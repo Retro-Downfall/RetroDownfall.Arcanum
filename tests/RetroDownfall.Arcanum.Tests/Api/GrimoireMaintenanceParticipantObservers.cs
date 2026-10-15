@@ -1092,7 +1092,6 @@ internal sealed record IndexingReconciliationObservation(
 
 internal sealed class OrdinaryMutationObservations
 {
-
     private readonly Lock _reconciliationGate = new();
 
     private readonly List<IndexingReconciliationObservation> _reconciliationObservations = [];
@@ -1200,7 +1199,6 @@ internal sealed class OrdinaryMutationObservations
 
     private static TaskCompletionSource NewReconciliationSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
-
 }
 
 internal sealed class ObservingSessionAttachmentIndexWriter(
@@ -1241,7 +1239,6 @@ internal sealed class ObservingSessionAttachmentIndexWriter(
         observations.IndexWriteSucceeded();
 
         observations.IndexAttemptSucceeded();
-
     }
 
     public async Task MarkWithoutIndexAsync(
@@ -1270,9 +1267,7 @@ internal sealed class ObservingSessionAttachmentIndexWriter(
 
         if (status == SessionAttachmentIndexStatus.Failed)
         {
-
             observations.FailureSucceeded();
-
         }
     }
 
@@ -1382,9 +1377,7 @@ internal sealed class ObservingTurnRunWriter(
 
         if (status == InferenceRunStatus.Failed)
         {
-
             observations.FailureSucceeded();
-
         }
     }
 
@@ -1415,9 +1408,7 @@ internal sealed class ObservingTurnRunWriter(
 
         if (operation.Status == BillableOperationStatus.Failed)
         {
-
             observations.FailureSucceeded();
-
         }
 
         return operationId;
@@ -1498,7 +1489,6 @@ internal sealed class ObservingUnseenServantWatermarkStore(
 
         observations.WatermarkSucceeded();
     }
-
 }
 
 // Wiring control only. Production stats executes raw SqliteCommand and is observed above.

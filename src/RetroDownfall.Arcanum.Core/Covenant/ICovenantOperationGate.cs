@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public interface ICovenantOperationGate
 {
-
     ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
         CancellationToken cancellationToken);
 
@@ -102,5 +101,4 @@ public interface ICovenantOperationGate
     ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken);
-
 }

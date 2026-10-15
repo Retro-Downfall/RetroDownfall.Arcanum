@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Logging;
 /// </summary>
 public sealed class NamedHttpClientLoggingTests
 {
-
     public static TheoryData<string> NamedClients() =>
     [
         WebResearchConstants.PerplexityHttpClientName,
@@ -35,7 +34,6 @@ public sealed class NamedHttpClientLoggingTests
     [MemberData(nameof(NamedClients))]
     public void Every_named_http_client_suppresses_default_uri_logging(string clientName)
     {
-
         ServiceCollection services = [];
 
         services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
@@ -51,13 +49,9 @@ public sealed class NamedHttpClientLoggingTests
             current is DelegatingHandler delegating;
             current = delegating.InnerHandler)
         {
-
             pipeline.Add(delegating.GetType().Name);
-
         }
 
         Assert.DoesNotContain(pipeline, static name => name.Contains("Logging", StringComparison.Ordinal));
-
     }
-
 }

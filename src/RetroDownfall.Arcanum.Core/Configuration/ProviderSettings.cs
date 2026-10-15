@@ -4,7 +4,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 
 public sealed record ProviderSettings
 {
-
     public string Name { get; set; } = string.Empty;
 
     public AiProviderKind Type { get; set; }
@@ -46,5 +45,4 @@ public sealed record ProviderSettings
     {
         return $"{nameof(ProviderSettings)} {{ {nameof(Name)} = {Name}, {nameof(Type)} = {Type}, {nameof(Endpoint)} = {Endpoint}, {nameof(CredentialEnvironmentVariable)} = {CredentialEnvironmentVariable ?? "null"}, {nameof(Command)} = {Command ?? "null"}, {nameof(Models)} = [{string.Join(", ", Models.Select(static m => m.SupportsVision ? $"{m.Name}(vision)" : m.Name))}], {nameof(HiddenModels)} = [{string.Join(", ", HiddenModels ?? [])}], {nameof(ContextWindowLimit)} = {ContextWindowLimit} }}";
     }
-
 }

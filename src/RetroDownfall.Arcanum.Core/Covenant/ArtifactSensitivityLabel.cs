@@ -199,5 +199,4 @@ public sealed class ArtifactSensitivityLabel
         value is >= SensitiveArtifactKind.AssistantEntry and <= SensitiveArtifactKind.LongRestDiscovery
             ? value
             : throw new ArgumentOutOfRangeException(nameof(value));
-
 }

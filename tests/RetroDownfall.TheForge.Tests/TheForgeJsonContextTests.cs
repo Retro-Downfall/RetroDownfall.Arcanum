@@ -17,7 +17,6 @@ namespace RetroDownfall.TheForge.Tests;
 
 public class TheForgeJsonContextTests
 {
-
     [Theory]
     [InlineData(typeof(ReasoningRequestOptions))]
     [InlineData(typeof(ReasoningEffortLevel))]
@@ -32,9 +31,7 @@ public class TheForgeJsonContextTests
     [InlineData(typeof(PromptCacheRetentionPolicy))]
     public void InferenceCapabilityContracts_HaveSourceGeneratedTypeInfo(Type type)
     {
-
         Assert.NotNull(TheForgeJsonContext.Default.GetTypeInfo(type));
-
     }
 
     [Fact]
@@ -71,7 +68,6 @@ public class TheForgeJsonContextTests
     [Fact]
     public void ApiResponse_SpellDetail_RoundTrips()
     {
-
         SpellDetail spell = new(
             Name: "greater-heal",
             Description: "Heals a target apprentice.",
@@ -106,7 +102,6 @@ public class TheForgeJsonContextTests
         Assert.Equal(SpellSource.Workspace, roundTripped.Data.Source);
 
         Assert.Equal(["healing", "support"], roundTripped.Data.Tags);
-
     }
 
     // Error.IsNone is a computed convenience read from the three fields Error.None fixes. It is
@@ -116,7 +111,6 @@ public class TheForgeJsonContextTests
     [InlineData(true)]
     public void Error_IsNone_IsNotPartOfTheWireShape(bool withDetails)
     {
-
         Error error = withDetails
             ? new("Test.Failed", "Nope.", [new ConfigurationValidationError("/pointer", "detail")])
             : new("Test.Failed", "Nope.");
@@ -145,13 +139,11 @@ public class TheForgeJsonContextTests
         Assert.False(roundTripped.Value.IsNone);
 
         Assert.Equal(json, JsonSerializer.Serialize(roundTripped.Value, TheForgeJsonContext.Default.Error));
-
     }
 
     [Fact]
     public void ApiResponse_Failure_OmitsDataAndCarriesError()
     {
-
         ApiResponse<bool> failure = new(default, false, new Error("Connection.Failed", "boom"), "trace-456");
 
         string json = JsonSerializer.Serialize(failure, TheForgeJsonContext.Default.ApiResponseBoolean);
@@ -169,7 +161,6 @@ public class TheForgeJsonContextTests
         Assert.False(roundTripped.IsSuccess);
 
         Assert.Equal("boom", roundTripped.Error?.Message);
-
     }
 
     [Theory]
@@ -180,7 +171,6 @@ public class TheForgeJsonContextTests
     [InlineData("""{"type":"toolError","message":"boom"}""", IntelligenceEventType.ToolError, null)]
     public void IntelligenceEvent_DeserializesEachNdjsonFrameType(string ndjsonLine, IntelligenceEventType expectedType, string? expectedData)
     {
-
         IntelligenceEvent? frame = JsonSerializer.Deserialize(ndjsonLine, TheForgeJsonContext.Default.IntelligenceEvent);
 
         Assert.NotNull(frame);
@@ -188,13 +178,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(expectedType, frame.Type);
 
         Assert.Equal(expectedData, frame.Data);
-
     }
 
     [Fact]
     public void IntelligenceEvent_ResultFrame_CarriesUsage()
     {
-
         const string ndjsonLine =
             """{"type":"result","message":"done","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}""";
 
@@ -209,13 +197,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(10, frame.Usage.PromptTokens);
 
         Assert.Equal(15, frame.Usage.TotalTokens);
-
     }
 
     [Fact]
     public void CreateSpellRequest_RoundTrips()
     {
-
         CreateSpellRequest request = new(
             Name: "light",
             Description: "Create light",
@@ -239,13 +225,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(["cantrip"], roundTripped.Tags);
 
         Assert.Equal("# Light", roundTripped.Body);
-
     }
 
     [Fact]
     public void CreatePromptRequest_RoundTrips()
     {
-
         CreatePromptRequest request = new(
             Name: "greeting",
             Version: "v1",
@@ -274,13 +258,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("Hello {{name}}", roundTripped.Template);
 
         Assert.Equal("gpt-4o", roundTripped.Model);
-
     }
 
     [Fact]
     public void CreateSessionRequest_RoundTrips()
     {
-
         CreateSessionRequest request = new(CampaignId: null, Title: "My session");
 
         string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.CreateSessionRequest);
@@ -290,13 +272,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped);
 
         Assert.Equal("My session", roundTripped.Title);
-
     }
 
     [Fact]
     public void ApiResponse_PromptDetailDto_RoundTrips()
     {
-
         PromptDetailDto prompt = new(
             Id: Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
             CampaignId: null,
@@ -330,13 +310,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("greeting", roundTripped.Data.Name);
 
         Assert.Equal("Hello {{name}}", roundTripped.Data.Template);
-
     }
 
     [Fact]
     public void ApiResponse_SessionDetailDto_RoundTrips()
     {
-
         SessionDetailDto session = new(
             Id: Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
             CampaignId: null,
@@ -363,13 +341,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("My session", roundTripped.Data.Title);
 
         Assert.Equal("active", roundTripped.Data.Status);
-
     }
 
     [Fact]
     public void PromptRenderResultDto_RoundTrips()
     {
-
         PromptRenderResultDto result = new(RenderedText: "Hello world", TokenCount: 7);
 
         string json = JsonSerializer.Serialize(result, TheForgeJsonContext.Default.PromptRenderResultDto);
@@ -381,13 +357,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("Hello world", roundTripped.RenderedText);
 
         Assert.Equal(7, roundTripped.TokenCount);
-
     }
 
     [Fact]
     public void PromptTestResultDto_RoundTrips()
     {
-
         PromptTestResultDto result = new(
             AssembledText: "Assembled prompt",
             TokenCount: 12,
@@ -409,13 +383,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("greeting", roundTripped.ResolvedSpell.Name);
 
         Assert.Equal(2, roundTripped.McpServerCount);
-
     }
 
     [Fact]
     public void ToolInvokeRequest_RoundTrips()
     {
-
         ToolInvokeRequest request = new("echo", JsonDocument.Parse("""{"path":"/tmp"}""").RootElement.Clone());
 
         string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.ToolInvokeRequest);
@@ -427,13 +399,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("echo", roundTripped.ToolName);
 
         Assert.Equal("/tmp", roundTripped.Arguments.GetProperty("path").GetString());
-
     }
 
     [Fact]
     public void ApiResponse_ToolInvokeResponse_RoundTrips()
     {
-
         ToolInvokeResponse result = new(JsonDocument.Parse("""{"ok":true}""").RootElement.Clone());
 
         ApiResponse<ToolInvokeResponse> original = new(result, true, null, "trace-ti");
@@ -451,13 +421,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(JsonValueKind.Object, roundTripped.Data!.Result.ValueKind);
 
         Assert.True(roundTripped.Data.Result.GetProperty("ok").GetBoolean());
-
     }
 
     [Fact]
     public void McpToolInvokeRequest_RoundTrips_WithServerAndWorkspace()
     {
-
         McpToolInvokeRequest request = new()
         {
             ToolName = "echo",
@@ -478,13 +446,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("srv-a", roundTripped.ServerName);
         Assert.Equal("/ws", roundTripped.WorkingDirectory);
         Assert.Equal("/tmp", roundTripped.Arguments.GetProperty("path").GetString());
-
     }
 
     [Fact]
     public void McpToolInvokeRequest_OmitsNullServerAndWorkspace()
     {
-
         McpToolInvokeRequest request = new()
         {
             ToolName = "echo",
@@ -495,13 +461,11 @@ public class TheForgeJsonContextTests
 
         Assert.DoesNotContain("serverName", json);
         Assert.DoesNotContain("workingDirectory", json);
-
     }
 
     [Fact]
     public void ApiResponse_McpToolInvokeResponse_RoundTrips()
     {
-
         McpToolInvokeResponse result = new()
         {
             Result = JsonDocument.Parse("""{"ok":true}""").RootElement.Clone(),
@@ -525,13 +489,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(42, roundTripped.Data.DurationMs);
         Assert.True(roundTripped.Data.Truncated);
         Assert.True(roundTripped.Data.Result.GetProperty("ok").GetBoolean());
-
     }
 
     [Fact]
     public void DiagnosticMcpFixtureStoreDocument_RoundTrips_WithCamelCase()
     {
-
         DiagnosticMcpFixtureRecord fixture = new(
             Guid.Parse("00000000-0000-0000-0000-000000000001"),
             "echo-fixture",
@@ -562,13 +524,11 @@ public class TheForgeJsonContextTests
         Assert.Single(roundTripped.Fixtures);
         Assert.Equal("echo-fixture", roundTripped.Fixtures[0].Name);
         Assert.Equal("echo", roundTripped.Fixtures[0].ToolName);
-
     }
 
     [Fact]
     public void ProviderTestRequest_RoundTrips()
     {
-
         ProviderTestRequest request = new("http://localhost:8080", "sk-test", AiProviderKind.OpenAICompatible);
 
         string json = JsonSerializer.Serialize(request, TheForgeJsonContext.Default.ProviderTestRequest);
@@ -580,13 +540,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("http://localhost:8080", roundTripped.Endpoint);
 
         Assert.Equal(AiProviderKind.OpenAICompatible, roundTripped.Type);
-
     }
 
     [Fact]
     public void ApiResponse_ProviderTestResult_RoundTrips()
     {
-
         ProviderTestResult result = new(true, 42, ["gpt-4o"], null);
 
         ApiResponse<ProviderTestResult> original = new(result, true, null, "trace-pt");
@@ -606,13 +564,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(42L, roundTripped.Data.LatencyMs);
 
         Assert.Equal(["gpt-4o"], roundTripped.Data.ModelsFound);
-
     }
 
     [Fact]
     public void OptionalWorkspaceRequest_RoundTripsNonNullAndNull()
     {
-
         OptionalWorkspaceRequest nonNull = new("/tmp/campaign");
 
         string json = JsonSerializer.Serialize(nonNull, TheForgeJsonContext.Default.OptionalWorkspaceRequest);
@@ -630,13 +586,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(nullRoundTripped);
 
         Assert.Null(nullRoundTripped.WorkingDirectory);
-
     }
 
     [Fact]
     public void WorkspaceArsenalDto_RoundTrips()
     {
-
         WorkspaceArsenalDto arsenal = new([], ["fs.read", "fs.write"], [], []);
 
         string json = JsonSerializer.Serialize(arsenal, TheForgeJsonContext.Default.WorkspaceArsenalDto);
@@ -660,13 +614,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(envelopeRoundTripped.Data);
 
         Assert.Equal(["fs.read", "fs.write"], envelopeRoundTripped.Data!.NativeTools);
-
     }
 
     [Fact]
     public void CompactResult_RoundTrips()
     {
-
         CompactResult original = new(120, 45, 5);
 
         string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.CompactResult);
@@ -680,13 +632,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(45, roundTripped.TokensAfter);
 
         Assert.Equal(5, roundTripped.EntriesRemoved);
-
     }
 
     [Fact]
     public void CompactResult_WithStop_KeepsTheStopCode()
     {
-
         CompactResult original = new(120, 45, 5, "Covenant.StaleSnapshot");
 
         string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.CompactResult);
@@ -698,13 +648,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(5, roundTripped.EntriesRemoved);
 
         Assert.Equal("Covenant.StaleSnapshot", roundTripped.StoppedBy);
-
     }
 
     [Fact]
     public void ApiResponse_CompactResult_RoundTrips()
     {
-
         CompactResult compact = new(80, 30, 2);
 
         ApiResponse<CompactResult> original = new(compact, true, null, "trace-compact");
@@ -720,13 +668,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped.Data);
 
         Assert.Equal(2, roundTripped.Data!.EntriesRemoved);
-
     }
 
     [Fact]
     public void ApiResponse_EntryDtoArray_RoundTrips()
     {
-
         EntryDto[] entries =
         [
             new(Guid.NewGuid(), Guid.NewGuid(), "user", "hello", null, null, DateTimeOffset.UtcNow),
@@ -747,13 +693,11 @@ public class TheForgeJsonContextTests
         Assert.Single(roundTripped.Data!);
 
         Assert.Equal("hello", roundTripped.Data![0].Content);
-
     }
 
     [Fact]
     public void SagaStats_RoundTrips()
     {
-
         SagaStats original = new(10, 3, DateTimeOffset.UtcNow.AddDays(-7), DateTimeOffset.UtcNow);
 
         string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.SagaStats);
@@ -765,13 +709,11 @@ public class TheForgeJsonContextTests
         Assert.Equal(10, roundTripped.TotalCount);
 
         Assert.Equal(3, roundTripped.SessionCount);
-
     }
 
     [Fact]
     public void ApiResponse_SagaStats_RoundTrips()
     {
-
         SagaStats stats = new(4, 2, null, DateTimeOffset.UtcNow);
 
         ApiResponse<SagaStats> original = new(stats, true, null, "trace-saga-stats");
@@ -787,13 +729,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped.Data);
 
         Assert.Equal(4, roundTripped.Data!.TotalCount);
-
     }
 
     [Fact]
     public void FileReadResult_RoundTrips()
     {
-
         FileReadResult original = new("notes.md", "# Notes", "utf-8", 128, DateTimeOffset.UtcNow);
 
         string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.FileReadResult);
@@ -805,13 +745,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("notes.md", roundTripped.RelativePath);
 
         Assert.Equal("# Notes", roundTripped.Content);
-
     }
 
     [Fact]
     public void ApiResponse_FileReadResult_RoundTrips()
     {
-
         FileReadResult read = new("readme.md", "hello", "utf-8", 5, DateTimeOffset.UtcNow);
 
         ApiResponse<FileReadResult> original = new(read, true, null, "trace-read");
@@ -827,13 +765,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped.Data);
 
         Assert.Equal("hello", roundTripped.Data!.Content);
-
     }
 
     [Fact]
     public void FileWriteResult_RoundTrips()
     {
-
         FileWriteResult original = new("draft.md", 256, DateTimeOffset.UtcNow);
 
         string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.FileWriteResult);
@@ -845,13 +781,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("draft.md", roundTripped.RelativePath);
 
         Assert.Equal(256, roundTripped.BytesWritten);
-
     }
 
     [Fact]
     public void ApiResponse_FileWriteResult_RoundTrips()
     {
-
         FileWriteResult write = new("save.md", 64, DateTimeOffset.UtcNow);
 
         ApiResponse<FileWriteResult> original = new(write, true, null, "trace-write");
@@ -867,13 +801,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped.Data);
 
         Assert.Equal(64, roundTripped.Data!.BytesWritten);
-
     }
 
     [Fact]
     public void CodexContentDto_RoundTrips()
     {
-
         CodexContentDto original = new("CODEX.md", "# Codex", true);
 
         string json = JsonSerializer.Serialize(original, TheForgeJsonContext.Default.CodexContentDto);
@@ -885,13 +817,11 @@ public class TheForgeJsonContextTests
         Assert.Equal("CODEX.md", roundTripped.Path);
 
         Assert.True(roundTripped.Exists);
-
     }
 
     [Fact]
     public void ApiResponse_CodexContentDto_RoundTrips()
     {
-
         CodexContentDto codex = new("campaigns/foo/CODEX.md", "# Campaign", true);
 
         ApiResponse<CodexContentDto> original = new(codex, true, null, "trace-codex");
@@ -907,13 +837,11 @@ public class TheForgeJsonContextTests
         Assert.NotNull(roundTripped.Data);
 
         Assert.Equal("# Campaign", roundTripped.Data!.Content);
-
     }
 
     [Fact]
     public void InquisitorArray_RoundTrips_EachKindViaTheForgeJsonContext()
     {
-
         List<Inquisitor> inquisitors =
         [
             new RegexInquisitor("hello", ShouldMatch: true, IgnoreCase: true) { Label = "greeting" },
@@ -952,13 +880,11 @@ public class TheForgeJsonContextTests
         Assert.False(semantic.ExpectedAnswer);
 
         Assert.Equal("polite", semantic.Label);
-
     }
 
     [Fact]
     public void Trial_RoundTrips_WithPolymorphicInquisitorsViaTheForgeJsonContext()
     {
-
         Trial trial = new(
             TrialTargetKind.Spell,
             "greater-heal",
@@ -988,13 +914,11 @@ public class TheForgeJsonContextTests
         Assert.IsType<SemanticInquisitor>(roundTripped.Inquisitors[1]);
 
         Assert.Equal("ally", roundTripped.Variables!["target"]);
-
     }
 
     [Fact]
     public void ApiResponse_TrialResult_RoundTripsViaTheForgeJsonContext()
     {
-
         TrialResult result = new(
             TrialName: "heal-check",
             TargetKind: TrialTargetKind.Prompt,
@@ -1029,7 +953,5 @@ public class TheForgeJsonContextTests
         Assert.Equal(2, roundTripped.Data.Verdicts.Count);
 
         Assert.Equal(15, roundTripped.Data.Usage!.TotalTokens);
-
     }
-
 }

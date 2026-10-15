@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 
 public sealed class ModelEntryJsonConverterTests
 {
-
     private static readonly JsonSerializerOptions Options = new()
     {
         TypeInfoResolver = ConfigurationJsonContext.Default,
@@ -19,7 +18,6 @@ public sealed class ModelEntryJsonConverterTests
     [Fact]
     public void Read_BareString_DefaultsSupportsVisionFalse()
     {
-
         Utf8JsonReader reader = CreateReader("\"gpt-4o-mini\"");
 
         reader.Read();
@@ -33,13 +31,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.False(entry.SupportsVision);
 
         Assert.Null(entry.Reasoning);
-
     }
 
     [Fact]
     public void Read_ObjectForm_ReadsSupportsVisionTrue()
     {
-
         Utf8JsonReader reader = CreateReader("""{"name":"gpt-4o","supportsVision":true}""");
 
         reader.Read();
@@ -51,13 +47,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.Equal("gpt-4o", entry!.Name);
 
         Assert.True(entry.SupportsVision);
-
     }
 
     [Fact]
     public void Read_ObjectFormMissingSupportsVision_DefaultsFalse()
     {
-
         Utf8JsonReader reader = CreateReader("""{"name":"local.gguf"}""");
 
         reader.Read();
@@ -71,13 +65,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.False(entry.SupportsVision);
 
         Assert.Null(entry.Reasoning);
-
     }
 
     [Fact]
     public void Read_ObjectForm_ReadsSupportsToolsFalse()
     {
-
         Utf8JsonReader reader = CreateReader("""{"name":"local.gguf","supportsTools":false}""");
 
         reader.Read();
@@ -87,13 +79,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.NotNull(entry);
 
         Assert.False(entry!.SupportsTools);
-
     }
 
     [Fact]
     public void Read_ObjectFormMissingSupportsTools_DefaultsNull()
     {
-
         Utf8JsonReader reader = CreateReader("""{"name":"local.gguf"}""");
 
         reader.Read();
@@ -103,13 +93,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.NotNull(entry);
 
         Assert.Null(entry!.SupportsTools);
-
     }
 
     [Fact]
     public void Write_WithSupportsToolsFalse_IncludesSupportsToolsInOutput()
     {
-
         using MemoryStream stream = new();
 
         using Utf8JsonWriter writer = new(stream);
@@ -121,13 +109,11 @@ public sealed class ModelEntryJsonConverterTests
         string json = Encoding.UTF8.GetString(stream.ToArray());
 
         Assert.Equal("""{"name":"gpt-4o","supportsVision":false,"supportsTools":false}""", json);
-
     }
 
     [Fact]
     public void Write_WithSupportsToolsUndeclared_OmitsSupportsToolsFromOutput()
     {
-
         using MemoryStream stream = new();
 
         using Utf8JsonWriter writer = new(stream);
@@ -139,32 +125,26 @@ public sealed class ModelEntryJsonConverterTests
         string json = Encoding.UTF8.GetString(stream.ToArray());
 
         Assert.DoesNotContain("supportsTools", json, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Read_InvalidToken_ThrowsJsonException()
     {
-
         JsonException ex = Assert.Throws<JsonException>(() =>
         {
-
             Utf8JsonReader local = CreateReader("42");
 
             local.Read();
 
             _ = _converter.Read(ref local, typeof(ModelEntry), Options);
-
         });
 
         Assert.Contains("models", ex.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public void Write_AlwaysWritesObjectForm()
     {
-
         using MemoryStream stream = new();
 
         using Utf8JsonWriter writer = new(stream);
@@ -176,13 +156,11 @@ public sealed class ModelEntryJsonConverterTests
         string json = Encoding.UTF8.GetString(stream.ToArray());
 
         Assert.Equal("""{"name":"gpt-4o","supportsVision":true}""", json);
-
     }
 
     [Fact]
     public void Read_ObjectForm_ReadsNestedReasoningFacts()
     {
-
         const string json =
             """
             {
@@ -202,7 +180,6 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.Equal(ReasoningWireDialect.OpenRouter, entry?.Reasoning?.WireDialect);
         Assert.Equal(65_536, entry?.Reasoning?.MaxBudgetTokens);
-
     }
 
     [Theory]
@@ -275,7 +252,6 @@ public sealed class ModelEntryJsonConverterTests
     [Fact]
     public void Write_WithReasoning_WritesNestedFactsObject()
     {
-
         ModelEntry entry = new("reasoner")
         {
             Reasoning = new ModelReasoningSettings
@@ -299,13 +275,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.Equal("topLevelReasoningBudget", reasoning.GetProperty("wireDialect").GetString());
         Assert.Equal(32_768, reasoning.GetProperty("maxBudgetTokens").GetInt32());
         Assert.False(reasoning.TryGetProperty("controlSupport", out _));
-
     }
 
     [Fact]
     public void ImplicitConversion_FromString_DefaultsSupportsVisionFalse()
     {
-
         ModelEntry entry = "llama3";
 
         Assert.Equal("llama3", entry.Name);
@@ -313,13 +287,11 @@ public sealed class ModelEntryJsonConverterTests
         Assert.False(entry.SupportsVision);
 
         Assert.Null(entry.Reasoning);
-
     }
 
     [Fact]
     public void RoundTrip_ProviderSettingsWithMixedModelForms_PreservesSupportsVision()
     {
-
         string json = """
             {
               "name": "openai",
@@ -369,7 +341,6 @@ public sealed class ModelEntryJsonConverterTests
 
         Assert.Equal(provider.Models[0].Reasoning?.WireDialect, reparsed.Models[0].Reasoning?.WireDialect);
         Assert.Null(reparsed.Models[1].Reasoning);
-
     }
 
     [Theory]
@@ -381,18 +352,13 @@ public sealed class ModelEntryJsonConverterTests
     [InlineData(typeof(ReasoningWireDialect))]
     public void ConfigurationJsonContext_RegistersReasoningCapabilityTypes(Type type)
     {
-
         Assert.NotNull(ConfigurationJsonContext.Default.GetTypeInfo(type));
-
     }
 
     private static Utf8JsonReader CreateReader(string json)
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes(json);
 
         return new Utf8JsonReader(bytes);
-
     }
-
 }

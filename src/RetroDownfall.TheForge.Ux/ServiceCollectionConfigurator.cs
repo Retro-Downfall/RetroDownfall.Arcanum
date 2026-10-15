@@ -42,10 +42,8 @@ namespace RetroDownfall.TheForge.Ux;
 /// </summary>
 internal static class ServiceCollectionConfigurator
 {
-
     public static ServiceProvider Build()
     {
-
         ServiceCollection services = new();
 
         services.AddArcanumClientMutationCoordination();
@@ -267,12 +265,10 @@ internal static class ServiceCollectionConfigurator
         services.AddTransient<MainViewModel>();
 
         return services.BuildServiceProvider();
-
     }
 
     private static void RegisterViewModels(ServiceCollection services)
     {
-
         services.AddTransient<AtelierViewModel>();
 
         services.AddTransient<WarTableViewModel>();
@@ -313,12 +309,10 @@ internal static class ServiceCollectionConfigurator
         services.AddTransient<FilesBatchesViewModel>();
 
         services.AddTransient<LedgerViewModel>();
-
     }
 
     private static void RegisterRouteServices(ServiceCollection services)
     {
-
         services.AddSingleton<HealthService>();
 
         services.AddSingleton<BudgetService>();
@@ -370,7 +364,5 @@ internal static class ServiceCollectionConfigurator
         services.AddSingleton<FilesBatchesService>();
 
         services.AddSingleton<DaemonService>();
-
     }
-
 }

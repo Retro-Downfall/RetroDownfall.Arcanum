@@ -607,7 +607,6 @@ public sealed partial class LongRestMaintenanceTests
         public Task<IReadOnlyList<LongRunningOperationCount>> GetCountsAsync(CancellationToken ct = default) => inner.GetCountsAsync(ct);
     }
 
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

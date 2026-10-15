@@ -78,7 +78,6 @@ public sealed class CampaignRollupTurnSnapshotTests
             throw new InvalidOperationException("Disabled inference must not request a Covenant origin or a claim payload.");
     }
 
-
     internal static readonly Guid CampaignId = Guid.NewGuid();
 
     internal static readonly CanonicalCampaignContext Campaign = CanonicalCampaignContext.Create(
@@ -221,7 +220,6 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         Assert.Null(snapshot.Replay);
 
-
         await snapshot.DisposeAsync();
 
         Assert.Equal(1, claims.Completions);
@@ -230,7 +228,6 @@ public sealed class CampaignRollupTurnSnapshotTests
     internal sealed class AcceptingClaims : ISessionTurnClaimCoordinator
     {
         public int Completions { get; private set; }
-
 
         public ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(SessionTurnRequestIdentity request, CancellationToken cancellationToken)
         {
@@ -394,5 +391,4 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
-
 }

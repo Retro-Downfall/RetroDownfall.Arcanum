@@ -99,7 +99,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.True(reset.SpanStart > captured.Span.End);
         }
-
         else if (shape == "formal-null-before-capture")
         {
             AssignmentExpressionSyntax changedFormal = Assert.Single(selected.Body!.DescendantNodes().OfType<AssignmentExpressionSyntax>(), assignment =>

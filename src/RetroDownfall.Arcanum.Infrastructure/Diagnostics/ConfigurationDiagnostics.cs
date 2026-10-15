@@ -19,7 +19,6 @@ public sealed class ConfigurationSemanticsCheck(
     IOptions<ArcanumSettings> options,
     ConfigurationValidator validator) : IDoctorCheck
 {
-
     public const string CheckId = "configuration.semantics";
 
     public string Id => CheckId;
@@ -32,16 +31,13 @@ public sealed class ConfigurationSemanticsCheck(
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         Result result = validator.Validate(options.Value);
 
         if (result.IsSuccess)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "Every configured provider, model reference, and host setting is internally consistent."));
-
         }
 
         IReadOnlyList<ConfigurationValidationError> details = result.Error.Details ?? [];
@@ -62,9 +58,7 @@ public sealed class ConfigurationSemanticsCheck(
                     DoctorRemedyCommands.ConfigEdit,
                     "Correct the reported paths, then re-run 'arcanum doctor --only configuration'."),
             ]));
-
     }
-
 }
 
 /// <summary>
@@ -75,7 +69,6 @@ public sealed class ConfigurationSemanticsCheck(
 /// </summary>
 public sealed class ConfigurationEnvironmentOverrideCheck(IOptions<ArcanumSettings> options) : IDoctorCheck
 {
-
     public const string CheckId = "configuration.environment_overrides";
 
     public string Id => CheckId;
@@ -88,7 +81,6 @@ public sealed class ConfigurationEnvironmentOverrideCheck(IOptions<ArcanumSettin
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         ConfigurationEnvironmentSnapshot snapshot =
             ConfigurationEnvironmentResolver.Resolve(options.Value);
 
@@ -99,13 +91,11 @@ public sealed class ConfigurationEnvironmentOverrideCheck(IOptions<ArcanumSettin
 
         if (ineffective.Count == 0)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Healthy,
                 effective == 0
                     ? "No configuration environment override is set."
                     : $"{effective} configuration environment override(s) applied cleanly."));
-
         }
 
         return Task.FromResult(new DoctorFinding(
@@ -122,9 +112,7 @@ public sealed class ConfigurationEnvironmentOverrideCheck(IOptions<ArcanumSettin
                     DoctorRemedyCommands.ConfigShow,
                     "Unset the reported variable or correct its value; 'arcanum config show' reports which source won for each path."),
             ]));
-
     }
-
 }
 
 /// <summary>
@@ -136,7 +124,6 @@ public sealed class LongRestRecipeCheck(
     IOptions<ArcanumSettings> options,
     ConfigurationValidator validator) : IDoctorCheck
 {
-
     public const string CheckId = "configuration.long_rest_recipe";
 
     public string Id => CheckId;
@@ -149,27 +136,22 @@ public sealed class LongRestRecipeCheck(
 
     public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
     {
-
         ArcanumSettings settings = options.Value;
 
         if (settings.Features?.LongRest is not true)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Skipped,
                 "Long Rest is not enabled."));
-
         }
 
         IReadOnlyList<ConfigurationValidationError> warnings = validator.ValidateLongRest(settings);
 
         if (warnings.Count == 0)
         {
-
             return Task.FromResult(new DoctorFinding(
                 DoctorOutcome.Healthy,
                 "Long Rest is enabled and its chat and embedding recipe resolves."));
-
         }
 
         return Task.FromResult(new DoctorFinding(
@@ -182,7 +164,5 @@ public sealed class LongRestRecipeCheck(
                     DoctorRemedyCommands.ConfigEdit,
                     "Set FastModel or DefaultModel to a model an OpenAI-compatible provider advertises, and configure Integrations:Embeddings, or turn Features:LongRest off."),
             ]));
-
     }
-
 }

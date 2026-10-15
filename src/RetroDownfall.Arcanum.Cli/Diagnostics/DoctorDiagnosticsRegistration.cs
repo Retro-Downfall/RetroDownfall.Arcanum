@@ -18,10 +18,8 @@ namespace RetroDownfall.Arcanum.Cli.Diagnostics;
 /// </summary>
 public static class DoctorDiagnosticsRegistration
 {
-
     public static IServiceCollection AddArcanumDoctorDiagnostics(this IServiceCollection services)
     {
-
         ArgumentNullException.ThrowIfNull(services);
 
         // The Familiar check needs the host-side probe. `arcanum doctor` runs on the lightweight CLI
@@ -90,7 +88,5 @@ public static class DoctorDiagnosticsRegistration
         services.AddTransient<DoctorDiagnosticRunner>();
 
         return services;
-
     }
-
 }

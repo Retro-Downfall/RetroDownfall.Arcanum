@@ -606,7 +606,6 @@ internal static class CoreSchemaVersionSeventeenFixture
             UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'FileLastWriteTime' AS ColumnName
             UNION ALL SELECT 'workspace_file_chunks' AS TableName, 'IndexedAt' AS ColumnName;
             """.ReplaceLineEndings("\n") + "\n",
-
     };
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>

@@ -42,7 +42,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection(HostedServiceLifetimeCollection.Name)]
 public sealed class LoremasterTests
 {
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

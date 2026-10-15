@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record McpSettings
 {
-
     public int InitializationTimeoutSeconds { get; set; } = 60;
 
     public bool BootstrapBlocksStartup { get; set; } = true;
@@ -30,5 +29,4 @@ public sealed record McpSettings
     /// <c>OutboundUrlGuard</c>) still applies regardless of this list.
     /// </summary>
     public string[] AllowedHttpHosts { get; set; } = [];
-
 }

@@ -30,13 +30,11 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// </remarks>
 public sealed class FullInstallationResetManagedFileReconcilerTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
     public void Reconciliation_phase_codes_are_literal_and_exhaustive()
     {
-
         Assert.Equal(
             1,
             (byte)FullInstallationResetManagedFileReconciliationPhase.InventoryPrepared);
@@ -62,13 +60,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         Assert.Equal(2, (byte)FullInstallationResetManagedFileBlockerArm.ManualWorkItemOrphan);
 
         Assert.Equal(2, Enum.GetValues<FullInstallationResetManagedFileBlockerArm>().Length);
-
     }
 
     [Fact]
     public async Task An_empty_installation_walks_all_four_phases_and_verifies_a_zero_inventory()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         Result<InstallationResetActivePublication> reconciled = await fixture.ReconcileAsync();
@@ -99,13 +95,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                 FullInstallationResetManagedFileReconciliationPhase.TerminalInventoryVerified,
             ],
             fixture.PublishedPhases());
-
     }
 
     [Fact]
     public async Task An_unfinished_write_is_cleaned_and_an_adopted_file_is_erased_before_the_counts_add_up()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         SeededSource unfinished = await fixture.SeedUnfinishedWriteAsync("draft.md", "partial");
@@ -161,13 +155,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         Assert.Contains(unfinished.WriteOperationId, checkpoint.OrderedSourceWriteOperationIds);
 
         Assert.Contains(adopted.WriteOperationId, checkpoint.OrderedSourceWriteOperationIds);
-
     }
 
     [Fact]
     public async Task A_file_that_is_not_ours_becomes_an_authenticated_manual_orphan_and_is_left_on_disk()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         SeededSource adopted = await fixture.SeedAdoptedFileAsync("answer.md", "final");
@@ -234,13 +226,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             "SELECT COUNT(*) FROM managed_file_write_intents WHERE PhaseCode = 7;"));
 
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task A_source_still_adopted_at_the_end_refuses_terminal_verification()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         SeededSource adopted = await fixture.SeedAdoptedFileAsync("answer.md", "final");
@@ -265,13 +255,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                 checkpoint.SafeTerminalWriteIntentCount!.Value
                 + checkpoint.ManualWriteOrphanCount!.Value),
             checkpoint.SourceCount);
-
     }
 
     [Fact]
     public async Task A_source_that_appears_after_the_inventory_was_fixed_refuses_the_whole_reconciliation()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         _ = await fixture.SeedUnfinishedWriteAsync("draft.md", "partial");
@@ -289,13 +277,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         Assert.True(second.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, second.Error.Code);
-
     }
 
     [Fact]
     public async Task A_resumed_reconciliation_reruns_from_its_published_phase_without_a_second_effect()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         SeededSource adopted = await fixture.SeedAdoptedFileAsync("answer.md", "final");
@@ -315,13 +301,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         // Already terminal: the resume republishes nothing, because republishing would advance the
         // envelope revision and invalidate every proof bound to the one it replaced.
         Assert.Equal(publicationsAfterFirst, fixture.PublishedPhases().Count);
-
     }
 
     [Fact]
     public async Task A_record_whose_campaign_receipt_is_not_terminal_is_refused_before_anything_is_read()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync(terminalReceipt: false);
 
         SeededSource adopted = await fixture.SeedAdoptedFileAsync("answer.md", "final");
@@ -335,13 +319,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         Assert.True(File.Exists(adopted.ChildPath));
 
         Assert.Empty(fixture.PublishedPhases());
-
     }
 
     [Fact]
     public async Task A_marker_checkpoint_short_of_pair_absence_is_refused()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync(
             phase: HostToolsMarkerPairResetPhase.OsMarkerCompareDeleted);
 
@@ -350,13 +332,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         Assert.True(reconciled.IsFailure);
 
         Assert.Empty(fixture.PublishedPhases());
-
     }
 
     [Fact]
     public async Task A_publication_that_moved_underneath_the_operation_revokes_the_authority()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         _ = await fixture.SeedAdoptedFileAsync("answer.md", "final");
@@ -373,13 +353,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         Assert.True(reconciled.IsFailure);
 
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, reconciled.Error.Code);
-
     }
 
     [Fact]
     public async Task The_erasure_authority_cannot_be_minted_from_anything_but_the_reconcilers_own_proof()
     {
-
         await using ReconcilerFixture fixture = await ReconcilerFixture.CreateAsync();
 
         // The factory is internal so the erasure kernel can be handed an authority, but its input is
@@ -394,14 +372,12 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             FullInstallationResetManagedFileReconciler
                 .FullInstallationResetManagedFileErasureAuthority
                 .Create(fixture.Subject, fixture.Store.Current));
-
     }
 
     private sealed record SeededSource(Guid WriteOperationId, string ChildPath);
 
     private sealed class ReconcilerFixture : IAsyncDisposable
     {
-
         private static readonly Guid CampaignId = CovenantOperationGateFixture.CampaignOne;
 
         private static readonly Guid InstallationId =
@@ -423,7 +399,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             ArcanumMaintenanceLock heldLock,
             RecordingActiveStore store)
         {
-
             _database = database;
 
             _workspaceRoot = workspaceRoot;
@@ -452,7 +427,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     new ManagedFileCapabilityOpener(),
                     new ManagedFileOwnershipVerifier(),
                     TimeProvider.System));
-
         }
 
         internal RecordingActiveStore Store { get; }
@@ -463,7 +437,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             HostToolsMarkerPairResetPhase phase = HostToolsMarkerPairResetPhase.PairAbsenceVerified,
             bool terminalReceipt = true)
         {
-
             CovenantSchemaScratchDatabase database =
                 await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
@@ -472,7 +445,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
             try
             {
-
                 _ = Directory.CreateDirectory(workspaceRoot);
 
                 string guardedRoot = Path.Combine(workspaceRoot, "guarded");
@@ -505,17 +477,13 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                 RecordingActiveStore store = new(guardedRoot, Publication(phase, terminalReceipt));
 
                 return new ReconcilerFixture(database, workspaceRoot, heldLock, store);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal Task<Result<InstallationResetActivePublication>> ReconcileAsync(
@@ -538,7 +506,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         /// </summary>
         internal async Task<SeededSource> SeedAdoptedFileAsync(string leaf, string content)
         {
-
             SeedContext context = await SeedFileAsync(leaf, content);
 
             long revision = await WalkAsync(
@@ -548,7 +515,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             _ = revision;
 
             return new SeededSource(context.WriteOperationId, context.ChildPath);
-
         }
 
         /// <summary>
@@ -556,13 +522,11 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         /// </summary>
         internal async Task<SeededSource> SeedUnfinishedWriteAsync(string leaf, string content)
         {
-
             SeedContext context = await SeedFileAsync(leaf, content, temporary: true);
 
             _ = await WalkAsync(context, ManagedFileWriteIntentPhase.TempWritten);
 
             return new SeededSource(context.WriteOperationId, context.ChildPath);
-
         }
 
         internal async Task<long> CountAsync(string sql) =>
@@ -570,24 +534,19 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
         public async ValueTask DisposeAsync()
         {
-
             _lock.Dispose();
 
             await _database.DisposeAsync();
 
             try
             {
-
                 Directory.Delete(_workspaceRoot, recursive: true);
-
             }
             catch (IOException)
             {
-
                 // A scratch workspace under the OS temp root; a failure to remove it is not a test
                 // outcome.
             }
-
         }
 
         private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
@@ -613,7 +572,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             HostToolsMarkerPairResetPhase phase,
             bool terminalReceipt)
         {
-
             Guid operation = Guid.Parse("11112222-3333-4444-8555-666677778888");
 
             DateTimeOffset acceptedAtUtc = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
@@ -732,7 +690,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     1,
                     envelopeDigest,
                     location.Digest));
-
         }
 
         private sealed record SeedContext(
@@ -750,7 +707,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             string content,
             bool temporary = false)
         {
-
             string parent = Path.Combine(_campaignRoot, "notes");
 
             _ = Directory.CreateDirectory(parent);
@@ -782,17 +738,13 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     Encoding.UTF8.GetByteCount(content)),
                 PathIdentity(childPath),
                 content);
-
         }
 
         private async Task InsertCampaignOnceAsync()
         {
-
             if (_campaignInserted)
             {
-
                 return;
-
             }
 
             _ = Directory.CreateDirectory(_campaignRoot);
@@ -819,7 +771,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             _ = await command.ExecuteNonQueryAsync(Token);
 
             _campaignInserted = true;
-
         }
 
         /// <summary>
@@ -827,12 +778,9 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         /// </summary>
         private async Task<long> WalkAsync(SeedContext context, ManagedFileWriteIntentPhase phase)
         {
-
             if (phase is ManagedFileWriteIntentPhase.AdoptedAndLabeled)
             {
-
                 await InsertLabelAsync(context);
-
             }
 
             using CovenantSqliteAuthorizationScope writer =
@@ -842,7 +790,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
             await using (SqliteCommand insert = _database.Connection.CreateCommand())
             {
-
                 insert.CommandText = """
                     INSERT INTO managed_file_write_intents (
                         WriteOperationId, StableEffectIdentityDigest, ArtifactId, SensitivityLabelId,
@@ -877,12 +824,10 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     context.Ownership.ContentLength);
 
                 _ = await insert.ExecuteNonQueryAsync(Token);
-
             }
 
             await using (SqliteCommand created = _database.Connection.CreateCommand())
             {
-
                 created.CommandText = """
                     UPDATE managed_file_write_intents
                     SET PhaseCode = 2,
@@ -899,14 +844,12 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                 _ = created.Parameters.AddWithValue("$write", Format(context.WriteOperationId));
 
                 _ = await created.ExecuteNonQueryAsync(Token);
-
             }
 
             long revision = 1;
 
             for (int next = 3; next <= (int)phase; next++)
             {
-
                 await using SqliteCommand advance = _database.Connection.CreateCommand();
 
                 advance.CommandText = """
@@ -932,16 +875,13 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                 _ = await advance.ExecuteNonQueryAsync(Token);
 
                 revision++;
-
             }
 
             return revision;
-
         }
 
         private async Task InsertLabelAsync(SeedContext context)
         {
-
             ArtifactSensitivityLabel label = CovenantErasureAuthorityFixture.Label(
                 context.ArtifactId,
                 context.LabelId,
@@ -981,9 +921,7 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             _ = command.Parameters.AddWithValue("$labelDigest", label.LabelDigest.Bytes.ToArray());
 
             _ = await command.ExecuteNonQueryAsync(Token);
-
         }
-
     }
 
     /// <summary>
@@ -997,7 +935,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
     /// </remarks>
     private sealed class UnreachableConnectionSource : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException(
@@ -1007,7 +944,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException(
                 "The stopped-host reconciliation must use the caller's connection.");
-
     }
 
     /// <summary>
@@ -1022,7 +958,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
         string guardedRoot,
         InstallationResetActivePublication initial) : IInstallationResetActiveStore
     {
-
         private readonly List<FullInstallationResetManagedFileReconciliationPhase> _phases = [];
 
         public string GuardedRoot { get; } = guardedRoot;
@@ -1040,7 +975,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             heldInstallationLock.AssertHeldFor(GuardedRoot);
@@ -1051,7 +985,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                         InstallationResetActiveRecoveryOutcome.AuthenticatedV2,
                         Current,
                         LegacyRecord: null)));
-
         }
 
         public Task<Result<InstallationResetActivePublication>> AdvanceAsync(
@@ -1060,7 +993,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             InstallationResetActiveRecord next,
             CancellationToken cancellationToken = default)
         {
-
             ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
             ArgumentNullException.ThrowIfNull(next);
@@ -1069,27 +1001,22 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
 
             if (current.EnvelopeDigest != Current.EnvelopeDigest)
             {
-
                 return Task.FromResult(
                     Result<InstallationResetActivePublication>.Failure(
                         new Error(
                             ErrorCodes.Data.RecoveryRequired,
                             "The publication is not the current one.")));
-
             }
 
             if (next.HostToolsMarkerPairReset?.ManagedFile is { } managed)
             {
-
                 _phases.Add(managed.Phase);
-
             }
 
             Current = Bump(Current, InstallationResetActivePayloadV3.FromRecord(next));
 
             return Task.FromResult(
                 Result<InstallationResetActivePublication>.Success(Current));
-
         }
 
         public Task<Result<InstallationResetActivePublication>> BeginAsync(
@@ -1126,7 +1053,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
             InstallationResetActivePublication current,
             InstallationResetActivePayloadV3 payload)
         {
-
             CovenantDigest envelopeDigest = new(
                 [.. Enumerable.Repeat(
                     checked((byte)(0x20 + current.Envelope.Revision)),
@@ -1147,9 +1073,6 @@ public sealed class FullInstallationResetManagedFileReconcilerTests
                     EnvelopeDigest = envelopeDigest,
                 },
             };
-
         }
-
     }
-
 }

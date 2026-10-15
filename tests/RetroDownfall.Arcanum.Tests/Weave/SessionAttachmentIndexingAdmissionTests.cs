@@ -57,7 +57,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 {
-
     private const int Dimensions = 64;
 
     /// <summary>
@@ -87,14 +86,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
     public SessionAttachmentIndexingAdmissionTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _attachmentsRoot = Path.Combine(
@@ -118,39 +114,29 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             new WeaveIndexAvailability());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_attachmentsRoot))
         {
-
             Directory.Delete(_attachmentsRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_AdmittedRequest_ConcludesAndIndexes()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -167,11 +153,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         scopes.OnScopeDisposed = () =>
         {
-
             Assert.True(gate.WorkLeaseIsHeld);
 
             return ValueTask.CompletedTask;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
@@ -195,13 +179,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.False(gate.WorkLeaseIsHeld);
 
         Assert.NotEmpty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_RefusedItsWorkLease_TouchesNothingAndKeepsItsIdentity()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -250,13 +232,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(service.TryEnqueue(request with { Attempt = 9 }));
 
         Assert.Equal(0, service.QueueReader.Count);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_HoldsItsWorkLeaseUntilAfterEveryScopeHasDisposed()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -281,12 +261,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         // this request's lease is still registered.
         scopes.OnScopeDisposed = () =>
         {
-
             if (drain is not null)
             {
-
                 return ValueTask.CompletedTask;
-
             }
 
             closing = BeginClosing(gate, 62);
@@ -300,7 +277,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             drain = started;
 
             return ValueTask.CompletedTask;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
@@ -320,13 +296,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_ProviderException_DisposesEffectGroupAfterDurableFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -339,16 +313,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         gate.OnEffectGroupDisposing = async () =>
         {
-
             stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
-
         };
 
         FakeWeaveService weave = new()
         {
-
             OnEmbed = static _ => throw new InvalidOperationException("simulated indexing fault."),
-
         };
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
@@ -361,11 +331,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         scopes.OnScopeDisposed = () =>
         {
-
             scopeDisposalsInsideLease.Add(gate.WorkLeaseIsHeld);
 
             return ValueTask.CompletedTask;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -410,13 +378,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         // A genuine failure is not a deferral: the identity is released so the retry can re-enter.
         Assert.Empty(service.DeferredRequests);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_AppendException_DisposesEffectGroupAfterDurableFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -438,9 +404,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         gate.OnEffectGroupDisposing = async () =>
         {
-
             stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
-
         };
 
         ObservingScopeFactory scopes = BuildScopeFactory(new FakeWeaveService());
@@ -471,13 +435,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Null(stateAtDisposal.PendingGenerationId);
 
         Assert.Equal(1, scopes.ScopesCreated);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_RetryableProviderOutcome_ReleasesLeaseBeforeRetryDelay()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -498,7 +460,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         ImmediateTimeProvider time = new(() =>
         {
-
             closing = BeginClosing(innerGate, 69);
 
             drain = innerGate
@@ -506,17 +467,14 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
                 .AsTask();
 
             drainCompletedWhenRetryDelayWasScheduled = drain.IsCompleted;
-
         });
 
         FakeWeaveService weave = new()
         {
-
             EmbedBatchResult = Result<Embedding<float>[]>.Failure(
                 new Error(
                     ErrorCodes.Embeddings.ProviderUnavailable,
                     "Simulated embedding failure.")),
-
         };
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
@@ -546,13 +504,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.False(gate.WorkLeaseIsHeld);
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_SuccessfulBatch_DisposesEffectGroupAfterDurableAppend()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -567,12 +523,10 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         gate.OnEffectGroupDisposing = async () =>
         {
-
             stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
 
             chunkCountAtDisposal = (await _index
                 .GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None)).Length;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -590,13 +544,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(SessionAttachmentIndexStatus.Pending, stateAtDisposal.Status);
 
         Assert.True(chunkCountAtDisposal > 0);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_FailedProviderResult_DisposesEffectGroupAfterDurableFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -609,19 +561,15 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         gate.OnEffectGroupDisposing = async () =>
         {
-
             stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
-
         };
 
         FakeWeaveService weave = new()
         {
-
             EmbedBatchResult = Result<Embedding<float>[]>.Failure(
                 new Error(
                     ErrorCodes.Embeddings.ProviderUnavailable,
                     "Simulated embedding failure.")),
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -640,13 +588,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.NotNull(stateAtDisposal);
 
         Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_DimensionMismatch_DisposesEffectGroupAfterDurableFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -659,9 +605,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         gate.OnEffectGroupDisposing = async () =>
         {
-
             stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -679,13 +623,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.NotNull(stateAtDisposal);
 
         Assert.Equal(SessionAttachmentIndexStatus.Failed, stateAtDisposal.Status);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_ProviderCancellation_DisposesEffectGroupAfterDurableFailure()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -698,16 +640,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         gate.OnEffectGroupDisposing = async () =>
         {
-
             stateAtDisposal = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
-
         };
 
         FakeWeaveService weave = new()
         {
-
             OnEmbed = static _ => throw new OperationCanceledException("simulated provider interruption"),
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -730,13 +668,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(
             "Attachment indexing was interrupted and will be retried.",
             stateAtDisposal.FailureReason);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_HostCancellation_PropagatesWithoutFailureClassification()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -750,16 +686,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         FakeWeaveService weave = new()
         {
-
             OnEmbedWithCancellation = async (_, cancellationToken) =>
             {
-
                 providerStarted.TrySetResult(true);
 
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-
             },
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -797,13 +729,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.False(service.QueueReader.TryRead(out _));
 
         Assert.Equal(1, weave.EmbedBatchCallCount);
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_RevocationWinsTheFirstEffectRace_MakesNoProviderCall()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -858,13 +788,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(0, service.QueueReader.Count);
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_RefusedEffectWithFailingScopeDisposal_DoesNotRetainConcludedRequest()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -889,27 +817,21 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         scopes.OnScopeCreated = () =>
         {
-
             scopeCreationsInsideLease.Add(gate.WorkLeaseIsHeld);
 
             closing ??= BeginClosing(innerGate, 76);
-
         };
 
         scopes.OnScopeDisposed = () =>
         {
-
             scopeDisposalsInsideLease.Add(gate.WorkLeaseIsHeld);
 
             if (Interlocked.Increment(ref disposedScopes) == 1)
             {
-
                 throw new InvalidOperationException("simulated processing-scope disposal fault");
-
             }
 
             return ValueTask.CompletedTask;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -962,13 +884,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.False(gate.WorkLeaseIsHeld);
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_EffectStartWins_IsNotCutAndTheClosureWaitsThroughIt()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -985,18 +905,14 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         // open, so maintenance must wait it out rather than revoke it.
         FakeWeaveService weave = new()
         {
-
             OnEmbed = _ =>
             {
-
                 closing ??= BeginClosing(gate, 64);
 
                 drain ??= gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask();
 
                 return Task.CompletedTask;
-
             },
-
         };
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
@@ -1025,13 +941,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(SessionAttachmentIndexStatus.Indexed, statuses[attachment.Id]);
 
         await closing!.DisposeAsync();
-
     }
 
     [SkippableFact]
     public async Task ProcessOneAsync_ClosedBetweenBatches_ResumesTheCheckpointAfterExactReopen()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1050,21 +964,15 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         // second batch's group refused.
         FakeWeaveService weave = new()
         {
-
             OnEmbed = batchNumber =>
             {
-
                 if (batchNumber == 1)
                 {
-
                     closing ??= BeginClosing(gate, 65);
-
                 }
 
                 return Task.CompletedTask;
-
             },
-
         };
 
         ObservingScopeFactory scopes = BuildScopeFactory(weave);
@@ -1157,13 +1065,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Equal(70, finalChunks.Length);
 
         Assert.Equal(Enumerable.Range(0, 70), finalChunks.Select(static chunk => chunk.ChunkIndex));
-
     }
 
     [SkippableFact]
     public async Task DeferredRequest_WaitsForTheExactClosedLeaseToReopenBeforeItIsResignalledOnce()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1215,13 +1121,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             await service.WaitForReopenAndResignalDeferredRequestsAsync(CancellationToken.None));
 
         Assert.Equal(0, service.QueueReader.Count);
-
     }
 
     [SkippableFact]
     public async Task RequestDeferredDuringClosed_ResignalsWhenItsRegisteredWaitObservesReopen()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1260,13 +1164,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? resignalled));
 
         Assert.Same(request, resignalled);
-
     }
 
     [SkippableFact]
     public async Task RequestDeferredDuringClosed_ResignalsWhenReopenPrecedesWaitRegistration()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1305,13 +1207,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? resignalled));
 
         Assert.Same(request, resignalled);
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_FullReopenSuffixRestoresEveryRequestBeforeConcurrentNewerIntake()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1337,23 +1237,17 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         FakeWeaveService weave = new()
         {
-
             OnEmbedInputs = async (callNumber, inputs) =>
             {
-
                 providerInputs.Enqueue(Assert.Single(inputs));
 
                 if (callNumber == 2)
                 {
-
                     secondProviderStarted.TrySetResult(true);
 
                     await continueSecondProvider.Task;
-
                 }
-
             },
-
         };
 
         GrimoireConnectionAdmissionGate gate = OpenGate();
@@ -1364,16 +1258,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         scopes.OnScopeDisposed = () =>
         {
-
             if (weave.EmbedBatchCallCount == 4)
             {
-
                 fourRequestsCompleted.TrySetResult(true);
-
             }
 
             return ValueTask.CompletedTask;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(
@@ -1397,9 +1287,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         for (int index = 2; index < capacity; index++)
         {
-
             Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), sessionId)));
-
         }
 
         Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(tail.Id, sessionId)));
@@ -1422,15 +1310,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         try
         {
-
             Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(newer.Id, sessionId)));
-
         }
         finally
         {
-
             continueSecondProvider.TrySetResult(true);
-
         }
 
         await fourRequestsCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -1458,13 +1342,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
                 "newer intake must stay fourth",
             ],
             providerInputs);
-
     }
 
     [SkippableFact]
     public async Task ReconcileAndEnqueueAsync_RefusedItsWorkLease_OpensNoScope()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireConnectionAdmissionGate gate = OpenGate();
@@ -1482,13 +1364,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
                 CancellationToken.None));
 
         Assert.Equal(0, scopes.ScopesCreated);
-
     }
 
     [SkippableFact]
     public async Task ReconcileAndEnqueueAsync_Admitted_ConcludesAndFindsPendingWork()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1503,11 +1383,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         scopes.OnScopeDisposed = () =>
         {
-
             Assert.True(gate.WorkLeaseIsHeld);
 
             return ValueTask.CompletedTask;
-
         };
 
         SessionAttachmentIndexingService service = CreateService(scopes, gate);
@@ -1529,13 +1407,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? found));
 
         Assert.Equal(attachment.Id, found!.AttachmentId);
-
     }
 
     [SkippableFact]
     public async Task ExecuteAsync_RepeatedlyDeferred_DoesNotLogAFaultOrEnterTheFaultBackoff()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -1583,7 +1459,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.Empty(await _index!.GetStatusesAsync([attachment.Id], CancellationToken.None));
 
         Assert.Single(service.DeferredRequests);
-
     }
 
     /// <summary>Puts one request through the real intake and takes it off the queue again.</summary>
@@ -1597,13 +1472,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         SessionAttachmentIndexingService service,
         SessionAttachmentIndexRequest request)
     {
-
         Assert.True(service.TryEnqueue(request));
 
         Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? dequeued));
 
         return dequeued!;
-
     }
 
     private SessionAttachmentIndexingService CreateService(
@@ -1621,7 +1494,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     /// <summary>A container holding exactly what one indexing scope resolves.</summary>
     private ObservingScopeFactory BuildScopeFactory(IWeaveService weave)
     {
-
         ServiceCollection services = new();
 
         services.AddSingleton(_index!);
@@ -1642,7 +1514,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         return new ObservingScopeFactory(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
-
     }
 
     private Task<SessionAttachmentRecord> PersistAsync(Guid sessionId, string text) =>
@@ -1669,13 +1540,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         GrimoireConnectionAdmissionGate gate,
         byte seed)
     {
-
         Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(Owner(seed));
 
         Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
 
         return begun.Value;
-
     }
 
     /// <summary>Advances the exact closing owner through drain to a fully closed lease.</summary>
@@ -1683,7 +1552,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         GrimoireConnectionAdmissionGate gate,
         IGrimoireClosingOwner closing)
     {
-
         Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
 
         Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Message : null);
@@ -1695,7 +1563,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.True(closed.IsSuccess, closed.IsFailure ? closed.Error.Message : null);
 
         return closed.Value;
-
     }
 
     /// <summary>Uses the exact closed lease to restore ordinary admission.</summary>
@@ -1703,7 +1570,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         IGrimoireExclusiveClosedLease closed,
         IGrimoireClosingOwner closing)
     {
-
         Result completed = await closed.CompleteAsync(
             CovenantExclusiveLeaseDisposition.RollbackAndReopen,
             CancellationToken.None);
@@ -1713,59 +1579,44 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         await closed.DisposeAsync();
 
         await closing.DisposeAsync();
-
     }
 
     private static ArcanumSettings CreateSettings() => new()
     {
-
         Features = new FeatureSettings
         {
-
             AttachmentRetrieval = true,
-
         },
 
         Integrations = new IntegrationSettings
         {
-
             Embeddings = new EmbeddingIntegrationSettings
             {
-
                 Dimensions = Dimensions,
-
             },
-
         },
-
     };
 
     /// <summary>Line-broken filler, so the chunker's line awareness has ordinary text to work on.</summary>
     private static string MultiBatchText()
     {
-
         StringBuilder builder = new(MultiBatchCharacterCount + 128);
 
         while (builder.Length < MultiBatchCharacterCount)
         {
-
             builder.Append("the quick brown fox jumps over the lazy dog and keeps on running").Append('\n');
-
         }
 
         return builder.ToString();
-
     }
 
     private static float[] CreateVector(int dimensions = Dimensions)
     {
-
         float[] vector = new float[dimensions];
 
         vector[0] = 1f;
 
         return vector;
-
     }
 
     /// <summary>
@@ -1779,7 +1630,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
     /// </remarks>
     private sealed class ObservingScopeFactory(IServiceScopeFactory inner) : IServiceScopeFactory
     {
-
         private int _scopesCreated;
 
         internal int ScopesCreated => Volatile.Read(ref _scopesCreated);
@@ -1790,7 +1640,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         public IServiceScope CreateScope()
         {
-
             _ = Interlocked.Increment(ref _scopesCreated);
 
             IServiceScope scope = inner.CreateScope();
@@ -1798,50 +1647,37 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             OnScopeCreated?.Invoke();
 
             return new ObservingScope(scope, OnScopeDisposed);
-
         }
-
     }
 
     private sealed class ObservingScope(
         IServiceScope inner,
         Func<ValueTask>? onDisposing) : IServiceScope, IAsyncDisposable
     {
-
         public IServiceProvider ServiceProvider => inner.ServiceProvider;
 
         public void Dispose() => inner.Dispose();
 
         public async ValueTask DisposeAsync()
         {
-
             if (inner is IAsyncDisposable asyncInner)
             {
-
                 await asyncInner.DisposeAsync();
-
             }
             else
             {
-
                 inner.Dispose();
-
             }
 
             if (onDisposing is not null)
             {
-
                 await onDisposing();
-
             }
-
         }
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         private int _embedBatchCallCount;
 
         private readonly ConcurrentQueue<int> _batchSizes = new();
@@ -1874,49 +1710,39 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             IReadOnlyList<string> texts,
             CancellationToken cancellationToken)
         {
-
             int batchNumber = Interlocked.Increment(ref _embedBatchCallCount);
 
             _batchSizes.Enqueue(texts.Count);
 
             if (OnEmbed is not null)
             {
-
                 await OnEmbed(batchNumber);
-
             }
 
             if (OnEmbedWithCancellation is not null)
             {
-
                 await OnEmbedWithCancellation(batchNumber, cancellationToken);
-
             }
 
             if (OnEmbedInputs is not null)
             {
-
                 await OnEmbedInputs(batchNumber, texts);
-
             }
 
             return EmbedBatchResult ?? Result<Embedding<float>[]>.Success(
                 [.. texts.Select(_ => new Embedding<float>(CreateVector(OutputDimensions)))]);
-
         }
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(
             string text,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     /// <summary>Records the exact work lease the service asks the real gate to create.</summary>
     private sealed class RecordingAdmissionGate(
         IGrimoireConnectionAdmissionGate inner) : IGrimoireConnectionAdmissionGate
     {
-
         private readonly TaskCompletionSource<bool> _nextOpenWaitStarted = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1947,18 +1773,15 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             GrimoireWorkKind kind,
             out IGrimoireWorkLease? lease)
         {
-
             _ = Interlocked.Increment(ref _workLeaseAttempts);
 
             RequestedWorkKinds.Add(kind);
 
             if (!inner.TryAcquireWorkLease(kind, out IGrimoireWorkLease? admitted))
             {
-
                 lease = null;
 
                 return false;
-
             }
 
             _workLease = new RecordingWorkLease(
@@ -1968,7 +1791,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             lease = _workLease;
 
             return true;
-
         }
 
         public IGrimoireConnectionOpenTicket AcquireOrdinaryOpen(DbConnection connection) =>
@@ -2003,11 +1825,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             long observedGeneration,
             CancellationToken cancellationToken)
         {
-
             _nextOpenWaitStarted.TrySetResult(true);
 
             return inner.WaitForNextOpenGenerationAsync(observedGeneration, cancellationToken);
-
         }
 
         public ValueTask<Result<IGrimoireExpiredLeaseAdoptionInterlock>>
@@ -2020,14 +1840,12 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
                 candidateOwner,
                 revalidateDurableOwnerAsync,
                 cancellationToken);
-
     }
 
     private sealed class RecordingWorkLease(
         IGrimoireWorkLease inner,
         Func<ValueTask> onEffectGroupDisposing) : IGrimoireWorkLease
     {
-
         private int _disposed;
 
         internal bool IsHeld => Volatile.Read(ref _disposed) == 0;
@@ -2043,62 +1861,46 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)
         {
-
             if (!inner.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? admitted))
             {
-
                 effectGroup = null;
 
                 return false;
-
             }
 
             effectGroup = new ObservingExternalEffectGroup(admitted!, onEffectGroupDisposing);
 
             return true;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await inner.DisposeAsync();
 
             _ = Interlocked.Exchange(ref _disposed, 1);
-
         }
-
     }
 
     private sealed class ObservingExternalEffectGroup(
         IGrimoireExternalEffectGroup inner,
         Func<ValueTask> onDisposing) : IGrimoireExternalEffectGroup
     {
-
         public async ValueTask DisposeAsync()
         {
-
             try
             {
-
                 await onDisposing();
-
             }
             finally
             {
-
                 await inner.DisposeAsync();
-
             }
-
         }
-
     }
 
     /// <summary>Completes delays immediately while exposing their scheduling boundary.</summary>
     private sealed class ImmediateTimeProvider(Action onDelayScheduled) : TimeProvider
     {
-
         internal List<TimeSpan> Delays { get; } = [];
 
         public override ITimer CreateTimer(
@@ -2107,7 +1909,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             TimeSpan dueTime,
             TimeSpan period)
         {
-
             Delays.Add(dueTime);
 
             onDelayScheduled();
@@ -2115,32 +1916,26 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             ThreadPool.QueueUserWorkItem(_ => callback(state));
 
             return NoopTimer.Instance;
-
         }
 
         private sealed class NoopTimer : ITimer
         {
-
             internal static NoopTimer Instance { get; } = new();
 
             public bool Change(TimeSpan dueTime, TimeSpan period) => true;
 
             public void Dispose()
             {
-
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
         }
-
     }
 
     /// <summary>A deterministic barrier reached when one exact request is held for maintenance.</summary>
     private sealed class RequestDeferralBarrierLogger(Guid attachmentId) :
         ILogger<SessionAttachmentIndexingService>
     {
-
         private readonly ConcurrentQueue<TestLogEntry> _entries = new();
 
         private readonly TaskCompletionSource<bool> _requestDeferred = new(
@@ -2163,7 +1958,6 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-
             string message = formatter(state, exception);
 
             _entries.Enqueue(new TestLogEntry(logLevel, message, exception));
@@ -2171,13 +1965,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             if (message.Contains(attachmentId.ToString(), StringComparison.Ordinal)
                 && message.Contains("indexing deferred", StringComparison.Ordinal))
             {
-
                 _requestDeferred.TrySetResult(true);
-
             }
-
         }
-
     }
-
 }

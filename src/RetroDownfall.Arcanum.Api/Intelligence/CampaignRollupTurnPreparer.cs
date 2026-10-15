@@ -138,7 +138,6 @@ public sealed class CampaignRollupTurnSnapshot(
             }
         }
     }
-
 }
 
 /// <summary>
@@ -206,7 +205,6 @@ public sealed class CampaignRollupTurnPreparer(
     ISessionTurnClaimReplayStore? replayStore = null,
     ILogger<CampaignRollupTurnPreparer>? logger = null)
 {
-
     internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation) =>
         invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
         && invocation.ContextPolicy is CovenantContextPolicy.Default
@@ -814,5 +812,4 @@ public sealed class CampaignRollupTurnPreparer(
             }
         }
     }
-
 }

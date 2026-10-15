@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class SessionDerivedArtifactStoreTests
 {
-
     private static readonly Guid Session = Guid.Parse("4E5F6071-8293-4EAF-90B1-4C5D6E7F8091");
 
     private static readonly Guid Generation = Guid.Parse("5F607182-93A4-4FB0-81C2-5D6E7F8091A2");
@@ -26,7 +25,6 @@ public sealed class SessionDerivedArtifactStoreTests
     [Fact]
     public async Task A_tainted_summary_replacement_writes_its_artifact_pointer_column_and_label()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         Result<SessionDerivedArtifactWriteReceipt> receipt =
@@ -54,13 +52,11 @@ public sealed class SessionDerivedArtifactStoreTests
             await fixture.ScalarStringAsync("SELECT CurrentArtifactId FROM session_summary_state;"));
 
         Assert.Equal(1, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task A_replacement_retires_the_previous_revision_and_its_label_together()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         ISessionSummaryArtifactStore store = fixture.Store;
@@ -80,13 +76,11 @@ public sealed class SessionDerivedArtifactStoreTests
         Assert.Equal(
             second.Value.ArtifactId.ToString().ToUpperInvariant(),
             await fixture.ScalarStringAsync("SELECT ArtifactId FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task A_clean_operator_replacement_removes_the_prior_tainted_label()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         ISessionTitleArtifactStore store = fixture.Store;
@@ -117,13 +111,11 @@ public sealed class SessionDerivedArtifactStoreTests
         Assert.Equal(0, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
 
         Assert.Equal("an operator title", await fixture.ScalarStringAsync("SELECT \"Title\" FROM \"Sessions\";"));
-
     }
 
     [Fact]
     public async Task Clearing_a_summary_is_a_revision_rather_than_an_untracked_null()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         ISessionSummaryArtifactStore store = fixture.Store;
@@ -144,13 +136,11 @@ public sealed class SessionDerivedArtifactStoreTests
         Assert.Null(await fixture.ScalarStringAsync("SELECT \"Summary\" FROM \"Sessions\";"));
 
         Assert.Equal(0, await fixture.ScalarLongAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task An_artifact_row_cannot_be_edited_in_place()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         _ = await ((ISessionSummaryArtifactStore)fixture.Store)
@@ -160,7 +150,6 @@ public sealed class SessionDerivedArtifactStoreTests
             fixture.ExecuteAsync("UPDATE session_summary_artifacts SET SensitivityCode = 0;"));
 
         Assert.Contains("immutable", refused.Message, StringComparison.OrdinalIgnoreCase);
-
     }
 
     private static SessionSummaryArtifactWrite TaintedSummary(string content) =>
@@ -173,31 +162,26 @@ public sealed class SessionDerivedArtifactStoreTests
 
     private sealed class StoreFixture : IAsyncDisposable
     {
-
         private readonly CovenantSchemaScratchDatabase _database;
 
         private StoreFixture(CovenantSchemaScratchDatabase database)
         {
-
             _database = database;
 
             Store = new SessionDerivedArtifactStore(
                 new FixedCovenantConnectionSource(database.Connection),
                 CovenantSqliteConnectionInitializer.Instance);
-
         }
 
         internal SessionDerivedArtifactStore Store { get; }
 
         internal static async Task<StoreFixture> CreateAsync()
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase
                 .CreateAsync(CancellationToken.None);
 
             try
             {
-
                 await database.InstallCoreObjectsAsync(
                     [
                         "Campaigns",
@@ -231,17 +215,13 @@ public sealed class SessionDerivedArtifactStoreTests
                 _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
 
                 return new StoreFixture(database);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal Task<long> ScalarLongAsync(string sql) =>
@@ -253,7 +233,5 @@ public sealed class SessionDerivedArtifactStoreTests
         internal Task ExecuteAsync(string sql) => _database.ExecuteAsync(sql, CancellationToken.None);
 
         public ValueTask DisposeAsync() => _database.DisposeAsync();
-
     }
-
 }

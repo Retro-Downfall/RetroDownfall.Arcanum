@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public enum DerivedOutputPolicy : byte
 {
-
     /// <summary>Writes its output and that output's label in the same transaction, or writes neither.</summary>
     PropagateLabel = 1,
 
@@ -26,7 +25,6 @@ public enum DerivedOutputPolicy : byte
 
     /// <summary>Returns protected content only while a clean Covenant read lease is held.</summary>
     ProtectedReadRequired = 4,
-
 }
 
 /// <summary>One declared producer or consumer of Covenant-derived output.</summary>
@@ -59,7 +57,6 @@ public sealed record CovenantDerivedOutputConsumer(
 /// </remarks>
 public static class CovenantDerivedOutputInventory
 {
-
     private static readonly ImmutableArray<CovenantDerivedOutputConsumer> Declared =
     [
         new(
@@ -167,5 +164,4 @@ public static class CovenantDerivedOutputInventory
     public static IReadOnlyList<CovenantDerivedOutputConsumer> ForOwningType(string owningTypeName) =>
         [.. Declared.Where(consumer =>
             string.Equals(consumer.OwningTypeName, owningTypeName, StringComparison.Ordinal))];
-
 }

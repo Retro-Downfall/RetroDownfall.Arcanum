@@ -31,7 +31,6 @@ internal static class UnreachedLongRestPorts
 
         public bool IsCurrent(LongRestConfigurationStamp stamp) => false;
     }
-
 }
 
 /// <summary>Throws on every call; a proxy type must itself be public for <see cref="DispatchProxy"/>.</summary>

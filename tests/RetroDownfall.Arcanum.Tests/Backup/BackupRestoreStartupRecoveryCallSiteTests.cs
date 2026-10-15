@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// </remarks>
 public sealed class BackupRestoreStartupRecoveryCallSiteTests
 {
-
     private const string RecoveryFileName = "BackupRestoreRecovery.cs";
 
     private const string TopologyFileName = "BackupRestorePhysicalTopology.cs";
@@ -26,7 +25,6 @@ public sealed class BackupRestoreStartupRecoveryCallSiteTests
     [Fact]
     public void Startup_restore_recovery_resumes_its_owner_and_never_acquires_a_new_one()
     {
-
         ProductionSource recovery = Source(RecoveryFileName);
 
         Assert.True(
@@ -38,13 +36,11 @@ public sealed class BackupRestoreStartupRecoveryCallSiteTests
             "Initial acquisition for a journaled owner would create a second operation for a scope "
             + "that is already closed, and the gate would then hold two owners each believing it may "
             + "reopen admission.");
-
     }
 
     [Fact]
     public void Startup_restore_recovery_opens_no_sqlcipher_handle_of_its_own()
     {
-
         ProductionSource topology = Source(TopologyFileName);
 
         Assert.False(topology.Names("SqliteConnection") || topology.Names("SqliteCommand"));
@@ -59,7 +55,6 @@ public sealed class BackupRestoreStartupRecoveryCallSiteTests
 
         Assert.Empty(OwnedDatabaseCalls(backupSources, "BackupRestoreRecovery",
             ["RecoverAuthorityBeforeReadinessAsync", "CompleteLegacyCommittedBeforeReadinessAsync"], forbidCommands: false));
-
     }
 
     [Fact]
@@ -133,5 +128,4 @@ public sealed class BackupRestoreStartupRecoveryCallSiteTests
 
     private static ProductionSource Source(string fileName) =>
         Assert.Single(ProductionSourceInventory.Sources(), source => source.Is(fileName));
-
 }

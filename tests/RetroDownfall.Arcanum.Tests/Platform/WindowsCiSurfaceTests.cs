@@ -23,7 +23,6 @@ namespace RetroDownfall.Arcanum.Tests.Platform;
 /// </remarks>
 public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
 {
-
     private const string RequireVariable = "ARCANUM_REQUIRE_WINDOWS_SUITE";
 
     private const string CredentialStoreVariable = "ARCANUM_TEST_OS_CREDENTIAL_STORE";
@@ -41,7 +40,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
     [Fact]
     public void Windows_ci_lane_runs_on_windows()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -53,7 +51,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
             OperatingSystem.IsWindows(),
             $"{RequireVariable}=true but the suite is running on {platform}. "
             + "The Windows lane must run on a Windows runner or its platform-gated tests assert nothing.");
-
     }
 
     /// <summary>
@@ -70,7 +67,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
     [Fact]
     public void Windows_ci_lane_reaches_a_real_credential_backend()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -89,7 +85,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
             read.Status == OsCredentialStoreStatus.NotFound,
             "Credential Manager must answer a read of an unwritten account with NotFound. "
             + $"It answered {read.Status}: {read.Message}");
-
     }
 
     /// <summary>
@@ -103,7 +98,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
     [Fact]
     public void Windows_ci_lane_opts_in_to_the_real_credential_store_round_trip()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -116,7 +110,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
             $"{RequireVariable}=true but {CredentialStoreVariable} is '{optIn ?? "<unset>"}'. "
             + "OsCredentialStoreRoundTripTests skips on that variable before it checks the platform, so "
             + "without it the lane performs no round trip against a real OS secret store.");
-
     }
 
     /// <summary>
@@ -134,7 +127,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
     [Fact]
     public void Windows_gated_tests_still_exist_to_be_run()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -163,7 +155,6 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
             "Every remaining Windows-named test class runs identically on macOS and Linux, so nothing in "
             + "this assembly is actually gated on the platform any more and this lane exercises no "
             + "Windows-only code path. Restore the skip-gated class or retire this lane deliberately.");
-
     }
 
     [Fact]
@@ -209,5 +200,4 @@ public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
         method.GetCustomAttributes()
             .Any(static attribute => attribute.GetType().Name
                 is "SkippableFactAttribute" or "SkippableTheoryAttribute");
-
 }

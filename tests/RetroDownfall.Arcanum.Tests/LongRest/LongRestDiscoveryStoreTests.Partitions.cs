@@ -206,5 +206,4 @@ public sealed class LongRestDiscoveryPartitionTests
 
         Assert.True((await h.Store.ReadNextFoldAsync(generation.GenerationId, null, CancellationToken.None)).IsFailure);
     }
-
 }

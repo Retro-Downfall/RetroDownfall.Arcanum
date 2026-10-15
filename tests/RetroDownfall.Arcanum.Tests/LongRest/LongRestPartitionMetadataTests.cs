@@ -96,6 +96,7 @@ public sealed class LongRestPartitionMetadataTests
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_generations;"));
     }
+
     [Theory]
     [InlineData("digest")]
     [InlineData("owner")]
@@ -137,5 +138,4 @@ public sealed class LongRestPartitionMetadataTests
 
         Assert.Equal(before, await h.ScalarAsync("SELECT total_changes();"));
     }
-
 }

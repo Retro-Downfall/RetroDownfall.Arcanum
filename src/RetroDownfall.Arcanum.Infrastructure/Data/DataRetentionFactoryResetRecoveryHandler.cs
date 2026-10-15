@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 internal sealed class DataRetentionFactoryResetRecoveryHandler(
     DataRetentionService service) : IAuthenticatedCovenantErasureRecoveryHandler
 {
-
     public string Kind => LongRunningOperationKinds.DataRetentionFactoryReset;
 
     public int SupportedCheckpointVersion => DataRetentionFactoryTransitionLaunchV2.CurrentVersion;
@@ -22,5 +21,4 @@ internal sealed class DataRetentionFactoryResetRecoveryHandler(
         CancellationToken cancellationToken) =>
         await service.RecoverFactoryResetAuthenticatedAsync(operation, admission, cancellationToken)
             .ConfigureAwait(false);
-
 }
