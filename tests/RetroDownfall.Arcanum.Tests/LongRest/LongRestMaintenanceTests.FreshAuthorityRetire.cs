@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
@@ -13,7 +15,9 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 // Fresh-Authority Retire. A protected sweep parked with a fault that left its captured generation unable to complete can never be
 // readmitted by anything, so a fresh request that carries the live turn authority of a Session turn for that partition retires it
 // (owner-guarded, evidence preserved, inside the request's own admitted immediate transaction) and starts a new generation. A request
-// without that authority, a park that needs an operator, and a contested owner all keep their old outcomes and write nothing.
+// without that authority, a park that needs an operator, and a contested owner all keep their old outcomes and write nothing. The parks
+// that can be retired are exactly the restart-generation class of LongRestFaultPolicy, the one table every Long Rest rule reads: the four
+// faults a run can end with and the two retirement markers (stale configuration, never started), each pinned both ways below.
 public sealed partial class LongRestMaintenanceTests
 {
     /// <summary>
@@ -45,6 +49,8 @@ public sealed partial class LongRestMaintenanceTests
     [InlineData("LongRest.StaleFence")]
     [InlineData("LongRest.CurrentnessLost")]
     [InlineData("LongRest.ConfigurationChanged")]
+    [InlineData(LongRestParkCodes.StaleConfiguration)]
+    [InlineData(LongRestParkCodes.NotStarted)]
     public async Task A_fresh_request_with_live_authority_retires_a_protected_restart_generation_park_and_starts_a_new_generation(string code)
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
@@ -107,6 +113,8 @@ public sealed partial class LongRestMaintenanceTests
     [InlineData("LongRest.StaleFence")]
     [InlineData("LongRest.CurrentnessLost")]
     [InlineData("LongRest.ConfigurationChanged")]
+    [InlineData(LongRestParkCodes.StaleConfiguration)]
+    [InlineData(LongRestParkCodes.NotStarted)]
     public async Task A_fresh_request_without_authority_still_finds_the_protected_restart_generation_park_and_writes_nothing(string code)
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
@@ -266,5 +274,73 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(before, await ParkedSnapshotAsync(f));
 
         Assert.Equal(changes, (long)(await f.H.ScalarAsync("SELECT total_changes();"))!);
+    }
+
+    private static async Task<string> GenerationSnapshotAsync(MaintenanceFixture f) =>
+        (string)(await f.H.ScalarAsync("SELECT json_group_array(json_array(GenerationId, OperationId, PhaseCode, Revision)) FROM long_rest_discovery_generations;"))!;
+
+    private static async Task<Result<LongRunningOperation>> AdmitWithProofAsync(MaintenanceFixture f, Func<CancellationToken, ValueTask<Result>> proveAuthority)
+    {
+        FixedCovenantConnectionSource connections = new(f.H.Connection);
+
+        LongRestLiveFenceReader facts = new(f.H.Saga.Context, f.Runtime, f.RecordedAdmission, f.Epoch,
+            new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!));
+
+        LongRestSweepFence fence = LongRestSweepHarness.Require(await facts.CaptureAsync(f.Scope, f.Epoch.Capture().Stamp, null, CancellationToken.None));
+
+        return await new LongRestSweepStore(f.H.Saga.Context, f.Clock).AdmitRequestAsync(f.Partition, fence, facts, f.Ownership, CancellationToken.None, proveAuthority);
+    }
+
+    [Fact]
+    public async Task An_authority_that_lapses_after_the_first_proof_rolls_the_whole_retirement_back_and_frees_the_claim()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        _ = await ParkProtectedWithEvidenceAsync(f, ErrorCodes.LongRest.StaleFence);
+
+        string before = await ParkedSnapshotAsync(f);
+
+        string generationsBefore = await GenerationSnapshotAsync(f);
+
+        // The authority is live when the park is about to be retired, and gone by the time the transaction would commit. The persisted rows,
+        // not total_changes(), prove the rollback: that counter also counts the statements the rollback undid.
+        int proofs = 0;
+
+        Result<LongRunningOperation> lapsed = await AdmitWithProofAsync(f, _ => ValueTask.FromResult(++proofs == 1
+            ? Result.Success()
+            : Result.Failure(new Error(ErrorCodes.Covenant.ForbiddenAuthority, "The turn authority is no longer live."))));
+
+        Assert.True(lapsed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, lapsed.Error.Code);
+
+        // Proved before the first write and again before the commit, and nothing in between survived.
+        Assert.Equal(2, proofs);
+
+        Assert.Equal(before, await ParkedSnapshotAsync(f));
+
+        Assert.Equal(generationsBefore, await GenerationSnapshotAsync(f));
+
+        Assert.False(f.Ownership.IsClaimed(f.Operation));
+
+        // The same call with an authority that stays live proves twice as well, and retires the park and starts the new generation.
+        proofs = 0;
+
+        Result<LongRunningOperation> live = await AdmitWithProofAsync(f, _ =>
+        {
+            proofs++;
+
+            return ValueTask.FromResult(Result.Success());
+        });
+
+        Assert.True(live.IsSuccess, live.IsFailure ? live.Error.Code : null);
+
+        Assert.Equal(2, proofs);
+
+        Assert.NotEqual(f.Operation, live.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, (await f.Operations.GetAsync(f.Operation))!.State);
+
+        Assert.False(f.Ownership.IsClaimed(f.Operation));
     }
 }
