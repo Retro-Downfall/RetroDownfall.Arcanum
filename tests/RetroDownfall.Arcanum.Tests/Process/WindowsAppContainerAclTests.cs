@@ -45,7 +45,7 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         string journalB = Path.Combine(_root, "b.journal");
         File.WriteAllBytes(journalA, []);
         File.WriteAllBytes(journalB, []);
-        string original = Sddl(shared);
+        string original = WindowsDaclText.Of(shared);
 
         WindowsAppContainerLauncher.Grant(
             journalA,
@@ -69,7 +69,7 @@ public sealed class WindowsAppContainerAclTests : IDisposable
 
         Assert.True(WindowsAppContainerLauncher.RemoveGrant(shared, RunB, WindowsAppContainerRootLockBudget.StartPerRun()));
 
-        Assert.Equal(original, Sddl(shared));
+        Assert.Equal(original, WindowsDaclText.Of(shared));
     }
 
     [SkippableFact]
@@ -79,7 +79,7 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer ACL removal is Windows-only.");
 
         string shared = Directory.CreateDirectory(Path.Combine(_root, "workspace")).FullName;
-        string original = Sddl(shared);
+        string original = WindowsDaclText.Of(shared);
         string currentUser = WindowsIdentity.GetCurrent().User!.Value;
 
         // The owner's own explicit ACE and the built-in Administrators group are exactly what a tampered
@@ -87,7 +87,7 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, currentUser, WindowsAppContainerRootLockBudget.StartPerRun()));
         Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, "S-1-5-32-544", WindowsAppContainerRootLockBudget.StartPerRun()));
         Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, "S-1-15-2-1", WindowsAppContainerRootLockBudget.StartPerRun()));
-        Assert.Equal(original, Sddl(shared));
+        Assert.Equal(original, WindowsDaclText.Of(shared));
     }
 
     [SkippableFact]
@@ -140,12 +140,6 @@ public sealed class WindowsAppContainerAclTests : IDisposable
             elapsed.Elapsed < TimeSpan.FromSeconds(4),
             $"Three contended waits took {elapsed.Elapsed}; one shared 2 s budget should bound them.");
     }
-
-    [SupportedOSPlatform("windows")]
-    private static string Sddl(string path) =>
-        new DirectoryInfo(path)
-            .GetAccessControl(AccessControlSections.Access)
-            .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
 
     [SupportedOSPlatform("windows")]
     private static List<string> ExplicitSids(string path) =>
