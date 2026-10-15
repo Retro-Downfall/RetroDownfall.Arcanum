@@ -67,6 +67,18 @@ public sealed class LongRestSummaryBoundTests
 
         { 256, 208 },
 
+        { 1193, 1023 },
+
+        { 1194, 1024 },
+
+        { 1195, 1025 },
+
+        { 2047, 1766 },
+
+        { 2048, 1766 },
+
+        { 2049, 1767 },
+
         { 2371, 2047 },
 
         { 2372, 2048 },
@@ -98,9 +110,9 @@ public sealed class LongRestSummaryBoundTests
     [Fact]
     public void The_smallest_recipe_window_gets_the_smallest_legal_bound_and_the_default_window_a_bound_below_the_maximum()
     {
-        Assert.Equal(2372, LongRestPromptLayout.MinimumEmbeddingWindowTokens);
+        Assert.Equal(1194, LongRestPromptLayout.MinimumEmbeddingWindowTokens);
 
-        Assert.Equal(2048, LongRestPromptLayout.MinimumSummaryUtf8Bytes);
+        Assert.Equal(1024, LongRestPromptLayout.MinimumSummaryUtf8Bytes);
 
         Assert.Equal(LongRestPromptLayout.MinimumSummaryUtf8Bytes, LongRestPromptLayout.SummaryBoundUtf8Bytes(LongRestPromptLayout.MinimumEmbeddingWindowTokens));
 
@@ -135,9 +147,9 @@ public sealed class LongRestSummaryBoundTests
     // Windows from the static minimum to 32k: every boundary, and a stride that visits every residue of the arithmetic.
     public static IEnumerable<object[]> EstimatorWindows()
     {
-        HashSet<int> windows = [2372, 2373, 4096, 6775, 8191, 8192, 8193, 9436, 9437, 9438, 16384, 32767, 32768];
+        HashSet<int> windows = [1194, 1195, 2047, 2048, 2049, 2372, 2373, 4096, 6775, 8191, 8192, 8193, 9436, 9437, 9438, 16384, 32767, 32768];
 
-        for (int window = 2400; window <= 32768; window += 509)
+        for (int window = 1200; window <= 32768; window += 509)
         {
             windows.Add(window);
         }
@@ -245,13 +257,13 @@ public sealed class LongRestSummaryBoundTests
             Assert.Contains(" " + bound.ToString(System.Globalization.CultureInfo.InvariantCulture) + " bytes", rendered, StringComparison.Ordinal);
         }
 
-        foreach (int illegal in new[] { int.MinValue, 0, 2047, 8193, int.MaxValue })
+        foreach (int illegal in new[] { int.MinValue, 0, 1023, 8193, int.MaxValue })
         {
             Assert.Throws<ArgumentOutOfRangeException>(() => LongRestPromptLayout.SummarySystemPromptFor(illegal));
         }
 
         // The request's fixed bytes are measured once, and are exactly what any recipe's prompt, schemas and names take.
-        foreach (int bound in new[] { 2048, 5000, 7109, 8192 })
+        foreach (int bound in new[] { 1024, 2048, 5000, 7109, 8192 })
         {
             Assert.Equal(LongRestPromptLayout.FixedBytes(LongRestProviderPayloadKind.Summary), LongRestPromptLayout.RenderedBytes(
                 LongRestPromptLayout.SummarySystemPromptFor(bound), string.Empty, LongRestPromptLayout.SummarySchema, LongRestPromptLayout.SummarySchemaName,
@@ -260,6 +272,8 @@ public sealed class LongRestSummaryBoundTests
     }
 
     [Theory]
+    [InlineData(1024)]
+    [InlineData(1766)]
     [InlineData(2048)]
     [InlineData(2049)]
     [InlineData(5000)]
@@ -327,7 +341,7 @@ public sealed class LongRestSummaryBoundTests
 
         Assert.Equal(LongRestDiscoveryLimits.SummaryUtf8Bytes, defaulted.SummaryBoundBytes);
 
-        foreach (int illegal in new[] { int.MinValue, 0, 2047, 8193, int.MaxValue })
+        foreach (int illegal in new[] { int.MinValue, 0, 1023, 8193, int.MaxValue })
         {
             Assert.True(LongRestPackingData.SummaryPayload(TwoChildren(), LongRestPackingData.Digest, 5328, illegal).IsFailure, $"bound {illegal}");
         }
@@ -378,12 +392,16 @@ public sealed class LongRestSummaryBoundTests
         };
 
     [Theory]
+    [InlineData(1024, true)]
+    [InlineData(1025, true)]
+    [InlineData(1766, true)]
     [InlineData(2048, true)]
     [InlineData(2049, true)]
     [InlineData(7109, true)]
     [InlineData(8191, true)]
     [InlineData(8192, true)]
-    [InlineData(2047, false)]
+    [InlineData(1023, false)]
+    [InlineData(999, false)]
     [InlineData(8193, false)]
     [InlineData(0, false)]
     [InlineData(-1, false)]
@@ -395,8 +413,13 @@ public sealed class LongRestSummaryBoundTests
     // Independently assembled preimages (Python struct.pack and hashlib.sha256 over the recipe fields in their canonical order, with the summary
     // bound as the third Int32BE of the bounds block). The same script reproduces the four existing 8,192-byte goldens in
     // LongRestDiscoveryPolicyTests (CF9B0D84... at 32768, 7BDFE21E... at 4096, 226A14F8... at 5328, 9264684C... at 20000), so only the bound
-    // moved the rows below. 7109 at 5328 is the recipe the default 8,192-token window resolves.
+    // moved the rows below. 7109 at 5328 is the recipe the default 8,192-token window resolves; 1024 is the smallest bound a recipe may carry
+    // (the digest does not encode the minimum, so the 2,048 row is unchanged by it); 1766 is the bound of a 2,048-token embedding window.
     [Theory]
+    [InlineData(1024, 32768, "44EBB675073E16C2FCD5B380D94B0C877D11D8E465940D8C724ED1F97F5BB969")]
+    [InlineData(1024, 5328, "1AE81E71B6874A3CA11283C35B14CA2DB5CB6438DE3EC77DA044596B1FA6942D")]
+    [InlineData(1766, 32768, "387DB9D8EDBDD7C384B02C8C4A70C93C3933FC64681C7941E6A47DAE8B6ABFA5")]
+    [InlineData(1766, 5328, "E187FB3174EDF42B556946272C56B732D0EC535DE35B1805CACDBE4AF435DE99")]
     [InlineData(2048, 32768, "8B329D584F3415C54B327F27935626DB3B71A7DF2D827EBB75AA44A296E8F57E")]
     [InlineData(7109, 32768, "DF871C156F94D4D2AF889B0B10049307E0EDC4E26C61814CFDAD7D7DA5B87151")]
     [InlineData(7109, 5328, "4542ECCE136C9BD996515E21F68598593FFB54175813A4A3179D1679F8606DE0")]
@@ -433,6 +456,8 @@ public sealed class LongRestSummaryBoundTests
     }
 
     [Theory]
+    [InlineData(1194, 1024)]
+    [InlineData(2048, 1766)]
     [InlineData(2372, 2048)]
     [InlineData(4096, 3547)]
     [InlineData(8192, 7109)]
@@ -463,7 +488,73 @@ public sealed class LongRestSummaryBoundTests
         Assert.Equal(LongRestDiscoveryHash.Recipe(large).Value, LongRestDiscoveryHash.Recipe(larger).Value);
 
         // Below the smallest embedding window the recipe is still unresolved; no bound is resolved for it.
-        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, LongRestRecipeResolver.Resolve(Settings(2371)).Error.Code);
+        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, LongRestRecipeResolver.Resolve(Settings(LongRestPromptLayout.MinimumEmbeddingWindowTokens - 1)).Error.Code);
+    }
+
+    // The common local embedding models report a 2,048-token window (Ollama's embeddinggemma has a context_length of 2048). The chat answer
+    // reservation no longer sets the floor, because the summary request states a bound the window holds, so such a model is a legal embedding provider.
+    [Fact]
+    public void A_2048_token_embedding_window_resolves_with_its_own_bound_and_every_summary_within_it_passes_the_embedding_estimator_and_the_window_gate()
+    {
+        const int window = 2048;
+
+        int bound = LongRestPromptLayout.SummaryBoundUtf8Bytes(window);
+
+        Assert.Equal(1766, bound);
+
+        LongRestRecipeIdentity recipe = LongRestRecipeResolver.Resolve(Settings(window)).Value;
+
+        Assert.Equal(bound, recipe.SummaryUtf8Bytes);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe).IsSuccess);
+
+        Assert.Empty(LongRestRecipeResolver.Problems(Settings(window)));
+
+        // The request the model receives states that bound.
+        LongRestChatRequest request = LongRestProviderCallFreezer.RenderChat(
+            LongRestPackingData.SummaryPayload(TwoChildren(), LongRestPackingData.Digest, recipe.ProviderInputUtf8Bytes, recipe.SummaryUtf8Bytes).Value).Value;
+
+        Assert.Contains("must not exceed 1766 bytes", request.SystemPrompt, StringComparison.Ordinal);
+
+        foreach (bool catalog in new[] { false, true })
+        {
+            ProviderSettings provider = EmbeddingProvider(window, catalog);
+
+            string model = catalog ? "gpt-4o" : "embedding";
+
+            for (int size = 1; size <= bound; size++)
+            {
+                foreach (string text in new[] { new string('a', size), LongRestPackingData.Content(new Random(size), size) })
+                {
+                    Assert.Equal(size, new UTF8Encoding(false, true).GetByteCount(text));
+
+                    int tokens = Estimator.EstimateLongRestEmbedding(provider, model, EmbeddingPayload(text)).TokenCount;
+
+                    Assert.True(tokens + LongRestPromptLayout.FramingTokens <= window, $"catalog {catalog}, {size} bytes: {tokens} tokens plus framing");
+
+                    Assert.True(ModelCallExecutor.CheckLongRestWindow(new LongRestProviderAdmission.Embedding(provider, model, 64, tokens, Zero)).IsSuccess, $"catalog {catalog}, {size} bytes");
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public void A_window_one_token_below_the_smallest_is_refused_and_the_reason_names_the_new_minimum()
+    {
+        ArcanumSettings settings = Settings(LongRestPromptLayout.MinimumEmbeddingWindowTokens - 1);
+
+        Assert.Equal(ErrorCodes.LongRest.ModelContextTooSmall, LongRestRecipeResolver.Resolve(settings).Error.Code);
+
+        string problem = Assert.Single(LongRestRecipeResolver.Problems(settings));
+
+        Assert.StartsWith("the embedding provider 'embedder' has a contextWindowLimit of 1193 tokens, below the 1194", problem, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("2372", problem, StringComparison.Ordinal);
+
+        // The smallest window itself resolves, with the smallest bound.
+        Assert.Equal(LongRestPromptLayout.MinimumSummaryUtf8Bytes, LongRestRecipeResolver.Resolve(Settings(LongRestPromptLayout.MinimumEmbeddingWindowTokens)).Value.SummaryUtf8Bytes);
+
+        Assert.Empty(LongRestRecipeResolver.Problems(Settings(LongRestPromptLayout.MinimumEmbeddingWindowTokens)));
     }
 
     private static string Summary(int bytes) => "{\"summary\":\"" + new string('a', bytes) + "\"}";

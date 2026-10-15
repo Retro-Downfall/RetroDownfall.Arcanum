@@ -236,7 +236,7 @@ public sealed class LongRestRecipeReadinessTests
 
     [Theory]
     [InlineData("chat-window-too-small", "the chat model named by DefaultModel is served by provider 'provider', whose contextWindowLimit of 6774 tokens is below the 6775")]
-    [InlineData("embedding-window-too-small", "the embedding provider 'embedder' has a contextWindowLimit of 2371 tokens, below the 2372")]
+    [InlineData("embedding-window-too-small", "the embedding provider 'embedder' has a contextWindowLimit of 1193 tokens, below the 1194")]
     public void A_window_too_small_for_the_smallest_recipe_says_which_provider_and_what_to_raise(string variant, string expected)
     {
         ArcanumSettings settings = Settings(variant);

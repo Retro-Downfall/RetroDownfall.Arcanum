@@ -65,11 +65,28 @@ public sealed class LongRestPromptLayoutTests
     }
 
     [Fact]
-    public void The_smallest_embedding_window_holds_one_maximum_answer_with_its_margin_and_framing()
+    public void The_smallest_embedding_window_is_the_one_whose_summary_bound_is_exactly_the_smallest_useful_summary()
     {
-        Assert.Equal(2372, LongRestPromptLayout.MinimumEmbeddingWindowTokens);
+        // The floor is a usefulness floor on the summary bound and not the size of one maximum chat answer: the summary request states the bound,
+        // so an answer is never asked to be larger than the embedding window holds. 1,024 bytes is the least a summary can usefully say.
+        Assert.Equal(1024, LongRestPromptLayout.MinimumSummaryUtf8Bytes);
 
-        Assert.True(LongRestPromptLayout.MinimumEmbeddingWindowTokens < 8192);
+        // Independent arithmetic: 1,024 bytes charged at the estimator's worst case (a byte is a token, plus the 15% margin rounded up), plus framing.
+        Assert.Equal(1024 + (1024 * 15 + 99) / 100 + LongRestPromptLayout.FramingTokens, LongRestPromptLayout.MinimumEmbeddingWindowTokens);
+
+        Assert.Equal(1194, LongRestPromptLayout.MinimumEmbeddingWindowTokens);
+
+        Assert.Equal(LongRestPromptLayout.MinimumSummaryUtf8Bytes, LongRestPromptLayout.SummaryBoundUtf8Bytes(LongRestPromptLayout.MinimumEmbeddingWindowTokens));
+
+        Assert.True(LongRestPromptLayout.SummaryBoundUtf8Bytes(LongRestPromptLayout.MinimumEmbeddingWindowTokens - 1) < LongRestPromptLayout.MinimumSummaryUtf8Bytes);
+
+        // The floor sits below the windows the common local embedding models report, and well below the chat floor.
+        Assert.True(LongRestPromptLayout.MinimumEmbeddingWindowTokens < 2048);
+
+        Assert.True(LongRestPromptLayout.MinimumEmbeddingWindowTokens < LongRestPromptLayout.MinimumChatWindowTokens);
+
+        // The bound sentence is four digits at the smallest bound (1024) as at the largest (8192).
+        Assert.Equal(4, LongRestPromptLayout.MinimumSummaryUtf8Bytes.ToString(System.Globalization.CultureInfo.InvariantCulture).Length);
     }
 
     [Theory]
