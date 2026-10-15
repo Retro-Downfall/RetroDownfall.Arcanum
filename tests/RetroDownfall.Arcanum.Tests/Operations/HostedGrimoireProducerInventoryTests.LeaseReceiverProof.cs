@@ -338,10 +338,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Null(run.Send.EffectFrontierCapsuleId);
 
         // A group whose receiver is a sound lease that is merely not the one holding the Work is still found retained by the
-        // send's own scan; the send then holds the group's identity but no capsule, and the mismatch is the refusal.
-        bool secondLease = shape == "second-acquisition";
-
-        Assert.Equal(!secondLease, run.Result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == LeaseReceiverSend));
+        // send's own scan, and the Effect it yields carries the origin of that lease. The send holds the Work of the first
+        // acquisition, so the pairing is refused at the send (HOSTED_ADMISSION_EFFECT_LEASE_MISMATCH) and the send loses the
+        // Effect: the group is no Effect of any send, whichever frame the send is in.
+        Assert.Contains(run.Result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == LeaseReceiverSend);
 
         string[] codes = [.. run.Result.Diagnostics.Select(static diagnostic => diagnostic.Code).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
 
@@ -350,7 +350,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         {
             "opaque-return-of-lease" => [LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING", "HOSTED_SITE_WORK_FRONTIER_MISSING"],
             "unguarded-acquisition" => [LeaseReceiverMismatch, "HOSTED_CALL_TARGET_UNRESOLVED", "HOSTED_SITE_EFFECT_FRONTIER_MISSING"],
-            "second-acquisition" => [LeaseReceiverMismatch],
+            "second-acquisition" => [HostedGrimoireProducerInventory.EffectLeaseMismatchCode, LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING"],
             _ => [LeaseReceiverMismatch, "HOSTED_SITE_EFFECT_FRONTIER_MISSING"],
         }, codes);
     }

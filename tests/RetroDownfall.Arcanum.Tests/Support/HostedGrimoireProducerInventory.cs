@@ -11097,9 +11097,11 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            return RootOperation(operationId)
-                + "@effect:"
-                + Location(admission);
+            // The group's own site records its effect with the origin of the lease it was begun on; the recovery effect is the same string.
+            return EffectOf(
+                RootOperation(operationId),
+                Location(admission),
+                LeaseReceiverProven(member, admission, out string? begunOn) ? begunOn : null);
         }
 
         private bool RuntimeRecoveryDispatchRejectsNonGenericTuples(
@@ -13290,7 +13292,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (effect is null || !effect.StartsWith(RootOperation(operationId) + "@effect:", StringComparison.Ordinal)
                 || FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null) is not { } local
-                || effect != RootOperation(operationId) + "@effect:" + local) return false;
+                || EffectGroupLocation(effect) != local) return false;
 
             InvocationExpressionSyntax[] groups = AdmissionSyntax(member).AdmissionCalls
                 .Where(group => Location(group) == local).ToArray();
@@ -16056,7 +16058,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (effect is null || !effect.StartsWith(RootOperation(operationId) + "@effect:", StringComparison.Ordinal)) return false;
 
-            string location = effect[(effect.LastIndexOf("@effect:", StringComparison.Ordinal) + 8)..];
+            string location = EffectGroupLocation(effect);
 
             // Local sends first authenticate the actually retained guarded group.
             if (FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null) is { } local)
@@ -57215,7 +57217,20 @@ internal static partial class HostedGrimoireProducerInventory
 
             string? local = FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null, position, disposing);
 
-            return local is null ? LiveInheritedAdmission(member, site, inherited, position) : RootOperation(operationId) + "@effect:" + local;
+            if (local is null)
+            {
+                return LiveInheritedAdmission(member, site, inherited, position);
+            }
+
+            // The effect of a group begun here carries the origin of the lease it was begun on, as the group's own site records it.
+            string? begunOn = AdmissionSyntax(member).AdmissionCalls
+                .Where(call => Location(call) == local && call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "TryBeginExternalEffectGroup" })
+                .Take(2)
+                .ToArray() is [InvocationExpressionSyntax begun] && LeaseReceiverProven(member, begun, out string? origin)
+                    ? origin
+                    : null;
+
+            return EffectOf(RootOperation(operationId), local, begunOn);
         }
 
         private string? WorkAt(AuthoredMember member, SyntaxNode site, string operationId, GrimoireWorkKind? kind, string? inherited, int? position = null, SyntaxNode? disposing = null)
@@ -57251,9 +57266,12 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            string origin = inherited[(inherited.LastIndexOf("@", StringComparison.Ordinal) + 1)..];
+            // An Effect is live while its group's value is; the lease it carries is the Work's to end, and the pairing at the send judges it.
+            string origin = inherited.Contains("@effect:", StringComparison.Ordinal)
+                ? EffectGroupLocation(inherited)
+                : inherited[(inherited.LastIndexOf("@", StringComparison.Ordinal) + 1)..];
 
-            origin = origin[(origin.IndexOf(':') + 1)..];
+            origin = inherited.Contains("@effect:", StringComparison.Ordinal) ? origin : origin[(origin.IndexOf(':') + 1)..];
 
             return AdmissionEndedBefore(member, origin, atPosition ?? site.SpanStart, []) ? null : inherited;
         }
@@ -59214,6 +59232,22 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ordinaryHolderPhysicalGroupProven) effectGroup = null;
 
+            // The pair a send holds is one lease's: the Effect carries the origin of the lease its group was begun on, and it is the Effect
+            // of a send only when that is the origin of the Work live at the send.
+            if (kind != HostedProducerSiteKind.EffectFrontier
+                && effectGroup is not null
+                && workAdmitted is not null
+                && EffectLeaseOrigin(effectGroup) is { } effectLease
+                && WorkOrigin(workAdmitted) is { } workLease
+                && effectLease != workLease)
+            {
+                effectGroup = null;
+
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(EffectLeaseMismatch(operationId, node, callee));
+            }
+
             // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live.
             bool leaseReceiverProven = kind != HostedProducerSiteKind.EffectFrontier
                 || !callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
@@ -59292,7 +59326,7 @@ internal static partial class HostedGrimoireProducerInventory
                 && (member.RecoveryContext is not { Disposition: RecoveryDisposition.OrdinaryPerUnitExternalEffect }
                     || perUnitPhysicalGroupProven))
             {
-                effectGroup = rootOperation + "@effect:" + Location(node);
+                effectGroup = EffectOf(rootOperation, Location(node), node is InvocationExpressionSyntax begun && LeaseReceiverProven(member, begun, out string? begunOn) ? begunOn : null);
 
                 admissionCapsules[effectGroup] = capsuleId;
             }
