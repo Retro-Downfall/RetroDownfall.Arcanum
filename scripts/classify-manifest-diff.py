@@ -205,7 +205,7 @@ INTERCEPTOR_CALLBACK_TYPES = frozenset(
 # Types whose members a call through a slot reaches only when the slot is resolved on the receiver's runtime type: the
 # OS-credential and Data Protection stores behind `ISecretStore` and the `CredentialMirror` Reviewed Closed Override Set (the
 # owner-only file primitives they write through), and the Saga store and entry queries behind two container-resolved
-# interfaces. Before the lane the traversal ended at the interface member, which declares no body.
+# interfaces. Before the lane the traversal ended at the interface member, which declares no body, or did not enter the call.
 SLOT_DISPATCH_TYPES = frozenset(
     SECURITY + name
     for name in (
