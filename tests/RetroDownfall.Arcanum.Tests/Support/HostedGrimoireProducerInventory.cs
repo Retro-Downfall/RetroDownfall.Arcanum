@@ -2172,6 +2172,12 @@ internal static partial class HostedGrimoireProducerInventory
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .CallbackImplementersThatReach();
 
+    // Where the candidates of a callback slot are read from an index of the authored formatters instead of asked of every formatter, this is
+    // the pairs of receiver type and slot, over a sample of the formatters, for which the index and the definition disagree.
+    internal static (int Pairs, int Selective, IReadOnlyList<string> Mismatches) ProbeFormatterCandidateIndex(IReadOnlyList<CSharpCompilation> compilations, int receiverSample) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeFormatterCandidateIndex(receiverSample);
+
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,
         IMethodSymbol method,
