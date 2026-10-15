@@ -1,5 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -77,7 +78,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // The judgement of a callback slot resolves each authored implementation once and takes each formatting step once per resolution. The
     // judgement for object resolves each production implementation at most once (the sum of the work is bounded by the implementations, not
     // by the implementations and the types that ask), and the judgement for a value, which asks about the same implementations, resolves none
-    // of them again. The production source has no callback that reaches a site, so both answers are no.
+    // of them again. This pins the work and what the answers are to the definition, not what the production source holds: the answers are those
+    // of resolving every implementation from scratch, whichever way they fall.
     [Fact]
     public void TheCallbackJudgementResolvesEachProductionImplementationOnce()
     {
@@ -88,10 +90,6 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.True(implementations >= 1000, "The production source holds " + implementations + " callback implementations.");
 
-        Assert.False(firstReaches);
-
-        Assert.False(secondReaches);
-
         Assert.True(firstResolutions <= implementations, firstResolutions + " resolutions for " + implementations + " implementations.");
 
         Assert.Equal(0, secondResolutions);
@@ -101,6 +99,159 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // A step is a slot of a type, and the steps of one resolution are the types its fields can hold: the work is bounded by the product of
         // the implementations and a small factor, never by the product of the implementations and the formatters.
         Assert.True(firstSteps <= implementations * 64, firstSteps + " formatting steps for " + implementations + " implementations.");
+
+        // Every authored formatter can be an object, so the judgement for object reaches a site exactly when one implementation of those families does
+        // when it is resolved from scratch with no memo; a value is one of the objects, so what it reaches an object reaches too.
+        IReadOnlyList<string> reaching = HostedGrimoireProducerInventory.ProbeCallbackImplementersThatReach(HostedGrimoireProducerInventory.ProductionCompilations, HostedGrimoireProducerInventory.CallbackWorkFamilies);
+
+        Assert.True((reaching.Count != 0) == firstReaches, "The judgement for object says " + firstReaches + ", resolving every implementation from scratch names " + reaching.Count + ": " + string.Join(" | ", reaching.Take(5)));
+
+        Assert.True(firstReaches || !secondReaches, "The judgement for a value reaches a site that the judgement for object does not.");
+    }
+
+    // The answers for an authored implementation are keyed by the anchor member whole, because the answer reads its model, its bindings and its syntax:
+    // the same member asks once, and a member over the very same syntax with another binding environment is another key.
+    [Fact]
+    public void TheAnswersForAnImplementationAreKeyedByTheWholeAnchorMember()
+    {
+        (int first, int repeated, int otherBindings) = HostedGrimoireProducerInventory.ProbeCallbackReachKey(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(first >= 1, "No implementation of the production source was judged and remembered.");
+
+        Assert.Equal(0, repeated);
+
+        Assert.True(otherBindings >= 1, "A member over the same syntax with other bindings read the answer of the member it was made from.");
+    }
+
+    // The answers for the implementers of an authored type are keyed by the anchor member whole too, because they are the answers of its implementations:
+    // the same member asks once, and a member over the very same syntax with another binding environment is another key, not a hit on the first member's.
+    [Fact]
+    public void TheAnswersForAnAuthoredTypeAreKeyedByTheWholeAnchorMember()
+    {
+        (int first, int repeated, int otherBindings) = HostedGrimoireProducerInventory.ProbeCallbackImplementersKey(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(first >= 1, "No authored type of the production source was judged and remembered.");
+
+        Assert.Equal(0, repeated);
+
+        Assert.True(otherBindings >= 1, "A member over the same syntax with other bindings read the answer for a type of the member it was made from.");
+    }
+
+    // A repeated formatting step can only repeat a name in the Unresolved list of a resolution, so the Formatting Steps rule changes no verdict while no
+    // reader counts the names. Every read of an Unresolved member in the checker is a test of the list for empty, a set (Distinct), a copy of the
+    // names into another list (Add, AddRange), a hand-over of the list whole, or a use of a flag of the same name in a condition.
+    private static IReadOnlyList<string> UnresolvedReadsThatCouldCount(string path, string text)
+    {
+        List<string> reads = [];
+
+        foreach (SyntaxNode node in CSharpSyntaxTree.ParseText(text, path: path).GetRoot().DescendantNodes())
+        {
+            ExpressionSyntax? use = node switch
+            {
+                MemberAccessExpressionSyntax { Name.Identifier.ValueText: "Unresolved" } access => access,
+                IdentifierNameSyntax { Identifier.ValueText: "Unresolved" } bare when !(bare.Parent is MemberAccessExpressionSyntax access && access.Name == bare) => bare,
+                _ => null,
+            };
+
+            if (use is null || UnresolvedReadIsSafe(use))
+            {
+                continue;
+            }
+
+            FileLinePositionSpan position = use.GetLocation().GetLineSpan();
+
+            reads.Add(Path.GetFileName(path) + ":" + (position.StartLinePosition.Line + 1) + " " + use.Parent!.ToString());
+        }
+
+        return reads;
+    }
+
+    private static bool UnresolvedReadIsSafe(ExpressionSyntax use)
+    {
+        if (use.Parent is MemberAccessExpressionSyntax { } member && member.Expression == use)
+        {
+            return member.Name.Identifier.ValueText switch
+            {
+                "Distinct" or "Add" or "AddRange" => member.Parent is InvocationExpressionSyntax invocation && invocation.Expression == member,
+                "Count" => member.Parent is BinaryExpressionSyntax comparison
+                    && comparison.Kind() is SyntaxKind.NotEqualsExpression or SyntaxKind.EqualsExpression
+                    && comparison.Left == member
+                    && comparison.Right is LiteralExpressionSyntax { Token.ValueText: "0" },
+                _ => false,
+            };
+        }
+
+        return use.Parent switch
+        {
+            ArgumentSyntax { Parent: ArgumentListSyntax { Parent: ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax } } => true,
+            ArgumentSyntax { Parent: ArgumentListSyntax { Parent: InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Name.Identifier.ValueText: "AddRange" } } } } => true,
+            PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.LogicalNotExpression } => true,
+            BinaryExpressionSyntax binary => binary.Kind() is SyntaxKind.LogicalOrExpression or SyntaxKind.LogicalAndExpression,
+            ConditionalExpressionSyntax conditional => conditional.Condition == use,
+            IfStatementSyntax statement => statement.Condition == use,
+            ExpressionColonSyntax or NameColonSyntax => true,
+            _ => false,
+        };
+    }
+
+    [Fact]
+    public void UnresolvedIsOnlyReadAsASetOrTestedForEmpty()
+    {
+        string support = Path.Combine(global::RetroDownfall.Arcanum.Tests.Support.TestRepositoryPaths.RepositoryRoot(), "tests", "RetroDownfall.Arcanum.Tests", "Support");
+
+        string[] files = [.. Directory.EnumerateFiles(support, "HostedGrimoireProducerInventory*.cs")];
+
+        Assert.True(files.Length >= 20, "The checker's sources were not found under " + support);
+
+        string[] reads = [.. files.Order(StringComparer.Ordinal).SelectMany(file => UnresolvedReadsThatCouldCount(file, File.ReadAllText(file)))];
+
+        Assert.True(reads.Length == 0, "A read of Unresolved could count the names a repeated formatting step repeats: " + string.Join(" | ", reads));
+    }
+
+    [Theory]
+    [InlineData("var n = targets.Unresolved.Count;")]
+    [InlineData("var n = targets.Unresolved.Count > 1;")]
+    [InlineData("var n = targets.Unresolved.Count != 1;")]
+    [InlineData("var n = targets.Unresolved.Count == 0 ? 1 : 2; var m = 0 != targets.Unresolved.Count;")]
+    [InlineData("var n = targets.Unresolved.Count();")]
+    [InlineData("var n = targets.Unresolved.Sum(static name => name.Length);")]
+    [InlineData("var n = targets.Unresolved[0];")]
+    [InlineData("var n = targets.Unresolved.First();")]
+    [InlineData("var n = targets.Unresolved.Last();")]
+    [InlineData("var n = targets.Unresolved.ToArray();")]
+    [InlineData("var n = string.Join(\",\", targets.Unresolved);")]
+    [InlineData("var n = Unresolved.Count + 1;")]
+    public void AnUnresolvedReadThatCouldCountIsRefused(string statement)
+    {
+        Assert.NotEmpty(UnresolvedReadsThatCouldCount("Probe.cs", "class Probe { void Read(dynamic targets, System.Collections.Generic.List<string> Unresolved) { " + statement + " } }"));
+    }
+
+    [Theory]
+    [InlineData("var n = targets.Unresolved.Count != 0;")]
+    [InlineData("var n = targets.Unresolved.Count == 0;")]
+    [InlineData("var n = string.Join(\",\", targets.Unresolved.Distinct());")]
+    [InlineData("targets.Unresolved.Add(name); targets.Unresolved.AddRange(other.Unresolved);")]
+    [InlineData("Unresolved.Add(name); var r = new Resolution(members, Unresolved);")]
+    [InlineData("var r = new Resolution(members, targets.Unresolved);")]
+    [InlineData("if (dispatch.Unresolved || !dispatch.Unresolved && other) { }")]
+    [InlineData("var n = dispatch.Unresolved ? 1 : 2; var m = dispatch is { Unresolved: true };")]
+    public void AnUnresolvedReadThatOnlyTestsOrCopiesTheNamesIsAccepted(string statement)
+    {
+        Assert.Empty(UnresolvedReadsThatCouldCount("Probe.cs", "class Probe { void Read(dynamic targets, dynamic dispatch, dynamic other, System.Collections.Generic.List<string> Unresolved) { " + statement + " } }"));
+    }
+
+    // The key of a cleanup cache holds the string of the bindings of a member, which can be tens of thousands of characters and is built again for every
+    // expression asked about. The keys share one instance per content (so the caches do not hold a copy per entry) and are still compared by content.
+    [Fact]
+    public void TheKeysOfTheCleanupCachesShareTheStringOfTheBindingsOfAMember()
+    {
+        (bool shared, bool equalToCopy, int pooled) = HostedGrimoireProducerInventory.ProbeCleanupBindingPool(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(shared, "Two keys for one expression of one member hold two copies of the string of its bindings.");
+
+        Assert.True(equalToCopy, "A key is no longer equal, by content, to a key made with a copy of the string.");
+
+        Assert.Equal(1, pooled);
     }
 
     // The program-wide queries a graph answers from an index or a memo (the call sites of a method, the constructors of a type, the implementers

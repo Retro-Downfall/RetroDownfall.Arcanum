@@ -2168,9 +2168,29 @@ internal static partial class HostedGrimoireProducerInventory
 
     // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
     // a producer site or cannot be followed, over the given compilations.
-    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations) =>
+    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations, CallbackFamilies? families = null) =>
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
-            .CallbackImplementersThatReach();
+            .CallbackImplementersThatReach(families);
+
+    // The families of slots the callback work probe asks about.
+    internal const CallbackFamilies CallbackWorkFamilies = ProducerGraph.CallbackWorkFamilies;
+
+    // The pool of the bindings strings the keys of the cleanup caches share.
+    internal static (bool SharedInstance, bool EqualToAnUnpooledCopy, int Probed) ProbeCleanupBindingPool(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeCleanupBindingPool();
+
+    // The key of the answers for an authored implementation of a callback slot: the judgement of one implementation for an anchor member, for
+    // the same member again, and for a member over the same syntax with other bindings.
+    internal static (int First, int Repeated, int OtherBindings) ProbeCallbackReachKey(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackReachKey();
+
+    // The key of the answers for a type: the implementers of one authored type judged for an anchor member, for the same member again, and for a
+    // member over the same syntax with other bindings.
+    internal static (int First, int Repeated, int OtherBindings) ProbeCallbackImplementersKey(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackImplementersKey();
 
     // The semantic model of a tree in a compilation, as two discoveries over the compilation and a discovery over another compilation
     // that holds the same tree are given it: whether the two discoveries over one compilation read one model, and whether the other
@@ -47666,14 +47686,55 @@ internal static partial class HostedGrimoireProducerInventory
                 : null;
         }
 
+        // The identity of the bindings of a member in a cleanup question holds the bindings of every caller in the chain, so it runs to tens of
+        // thousands of characters, and it is built again for every expression asked about and kept in the key of a cache entry. One instance per
+        // distinct content is kept here and every key shares it, where a key would hold a copy of its own (on the production source the
+        // cleanup caches held about 2.6 GB of copies of 40 MB of distinct strings). A key is still compared by content, so this changes no answer.
+        private readonly HashSet<string> pooledCleanupBindings = new(StringComparer.Ordinal);
+
+        private string PooledCleanupBindings(string identity)
+        {
+            if (pooledCleanupBindings.TryGetValue(identity, out string? pooled))
+            {
+                return pooled;
+            }
+
+            _ = pooledCleanupBindings.Add(identity);
+
+            return identity;
+        }
+
         private CleanupProvenanceIdentity CleanupIdentity(
             AuthoredMember member,
             ExpressionSyntax expression) =>
             new(
                 MemberIdentity(member),
-                CleanupBindingIdentity(member),
+                PooledCleanupBindings(CleanupBindingIdentity(member)),
                 expression.SpanStart,
                 expression.Span.Length);
+
+        // Fixture seam: the keys two questions about one expression of one member make share the string of the bindings (one instance), and a key
+        // is still equal, by content, to a key made with a copy of that string that the pool never saw.
+        internal (bool SharedInstance, bool EqualToAnUnpooledCopy, int Probed) ProbeCleanupBindingPool()
+        {
+            foreach (AuthoredMember member in AuthoredMembers)
+            {
+                if (member.Syntax.DescendantNodes().OfType<ExpressionSyntax>().FirstOrDefault() is not { } expression)
+                {
+                    continue;
+                }
+
+                CleanupProvenanceIdentity first = CleanupIdentity(member, expression);
+
+                CleanupProvenanceIdentity second = CleanupIdentity(member, expression);
+
+                CleanupProvenanceIdentity copy = first with { ConcreteBindings = new string(first.ConcreteBindings.AsSpan()) };
+
+                return (ReferenceEquals(first.ConcreteBindings, second.ConcreteBindings), first.Equals(copy) && !ReferenceEquals(first.ConcreteBindings, copy.ConcreteBindings), pooledCleanupBindings.Count);
+            }
+
+            return (false, false, 0);
+        }
 
         private string CleanupBindingIdentity(AuthoredMember member)
         {
