@@ -91,7 +91,10 @@ public sealed partial class LongRestSweepStoreTests
 
         await using Fixture large = await Fixture.CreateAsync(protect, sourceCount: 40);
 
+        // The set-based question and the statement over the leaves.
         int untouched = await SeamStatementsAsync(small);
+
+        Assert.Equal(2, untouched);
 
         Assert.Equal(untouched, await SeamStatementsAsync(large));
 
@@ -110,7 +113,9 @@ public sealed partial class LongRestSweepStoreTests
 
         int proof = oneReceiptLarge - untouched;
 
-        Assert.True(proof > 0, "A receipt that consolidated leaves must be proved.");
+        // The proof of one receipt: the receipt, its inputs, its suppressions, its unit and the unit's inputs, and a protected receipt's
+        // evidence besides. A statement added to the proof changes the figure, which the design's cost of a seam states.
+        Assert.Equal(protect ? 8 : 5, proof);
 
         _ = await DecideNextAsync(large);
 

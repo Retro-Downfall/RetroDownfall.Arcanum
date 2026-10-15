@@ -473,7 +473,7 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         { "survivor-of-sixteen", AppliedReceipts(16) },
         { "survivor-of-seventeen", AppliedReceipts(17) },
         { "suppressed-by-an-unapplied-receipt", UnappliedSuppression() },
-        { "suppressed-and-survivor-by-one-receipt", AppliedReceipts(1) + SuppressionBy(1, 6, 4) },
+        { "suppressed-and-survivor-by-one-receipt", AppliedReceipts(1) + SuppressionBy(receipt: 1, source: 4, survivor: 6) },
     };
 
     private const string ReceiptFields = "ReceiptId, PolicyVersion, KindCode, OutcomeCode, ReasonCode, InputHash, OutputHash, RequestedSurvivorVersionId, SurvivorMemoryId, SurvivorVersionId, CreatedAtUtc";
@@ -485,10 +485,13 @@ public sealed class LongRestMetadataCorpusEquivalenceTests
         SELECT printf('%064X', i), 1, 2, 1, 0, printf('%064X', i), printf('%064X', i), {Head(MemoryId(4))}, '{MemoryId(4)}', {Head(MemoryId(4))}, '2026-10-10T00:00:00.0000000Z' FROM n;
         """;
 
-    /// <summary>A suppression of one memory's head in favour of another's, written by receipt number <paramref name="receipt"/>.</summary>
+    /// <summary>
+    /// A suppression of one memory's head in favour of another's, written by receipt number <paramref name="receipt"/>. With the receipts above, whose
+    /// survivor is the fourth memory's head, suppressing that same head makes one receipt both the source's and the survivor's cause.
+    /// </summary>
     private static string SuppressionBy(int receipt, int source, int survivor) => $"""
         INSERT INTO long_rest_suppressions (SourceVersionId, SurvivorVersionId, ReceiptId)
-        VALUES ({Head(MemoryId(source))}, {Head(MemoryId(survivor == source ? 6 : survivor))}, printf('%064X', {receipt}));
+        VALUES ({Head(MemoryId(source))}, {Head(MemoryId(survivor))}, printf('%064X', {receipt}));
         """;
 
     private static string UnappliedSuppression() => $"""
