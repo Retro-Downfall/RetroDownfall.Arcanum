@@ -31,7 +31,11 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 /// the leaves froze. That is the corpus a seam exists for.</para>
 /// <para>The second half mutates a plain corpus one column at a time, on either side of the comparison: the live row a snapshot is made of,
 /// and the manifest the leaf stored. Each is refused by both reads or admitted by both, and a stored manifest that is merely reformatted is
-/// refused, because the comparison is of the bytes.</para>
+/// refused, because the comparison is of the bytes. A manifest is also compared by its storage class: the per-leaf read compares inside
+/// SQLite, where a BLOB is unequal to every TEXT value, so a manifest stored as a BLOB with the very bytes is refused by both.</para>
+/// <para>The third half writes receipts that name a leaf's version into the plain corpus without the proof a real decision leaves, so that
+/// the leaf's live flags differ from the frozen ones and only a receipt that proves can explain them. The set read carries those receipts in
+/// the row it already read, up to a bound, and a leaf that more receipts touch is paged by the per-leaf read; both ways must refuse.</para>
 /// </remarks>
 [Collection("Grimoire")]
 public sealed class LongRestMetadataCorpusEquivalenceTests
