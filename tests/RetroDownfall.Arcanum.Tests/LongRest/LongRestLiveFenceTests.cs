@@ -106,6 +106,55 @@ public sealed class LongRestLiveFenceTests
         Assert.False(reader.IsRequestFenceCurrent(first));
     }
 
+    [Fact]
+    public async Task The_insertion_boundary_never_falls_when_the_newest_tracked_memory_is_deleted()
+    {
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+        await h.SeedAsync(Guid.NewGuid().ToString("D"), "observation");
+
+        string newest = Guid.NewGuid().ToString("D");
+
+        await h.SeedAsync(newest, "later observation");
+
+        using CovenantRuntimeGenerationProvider runtime = new();
+
+        runtime.PublishAvailability(current => current with { DatasetGeneration = Guid.NewGuid(), Canonical = CovenantCapabilityState.Healthy });
+
+        LongRestConfigurationEpochTests.NotifyingOptions options = new(LongRestConfigurationEpochTests.Settings());
+
+        using LongRestConfigurationEpoch epoch = new(options, Guid.NewGuid());
+
+        NoCampaigns campaigns = new();
+
+        LongRestLiveFenceReader reader = new(h.Saga.Context, runtime, new GrimoireConnectionAdmissionGate(TimeProvider.System), epoch, campaigns, campaigns);
+
+        LongRestSweepFence first = LongRestSweepHarness.Require(await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, null, CancellationToken.None));
+
+        Assert.Equal(2, first.InsertionHighWatermark);
+
+        // The newest tracked memory goes, in a scope this generation knows nothing about: the highest row falls, the boundary does not.
+        Assert.True(await h.Saga.Store.DeleteAsync(newest, CancellationToken.None));
+
+        Assert.Equal(1L, await h.ScalarAsync("SELECT max(InsertionSequence) FROM long_rest_sources;"));
+
+        LongRestSweepFence resumed = LongRestSweepHarness.Require(await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, first.InsertionHighWatermark, CancellationToken.None));
+
+        Assert.Equal(first, resumed);
+
+        LongRestSweepFence fresh = LongRestSweepHarness.Require(await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, null, CancellationToken.None));
+
+        Assert.Equal(first.InsertionHighWatermark, fresh.InsertionHighWatermark);
+
+        // A memory inserted afterwards lies above the boundary, as debt for the next generation, never beneath it.
+        await h.SeedAsync(Guid.NewGuid().ToString("D"), "after the deletion");
+
+        Assert.Equal(3L, await h.ScalarAsync("SELECT max(InsertionSequence) FROM long_rest_sources;"));
+
+        // A retained boundary that this table never issued is still refused.
+        Assert.True((await reader.CaptureAsync(CanonicalCampaignContext.GlobalOnly, epoch.Capture().Stamp, 4, CancellationToken.None)).IsFailure);
+    }
+
     [Theory]
     [InlineData("dataset")]
     [InlineData("canonical")]

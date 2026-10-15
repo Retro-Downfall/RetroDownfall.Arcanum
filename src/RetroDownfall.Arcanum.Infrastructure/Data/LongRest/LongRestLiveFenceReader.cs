@@ -16,6 +16,18 @@ internal sealed partial class LongRestLiveFenceReader(ArcanumDbContext db, ICove
     IGrimoireConnectionAdmissionGate admission, ILongRestConfigurationProvider configuration,
     ICampaignAvailabilityReader campaigns, ICampaignPathIdentityReader paths)
 {
+    /// <summary>
+    /// The live insertion boundary: the highest sequence <c>long_rest_sources</c> has ever issued, not the highest one it still holds. The
+    /// table is <c>AUTOINCREMENT</c>, which records that sequence in <c>sqlite_sequence</c> and never lowers it, so deleting the newest
+    /// tracked memory anywhere (another scope, another partition) cannot put the live boundary below one a generation retained. Reading
+    /// <c>max(InsertionSequence)</c> would, and a generation whose leaves were all untouched could no longer be proved against a boundary
+    /// that fell. The larger of the two is read so a table whose counter was ever lost still never reads below its own rows.
+    /// </summary>
+    internal const string InsertionBoundarySql = """
+        SELECT max(COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'long_rest_sources'), 0),
+                   COALESCE((SELECT max(InsertionSequence) FROM long_rest_sources), 0));
+        """;
+
     internal async Task<Result<LongRestSweepFence>> CaptureAsync(CanonicalCampaignContext scope,
         LongRestConfigurationStamp stamp, long? retainedHighwater, CancellationToken ct)
     {
@@ -61,7 +73,7 @@ internal sealed partial class LongRestLiveFenceReader(ArcanumDbContext db, ICove
 
             await using SqliteCommand command = connection.CreateCommand();
 
-            command.CommandText = "SELECT COALESCE(max(InsertionSequence), 0) FROM long_rest_sources;";
+            command.CommandText = InsertionBoundarySql;
 
             long currentHighwater = (long)(await command.ExecuteScalarAsync(ct).ConfigureAwait(false))!;
 

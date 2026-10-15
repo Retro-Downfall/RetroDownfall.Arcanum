@@ -20,7 +20,7 @@ namespace RetroDownfall.Arcanum.Core.LongRest;
 /// including the proposal a turn commits, republishes with a new canonical sequence. A fence that required the counter to be unchanged
 /// would be invalidated by all of them, so a sweep longer than a pass would restart from nothing and a protected park would never
 /// be readmitted in the boot that parked it. A publication that changes none of the facts below leaves the number, and so every
-/// sweep and park, exactly as it was; one that changes any of them moves it, and the sweep ends as stale.</para>
+/// sweep and park, exactly as it was; one that changes any of them moves it, and a sweep or park that a check then observes the move in ends as stale. A change that is undone before any check (the canonical tier degraded and repaired to the same schema and catalog) returns the number to the value it had, which is safe because the term is never authority: the gate judges the tier's health at every use.</para>
 ///
 /// <para>The number is a truncated SHA-256 of a fixed, versioned encoding in the discovery grammar (a domain string and NUL, signed
 /// big-endian numbers, UTF-8 strings with a big-endian byte length, one-byte presence tags), always odd and below

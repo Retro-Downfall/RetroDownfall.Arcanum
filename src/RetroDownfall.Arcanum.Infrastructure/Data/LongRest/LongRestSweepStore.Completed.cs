@@ -58,7 +58,16 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
 
     private Task<Result<Guid?>> FindCompletedReplayCoreAsync(CanonicalCampaignContext scope, LongRestSweepScope? partition,
         LongRestRecipeIdentity recipe, LongRunningOperationState? requiredState, CancellationToken ct) =>
-        WithinReadAsync<Guid?>(async (connection, transaction) =>
+        WithinReadAsync<Guid?>((connection, transaction) =>
+            FindCompletedWithinAsync(connection, transaction, scope, partition, recipe, requiredState, null, ct), ct);
+
+    /// <summary>
+    /// The newest completed generation that proves out, read inside the caller's transaction. A candidate <paramref name="accept"/>
+    /// declines is passed over exactly as a damaged one is, so the lookup goes on to the next-newest.
+    /// </summary>
+    private static async Task<Guid?> FindCompletedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
+        CanonicalCampaignContext scope, LongRestSweepScope? partition, LongRestRecipeIdentity recipe, LongRunningOperationState? requiredState,
+        Func<LongRestDiscoveryGeneration, bool>? accept, CancellationToken ct)
     {
         if (partition is { } exact && (!exact.IsInitialized || exact.CampaignId != scope.CampaignId
             || exact.Kind != (scope.IsCampaignBound ? LongRestSweepScopeKind.Campaign : LongRestSweepScopeKind.Global)))
@@ -110,6 +119,12 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
                         continue;
                     }
 
+                    // The caller's own question is in memory and the proof of the corpus is not, so it comes first.
+                    if (accept is not null && !accept(generation))
+                    {
+                        continue;
+                    }
+
                     await LongRestDiscoveryStore.ValidateCompletedCorpusMetadataAsync(connection, transaction, generation, partition, ct).ConfigureAwait(false);
 
                     return operation;
@@ -131,5 +146,5 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
 
             cursorOperation = last.ToString("N");
         }
-    }, ct);
+    }
 }

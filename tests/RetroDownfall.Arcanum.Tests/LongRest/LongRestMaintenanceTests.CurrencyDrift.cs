@@ -228,37 +228,6 @@ public sealed partial class LongRestMaintenanceTests
     }
 
     [Fact]
-    public async Task A_protected_park_whose_fence_changed_in_its_own_boot_is_returned_but_cannot_be_readmitted_by_the_turn()
-    {
-        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
-
-        f.Handler.Status = System.Net.HttpStatusCode.InternalServerError;
-
-        LongRestSweepProgress parked = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, await FreshAsync(f), CancellationToken.None));
-
-        Assert.Equal(LongRestParkCodes.AuthorizedRequestRequired, parked.DeferredReason);
-
-        // A drained maintenance window inside the boot that parked it: only a new boot readmits across it.
-        await CleanReviewSafeForeignEdgeAsync(f.Admission);
-
-        await using CovenantTurnLease next = LongRestSweepHarness.Require(await f.Gate.AcquireTurnAsync(f.Scope, CancellationToken.None));
-
-        Result<LongRunningOperationDto> request = await f.Coordinator.RequestAsync(f.Scope, f.Partition, next, CancellationToken.None);
-
-        Assert.True(request.IsSuccess, request.IsFailure ? request.Error.Code : null);
-
-        Assert.Equal(f.Operation, request.Value.Id);
-
-        Result<LongRestMaintenanceCapability> capability = await f.Maintenance.CreateCapabilityAsync(f.Operation, f.Invocation, f.Claim, f.Scope, next, CancellationToken.None);
-
-        Assert.True(capability.IsFailure);
-
-        Assert.Equal(ErrorCodes.LongRest.StaleInput, capability.Error.Code);
-
-        Assert.Equal(LongRunningOperationState.ReconciliationRequired, (await f.Operations.GetAsync(f.Operation))!.State);
-    }
-
-    [Fact]
     public async Task A_Covenant_availability_change_that_matters_still_ends_the_sweep_it_spans()
     {
         ManualWallClockTimeProvider clock = new();

@@ -80,7 +80,7 @@ internal sealed partial class LongRestLiveFenceReader
 
         highwater.Transaction = transaction;
 
-        highwater.CommandText = "SELECT COALESCE(max(InsertionSequence), 0) FROM long_rest_sources;";
+        highwater.CommandText = InsertionBoundarySql;
 
         long current = (long)(await highwater.ExecuteScalarAsync(ct).ConfigureAwait(false))!;
 

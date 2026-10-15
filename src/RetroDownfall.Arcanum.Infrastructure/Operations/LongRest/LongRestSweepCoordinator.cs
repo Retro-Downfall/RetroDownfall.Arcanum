@@ -65,24 +65,14 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
 
             Guid? completed = Require(await completedRequests.FindCompletedRequestReplayAsync(scope, partition, options.Recipe.Value, ct).ConfigureAwait(false));
 
-            LongRestDiscoveryGeneration? replayed = completed is { } completedId
-                ? Require(await discovery.ReadGenerationMetadataAsync(completedId, ct).ConfigureAwait(false)) ?? throw new Refused(Unavailable()) : null;
-
-            // A completed sweep answers a request only while it still describes the installation: the same configuration value, dataset and,
-            // inside one boot, the same fence. One that no longer does is history, not an answer, and not a refusal either: the request
-            // admits a new generation exactly as it does when no completed sweep matches (the old one keeps its evidence).
-            if (replayed is not null && await IsHistoricallyCurrentAsync(replayed, scope, partition, options, ct).ConfigureAwait(false))
+            // A completed sweep answers a request only while it still describes the installation. One that no longer does, or that was
+            // superseded, invalidated or purged since the lookup found it, is history: not an answer, and not a refusal either. The request
+            // admits a new generation exactly as it does when no completed sweep matches (the old sweep keeps its evidence until its
+            // successor completes). Only a live fence that cannot be captured at all is a refusal.
+            if (completed is { } completedId
+                && await ReplayCompletedAsync(completedId, scope, partition, options, ct).ConfigureAwait(false) is { } replay)
             {
-                LongRunningOperation operation = await operations.GetAsync(completed!.Value, ct).ConfigureAwait(false) ?? throw new Refused(Unavailable());
-
-                if (operation.Kind != LongRunningOperationKinds.LongRestSweep || operation.State != LongRunningOperationState.Completed)
-                {
-                    return Unavailable();
-                }
-
-                Require(await ValidateHistoricalAsync(replayed, scope, partition, options, ct).ConfigureAwait(false));
-
-                return LongRunningOperationDto.FromOperation(operation);
+                return replay;
             }
 
             LongRestSweepFence fence = Require(await facts.CaptureAsync(scope, options.Stamp, null, ct).ConfigureAwait(false));
@@ -93,9 +83,11 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
             Func<CancellationToken, ValueTask<Result>>? prove = authority is not null && partition.ProtectedPartitionDigest is not null
                 ? token => ProveRequestAuthorityAsync(authority, scope, fence, options, token) : null;
 
-            LongRunningOperation admitted = Require(await requests.AdmitRequestAsync(partition, fence, facts, ownership, ct, prove).ConfigureAwait(false));
+            // The recipe lets admission look once more, inside its own transaction, for a sweep that completed while this request was between its
+            // lookup and its admission: it then joins that sweep instead of paying for a second generation.
+            LongRunningOperation admitted = Require(await requests.AdmitRequestAsync(partition, fence, facts, ownership, ct, prove, options.Recipe.Value).ConfigureAwait(false));
 
-            if (partition.ProtectedPartitionDigest is null) queue.Signal(admitted.Id);
+            if (partition.ProtectedPartitionDigest is null && admitted.State != LongRunningOperationState.Completed) queue.Signal(admitted.Id);
 
             return LongRunningOperationDto.FromOperation(admitted);
         }
@@ -359,17 +351,45 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
         await IsHistoricallyCurrentAsync(generation, scope, partition, options, ct).ConfigureAwait(false) ? Result.Success() : Unavailable();
 
     /// <summary>
-    /// Whether the generation still describes this installation: its scope, partition and recipe, the dataset, the configuration value and,
-    /// inside the boot that made it, the whole fence. A live fence that cannot be captured at all is a refusal, not a "no".
+    /// The completed sweep a request is answered with, or <see langword="null"/> when the candidate is no longer one: it has been
+    /// superseded, invalidated or purged since the lookup found it, or it no longer describes the installation. The operation is read
+    /// before the fence is judged and the fence is judged once, after it: a completed operation never regresses, so the fence that is
+    /// current at that point is the one the answer stands on.
+    /// </summary>
+    private async Task<LongRunningOperationDto?> ReplayCompletedAsync(Guid completedId, CanonicalCampaignContext scope,
+        LongRestSweepScope partition, LongRestSweepConfiguration options, CancellationToken ct)
+    {
+        LongRestDiscoveryGeneration? generation = Require(await discovery.ReadGenerationMetadataAsync(completedId, ct).ConfigureAwait(false));
+
+        if (generation is not { Phase: LongRestSweepPhase.Completed }) return null;
+
+        LongRunningOperation? operation = await operations.GetAsync(completedId, ct).ConfigureAwait(false);
+
+        if (operation is null) return null;
+
+        if (operation.Kind != LongRunningOperationKinds.LongRestSweep || operation.State != LongRunningOperationState.Completed)
+        {
+            throw new Refused(Unavailable());
+        }
+
+        return await IsHistoricallyCurrentAsync(generation, scope, partition, options, ct).ConfigureAwait(false)
+            ? LongRunningOperationDto.FromOperation(operation) : null;
+    }
+
+    /// <summary>
+    /// Whether the generation still describes this installation: its scope, partition and recipe, the configuration value and the fence,
+    /// judged as <see cref="LongRestFenceCurrency"/> judges it (a completed sweep by what it describes, any other by whether it can resume).
+    /// A live fence that cannot be captured at all is a refusal, not a "no".
     /// </summary>
     private async Task<bool> IsHistoricallyCurrentAsync(LongRestDiscoveryGeneration generation, CanonicalCampaignContext scope,
         LongRestSweepScope partition, LongRestSweepConfiguration options, CancellationToken ct)
     {
         LongRestSweepFence current = Require(await facts.CaptureAsync(scope, options.Stamp, generation.Fence.InsertionHighWatermark, ct).ConfigureAwait(false));
 
-        return generation.Scope == partition && generation.Recipe == options.Recipe.Value && generation.Fence.CanonicalScope == scope
-            && generation.Fence.DatasetGeneration == current.DatasetGeneration && generation.Fence.Configuration.ValueDigest == options.Stamp.ValueDigest
-            && (generation.Fence.Configuration.BootId != current.Configuration.BootId || generation.Fence == current);
+        return generation.Scope == partition && generation.Recipe == options.Recipe.Value
+            && generation.Fence.Configuration.ValueDigest == options.Stamp.ValueDigest
+            && (generation.Phase == LongRestSweepPhase.Completed
+                ? LongRestFenceCurrency.Describes(generation.Fence, current) : LongRestFenceCurrency.CanResume(generation.Fence, current));
     }
 
     /// <summary>

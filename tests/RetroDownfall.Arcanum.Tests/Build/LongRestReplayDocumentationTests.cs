@@ -103,6 +103,51 @@ public sealed class LongRestReplayDocumentationTests
     }
 
     [Fact]
+    public void The_comparison_rules_of_a_retained_fence_are_stated_and_the_restart_limitation_they_ended_is_not()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.Contains("`LongRestFenceCurrency.Describes`", design, StringComparison.Ordinal);
+
+        Assert.Contains("`LongRestFenceCurrency.CanResume`", design, StringComparison.Ordinal);
+
+        Assert.Contains("the highest sequence the table has ever issued", design, StringComparison.Ordinal);
+
+        Assert.Contains("a setting changed and changed back is the same setting", design, StringComparison.Ordinal);
+
+        Assert.Contains("A change ends a sweep only if a check observes it", design, StringComparison.Ordinal);
+
+        Assert.Contains("a request that raced the completion of its replacement joins that replacement", design, StringComparison.Ordinal);
+
+        Assert.Contains("is retired by the next Session turn that carries live authority and replaced by a new generation", design, StringComparison.Ordinal);
+
+        string api = ReadDocument("Arcanum.API.md");
+
+        Assert.Contains("A setting changed and changed back is the same configuration value", api, StringComparison.Ordinal);
+
+        Assert.Contains("unless its captured generation can no longer resume", api, StringComparison.Ordinal);
+
+        Assert.Contains("the same admission, authority and Covenant capability state", api, StringComparison.Ordinal);
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        Assert.Contains("A setting changed and then changed back is the same setting", reference, StringComparison.Ordinal);
+
+        Assert.Contains("can no longer be readmitted, so the next Session turn that needs it retires it", reference, StringComparison.Ordinal);
+
+        Assert.Contains("leaves a completed sweep replaying", ReadDocument("Compendium.README.md"), StringComparison.Ordinal);
+
+        foreach (string file in GovernedDocuments)
+        {
+            string document = ReadDocument(file);
+
+            Assert.DoesNotContain("until the host restarts (a new boot readmits across all of them)", document, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("because only a new boot readmits across such a change", document, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Every_document_that_describes_a_transient_provider_failure_says_it_spends_the_unknown_usage_allowance()
     {
         string reference = ReadDocument("Arcanum.Command.Reference.md");
