@@ -2172,6 +2172,20 @@ internal static partial class HostedGrimoireProducerInventory
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
             .CallbackImplementersThatReach();
 
+    // The semantic model of a tree in a compilation, as two discoveries over the compilation and a discovery over another compilation
+    // that holds the same tree are given it: whether the two discoveries over one compilation read one model, and whether the other
+    // compilation reads a model of its own.
+    internal static (bool SharedByDiscoveries, bool DistinctAcrossCompilations) ProbeSemanticModelSharing(CSharpCompilation compilation, CSharpCompilation other, SyntaxTree tree)
+    {
+        SemanticModel first = new InventoryFacts([compilation]).SemanticModelOf(compilation, tree);
+
+        SemanticModel second = new InventoryFacts([compilation]).SemanticModelOf(compilation, tree);
+
+        SemanticModel foreign = new InventoryFacts([other]).SemanticModelOf(other, tree);
+
+        return (ReferenceEquals(first, second), !ReferenceEquals(first, foreign) && ReferenceEquals(foreign.Compilation, other));
+    }
+
     // Where the candidates of a callback slot are read from an index of the authored formatters instead of asked of every formatter, this is
     // the pairs of receiver type and slot, over a sample of the formatters, for which the index and the definition disagree.
     internal static (int Pairs, int Selective, IReadOnlyList<string> Mismatches) ProbeFormatterCandidateIndex(IReadOnlyList<CSharpCompilation> compilations, int receiverSample) =>
