@@ -12,6 +12,7 @@ CHAT_MODEL="gemma4:e4b"
 DEFAULT_MODEL="ornith1.5:35b"
 EMBEDDING_MODEL="embeddinggemma"
 EMBEDDING_WINDOW="2048"
+EMBEDDING_DIMENSIONS="768"
 ENDPOINT="http://127.0.0.1:11434/v1/"
 REPORT_DIR=""
 
@@ -28,6 +29,9 @@ Local qualification options:
   --embedding-model <tag>    Installed Ollama embedding model (default: embeddinggemma).
   --embedding-window <n>     Context window, in tokens, configured on the separate embedding provider entry
                              (default: 2048, the context length embeddinggemma reports).
+  --embedding-dimensions <n> Vector size configured for the embedding model, 64 to 4096. It must equal the model's
+                             own size, which the test measures before it starts anything (default: 768, the size of
+                             embeddinggemma; qwen3-embedding:8b returns 4096).
   --endpoint <uri>           Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
   --report-dir <directory>   Existing directory that receives the progress log, the summary and the calibration
                              report (text and JSON). Without it they live in the wrapper's temporary directory,
@@ -63,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --embedding-window)
       EMBEDDING_WINDOW="${2:?--embedding-window requires a token count}"
+      shift 2
+      ;;
+    --embedding-dimensions)
+      EMBEDDING_DIMENSIONS="${2:?--embedding-dimensions requires a vector size}"
       shift 2
       ;;
     --endpoint)
@@ -165,6 +173,11 @@ done
 
 if [[ ! "$EMBEDDING_WINDOW" =~ ^[1-9][0-9]{0,6}$ ]]; then
   echo "error: --embedding-window must be a positive token count" >&2
+  exit 2
+fi
+
+if [[ ! "$EMBEDDING_DIMENSIONS" =~ ^[0-9]{1,4}$ ]] || ((10#$EMBEDDING_DIMENSIONS < 64 || 10#$EMBEDDING_DIMENSIONS > 4096)); then
+  echo "error: --embedding-dimensions must be an integer between 64 and 4096" >&2
   exit 2
 fi
 
@@ -280,6 +293,7 @@ ARCANUM_OLLAMA_LONG_REST_CHAT_MODEL="$CHAT_MODEL" \
 ARCANUM_OLLAMA_LONG_REST_DEFAULT_MODEL="$DEFAULT_MODEL" \
 ARCANUM_OLLAMA_LONG_REST_EMBEDDING_MODEL="$EMBEDDING_MODEL" \
 ARCANUM_OLLAMA_LONG_REST_EMBEDDING_WINDOW="$EMBEDDING_WINDOW" \
+ARCANUM_OLLAMA_LONG_REST_EMBEDDING_DIMENSIONS="$EMBEDDING_DIMENSIONS" \
 ARCANUM_OLLAMA_LONG_REST_ENDPOINT="$ENDPOINT" \
 ARCANUM_OLLAMA_LONG_REST_RESULTS="$RESULTS_DIR_FOR_TEST" \
 ARCANUM_OLLAMA_LONG_REST_RECEIPT="$QUALIFICATION_RECEIPT_FOR_TEST" \

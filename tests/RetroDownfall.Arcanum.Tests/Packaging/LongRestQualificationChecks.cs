@@ -234,6 +234,42 @@ internal static class LongRestQualificationChecks
         return problems;
     }
 
+    /// <summary>
+    /// The finding for an embedding model whose own vector size is not the configured dimensions. The product's Saga writes ask the
+    /// provider for its default size and refuse a vector of any other length, so a model of another native size writes no memory at all.
+    /// </summary>
+    public static string? EmbeddingDimensionsFinding(string model, int configured, int measured) =>
+        configured == measured
+            ? null
+            : string.Create(
+                CultureInfo.InvariantCulture,
+                $"The embedding model '{model}' returns {measured}-dimension vectors but {configured} are configured, and the host refuses a vector of any other length, so it would write no memory. Pass --embedding-dimensions {measured}.");
+
+    /// <summary>The provider requests that failed, by kind and status (or aborted or unanswered), for a failure that needs to say what the provider did.</summary>
+    public static string DescribeFailedRequests(IReadOnlyList<LongRestRecordedRequest> traffic)
+    {
+        ArgumentNullException.ThrowIfNull(traffic);
+
+        string[] failures =
+        [
+            .. traffic
+                .Select(static request => (request.Kind, Outcome: request.ClientAborted
+                    ? "aborted"
+                    : request.StatusCode is null
+                        ? "unanswered"
+                        : request.StatusCode is >= 200 and < 300
+                            ? null
+                            : request.StatusCode.Value.ToString(CultureInfo.InvariantCulture)))
+                .Where(static failure => failure.Outcome is not null)
+                .GroupBy(static failure => failure)
+                .OrderBy(static group => group.Key.Kind)
+                .ThenBy(static group => group.Key.Outcome, StringComparer.Ordinal)
+                .Select(static group => $"{group.Key.Kind} {group.Key.Outcome} x{group.Count()}"),
+        ];
+
+        return failures.Length == 0 ? "none" : string.Join("; ", failures);
+    }
+
     internal static string NormalizeIdentity(string identity) =>
         identity.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
 

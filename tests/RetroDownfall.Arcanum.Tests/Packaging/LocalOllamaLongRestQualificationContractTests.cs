@@ -28,6 +28,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         "ornith1.5:35b",
         "embeddinggemma",
         2048,
+        768,
         new Uri("http://127.0.0.1:11434/v1/"),
         null,
         null);
@@ -54,6 +55,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Contains("--default-model", wrapper, StringComparison.Ordinal);
         Assert.Contains("--embedding-model", wrapper, StringComparison.Ordinal);
         Assert.Contains("--embedding-window", wrapper, StringComparison.Ordinal);
+        Assert.Contains("--embedding-dimensions", wrapper, StringComparison.Ordinal);
         Assert.Contains("--endpoint", wrapper, StringComparison.Ordinal);
         Assert.Contains("--report-dir", wrapper, StringComparison.Ordinal);
         Assert.Contains(LongRestQualificationOptions.OptInVariable, wrapper, StringComparison.Ordinal);
@@ -123,6 +125,8 @@ public sealed class LocalOllamaLongRestQualificationContractTests
             "embed-model",
             "--embedding-window",
             "4096",
+            "--embedding-dimensions",
+            "1024",
             "--report-dir",
             reportDirectory);
 
@@ -141,6 +145,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Equal("default-model:2b", PublishedApphostVerificationScriptTests.ReadLoggedValue(dotnetLog, "long-rest-default-model="));
         Assert.Equal("embed-model", PublishedApphostVerificationScriptTests.ReadLoggedValue(dotnetLog, "long-rest-embedding-model="));
         Assert.Equal("4096", PublishedApphostVerificationScriptTests.ReadLoggedValue(dotnetLog, "long-rest-embedding-window="));
+        Assert.Equal("1024", PublishedApphostVerificationScriptTests.ReadLoggedValue(dotnetLog, "long-rest-embedding-dimensions="));
         Assert.Equal("http://127.0.0.1:11434/v1/", PublishedApphostVerificationScriptTests.ReadLoggedValue(dotnetLog, "long-rest-endpoint="));
         Assert.EndsWith(Path.DirectorySeparatorChar + "report", PublishedApphostVerificationScriptTests.ReadLoggedValue(dotnetLog, "long-rest-results="), StringComparison.Ordinal);
 
@@ -251,6 +256,9 @@ public sealed class LocalOllamaLongRestQualificationContractTests
     [InlineData("--embedding-model", "tag;rm", "model tags")]
     [InlineData("--embedding-window", "0", "positive token count")]
     [InlineData("--embedding-window", "2k", "positive token count")]
+    [InlineData("--embedding-dimensions", "63", "between 64 and 4096")]
+    [InlineData("--embedding-dimensions", "4097", "between 64 and 4096")]
+    [InlineData("--embedding-dimensions", "abc", "between 64 and 4096")]
     public async Task Wrapper_rejects_unsafe_options_before_building_anything(string option, string value, string expected)
     {
         RequirePosixScriptFixture();
@@ -342,6 +350,13 @@ public sealed class LocalOllamaLongRestQualificationContractTests
             && guard < test.IndexOf("AssertModelsAreInstalledAsync(options)", StringComparison.Ordinal),
             "The qualification must reject GitHub Actions before reading its inputs or contacting Ollama.");
 
+        // The embedding model's native vector size is measured against the configured dimensions before anything is created or started.
+        Assert.True(
+            test.IndexOf("AssertEmbeddingDimensionsAsync(options)", StringComparison.Ordinal) is var measured and >= 0
+            && measured > test.IndexOf("AssertModelsAreInstalledAsync(options)", StringComparison.Ordinal)
+            && measured < test.IndexOf("PublishedTestProcessIsolation.Create(", StringComparison.Ordinal),
+            "The embedding dimensions must be proved after the models are known to be installed and before the isolated home is created.");
+
         Assert.Contains("[Collection(LocalNativeAotOllamaQualificationCollection.Name)]", test, StringComparison.Ordinal);
         Assert.Contains("AssertNativeAotPublish", test, StringComparison.Ordinal);
         Assert.Contains("LocalOllamaQualificationGuards.IsNativeBinary", test, StringComparison.Ordinal);
@@ -431,6 +446,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Equal("ornith1.5:35b", options.DefaultModel);
         Assert.Equal("embeddinggemma", options.EmbeddingModel);
         Assert.Equal(2048, options.EmbeddingWindow);
+        Assert.Equal(768, options.EmbeddingDimensions);
         Assert.Equal("http://127.0.0.1:11434/v1/", options.Endpoint.AbsoluteUri);
         Assert.Null(options.ResultsDirectory);
         Assert.Null(options.ReceiptPath);
@@ -445,6 +461,9 @@ public sealed class LocalOllamaLongRestQualificationContractTests
             (LongRestQualificationOptions.EmbeddingWindowVariable, "0"),
             (LongRestQualificationOptions.EmbeddingWindowVariable, "-5"),
             (LongRestQualificationOptions.EmbeddingWindowVariable, "abc"),
+            (LongRestQualificationOptions.EmbeddingDimensionsVariable, "63"),
+            (LongRestQualificationOptions.EmbeddingDimensionsVariable, "4097"),
+            (LongRestQualificationOptions.EmbeddingDimensionsVariable, "abc"),
         })
         {
             Dictionary<string, string> unsafeEnvironment = new(environment, StringComparer.Ordinal) { [variable] = value };
@@ -534,6 +553,18 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Equal("gemma4:e4b", recipe.Value.SummaryModel);
         Assert.Equal("Ollama Embeddings", recipe.Value.EmbeddingProvider);
         Assert.Equal(1766, recipe.Value.SummaryUtf8Bytes);
+
+        // The dimensions are the embedding model's own, from the option: a model whose native size is not 768 is configured with its own.
+        ArcanumSettings wide = LongRestQualificationConfiguration.Create(
+            Options with { EmbeddingDimensions = 4096 },
+            51234,
+            new Uri("http://127.0.0.1:50001/v1/"),
+            workspace,
+            sagaExtraction: false,
+            longRest: true).Arcanum;
+
+        Assert.Equal(4096, wide.Integrations.Embeddings.Dimensions);
+        Assert.True(new ConfigurationValidator().Validate(wide).IsSuccess);
 
         ArcanumSettings seeding = LongRestQualificationConfiguration.Create(
             Options,

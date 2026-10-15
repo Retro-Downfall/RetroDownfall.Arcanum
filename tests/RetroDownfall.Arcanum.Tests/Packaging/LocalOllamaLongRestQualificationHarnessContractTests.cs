@@ -679,6 +679,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
             LongRestQualificationOptions.DefaultModelVariable,
             LongRestQualificationOptions.EmbeddingModelVariable,
             LongRestQualificationOptions.EmbeddingWindowVariable,
+            LongRestQualificationOptions.EmbeddingDimensionsVariable,
             LongRestQualificationOptions.EndpointVariable,
             LongRestQualificationOptions.ResultsVariable,
             LongRestQualificationOptions.ReceiptVariable,
@@ -692,6 +693,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains($"{LongRestQualificationOptions.DefaultModelVariable}=\"$DEFAULT_MODEL\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"{LongRestQualificationOptions.EmbeddingModelVariable}=\"$EMBEDDING_MODEL\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"{LongRestQualificationOptions.EmbeddingWindowVariable}=\"$EMBEDDING_WINDOW\"", wrapper, StringComparison.Ordinal);
+        Assert.Contains($"{LongRestQualificationOptions.EmbeddingDimensionsVariable}=\"$EMBEDDING_DIMENSIONS\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"{LongRestQualificationOptions.EndpointVariable}=\"$ENDPOINT\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"{LongRestQualificationOptions.ResultsVariable}=\"$RESULTS_DIR_FOR_TEST\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"{LongRestQualificationOptions.ReceiptVariable}=\"$QUALIFICATION_RECEIPT_FOR_TEST\"", wrapper, StringComparison.Ordinal);
@@ -703,6 +705,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains($"DEFAULT_MODEL=\"{LongRestQualificationOptions.DefaultDefaultModel}\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"EMBEDDING_MODEL=\"{LongRestQualificationOptions.DefaultEmbeddingModel}\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"EMBEDDING_WINDOW=\"{LongRestQualificationOptions.DefaultEmbeddingWindow}\"", wrapper, StringComparison.Ordinal);
+        Assert.Contains($"EMBEDDING_DIMENSIONS=\"{LongRestQualificationOptions.DefaultEmbeddingDimensions}\"", wrapper, StringComparison.Ordinal);
         Assert.Contains($"ENDPOINT=\"{LongRestQualificationOptions.DefaultEndpoint}\"", wrapper, StringComparison.Ordinal);
 
         // The receipt: the wrapper's expected line is the test's constant, and the test writes that constant and one newline.
@@ -718,6 +721,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
             [LongRestQualificationOptions.DefaultModelVariable] = "default-x:2b",
             [LongRestQualificationOptions.EmbeddingModelVariable] = "embed-x",
             [LongRestQualificationOptions.EmbeddingWindowVariable] = "4096",
+            [LongRestQualificationOptions.EmbeddingDimensionsVariable] = "1024",
             [LongRestQualificationOptions.EndpointVariable] = "http://127.0.0.1:12345/v1/",
         };
 
@@ -727,6 +731,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Equal("default-x:2b", options.DefaultModel);
         Assert.Equal("embed-x", options.EmbeddingModel);
         Assert.Equal(4096, options.EmbeddingWindow);
+        Assert.Equal(1024, options.EmbeddingDimensions);
         Assert.Equal("http://127.0.0.1:12345/v1/", options.Endpoint.AbsoluteUri);
     }
 
@@ -759,6 +764,50 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains("GET /api/health", section, StringComparison.Ordinal);
         Assert.Contains("receipt", section, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Embedding-Bounded Summary", section, StringComparison.Ordinal);
+        Assert.Contains("--embedding-dimensions", section, StringComparison.Ordinal);
+    }
+
+    // ---- The embedding model's own vector size, and a seeding failure that says what the provider did ----
+
+    [Fact]
+    public void The_embedding_models_vector_size_must_equal_the_configured_dimensions_and_the_finding_names_the_flag()
+    {
+        Assert.Null(LongRestQualificationChecks.EmbeddingDimensionsFinding("embeddinggemma", 768, 768));
+
+        string? finding = LongRestQualificationChecks.EmbeddingDimensionsFinding("qwen3-embedding:8b", 768, 4096);
+
+        Assert.NotNull(finding);
+        Assert.Contains("qwen3-embedding:8b", finding, StringComparison.Ordinal);
+        Assert.Contains("4096", finding, StringComparison.Ordinal);
+        Assert.Contains("768", finding, StringComparison.Ordinal);
+        Assert.Contains("--embedding-dimensions 4096", finding, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_seeding_failure_lists_what_the_provider_answered_by_kind_and_status()
+    {
+        LongRestRecordedRequest[] traffic =
+        [
+            new() { Kind = LongRestProviderRequestKind.Chat, StatusCode = 200, Delivered = true },
+            new() { Kind = LongRestProviderRequestKind.Embedding, StatusCode = 200, Delivered = true },
+            new() { Kind = LongRestProviderRequestKind.Embedding, StatusCode = 500, Delivered = true },
+            new() { Kind = LongRestProviderRequestKind.Embedding, StatusCode = 500, Delivered = true },
+            new() { Kind = LongRestProviderRequestKind.Chat, ClientAborted = true },
+            new() { Kind = LongRestProviderRequestKind.Models, StatusCode = 404, Delivered = true },
+        ];
+
+        string described = LongRestQualificationChecks.DescribeFailedRequests(traffic);
+
+        Assert.Contains("Embedding 500 x2", described, StringComparison.Ordinal);
+        Assert.Contains("Chat aborted x1", described, StringComparison.Ordinal);
+        Assert.Contains("Models 404 x1", described, StringComparison.Ordinal);
+        Assert.DoesNotContain("200", described, StringComparison.Ordinal);
+        Assert.Equal("none", LongRestQualificationChecks.DescribeFailedRequests([]));
+        Assert.Equal("none", LongRestQualificationChecks.DescribeFailedRequests([traffic[0]]));
+
+        string seeding = ReadRunSources();
+
+        Assert.Contains("DescribeFailedRequests(Proxy.All)", seeding, StringComparison.Ordinal);
     }
 
     // ---- helpers ----

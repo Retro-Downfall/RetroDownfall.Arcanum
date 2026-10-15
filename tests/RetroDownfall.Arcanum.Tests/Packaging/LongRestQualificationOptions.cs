@@ -13,6 +13,7 @@ internal sealed record LongRestQualificationOptions(
     string DefaultModel,
     string EmbeddingModel,
     int EmbeddingWindow,
+    int EmbeddingDimensions,
     Uri Endpoint,
     string? ResultsDirectory,
     string? ReceiptPath)
@@ -29,6 +30,8 @@ internal sealed record LongRestQualificationOptions(
 
     public const string EmbeddingWindowVariable = "ARCANUM_OLLAMA_LONG_REST_EMBEDDING_WINDOW";
 
+    public const string EmbeddingDimensionsVariable = "ARCANUM_OLLAMA_LONG_REST_EMBEDDING_DIMENSIONS";
+
     public const string EndpointVariable = "ARCANUM_OLLAMA_LONG_REST_ENDPOINT";
 
     public const string ResultsVariable = "ARCANUM_OLLAMA_LONG_REST_RESULTS";
@@ -44,6 +47,13 @@ internal sealed record LongRestQualificationOptions(
     public const string DefaultEmbeddingModel = "embeddinggemma";
 
     public const int DefaultEmbeddingWindow = 2048;
+
+    /// <summary>The vector size of the default embedding model; Compendium allows 64 to 4,096.</summary>
+    public const int DefaultEmbeddingDimensions = 768;
+
+    public const int MinimumEmbeddingDimensions = 64;
+
+    public const int MaximumEmbeddingDimensions = 4096;
 
     public const string DefaultEndpoint = "http://127.0.0.1:11434/v1/";
 
@@ -78,6 +88,18 @@ internal sealed record LongRestQualificationOptions(
             throw new InvalidOperationException($"{EmbeddingWindowVariable} must be a positive token count.");
         }
 
+        int embeddingDimensions = DefaultEmbeddingDimensions;
+
+        string? rawDimensions = environment(EmbeddingDimensionsVariable)?.Trim();
+
+        if (!string.IsNullOrEmpty(rawDimensions)
+            && (!int.TryParse(rawDimensions, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out embeddingDimensions)
+                || embeddingDimensions is < MinimumEmbeddingDimensions or > MaximumEmbeddingDimensions))
+        {
+            throw new InvalidOperationException(
+                $"{EmbeddingDimensionsVariable} must be an integer between {MinimumEmbeddingDimensions} and {MaximumEmbeddingDimensions}.");
+        }
+
         if (!LocalOllamaQualificationGuards.IsLocalOllamaEndpoint(
                 environment(EndpointVariable) ?? DefaultEndpoint,
                 out Uri? endpoint))
@@ -96,6 +118,7 @@ internal sealed record LongRestQualificationOptions(
             defaultModel,
             embeddingModel,
             embeddingWindow,
+            embeddingDimensions,
             endpoint!,
             string.IsNullOrWhiteSpace(results) ? null : Path.GetFullPath(results),
             string.IsNullOrWhiteSpace(receipt) ? null : receipt);

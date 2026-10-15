@@ -28,8 +28,6 @@ internal static class LongRestQualificationConfiguration
 
     public const int ChatContextWindow = 131_072;
 
-    public const int EmbeddingDimensions = 768;
-
     /// <summary>Synthetic prices, so that the budget snapshot's spend is a nonzero figure the test can compare with the traffic it saw.</summary>
     public const decimal InputPricePerMillion = 1000m;
 
@@ -133,7 +131,7 @@ internal static class LongRestQualificationConfiguration
                     {
                         Provider = EmbeddingProviderName,
                         Model = options.EmbeddingModel,
-                        Dimensions = EmbeddingDimensions,
+                        Dimensions = options.EmbeddingDimensions,
                     },
                 },
                 Cost = new CostSettings

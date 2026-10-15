@@ -842,6 +842,7 @@ public sealed class PublishedApphostVerificationScriptTests
                 printf 'long-rest-default-model=%s\n' "${ARCANUM_OLLAMA_LONG_REST_DEFAULT_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'long-rest-embedding-model=%s\n' "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'long-rest-embedding-window=%s\n' "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_WINDOW:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'long-rest-embedding-dimensions=%s\n' "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_DIMENSIONS:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'long-rest-endpoint=%s\n' "${ARCANUM_OLLAMA_LONG_REST_ENDPOINT:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'long-rest-results=%s\n' "${ARCANUM_OLLAMA_LONG_REST_RESULTS:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'long-rest-opt-in=%s\n' "${ARCANUM_RUN_LOCAL_OLLAMA_LONG_REST_QUALIFICATION:-}" >> "${FAKE_DOTNET_LOG:?}"

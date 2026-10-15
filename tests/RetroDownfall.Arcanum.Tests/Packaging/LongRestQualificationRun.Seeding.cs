@@ -137,6 +137,7 @@ internal sealed partial class LongRestQualificationRun
             {
                 throw new TimeoutException(
                     $"The host's Saga extraction wrote no memories within {ExtractionBudget} (count {last}, started at {before}). "
+                    + $"The provider saw {DescribeTraffic(Proxy.All)} (chat requests included in 'other'); requests that failed: {LongRestQualificationChecks.DescribeFailedRequests(Proxy.All)}. "
                     + "This is the harness's seeding model, not Long Rest.");
             }
         }
