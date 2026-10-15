@@ -39,7 +39,8 @@ internal sealed partial class LongRestDiscoveryStore
                 return Result<LongRestHierarchyWork?>.Failure(authority.Error);
             }
 
-            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
+            // A fold read is a step: the frontier page it plans from is read in full just below, so every input of the fold is re-proved here.
+            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, LongRestVerificationDepth.Step, cancellationToken).ConfigureAwait(false);
 
             // Counted as the plan is walked, published only once the cursor it moved is durable.
             long oversize = 0;
@@ -116,13 +117,15 @@ internal sealed partial class LongRestDiscoveryStore
 
                 LongRestAcceptedHierarchySummary? accepted = await ReadAcceptedSummaryAsync(connection, transaction, fold, generation.Recipe, cancellationToken).ConfigureAwait(false);
 
+                ImmutableArray<string> leaves = await ReadSubtreeLeavesAsync(connection, transaction, generation, children, cancellationToken).ConfigureAwait(false);
+
                 await BindCurrentWorkAsync(connection, transaction, fold.Work, cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
                 PublishOversize(oversize);
 
-                return Result<LongRestHierarchyWork?>.Success(new(fold, accepted));
+                return Result<LongRestHierarchyWork?>.Success(new(fold, accepted, leaves));
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -135,6 +138,48 @@ internal sealed partial class LongRestDiscoveryStore
         {
             return Refuse<LongRestHierarchyWork?>(ErrorCodes.LongRest.Unavailable, "The hierarchy plan could not retain its exact source and child bindings.");
         }
+    }
+
+    /// <summary>
+    /// Every leaf of a node's subtree. The edges strictly descend, so a walk of a damaged forest still ends; a child that stands for no leaf at all
+    /// is refused rather than counted as none, because a fold that proves less than it derives from has proved nothing.
+    /// </summary>
+    private const string SubtreeLeavesSql = """
+        WITH RECURSIVE subtree(NodeId, Layer, MemoryId) AS (
+            SELECT NodeId, Layer, MemoryId FROM long_rest_discovery_nodes WHERE GenerationId = $generation AND NodeId = $root
+            UNION
+            SELECT child.NodeId, child.Layer, child.MemoryId FROM subtree
+                JOIN long_rest_discovery_edges edge ON edge.GenerationId = $generation AND edge.ParentNodeId = subtree.NodeId
+                JOIN long_rest_discovery_nodes child ON child.GenerationId = $generation AND child.NodeId = edge.ChildNodeId AND child.Layer < subtree.Layer)
+        SELECT MemoryId FROM subtree WHERE Layer = 0 ORDER BY MemoryId;
+        """;
+
+    private static async Task<ImmutableArray<string>> ReadSubtreeLeavesAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, ImmutableArray<LongRestHierarchyChild> children, CancellationToken cancellationToken)
+    {
+        ImmutableArray<string>.Builder leaves = ImmutableArray.CreateBuilder<string>();
+
+        foreach (LongRestHierarchyChild child in children)
+        {
+            int before = leaves.Count;
+
+            await using SqliteCommand command = Command(connection, transaction, SubtreeLeavesSql,
+                ("$generation", Format(generation.GenerationId)), ("$root", Format(child.NodeId)));
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                leaves.Add(reader.GetString(0));
+            }
+
+            if (leaves.Count == before)
+            {
+                throw new InvalidDataException();
+            }
+        }
+
+        return leaves.ToImmutable();
     }
 
     private static void PublishOversize(long oversize)
@@ -168,7 +213,8 @@ internal sealed partial class LongRestDiscoveryStore
                 return Result<LongRestDiscoveryGeneration>.Failure(authority.Error);
             }
 
-            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, cancellationToken).ConfigureAwait(false);
+            // Publishing closes the build and opens discovery on the corpus as it stands: a seam, so every leaf is re-proved in full.
+            await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, LongRestVerificationDepth.Seam, cancellationToken).ConfigureAwait(false);
 
             await using SqliteCommand proof = Command(connection, transaction, """
                 SELECT NOT EXISTS (
@@ -556,12 +602,29 @@ internal sealed partial class LongRestDiscoveryStore
         }
     }
 
-    private static async Task VerifyFrozenSourcesAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken)
+    /// <summary>
+    /// Re-proves a generation's captured leaves against the live corpus. At a <see cref="LongRestVerificationDepth.Seam"/> that is every leaf,
+    /// read in full; at a <see cref="LongRestVerificationDepth.Step"/> it is the set-based metadata question over every leaf and one rotating
+    /// window of them read in full, which is what bounds how long a divergence no trigger saw can go unnoticed.
+    /// </summary>
+    internal static async Task VerifyFrozenSourcesAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, LongRestVerificationDepth depth, CancellationToken cancellationToken)
     {
         if (!await FrozenSourceMetadataMatchesAsync(connection, transaction, generation, cancellationToken).ConfigureAwait(false))
         {
             throw new InvalidDataException();
+        }
+
+        // A step reads one window, picked by the revision, and a seam pages through every leaf; both list their keys with the same statement.
+        bool window = depth == LongRestVerificationDepth.Step;
+
+        if (window)
+        {
+            LongRestVerificationCounters.ScrubWindow();
+        }
+        else
+        {
+            LongRestVerificationCounters.CorpusPass();
         }
 
         string? cursor = null;
@@ -570,9 +633,7 @@ internal sealed partial class LongRestDiscoveryStore
         {
             List<string> memories = [];
 
-            await using (SqliteCommand command = Command(connection, transaction,
-                "SELECT MemoryId FROM long_rest_discovery_leaves WHERE GenerationId = $generation AND ($cursor IS NULL OR MemoryId > $cursor) ORDER BY MemoryId LIMIT 128;",
-                ("$generation", Format(generation.GenerationId)), ("$cursor", cursor)))
+            await using (SqliteCommand command = LeafKeys(connection, transaction, generation, cursor, window))
             {
                 await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -587,9 +648,11 @@ internal sealed partial class LongRestDiscoveryStore
                 return;
             }
 
-            foreach (string memory in memories)
+            await ReadLeavesAsync(connection, transaction, generation, memories, capability, cancellationToken).ConfigureAwait(false);
+
+            if (window)
             {
-                _ = await ReadFrozenLeafAsync(connection, transaction, generation, memory, capability, cancellationToken).ConfigureAwait(false);
+                return;
             }
 
             cursor = memories[^1];

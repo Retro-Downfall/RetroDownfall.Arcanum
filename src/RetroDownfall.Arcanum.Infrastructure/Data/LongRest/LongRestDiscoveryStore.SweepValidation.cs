@@ -12,7 +12,7 @@ internal sealed partial class LongRestDiscoveryStore
         Guid operation, CancellationToken ct) => ReadGenerationAsync(connection, transaction, "OperationId = $id", operation.ToString("N"), ct);
 
     internal static async Task ValidateSweepGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, CancellationToken ct)
+        LongRestDiscoveryGeneration generation, LongRestMaintenanceCapability? capability, LongRestVerificationDepth depth, CancellationToken ct)
     {
         if (generation.Phase is LongRestSweepPhase.Invalidated or LongRestSweepPhase.Deferred or LongRestSweepPhase.Retired
             || (await ValidateReadAuthorityAsync(generation, capability, ct).ConfigureAwait(false)).IsFailure)
@@ -20,7 +20,7 @@ internal sealed partial class LongRestDiscoveryStore
             throw new InvalidDataException();
         }
 
-        await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, ct).ConfigureAwait(false);
+        await VerifyFrozenSourcesAsync(connection, transaction, generation, capability, depth, ct).ConfigureAwait(false);
     }
 
     internal static Task<LongRestSourceLeaf> ReadSweepLeafAsync(SqliteConnection connection, SqliteTransaction transaction,

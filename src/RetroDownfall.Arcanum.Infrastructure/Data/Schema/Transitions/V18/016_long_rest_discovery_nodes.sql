@@ -21,3 +21,10 @@ CREATE TABLE IF NOT EXISTS long_rest_discovery_nodes (
     CHECK ((SensitivityCode = 0 AND PartitionDigest IS NULL AND ProvenanceJson IS NULL)
         OR (SensitivityCode = 1 AND PartitionDigest IS NOT NULL AND ProvenanceJson IS NOT NULL))
 );
+
+-- A summary node's label is keyed by the node's identity in whatever spelling it was stored, and the label guard proves a node is gone by
+-- lower(replace(NodeId, '-', '')) before it lets the orphan label go. SQLite answers a function-wrapped column only from an index on that
+-- exact expression, so without this one retiring a protected generation read every node once per summary label. The expression has to stay
+-- character for character the shape the predicate has.
+CREATE INDEX IF NOT EXISTS idx_long_rest_nodes_node_norm
+    ON long_rest_discovery_nodes(lower(replace(NodeId, '-', '')));

@@ -9,3 +9,11 @@ CREATE TABLE IF NOT EXISTS long_rest_discovery_edges (
     FOREIGN KEY (GenerationId, ChildNodeId) REFERENCES long_rest_discovery_nodes(GenerationId, NodeId) ON DELETE CASCADE,
     CHECK (ParentNodeId <> ChildNodeId)
 );
+
+-- The label guard also proves that no edge still names the label's node, as parent or as child, and it does so by the normalized
+-- identity: lower(replace(col, '-', '')). Each side needs its own index in that exact shape, or the OR is a scan of every edge.
+CREATE INDEX IF NOT EXISTS idx_long_rest_edges_parent_norm
+    ON long_rest_discovery_edges(lower(replace(ParentNodeId, '-', '')));
+
+CREATE INDEX IF NOT EXISTS idx_long_rest_edges_child_norm
+    ON long_rest_discovery_edges(lower(replace(ChildNodeId, '-', '')));

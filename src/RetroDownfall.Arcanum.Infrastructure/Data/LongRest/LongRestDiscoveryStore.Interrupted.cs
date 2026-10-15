@@ -54,7 +54,8 @@ internal sealed partial class LongRestDiscoveryStore
 
                     if (LongRestAttemptStore.ReadOriginalWork(reader.GetString(18), new((byte[])reader[6])) != work) throw new InvalidDataException();
 
-                    await ValidateAttemptSourceMetadataAsync(connection, transaction, work, reader.GetString(0), ct).ConfigureAwait(false);
+                    // The caller has just re-proved the whole corpus in this transaction, so each send is a step.
+                    await ValidateAttemptSourceMetadataAsync(connection, transaction, work, reader.GetString(0), LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
                     page.Add(new(reader.GetString(0), hash.Value, reader.GetString(7), reader.GetInt64(9), reader.GetInt64(10), checked(reader.GetInt64(15) + 1)));
                 }

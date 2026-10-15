@@ -25,7 +25,9 @@ internal sealed partial class LongRestDiscoveryStore
         {
             SqliteConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
-            await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+            // Discovery only reads, so it takes no writer lock; the sweep that reads and queues work in one transaction calls DiscoverWithinAsync
+            // from inside its own writer transaction instead.
+            await using SqliteTransaction transaction = connection.BeginTransaction(deferred: true);
 
             return await DiscoverWithinAsync(connection, transaction, generationId, anchor, capability, cancellationToken).ConfigureAwait(false);
         }
@@ -137,6 +139,8 @@ internal sealed partial class LongRestDiscoveryStore
                 LongRestSourceLeaf candidate = await ReadFrozenLeafAsync(connection, transaction, generation, hit.MemoryId, capability, cancellationToken).ConfigureAwait(false);
 
                 verified++;
+
+                LongRestVerificationCounters.FtsHitVerification();
 
                 if (!CandidateEligible(candidate))
                 {
@@ -253,6 +257,8 @@ internal sealed partial class LongRestDiscoveryStore
     private static async Task<VerifiedFrozenLeaf> ReadVerifiedFrozenLeafAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, string memory, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken)
     {
+        LongRestVerificationCounters.FullLeafRead();
+
         SourceCoordinate coordinate;
 
         CovenantDigest expected;

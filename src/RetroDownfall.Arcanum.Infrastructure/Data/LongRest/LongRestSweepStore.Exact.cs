@@ -25,7 +25,7 @@ internal sealed partial class LongRestSweepStore
 
         await ValidateClaimAsync(connection, transaction, generation, capability, ct).ConfigureAwait(false);
 
-        await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, generation, capability, ct).ConfigureAwait(false);
+        await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, generation, capability, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         string unit;
 
@@ -58,7 +58,7 @@ internal sealed partial class LongRestSweepStore
             return await ReadAsync(connection, transaction, expected.OperationId, ct).ConfigureAwait(false) ?? throw new InvalidDataException();
         }
 
-        _ = await RequireGenerationAsync(connection, transaction, expected, capability, ct).ConfigureAwait(false);
+        _ = await RequireGenerationAsync(connection, transaction, expected, capability, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         LongRestSweepWork current = await ResolveAsync(connection, transaction, generation, expected.Revision, work.ItemId, capability, ct).ConfigureAwait(false);
 

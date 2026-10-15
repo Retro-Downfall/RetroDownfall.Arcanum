@@ -12,3 +12,8 @@ CREATE TABLE IF NOT EXISTS long_rest_accepted_summaries (
     EvidenceJson TEXT NOT NULL CHECK (length(CAST(EvidenceJson AS BLOB)) BETWEEN 2 AND 1048576),
     CreatedAtUtc TEXT NOT NULL
 );
+
+-- The label guard proves that no accepted summary still belongs to the label's node by the normalized identity: lower(replace(NodeId, '-', '')),
+-- in the exact shape the predicate has.
+CREATE INDEX IF NOT EXISTS idx_long_rest_accepted_summaries_node_norm
+    ON long_rest_accepted_summaries(lower(replace(NodeId, '-', '')));

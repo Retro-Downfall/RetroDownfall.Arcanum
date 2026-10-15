@@ -71,8 +71,12 @@ internal sealed partial class LongRestLiveFenceReader
         }
     }
 
+    /// <summary>
+    /// Proves that the generation still holds, to the depth the caller names. <paramref name="inputs"/> are the memories the calling step
+    /// is about to act on: each is re-proved in full, whatever the depth, so the leaves a send is built from are never taken on trust.
+    /// </summary>
     internal async Task<Result> ValidateGenerationAsync(LongRestDiscoveryGeneration expected, LongRestMaintenanceCapability? capability,
-        DateTimeOffset now, CancellationToken ct)
+        DateTimeOffset now, LongRestVerificationDepth depth, IReadOnlyCollection<string>? inputs, CancellationToken ct)
     {
         Result<LongRestSweepFence> before = await CaptureAsync(expected.Fence.CanonicalScope, expected.Fence.Configuration,
             expected.Fence.InsertionHighWatermark, ct).ConfigureAwait(false);
@@ -114,7 +118,9 @@ internal sealed partial class LongRestLiveFenceReader
                     }
                 }
 
-                await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, current, capability, ct).ConfigureAwait(false);
+                await LongRestDiscoveryStore.ValidateSweepGenerationAsync(connection, transaction, current, capability, depth, ct).ConfigureAwait(false);
+
+                await LongRestDiscoveryStore.ReadLeavesAsync(connection, transaction, current, inputs ?? [], capability, ct).ConfigureAwait(false);
             }
 
             Result<LongRestSweepFence> after = await CaptureAsync(expected.Fence.CanonicalScope, expected.Fence.Configuration,
@@ -141,7 +147,8 @@ internal sealed partial class LongRestLiveFenceReader
 
             if (current != expected || current.Phase is LongRestSweepPhase.Invalidated or LongRestSweepPhase.Deferred or LongRestSweepPhase.Retired) return Unavailable();
 
-            await LongRestDiscoveryStore.VerifyFrozenMetadataAsync(connection, transaction, current, ct).ConfigureAwait(false);
+            // Issuing a capability over a retained generation is a seam.
+            await LongRestDiscoveryStore.VerifyFrozenMetadataAsync(connection, transaction, current, LongRestVerificationDepth.Seam, ct).ConfigureAwait(false);
 
             return Result.Success();
         }

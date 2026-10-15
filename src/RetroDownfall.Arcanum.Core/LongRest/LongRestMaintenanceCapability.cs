@@ -26,6 +26,8 @@ public sealed class LongRestMaintenanceCapability
 
     private int _consumed;
 
+    private int _entrySeamProven;
+
     private LongRestSweepScope _operationScope;
 
     private LongRestMaintenanceCapability(Guid operationId, ArcanumInvocationContext invocation, SessionTurnClaimLease claim, CanonicalCampaignContext scope, CovenantTurnLease authority, LongRestConfigurationStamp configuration, CancellationToken revocation, TimeProvider timeProvider)
@@ -48,6 +50,15 @@ public sealed class LongRestMaintenanceCapability
     }
 
     public Guid OperationId { get; }
+
+    /// <summary>
+    /// Whether the run that holds this capability still owes the whole-corpus recompute that its first unit performs. A protected sweep is
+    /// resumed without a capability to read content with, so its resume entry can only re-prove metadata; the first unit under the capability
+    /// re-proves every leaf in full before anything is sent, and then marks it done. A refused first unit leaves it owed.
+    /// </summary>
+    internal bool EntrySeamPending => Volatile.Read(ref _entrySeamProven) == 0;
+
+    internal void MarkEntrySeamProven() => Volatile.Write(ref _entrySeamProven, 1);
 
     public ArcanumInvocationContext Invocation { get; }
 

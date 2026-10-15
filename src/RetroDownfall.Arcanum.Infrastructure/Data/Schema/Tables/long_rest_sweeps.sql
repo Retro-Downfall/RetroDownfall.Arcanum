@@ -19,3 +19,10 @@ CREATE TABLE IF NOT EXISTS long_rest_sweeps (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_long_rest_sweep_active_scope
 ON long_rest_sweeps(ScopeKindCode, COALESCE(CampaignId, ''), COALESCE(hex(PartitionDigest), ''))
 WHERE PhaseCode NOT IN (6, 7, 9);
+
+-- The completed-replay lookup runs on every eligible Session turn: it asks for the sweeps of one scope, one partition and one phase (the
+-- completed ones), newest generation first. The active-scope index above is partial and excludes exactly those rows, so without this one
+-- the lookup started from every long-rest operation the installation ever ran. The phase sits before the partition so the whole-scope
+-- form, which names no partition, still narrows by phase.
+CREATE INDEX IF NOT EXISTS idx_long_rest_sweeps_scope_phase
+    ON long_rest_sweeps(ScopeKindCode, CampaignId, PhaseCode, PartitionDigest);

@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -250,6 +252,68 @@ public sealed partial class LongRestHierarchyTests
         Assert.Equal(1, h.SummarySends);
 
         Assert.Equal(0, h.EmbeddingSends);
+    }
+
+    /// <summary>
+    /// A request lists the first few leaves of each child, but the summary it asks for, and the embedding of that summary after it, derive from
+    /// every leaf under the children. The fold names all of them, so the gates in front of its sends can re-prove each one.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_fold_names_every_leaf_under_its_children_however_deep()
+    {
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+        for (int index = 0; index < 300; index++)
+        {
+            await h.SeedAsync($"leaf-{index:D4}", $"observation {index:D4} about orchard apple harvest");
+        }
+
+        LongRestDiscoveryGeneration generation = await h.CaptureAsync();
+
+        int deepest = 0;
+
+        bool beyondTheRequest = false;
+
+        while (LongRestSweepHarness.Require(await h.Store.ReadNextFoldAsync(generation.GenerationId, null, CancellationToken.None)) is { } work)
+        {
+            List<string> expected = [];
+
+            foreach (LongRestHierarchyChild child in work.Fold.Children)
+            {
+                await using SqliteCommand walk = h.Connection.CreateCommand();
+
+                walk.CommandText = """
+                    WITH RECURSIVE subtree(NodeId) AS (
+                        SELECT $root UNION ALL SELECT edge.ChildNodeId FROM long_rest_discovery_edges edge JOIN subtree ON edge.ParentNodeId = subtree.NodeId)
+                    SELECT node.MemoryId FROM subtree JOIN long_rest_discovery_nodes node ON node.NodeId = subtree.NodeId WHERE node.Layer = 0;
+                    """;
+
+                walk.Parameters.AddWithValue("$root", child.NodeId.ToString("D").ToUpperInvariant());
+
+                await using SqliteDataReader reader = await walk.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    expected.Add(reader.GetString(0));
+                }
+            }
+
+            Assert.Equal(expected.Order(StringComparer.Ordinal), work.Leaves.Order(StringComparer.Ordinal));
+
+            Assert.Equal(work.Leaves.Length, work.Leaves.Distinct().Count());
+
+            deepest = Math.Max(deepest, work.Fold.Layer);
+
+            beyondTheRequest |= work.Leaves.Length > work.Fold.Children.Sum(static child => child.ExpandedTargets.Length);
+
+            LongRestAcceptedHierarchySummary summary = await h.SummaryAsync(work);
+
+            LongRestSweepHarness.Require(await h.Store.CommitFoldAsync(await h.EmbeddingAsync(work, summary), null, CancellationToken.None));
+        }
+
+        Assert.True(deepest >= 3, $"The forest is {deepest} layers deep, so no fold has a child whose subtree is deeper than its request lists.");
+
+        Assert.True(beyondTheRequest, "No fold stood for more leaves than its request lists.");
     }
 
     [SkippableFact]

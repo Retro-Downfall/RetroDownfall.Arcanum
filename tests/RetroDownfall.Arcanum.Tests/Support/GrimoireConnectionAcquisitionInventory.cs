@@ -1145,7 +1145,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestAttemptStore.cs", "LongRestAttemptStore", "WithinAsync(2)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestAttemptStore.cs", "LongRestAttemptStore", "RunAsync(3)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1166,7 +1166,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "ValidateGenerationAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestLiveFenceReader.Stored.cs", "LongRestLiveFenceReader", "ValidateGenerationAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1208,7 +1208,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.cs", "LongRestSweepStore", "WithinAsync(2)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.cs", "LongRestSweepStore", "RunAsync(3)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

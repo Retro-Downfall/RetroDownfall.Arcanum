@@ -351,7 +351,7 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
 
     public async Task<Result> ValidateAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct)
     {
-        Result<LongRestDispatchAttempt> result = await WithinAsync(async (connection, transaction) =>
+        Result<LongRestDispatchAttempt> result = await WithinReadAsync(async (connection, transaction) =>
         {
             string unit = await CurrentUnitAsync(connection, transaction, attempt.Work, ct).ConfigureAwait(false);
 
@@ -411,7 +411,8 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
 
         await reader.DisposeAsync().ConfigureAwait(false);
 
-        await LongRestDiscoveryStore.ValidateAttemptSourceMetadataAsync(connection, transaction, work, unit, ct).ConfigureAwait(false);
+        // Every attempt operation is a step: the unit's own inputs are re-proved exactly, and the corpus is proved at the seams around it.
+        await LongRestDiscoveryStore.ValidateAttemptSourceMetadataAsync(connection, transaction, work, unit, LongRestVerificationDepth.Step, ct).ConfigureAwait(false);
 
         return unit;
     }
@@ -467,7 +468,16 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
             reader.IsDBNull(21) ? null : reader.GetString(21));
     }
 
-    private async Task<Result<T>> WithinAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct)
+    // Every write takes the writer lock up front, so it either owns the database for the whole of its proof or learns at once that it does not.
+    private Task<Result<T>> WithinAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct) =>
+        RunAsync(action, false, ct);
+
+    // A transaction that only reads takes no writer lock: WAL gives it one consistent snapshot, and it neither waits for a writer nor holds
+    // one up. Only a statement that proves without changing anything may use it; anything that writes stays on WithinAsync.
+    private Task<Result<T>> WithinReadAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, CancellationToken ct) =>
+        RunAsync(action, true, ct);
+
+    private async Task<Result<T>> RunAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, bool deferred, CancellationToken ct)
     {
         try
         {
@@ -480,7 +490,16 @@ internal sealed partial class LongRestAttemptStore(ArcanumDbContext db, TimeProv
                     await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
                 }
 
-                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+                await using SqliteTransaction transaction = connection.BeginTransaction(deferred: deferred);
+
+                if (deferred)
+                {
+                    LongRestVerificationCounters.ReadTransaction();
+                }
+                else
+                {
+                    LongRestVerificationCounters.WriterTransaction();
+                }
 
                 T result = await action(connection, transaction).ConfigureAwait(false);
 
