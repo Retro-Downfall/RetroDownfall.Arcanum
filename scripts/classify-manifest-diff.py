@@ -13,7 +13,8 @@ Input
   --regenerated   the manifest after it
   --git-base/--git-head/--repo
                   the source files changed since the base (git diff --name-only BASE HEAD -- src); --edited-sources FILE
-                  reads the same list from a file, one path per line
+                  reads the same list from a file, one path per line. --git-base also lets the script read a source file at
+                  the two revisions, which the class r and the rules that read the source need; without it they explain nothing.
   --parity        optional. The manifest the same checker renders over the BASE source (the Old-Source Parity run: the
                   candidate checker with src/ swapped back to the base). With it, the cause of every delta row is known by
                   construction (see "Stages") instead of being inferred.
@@ -29,8 +30,10 @@ Classes (the first that applies; the order is the order below)
   a         the row's own site is in an edited source
   b         its Work or Effect capsule resolves to an acquisition, group or Root Lease Formal site in an edited source (in the
             manifest that carries the row, or in the one that carries the row it is paired with)
-  r         (only with --parity) the site and its frames are all in unedited sources, and the source alone introduced or removed
-            the row: the edit is on the call chain that reaches it
+  r         (only with --parity) the source alone introduced or removed the row, its site and frames are all in unedited sources,
+            and a REACHED_THROUGH entry names the edited call that reaches it: the entry's caller is an edited source whose text
+            gained (for an added row) or lost (for a removed one) the entry's marker between the base and the head. A row of
+            this kind with no entry, or whose marker did not change, is d: the tool does not infer a call chain
   c         introduced or removed by a named checker rule of this branch: the row matches the mechanical predicate of one rule in
             RULES below (with --parity, only a row that the checker alone introduced or removed is tested, and it is tested
             before any source class, so a row of an edited file that the checker yields over the unchanged base source is
@@ -46,17 +49,21 @@ row that an edit and a rule could both explain is credited to the edit and a row
 The rules (see RULES; each names the DESIGN paragraph that states its lane)
   interceptor-and-state-handler-callbacks   an authored EF interceptor callback, the state handler it subscribes or the drain it
                                             reaches, entered at the EF operation that raises it
-  base-constructor-initializers             the `: base(...)` constructor of an authored FileStream or Stream subclass
+  base-constructor-initializers             the `: base(...)` constructor of an authored FileStream or Stream subclass, at a
+                                            member the table below lists, whose source declares the subclass
   runtime-type-dispatch                     a call through an interface or abstract slot entering the implementation of the
                                             receiver's runtime type (the reviewed CredentialMirror set included)
   lease-receiver-proof                      an Effect withdrawn from a site whose Work is unchanged, and the group site whose
                                             receiver fails the proof
-  stream-disposal-by-origin                 the Dispose of an in-memory or database stream, no longer the abstract Stream.Dispose
+  stream-disposal-by-origin                 the Dispose of a stream that the member's own source declares as an in-memory or a
+                                            database stream and no file-backed one, no longer the abstract Stream.Dispose
 
-Invariants of a regeneration, checked whatever the labels are: no ProviderCall row is added without a Work and an Effect capsule
-and the Long Rest roots hold none; a root the committed manifest did not have is a Long Rest root; every root of the committed
-manifest still has rows; the Long Rest roots admit the Long Rest kind and only the handoff root reaches a provider; every Root
-Lease Formal row names a root that a Lease-Handoff binding row ties to its caller.
+Invariants of a regeneration, checked whatever the labels are: no ProviderCall row is added without a Work and an Effect capsule,
+the ProviderCall rows that have neither are the reviewed set (each under a root whose authority needs no Work, see
+UNFRAMED_PROVIDER_CALL_ROOTS), and the Long Rest roots hold none; no ProviderCall row is removed unless its own file was edited,
+a rule explains it or a ProviderCall row with both frames replaces it at the same site; a root the committed manifest did not have
+is a Long Rest root; every root of the committed manifest still has rows; the Long Rest roots admit the Long Rest kind and only
+the handoff root reaches a provider; every Root Lease Formal row names a root that a Lease-Handoff binding row ties to its caller.
 
 Exit status: 0 when no row is unexplained, 1 otherwise, 2 for an unreadable input.
 """
@@ -72,7 +79,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable, NamedTuple
+from typing import Callable, NamedTuple, Protocol
 
 HEADER = "# arcanum-hosted-producer-capsules v1"
 
@@ -182,6 +189,101 @@ def read_manifest(path: str, name: str) -> Manifest:
         raise ManifestError(f"{name}: {error}") from error
 
 
+# --- The source at the two revisions ---------------------------------------------------------------------------------------------
+#
+# Two things the classifier cannot read off a manifest row need the text of a source file: that an edit put a call on the chain that
+# reaches a row (class r), and that the member a rule names declares what the rule says it does. Both read the file at the base
+# and at the head, and a classifier run without a revision pair reads nothing, so it explains nothing of either kind.
+
+
+class SourceTexts(Protocol):
+    def base(self, path: str) -> str | None: ...
+
+    def head(self, path: str) -> str | None: ...
+
+
+class GitSourceTexts:
+    """The text of a repository file at two revisions, or None where the file does not exist at one."""
+
+    def __init__(self, repo: str, base: str, head: str) -> None:
+        self.repo = repo
+        self.revisions = {"base": base, "head": head}
+        self.cache: dict[tuple[str, str], str | None] = {}
+
+    def read(self, which: str, path: str) -> str | None:
+        key = (which, path)
+
+        if key not in self.cache:
+            result = subprocess.run(
+                ["git", "-C", self.repo, "show", f"{self.revisions[which]}:{path}"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.cache[key] = result.stdout if result.returncode == 0 else None
+
+        return self.cache[key]
+
+    def base(self, path: str) -> str | None:
+        return self.read("base", path)
+
+    def head(self, path: str) -> str | None:
+        return self.read("head", path)
+
+
+def member_bodies(text: str, member: str) -> list[str]:
+    """The text of every method, local function or constructor named `member` that has a body in a C# source.
+
+    A textual reading and no more: a declaration is a line that opens with optional attributes and modifiers, then a type, then
+    the name and a parameter list, and is followed by a block or an expression body. A call, an abstract declaration and an
+    interface member have neither and are skipped. The caller asks only whether the text contains a declaration, so a body that
+    is found twice (an overload) is a body that is searched twice.
+    """
+    declaration = re.compile(
+        r"(?m)^[ \t]*(?:\[[^\]]*\]\s*)*(?:(?:public|private|internal|protected|static|async|unsafe|override|virtual|sealed|partial|extern|readonly|new)\s+)*"
+        r"[\w<>\[\],.?()\s]*?\b" + re.escape(member) + r"\s*(?:<[^>\n]*>)?\s*\("
+    )
+
+    bodies: list[str] = []
+
+    for match in declaration.finditer(text):
+        position, depth = match.end(), 1
+
+        while position < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[position], 0)
+            position += 1
+
+        start = position
+
+        while start < len(text) and text[start] not in "{;" and text[start : start + 2] != "=>":
+            start += 1
+
+        if start >= len(text) or text[start] == ";":
+            continue
+
+        if text.startswith("=>", start):
+            end = text.find(";", start)
+
+            bodies.append(text[match.start() : end + 1] if end >= 0 else text[match.start() :])
+
+            continue
+
+        depth, end = 0, start
+
+        while end < len(text):
+            depth += {"{": 1, "}": -1}.get(text[end], 0)
+
+            if depth == 0:
+                break
+
+            end += 1
+
+        bodies.append(text[match.start() : end + 1])
+
+    return bodies
+
+
 # --- The named checker rules of this branch -------------------------------------------------------------------------------------
 #
 # A rule is a footprint: what one lane of the checker makes the discovery see, or stop seeing, over the unchanged base source. Its
@@ -224,22 +326,75 @@ SLOT_DISPATCH_TYPES = frozenset(
     )
 )
 
+@dataclasses.dataclass(frozen=True)
+class BaseConstructorSite:
+    """A member that builds an authored FileStream or Stream subclass, whose `: base(...)` initializer is a site the census lists."""
+
+    source_path: str
+    member: str
+    subclass: str
+    declared_in: str
+    base: str  # FileStream or Stream
+
+
 # The base constructor an authored FileStream or Stream subclass runs from its `: base(...)` initializer. No operation of the
-# constructor body binds it, so it is a site only because the census lists it.
-BASE_CONSTRUCTOR_CALLEES = frozenset(("System.IO.FileStream..ctor", "System.IO.Stream..ctor"))
+# constructor body binds it, so it is a site only because the census lists it, at the member that builds the subclass. Each entry
+# is checked against the source: the member's file names the subclass, and the subclass is declared as deriving from the base.
+# A direct `new FileStream(...)` is no entry: it is a call the census always listed, so a row for one is not this rule's.
+BASE_CONSTRUCTOR_SITES = (
+    BaseConstructorSite(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/SecureFileReader.cs",
+        "TryOpenRegularFile",
+        "SecureRegularFileStream",
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/SecureFileReader.cs",
+        "FileStream",
+    ),
+    BaseConstructorSite(
+        "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs",
+        "GetStream",
+        "RelativeFileStream",
+        "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionJournalFilePrimitives.cs",
+        "FileStream",
+    ),
+    BaseConstructorSite(
+        "src/RetroDownfall.Arcanum.Infrastructure/Hosting/DaemonProcessRunner.cs",
+        "RunAsync",
+        "CappedOutputStream",
+        "src/RetroDownfall.Arcanum.Infrastructure/Hosting/CappedOutputStream.cs",
+        "Stream",
+    ),
+)
 
 STREAM_DISPOSE = "System.IO.Stream.Dispose"
+
+# The disposed stream a member declares, read from its own text. An in-memory stream is a MemoryStream declared by its type or
+# built by `new MemoryStream`; a database stream is the stream a data reader's GetStream returns. A member that also touches a
+# file-backed stream is not excused by the other one.
+IN_MEMORY_STREAM_USINGS = (
+    re.compile(r"\busing\s+(?:System\.IO\.)?MemoryStream\s+\w+\s*="),
+    re.compile(r"\busing\s+var\s+\w+\s*=\s*new\s+(?:System\.IO\.)?MemoryStream\b"),
+    re.compile(r"\busing\s+(?:System\.IO\.)?Stream\s+\w+\s*=\s*\w+\.GetStream\("),
+)
+
+FILE_BACKED_STREAM = re.compile(r"\b(?:FileStream|File\.Open\w*|File\.Create\w*|OpenHandle)\b")
 
 GROUP_CALLEE_SUFFIX = ".TryBeginExternalEffectGroup"
 
 
 class Context:
-    """The manifests a rule may compare a row with."""
+    """The manifests, and the source revisions, a rule may compare a row with."""
 
-    def __init__(self, committed: Manifest, regenerated: Manifest, parity: Manifest | None) -> None:
+    def __init__(
+        self,
+        committed: Manifest,
+        regenerated: Manifest,
+        parity: Manifest | None,
+        sources: SourceTexts | None = None,
+    ) -> None:
         self.committed = committed
         self.regenerated = regenerated
         self.parity = parity
+        self.sources = sources
 
     @staticmethod
     def same_site(manifest: Manifest | None, row: Row) -> list[Row]:
@@ -267,7 +422,29 @@ def is_slot_dispatch(row: Row, side: str, context: Context) -> bool:
 
 
 def is_base_constructor(row: Row, side: str, context: Context) -> bool:
-    return row.kind in ("FileSystemEffect", "FileSystemRead") and row.callee in BASE_CONSTRUCTOR_CALLEES
+    """The base constructor of a subclass the table lists, at the member the table lists, with the source declaring the subclass."""
+    if row.kind not in ("FileSystemEffect", "FileSystemRead") or context.sources is None:
+        return False
+
+    for entry in BASE_CONSTRUCTOR_SITES:
+        if (row.source_path, row.member, row.callee) != (entry.source_path, entry.member, f"System.IO.{entry.base}..ctor"):
+            continue
+
+        member_text = context.sources.head(entry.source_path)
+        declaring_text = context.sources.head(entry.declared_in)
+
+        if member_text is None or declaring_text is None:
+            continue
+
+        derives = re.search(
+            r"\bclass\s+" + re.escape(entry.subclass) + r"\s*(?:\([^)]*\))?\s*:\s*(?:System\.IO\.)?" + entry.base + r"\b",
+            declaring_text,
+        )
+
+        if derives and re.search(r"\b" + re.escape(entry.subclass) + r"\b", "\n".join(member_bodies(member_text, entry.member))):
+            return True
+
+    return False
 
 
 def withdraws_effect(row: Row, side: str, context: Context) -> bool:
@@ -286,12 +463,26 @@ def withdraws_effect(row: Row, side: str, context: Context) -> bool:
 
 
 def is_stream_disposal_by_origin(row: Row, side: str, context: Context) -> bool:
-    """The disposal of a stream the checker now resolves to the exact in-memory or database stream it came from."""
-    return (
-        row.kind == "FileSystemEffect"
-        and row.callee == STREAM_DISPOSE
-        and context.parity is not None
-        and not context.same_site(context.parity, row)
+    """The disposal of a stream the checker now resolves to the exact in-memory or database stream it came from.
+
+    The parity traversal no longer has the row, and the member's own source declares an in-memory or a database stream and
+    touches no file-backed one, so the abstract Stream.Dispose the checker assumed before has nothing left to be a file effect of.
+    """
+    if (
+        row.kind != "FileSystemEffect"
+        or row.callee != STREAM_DISPOSE
+        or context.parity is None
+        or context.sources is None
+        or context.same_site(context.parity, row)
+    ):
+        return False
+
+    text = context.sources.head(row.source_path)
+
+    bodies = member_bodies(text, row.member) if text is not None else []
+
+    return any(
+        any(pattern.search(body) for pattern in IN_MEMORY_STREAM_USINGS) and not FILE_BACKED_STREAM.search(body) for body in bodies
     )
 
 
@@ -308,7 +499,8 @@ RULES: tuple[Rule, ...] = (
         "base-constructor-initializers",
         "Implicit Call Census (constructor initializers)",
         "+",
-        "the `: base(...)` constructor of an authored FileStream or Stream subclass is a site the census lists",
+        "the `: base(...)` constructor of an authored FileStream or Stream subclass is a site the census lists, at the member that "
+        "builds the subclass",
         is_base_constructor,
     ),
     Rule(
@@ -331,8 +523,8 @@ RULES: tuple[Rule, ...] = (
         "stream-disposal-by-origin",
         "Implicit Call Census (using disposals); EF and ADO.NET semantics",
         "-",
-        "the Dispose of an in-memory or database stream is no filesystem effect; the abstract Stream.Dispose the checker "
-        "assumed before is gone",
+        "the Dispose of an in-memory or database stream the member declares is no filesystem effect; the abstract Stream.Dispose "
+        "the checker assumed before is gone",
         is_stream_disposal_by_origin,
     ),
 )
@@ -340,6 +532,84 @@ RULES: tuple[Rule, ...] = (
 
 def matching_rules(row: Row, side: str, context: Context) -> list[Rule]:
     return [rule for rule in RULES if rule.matches(row, side, context)]
+
+
+# --- Class r: a row an edited call reaches --------------------------------------------------------------------------------------
+#
+# A row whose site and frames are all in unedited sources, which only the source (not the checker) added or removed, is on the call
+# chain of an edit. The classifier does not search for that chain. It is explained only by an entry here, which names the row's
+# site and root, the edited file whose call reaches it, and the text that call is spelled with; the entry holds only while that
+# file is in the edit list and the text appears in it at the head and not at the base (for a removed row: at the base and not at
+# the head). Every entry is a reviewed claim about one call chain, with the reason, and a test pins that the call is still there.
+
+
+@dataclasses.dataclass(frozen=True)
+class Reach:
+    root_type: str
+    operation: str
+    source_path: str
+    member: str
+    callee: str
+    side: str  # "+" the edit added the call, "-" it removed it
+    caller: str
+    marker: str
+    reason: str
+
+    def covers(self, row: Row, side: str) -> bool:
+        return side == self.side and (row.root_type, row.authority_operation_id, row.source_path, row.member, row.callee) == (
+            self.root_type,
+            self.operation,
+            self.source_path,
+            self.member,
+            self.callee,
+        )
+
+
+REACHED_THROUGH = (
+    Reach(
+        "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService",
+        "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync",
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestorePhysicalTopology.cs",
+        "ProveAbsent",
+        "System.IO.Directory.EnumerateFileSystemEntries",
+        "+",
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.cs",
+        "BackupRestorePhysicalTopology.Reconcile(",
+        "the Covenant coordinator's restore now reconciles the physical topology (two calls), and Reconcile proves each node "
+        "absent with ProveAbsent",
+    ),
+)
+
+
+def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceTexts | None) -> tuple[Reach | None, str]:
+    """The entry that explains the row as class r, or None and why not."""
+    candidates = [entry for entry in REACHED_THROUGH if entry.covers(row, side)]
+
+    if not candidates:
+        return None, "no reviewed call chain reaches this site"
+
+    if sources is None:
+        return None, "the call chain needs the source revisions (--git-base)"
+
+    problems: list[str] = []
+
+    for entry in candidates:
+        if entry.caller not in edited:
+            problems.append(f"{entry.caller} is not an edited source")
+
+            continue
+
+        head, base = sources.head(entry.caller), sources.base(entry.caller)
+
+        in_head = head is not None and entry.marker in head
+        in_base = base is not None and entry.marker in base
+
+        if (side == "+" and in_head and not in_base) or (side == "-" and in_base and not in_head):
+            return entry, entry.reason
+
+        problems.append(f"{entry.marker!r} did not {'appear' if side == '+' else 'disappear'} in {entry.caller}")
+
+    return None, "; ".join(problems)
 
 
 # --- Classification -------------------------------------------------------------------------------------------------------------
@@ -350,7 +620,7 @@ CLASS_TITLES = {
     "b-format": "the Effect id differs only by its @lease: marker",
     "a": "own site in an edited source",
     "b": "Work or Effect capsule names an edited acquisition, group or formal site",
-    "r": "unedited site and frames reached through an edited call chain (parity)",
+    "r": "unedited site and frames reached through a reviewed edited call (parity)",
     "c": "introduced or removed by a named checker rule",
     "d": "UNEXPLAINED",
 }
@@ -383,6 +653,7 @@ def classify(
     regenerated: Manifest,
     edited: frozenset[str],
     parity: Manifest | None = None,
+    sources: SourceTexts | None = None,
 ) -> list[Labelled]:
     added = list((regenerated.counter - committed.counter).elements())
     removed = list((committed.counter - regenerated.counter).elements())
@@ -407,7 +678,7 @@ def classify(
 
     labelled: list[Labelled] = []
 
-    context = Context(committed, regenerated, parity)
+    context = Context(committed, regenerated, parity, sources)
 
     for side, row in delta:
         manifest = regenerated if side == "+" else committed
@@ -458,7 +729,13 @@ def classify(
             elif reference_edit:
                 labelled.append(Labelled(side, row, "b", stage=stage))
             else:
-                labelled.append(Labelled(side, row, "r", stage=stage))
+                reach, why = prove_reach(row, side, edited, sources)
+
+                labelled.append(
+                    Labelled(side, row, "r", stage=stage, detail=why)
+                    if reach is not None
+                    else Labelled(side, row, "d", stage=stage, detail=why)
+                )
         else:
             labelled.append(rule_label(side, row, stage, context))
 
@@ -488,18 +765,103 @@ def is_long_rest_root(root: tuple[str, str]) -> bool:
     return "LongRest" in root[0] or "LongRest" in root[1]
 
 
-def check_invariants(committed: Manifest, regenerated: Manifest) -> list[Invariant]:
+@dataclasses.dataclass(frozen=True)
+class UnframedRoot:
+    """A root that is judged without a Work frontier by design, and so holds ProviderCall rows with no Work."""
+
+    root_type: str
+    operation: str  # the authority operation id without the digest a selection root carries
+    authority: str  # HostedProducerAuthorityKind
+    reason: str
+
+
+# The ProviderCall rows of the committed manifest that have no Work, an Effect or neither, are all under these roots. They are not
+# Long Rest roots, this delivery does not touch them, and the regeneration leaves them byte for byte as they were. Each root is
+# declared in the checker with an authority that needs no Work from a lease the root holds; the reason is that declaration's.
+UNFRAMED_PROVIDER_CALL_ROOTS = (
+    UnframedRoot(
+        "PidFileService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.PidFileService.StartAsync",
+        "PreReadinessStartup",
+        "the PID-file startup reads the process table before readiness, under the awaited process PID-file startup",
+    ),
+    UnframedRoot(
+        "LongRunningOperationStartupHostedService",
+        "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:"
+        "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0",
+        "PreReadinessStartup",
+        "the readiness reconciliation pass runs before readiness under its awaited budget; its recovery handler cancels a remote task",
+    ),
+    UnframedRoot(
+        "McpServerBootstrapHostedService",
+        "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StartAsync::call:"
+        "RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0",
+        "PreReadinessStartup",
+        "the blocking branch of the bootstrap awaits the global MCP initialization before readiness",
+    ),
+    UnframedRoot(
+        "McpServerBootstrapHostedService",
+        "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StopAsync",
+        "StoppedHost",
+        "host shutdown joins the manager-owned initialization and stops the connections",
+    ),
+    UnframedRoot(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync",
+        "OwnerBoundMaintenance",
+        "the reset spawns and stops the daemon process under the generation-bound maintenance lock and an authenticated reset owner",
+    ),
+    UnframedRoot(
+        "WorkspaceIndexingService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.QueueIndexNow",
+        "FiniteRequest",
+        "a bounded request that coalesces one tracked, self-admitted workspace handle: the handle's own pass acquires its lease "
+        "(its TryAcquireWorkLease row is under this root), so the request holds the pass's group as an Effect and no Work of its own",
+    ),
+    UnframedRoot(
+        "WorkspaceIndexingService",
+        "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.RegisterWorkspace",
+        "FiniteRequest",
+        "a bounded request that publishes one tracked, self-admitted workspace handle: as QueueIndexNow, the request holds the pass's "
+        "group as an Effect and no Work of its own",
+    ),
+)
+
+
+def selection_root(row: Row) -> tuple[str, str]:
+    """A selection root names its call and then the digest of the selected source after a tilde; the manifest pins the digest."""
+    return (row.root_type, row.authority_operation_id.split("~")[0])
+
+
+def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[Labelled] | None = None) -> list[Invariant]:
     """The facts about a regeneration that hold whatever its rows are labelled."""
 
     def unframed(manifest: Manifest) -> set[Row]:
         return {row for row in manifest.rows if row.kind == "ProviderCall" and "-" in (row.work, row.effect)}
 
-    # A lifecycle or recovery root (StartAsync, StopAsync, a startup pass) is judged without a Work frontier by design, so
-    # the committed manifest already holds unframed ProviderCall rows. The regeneration must not add one, and the Long Rest
-    # roots, which are ordinary hosted work, must hold none.
+    # A lifecycle, maintenance or request root is judged without a Work frontier by design, so the committed manifest already holds
+    # unframed ProviderCall rows. They sit under the reviewed roots, the regeneration must not add one, and the Long Rest roots,
+    # which are ordinary hosted work, must hold none.
     added_unframed = sorted(unframed(regenerated) - unframed(committed))
 
     long_rest_unframed = [row for row in unframed(regenerated) if is_long_rest_root(row.root)]
+
+    reviewed = {(entry.root_type, entry.operation) for entry in UNFRAMED_PROVIDER_CALL_ROOTS}
+
+    unreviewed_unframed = sorted(row for row in unframed(regenerated) if selection_root(row) not in reviewed)
+
+    # No ProviderCall row goes away unexplained: its own file was edited, a rule explains it, or a row with both frames replaced it.
+    replaced_sites = {
+        item.row.site
+        for item in (labelled or [])
+        if item.side == "+" and item.row.kind == "ProviderCall" and "-" not in (item.row.work, item.row.effect)
+    }
+
+    vanished_provider_calls = [
+        item.row
+        for item in (labelled or [])
+        if item.side == "-" and item.row.kind == "ProviderCall" and item.label not in ("a", "c") and item.row.site not in replaced_sites
+    ]
 
     old_roots = {row.root for row in committed.rows}
     new_roots = {row.root for row in regenerated.rows}
@@ -531,12 +893,22 @@ def check_invariants(committed: Manifest, regenerated: Manifest) -> list[Invaria
         if is_long_rest_root(row.root) and row.kind == "ProviderCall" and row.root not in handoff_roots
     ]
 
+    def describe(row: Row) -> str:
+        return f"{row.root_type}|{row.authority_operation_id}|{row.callee}|{row.member}"
+
     return [
         Invariant(
             "provider-call-frames",
-            "the regeneration adds no ProviderCall row without a Work and an Effect capsule, and the Long Rest roots hold none",
-            [f"{row.root_type}|{row.authority_operation_id}|{row.callee}|{row.member}" for row in added_unframed]
-            + [f"{row.root_type}|{row.authority_operation_id}|{row.callee}|{row.member}" for row in long_rest_unframed],
+            "no ProviderCall row is added without a Work and an Effect capsule, the ones that have neither sit under the reviewed "
+            "roots, and the Long Rest roots hold none",
+            [describe(row) for row in added_unframed]
+            + [describe(row) for row in long_rest_unframed]
+            + [describe(row) + ": under no reviewed root" for row in unreviewed_unframed],
+        ),
+        Invariant(
+            "provider-call-removals",
+            "no ProviderCall row is removed unless its own file was edited, a named rule explains it or a framed row replaces it",
+            [describe(row) for row in vanished_provider_calls],
         ),
         Invariant(
             "new-roots",
@@ -650,7 +1022,7 @@ def render_summary(
     for invariant in invariants:
         verdict = "ok" if not invariant.violations else f"VIOLATED ({len(invariant.violations)})"
 
-        lines.append(f"  {invariant.name:<22}{verdict}  {invariant.description}")
+        lines.append(f"  {invariant.name:<24}{verdict}  {invariant.description}")
 
         lines += [f"    {violation}" for violation in invariant.violations[:10]]
 
@@ -699,14 +1071,16 @@ def main(argv: list[str] | None = None) -> int:
             edited = edited_sources_from_git(arguments.repo, arguments.git_base, arguments.git_head)
         else:
             parser.error("give --edited-sources or --git-base")
+
+        sources = GitSourceTexts(arguments.repo, arguments.git_base, arguments.git_head) if arguments.git_base else None
     except (ManifestError, OSError) as error:
         print(f"classify-manifest-diff: {error}", file=sys.stderr)
 
         return 2
 
-    labelled = classify(committed, regenerated, edited, parity)
+    labelled = classify(committed, regenerated, edited, parity, sources)
     summary = summarise(labelled)
-    invariants = check_invariants(committed, regenerated)
+    invariants = check_invariants(committed, regenerated, labelled)
 
     sys.stdout.write(render_summary(summary, committed, regenerated, edited, invariants, parity))
 

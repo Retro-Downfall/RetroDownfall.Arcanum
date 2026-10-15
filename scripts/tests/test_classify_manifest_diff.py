@@ -30,6 +30,11 @@ ACQUISITION = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmi
 
 GROUP = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"
 
+# a root the reviewed set of Work-less ProviderCall roots names
+PID_ROOT = "PidFileService"
+
+PID_OPERATION = "RetroDownfall.Arcanum.Infrastructure.Hosting.PidFileService.StartAsync"
+
 
 def site(
     path: str,
@@ -66,10 +71,51 @@ def manifest(*rows: "CLASSIFIER.Row", name: str = "m") -> "CLASSIFIER.Manifest":
     return CLASSIFIER.Manifest(list(rows), name)
 
 
-def classify(committed, regenerated, edited=(), parity=None):
-    labelled = CLASSIFIER.classify(committed, regenerated, frozenset(edited), parity)
+def classify(committed, regenerated, edited=(), parity=None, sources=None):
+    labelled = CLASSIFIER.classify(committed, regenerated, frozenset(edited), parity, sources)
 
     return {(item.side, item.row): item for item in labelled}
+
+
+class FakeSources:
+    """The text of source files at the base and at the head, as a test states them."""
+
+    def __init__(self, base=None, head=None) -> None:
+        self.base_texts = base or {}
+        self.head_texts = head or {}
+
+    def base(self, path):
+        return self.base_texts.get(path)
+
+    def head(self, path):
+        return self.head_texts.get(path)
+
+
+@contextlib.contextmanager
+def patched(name, value):
+    original = getattr(CLASSIFIER, name)
+
+    setattr(CLASSIFIER, name, value)
+
+    try:
+        yield
+    finally:
+        setattr(CLASSIFIER, name, original)
+
+
+def reach_for(row, caller="src/Edited.cs", marker="Topology.Reconcile(", side="+"):
+    """A reviewed call chain that reaches `row`, as the table spells one."""
+    return CLASSIFIER.Reach(
+        row.root_type,
+        row.authority_operation_id,
+        row.source_path,
+        row.member,
+        row.callee,
+        side,
+        caller,
+        marker,
+        "the edited caller now calls the member that holds the site",
+    )
 
 
 class ClassifyManifestDiffTests(unittest.TestCase):
@@ -275,12 +321,113 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertEqual("a", result[("+", added)].label)
 
-    def test_an_unedited_site_and_frame_reached_only_by_the_new_source_is_r(self) -> None:
+    def test_an_unedited_row_only_the_source_added_is_d_when_no_reviewed_call_chain_reaches_it(self) -> None:
+        # Nothing in the diff says why the row is there: the tool does not infer a call chain, so the row is unexplained.
         added = site("src/Unedited.cs")
 
         result = classify(manifest(), manifest(added), edited={"src/Edited.cs"}, parity=manifest())
 
+        self.assertEqual("source", result[("+", added)].stage)
+
+        self.assertEqual("d", result[("+", added)].label)
+
+        self.assertIn("no reviewed call chain", result[("+", added)].detail)
+
+    def test_an_unedited_row_the_edited_source_no_longer_yields_is_d_when_no_reviewed_call_chain_reaches_it(self) -> None:
+        # A row in the committed and the parity manifests that the regeneration silently lost, in a file nobody edited.
+        lost = site("src/Unedited.cs", member="Lost")
+
+        result = classify(manifest(lost), manifest(), edited={"src/Edited.cs"}, parity=manifest(lost))
+
+        self.assertEqual("source", result[("-", lost)].stage)
+
+        self.assertEqual("d", result[("-", lost)].label)
+
+    def test_a_reviewed_call_chain_whose_call_is_new_at_the_head_explains_the_row_as_r(self) -> None:
+        added = site("src/Unedited.cs", member="ProveAbsent")
+
+        sources = FakeSources(base={"src/Edited.cs": "void Restore() { Other(); }"}, head={"src/Edited.cs": "void Restore() { Topology.Reconcile(x); }"})
+
+        with patched("REACHED_THROUGH", (reach_for(added),)):
+            result = classify(manifest(), manifest(added), edited={"src/Edited.cs"}, parity=manifest(), sources=sources)
+
         self.assertEqual("r", result[("+", added)].label)
+
+        self.assertIn("edited caller", result[("+", added)].detail)
+
+    def test_a_reviewed_call_chain_explains_a_removed_row_only_when_the_call_is_gone_at_the_head(self) -> None:
+        removed = site("src/Unedited.cs", member="ProveAbsent")
+
+        gone = FakeSources(base={"src/Edited.cs": "Topology.Reconcile(x);"}, head={"src/Edited.cs": "Other();"})
+
+        kept = FakeSources(base={"src/Edited.cs": "Topology.Reconcile(x);"}, head={"src/Edited.cs": "Topology.Reconcile(x);"})
+
+        with patched("REACHED_THROUGH", (reach_for(removed, side="-"),)):
+            explained = classify(manifest(removed), manifest(), edited={"src/Edited.cs"}, parity=manifest(removed), sources=gone)
+
+            unexplained = classify(manifest(removed), manifest(), edited={"src/Edited.cs"}, parity=manifest(removed), sources=kept)
+
+        self.assertEqual("r", explained[("-", removed)].label)
+
+        self.assertEqual("d", unexplained[("-", removed)].label)
+
+    def test_a_reviewed_call_chain_does_not_explain_a_row_whose_call_was_already_there_at_the_base(self) -> None:
+        added = site("src/Unedited.cs", member="ProveAbsent")
+
+        sources = FakeSources(base={"src/Edited.cs": "Topology.Reconcile(x);"}, head={"src/Edited.cs": "Topology.Reconcile(x); More();"})
+
+        with patched("REACHED_THROUGH", (reach_for(added),)):
+            result = classify(manifest(), manifest(added), edited={"src/Edited.cs"}, parity=manifest(), sources=sources)
+
+        self.assertEqual("d", result[("+", added)].label)
+
+        self.assertIn("did not appear", result[("+", added)].detail)
+
+    def test_a_reviewed_call_chain_does_not_explain_a_row_when_its_caller_is_not_an_edited_source(self) -> None:
+        added = site("src/Unedited.cs", member="ProveAbsent")
+
+        sources = FakeSources(head={"src/Edited.cs": "Topology.Reconcile(x);"})
+
+        with patched("REACHED_THROUGH", (reach_for(added),)):
+            result = classify(manifest(), manifest(added), edited={"src/Other.cs"}, parity=manifest(), sources=sources)
+
+        self.assertEqual("d", result[("+", added)].label)
+
+        self.assertIn("not an edited source", result[("+", added)].detail)
+
+    def test_a_reviewed_call_chain_without_the_source_revisions_explains_nothing(self) -> None:
+        added = site("src/Unedited.cs", member="ProveAbsent")
+
+        with patched("REACHED_THROUGH", (reach_for(added),)):
+            result = classify(manifest(), manifest(added), edited={"src/Edited.cs"}, parity=manifest(), sources=None)
+
+        self.assertEqual("d", result[("+", added)].label)
+
+        self.assertIn("--git-base", result[("+", added)].detail)
+
+    def test_a_reviewed_call_chain_names_one_root_and_one_site_and_explains_no_other_row(self) -> None:
+        reviewed = site("src/Unedited.cs", member="ProveAbsent")
+
+        other_root = reviewed._replace(root_type="Other", authority_operation_id="Other.Run")
+
+        other_site = reviewed._replace(callee="System.IO.File.Delete")
+
+        sources = FakeSources(head={"src/Edited.cs": "Topology.Reconcile(x);"})
+
+        with patched("REACHED_THROUGH", (reach_for(reviewed),)):
+            result = classify(
+                manifest(),
+                manifest(reviewed, other_root, other_site),
+                edited={"src/Edited.cs"},
+                parity=manifest(),
+                sources=sources,
+            )
+
+        self.assertEqual("r", result[("+", reviewed)].label)
+
+        self.assertEqual("d", result[("+", other_root)].label)
+
+        self.assertEqual("d", result[("+", other_site)].label)
 
     def test_a_removed_row_the_base_source_still_yields_is_the_sources_and_one_it_does_not_is_the_checkers(self) -> None:
         by_source = site("src/Unedited.cs", member="BySource")
@@ -296,11 +443,75 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertEqual("source", result[("-", by_source)].stage)
 
-        self.assertEqual("r", result[("-", by_source)].label)
+        self.assertEqual("d", result[("-", by_source)].label)
 
         self.assertEqual("checker", result[("-", by_checker)].stage)
 
         self.assertEqual("d", result[("-", by_checker)].label)
+
+    def test_a_fabricated_row_in_an_unedited_file_fails_the_run_under_parity(self) -> None:
+        fabricated = site("src/Unedited.cs", member="FabricatedMember", callee="System.Totally.Fake.Call", ordinal="999")
+
+        with tempfile.TemporaryDirectory() as directory:
+            old = Path(directory) / "old.tsv"
+            new = Path(directory) / "new.tsv"
+            parity = Path(directory) / "parity.tsv"
+            edited = Path(directory) / "edited.txt"
+
+            write_manifest(old, [])
+            write_manifest(new, [fabricated])
+            write_manifest(parity, [])
+            edited.write_text("src/Edited.cs\n", encoding="utf-8")
+
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                status = CLASSIFIER.main(
+                    [
+                        "--committed", str(old),
+                        "--regenerated", str(new),
+                        "--edited-sources", str(edited),
+                        "--parity", str(parity),
+                    ]
+                )
+
+            self.assertEqual(1, status)
+
+            self.assertIn("unexplained rows: 1", output.getvalue())
+
+    def test_a_provider_call_row_silently_lost_in_an_unedited_file_fails_the_run_under_parity(self) -> None:
+        lost = site("src/Unedited.cs", kind="ProviderCall", member="Lost", work="a" * 64, effect="b" * 64)
+
+        group = site("src/Unedited.cs", callee=GROUP, kind="EffectFrontier", member="Begin")
+
+        with tempfile.TemporaryDirectory() as directory:
+            old = Path(directory) / "old.tsv"
+            new = Path(directory) / "new.tsv"
+            parity = Path(directory) / "parity.tsv"
+            edited = Path(directory) / "edited.txt"
+
+            write_manifest(old, [lost, group])
+            write_manifest(new, [group])
+            write_manifest(parity, [lost, group])
+            edited.write_text("src/Edited.cs\n", encoding="utf-8")
+
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                status = CLASSIFIER.main(
+                    [
+                        "--committed", str(old),
+                        "--regenerated", str(new),
+                        "--edited-sources", str(edited),
+                        "--parity", str(parity),
+                    ]
+                )
+
+            self.assertEqual(1, status)
+
+            self.assertIn("unexplained rows: 1", output.getvalue())
+
+            self.assertIn("VIOLATED", output.getvalue())
 
     def test_a_checker_row_is_c_when_a_named_rule_matches_it_and_d_when_none_does(self) -> None:
         matched = site("src/Rule.cs", member="Matched")
@@ -373,17 +584,89 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertFalse(rule.matches(site("src/A.cs"), "+", context))
 
-    def test_the_base_constructor_rule_matches_the_framework_stream_constructors_only(self) -> None:
-        context = CLASSIFIER.Context(manifest(), manifest(), None)
-
+    def test_the_base_constructor_rule_matches_the_member_that_builds_an_authored_stream_subclass_and_nothing_else(self) -> None:
         rule = rule_named("base-constructor-initializers")
 
-        for callee in ("System.IO.FileStream..ctor", "System.IO.Stream..ctor"):
-            self.assertTrue(rule.matches(site("src/A.cs", kind="FileSystemEffect", callee=callee), "+", context), callee)
+        entry = CLASSIFIER.BASE_CONSTRUCTOR_SITES[0]
 
-        self.assertFalse(rule.matches(site("src/A.cs", kind="FileSystemEffect", callee="System.IO.File.Delete"), "+", context))
+        sources = FakeSources(
+            head={
+                entry.source_path: f"""
+                    internal static class Reader
+                    {{
+                        internal static bool {entry.member}(string path)
+                        {{
+                            stream = new {entry.subclass}(path);
 
-        self.assertFalse(rule.matches(site("src/A.cs", kind="DatabaseAccess", callee="System.IO.FileStream..ctor"), "+", context))
+                            return true;
+                        }}
+
+                        private sealed class {entry.subclass}(string path) : {entry.base}(path, FileMode.Open) {{ }}
+                    }}
+                """
+            }
+        )
+
+        context = CLASSIFIER.Context(manifest(), manifest(), None, sources)
+
+        base = site(entry.source_path, kind="FileSystemEffect", callee=f"System.IO.{entry.base}..ctor", member=entry.member)
+
+        self.assertTrue(rule.matches(base, "+", context))
+
+        # the rule explains an added row only, and only with the source revisions
+        self.assertFalse(rule.matches(base, "-", context))
+
+        self.assertFalse(rule.matches(base, "+", CLASSIFIER.Context(manifest(), manifest(), None)))
+
+        # a Read row of the same member is the same site
+        self.assertTrue(rule.matches(base._replace(kind="FileSystemRead"), "+", context))
+
+        # another kind, another callee, another member and another file are not the listed site
+        self.assertFalse(rule.matches(base._replace(kind="DatabaseAccess"), "+", context))
+
+        self.assertFalse(rule.matches(base._replace(callee="System.IO.File.Delete"), "+", context))
+
+        self.assertFalse(rule.matches(base._replace(member="Other"), "+", context))
+
+        self.assertFalse(rule.matches(base._replace(source_path="src/Other.cs"), "+", context))
+
+    def test_the_base_constructor_rule_does_not_excuse_a_direct_file_stream_construction(self) -> None:
+        # AtomicFile builds a FileStream itself. The census always listed that call, so a row for it is not the rule's: it is d.
+        rule = rule_named("base-constructor-initializers")
+
+        sources = FakeSources(
+            head={"src/RetroDownfall.Arcanum.Infrastructure/Storage/AtomicFile.cs": "static async Task ReplaceAsync() { FileStream stream = new(path, mode); }"}
+        )
+
+        direct = site(
+            "src/RetroDownfall.Arcanum.Infrastructure/Storage/AtomicFile.cs",
+            kind="FileSystemEffect",
+            callee="System.IO.FileStream..ctor",
+            member="ReplaceAsync",
+            ordinal="77",
+        )
+
+        self.assertFalse(rule.matches(direct, "+", CLASSIFIER.Context(manifest(), manifest(), manifest(), sources)))
+
+        moved = direct._replace(syntax_ordinal="78")
+
+        result = classify(manifest(direct), manifest(moved), parity=manifest(moved), sources=sources)
+
+        self.assertEqual({"d"}, {item.label for item in result.values()})
+
+    def test_the_base_constructor_rule_needs_the_subclass_to_derive_from_the_stream_the_table_names(self) -> None:
+        rule = rule_named("base-constructor-initializers")
+
+        entry = CLASSIFIER.BASE_CONSTRUCTOR_SITES[0]
+
+        base = site(entry.source_path, kind="FileSystemEffect", callee=f"System.IO.{entry.base}..ctor", member=entry.member)
+
+        builds = f"void {entry.member}() {{ stream = new {entry.subclass}(path); }}"
+
+        for declaration in (f"sealed class {entry.subclass} : IDisposable {{ }}", f"sealed class {entry.subclass}(string p) : Object {{ }}"):
+            sources = FakeSources(head={entry.source_path: builds + " " + declaration})
+
+            self.assertFalse(rule.matches(base, "+", CLASSIFIER.Context(manifest(), manifest(), None, sources)), declaration)
 
     def test_the_dispatch_rule_matches_the_reviewed_types_on_the_added_side_only(self) -> None:
         context = CLASSIFIER.Context(manifest(), manifest(), None)
@@ -431,20 +714,66 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertFalse(rule.matches(group._replace(callee=ACQUISITION), "-", CLASSIFIER.Context(manifest(group), manifest(), manifest())))
 
-    def test_the_stream_disposal_rule_matches_a_stream_dispose_the_parity_traversal_no_longer_has(self) -> None:
+    def test_the_stream_disposal_rule_matches_the_disposal_of_a_stream_the_member_declares_as_in_memory_or_database(self) -> None:
         rule = rule_named("stream-disposal-by-origin")
 
-        dispose = site("src/A.cs", kind="FileSystemEffect", callee="System.IO.Stream.Dispose")
+        dispose = site("src/A.cs", kind="FileSystemEffect", callee="System.IO.Stream.Dispose", member="Digest")
 
-        self.assertTrue(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest())))
+        for declaration in (
+            "using MemoryStream buffer = new();",
+            "using System.IO.MemoryStream buffer = Start(domain);",
+            "using var buffer = new MemoryStream();",
+            "using Stream stream = reader.GetStream(ordinal);",
+        ):
+            sources = FakeSources(head={"src/A.cs": "byte[] Digest(int domain)\n{\n    " + declaration + "\n    return Hash(buffer);\n}"})
 
-        self.assertFalse(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest(dispose))))
+            context = CLASSIFIER.Context(manifest(dispose), manifest(), manifest(), sources)
 
-        self.assertFalse(rule.matches(dispose, "+", CLASSIFIER.Context(manifest(), manifest(dispose), manifest())))
+            self.assertTrue(rule.matches(dispose, "-", context), declaration)
+
+        sources = FakeSources(head={"src/A.cs": "byte[] Digest(int d) { using MemoryStream buffer = new(); return null; }"})
+
+        # the parity traversal still has the row: it is not the checker's to have dropped
+        self.assertFalse(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest(dispose), sources)))
+
+        # an added row is not a disposal that went away
+        self.assertFalse(rule.matches(dispose, "+", CLASSIFIER.Context(manifest(), manifest(dispose), manifest(), sources)))
+
+        # no parity manifest, or no source revisions, is no proof
+        self.assertFalse(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), None, sources)))
+
+        self.assertFalse(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest(), None)))
 
         self.assertFalse(
-            rule.matches(dispose._replace(callee="System.IO.File.Delete"), "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest()))
+            rule.matches(
+                dispose._replace(callee="System.IO.File.Delete"), "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest(), sources)
+            )
         )
+
+    def test_the_stream_disposal_rule_does_not_excuse_the_disposal_of_a_file_backed_stream(self) -> None:
+        rule = rule_named("stream-disposal-by-origin")
+
+        dispose = site("src/A.cs", kind="FileSystemEffect", callee="System.IO.Stream.Dispose", member="Digest")
+
+        declarations = (
+            # no in-memory or database stream at all
+            "using FileStream stream = new(path, FileMode.Open);",
+            "using Stream stream = new FileStream(path, FileMode.Open);",
+            "using Stream stream = File.OpenRead(path);",
+            # the file-backed stream shares the member with an in-memory one
+            "using MemoryStream buffer = new(); using FileStream stream = new(path, FileMode.Open);",
+            "using MemoryStream buffer = new(); using Stream stream = File.OpenRead(path);",
+        )
+
+        for declaration in declarations:
+            sources = FakeSources(head={"src/A.cs": "byte[] Digest(string path) { " + declaration + " return null; }"})
+
+            self.assertFalse(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest(), sources)), declaration)
+
+        # a member the source does not declare at all is not excused either
+        sources = FakeSources(head={"src/A.cs": "byte[] Other() { using MemoryStream buffer = new(); return null; }"})
+
+        self.assertFalse(rule.matches(dispose, "-", CLASSIFIER.Context(manifest(dispose), manifest(), manifest(), sources)))
 
     def test_every_type_a_rule_names_is_declared_in_the_product_source(self) -> None:
         declared = declared_types()
@@ -482,6 +811,117 @@ class ClassifyManifestDiffTests(unittest.TestCase):
             r"class\s+DataProtectionStoreCredentialMirror\b",
         ):
             self.assertRegex(text, declaration)
+
+    def test_every_reviewed_call_chain_is_still_the_call_the_source_makes_and_a_row_of_the_committed_manifest(self) -> None:
+        reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")
+
+        self.assertGreater(len(CLASSIFIER.REACHED_THROUGH), 0)
+
+        for entry in CLASSIFIER.REACHED_THROUGH:
+            caller = (REPOSITORY / entry.caller).read_text(encoding="utf-8")
+
+            self.assertIn(entry.marker, caller, entry.caller)
+
+            holder = (REPOSITORY / entry.source_path).read_text(encoding="utf-8")
+
+            self.assertTrue(CLASSIFIER.member_bodies(holder, entry.member), entry.member)
+
+            self.assertTrue(
+                any(
+                    (row.root_type, row.authority_operation_id, row.source_path, row.member, row.callee)
+                    == (entry.root_type, entry.operation, entry.source_path, entry.member, entry.callee)
+                    for row in reviewed.rows
+                ),
+                f"{entry.root_type}|{entry.operation}|{entry.member}|{entry.callee} is no row of the committed manifest",
+            )
+
+    def test_every_base_constructor_site_is_a_subclass_the_source_declares_and_builds_and_a_row_of_the_committed_manifest(self) -> None:
+        reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")
+
+        for entry in CLASSIFIER.BASE_CONSTRUCTOR_SITES:
+            member_text = (REPOSITORY / entry.source_path).read_text(encoding="utf-8")
+
+            declaring_text = (REPOSITORY / entry.declared_in).read_text(encoding="utf-8")
+
+            self.assertRegex(
+                declaring_text,
+                r"class\s+" + entry.subclass + r"\s*(?:\([^)]*\))?\s*:\s*(?:System\.IO\.)?" + entry.base + r"\b",
+            )
+
+            self.assertRegex("\n".join(CLASSIFIER.member_bodies(member_text, entry.member)), r"\b" + entry.subclass + r"\b")
+
+            self.assertTrue(
+                any(
+                    row.source_path == entry.source_path and row.member == entry.member and row.callee == f"System.IO.{entry.base}..ctor"
+                    for row in reviewed.rows
+                ),
+                f"{entry.source_path} {entry.member} has no {entry.base} constructor row in the committed manifest",
+            )
+
+    def test_the_reviewed_roots_without_a_work_are_exactly_the_roots_that_hold_unframed_provider_calls_in_the_committed_manifest(self) -> None:
+        reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")
+
+        holders = {
+            CLASSIFIER.selection_root(row)
+            for row in reviewed.rows
+            if row.kind == "ProviderCall" and "-" in (row.work, row.effect)
+        }
+
+        named = {(entry.root_type, entry.operation) for entry in CLASSIFIER.UNFRAMED_PROVIDER_CALL_ROOTS}
+
+        self.assertEqual(len(CLASSIFIER.UNFRAMED_PROVIDER_CALL_ROOTS), len(named))
+
+        self.assertEqual(sorted(holders), sorted(named))
+
+        for entry in CLASSIFIER.UNFRAMED_PROVIDER_CALL_ROOTS:
+            self.assertTrue(entry.reason.strip(), entry.operation)
+
+            self.assertIn(
+                entry.authority,
+                ("PreReadinessStartup", "StoppedHost", "OwnerBoundMaintenance", "FiniteRequest", "OwnerBoundRecovery", "EffectFree"),
+            )
+
+    def test_the_member_bodies_of_a_source_are_the_blocks_and_expression_bodies_that_declare_the_member(self) -> None:
+        text = """
+            internal sealed class Store
+            {
+                [Obsolete("x")]
+                internal static async Task<Result<byte[]>> Read(string path, int n)
+                {
+                    using MemoryStream buffer = new();
+
+                    return Call(buffer);
+                }
+
+                private static string Name() => "name";
+
+                internal int Read(int overload) { return overload; }
+
+                abstract void Missing(int a);
+
+                void Caller()
+                {
+                    Read(path, 1);
+                    Name();
+                    Missing(3);
+                }
+            }
+        """
+
+        read = CLASSIFIER.member_bodies(text, "Read")
+
+        self.assertEqual(2, len(read))
+
+        self.assertIn("MemoryStream", read[0])
+
+        self.assertIn("return overload;", read[1])
+
+        self.assertEqual(['private static string Name() => "name";'], [body.strip() for body in CLASSIFIER.member_bodies(text, "Name")])
+
+        # a declaration without a body and a call are no body
+        self.assertEqual([], CLASSIFIER.member_bodies(text, "Missing"))
+
+        self.assertEqual([], CLASSIFIER.member_bodies(text, "Absent"))
 
     def test_a_manifest_with_another_header_or_row_width_is_refused(self) -> None:
         good = CLASSIFIER.COLUMNS
@@ -527,22 +967,99 @@ class ClassifyManifestDiffTests(unittest.TestCase):
             )
 
     def test_an_unframed_provider_call_the_regeneration_adds_violates_the_invariants(self) -> None:
-        framed = site("src/A.cs", kind="ProviderCall", work="a" * 64, effect="b" * 64)
+        framed = site("src/A.cs", kind="ProviderCall", work="a" * 64, effect="b" * 64, root=PID_ROOT, operation=PID_OPERATION)
 
-        unframed = site("src/B.cs", kind="ProviderCall", member="Other")
+        unframed = site("src/B.cs", kind="ProviderCall", member="Other", root=PID_ROOT, operation=PID_OPERATION)
 
-        existing = site("src/C.cs", kind="ProviderCall", member="Lifecycle")
+        existing = site("src/C.cs", kind="ProviderCall", member="Lifecycle", root=PID_ROOT, operation=PID_OPERATION)
 
         violations = {
             invariant.name: invariant.violations
             for invariant in CLASSIFIER.check_invariants(manifest(existing), manifest(existing, framed, unframed))
         }
 
+        # the reviewed root holds the row it had, and the row the regeneration adds under it is still a finding
         self.assertEqual(1, len(violations["provider-call-frames"]))
 
         self.assertIn("Other", violations["provider-call-frames"][0])
 
+        self.assertNotIn("under no reviewed root", violations["provider-call-frames"][0])
+
         self.assertEqual([], violations["new-roots"])
+
+    def test_a_provider_call_without_frames_under_a_root_nobody_reviewed_violates_the_invariants(self) -> None:
+        # Present before and after, so nothing was added; but a root whose authority was never reviewed as Work-less holds it.
+        stray = site("src/C.cs", kind="ProviderCall", member="Stray", root="Worker", operation="Worker.ExecuteAsync")
+
+        reviewed = site("src/D.cs", kind="ProviderCall", member="Lifecycle", root=PID_ROOT, operation=PID_OPERATION)
+
+        violations = {i.name: i.violations for i in CLASSIFIER.check_invariants(manifest(stray, reviewed), manifest(stray, reviewed))}
+
+        self.assertEqual(1, len(violations["provider-call-frames"]))
+
+        self.assertIn("Stray", violations["provider-call-frames"][0])
+
+        self.assertIn("under no reviewed root", violations["provider-call-frames"][0])
+
+    def test_a_selection_root_is_reviewed_by_its_call_and_not_by_its_digest(self) -> None:
+        selected = CLASSIFIER.UNFRAMED_PROVIDER_CALL_ROOTS[1]
+
+        row = site("src/A.cs", kind="ProviderCall", member="Recover", root=selected.root_type, operation=selected.operation + "~" + "F" * 64)
+
+        violations = {i.name: i.violations for i in CLASSIFIER.check_invariants(manifest(row), manifest(row))}
+
+        self.assertEqual([], violations["provider-call-frames"])
+
+    def test_a_provider_call_row_that_goes_away_unexplained_violates_the_invariants(self) -> None:
+        acquisition = site("src/Keep.cs", callee=ACQUISITION, kind="EffectFrontier", member="Acquire")
+
+        group = site("src/Keep.cs", callee=GROUP, kind="EffectFrontier", member="Begin")
+
+        frames = {"work": acquisition.capsule_id, "effect": group.capsule_id}
+
+        gone = site("src/Unedited.cs", kind="ProviderCall", member="Gone", **frames)
+
+        edited = site("src/Edited.cs", kind="ProviderCall", member="Edited", **frames)
+
+        framed = site("src/Unedited.cs", kind="ProviderCall", member="Moved", **frames)
+
+        # the same site with another framed row in its place: its frame changed, and it is still a provider call with both frames
+        replaced = framed._replace(work=group.capsule_id)
+
+        committed = manifest(acquisition, group, gone, edited, framed)
+
+        regenerated = manifest(acquisition, group, replaced)
+
+        labelled = CLASSIFIER.classify(committed, regenerated, frozenset({"src/Edited.cs"}), committed)
+
+        violations = {i.name: i.violations for i in CLASSIFIER.check_invariants(committed, regenerated, labelled)}
+
+        # Gone is the finding: an unedited provider call that nothing explains and nothing replaced. Edited is explained by its
+        # file. Moved is a changed row, replaced at its site by a framed one; its removal is labelled d (nobody explained why its
+        # frame moved), which is the classifier's finding and not this invariant's.
+        self.assertEqual(1, len(violations["provider-call-removals"]))
+
+        self.assertIn("Gone", violations["provider-call-removals"][0])
+
+    def test_a_provider_call_row_a_named_rule_explains_may_go_away(self) -> None:
+        acquisition = site("src/Keep.cs", callee=ACQUISITION, kind="EffectFrontier", member="Acquire")
+
+        group = site("src/Keep.cs", callee=GROUP, kind="EffectFrontier", member="Begin")
+
+        gone = site("src/Unedited.cs", kind="ProviderCall", member="Gone", work=acquisition.capsule_id, effect=group.capsule_id)
+
+        rule = CLASSIFIER.Rule("test-rule", "Test lane", "-", "matches the member Gone", lambda row, side, context: row.member == "Gone")
+
+        committed, regenerated = manifest(acquisition, group, gone), manifest(acquisition, group)
+
+        with patched("RULES", (rule,)):
+            labelled = CLASSIFIER.classify(committed, regenerated, frozenset(), manifest())
+
+        violations = {i.name: i.violations for i in CLASSIFIER.check_invariants(committed, regenerated, labelled)}
+
+        self.assertEqual("c", labelled[0].label)
+
+        self.assertEqual([], violations["provider-call-removals"])
 
     def test_a_new_root_that_is_not_a_long_rest_root_violates_the_invariants(self) -> None:
         old = site("src/A.cs")
