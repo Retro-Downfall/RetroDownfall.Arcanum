@@ -515,17 +515,31 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// A reparse point that names no other location (a cloud placeholder, deduplicated or compressed data)
-    /// is served by the operating system as an ordinary file, and Windows reports it as something other
-    /// than a regular file. The test makes the closest thing a user account can make on demand, a file
-    /// whose data the system compresses in place, and skips when the volume will not.
+    /// A file whose data the volume serves in place from a reparse point that names no other location (a cloud
+    /// placeholder, deduplicated or compressed data) is an ordinary file to every reader, and the attachment
+    /// gate must stage it as one. The test makes the closest thing a user account can make on demand, a file
+    /// that <c>compact.exe /exe</c> compresses in place, and proves the volume really backed it before it
+    /// asserts anything: the Windows Overlay Filter's own API (<c>WofIsExternalFile</c>) must report the file
+    /// externally backed through the file provider after the compaction and not before it. It then asserts what
+    /// has to hold however the host presents the file: the content round-trips through the attachment builder
+    /// by <c>@path</c> and the file stages by <c>/attach</c>.
     /// </summary>
     /// <remarks>
-    /// On a machine that is not the Windows lane that skip is the honest answer. On the lane, where
-    /// <c>ARCANUM_REQUIRE_WINDOWS_SUITE=true</c>, it is a hole in the only evidence for this behaviour, so
-    /// the test fails there instead and says what the volume did: the exit code and output of
-    /// <c>compact.exe</c>, the attributes and link target it left, the volume's file system and the kind
-    /// the repository's own path policy reads for the file.
+    /// <para>How the host presents the file is a fact of the host, not of the fixture. On the GitHub-hosted
+    /// Windows lanes the filter hides the reparse attribute from attribute queries, so the framework and the
+    /// repository's path policy read an ordinary file (<see cref="FileSystemObjectKind.RegularFile"/>) and the
+    /// gate's reparse-point branch is not reached there. This test does not claim otherwise. It records which
+    /// kind the path policy saw, which tag a handle that does not follow reparse points can read, and what
+    /// the gate's probe decided, in every failure message and in the xunit diagnostic output of a pass, and it
+    /// holds for either presentation. The reparse-point branch itself (a reparse point that carries no link
+    /// target is attachable; one that carries a target, or is a directory, is not) is pinned on every host by
+    /// <see cref="CommandCenterAttachmentFileKindTests"/>, which feeds the decision the attributes and the
+    /// link target a volume would report.</para>
+    ///
+    /// <para>Off the Windows lane a volume that cannot compress in place (another file system, no compaction
+    /// support) skips the test. On the lane, where <c>ARCANUM_REQUIRE_WINDOWS_SUITE=true</c>, that would be a
+    /// hole in the only evidence for this behaviour, so the test fails there instead and says what the volume
+    /// did.</para>
     /// </remarks>
     [SkippableFact]
     public async Task Windows_a_reparse_point_that_names_no_other_location_stages()
@@ -536,10 +550,20 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         string content = string.Concat(Enumerable.Repeat("arcanum attachment ", 8192));
         File.WriteAllText(path, content, Encoding.UTF8);
 
-        if (!TryMakeCompressedReparsePoint(path, out string diagnostic))
+        ExternalBacking before = WindowsFileBackingProbe.ReadExternalBacking(path);
+        string compact = CompressInPlace(path);
+        ExternalBacking after = WindowsFileBackingProbe.ReadExternalBacking(path);
+
+        string fixture = $"Before compact.exe, {before.Detail} {compact} After it, {after.Detail}";
+
+        // The reading before the compaction is the control: a file nobody compressed that already reads as
+        // externally backed would mean the answer below proves nothing.
+        if (before is { Answered: true, IsExternal: true }
+            || after is not { Answered: true, IsExternal: true, Provider: WindowsFileBackingProbe.FileProvider })
         {
             string reason =
-                "The volume did not turn the file into a reparse point that names no other location. " + diagnostic;
+                "The volume did not back the file with the Windows Overlay Filter's file provider, so it is not the "
+                + "fixture this test needs. " + fixture;
 
             if (WindowsLaneRequired())
             {
@@ -549,6 +573,21 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
             Skip.If(true, reason);
         }
 
+        HostView host = ObserveHost(path);
+        string evidence = $"{fixture} {host.Description}";
+
+        Assert.True(
+            host.LinkTarget is null,
+            "The fixture names another location, so it is a link and not data the volume serves in place. " + evidence);
+
+        Assert.False(
+            host.Tag.Answered && WindowsFileBackingProbe.IsNameSurrogate(host.Tag.Tag),
+            "The reparse tag the volume shows is a name surrogate, so the fixture is a link. " + evidence);
+
+        Assert.True(
+            host.Kind is FileSystemObjectKind.RegularFile or FileSystemObjectKind.Other,
+            "The path policy read the fixture as neither an ordinary file nor a reparse point. " + evidence);
+
         TurnAttachmentBuildResult result = await CommandCenterTurnAttachmentBuilder.BuildAsync(
             "read @compressed.txt",
             workingDirectory: _root,
@@ -556,15 +595,26 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
             settings: DefaultSettings(),
             cancellationToken: CancellationToken.None);
 
-        Assert.Equal(content, Assert.Single(result.AttachedFiles!).Content);
         Assert.True(
-            CommandCenterTurnAttachmentBuilder.TryStagePathForNextTurn(
-                _root,
-                "compressed.txt",
-                DefaultSettings(),
-                out _,
-                out string statusLine),
-            statusLine);
+            result.AttachedFiles is { Count: 1 },
+            $"The file did not stage by @path. Status: [{string.Join(" | ", result.StatusLines)}]. {evidence}");
+
+        Assert.True(
+            string.Equals(content, result.AttachedFiles![0].Content, StringComparison.Ordinal),
+            "The staged content is not the file's content. " + evidence);
+
+        bool staged = CommandCenterTurnAttachmentBuilder.TryStagePathForNextTurn(
+            _root,
+            "compressed.txt",
+            DefaultSettings(),
+            out _,
+            out string statusLine);
+
+        Assert.True(staged, $"The file did not stage by /attach. Status: [{statusLine}]. {evidence}");
+
+        TestDiagnostics.Report(
+            $"{nameof(Windows_a_reparse_point_that_names_no_other_location_stages)}: the file staged by @path and "
+            + $"by /attach. {evidence}");
     }
 
     /// <summary>The Windows lane sets this so a skipped Windows test is a failure there, as in <c>WindowsCiSurfaceTests</c>.</summary>
@@ -575,15 +625,10 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Compresses <paramref name="path"/> in place and reports whether that left a reparse point that
-    /// names no other location. <paramref name="diagnostic"/> says what the volume did either way.
+    /// Compresses <paramref name="path"/> in place the way a user's machine does, with <c>compact.exe /exe</c>,
+    /// and says what it did. Whether that made the fixture is not decided here: the volume's own API decides.
     /// </summary>
-    /// <remarks>
-    /// A file system filter may hide the reparse attribute from an ordinary attribute query, so the kind
-    /// the repository's path policy reads through a handle counts as well: a regular file it reports as
-    /// anything other than a regular file is a reparse point.
-    /// </remarks>
-    private static bool TryMakeCompressedReparsePoint(string path, out string diagnostic)
+    private static string CompressInPlace(string path)
     {
         ProcessStartInfo startInfo = new("compact.exe", ["/c", "/exe:xpress4k", path])
         {
@@ -596,9 +641,7 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 
         if (compact is null)
         {
-            diagnostic = "compact.exe could not be started.";
-
-            return false;
+            return "compact.exe could not be started.";
         }
 
         Task<string> standardOutput = compact.StandardOutput.ReadToEndAsync();
@@ -609,9 +652,7 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
         {
             compact.Kill(entireProcessTree: true);
 
-            diagnostic = "compact.exe did not exit within 30 seconds.";
-
-            return false;
+            return "compact.exe did not exit within 30 seconds.";
         }
 
         // Exit has been observed, so the pipes are closed and both reads complete.
@@ -619,26 +660,70 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 
         string error = standardError.GetAwaiter().GetResult().Trim();
 
+        return $"compact.exe exited {compact.ExitCode}; stdout: [{output}]; stderr: [{error}].";
+    }
+
+    /// <summary>
+    /// Everything the host reports about <paramref name="path"/> that bears on the attachment gate: the
+    /// attributes and link target the framework reads, the kind the repository's path policy reads through a
+    /// path and through an opened handle, what the gate's reparse-point probe decides, and the tag a handle
+    /// that does not follow reparse points can read. Each is read independently, so a filter that hides the
+    /// reparse point from one view shows up as the views disagreeing.
+    /// </summary>
+    private static HostView ObserveHost(string path)
+    {
         FileAttributes attributes = File.GetAttributes(path);
 
         string? linkTarget = new FileInfo(path).LinkTarget;
 
         string fileSystem = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(path))!).DriveFormat;
 
-        bool kindKnown = FileHandleIdentityInterop.TryGetPathMetadata(path, out FileHandleMetadata metadata);
+        FileSystemObjectKind? kind = FileHandleIdentityInterop.TryGetPathMetadata(path, out FileHandleMetadata metadata)
+            ? metadata.Kind
+            : null;
 
-        string kind = kindKnown ? metadata.Kind.ToString() : "unavailable";
+        bool probe = AttachableFile.IsReparsePointWithoutTarget(path);
 
-        diagnostic =
-            $"compact.exe exited {compact.ExitCode}; stdout: [{output}]; stderr: [{error}]; "
-            + $"attributes: {attributes}; link target: {linkTarget ?? "none"}; "
-            + $"file system: {fileSystem}; path-policy kind: {kind}.";
+        ReparseTagReading tag = WindowsFileBackingProbe.ReadReparseTag(path);
 
-        bool reparsePoint = (attributes & FileAttributes.ReparsePoint) != 0
-            || (kindKnown && metadata.Kind == FileSystemObjectKind.Other);
+        string handleKind;
 
-        return reparsePoint && linkTarget is null;
+        try
+        {
+            using FileStream stream = AttachableFile.OpenForRead(path, bufferSize: 4096);
+
+            handleKind = FileHandleIdentityInterop.TryGetHandleMetadata(stream.SafeFileHandle, out FileHandleMetadata opened)
+                ? opened.Kind.ToString()
+                : "unavailable";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            handleKind = "refused (" + ex.Message + ")";
+        }
+
+        string branch = kind switch
+        {
+            FileSystemObjectKind.RegularFile =>
+                "The filter hid the reparse attribute from the path policy, which read an ordinary file (RegularFile), "
+                + "so the gate's reparse-point branch was not reached.",
+            FileSystemObjectKind.Other when probe =>
+                "The path policy read a reparse point (Other) and the gate's probe found no link target, so the "
+                + "reparse-point branch decided.",
+            FileSystemObjectKind.Other =>
+                "The path policy read a reparse point (Other) and the gate's probe did not accept it as one that "
+                + "names no other location.",
+            _ => "The path policy could not classify the file as an ordinary file or a reparse point.",
+        };
+
+        string description =
+            $"Host view: attributes: {attributes}; link target: {linkTarget ?? "none"}; file system: {fileSystem}; "
+            + $"path-policy kind: {kind?.ToString() ?? "unavailable"}; handle kind: {handleKind}; "
+            + $"probe says a reparse point without a target: {probe}; {tag.Detail} {branch}";
+
+        return new HostView(kind, linkTarget, tag, description);
     }
+
+    private sealed record HostView(FileSystemObjectKind? Kind, string? LinkTarget, ReparseTagReading Tag, string Description);
 
     private static ArcanumSettings DefaultSettings() =>
         new()
@@ -651,9 +736,11 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 /// The kind gate that sits in front of every attachment read, driven through the same seams the path
 /// policy tests use so its decisions are pinned on every platform. Windows reports every reparse point as
 /// <see cref="FileSystemObjectKind.Other"/>, including the ones that name no other location (a cloud
-/// placeholder, deduplicated data), which the repository's path policy treats as ordinary files; the
-/// Windows-only branch is pinned through its parameters because it cannot be reached by a real file
-/// here.
+/// placeholder, deduplicated data), which the repository's path policy treats as ordinary files. That
+/// branch is pinned through its parameters, with the attributes and link target a volume would report,
+/// because no real file reaches it reliably: a file compressed in place on a volume whose filter hides the
+/// reparse attribute reads as an ordinary file (the Windows lane's real-volume case records which it saw,
+/// <see cref="CommandCenterTurnAttachmentBuilderTests.Windows_a_reparse_point_that_names_no_other_location_stages"/>).
 /// </summary>
 [Collection("WorkspacePathPolicy")]
 public sealed class CommandCenterAttachmentFileKindTests : IDisposable
@@ -733,6 +820,153 @@ public sealed class CommandCenterAttachmentFileKindTests : IDisposable
         FileSystemObjectKind kind = Enum.Parse<FileSystemObjectKind>(kindName);
 
         Assert.Equal(expectedAttachable, AttachableFile.IsAttachableHandleKind(kind, onWindows));
+    }
+
+    /// <summary>
+    /// The kind of a Windows attribute word. The reparse-point attribute decides before the directory one, so
+    /// every entry that carries it is <see cref="FileSystemObjectKind.Other"/>, a link and a reparse point that
+    /// names no other location alike: the reparse tag is never read. An entry whose reparse attribute a file
+    /// system filter hides arrives here as an ordinary file.
+    /// </summary>
+    [Theory]
+    [InlineData("an ordinary file", 0x20u, "RegularFile")]
+    [InlineData("a file with no other attribute (FILE_ATTRIBUTE_NORMAL)", 0x80u, "RegularFile")]
+    [InlineData("a directory", 0x10u, "Directory")]
+    [InlineData("a reparse point (any tag)", 0x420u, "Other")]
+    [InlineData("a reparse-point directory (a junction)", 0x410u, "Other")]
+    [InlineData("a device", 0x40u, "Other")]
+    public void A_windows_attribute_word_decides_the_kind_and_the_reparse_attribute_decides_first(
+        string label,
+        uint attributes,
+        string expectedKindName)
+    {
+        FileSystemObjectKind expected = Enum.Parse<FileSystemObjectKind>(expectedKindName);
+        FileSystemObjectKind actual = FileHandleIdentityInterop.ClassifyWindowsAttributes(attributes);
+
+        Assert.True(expected == actual, $"{label} (0x{attributes:X}): expected {expected}, read {actual}.");
+    }
+
+    /// <summary>
+    /// The Windows decision for an entry the stat followed, composed from the two steps it takes: the kind of
+    /// the attribute word the stat reports, then, for a reparse point, whether the final target carries a link
+    /// target. The cases are labelled with the reparse tag of the entry they stand for, but the tag is never
+    /// read: what separates a link from every other reparse point is whether the framework reports a target
+    /// for it, and it reports one for the two name-surrogate tags it understands (a symbolic link and a mount
+    /// point). So a reparse point that names no other location stages, however the volume tags it, and one
+    /// that reports a target or is a directory does not. A symbolic link is normally followed by the open, so
+    /// the stat reports its target's ordinary attributes and it stages like any file; only a link that is
+    /// still a link at the probe is refused.
+    /// </summary>
+    [Theory]
+    [InlineData("an ordinary file", 0x20u, FileAttributes.Archive, false, "RegularFile", true)]
+    [InlineData(
+        "a file compact.exe /exe compressed in place when the filter hides the tag (IO_REPARSE_TAG_WOF 0x80000017)",
+        0x20u,
+        FileAttributes.Archive,
+        false,
+        "RegularFile",
+        true)]
+    [InlineData(
+        "IO_REPARSE_TAG_WOF 0x80000017 with the attribute visible",
+        0x420u,
+        FileAttributes.ReparsePoint | FileAttributes.Archive,
+        false,
+        "Other",
+        true)]
+    [InlineData(
+        "IO_REPARSE_TAG_DEDUP 0x80000013 with the attribute visible",
+        0x420u,
+        FileAttributes.ReparsePoint | FileAttributes.Archive,
+        false,
+        "Other",
+        true)]
+    [InlineData(
+        "IO_REPARSE_TAG_CLOUD 0x9000001A with the attribute visible",
+        0x420u,
+        FileAttributes.ReparsePoint | FileAttributes.Archive,
+        false,
+        "Other",
+        true)]
+    [InlineData(
+        "IO_REPARSE_TAG_SYMLINK 0xA000000C followed to an ordinary target",
+        0x20u,
+        FileAttributes.Archive,
+        false,
+        "RegularFile",
+        true)]
+    [InlineData(
+        "IO_REPARSE_TAG_SYMLINK 0xA000000C still a link at the probe",
+        0x420u,
+        FileAttributes.ReparsePoint | FileAttributes.Archive,
+        true,
+        "Other",
+        false)]
+    [InlineData(
+        "IO_REPARSE_TAG_MOUNT_POINT 0xA0000003, a junction",
+        0x410u,
+        FileAttributes.ReparsePoint | FileAttributes.Directory,
+        true,
+        "Other",
+        false)]
+    [InlineData(
+        "a reparse-point directory that names no other location",
+        0x410u,
+        FileAttributes.ReparsePoint | FileAttributes.Directory,
+        false,
+        "Other",
+        false)]
+    [InlineData("a directory", 0x10u, FileAttributes.Directory, false, "Directory", false)]
+    public void On_windows_a_file_is_attachable_exactly_when_it_is_ordinary_or_a_reparse_point_without_a_target(
+        string label,
+        uint statAttributes,
+        FileAttributes entryAttributes,
+        bool entryReportsLinkTarget,
+        string expectedKindName,
+        bool expectedAttachable)
+    {
+        FileSystemObjectKind expectedKind = Enum.Parse<FileSystemObjectKind>(expectedKindName);
+        FileSystemObjectKind kind = FileHandleIdentityInterop.ClassifyWindowsAttributes(statAttributes);
+
+        bool attachable = AttachableFile.IsAttachableFileKind(
+            kind,
+            onWindows: true,
+            () => AttachableFile.IsReparsePointWithoutTarget(
+                entryAttributes,
+                () => entryReportsLinkTarget ? @"C:\elsewhere\target.txt" : null));
+
+        Assert.True(expectedKind == kind, $"{label}: expected the stat to read {expectedKind}, read {kind}.");
+        Assert.True(
+            expectedAttachable == attachable,
+            $"{label}: expected {(expectedAttachable ? "attachable" : "refused")}, got {(attachable ? "attachable" : "refused")}.");
+    }
+
+    /// <summary>
+    /// The framework's link-target read is a second file-system call, so it is made only when the attributes
+    /// leave the answer open: an entry without the reparse-point attribute, and a directory, are decided
+    /// without it.
+    /// </summary>
+    [Theory]
+    [InlineData(FileAttributes.Archive, false)]
+    [InlineData(FileAttributes.Directory, false)]
+    [InlineData(FileAttributes.ReparsePoint | FileAttributes.Directory, false)]
+    [InlineData(FileAttributes.ReparsePoint | FileAttributes.Archive, true)]
+    [InlineData(FileAttributes.ReparsePoint | FileAttributes.Archive | FileAttributes.ReadOnly, true)]
+    public void The_link_target_is_read_only_when_the_attributes_leave_the_answer_open(
+        FileAttributes attributes,
+        bool expectedRead)
+    {
+        int reads = 0;
+
+        _ = AttachableFile.IsReparsePointWithoutTarget(
+            attributes,
+            () =>
+            {
+                reads++;
+
+                return null;
+            });
+
+        Assert.Equal(expectedRead ? 1 : 0, reads);
     }
 
     [SkippableFact]
