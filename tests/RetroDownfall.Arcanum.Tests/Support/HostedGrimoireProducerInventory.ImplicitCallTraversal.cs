@@ -137,7 +137,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             // The formatting steps taken in this resolution, shared with every nested collector like the visited set. A step is the
             // slot of a type: it adds what the implementation the type selects for the slot runs, which the visited set already
-            // holds once the step was taken, so taking it again adds nothing.
+            // holds once the step was taken, so taking it again adds no member and no framework method. It could add one thing
+            // only, a repeated name in Unresolved: Add and AddSynthesizedByName name a slot they cannot resolve before the visited
+            // set is asked. That is harmless because Unresolved is consumed only as a set (Distinct) or as a test for empty, never
+            // as a count, which UnresolvedIsOnlyReadAsASetOrTestedForEmpty pins.
             private readonly HashSet<(ISymbol Type, ISymbol Slot)> formatting = sharedFormatting ?? new(FormattingStepComparer.Instance);
 
             internal AuthoredMember Member => member;
@@ -1647,19 +1650,21 @@ internal static partial class HostedGrimoireProducerInventory
 
         // Whether the members one authored implementation of a callback slot runs can reach a producer site or cannot be followed. The
         // resolution starts from the implementation alone, in a collector of its own, so the answer is the same for every type and
-        // every family that asks about it, and it is remembered the way an answer for a type is: unless a cycle cut it.
-        private readonly Dictionary<(SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot), bool> callbackImplementationReach = new(CallbackImplementationComparer.Instance);
+        // every family that asks about it, and it is remembered the way an answer for a type is: unless a cycle cut it. The answer reads
+        // the whole anchor member (its model, the bindings its classification consults, its syntax), so the key holds that member
+        // itself and not its syntax: another member made over the same syntax with other bindings is another key.
+        private readonly Dictionary<(AuthoredMember Anchor, ISymbol Implementation, ISymbol Slot), bool> callbackImplementationReach = new(CallbackImplementationComparer.Instance);
 
-        private sealed class CallbackImplementationComparer : IEqualityComparer<(SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot)>
+        private sealed class CallbackImplementationComparer : IEqualityComparer<(AuthoredMember Anchor, ISymbol Implementation, ISymbol Slot)>
         {
             internal static readonly CallbackImplementationComparer Instance = new();
 
-            public bool Equals((SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot) left, (SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot) right) =>
+            public bool Equals((AuthoredMember Anchor, ISymbol Implementation, ISymbol Slot) left, (AuthoredMember Anchor, ISymbol Implementation, ISymbol Slot) right) =>
                 ReferenceEquals(left.Anchor, right.Anchor)
                 && SymbolEqualityComparer.Default.Equals(left.Implementation, right.Implementation)
                 && SymbolEqualityComparer.Default.Equals(left.Slot, right.Slot);
 
-            public int GetHashCode((SyntaxNode Anchor, ISymbol Implementation, ISymbol Slot) key) =>
+            public int GetHashCode((AuthoredMember Anchor, ISymbol Implementation, ISymbol Slot) key) =>
                 HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Anchor), SymbolEqualityComparer.Default.GetHashCode(key.Implementation), SymbolEqualityComparer.Default.GetHashCode(key.Slot));
         }
 
@@ -1670,7 +1675,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private bool CallbackImplementationReaches(AuthoredMember member, IMethodSymbol slot, ISymbol implementation)
         {
-            var key = (member.Syntax, implementation, (ISymbol)slot);
+            var key = (member, implementation, (ISymbol)slot);
 
             if (callbackImplementationReach.TryGetValue(key, out bool known))
             {
@@ -1764,13 +1769,16 @@ internal static partial class HostedGrimoireProducerInventory
             return reaches;
         }
 
+        // The families the work probe asks about: the slots a generated record member compares, hashes and prints through.
+        internal const CallbackFamilies CallbackWorkFamilies = CallbackFamilies.Format | CallbackFamilies.Equality | CallbackFamilies.Compare;
+
         // Fixture seam: the callback judgement of every authored formatter for two receivers that ask about the same implementations (object, then
         // a value), with the work each judgement did: implementations resolved, formatting steps taken, and the answers.
         internal (int Implementations, int FirstResolutions, int FirstSteps, bool FirstReaches, int SecondResolutions, int SecondSteps, bool SecondReaches) ProbeCallbackReachWork()
         {
             AuthoredMember anchor = AuthoredMembers.First();
 
-            CallbackFamilies families = CallbackFamilies.Format | CallbackFamilies.Equality | CallbackFamilies.Compare;
+            CallbackFamilies families = CallbackWorkFamilies;
 
             int implementations = AuthoredFormatters().SelectMany(static formatter => formatter.Implementations).Count(implementation => (FamilyOf(implementation.Slot) & families) != CallbackFamilies.None);
 
@@ -1784,8 +1792,9 @@ internal static partial class HostedGrimoireProducerInventory
         }
 
         // The authored implementers of the framework slots that reach a producer site or cannot be followed, with the slot and
-        // what was found, for the pin that names them.
-        internal IReadOnlyList<string> CallbackImplementersThatReach()
+        // what was found, for the pin that names them. It resolves each implementation from scratch, with no memo, so it is the
+        // definition the memoized judgement is compared with; a set of families narrows it to the slots of those families.
+        internal IReadOnlyList<string> CallbackImplementersThatReach(CallbackFamilies? families = null)
         {
             List<string> found = [];
 
@@ -1800,6 +1809,11 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 foreach ((IMethodSymbol slot, ISymbol implementation) in implementer.Implementations)
                 {
+                    if (families is { } narrowed && (FamilyOf(slot) & narrowed) == CallbackFamilies.None)
+                    {
+                        continue;
+                    }
+
                     ImplicitTargetCollector collector = new(this, anchor);
 
                     collector.Add(implementation, slot);
@@ -1820,6 +1834,41 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return found;
+        }
+
+        // Fixture seam: the key of the implementation answers. One implementation is judged for an anchor member, again for the same anchor, and then
+        // for a second member made over the very same syntax with another binding environment: the first resolves the implementation, the repeat
+        // resolves nothing, and the member with other bindings is another key, so it resolves it again.
+        internal (int First, int Repeated, int OtherBindings) ProbeCallbackReachKey()
+        {
+            AuthoredMember anchor = AuthoredMembers.First();
+
+            AuthoredMember other = anchor with { AdmissionBindings = new Dictionary<ISymbol, IReadOnlySet<string>>(SymbolEqualityComparer.Default) };
+
+            foreach ((IMethodSymbol slot, ISymbol implementation) in AuthoredFormatters().SelectMany(static formatter => formatter.Implementations))
+            {
+                int before = callbackImplementationResolutions;
+
+                CallbackImplementationReaches(anchor, slot, implementation);
+
+                int first = callbackImplementationResolutions - before;
+
+                CallbackImplementationReaches(anchor, slot, implementation);
+
+                int repeated = callbackImplementationResolutions - before - first;
+
+                // An answer computed while a cycle was being cut is not remembered, so it is asked again: only a remembered one tells the key.
+                if (first == 0 || repeated != 0)
+                {
+                    continue;
+                }
+
+                CallbackImplementationReaches(other, slot, implementation);
+
+                return (first, repeated, callbackImplementationResolutions - before - first);
+            }
+
+            return (0, 0, 0);
         }
 
         // The graph that asks about classified producer sites alone, one per set of compilations, shared by every graph over it. What

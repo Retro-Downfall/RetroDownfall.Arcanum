@@ -2168,9 +2168,18 @@ internal static partial class HostedGrimoireProducerInventory
 
     // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
     // a producer site or cannot be followed, over the given compilations.
-    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations) =>
+    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations, CallbackFamilies? families = null) =>
         new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
-            .CallbackImplementersThatReach();
+            .CallbackImplementersThatReach(families);
+
+    // The families of slots the callback work probe asks about.
+    internal const CallbackFamilies CallbackWorkFamilies = ProducerGraph.CallbackWorkFamilies;
+
+    // The key of the answers for an authored implementation of a callback slot: the judgement of one implementation for an anchor member, for
+    // the same member again, and for a member over the same syntax with other bindings.
+    internal static (int First, int Repeated, int OtherBindings) ProbeCallbackReachKey(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackReachKey();
 
     // The semantic model of a tree in a compilation, as two discoveries over the compilation and a discovery over another compilation
     // that holds the same tree are given it: whether the two discoveries over one compilation read one model, and whether the other
