@@ -79,7 +79,9 @@ internal sealed partial class SagaLongRestService(ArcanumDbContext db, TimeProvi
             {
                 DbConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                // Inspecting a receipt only reads, so it begins deferred and takes no writer lock; the provider's own BeginTransactionAsync would
+                // have begun BEGIN IMMEDIATE.
+                await using SqliteTransaction transaction = ((SqliteConnection)connection).BeginTransaction(deferred: true);
 
                 LongRestVerificationCounters.Transaction(deferred: true);
 
