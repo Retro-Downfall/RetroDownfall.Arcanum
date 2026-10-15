@@ -209,6 +209,37 @@ public sealed class LongRestSummaryBoundTests
         }
     }
 
+    /// <summary>
+    /// When the embedding model shares the chat provider's entry, the bound and the local window gate both read that one configured
+    /// window. A summary that respects the bound is therefore never refused locally, however much more than a smaller real embedding
+    /// model can read it holds: the call is made, and what happens to the excess is the provider's doing. The operator documentation
+    /// says exactly this, so it must not describe a local refusal for it.
+    /// </summary>
+    [Fact]
+    public void A_shared_chat_and_embedding_entry_passes_the_local_gate_with_a_summary_a_2048_token_embedding_model_cannot_read()
+    {
+        ArcanumSettings settings = LongRestConfigurationEpochTests.Settings();
+
+        settings.Providers[0].ContextWindowLimit = 8192;
+
+        LongRestRecipeIdentity recipe = LongRestRecipeResolver.Resolve(settings).Value;
+
+        Assert.Equal(LongRestPromptLayout.SummaryBoundUtf8Bytes(8192), recipe.SummaryUtf8Bytes);
+
+        ProviderSettings provider = settings.Providers[0];
+
+        int tokens = Estimator.EstimateLongRestEmbedding(provider, "embedding", EmbeddingPayload(new string('a', recipe.SummaryUtf8Bytes))).TokenCount;
+
+        // More than a 2,048-token embedding model reads, and still inside the window Arcanum was told about.
+        Assert.True(tokens > 2048);
+
+        using AsyncFlowMetricCapture metrics = new(RefusedMetric);
+
+        Assert.True(ModelCallExecutor.CheckLongRestWindow(new LongRestProviderAdmission.Embedding(provider, "embedding", 64, tokens, Zero)).IsSuccess);
+
+        Assert.Equal(0, metrics.Sum(RefusedMetric));
+    }
+
     [Fact]
     public void A_maximum_summary_is_not_safe_below_the_window_the_bound_gives_it_to_and_the_gate_counts_the_refusal()
     {
