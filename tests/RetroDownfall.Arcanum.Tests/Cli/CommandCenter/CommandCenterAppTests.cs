@@ -1,6 +1,7 @@
 using System.Diagnostics;
 
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -11,8 +12,16 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// and never exits blocked the calling thread forever — the deadline and the
 /// <see cref="Process.Kill(bool)"/> recovery were unreachable dead code.
 /// </summary>
-public sealed class CommandCenterAppTests
+public sealed class CommandCenterAppTests : IAsyncLifetime
 {
+    /// <summary>
+    /// Runs PowerShell once, outside every test's deadline and stopwatch, so no test measures its cold start. A
+    /// no-op wherever the children are POSIX tools.
+    /// </summary>
+    public Task InitializeAsync() => WindowsPowerShellWarmUp.EnsureAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
     [Fact]
     public void TryReadWithDeadline_returns_false_within_the_deadline_when_the_child_never_exits()
     {
@@ -41,11 +50,13 @@ public sealed class CommandCenterAppTests
     {
         ProcessStartInfo startInfo = CreateEchoProcessStartInfo("24 80");
 
-        // Not 1000ms: this test exercises the captured-output path, not the deadline, and a cold
-        // powershell.exe start on Windows CI routinely takes 1-3s on its own.
+        // Not 1000ms: this test exercises the captured-output path, not the deadline, and the deadline runs from the
+        // process start, which on Windows includes powershell.exe starting. That has taken more than ten seconds on a
+        // loaded CI runner even before this class warmed it up, so the deadline here is only a guard against a hang
+        // and a passing run never comes near it.
         bool result = CommandCenterApp.TryReadWithDeadline(
             startInfo,
-            timeoutMilliseconds: 30_000,
+            timeoutMilliseconds: 60_000,
             out string output);
 
         Assert.True(result);
