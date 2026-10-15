@@ -22,11 +22,7 @@ public interface ICampaignRepository
     /// normalisation form of an accented name. This is how a directory below a Campaign root (or the root spelled differently) is
     /// recognised as that Campaign's workspace.
     /// </summary>
-    /// <remarks>
-    /// The default answers the exact match, which is all a store without an ancestor query can know; the production repository overrides it.
-    /// </remarks>
-    Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
-        GetByPathAsync(path, cancellationToken);
+    Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default);
 
     Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default);
 
