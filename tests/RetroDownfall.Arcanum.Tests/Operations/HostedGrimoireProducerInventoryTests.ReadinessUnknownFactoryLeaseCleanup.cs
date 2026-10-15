@@ -12,9 +12,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     {
         string source = ExplicitReadinessSelfAdmissionFixture("owned-lease");
 
-        Assert.Equal(1, source.Split("gate = new ReadinessWorkGate();", StringSplitOptions.None).Length - 1);
+        Assert.Equal(1, source.Split("gate = new GrimoireConnectionAdmissionGate();", StringSplitOptions.None).Length - 1);
 
-        source = source.Replace("gate = new ReadinessWorkGate();", "gate = UnknownReadinessGateFactory.Current.CreateGate();", StringComparison.Ordinal);
+        source = source.Replace("gate = new GrimoireConnectionAdmissionGate();", "gate = UnknownReadinessGateFactory.Current.CreateGate();", StringComparison.Ordinal);
 
         Assert.Equal(1, source.Split("public ValueTask DisposeAsync() => ValueTask.CompletedTask;", StringSplitOptions.None).Length - 1);
 
@@ -32,7 +32,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             {
                 internal interface IReadinessGateFactory
                 {
-                    IGrimoireConnectionAdmissionGate CreateGate() => new ReadinessWorkGate();
+                    IGrimoireConnectionAdmissionGate CreateGate() => new GrimoireConnectionAdmissionGate();
                 }
 
                 internal sealed class InheritedReadinessGateFactory : IReadinessGateFactory { }

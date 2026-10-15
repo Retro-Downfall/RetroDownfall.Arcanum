@@ -233,9 +233,11 @@ internal static partial class HostedGrimoireProducerInventory
             return null;
         }
 
-        // The guarded TryAcquireWorkLease call whose out argument declares this designation.
-        private static InvocationExpressionSyntax? LeaseAcquisitionOf(AuthoredMember member, SingleVariableDesignationSyntax designation) =>
-            designation.Parent is DeclarationExpressionSyntax
+        // The guarded TryAcquireWorkLease call whose out argument declares this designation, on a gate the Single Gate Census trusts.
+        // A lease from a gate beside the reviewed one is the origin of nothing.
+        private InvocationExpressionSyntax? LeaseAcquisitionOf(AuthoredMember member, SingleVariableDesignationSyntax designation) =>
+            AdmissionGateTrusted
+            && designation.Parent is DeclarationExpressionSyntax
             {
                 Parent: ArgumentSyntax
                 {

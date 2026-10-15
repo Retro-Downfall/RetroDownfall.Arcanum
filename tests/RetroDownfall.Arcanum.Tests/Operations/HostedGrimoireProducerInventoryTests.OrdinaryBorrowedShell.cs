@@ -117,23 +117,27 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         {
             source = source.ReplaceSdkFixtureText(
                 "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!;",
-                "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = new ClosedOrdinaryGate();",
+                "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = new RetroDownfall.Arcanum.Infrastructure.Data.GrimoireConnectionAdmissionGate();",
                 StringComparison.Ordinal);
 
-            source = source.ReplaceSdkFixtureText("private sealed class ForeignLease", """
-                private sealed class ClosedOrdinaryGate : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate
-                {
-                    public bool TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind kind,
-                        out RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease)
-                    {
-                        lease = new ForeignLease();
+            source = source.ReplaceSdkFixtureText("private sealed class ForeignLease", "internal sealed class ForeignLease", StringComparison.Ordinal);
 
-                        return true;
+            // The gate the fixture acquires from is the reviewed gate (see the Single Gate Census), and the lease it mints is the fixture's own.
+            source += """
+
+                namespace RetroDownfall.Arcanum.Infrastructure.Data
+                {
+                    internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmissionGate
+                    {
+                        public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease lease)
+                        {
+                            lease = new global::Worker.ForeignLease();
+
+                            return true;
+                        }
                     }
                 }
-
-                internal sealed class ForeignLease
-                """, StringComparison.Ordinal);
+                """;
         }
 
         CSharpCompilation compilation = Compile(source);
@@ -426,14 +430,14 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
             Assert.True(closedGateType.IsSealed);
 
-            IMethodSymbol closedGateMethod = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method("ClosedOrdinaryGate", "TryAcquireWorkLease")));
+            IMethodSymbol closedGateMethod = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method("GrimoireConnectionAdmissionGate", "TryAcquireWorkLease")));
 
             Assert.True(SymbolEqualityComparer.Default.Equals(closedGateMethod,
                 closedGateType.FindImplementationForInterfaceMember(closedAcquisitionCall.TargetMethod)));
 
             Assert.Equal(compilation.Assembly.Identity, closedGateMethod.ContainingAssembly.Identity);
 
-            AssignmentExpressionSyntax closedAssignment = Assert.Single(Method("ClosedOrdinaryGate", "TryAcquireWorkLease")
+            AssignmentExpressionSyntax closedAssignment = Assert.Single(Method("GrimoireConnectionAdmissionGate", "TryAcquireWorkLease")
                 .DescendantNodes().OfType<AssignmentExpressionSyntax>());
 
             IParameterSymbol closedOutParameter = Assert.IsAssignableFrom<IParameterSymbol>(model.GetSymbolInfo(closedAssignment.Left).Symbol);

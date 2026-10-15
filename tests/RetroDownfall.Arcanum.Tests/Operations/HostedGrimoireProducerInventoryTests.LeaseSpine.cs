@@ -98,9 +98,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                 {
                     services.AddHostedService<Worker>();
 
-                    services.AddSingleton<ProbeGate>();
+                    services.AddSingleton<GrimoireConnectionAdmissionGate>();
 
-                    services.AddSingleton<IGrimoireConnectionAdmissionGate>(sp => sp.GetRequiredService<ProbeGate>());
+                    services.AddSingleton<IGrimoireConnectionAdmissionGate>(sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
 
                     services.AddScoped<LongRestSweepCoordinator>();
 
@@ -132,7 +132,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                     bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease);
                 }
 
-                public sealed class ProbeGate : IGrimoireConnectionAdmissionGate
+                public sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmissionGate
                 {
                     public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)
                     {

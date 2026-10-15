@@ -28,6 +28,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Lazy<bool> efEventDataSpelled;
 
+        private readonly Lazy<string[]> unreviewedGateImplementations;
+
         internal InventoryFacts(IReadOnlyList<CSharpCompilation> compilations)
         {
             dbContextConnectionReplacement = new(
@@ -52,6 +54,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             efEventDataSpelled = new(
                 () => FindSpelledEfEventData(compilations, SemanticModelOf),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+
+            unreviewedGateImplementations = new(
+                () => FindUnreviewedGateImplementations(compilations),
                 LazyThreadSafetyMode.ExecutionAndPublication);
         }
 
@@ -84,5 +90,9 @@ internal static partial class HostedGrimoireProducerInventory
         // True when any analysed source spells the name of an EF event-data type in a position that could create one or
         // derive from one. When false, every event-data value is an instance Entity Framework itself raised.
         internal bool EfEventDataSpelled => efEventDataSpelled.Value;
+
+        // Every concrete type of the analysed source that implements the admission gate contract and is not the reviewed gate, and
+        // a reviewed gate declared twice. Empty when the source has exactly the reviewed implementation (see the Single Gate Census).
+        internal string[] UnreviewedGateImplementations => unreviewedGateImplementations.Value;
     }
 }

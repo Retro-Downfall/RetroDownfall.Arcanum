@@ -57912,6 +57912,12 @@ internal static partial class HostedGrimoireProducerInventory
                     continue;
                 }
 
+                // The Single Gate Census: a lease from a gate the census does not trust retains nothing.
+                if (admissionName == "TryAcquireWorkLease" && !AdmissionGateTrusted)
+                {
+                    continue;
+                }
+
                 // CK-3: a group begun on a receiver that is not a must-alias of a work lease is retained by nothing.
                 if (admissionName == "TryBeginExternalEffectGroup" && !LeaseReceiverProven(member, admission, out _))
                 {
@@ -58732,6 +58738,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return HostedProducerSiteKind.OrdinaryConnectionRoute;
             }
 
+            // The Single Gate Census: while the analysed source declares a gate other than the reviewed one, an acquisition through the
+            // contract may be that gate's, and nothing it returns is an admitted lease.
+            if (callee == GateAcquisitionCallee && !AdmissionGateTrusted)
+            {
+                RefuseUnreviewedGate(node);
+
+                return null;
+            }
+
             if ((callee is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")
                 && (IsGuardedAdmission(node)
                     || callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"
@@ -59464,7 +59479,8 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     string key = TypeKey(contract) + "." + slot.Name;
 
-                    if ((Vocabulary.ContainsKey(key) || key is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease") && SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot)?.OriginalDefinition, symbol.OriginalDefinition))
+                    // Only the reviewed gate's own slot is the acquisition: an implementation of the contract anywhere else is an authored method.
+                    if ((Vocabulary.ContainsKey(key) || key is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" || key == GateAcquisitionCallee && TypeKey(type) == ReviewedAdmissionGate) && SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot)?.OriginalDefinition, symbol.OriginalDefinition))
                     {
                         candidates.Add(key);
                     }
