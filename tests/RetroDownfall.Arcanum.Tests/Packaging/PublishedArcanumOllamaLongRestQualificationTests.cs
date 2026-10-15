@@ -243,34 +243,10 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
     /// </summary>
     private static async Task AssertEmbeddingDimensionsAsync(LongRestQualificationOptions options)
     {
-        using SocketsHttpHandler handler = LocalOllamaQualificationGuards.CreateLoopbackOnlyHttpHandler();
-
-        using HttpClient client = new(handler, disposeHandler: false)
-        {
-            Timeout = Timeout.InfiniteTimeSpan,
-        };
-
-        using CancellationTokenSource timeout = new(TimeSpan.FromMinutes(5));
-
-        using StringContent request = new(
-            JsonSerializer.Serialize(new Dictionary<string, string> { ["model"] = options.EmbeddingModel, ["input"] = "dimension probe" }),
-            Encoding.UTF8,
-            "application/json");
-
-        using HttpResponseMessage response = await client.PostAsync(new Uri(options.Endpoint, "embeddings"), request, timeout.Token);
-
-        byte[]? responseBytes = await LocalOllamaQualificationGuards.ReadCappedResponseBytesAsync(
-            response.Content,
-            MaxModelCatalogResponseBytes,
-            timeout.Token);
-
-        Assert.NotNull(responseBytes);
-
-        Assert.True(response.IsSuccessStatusCode, $"Ollama /v1/embeddings returned {(int)response.StatusCode} for the embedding model '{options.EmbeddingModel}'.");
-
-        using JsonDocument document = JsonDocument.Parse(responseBytes);
-
-        int measured = document.RootElement.GetProperty("data")[0].GetProperty("embedding").GetArrayLength();
+        int measured = await LongRestQualificationPreflight.MeasureEmbeddingDimensionsAsync(
+            options.Endpoint,
+            options.EmbeddingModel,
+            CancellationToken.None);
 
         string? finding = LongRestQualificationChecks.EmbeddingDimensionsFinding(options.EmbeddingModel, options.EmbeddingDimensions, measured);
 

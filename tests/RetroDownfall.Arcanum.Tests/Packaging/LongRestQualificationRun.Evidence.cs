@@ -138,7 +138,19 @@ internal sealed partial class LongRestQualificationRun
     /// <summary>The readiness report after a scenario: not Unhealthy, and the Long Rest component present and healthy.</summary>
     private async Task CheckHealthAsync(string scenario, CancellationToken cancellationToken)
     {
-        LongRestApiHealth health = await Api.GetHealthAsync(cancellationToken);
+        LongRestApiHealth health;
+
+        try
+        {
+            health = await Api.GetHealthAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException or JsonException or HttpRequestException or FormatException)
+        {
+            // An answer the run cannot read is a finding about the host, not a reason to lose the scenarios that follow.
+            RecordFinding($"{scenario}: GET /api/health could not be read ({exception.GetType().Name}: {LongRestQualificationChecks.NoValues(exception.Message)}).");
+
+            return;
+        }
 
         string? finding = LongRestQualificationChecks.HealthFinding(scenario, health);
 
@@ -170,7 +182,20 @@ internal sealed partial class LongRestQualificationRun
 
         foreach (LongRestApiMemory memory in named)
         {
-            LongRestApiReceipt receipt = await Api.GetReceiptAsync(memory.LongRestReceiptId!, cancellationToken);
+            LongRestApiReceipt receipt;
+
+            try
+            {
+                receipt = await Api.GetReceiptAsync(memory.LongRestReceiptId!, cancellationToken);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException or JsonException or HttpRequestException or FormatException)
+            {
+                problems++;
+
+                RecordFinding($"{scenario}: the receipt memory {Short(memory.Id)} names could not be fetched through the API ({exception.GetType().Name}: {LongRestQualificationChecks.NoValues(exception.Message)}).");
+
+                continue;
+            }
 
             foreach (string problem in LongRestQualificationChecks.ReceiptProblems(receipt, memory, corpus))
             {

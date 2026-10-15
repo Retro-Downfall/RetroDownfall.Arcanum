@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
 
@@ -270,6 +271,16 @@ internal static class LongRestQualificationChecks
         return failures.Length == 0 ? "none" : string.Join("; ", failures);
     }
 
+    /// <summary>An exception message bounded for a finding: the first line, at most 200 characters, so a response body can never be echoed whole.</summary>
+    internal static string NoValues(string message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        string firstLine = message.Split('\n')[0].TrimEnd('\r');
+
+        return firstLine.Length <= 200 ? firstLine : firstLine[..200];
+    }
+
     internal static string NormalizeIdentity(string identity) =>
         identity.Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
 
@@ -340,5 +351,64 @@ internal static class LongRestQualificationKillPoint
                     $"Scenario B: no Long Rest chat request reached the provider within {bound}; the operation is {snapshot}. Traffic so far: {describeTraffic()}.");
             }
         }
+    }
+}
+
+/// <summary>The questions the qualification puts to the embedding model before it creates anything.</summary>
+internal static class LongRestQualificationPreflight
+{
+    private const int MaximumResponseBytes = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// Asks <paramref name="model"/> for one vector the way the host's own Saga writes do, with no size requested, and returns its length.
+    /// Only the loopback-only handler is used: no redirect, no ambient proxy.
+    /// </summary>
+    public static async Task<int> MeasureEmbeddingDimensionsAsync(Uri endpoint, string model, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(endpoint);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+
+        using SocketsHttpHandler handler = LocalOllamaQualificationGuards.CreateLoopbackOnlyHttpHandler();
+
+        using HttpClient client = new(handler, disposeHandler: false)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+
+        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+
+        using MemoryStream body = new();
+
+        using (Utf8JsonWriter writer = new(body))
+        {
+            writer.WriteStartObject();
+
+            writer.WriteString("model", model);
+
+            writer.WriteString("input", "dimension probe");
+
+            writer.WriteEndObject();
+        }
+
+        using ByteArrayContent request = new(body.ToArray());
+
+        request.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        using HttpResponseMessage response = await client.PostAsync(new Uri(endpoint, "embeddings"), request, timeout.Token);
+
+        byte[]? responseBytes = await LocalOllamaQualificationGuards.ReadCappedResponseBytesAsync(response.Content, MaximumResponseBytes, timeout.Token);
+
+        if (!response.IsSuccessStatusCode || responseBytes is null)
+        {
+            throw new InvalidOperationException(
+                string.Create(CultureInfo.InvariantCulture, $"Ollama /v1/embeddings returned {(int)response.StatusCode} for the embedding model '{model}'."));
+        }
+
+        using JsonDocument document = JsonDocument.Parse(responseBytes);
+
+        return document.RootElement.GetProperty("data")[0].GetProperty("embedding").GetArrayLength();
     }
 }

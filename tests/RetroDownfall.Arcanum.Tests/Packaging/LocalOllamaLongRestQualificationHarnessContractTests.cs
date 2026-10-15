@@ -784,6 +784,60 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
     }
 
     [Fact]
+    public void An_unreadable_answer_is_reported_by_its_first_line_and_never_echoed_whole()
+    {
+        Assert.Equal("first", LongRestQualificationChecks.NoValues("first\r\nsecond"));
+        Assert.Equal(200, LongRestQualificationChecks.NoValues(new string('x', 5000)).Length);
+        Assert.Equal(string.Empty, LongRestQualificationChecks.NoValues(string.Empty));
+    }
+
+    [Fact]
+    public async Task The_dimension_probe_asks_for_one_vector_without_a_size_and_reads_its_length()
+    {
+        string? requestBody = null;
+
+        await using StubUpstream upstream = await StubUpstream.StartAsync(async context =>
+        {
+            using StreamReader reader = new(context.Request.Body);
+
+            requestBody = await reader.ReadToEndAsync();
+
+            context.Response.ContentType = "application/json";
+
+            await context.Response.WriteAsync("{\"data\":[{\"embedding\":[0.1,0.2,0.3,0.4,0.5]}]}");
+        });
+
+        int measured = await LongRestQualificationPreflight.MeasureEmbeddingDimensionsAsync(upstream.Endpoint, "qwen3-embedding:8b", CancellationToken.None);
+
+        Assert.Equal(5, measured);
+
+        using JsonDocument body = JsonDocument.Parse(requestBody!);
+
+        Assert.Equal("qwen3-embedding:8b", body.RootElement.GetProperty("model").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("input").GetString()));
+
+        // As the host's own Saga writes ask: the provider's default size, never a requested one.
+        Assert.False(body.RootElement.TryGetProperty("dimensions", out _));
+    }
+
+    [Fact]
+    public async Task The_dimension_probe_fails_with_the_status_when_the_provider_refuses_the_model()
+    {
+        await using StubUpstream upstream = await StubUpstream.StartAsync(context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+
+            return context.Response.WriteAsync("{\"error\":\"model not found\"}");
+        });
+
+        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => LongRestQualificationPreflight.MeasureEmbeddingDimensionsAsync(upstream.Endpoint, "missing-model", CancellationToken.None));
+
+        Assert.Contains("404", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("missing-model", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_seeding_failure_lists_what_the_provider_answered_by_kind_and_status()
     {
         LongRestRecordedRequest[] traffic =
