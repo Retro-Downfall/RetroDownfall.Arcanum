@@ -168,6 +168,15 @@ internal static class LongRestQualificationChecks
             problems.Add($"the LongRest component is {longRest.Status}: {longRest.Detail ?? "no detail"}");
         }
 
+        // A sweep that has settled (completed, or cancelled by the operator, or recovered after a crash) leaves nothing awaiting repair, so the
+        // durable-operations row is Healthy again. Degraded here would be the reconciliation pass's last count outliving the work it counted.
+        LongRestApiHealthComponent? durable = health.Components.FirstOrDefault(static component => component.Name == "DurableOperations");
+
+        if (durable is not null && !string.Equals(durable.Status, "Healthy", StringComparison.Ordinal))
+        {
+            problems.Add($"the DurableOperations component is {durable.Status} with every sweep settled: {durable.Detail ?? "no detail"}");
+        }
+
         return problems.Count == 0 ? null : $"{scenario}: GET /api/health: {string.Join("; ", problems)}.";
     }
 

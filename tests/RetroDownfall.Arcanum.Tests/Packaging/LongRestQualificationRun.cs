@@ -142,12 +142,18 @@ internal sealed partial class LongRestQualificationRun(
     /// </summary>
     public async Task CompleteAsync(CancellationToken cancellationToken)
     {
-        await StopHostGracefullyAsync(cancellationToken);
+        await StopAsync(cancellationToken);
 
+        AssertNoFindings();
+    }
+
+    /// <summary>Stops the last host gracefully, so the findings of several runs can be reported together after all of them have run.</summary>
+    public Task StopAsync(CancellationToken cancellationToken) => StopHostGracefullyAsync(cancellationToken);
+
+    public void AssertNoFindings() =>
         Assert.True(
             _findings.Count == 0,
             "The scenarios completed, but Long Rest has product-level findings:\n- " + string.Join("\n- ", _findings));
-    }
 
     public async Task<IReadOnlyList<Exception>> CleanupAsync(string? masterApiKey)
     {
@@ -250,9 +256,9 @@ internal sealed partial class LongRestQualificationRun(
 
         await AssertNativeAotMetadataAsync(cancellationToken);
 
-        // The exporter should listen from the host's start. Authenticated requests are answered, then the first scrape must carry them:
-        // when it does not, the exporter only starts at that scrape and loses everything measured before it, which is a product defect
-        // and a finding on every restart.
+        // The exporter listens from the host's start. Authenticated requests are answered, then the first scrape must carry them: when
+        // it does not, the exporter only started at that scrape and lost everything measured before it (the counters a restart's recovery
+        // moves included), which is a finding on every restart.
         _ = await Api.GetMetaAsync(cancellationToken);
 
         _ = await Api.GetMetaAsync(cancellationToken);
@@ -265,10 +271,6 @@ internal sealed partial class LongRestQualificationRun(
         {
             RecordFinding(lateExporter);
         }
-
-        // That scrape is also a temporary workaround, kept only until the exporter starts with the host: the listener never replays earlier
-        // measurements, so the counters a sweep moves can be compared only if a scrape came before it. The finding above is what shows
-        // whether the workaround is still needed; the product defect is reported with the #91 delivery, not fixed in this stream.
 
         _log.Info($"Published host restarted on the same home ({description})");
     }

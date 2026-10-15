@@ -31,8 +31,8 @@ public sealed class LongRestSweepCoordinatorTests
 
             Assert.Equal(LongRunningOperationState.Running, actual.State);
 
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Accepted summary.\"}";
         };
 
         LongRestSweepProgress result = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(requested.Id, null, CancellationToken.None));

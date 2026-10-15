@@ -5,6 +5,7 @@ using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.LongRest;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
@@ -361,7 +362,10 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Contains("AssertNativeAotPublish", test, StringComparison.Ordinal);
         Assert.Contains("LocalOllamaQualificationGuards.IsNativeBinary", test, StringComparison.Ordinal);
         Assert.Contains("PublishedTestProcessIsolation.Create(\"ollama-long-rest\")", test, StringComparison.Ordinal);
-        Assert.Contains("isolation.Delete()", test, StringComparison.Ordinal);
+        Assert.Contains("PublishedTestProcessIsolation.Create(\"ollama-long-rest-mutiny\")", test, StringComparison.Ordinal);
+        Assert.Contains("toDelete.Delete()", test, StringComparison.Ordinal);
+        Assert.Contains("mutiny.RunMutinySweepAsync", test, StringComparison.Ordinal);
+        Assert.Contains("AssertNoPlaintextCredentialFiles(mutinyIsolation!.ProcessTemporaryDirectory", test, StringComparison.Ordinal);
         Assert.Contains("AggregateException", test, StringComparison.Ordinal);
         Assert.Contains("cleanupFailures.Insert(0, primaryFailure)", test, StringComparison.Ordinal);
         Assert.Contains("AssertNoPlaintextCredentialFiles", test, StringComparison.Ordinal);
@@ -752,21 +756,42 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Equal((null, null), LongRestQualificationProxy.ReadUsage(Encoding.UTF8.GetBytes("not json"), streaming: false));
     }
 
+    public static TheoryData<string, string> AdjudicationAnswers => new()
+    {
+        { LongRestScriptedVerdicts.AllPairs(3), "valid: every pair asserted" },
+
+        { LongRestScriptedVerdicts.NoMatches(3), "valid: no pair asserted" },
+
+        { LongRestScriptedVerdicts.Groups(3, [1, 2]), "valid: some pairs asserted" },
+
+        // A pair asserted in one direction only is asserted.
+        { "{\"memories\":[{\"memory\":1,\"fact\":\"a\",\"sameAs\":[]},{\"memory\":2,\"fact\":\"a\",\"sameAs\":[1]},{\"memory\":3,\"fact\":\"a\",\"sameAs\":[1,2]}]}", "valid: every pair asserted" },
+
+        // References to a memory that is not there, to itself, and from a memory listed twice assert nothing.
+        { "{\"memories\":[{\"memory\":1,\"fact\":\"a\",\"sameAs\":[1,9]},{\"memory\":2,\"fact\":\"b\",\"sameAs\":[]}]}", "valid: no pair asserted" },
+
+        { "{\"memories\":[{\"memory\":2,\"fact\":\"a\",\"sameAs\":[1]},{\"memory\":2,\"fact\":\"a\",\"sameAs\":[1]}]}", "valid: no pair asserted" },
+
+        // The version 1 answers, and anything outside the closed shape, are invalid.
+        { "{\"kind\":\"NoChange\",\"survivorVersionId\":null}", "invalid: not the member-verdict shape" },
+
+        { "{\"memories\":[{\"memory\":1,\"fact\":\"a\"}]}", "invalid: not the member-verdict shape" },
+
+        { "{\"memories\":[],\"survivorVersionId\":null}", "invalid: not the member-verdict shape" },
+
+        { "{\"memories\":[{\"memory\":\"1\",\"fact\":\"a\",\"sameAs\":[]}]}", "invalid: not the member-verdict shape" },
+
+        { "{\"memories\":[{\"memory\":1,\"fa", "invalid: not JSON" },
+    };
+
     [Theory]
-    [InlineData("{\"kind\":\"NoChange\",\"survivorVersionId\":null}", "valid NoChange")]
-    [InlineData("{\"kind\":\"EquivalentObservations\",\"survivorVersionId\":null}", "valid EquivalentObservations")]
-    [InlineData("{\"kind\":\"EquivalentObservations\",\"survivorVersionId\":\"e3783769-efaf-482e-b247-ee20691725dc\"}", "invalid: EquivalentObservations names a survivor")]
-    [InlineData("{\"kind\":\"Supersession\",\"survivorVersionId\":\"e3783769-efaf-482e-b247-ee20691725dc\"}", "valid Supersession")]
-    [InlineData("{\"kind\":\"Supersession\",\"survivorVersionId\":\"11111111-1111-1111-1111-111111111111\"}", "invalid: Supersession without a listed survivor")]
-    [InlineData("{\"kind\":\"Supersession\",\"survivorVersionId\":null}", "invalid: Supersession without a listed survivor")]
-    [InlineData("{\"kind\":\"Merge\",\"survivorVersionId\":null}", "invalid: unknown kind")]
-    [InlineData("{\"kind\":\"NoCha", "invalid: not JSON")]
+    [MemberData(nameof(AdjudicationAnswers))]
     public void Answer_grading_applies_the_rule_the_adjudication_prompt_states(string answer, string expected)
     {
         LongRestRecordedRequest request = new()
         {
             Kind = LongRestProviderRequestKind.Adjudication,
-            ProviderVisibleText = "Memory 0125f9cf-684e-4371-8f0e-bc1090f71e0e\nVersion e3783769-efaf-482e-b247-ee20691725dc\nContentHash AA\nA fact.\n",
+            UserText = "Memory 01\nA fact.\n\nMemory 02\nAnother fact.\n\nMemory 03\nA third fact.\n\n",
             ResponseContent = answer,
         };
 
@@ -778,7 +803,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
     {
         Assert.Equal(
             "invalid: cut off at the output cap",
-            LongRestQualificationRun.GradeAdjudication(new LongRestRecordedRequest { ResponseContent = "{\"kind\":\"No", FinishReason = "length" }));
+            LongRestQualificationRun.GradeAdjudication(new LongRestRecordedRequest { ResponseContent = "{\"memories\":[{\"memory\":1,\"fa", FinishReason = "length" }));
 
         Assert.Equal("invalid: no content", LongRestQualificationRun.GradeAdjudication(new LongRestRecordedRequest()));
         Assert.Equal("invalid: no content", LongRestQualificationRun.GradeSummary(null, 1766));
@@ -793,17 +818,41 @@ public sealed class LocalOllamaLongRestQualificationContractTests
     }
 
     [Fact]
-    public void Pack_grading_reads_the_memories_an_adjudication_request_names()
+    public void Pack_grading_reads_the_memories_an_adjudication_request_lists_by_their_text()
     {
-        string request = "Compare the supplied exact observations.\nMemory 0125f9cf-684e-4371-8f0e-bc1090f71e0e\nVersion 54017d53-070d-4d68-ad82-b7a583a1746d\n"
-            + "ContentHash B6F6\nThe user owns a grey tabby cat named Mochi.\n\nMemory 0bc1ab43-124a-44c6-ae12-a7efcfee9873\nVersion 1a9c6943-8da5-4605-bc64-b2f47a6eef45\n"
-            + "ContentHash AA00\nMemory of the user's childhood home.\n";
+        string userText = "Memory 01\nThe user owns a grey tabby cat named Mochi.\n\nMemory 02\nThe user's cat is a grey tabby named Mochi.\n\n";
 
         Assert.Equal(
-            ["0125f9cf-684e-4371-8f0e-bc1090f71e0e", "0bc1ab43-124a-44c6-ae12-a7efcfee9873"],
-            LongRestQualificationRun.ReadPackMemories(request));
+            ["The user owns a grey tabby cat named Mochi.", "The user's cat is a grey tabby named Mochi."],
+            LongRestQualificationRun.ReadPackContents(userText));
 
-        Assert.Empty(LongRestQualificationRun.ReadPackMemories("Observation 01\nA summary child.\n"));
+        Assert.Equal(2, LongRestQualificationProxy.CountMemories(userText));
+        Assert.Equal(0, LongRestQualificationProxy.CountMemories("Observation 01\nA summary child.\n"));
+        Assert.Empty(LongRestQualificationRun.ReadPackContents("Observation 01\nA summary child.\n"));
+
+        // A line of a memory that merely starts with the word is not a place: a place is exactly "Memory" and two digits.
+        Assert.Equal(1, LongRestQualificationProxy.CountMemories("Memory 01\nMemory of the user's childhood home.\n\n"));
+    }
+
+    [Fact]
+    public void The_forwarder_reads_the_last_user_message_and_the_reasoning_effort_of_a_request()
+    {
+        using JsonDocument body = JsonDocument.Parse("{\"reasoning_effort\":\"none\",\"messages\":[{\"role\":\"system\",\"content\":\"Memory 01\\nexample\"},{\"role\":\"user\",\"content\":\"Memory 01\\nA.\\n\\nMemory 02\\nB.\\n\\n\"}]}");
+
+        string user = LongRestQualificationProxy.UserMessageText(body.RootElement);
+
+        Assert.Equal(2, LongRestQualificationProxy.CountMemories(user));
+        Assert.DoesNotContain("example", user, StringComparison.Ordinal);
+        Assert.Equal(string.Empty, LongRestQualificationProxy.UserMessageText(null));
+
+        byte[] replaced = LongRestQualificationProxy.ReplaceMessageContent(
+            Encoding.UTF8.GetBytes("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"old\"}}],\"usage\":{\"prompt_tokens\":21,\"completion_tokens\":34}}"),
+            "{\"memories\":[]}");
+
+        Assert.Equal("{\"memories\":[]}", LongRestQualificationProxy.ReadMessageContent(replaced));
+        Assert.Equal((21L, 34L), LongRestQualificationProxy.ReadUsage(replaced, streaming: false));
+        Assert.Equal("stop", LongRestQualificationProxy.ReadFinishReason(replaced));
+        Assert.Throws<InvalidOperationException>(() => LongRestQualificationProxy.ReplaceMessageContent(Encoding.UTF8.GetBytes("{\"choices\":[]}"), "x"));
     }
 
     [Fact]
@@ -859,9 +908,22 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.True(report.Vector.Cross.Median < 0.5);
         Assert.Equal(3 + 1, report.Vector.Within.Count);
         Assert.Equal(21 - 4, report.Vector.Cross.Count);
-        Assert.Equal(0.92, report.Vector.ConfiguredThreshold);
-        Assert.Equal(12, report.Lexical.ConfiguredThreshold);
+        Assert.Equal(LongRestDiscoveryLimits.LexicalMinimumCoveragePermille, report.Lexical.ConfiguredThreshold);
         Assert.Null(report.SummaryGate);
+
+        // The Pairing Gate: seven leaves are too few for a distribution of their own, so every memory uses the fallback floor. Every true pair is
+        // far above it and every other pair far below it, and nothing is left for the model to be the only defence against.
+        CalibrationFloors floors = Assert.IsType<CalibrationFloors>(report.Floors);
+
+        Assert.Equal(0.92, floors.Floors.Median);
+        Assert.Equal(report.Floors.Floors.Median, report.Vector.ConfiguredThreshold);
+        Assert.Equal(8, floors.WithinPairs);
+        Assert.Equal(8, floors.WithinAtOrAboveFloor);
+        Assert.Equal(1.0, floors.WithinRetained);
+        Assert.Equal(0, floors.CrossAtOrAboveFloor);
+        Assert.Equal(0, floors.CrossPairsAtOrAboveEitherFloor);
+        Assert.True(floors.CrossMargin.Minimum > 0.4);
+        Assert.Equal(corpus.Length, floors.Anchors.Count);
 
         // Singles never pair with one another: an unrelated memory is no cluster.
         Assert.False(LongRestQualificationCalibration.SameCluster(corpus[5], corpus[6]));
@@ -876,7 +938,64 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         using JsonDocument json = JsonDocument.Parse(LongRestQualificationCalibration.RenderJson(report));
 
         Assert.Equal(7, json.RootElement.GetProperty("corpusMemories").GetInt32());
-        Assert.Equal(12, json.RootElement.GetProperty("lexical").GetProperty("configuredThreshold").GetDouble());
+        Assert.Equal(LongRestDiscoveryLimits.LexicalMinimumCoveragePermille, json.RootElement.GetProperty("lexical").GetProperty("configuredThreshold").GetDouble());
+        Assert.Equal(8, json.RootElement.GetProperty("pairingGate").GetProperty("withinAtOrAboveFloor").GetInt32());
+        Assert.Equal(7, json.RootElement.GetProperty("pairingGate").GetProperty("anchors").GetArrayLength());
+        Assert.Contains("Pairing Gate", text, StringComparison.Ordinal);
+        Assert.Contains("every other pair is below its anchor's floor", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Calibration_names_the_pairs_an_embedding_model_leaves_at_or_above_a_floor_as_the_residual()
+    {
+        // A model that does not separate topics: one cat memory sits close to the dog memories in its space.
+        CalibrationMemory[] corpus =
+        [
+            Memory("a1", "dog", "The user's dog is a beagle named Biscuit.", 1f, 0f),
+            Memory("a2", "dog", "The user owns a beagle called Biscuit.", 0.98f, 0.1f),
+            Memory("b1", "cat", "The user's cat is a grey tabby named Mochi.", 0.96f, 0.28f),
+            Memory("b2", "cat", "The user has a grey tabby cat called Mochi.", 0.2f, 0.98f),
+        ];
+
+        CalibrationFloors floors = Assert.IsType<CalibrationFloors>(LongRestQualificationCalibration.Calibrate(corpus, [], new Dictionary<string, string?>(), 1766).Floors);
+
+        // b1 is at or above the fallback floor (0.92) of both dog memories, and each of the dog memories is above b1's: three unordered pairs... (a1,b1), (a2,b1).
+        Assert.True(floors.CrossAtOrAboveFloor >= 4);
+        Assert.Equal(2, floors.CrossPairsAtOrAboveEitherFloor);
+        Assert.True(floors.CrossMargin.Minimum < 0);
+
+        string text = LongRestQualificationCalibration.RenderText(LongRestQualificationCalibration.Calibrate(corpus, [], new Dictionary<string, string?>(), 1766), Options);
+
+        Assert.Contains("documented residual of an embedding model that does not separate topics", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Calibration_reads_the_floor_from_every_leaf_of_the_generation_and_not_only_the_labelled_corpus()
+    {
+        // The labelled memories are two tight pairs; the generation also holds twenty unrelated leaves, which give each anchor a distribution of its own.
+        CalibrationMemory[] corpus =
+        [
+            Memory("a1", "dog", "The user's dog is a beagle named Biscuit.", 1f, 0f),
+            Memory("a2", "dog", "The user owns a beagle called Biscuit.", 0.99f, 0.1f),
+        ];
+
+        List<CalibrationLeaf> leaves = [new("a1", [1f, 0f]), new("a2", [0.99f, 0.1f])];
+
+        for (int index = 0; index < 20; index++)
+        {
+            double angle = (0.5 + (index * 0.15)) * Math.PI / 2;
+
+            leaves.Add(new($"z{index:D2}", [(float)Math.Cos(angle), (float)Math.Sin(angle)]));
+        }
+
+        CalibrationFloors alone = LongRestQualificationCalibration.Floors(corpus, [.. leaves.Take(2)]);
+
+        CalibrationFloors among = LongRestQualificationCalibration.Floors(corpus, leaves);
+
+        // Two leaves cannot set a floor (the fallback is 920 permille); with the other leaves the distribution is the generation's own.
+        Assert.Equal(0.92, alone.Floors.Median);
+        Assert.NotEqual(0.92, among.Floors.Median);
+        Assert.InRange(among.Floors.Median, 0.5, 1.0);
     }
 
     [Fact]

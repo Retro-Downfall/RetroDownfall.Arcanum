@@ -251,14 +251,26 @@ public static class ArcanumMetrics
         "Parked Long Rest sweeps readmitted");
 
     /// <summary>
-    /// Discovered neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
-    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>pack_limit</c>:
-    /// the anchor already has its three packs). Never carries an identity or any content.
+    /// Nominated neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
+    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>unpaired</c>: the Pairing Gate
+    /// did not pair it with the anchor, because it is below the anchor's Background Floor or has no vector to judge; <c>incohesive</c>: it is paired
+    /// with the anchor but not with a member of every pack that had room; <c>pack_limit</c>: the anchor already has its three clique packs).
+    /// Never carries an identity or any content.
     /// </summary>
     public static readonly Counter<long> LongRestPackSkippedCandidatesTotal = Meter.CreateCounter<long>(
         "arcanum.long_rest.sweep.skipped_candidates",
         "{candidates}",
         "Long Rest neighbours the group packer skipped, by reason");
+
+    /// <summary>
+    /// The Background Floor, in thousandths of cosine, of each anchor that had at least one nominated neighbour: the cosine a nominee needed
+    /// to be paired with it. Fixed buckets from 500 to 1000; a distribution that sits at the top says the embedding model does not separate
+    /// topics in this installation's memories. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Histogram<int> LongRestPairingFloor = Meter.CreateHistogram<int>(
+        "arcanum.long_rest.discovery.pairing_floor",
+        "{permille}",
+        "Long Rest Background Floor of anchors with nominated neighbours, in thousandths of cosine");
 
     /// <summary>
     /// Hierarchy children too large for any summary request of the recipe's input budget, carried unsummarized instead of folded. Counted

@@ -7,10 +7,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed record LongRestStoredWork(Guid GenerationId, Guid OperationId, string ItemId, LongRestWorkKind Kind,
     LongRestSweepScopeKind ScopeKind, Guid? CampaignId, CovenantDigest? PartitionDigest, LongRestStoredFence Fence,
-    CovenantDigest SourceDigest, CovenantDigest RecipeDigest)
+    CovenantDigest SourceDigest, CovenantDigest RecipeDigest, int PairingFloorPermille = 0)
 {
     internal static LongRestStoredWork From(LongRestWorkIdentity work) => new(work.GenerationId, work.OperationId, work.ItemId, work.Kind,
-        work.Scope.Kind, work.Scope.CampaignId, work.Scope.ProtectedPartitionDigest, LongRestStoredFence.From(work.Fence), work.SourceDigest, work.RecipeDigest);
+        work.Scope.Kind, work.Scope.CampaignId, work.Scope.ProtectedPartitionDigest, LongRestStoredFence.From(work.Fence), work.SourceDigest, work.RecipeDigest,
+        work.PairingFloorPermille);
 
     internal LongRestWorkIdentity ToDomain()
     {
@@ -26,7 +27,7 @@ internal sealed record LongRestStoredWork(Guid GenerationId, Guid OperationId, s
             throw new InvalidDataException();
         }
 
-        return new(GenerationId, OperationId, ItemId, Kind, parsed.Value, Fence.ToDomain(parsed.Value), SourceDigest, RecipeDigest);
+        return new(GenerationId, OperationId, ItemId, Kind, parsed.Value, Fence.ToDomain(parsed.Value), SourceDigest, RecipeDigest, PairingFloorPermille);
     }
 }
 

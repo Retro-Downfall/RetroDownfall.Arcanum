@@ -66,15 +66,20 @@ internal sealed partial class LongRestQualificationRun
     /// Grades every consolidation the sweeps applied against the corpus's labels. A memory belongs under a survivor when both say the same
     /// thing (one cluster, or the same text); a memory folded into a survivor of another topic is suppressed from recall for good, so a
     /// sweep that does that has destroyed data. The decision is the model's, over a pack discovery assembled, so this is where a weak
-    /// model, a loose gate or an all-or-nothing group decision shows.
+    /// model, a loose gate or an all-or-nothing group decision shows. A finding is recorded when more memories were folded into a survivor of
+    /// another topic than <paramref name="allowedWrong"/>.
     /// </summary>
-    private void GradeConsolidations(string scenario, IReadOnlyList<LongRestApiMemory> memories)
+    private FoldGrade GradeConsolidations(string scenario, IReadOnlyList<LongRestApiMemory> memories, int allowedWrong = 0)
     {
         Dictionary<string, LongRestSeededMemory> seeded = _corpus.ToDictionary(static memory => NormalizeIdentity(memory.Id), StringComparer.Ordinal);
 
+        HashSet<string> duplicateLabels = DuplicateLabels();
+
         List<string> wrong = [];
 
-        int right = 0;
+        int exact = 0;
+
+        int paraphrase = 0;
 
         foreach (LongRestApiMemory memory in memories.Where(static memory => memory.ConsolidatedIntoMemoryId is not null))
         {
@@ -90,26 +95,65 @@ internal sealed partial class LongRestQualificationRun
             bool sameThing = string.Equals(source.Content, survivor.Content, StringComparison.Ordinal)
                 || (source.Label == survivor.Label && source.Label != LongRestQualificationCorpus.SingleLabel);
 
-            if (sameThing)
-            {
-                right++;
-            }
-            else
+            if (!sameThing)
             {
                 wrong.Add($"\"{source.Content}\" ({source.Label}) into \"{survivor.Content}\" ({survivor.Label})");
             }
+            else if (duplicateLabels.Contains(source.Label))
+            {
+                exact++;
+            }
+            else
+            {
+                paraphrase++;
+            }
         }
+
+        FoldGrade grade = new(exact, paraphrase, wrong.Count, PossibleExactFolds(), PossibleParaphraseFolds());
 
         Observe(string.Create(
             CultureInfo.InvariantCulture,
-            $"{scenario} consolidation quality: {right} memories folded into a survivor that says the same thing, {wrong.Count} folded into a survivor about something else"));
+            $"{scenario} consolidation quality: {exact + paraphrase} memories folded into a survivor that says the same thing ({exact} of {grade.PossibleExact} possible exact-duplicate folds, {paraphrase} of {grade.PossibleParaphrase} possible paraphrase folds), {wrong.Count} folded into a survivor about something else"));
 
-        if (wrong.Count > 0)
+        if (wrong.Count > allowedWrong)
         {
             RecordFinding(string.Create(
                 CultureInfo.InvariantCulture,
-                $"{scenario}: Long Rest folded {wrong.Count} memories into survivors of a different topic ({right} correctly), which suppresses them from recall. For example: {string.Join("; ", wrong.Take(5))}."));
+                $"{scenario}: Long Rest folded {wrong.Count} memories into survivors of a different topic ({exact + paraphrase} correctly), which suppresses them from recall{(allowedWrong > 0 ? string.Create(CultureInfo.InvariantCulture, $" (the embedding model leaves {allowedWrong} such pairs at or above their anchor's floor)") : string.Empty)}. For example: {string.Join("; ", wrong.Take(5))}."));
         }
+
+        return grade;
+    }
+
+    /// <summary>The labels whose ordinary memories are all one text: the exact-duplicate groups, which a sweep folds without a model call.</summary>
+    private HashSet<string> DuplicateLabels() =>
+        new(
+            _corpus
+                .Where(static memory => memory.Role == LongRestCorpusRole.Ordinary && memory.Label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel))
+                .GroupBy(static memory => memory.Label, StringComparer.Ordinal)
+                .Where(static group => group.Count() > 1 && group.Select(static memory => memory.Content).Distinct(StringComparer.Ordinal).Count() == 1)
+                .Select(static group => group.Key),
+            StringComparer.Ordinal);
+
+    /// <summary>The folds an exact-duplicate group allows: all of its memories but one.</summary>
+    private int PossibleExactFolds()
+    {
+        HashSet<string> duplicates = DuplicateLabels();
+
+        return _corpus.Count(memory => memory.Role == LongRestCorpusRole.Ordinary && duplicates.Contains(memory.Label)) - duplicates.Count;
+    }
+
+    /// <summary>The folds the other clusters allow: all of the ordinary memories of a cluster but one.</summary>
+    private int PossibleParaphraseFolds()
+    {
+        HashSet<string> duplicates = DuplicateLabels();
+
+        return _corpus
+            .Where(memory => memory.Role == LongRestCorpusRole.Ordinary
+                && memory.Label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel)
+                && !duplicates.Contains(memory.Label))
+            .GroupBy(static memory => memory.Label, StringComparer.Ordinal)
+            .Sum(static group => group.Count() - 1);
     }
 
     /// <summary>
@@ -218,6 +262,9 @@ internal sealed partial class LongRestQualificationRun
             + $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Summary)} summaries, "
             + $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Adjudication)} adjudications, "
             + $"{traffic.Count(static request => request.Kind is not (LongRestProviderRequestKind.Embedding or LongRestProviderRequestKind.Summary or LongRestProviderRequestKind.Adjudication))} other requests");
+
+    /// <summary>How many unordered labelled pairs of different topics were at or above the lower floor of the two when the calibration was taken.</summary>
+    private int _crossPairsAtOrAboveFloor;
 
     /// <summary>The calibration, once the clean sweep has completed: printed whatever happens afterwards.</summary>
     public string? CalibrationText { get; private set; }
@@ -337,21 +384,22 @@ internal sealed partial class LongRestQualificationRun
     }
 
     /// <summary>
-    /// How well discovery grouped the corpus: each adjudication request names the memories it compares, and the corpus knows which
-    /// cluster each belongs to, so the packs the sweep paid to adjudicate can be graded by whether they hold one topic or several.
+    /// How well discovery grouped the corpus: each adjudication request lists the memories it compares, and the corpus knows which
+    /// cluster each belongs to, so the packs the sweep paid to adjudicate can be graded by whether they hold one topic or several. A
+    /// request that holds memories of more than one cluster, or an unrelated single beside others, is a finding: the Pairing Gate exists so
+    /// that no pack is ever put to the model that is not a clique of one topic.
     /// </summary>
     private void ObservePacks(string scenario, IReadOnlyList<LongRestRecordedRequest> traffic)
     {
-        Dictionary<string, string> labels = _corpus.ToDictionary(
-            static memory => NormalizeIdentity(memory.Id),
-            static memory => memory.Label,
-            StringComparer.Ordinal);
+        Dictionary<string, string> labels = _corpus
+            .GroupBy(static memory => memory.Content, StringComparer.Ordinal)
+            .ToDictionary(static group => group.Key, static group => group.First().Label, StringComparer.Ordinal);
 
         List<string[]> packs = [];
 
         foreach (LongRestRecordedRequest request in traffic.Where(static request => request.Kind == LongRestProviderRequestKind.Adjudication))
         {
-            packs.Add([.. ReadPackMemories(request.ProviderVisibleText).Select(id => labels.GetValueOrDefault(NormalizeIdentity(id), LongRestQualificationCorpus.UnmatchedLabel))]);
+            packs.Add([.. ReadPackContents(request.UserText).Select(content => labels.GetValueOrDefault(content, LongRestQualificationCorpus.UnmatchedLabel))]);
         }
 
         if (packs.Count == 0)
@@ -361,7 +409,7 @@ internal sealed partial class LongRestQualificationRun
 
         CalibrationDistribution sizes = CalibrationDistribution.Of([.. packs.Select(static pack => (double)pack.Length)]);
 
-        int mixed = packs.Count(static pack => pack.Where(static label => label != LongRestQualificationCorpus.SingleLabel).Distinct(StringComparer.Ordinal).Count() > 1);
+        int mixed = packs.Count(static pack => pack.Where(static label => label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel)).Distinct(StringComparer.Ordinal).Count() > 1);
 
         int withUnrelated = packs.Count(static pack => pack.Contains(LongRestQualificationCorpus.SingleLabel, StringComparer.Ordinal) && pack.Length > 1);
 
@@ -370,14 +418,22 @@ internal sealed partial class LongRestQualificationRun
         Observe(string.Create(
             CultureInfo.InvariantCulture,
             $"{scenario} adjudication packs: {packs.Count} requests, {sizes.Median:0} memories median ({sizes.Maximum:0} max); {pure} hold one cluster, {mixed} hold memories of more than one cluster, {withUnrelated} hold an unrelated single beside others"));
+
+        Check(
+            mixed == 0,
+            string.Create(CultureInfo.InvariantCulture, $"{scenario}: {mixed} of {packs.Count} adjudication requests held memories of more than one labelled cluster; every pack must be a clique of one topic."));
+
+        Check(
+            withUnrelated == 0,
+            string.Create(CultureInfo.InvariantCulture, $"{scenario}: {withUnrelated} of {packs.Count} adjudication requests held an unrelated single beside other memories."));
     }
 
     /// <summary>
-    /// Whether the models' answers were ones Long Rest accepts: an adjudication is valid when it names a kind and, only for a
-    /// supersession, one of the versions the request listed; a summary is valid JSON within the recipe's byte bound. The grading
-    /// is the rule the request's own prompt states, so a count of invalid answers says how often the model ignored its instructions.
+    /// Whether the models' answers were ones Long Rest accepts: an adjudication is valid when it is an instance of the closed member-verdict
+    /// shape, a summary when it is valid JSON within the recipe's byte bound. The grading is the rule the request's own prompt states, so a
+    /// count of invalid answers says how often the model ignored its instructions. Returns the number of invalid adjudication answers.
     /// </summary>
-    private void ObserveAnswerQuality(string scenario, IReadOnlyList<LongRestRecordedRequest> traffic)
+    private int ObserveAnswerQuality(string scenario, IReadOnlyList<LongRestRecordedRequest> traffic)
     {
         Dictionary<string, int> adjudications = new(StringComparer.Ordinal);
 
@@ -403,8 +459,16 @@ internal sealed partial class LongRestQualificationRun
                 Observe($"{scenario} {kind} answers: {string.Join(", ", tally.OrderBy(static pair => pair.Key, StringComparer.Ordinal).Select(static pair => $"{pair.Key} x{pair.Value}"))}");
             }
         }
+
+        return adjudications.Where(static pair => pair.Key.StartsWith("invalid", StringComparison.Ordinal)).Sum(static pair => pair.Value);
     }
 
+    /// <summary>
+    /// Grades one adjudication answer the way the product reads it. Valid is an object with exactly one property, <c>memories</c>, an array of
+    /// entries with exactly <c>memory</c> (an integer), <c>fact</c> (a string) and <c>sameAs</c> (an array of integers). Among valid answers it
+    /// says how many pairs of the request's memories the model asserted the same fact for, in either direction: every pair (the unit would be
+    /// folded whole), some, or none.
+    /// </summary>
     internal static string GradeAdjudication(LongRestRecordedRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -420,24 +484,69 @@ internal sealed partial class LongRestQualificationRun
 
             JsonElement root = document.RootElement;
 
-            string? kind = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("kind", out JsonElement kindValue) ? kindValue.GetString() : null;
-
-            string? survivor = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("survivorVersionId", out JsonElement survivorValue) && survivorValue.ValueKind == JsonValueKind.String
-                ? survivorValue.GetString()
-                : null;
-
-            HashSet<string> versions = new(
-                request.ProviderVisibleText.Split('\n').Where(static line => line.StartsWith("Version ", StringComparison.Ordinal)).Select(static line => line[8..].Trim()),
-                StringComparer.OrdinalIgnoreCase);
-
-            return kind switch
+            if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 1 || !root.TryGetProperty("memories", out JsonElement memories) || memories.ValueKind != JsonValueKind.Array)
             {
-                "NoChange" or "EquivalentObservations" when survivor is null => "valid " + kind,
-                "NoChange" or "EquivalentObservations" => "invalid: " + kind + " names a survivor",
-                "Supersession" when survivor is not null && versions.Contains(survivor) => "valid Supersession",
-                "Supersession" => "invalid: Supersession without a listed survivor",
-                _ => "invalid: unknown kind",
-            };
+                return "invalid: not the member-verdict shape";
+            }
+
+            int count = LongRestQualificationProxy.CountMemories(request.UserText);
+
+            int[] listed = new int[count + 1];
+
+            List<(int Memory, List<int> Same)> entries = [];
+
+            foreach (JsonElement entry in memories.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object
+                    || entry.EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal).SequenceEqual(["fact", "memory", "sameAs"]) is false
+                    || entry.GetProperty("memory").ValueKind != JsonValueKind.Number
+                    || !entry.GetProperty("memory").TryGetInt32(out int memory)
+                    || entry.GetProperty("fact").ValueKind != JsonValueKind.String
+                    || entry.GetProperty("sameAs").ValueKind != JsonValueKind.Array)
+                {
+                    return "invalid: not the member-verdict shape";
+                }
+
+                List<int> same = [];
+
+                foreach (JsonElement reference in entry.GetProperty("sameAs").EnumerateArray())
+                {
+                    if (reference.ValueKind != JsonValueKind.Number || !reference.TryGetInt32(out int number))
+                    {
+                        return "invalid: not the member-verdict shape";
+                    }
+
+                    same.Add(number);
+                }
+
+                if (memory >= 1 && memory <= count)
+                {
+                    listed[memory]++;
+                }
+
+                entries.Add((memory, same));
+            }
+
+            HashSet<(int, int)> pairs = [];
+
+            foreach ((int memory, List<int> same) in entries)
+            {
+                if (memory < 1 || memory > count || listed[memory] != 1)
+                {
+                    continue;
+                }
+
+                foreach (int other in same.Where(other => other >= 1 && other <= count && other != memory))
+                {
+                    _ = pairs.Add((Math.Min(memory, other), Math.Max(memory, other)));
+                }
+            }
+
+            int possible = count * (count - 1) / 2;
+
+            return possible == 0 || pairs.Count == 0
+                ? "valid: no pair asserted"
+                : pairs.Count == possible ? "valid: every pair asserted" : "valid: some pairs asserted";
         }
         catch (JsonException)
         {
@@ -471,13 +580,21 @@ internal sealed partial class LongRestQualificationRun
         }
     }
 
-    internal static IEnumerable<string> ReadPackMemories(string text)
+    /// <summary>
+    /// The text of each memory an adjudication request lists, in the order it lists them. A request names no identity (a memory is a place and
+    /// its text), so the corpus label of a memory is found by its text.
+    /// </summary>
+    internal static IEnumerable<string> ReadPackContents(string userText)
     {
-        foreach (string line in text.Split('\n'))
+        ArgumentNullException.ThrowIfNull(userText);
+
+        string[] lines = userText.Split('\n');
+
+        for (int index = 0; index + 1 < lines.Length; index++)
         {
-            if (line.StartsWith("Memory ", StringComparison.Ordinal) && Guid.TryParse(line.AsSpan(7), out Guid identity))
+            if (lines[index].Length == 9 && lines[index].StartsWith("Memory ", StringComparison.Ordinal) && char.IsAsciiDigit(lines[index][7]) && char.IsAsciiDigit(lines[index][8]))
             {
-                yield return identity.ToString("D");
+                yield return lines[index + 1];
             }
         }
     }
@@ -629,11 +746,21 @@ internal sealed partial class LongRestQualificationRun
                 [.. edges.Where(edge => string.Equals(edge.Parent, node.NodeId, StringComparison.OrdinalIgnoreCase)).Select(static edge => edge.Child)]));
         }
 
+        // The Background Floor is read from every leaf of the generation, in memory id order, whatever its label.
+        List<CalibrationLeaf> generationLeaves =
+        [
+            .. nodes
+                .Where(node => node.Layer == 0 && node.MemoryId is not null && vectors.ContainsKey(node.MemoryId))
+                .OrderBy(static node => node.MemoryId!.ToLowerInvariant(), StringComparer.Ordinal)
+                .Select(node => new CalibrationLeaf(node.MemoryId!, vectors[node.MemoryId!])),
+        ];
+
         CalibrationReport report = LongRestQualificationCalibration.Calibrate(
             corpus,
             summaries,
             leafByNode,
-            LongRestPromptLayout.SummaryBoundUtf8Bytes(_options.EmbeddingWindow));
+            LongRestPromptLayout.SummaryBoundUtf8Bytes(_options.EmbeddingWindow),
+            generationLeaves);
 
         CalibrationText = LongRestQualificationCalibration.RenderText(report, _options);
 
@@ -646,6 +773,30 @@ internal sealed partial class LongRestQualificationRun
         foreach (string line in CalibrationText.Split('\n'))
         {
             _log.Info("CALIBRATION " + line.TrimEnd('\r'));
+        }
+
+        // The Pairing Gate on the real vectors: the guarantee that holds whatever the model answers is that no pair reaches it unless it is at least
+        // as close as its anchor's floor, so what the gate keeps of the true pairs and lets through of the others is the evidence for the embedding
+        // model in use. A true pair the gate refuses is only a fold lost; another pair at or above a floor is one the model alone then stands in front of.
+        if (report.Floors is { } floors)
+        {
+            _crossPairsAtOrAboveFloor = floors.CrossPairsAtOrAboveEitherFloor;
+
+            Check(
+                floors.WithinPairs == 0 || floors.WithinRetained >= 0.9,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The Pairing Gate keeps {floors.WithinRetained:P1} of the labelled true pairs ({floors.WithinAtOrAboveFloor} of {floors.WithinPairs}); at least 90% of them should be at or above their anchor's floor."));
+
+            Check(
+                floors.CrossAtOrAboveFloor == 0,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{floors.CrossAtOrAboveFloor} labelled pairs of different topics are at or above their anchor's floor on the embedding model '{_options.EmbeddingModel}' (the smallest margin below a floor is {(floors.CrossMargin.Count == 0 ? double.NaN : floors.CrossMargin.Minimum):0.000}). Those can reach the model as a pair or within a clique; this is the documented residual of an embedding model that does not separate topics."));
+
+            Observe(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Pairing Gate on '{_options.EmbeddingModel}': per-anchor floors {floors.Floors.Minimum:0.000} to {floors.Floors.Maximum:0.000} (median {floors.Floors.Median:0.000}); {floors.WithinAtOrAboveFloor} of {floors.WithinPairs} true pairs paired (lowest margin above a floor {floors.WithinMargin.Minimum:0.000}); {floors.CrossAtOrAboveFloor} of {floors.CrossPairs} other pairs at or above a floor (the smallest margin below one is {(floors.CrossMargin.Count == 0 ? double.NaN : floors.CrossMargin.Minimum):0.000})"));
         }
 
         // Loosely: the report must have measured something, and the real models must at least rank true pairs above the others.
@@ -677,4 +828,12 @@ internal sealed partial class LongRestQualificationRun
     private static string Short(string identity) => identity.Length > 8 ? identity[..8] : identity;
 
     private static string NormalizeIdentity(string identity) => LongRestQualificationChecks.NormalizeIdentity(identity);
+}
+
+/// <summary>How a scenario's consolidations were graded against the corpus's labels.</summary>
+internal sealed record FoldGrade(int ExactFolds, int ParaphraseFolds, int WrongFolds, int PossibleExact, int PossibleParaphrase)
+{
+    public int RightFolds => ExactFolds + ParaphraseFolds;
+
+    public int PossibleFolds => PossibleExact + PossibleParaphrase;
 }

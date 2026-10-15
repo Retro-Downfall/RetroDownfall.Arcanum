@@ -67,9 +67,10 @@ public sealed class LongRestDiscoveryStoreTests
 
         await h.SeedAsync("anchor", "opal OR quartz");
 
-        await h.SeedAsync("z-token", "opal opal gem");
+        // Token matches that cover what the anchor says ('or' is a word of the anchor here, never an operator of the query).
+        await h.SeedAsync("z-token", "opal or quartz gem");
 
-        await h.SeedAsync("a-token", "opal opal gem");
+        await h.SeedAsync("a-token", "opal or quartz gem");
 
         await h.SeedAsync("substring", "opalescent quarry");
 

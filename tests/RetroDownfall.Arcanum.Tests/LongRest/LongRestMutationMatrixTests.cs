@@ -1028,8 +1028,8 @@ public sealed partial class LongRestMutationMatrixTests
 
             f.Handler.InsideSend = () =>
             {
-                f.Handler.ChatText = f.Handler.LastBody!.Contains("long_rest_adjudication", StringComparison.Ordinal)
-                    ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Summary " + ++sends + "\"}";
+                f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                    ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Summary " + ++sends + "\"}";
 
                 return Task.CompletedTask;
             };

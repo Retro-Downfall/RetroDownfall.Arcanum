@@ -145,7 +145,9 @@ public sealed class LongRestDiscoveryPolicyTests
     {
         LongRestWorkIdentity work = Work();
 
-        Assert.Equal("051CC2C1B49ABA1D2CE818C4269A00A6CDD2C5AAB1628ED72A7A1F8D5AD65583", LongRestDiscoveryHash.Work(work).Value.ToString());
+        // Independently assembled (Python struct.pack and hashlib.sha256); the same script's version 1 layout reproduces the digest pinned before the
+        // pairing floor joined the identity (051CC2C1...5583), so only the domain and the appended floor moved it.
+        Assert.Equal("488B972B44407A23EBF67CE4FBE53FDBF5F61B667F72A0F0571B5CB7299A5A0F", LongRestDiscoveryHash.Work(work).Value.ToString());
 
         Assert.NotEqual(LongRestDiscoveryHash.Work(work).Value, LongRestDiscoveryHash.Work(work with { ItemId = "fold-2" }).Value);
 
@@ -156,6 +158,34 @@ public sealed class LongRestDiscoveryPolicyTests
         LongRestSweepScope scope = LongRestSweepScope.Create(new(LongRestSweepScopeKind.Campaign, context.CampaignId)).Value;
 
         Assert.True(LongRestDiscoveryHash.Work(work with { Scope = scope, Fence = work.Fence with { CanonicalScope = context } }).IsSuccess);
+    }
+
+    [Fact]
+    public void The_pairing_floor_is_part_of_an_anchor_units_identity_and_of_no_other_units()
+    {
+        LongRestWorkIdentity anchor = AnchorWork();
+
+        // Independently assembled, like the fold identity above.
+        Assert.Equal("F440CE939C177561C577402D0395A8E62415376656FADD48C6283C9BEC7055F0", LongRestDiscoveryHash.Work(anchor).Value.ToString());
+
+        Assert.NotEqual(LongRestDiscoveryHash.Work(anchor).Value, LongRestDiscoveryHash.Work(anchor with { PairingFloorPermille = 921 }).Value);
+
+        foreach (int floor in new[] { 500, 501, 750, 999, 1000 })
+        {
+            Assert.True(LongRestDiscoveryHash.Work(anchor with { PairingFloorPermille = floor }).IsSuccess, $"floor {floor}");
+        }
+
+        // An anchor unit without a floor, or with one outside its bounds, is not an identity; nor is a fold or a page with a floor.
+        foreach (int floor in new[] { int.MinValue, -1, 0, 1, 499, 1001, int.MaxValue })
+        {
+            Assert.True(LongRestDiscoveryHash.Work(anchor with { PairingFloorPermille = floor }).IsFailure, $"floor {floor}");
+        }
+
+        Assert.True(LongRestDiscoveryHash.Work(Work() with { PairingFloorPermille = 920 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Work(Work() with { Kind = LongRestWorkKind.SourcePage, PairingFloorPermille = 500 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Work(Work() with { Kind = LongRestWorkKind.SourcePage }).IsSuccess);
     }
 
     [Fact]
@@ -171,28 +201,52 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { ProviderInputUtf8Bytes = 32769 }).IsFailure);
 
-        // The lexical relevance floor is a code-owned bound that the recipe binds: any other value is not this code's recipe.
-        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore - 1 }).IsFailure);
+        // The lexical coverage share, the summary gate and every pairing constant are code-owned bounds that the recipe binds: any other value is
+        // not this code's recipe.
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumCoveragePermille = LongRestDiscoveryLimits.LexicalMinimumCoveragePermille - 1 }).IsFailure);
 
-        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore + 1 }).IsFailure);
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumCoveragePermille = LongRestDiscoveryLimits.LexicalMinimumCoveragePermille + 1 }).IsFailure);
 
-        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumScore = 0 }).IsFailure);
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { LexicalMinimumCoveragePermille = 0 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { SummaryMinimumCosinePermille = 919 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingRecipeVersion = 2 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingClosenessPermille = 540 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingSpreadTenths = 36 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingSpreadStepTenths = 3 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingSpreadMinimumThousandths = 10 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingSampleLeaves = 63 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingMinimumLeaves = 15 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingFallbackPermille = 900 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingAbsoluteMinimumPermille = 400 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingHistogramBins = 512 }).IsFailure);
+
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairFallbackLimit = 14 }).IsFailure);
 
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { SummaryProvider = " " }).IsFailure);
 
         Assert.NotEqual(LongRestDiscoveryHash.Recipe(recipe).Value, LongRestDiscoveryHash.Recipe(recipe with { EmbeddingModel = "different-model" }).Value);
     }
 
-    // Independently assembled preimages (Python struct.pack and hashlib.sha256): the bounds, the cosine bits, the lexical relevance floor, the
-    // adjudication recipe version and then the lexical scorer version, each a final Int32BE. The same script reproduces the digests this recipe
-    // had before the scorer version joined it (4D6E446D...2DE6 at 32768, D63F0590...E300 at 4096, 12B5D17E...5CD3 at 5328, D1FC022C...3D53 at
-    // 20000), so only the appended version moved them.
+    // Independently assembled preimages (Python struct.pack and hashlib.sha256) of Arcanum.LongRest.Recipe.v2: the bounds, then the thirteen
+    // integers of discovery (the summary gate in thousandths, the lexical coverage share, the pairing recipe version and its eleven constants),
+    // the adjudication recipe version and then the lexical scorer version, each an Int32BE. No floating-point value is bound into the recipe.
     [Theory]
-    [InlineData(32768, "CF9B0D84FBD2D8B8CB823EE814682AC04DAF9F4CE8E93EE72564CDDEAA7AB054")]
-    [InlineData(4096, "7BDFE21E16400AF08D5B049F1F2D7207C842264649D5E4993302D8C6BABAF5B0")]
-    [InlineData(5328, "226A14F8FE41E3E1DE3A8C777D52B75C2BB9C64552C02E2DCEAA7FE75B4D4A37")]
-    [InlineData(20000, "9264684CE4CCD0DEC51CD1C17994BF9544C60321BFC4AF7429A09EEDA80925D2")]
-    public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_the_floor_and_the_versions(int budget, string expected)
+    [InlineData(32768, "FBE16305FB75AF048057D7F028102A62DDCD643871F7C18CA069E4E3C3499127")]
+    [InlineData(4096, "E110ACC55E97F9D86E77A5D9447E798A6CD3B0D311997BBE52CDD0EDE3E3DC98")]
+    [InlineData(5328, "6E5AB9331FBA6D235783F5257E7436DAB88E646C5828484DCEDC9839BFBB9E72")]
+    [InlineData(20000, "629058485F4B4F6A423BD443DE6DE7E4F77809476B302A5C6F1A41EC961AE4FD")]
+    public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_the_pairing_constants_and_the_versions(int budget, string expected)
     {
         CovenantDigest digest = new(new byte[32]);
 
@@ -260,7 +314,7 @@ public sealed class LongRestDiscoveryPolicyTests
     {
         LongRestSourceLeaf leaf = Leaf("memory", "version", 1) with { Content = "source" };
 
-        LongRestWorkIdentity work = Work() with { Kind = LongRestWorkKind.Anchor };
+        LongRestWorkIdentity work = AnchorWork();
 
         work = work with { SourceDigest = LongRestDiscoveryHash.SourcePage(work.Scope, [leaf]).Value };
 
@@ -412,7 +466,7 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.Equal($"memory-{merged.Length - 1:D3}", merged[^1].Target.MemoryId);
 
-        ImmutableArray<LongRestCandidateGroup> groups = LongRestDiscoveryPolicy.GroupCandidates(anchor, merged).Value;
+        ImmutableArray<LongRestCandidateGroup> groups = LongRestDiscoveryPolicy.GroupCandidates(anchor, merged, 920).Value;
 
         Assert.All(groups, group => Assert.InRange(group.Targets.Length, 2, 16));
 
@@ -538,6 +592,9 @@ public sealed class LongRestDiscoveryPolicyTests
 
     private static CovenantDigest VectorDigest(ImmutableArray<float> vector) => new(SHA256.HashData(EmbeddingBlobCodec.Encode(vector.AsSpan())));
 
+    // An anchor unit records the floor its pairs were proved against.
+    private static LongRestWorkIdentity AnchorWork() => Work() with { ItemId = "anchor:00", Kind = LongRestWorkKind.Anchor, PairingFloorPermille = 920 };
+
     private static LongRestWorkIdentity Work()
     {
         CovenantDigest digest = new(Enumerable.Range(1, 32).Select(value => (byte)value).ToArray());
@@ -569,7 +626,7 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.Equal(merged.ToArray(), LongRestDiscoveryPolicy.MergeCandidates(anchor, supplied).Value.ToArray());
 
-        ImmutableArray<LongRestCandidateGroup> groups = LongRestDiscoveryPolicy.GroupCandidates(anchor, merged).Value;
+        ImmutableArray<LongRestCandidateGroup> groups = LongRestDiscoveryPolicy.GroupCandidates(anchor, merged, 920).Value;
 
         Assert.Equal(3, groups.Length);
 
@@ -598,7 +655,8 @@ public sealed class LongRestDiscoveryPolicyTests
             new(anchor, LongRestDiscoveryLane.ExactHash, 0),
         ];
 
-        Assert.Equal(new[] { "duplicate", "lexical", "vector", "hierarchy" }, LongRestDiscoveryPolicy.MergeCandidates(anchor, supplied).Value.Select(item => item.Target.MemoryId));
+        // The merge cuts no score: a vector nominee below any particular cosine is judged by the Pairing Gate, which knows the anchor's floor.
+        Assert.Equal(new[] { "duplicate", "lexical", "vector", "low-vector", "hierarchy" }, LongRestDiscoveryPolicy.MergeCandidates(anchor, supplied).Value.Select(item => item.Target.MemoryId));
 
         Assert.True(LongRestDiscoveryPolicy.MergeCandidates(anchor, [new(duplicate, LongRestDiscoveryLane.Vector, double.NaN)]).IsFailure);
 

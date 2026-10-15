@@ -197,7 +197,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
             List<(string Unit, LongRestWorkIdentity Original)> page = [];
 
             await using (SqliteCommand command = Command(connection, transaction, """
-                SELECT unit.WorkItemId, unit.ItemId, unit.SourceDigest, unit.RecipeDigest, unit.WorkDigest, effect.WorkDigest, effect.OriginalWorkJson
+                SELECT unit.WorkItemId, unit.ItemId, unit.SourceDigest, unit.RecipeDigest, unit.WorkDigest, effect.WorkDigest, effect.OriginalWorkJson, unit.PairingFloorPermille
                 FROM long_rest_work_items unit JOIN long_rest_provider_effects effect ON effect.WorkItemId = unit.WorkItemId
                 WHERE unit.OperationId = $operation AND unit.GenerationId = $generation AND unit.KindCode = 3 AND unit.DispositionCode = 2
                   AND ($cursor IS NULL OR unit.WorkItemId > $cursor) ORDER BY unit.WorkItemId LIMIT 128;
@@ -210,7 +210,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCompletedCheckpo
                     LongRestWorkIdentity original = LongRestAttemptStore.ReadOriginalWork(reader.GetString(6), new((byte[])reader[5]));
 
                     LongRestWorkIdentity current = new(generation.GenerationId, generation.OperationId, reader.GetString(1), LongRestWorkKind.Anchor,
-                        generation.Scope, generation.Fence, new((byte[])reader[2]), new((byte[])reader[3]));
+                        generation.Scope, generation.Fence, new((byte[])reader[2]), new((byte[])reader[3]), reader.GetInt32(7));
 
                     CovenantDigest unitDigest = new((byte[])reader[4]);
 

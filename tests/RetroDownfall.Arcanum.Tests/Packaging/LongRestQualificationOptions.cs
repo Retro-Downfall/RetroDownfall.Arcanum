@@ -16,7 +16,8 @@ internal sealed record LongRestQualificationOptions(
     int EmbeddingDimensions,
     Uri Endpoint,
     string? ResultsDirectory,
-    string? ReceiptPath)
+    string? ReceiptPath,
+    bool Mutiny = true)
 {
     public const string OptInVariable = "ARCANUM_RUN_LOCAL_OLLAMA_LONG_REST_QUALIFICATION";
 
@@ -37,6 +38,9 @@ internal sealed record LongRestQualificationOptions(
     public const string ResultsVariable = "ARCANUM_OLLAMA_LONG_REST_RESULTS";
 
     public const string ReceiptVariable = "ARCANUM_OLLAMA_LONG_REST_RECEIPT";
+
+    /// <summary><c>0</c> skips the Mutiny Scenario, a second sweep in which the forwarder rewrites every adjudication answer into the all-pairs verdict; it runs by default.</summary>
+    public const string MutinyVariable = "ARCANUM_OLLAMA_LONG_REST_MUTINY";
 
     public const string SuccessReceipt = "local-ollama-long-rest-qualification:v1";
 
@@ -112,6 +116,13 @@ internal sealed record LongRestQualificationOptions(
 
         string? receipt = environment(ReceiptVariable);
 
+        string? rawMutiny = environment(MutinyVariable)?.Trim();
+
+        if (!string.IsNullOrEmpty(rawMutiny) && rawMutiny is not ("0" or "1"))
+        {
+            throw new InvalidOperationException($"{MutinyVariable} must be 0 or 1.");
+        }
+
         return new LongRestQualificationOptions(
             Path.GetFullPath(executable),
             chatModel,
@@ -121,7 +132,8 @@ internal sealed record LongRestQualificationOptions(
             embeddingDimensions,
             endpoint!,
             string.IsNullOrWhiteSpace(results) ? null : Path.GetFullPath(results),
-            string.IsNullOrWhiteSpace(receipt) ? null : receipt);
+            string.IsNullOrWhiteSpace(receipt) ? null : receipt,
+            rawMutiny != "0");
     }
 
     private static string RequireValue(Func<string, string?> environment, string variable)

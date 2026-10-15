@@ -74,12 +74,47 @@ internal sealed record CalibrationSummaryGate(
     IReadOnlyList<string> Composition,
     IReadOnlyList<int> SummaryBytes);
 
+/// <summary>One leaf of the completed generation: the memory and the raw vector the embedding model gave it, as the Background Floor reads it.</summary>
+internal sealed record CalibrationLeaf(string Id, float[] Vector);
+
+/// <summary>One labelled memory's Background Floor and how the pairs it is the anchor of stand against it.</summary>
+internal sealed record CalibrationAnchorFloor(
+    string Label,
+    string Text,
+    int FloorPermille,
+    double LowestWithinMargin,
+    double LowestCrossMargin,
+    int CrossAtOrAboveFloor);
+
+/// <summary>
+/// The Pairing Gate on the labelled corpus. A pair is admitted from an anchor's side when its cosine is at least that anchor's floor, so the
+/// margin of a true pair is its cosine minus the floor (it is paired when the margin is not negative), and the margin of any other pair is the
+/// floor minus its cosine (it is refused when the margin is positive). Pairs are ordered: each memory is the anchor of its pairs with every other.
+/// </summary>
+internal sealed record CalibrationFloors(
+    CalibrationDistribution Floors,
+    CalibrationDistribution WithinMargin,
+    CalibrationDistribution CrossMargin,
+    int WithinPairs,
+    int WithinAtOrAboveFloor,
+    int CrossPairs,
+    int CrossAtOrAboveFloor,
+    int CrossPairsAtOrAboveEitherFloor,
+    IReadOnlyList<CalibrationAnchorFloor> Anchors,
+    IReadOnlyList<double> WithinMargins,
+    IReadOnlyList<double> CrossMargins)
+{
+    /// <summary>The share of true pairs the gate keeps, or NaN when there are none.</summary>
+    public double WithinRetained => WithinPairs == 0 ? double.NaN : (double)WithinAtOrAboveFloor / WithinPairs;
+}
+
 internal sealed record CalibrationReport(
     int CorpusMemories,
     int LabelledClusters,
     CalibrationLane Lexical,
     CalibrationLane Vector,
-    CalibrationSummaryGate? SummaryGate);
+    CalibrationSummaryGate? SummaryGate,
+    CalibrationFloors? Floors = null);
 
 /// <summary>
 /// Calibrates Long Rest's discovery thresholds against the labelled corpus, using the product's own scoring function and the
@@ -88,23 +123,32 @@ internal sealed record CalibrationReport(
 /// </summary>
 internal static class LongRestQualificationCalibration
 {
-    private static readonly double[] LexicalThresholds = [4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 144, 160, 176, 192, 256, 384];
+    private static readonly double[] LexicalThresholds = [50, 100, 150, 200, 250, 300, 400, 500, 750];
 
     private static readonly double[] CosineThresholds = [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.88, 0.90, 0.92, 0.94, 0.96, 0.98];
 
+    /// <param name="generationLeaves">
+    /// Every leaf of the generation with a vector, in memory id order, which is what the product's Background Floor is read from; the labelled
+    /// corpus alone when none is given.
+    /// </param>
     public static CalibrationReport Calibrate(
         IReadOnlyList<CalibrationMemory> corpus,
         IReadOnlyList<CalibrationSummary> summaries,
         IReadOnlyDictionary<string, string?> summaryLeafMemory,
-        int summaryBoundBytes)
+        int summaryBoundBytes,
+        IReadOnlyList<CalibrationLeaf>? generationLeaves = null)
     {
         ArgumentNullException.ThrowIfNull(corpus);
         ArgumentNullException.ThrowIfNull(summaries);
         ArgumentNullException.ThrowIfNull(summaryLeafMemory);
 
+        CalibrationFloors floors = Floors(
+            corpus,
+            generationLeaves ?? [.. corpus.OrderBy(static memory => memory.Id, StringComparer.Ordinal).Select(static memory => new CalibrationLeaf(memory.Id, memory.Vector))]);
+
         CalibrationLane lexical = LexicalLane(corpus);
 
-        CalibrationLane vector = VectorLane(corpus);
+        CalibrationLane vector = VectorLane(corpus, floors.Floors.Median);
 
         CalibrationSummaryGate? gate = summaries.Count == 0
             ? null
@@ -115,7 +159,117 @@ internal static class LongRestQualificationCalibration
             corpus.Select(static memory => memory.Label).Where(static label => label != LongRestQualificationCorpus.SingleLabel).Distinct(StringComparer.Ordinal).Count(),
             lexical,
             vector,
-            gate);
+            gate,
+            floors);
+    }
+
+    /// <summary>
+    /// The Background Floor of every labelled memory, read by the product's own sampler from the generation's leaves in memory id order, and the
+    /// margin of every pair against the floor of the memory it is judged from. Reports how much room the embedding model leaves between the
+    /// true pairs and the rest: a model that does not separate topics shows cross pairs at or above a floor, and those can reach the model.
+    /// </summary>
+    internal static CalibrationFloors Floors(IReadOnlyList<CalibrationMemory> corpus, IReadOnlyList<CalibrationLeaf> leaves)
+    {
+        int[] floor = new int[corpus.Count];
+
+        for (int index = 0; index < corpus.Count; index++)
+        {
+            LongRestBackgroundSampler sampler = new([.. corpus[index].Vector]);
+
+            foreach (CalibrationLeaf leaf in leaves)
+            {
+                _ = sampler.Observe(string.Equals(leaf.Id, corpus[index].Id, StringComparison.OrdinalIgnoreCase), [.. leaf.Vector]);
+            }
+
+            floor[index] = sampler.FloorPermille();
+        }
+
+        List<double> withinMargins = [];
+
+        List<double> crossMargins = [];
+
+        int withinAtOrAbove = 0;
+
+        int crossAtOrAbove = 0;
+
+        int crossEither = 0;
+
+        List<CalibrationAnchorFloor> anchors = [];
+
+        for (int anchor = 0; anchor < corpus.Count; anchor++)
+        {
+            double lowestWithin = double.PositiveInfinity;
+
+            double lowestCross = double.PositiveInfinity;
+
+            int crossAbove = 0;
+
+            for (int other = 0; other < corpus.Count; other++)
+            {
+                if (other == anchor)
+                {
+                    continue;
+                }
+
+                double cosine = Cosine(corpus[anchor].Vector, corpus[other].Vector);
+
+                if (SameCluster(corpus[anchor], corpus[other]))
+                {
+                    double margin = cosine - (floor[anchor] / 1000.0);
+
+                    withinMargins.Add(margin);
+
+                    lowestWithin = Math.Min(lowestWithin, margin);
+
+                    // A byte-identical memory is paired whatever its vector says.
+                    if (margin >= 0 || string.Equals(corpus[anchor].Text, corpus[other].Text, StringComparison.Ordinal))
+                    {
+                        withinAtOrAbove++;
+                    }
+                }
+                else
+                {
+                    double margin = (floor[anchor] / 1000.0) - cosine;
+
+                    crossMargins.Add(margin);
+
+                    lowestCross = Math.Min(lowestCross, margin);
+
+                    if (margin <= 0)
+                    {
+                        crossAtOrAbove++;
+
+                        crossAbove++;
+                    }
+
+                    if (other > anchor && cosine >= Math.Min(floor[anchor], floor[other]) / 1000.0)
+                    {
+                        crossEither++;
+                    }
+                }
+            }
+
+            anchors.Add(new CalibrationAnchorFloor(
+                corpus[anchor].Label,
+                corpus[anchor].Text,
+                floor[anchor],
+                double.IsInfinity(lowestWithin) ? double.NaN : lowestWithin,
+                double.IsInfinity(lowestCross) ? double.NaN : lowestCross,
+                crossAbove));
+        }
+
+        return new CalibrationFloors(
+            CalibrationDistribution.Of([.. floor.Select(static value => value / 1000.0)]),
+            CalibrationDistribution.Of(withinMargins),
+            CalibrationDistribution.Of(crossMargins),
+            withinMargins.Count,
+            withinAtOrAbove,
+            crossMargins.Count,
+            crossAtOrAbove,
+            crossEither,
+            anchors,
+            withinMargins,
+            crossMargins);
     }
 
     /// <summary>Whether two corpus memories say the same thing: they share a cluster label, and the label is not the unrelated one.</summary>
@@ -162,6 +316,15 @@ internal static class LongRestQualificationCalibration
 
             ImmutableArray<int> weights = LongRestLexicalScorer.Weights(corpus.Count, [.. frequencies]);
 
+            // What the anchor scores against itself under the same weights is the bar's unit: a hit is nominated when it scores at least
+            // LexicalMinimumCoveragePermille thousandths of that, so the bar does not move with the size of the corpus.
+            double self = LongRestLexicalScorer.Score(weights, LongRestLexicalScorer.Profile(anchor.Text, terms));
+
+            if (self <= 0)
+            {
+                continue;
+            }
+
             for (int index = 0; index < corpus.Count; index++)
             {
                 CalibrationMemory other = corpus[index];
@@ -171,17 +334,17 @@ internal static class LongRestQualificationCalibration
                     continue;
                 }
 
-                double score = LongRestLexicalScorer.Score(weights, profiles[index]);
+                double coverage = LongRestLexicalScorer.Score(weights, profiles[index]) * 1000.0 / self;
 
-                (SameCluster(anchor, other) ? within : cross).Add(score);
+                (SameCluster(anchor, other) ? within : cross).Add(coverage);
             }
         }
 
-        return Lane("Lexical (integer score, sixteenths of a bit)", LongRestDiscoveryLimits.LexicalMinimumScore, within, cross, LexicalThresholds);
+        return Lane("Lexical coverage (share of the anchor's own score, in thousandths; nomination only)", LongRestDiscoveryLimits.LexicalMinimumCoveragePermille, within, cross, LexicalThresholds);
     }
 
     /// <summary>Cosines of every unordered pair of corpus vectors: the vector lane compares a leaf with each other leaf.</summary>
-    internal static CalibrationLane VectorLane(IReadOnlyList<CalibrationMemory> corpus)
+    internal static CalibrationLane VectorLane(IReadOnlyList<CalibrationMemory> corpus, double medianFloor)
     {
         List<double> within = [];
 
@@ -197,7 +360,7 @@ internal static class LongRestQualificationCalibration
             }
         }
 
-        return Lane("Vector (leaf to leaf cosine)", LongRestDiscoveryLimits.MinimumVectorCosine, within, cross, CosineThresholds);
+        return Lane("Vector (leaf to leaf cosine; the gate is each anchor's own floor, the marker is the median floor)", medianFloor, within, cross, CosineThresholds);
     }
 
     internal static CalibrationSummaryGate SummaryGate(
@@ -284,7 +447,7 @@ internal static class LongRestQualificationCalibration
                     $"layer {summary.Layer} node {Short(summary.NodeId)} covers {descendantLeaves[summary.NodeId].Count} memories: {string.Join(", ", labels)}"));
         }
 
-        double gate = LongRestDiscoveryLimits.MinimumVectorCosine;
+        double gate = (LongRestDiscoveryLimits.SummaryMinimumCosinePermille / 1000.0);
 
         return new CalibrationSummaryGate(
             gate,
@@ -337,6 +500,11 @@ internal static class LongRestQualificationCalibration
 
         AppendLane(text, report.Vector, "{0:0.000}");
 
+        if (report.Floors is { } floors)
+        {
+            AppendFloors(text, floors);
+        }
+
         if (report.SummaryGate is { } gate)
         {
             AppendSummaryGate(text, gate);
@@ -366,6 +534,11 @@ internal static class LongRestQualificationCalibration
             WriteLane(writer, "lexical", report.Lexical);
 
             WriteLane(writer, "vector", report.Vector);
+
+            if (report.Floors is { } floors)
+            {
+                WriteFloors(writer, floors);
+            }
 
             if (report.SummaryGate is { } gate)
             {
@@ -515,6 +688,106 @@ internal static class LongRestQualificationCalibration
         }
 
         _ = text.AppendLine();
+    }
+
+    private static void AppendFloors(StringBuilder text, CalibrationFloors floors)
+    {
+        _ = text.AppendLine("Pairing Gate (each memory's Background Floor, read by the product's own sampler from every leaf of the generation)")
+            .AppendLine(string.Create(CultureInfo.InvariantCulture, $"  per-anchor floors   n={floors.Floors.Count}  {Describe(floors.Floors, "{0:0.000}")}"))
+            .AppendLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  margin of a true pair above its anchor's floor   n={floors.WithinMargin.Count}  {Describe(floors.WithinMargin, "{0:0.000}")}"))
+            .AppendLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  margin of another pair below its anchor's floor   n={floors.CrossMargin.Count}  {Describe(floors.CrossMargin, "{0:0.000}")}"))
+            .AppendLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  true pairs paired: {floors.WithinAtOrAboveFloor} of {floors.WithinPairs} ({floors.WithinRetained:P1}); other pairs at or above the floor of the anchor they are judged from: {floors.CrossAtOrAboveFloor} of {floors.CrossPairs} ({floors.CrossPairsAtOrAboveEitherFloor} unordered pairs at or above the lower floor of the two)"));
+
+        foreach (CalibrationAnchorFloor anchor in floors.Anchors)
+        {
+            _ = text.AppendLine(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  [{anchor.Label}] floor {anchor.FloorPermille / 1000.0:0.000}  lowest true-pair margin {anchor.LowestWithinMargin:0.000}  lowest other-pair margin {anchor.LowestCrossMargin:0.000}  other pairs at or above: {anchor.CrossAtOrAboveFloor}  \"{Truncate(anchor.Text)}\""));
+        }
+
+        double lowestCross = floors.CrossMargin.Count == 0 ? double.NaN : floors.CrossMargin.Minimum;
+
+        _ = text.AppendLine(
+            floors.CrossAtOrAboveFloor == 0
+                ? string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"  Verdict: every other pair is below its anchor's floor (the smallest margin is {lowestCross:0.000}), so on this embedding model the gate alone keeps every cross-topic pair from the model, whatever the model answers.")
+                : string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"  Verdict: {floors.CrossAtOrAboveFloor} other pairs are at or above their anchor's floor, so on this embedding model they can reach the model as a pair or within a clique, and only the model's own answer and Number Agreement stand between them and a fold. This is the documented residual of an embedding model that does not separate topics."))
+            .AppendLine();
+    }
+
+    private static string Truncate(string text) => text.Length <= 60 ? text : string.Concat(text.AsSpan(0, 57), "...");
+
+    private static void WriteFloors(Utf8JsonWriter writer, CalibrationFloors floors)
+    {
+        writer.WriteStartObject("pairingGate");
+
+        WriteDistribution(writer, "floors", floors.Floors);
+
+        WriteDistribution(writer, "withinMargin", floors.WithinMargin);
+
+        WriteDistribution(writer, "crossMargin", floors.CrossMargin);
+
+        writer.WriteNumber("withinPairs", floors.WithinPairs);
+
+        writer.WriteNumber("withinAtOrAboveFloor", floors.WithinAtOrAboveFloor);
+
+        WriteFinite(writer, "withinRetained", floors.WithinRetained);
+
+        writer.WriteNumber("crossPairs", floors.CrossPairs);
+
+        writer.WriteNumber("crossAtOrAboveFloor", floors.CrossAtOrAboveFloor);
+
+        writer.WriteNumber("crossUnorderedAtOrAboveEitherFloor", floors.CrossPairsAtOrAboveEitherFloor);
+
+        writer.WriteStartArray("anchors");
+
+        foreach (CalibrationAnchorFloor anchor in floors.Anchors)
+        {
+            writer.WriteStartObject();
+
+            writer.WriteString("label", anchor.Label);
+
+            writer.WriteNumber("floorPermille", anchor.FloorPermille);
+
+            WriteFinite(writer, "lowestWithinMargin", anchor.LowestWithinMargin);
+
+            WriteFinite(writer, "lowestCrossMargin", anchor.LowestCrossMargin);
+
+            writer.WriteNumber("crossAtOrAboveFloor", anchor.CrossAtOrAboveFloor);
+
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+
+        writer.WriteStartArray("withinMargins");
+
+        foreach (double margin in floors.WithinMargins)
+        {
+            writer.WriteNumberValue(Math.Round(margin, 4));
+        }
+
+        writer.WriteEndArray();
+
+        writer.WriteStartArray("crossMargins");
+
+        foreach (double margin in floors.CrossMargins)
+        {
+            writer.WriteNumberValue(Math.Round(margin, 4));
+        }
+
+        writer.WriteEndArray();
+
+        writer.WriteEndObject();
     }
 
     private static void AppendSummaryGate(StringBuilder text, CalibrationSummaryGate gate)

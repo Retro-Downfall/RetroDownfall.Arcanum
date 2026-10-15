@@ -73,8 +73,8 @@ public sealed class LongRestTurnPreparationProtectedTests
 
             Assert.True((long)(await f.H.ScalarAsync("SELECT count(*) FROM external_disclosure_receipts;"))! > 0);
 
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Accepted summary.\"}";
         };
 
         PingRequest request = new("Continue after protected maintenance.", Model: "model", SessionId: session,
@@ -171,8 +171,8 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         f.Handler.InsideSend = () =>
         {
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Accepted summary.\"}";
 
             return Task.CompletedTask;
         };
@@ -518,8 +518,8 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         f.Handler.InsideSend = () =>
         {
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Accepted summary.\"}";
 
             return Task.CompletedTask;
         };

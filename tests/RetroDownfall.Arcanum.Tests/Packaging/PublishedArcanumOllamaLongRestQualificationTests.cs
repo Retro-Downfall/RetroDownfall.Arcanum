@@ -8,8 +8,10 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// Opt-in, local-only qualification of Long Rest against the published Native AOT apphost and real Ollama models. The isolated
 /// installation, the credential posture and the refusal to run in CI are those of
 /// <see cref="PublishedArcanumOllamaQualificationTests"/>; this adds a labelled Saga corpus seeded through the host's own extraction,
-/// a clean sweep, a sweep interrupted by SIGKILL and recovered after a restart, one ordinary turn on the default model, and a
-/// calibration report of the discovery thresholds. It measures and asserts; it changes no product constant.
+/// a clean sweep, a sweep interrupted by SIGKILL and recovered after a restart, one ordinary turn on the default model, the Mutiny
+/// Scenario (a second sweep in which the forwarder rewrites every adjudication answer into the all-pairs verdict, over a freshly seeded
+/// installation), and a calibration report of the lexical bar, the vectors and each memory's Pairing Gate floor. It measures and asserts; it
+/// changes no product constant.
 /// </summary>
 [Collection(LocalNativeAotOllamaQualificationCollection.Name)]
 public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutputHelper output)
@@ -61,6 +63,11 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
 
         LongRestQualificationRun run = new(options, isolation, log);
 
+        // The Mutiny Scenario is a second, freshly seeded installation of its own: the first run's sweep has folded the corpus.
+        PublishedTestProcessIsolation? mutinyIsolation = options.Mutiny ? PublishedTestProcessIsolation.Create("ollama-long-rest-mutiny") : null;
+
+        LongRestQualificationRun? mutiny = mutinyIsolation is null ? null : new(options, mutinyIsolation, log);
+
         Exception? primaryFailure = null;
 
         try
@@ -77,9 +84,31 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
 
             await run.RunOrdinaryTurnAsync(CancellationToken.None);
 
-            await run.CompleteAsync(CancellationToken.None);
+            await run.StopAsync(CancellationToken.None);
 
             AssertNoPlaintextCredentialFiles(isolation.ProcessTemporaryDirectory, run.SensitiveValues());
+
+            if (mutiny is not null)
+            {
+                await mutiny.PrepareAsync(CancellationToken.None);
+
+                await mutiny.SeedAsync(CancellationToken.None);
+
+                await mutiny.EnableLongRestAsync(CancellationToken.None);
+
+                await mutiny.RunMutinySweepAsync(CancellationToken.None);
+
+                await mutiny.StopAsync(CancellationToken.None);
+
+                AssertNoPlaintextCredentialFiles(mutinyIsolation!.ProcessTemporaryDirectory, mutiny.SensitiveValues());
+            }
+
+            // Every run has run: the findings of all of them are reported together.
+            string[] findings = [.. run.Findings, .. mutiny?.Findings ?? []];
+
+            Assert.True(
+                findings.Length == 0,
+                "The scenarios completed, but Long Rest has product-level findings:\n- " + string.Join("\n- ", findings));
         }
         catch (Exception exception)
         {
@@ -88,7 +117,7 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
                 exception,
                 LongRestQualificationConfiguration.ChatCredentialPlaceholder,
                 run.MasterApiKey,
-                [LongRestQualificationConfiguration.EmbeddingCredentialPlaceholder, .. run.SensitiveValues()]);
+                [LongRestQualificationConfiguration.EmbeddingCredentialPlaceholder, .. run.SensitiveValues(), .. mutiny?.SensitiveValues() ?? []]);
 
             primaryFailure = wrapped;
 
@@ -100,21 +129,34 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
 
             cleanupFailures.AddRange(await run.CleanupAsync(run.MasterApiKey));
 
-            await WriteSummaryAsync(options, run, log, primaryFailure is null);
-
-            try
+            if (mutiny is not null)
             {
-                isolation.Delete();
+                cleanupFailures.AddRange(await mutiny.CleanupAsync(mutiny.MasterApiKey));
             }
-            catch (Exception cleanupFailure)
+
+            await WriteSummaryAsync(options, run, mutiny, log, primaryFailure is null);
+
+            foreach (PublishedTestProcessIsolation? toDelete in new[] { isolation, mutinyIsolation })
             {
-                cleanupFailures.Add(
-                    LocalOllamaQualificationGuards.CreateSanitizedFailure(
-                        "Long Rest qualification temporary cleanup failed.",
-                        cleanupFailure,
-                        LongRestQualificationConfiguration.ChatCredentialPlaceholder,
-                        run.MasterApiKey,
-                        [LongRestQualificationConfiguration.EmbeddingCredentialPlaceholder, .. run.SensitiveValues()]));
+                if (toDelete is null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    toDelete.Delete();
+                }
+                catch (Exception cleanupFailure)
+                {
+                    cleanupFailures.Add(
+                        LocalOllamaQualificationGuards.CreateSanitizedFailure(
+                            "Long Rest qualification temporary cleanup failed.",
+                            cleanupFailure,
+                            LongRestQualificationConfiguration.ChatCredentialPlaceholder,
+                            run.MasterApiKey,
+                            [LongRestQualificationConfiguration.EmbeddingCredentialPlaceholder, .. run.SensitiveValues(), .. mutiny?.SensitiveValues() ?? []]));
+                }
             }
 
             if (cleanupFailures.Count > 0)
@@ -146,6 +188,7 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
     private async Task WriteSummaryAsync(
         LongRestQualificationOptions options,
         LongRestQualificationRun run,
+        LongRestQualificationRun? mutiny,
         LongRestQualificationLog log,
         bool succeeded)
     {
@@ -156,12 +199,12 @@ public sealed class PublishedArcanumOllamaLongRestQualificationTests(ITestOutput
             .AppendLine($"Total wall clock: {log.Elapsed:hh\\:mm\\:ss}")
             .AppendLine();
 
-        foreach (string observation in run.Observations)
+        foreach (string observation in run.Observations.Concat(mutiny?.Observations ?? []))
         {
             _ = text.Append("- ").AppendLine(observation);
         }
 
-        foreach (string finding in run.Findings)
+        foreach (string finding in run.Findings.Concat(mutiny?.Findings ?? []))
         {
             _ = text.Append("- FINDING: ").AppendLine(finding);
         }

@@ -20,7 +20,7 @@ public sealed partial class LongRestSweepStoreTests
     [InlineData(true)]
     public async Task A_seam_proves_the_receipt_of_the_leaves_the_sweep_consolidated_once_and_refuses_a_receipt_that_does_not_prove(bool protect)
     {
-        await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: 24);
+        await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: 24, related: 8);
 
         LongRestSweep sweep = await fixture.BeginAsync();
 
@@ -87,9 +87,9 @@ public sealed partial class LongRestSweepStoreTests
     [InlineData(true)]
     public async Task A_seam_after_decisions_costs_a_constant_and_one_proof_for_each_receipt_whatever_the_corpus_and_the_leaves_consolidated(bool protect)
     {
-        await using Fixture small = await Fixture.CreateAsync(protect, sourceCount: 6);
+        await using Fixture small = await Fixture.CreateAsync(protect, sourceCount: 6, clusters: [3, 3]);
 
-        await using Fixture large = await Fixture.CreateAsync(protect, sourceCount: 40);
+        await using Fixture large = await Fixture.CreateAsync(protect, sourceCount: 40, clusters: [16, 8]);
 
         // The set-based question and the statement over the leaves.
         int untouched = await SeamStatementsAsync(small);
@@ -176,7 +176,18 @@ public sealed partial class LongRestSweepStoreTests
     {
         LongRestSweep sweep = await fixture.BeginAsync();
 
-        LongRestSweepWork work = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
+        // A unit whose members an earlier decision consolidated is passed over without a request, and a pass over it returns no work, so the
+        // next unit that does need a decision is found by reading on.
+        LongRestSweepWork? work = null;
+
+        for (int step = 0; step < 64 && work is null; step++)
+        {
+            work = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None));
+
+            if (work is null) sweep = await fixture.BeginAsync();
+        }
+
+        Assert.NotNull(work);
 
         LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, work);
 

@@ -111,9 +111,20 @@ internal sealed partial class LongRestQualificationRun
 
         await CheckReceiptsAsync("Scenario A", consolidated, cancellationToken);
 
-        ObserveExactDuplicates(memories);
+        // Every consolidation is graded against the corpus's labels: none may join memories of different topics (a memory folded into another
+        // topic is suppressed from recall for good), both exact-duplicate groups are folded without a model call, and at least half of the
+        // paraphrase folds the labelled clusters allow are made.
+        FoldGrade grade = GradeConsolidations("Scenario A", memories);
 
-        GradeConsolidations("Scenario A", memories);
+        Check(
+            grade.ExactFolds >= grade.PossibleExact,
+            string.Create(CultureInfo.InvariantCulture, $"Scenario A: only {grade.ExactFolds} of the {grade.PossibleExact} exact-duplicate folds were made; an exact duplicate is folded without a model call."));
+
+        int requiredParaphrases = (grade.PossibleParaphrase + 1) / 2;
+
+        Check(
+            grade.ParaphraseFolds >= requiredParaphrases,
+            string.Create(CultureInfo.InvariantCulture, $"Scenario A: only {grade.ParaphraseFolds} of the {grade.PossibleParaphrase} possible paraphrase folds were made; at least {requiredParaphrases} are expected."));
 
         // The retired and the pinned memory were not part of the corpus: untouched, and their text never left the process.
         AssertOperatorStateUntouched(memories);
@@ -142,7 +153,15 @@ internal sealed partial class LongRestQualificationRun
 
         ObservePacks("Scenario A", traffic);
 
-        ObserveAnswerQuality("Scenario A", traffic);
+        int invalidAnswers = ObserveAnswerQuality("Scenario A", traffic);
+
+        Check(
+            invalidAnswers == 0,
+            string.Create(CultureInfo.InvariantCulture, $"Scenario A: {invalidAnswers} adjudication answers were not an instance of the member-verdict shape; each is a paid call that parks the sweep for an operator."));
+
+        Check(
+            _operatorRetries == 0,
+            string.Create(CultureInfo.InvariantCulture, $"Scenario A: the sweep was parked {_operatorRetries} times by a fault only an operator clears; an answer the model gives must never need one."));
 
         // Every paid unit was settled exactly once and the host's accounting equals what the provider reported.
         IReadOnlyList<LongRestEffectRow> effects = await Grimoire.ReadEffectsAsync(cancellationToken);
@@ -199,28 +218,6 @@ internal sealed partial class LongRestQualificationRun
             "Scenario A: the replay of a completed sweep made a provider call.");
 
         _log.Info("Scenario A: an unchanged request replayed the completed sweep without a provider call");
-    }
-
-    /// <summary>
-    /// Reports how many of the corpus's exact-duplicate pairs the sweep folded. This is a measurement, not an assertion: a pair is folded
-    /// locally without a model call only when its pack holds nothing else, and a pack the hierarchy lane has filled with other memories
-    /// leaves the pair to the model's decision.
-    /// </summary>
-    private void ObserveExactDuplicates(IReadOnlyList<LongRestApiMemory> memories)
-    {
-        IGrouping<string, LongRestSeededMemory>[] pairs =
-        [
-            .. _corpus
-                .Where(static memory => memory.Role == LongRestCorpusRole.Ordinary)
-                .GroupBy(static memory => memory.Content, StringComparer.Ordinal)
-                .Where(static group => group.Count() > 1),
-        ];
-
-        int folded = pairs.Count(pair => pair.Count(member => memories.Single(memory => memory.Id == member.Id).ConsolidatedIntoMemoryId is not null) >= pair.Count() - 1);
-
-        Observe(string.Create(
-            CultureInfo.InvariantCulture,
-            $"Scenario A: {folded} of {pairs.Length} exact-duplicate groups were folded into one survivor ({string.Join("; ", pairs.Select(static pair => $"\"{pair.Key}\" x{pair.Count()}"))})"));
     }
 
     private void AssertOperatorStateUntouched(IReadOnlyList<LongRestApiMemory> memories)

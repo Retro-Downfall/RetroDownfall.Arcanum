@@ -67,7 +67,16 @@ internal sealed class LongRestRecordedRequest
     /// <summary>The decoded message and input text the provider received, so a search is not defeated by JSON escaping.</summary>
     public string ProviderVisibleText { get; init; } = string.Empty;
 
+    /// <summary>The last user message the request carried, decoded: for an adjudication, the numbered memories alone (the system prompt's worked example is not in it).</summary>
+    public string UserText { get; init; } = string.Empty;
+
+    /// <summary>The request's <c>reasoning_effort</c>, when it asked for one (<c>none</c> when the host asked the model not to reason).</summary>
+    public string? ReasoningEffort { get; init; }
+
     public int BodyBytes { get; init; }
+
+    /// <summary>The forwarder replaced the answer the host received (the Mutiny Scenario). The usage the provider reported is still the provider's own.</summary>
+    public bool Rewritten { get; set; }
 
     public DateTimeOffset? CompletedAt { get; set; }
 
@@ -129,6 +138,8 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
     private Func<LongRestRecordedRequest, bool>? _holdSelector;
 
     private Func<LongRestRecordedRequest, Task<bool>>? _beforeDelivery;
+
+    private Func<LongRestRecordedRequest, string?>? _answerRewriter;
 
     private LongRestQualificationProxy(WebApplication application, HttpClient upstream, Uri upstreamEndpoint, Uri endpoint)
     {
@@ -240,6 +251,28 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Arms the Mutiny Scenario: the forwarder receives every non-streamed adjudication answer whole, replaces its text with what
+    /// <paramref name="rewrite"/> returns for that request (the answer is left alone when it returns <see langword="null"/>), and passes the
+    /// rewritten answer on. The provider's own usage figures are kept, so the host's accounting still equals what the provider billed. Pass
+    /// <see langword="null"/> to stop rewriting.
+    /// </summary>
+    public void SetAnswerRewriter(Func<LongRestRecordedRequest, string?>? rewrite)
+    {
+        lock (_sync)
+        {
+            _answerRewriter = rewrite;
+        }
+    }
+
+    private Func<LongRestRecordedRequest, string?>? AnswerRewriterFor(LongRestRecordedRequest record)
+    {
+        lock (_sync)
+        {
+            return _answerRewriter is { } rewrite && record.Kind == LongRestProviderRequestKind.Adjudication && !record.Streaming ? rewrite : null;
+        }
+    }
+
     private Func<LongRestRecordedRequest, Task<bool>>? TakeBeforeDeliveryHook(LongRestRecordedRequest record)
     {
         lock (_sync)
@@ -330,6 +363,61 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
         return text.ToString();
     }
 
+    /// <summary>The text of the last user message of a chat request, decoded, or empty when there is none.</summary>
+    internal static string UserMessageText(JsonElement? body)
+    {
+        if (body is not { ValueKind: JsonValueKind.Object } root
+            || !root.TryGetProperty("messages", out JsonElement messages)
+            || messages.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        string user = string.Empty;
+
+        foreach (JsonElement message in messages.EnumerateArray())
+        {
+            if (message.ValueKind == JsonValueKind.Object
+                && message.TryGetProperty("role", out JsonElement role) && role.ValueKind == JsonValueKind.String && role.GetString() == "user"
+                && message.TryGetProperty("content", out JsonElement content))
+            {
+                StringBuilder text = new();
+
+                AppendText(text, content);
+
+                user = text.ToString();
+            }
+        }
+
+        return user;
+    }
+
+    /// <summary>How many numbered memories an adjudication request's user message lists (<c>Memory 01</c>, <c>Memory 02</c>, ...).</summary>
+    internal static int CountMemories(string userText)
+    {
+        ArgumentNullException.ThrowIfNull(userText);
+
+        return userText.Split('\n').Count(static line => line.Length == 9 && line.StartsWith("Memory ", StringComparison.Ordinal) && char.IsAsciiDigit(line[7]) && char.IsAsciiDigit(line[8]));
+    }
+
+    /// <summary>The whole chat response with its first choice's message text replaced, every other field kept as the provider sent it.</summary>
+    internal static byte[] ReplaceMessageContent(byte[] response, string content)
+    {
+        ArgumentNullException.ThrowIfNull(response);
+        ArgumentNullException.ThrowIfNull(content);
+
+        System.Text.Json.Nodes.JsonNode? root = System.Text.Json.Nodes.JsonNode.Parse(response);
+
+        if (root?["choices"] is not System.Text.Json.Nodes.JsonArray { Count: > 0 } choices || choices[0]?["message"] is not System.Text.Json.Nodes.JsonObject message)
+        {
+            throw new InvalidOperationException("The provider's answer has no first choice message to replace.");
+        }
+
+        message["content"] = content;
+
+        return Encoding.UTF8.GetBytes(root.ToJsonString());
+    }
+
     private static void AppendText(StringBuilder text, JsonElement value)
     {
         switch (value.ValueKind)
@@ -409,6 +497,9 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
             Streaming = json is { ValueKind: JsonValueKind.Object } streamRoot && streamRoot.TryGetProperty("stream", out JsonElement stream)
                 && stream.ValueKind == JsonValueKind.True,
             ProviderVisibleText = ProviderVisibleText(json),
+            UserText = UserMessageText(json),
+            ReasoningEffort = json is { ValueKind: JsonValueKind.Object } effortRoot && effortRoot.TryGetProperty("reasoning_effort", out JsonElement effort)
+                && effort.ValueKind == JsonValueKind.String ? effort.GetString() : null,
             BodyBytes = body.Length,
         };
 
@@ -547,8 +638,13 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
             context.Response.Headers[header.Key] = header.Value.ToArray();
         }
 
-        // An intercepted request is received whole before any of it is passed on; every other one streams through as it arrives.
+        // An intercepted request is received whole before any of it is passed on; every other one streams through as it arrives. So is an
+        // adjudication answer the Mutiny Scenario rewrites, since the host must receive the rewritten text and not the model's.
         Func<LongRestRecordedRequest, Task<bool>>? beforeDelivery = TakeBeforeDeliveryHook(record);
+
+        Func<LongRestRecordedRequest, string?>? rewrite = record.StatusCode is >= 200 and < 300 ? AnswerRewriterFor(record) : null;
+
+        bool hold = beforeDelivery is not null || rewrite is not null;
 
         await using Stream upstream = await response.Content.ReadAsStreamAsync(context.RequestAborted);
 
@@ -569,12 +665,12 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
             {
                 capture.Write(buffer, 0, read);
             }
-            else if (beforeDelivery is not null)
+            else if (hold)
             {
                 throw new InvalidOperationException("The provider's answer exceeded the bound for holding it back.");
             }
 
-            if (beforeDelivery is null)
+            if (!hold)
             {
                 await context.Response.Body.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted);
 
@@ -594,6 +690,15 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
 
         record.ResponseContent = record.Streaming || !record.IsLongRestChat ? null : ReadMessageContent(captured);
 
+        if (rewrite is not null && rewrite(record) is { } replacement)
+        {
+            captured = ReplaceMessageContent(captured, replacement);
+
+            record.ResponseContent = replacement;
+
+            record.Rewritten = true;
+        }
+
         if (beforeDelivery is not null)
         {
             if (await beforeDelivery(record))
@@ -605,7 +710,10 @@ internal sealed class LongRestQualificationProxy : IAsyncDisposable
 
                 return;
             }
+        }
 
+        if (hold)
+        {
             await context.Response.Body.WriteAsync(captured, context.RequestAborted);
         }
 

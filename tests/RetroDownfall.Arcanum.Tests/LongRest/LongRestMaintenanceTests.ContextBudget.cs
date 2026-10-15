@@ -81,7 +81,7 @@ public sealed partial class LongRestMaintenanceTests
     public async Task At_an_8192_window_every_paid_request_fits_the_window_and_no_effect_is_left_unsettled()
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false, sourceCount: 10,
-            configure: Window(8192), sourceText: index => Lorem(index, 1200));
+            configure: Window(8192), sourceText: index => Lorem(index, 800));
 
         f.Handler.InsideSend = () =>
         {
@@ -220,8 +220,8 @@ public sealed partial class LongRestMaintenanceTests
 
         f.Handler.InsideSend = () =>
         {
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("long_rest_adjudication", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"" + new string('s', 7900) + "\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"" + new string('s', 7900) + "\"}";
 
             return Task.CompletedTask;
         };
@@ -259,8 +259,8 @@ public sealed partial class LongRestMaintenanceTests
 
         f.Handler.InsideSend = () =>
         {
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("long_rest_adjudication", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"" + new string('s', 7900) + "\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"" + new string('s', 7900) + "\"}";
 
             return Task.CompletedTask;
         };

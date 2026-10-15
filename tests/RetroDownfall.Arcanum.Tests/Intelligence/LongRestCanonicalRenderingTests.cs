@@ -50,9 +50,19 @@ public sealed class LongRestCanonicalRenderingTests
 
             Assert.Equal(digest, Digest(payload));
 
-            // The anchor is first in the pack and last in no order in particular; the request lists the memories by identity.
-            Assert.Equal(Enumerable.Range(0, 5).Select(static index => "Memory m-" + index.ToString("D6", System.Globalization.CultureInfo.InvariantCulture)),
+            // The anchor is first in the pack and last in no order in particular; the request lists the memories in ordinal identity order and
+            // labels each by its place. Nothing of a memory but its text is in it.
+            Assert.Equal(Enumerable.Range(1, 5).Select(static place => "Memory " + place.ToString("D2", System.Globalization.CultureInfo.InvariantCulture)),
                 request.UserPrompt.Split("\n\n", StringSplitOptions.RemoveEmptyEntries).Select(static block => block.Split('\n')[0]));
+
+            Assert.Equal(Enumerable.Range(0, 5).Select(static index => $"observation number {index}"),
+                request.UserPrompt.Split("\n\n", StringSplitOptions.RemoveEmptyEntries).Select(static block => block.Split('\n')[1]));
+
+            Assert.DoesNotContain("m-0000", request.UserPrompt, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("v-0000", request.UserPrompt, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("ContentHash", request.UserPrompt, StringComparison.Ordinal);
         }
     }
 
@@ -65,8 +75,8 @@ public sealed class LongRestCanonicalRenderingTests
 
         LongRestChatRequest request = LongRestProviderCallFreezer.RenderChat(LongRestPackingData.AdjudicationPayload([lower, upper], 8192).Value).Value;
 
-        // Ordinally 'B' (0x42) sorts before 'a' (0x61); a culture comparison would put 'a' first.
-        Assert.True(request.UserPrompt.IndexOf("Memory B-1", StringComparison.Ordinal) < request.UserPrompt.IndexOf("Memory a-1", StringComparison.Ordinal));
+        // Ordinally 'B' (0x42) sorts before 'a' (0x61); a culture comparison would put 'a' first. The first place is B-1's text.
+        Assert.Equal("Memory 01\nfirst\n\nMemory 02\nsecond\n\n", request.UserPrompt);
     }
 
     [Fact]
@@ -142,10 +152,11 @@ public sealed class LongRestCanonicalRenderingTests
         // The version names the adjudication request's text: the prompt, the decision schema and the shape of a memory block. Changing any of
         // them without moving the version would let an old decision answer a new question, so this digest and the version move together.
         string text = string.Join('\0', LongRestPromptLayout.AdjudicationSystemPrompt, LongRestPromptLayout.DecisionSchema, LongRestPromptLayout.AdjudicationSchemaName,
-            LongRestPromptLayout.AdjudicationSchemaDescription, LongRestPromptLayout.AdjudicationMemory("<memory>", "<version>", "<hash>", "<content>"));
+            LongRestPromptLayout.AdjudicationSchemaDescription, LongRestPromptLayout.AdjudicationMemory(1, "<content>"));
 
-        Assert.Equal(1, LongRestPromptLayout.AdjudicationRecipeVersion);
+        Assert.Equal(2, LongRestPromptLayout.AdjudicationRecipeVersion);
 
-        Assert.Equal("14009BDFFF5F799817B78386495A4C36BB6CEED98ACCDBDEEE5F05059B8F2D85", Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false, true).GetBytes(text))));
+        // Taken from the source text by an independent script.
+        Assert.Equal("CDB92F65583A43938B23A890E6489277D29A4346591F6163A3CE04E781107EA1", Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false, true).GetBytes(text))));
     }
 }

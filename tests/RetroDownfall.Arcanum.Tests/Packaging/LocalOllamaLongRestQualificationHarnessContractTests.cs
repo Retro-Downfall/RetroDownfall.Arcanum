@@ -14,6 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Tests.LongRest;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
@@ -383,6 +384,56 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.True(second.Delivered);
     }
 
+    // ---- The Mutiny Scenario rewrites what the host is told, and only that ----
+
+    [Fact]
+    public async Task Forwarder_rewrites_an_adjudication_answer_for_the_host_and_keeps_the_providers_own_usage()
+    {
+        await using StubUpstream upstream = await StubUpstream.StartAsync(StubChatResponse);
+
+        await using LongRestQualificationProxy proxy = await LongRestQualificationProxy.StartAsync(upstream.Endpoint);
+
+        using HttpClient client = new();
+
+        proxy.SetAnswerRewriter(static request => LongRestScriptedVerdicts.AllPairs(LongRestQualificationProxy.CountMemories(request.UserText)));
+
+        // A summary is left alone, and an adjudication is rewritten into the all-pairs verdict for the number of memories it lists.
+        using HttpResponseMessage summary = await client.SendAsync(SummaryRequest(proxy.Endpoint));
+
+        Assert.Contains("A beagle.", await summary.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+        using HttpResponseMessage adjudication = await client.SendAsync(AdjudicationRequest(proxy.Endpoint, 3));
+
+        Assert.Equal(HttpStatusCode.OK, adjudication.StatusCode);
+
+        using JsonDocument body = JsonDocument.Parse(await adjudication.Content.ReadAsStringAsync());
+
+        string? content = body.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString();
+
+        Assert.Equal(LongRestScriptedVerdicts.AllPairs(3), content);
+        Assert.Equal(34, body.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32());
+
+        LongRestRecordedRequest record = proxy.All[^1];
+
+        await WaitUntilAsync(() => record.CompletedAt is not null);
+
+        Assert.Equal(LongRestProviderRequestKind.Adjudication, record.Kind);
+        Assert.True(record.Rewritten);
+        Assert.True(record.Delivered);
+        Assert.Equal(LongRestScriptedVerdicts.AllPairs(3), record.ResponseContent);
+        Assert.Equal(34L, record.CompletionTokens);
+        Assert.Equal("none", record.ReasoningEffort);
+        Assert.False(proxy.All[0].Rewritten);
+
+        // Stopping the mutiny restores the model's own answer.
+        proxy.SetAnswerRewriter(null);
+
+        using HttpResponseMessage plain = await client.SendAsync(AdjudicationRequest(proxy.Endpoint, 3));
+
+        Assert.Contains("A beagle.", await plain.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        Assert.False(proxy.All[^1].Rewritten);
+    }
+
     [Fact]
     public async Task Forwarder_delivers_the_held_response_intact_when_the_hook_does_not_withhold_it()
     {
@@ -568,6 +619,19 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.NotNull(degraded);
         Assert.Contains("recipe unresolved", degraded, StringComparison.Ordinal);
 
+        // Durable operations: a recovered crash or a cancelled sweep leaves nothing awaiting repair, so a Degraded row with every sweep settled is a finding.
+        Assert.Null(LongRestQualificationChecks.HealthFinding(
+            "Scenario B",
+            new("Healthy", [new("DurableOperations", "Healthy", "nothing awaiting repair"), new("LongRest", "Healthy", null)])));
+
+        string? stale = LongRestQualificationChecks.HealthFinding(
+            "Scenario B",
+            new("Degraded", [new("DurableOperations", "Degraded", "1 operation awaiting repair"), new("LongRest", "Healthy", null)]));
+
+        Assert.NotNull(stale);
+        Assert.Contains("DurableOperations component is Degraded", stale, StringComparison.Ordinal);
+        Assert.Contains("awaiting repair", stale, StringComparison.Ordinal);
+
         string? missing = LongRestQualificationChecks.HealthFinding("Scenario C", new("Healthy", [new("Grimoire", "Healthy", null)]));
 
         Assert.NotNull(missing);
@@ -663,12 +727,10 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains("SetBeforeDeliveryHook", run, StringComparison.Ordinal);
         Assert.Contains("LongRestQualificationChecks.BilledButUndelivered", run, StringComparison.Ordinal);
 
-        // The metrics exporter's late start is a finding, then (and only then) a scrape that primes the listener for the counters.
+        // The metrics exporter starts with the host, so a restart's first scrape must already carry what the host recorded: a late start is a
+        // finding, and the run keeps no workaround scrape to hide it.
         Assert.Contains("LongRestQualificationChecks.ExporterStartFinding", run, StringComparison.Ordinal);
-        Assert.True(
-            run.IndexOf("LongRestQualificationChecks.ExporterStartFinding", StringComparison.Ordinal)
-                < run.IndexOf("temporary workaround", StringComparison.OrdinalIgnoreCase),
-            "The exporter probe must come before the note that the scrape which primes the listener is a temporary workaround.");
+        Assert.DoesNotContain("temporary workaround", run, StringComparison.OrdinalIgnoreCase);
 
         // The runtime gate on the in-memory credential backend precedes the first host start.
         Assert.True(
@@ -708,10 +770,20 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
             LongRestQualificationOptions.EndpointVariable,
             LongRestQualificationOptions.ResultsVariable,
             LongRestQualificationOptions.ReceiptVariable,
+            LongRestQualificationOptions.MutinyVariable,
         })
         {
             Assert.Contains(variable + "=", wrapper, StringComparison.Ordinal);
         }
+
+        Assert.Contains($"{LongRestQualificationOptions.MutinyVariable}=\"$MUTINY\"", wrapper, StringComparison.Ordinal);
+        Assert.Contains("MUTINY=\"1\"", wrapper, StringComparison.Ordinal);
+        Assert.Contains("--no-mutiny)", wrapper, StringComparison.Ordinal);
+
+        // One run for each installed embedding model: the wrapper asks Ollama which models embed and what their window and vector size are.
+        Assert.Contains("--all-embedding-models)", wrapper, StringComparison.Ordinal);
+        Assert.Contains("/api/show", wrapper, StringComparison.Ordinal);
+        Assert.Contains(",embedding,", wrapper, StringComparison.Ordinal);
 
         // Each flag's value reaches the variable the test reads for it.
         Assert.Contains($"{LongRestQualificationOptions.ChatModelVariable}=\"$CHAT_MODEL\"", wrapper, StringComparison.Ordinal);
@@ -752,6 +824,16 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
 
         LongRestQualificationOptions options = LongRestQualificationOptions.Read(name => environment.GetValueOrDefault(name));
 
+        Assert.True(options.Mutiny);
+
+        environment[LongRestQualificationOptions.MutinyVariable] = "0";
+
+        Assert.False(LongRestQualificationOptions.Read(name => environment.GetValueOrDefault(name)).Mutiny);
+
+        environment[LongRestQualificationOptions.MutinyVariable] = "maybe";
+
+        Assert.Throws<InvalidOperationException>(() => LongRestQualificationOptions.Read(name => environment.GetValueOrDefault(name)));
+
         Assert.Equal("chat-x:1b", options.ChatModel);
         Assert.Equal("default-x:2b", options.DefaultModel);
         Assert.Equal("embed-x", options.EmbeddingModel);
@@ -763,7 +845,7 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
     // ---- The owning document states what the harness now does ----
 
     [Fact]
-    public void The_design_states_the_corpus_size_the_recovery_rule_and_the_exporter_defect_as_what_they_are()
+    public void The_design_states_the_corpus_size_the_recovery_rule_the_exporter_start_and_the_mutiny_scenario_as_what_they_are()
     {
         string design = File.ReadAllText(Path.Combine(FindRepositoryRoot(), "docs", "Arcanum.DESIGN.md"));
 
@@ -781,8 +863,14 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("about forty facts", section, StringComparison.Ordinal);
-        Assert.Contains("known product defect", section, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("starts with the host", section, StringComparison.Ordinal);
+        Assert.DoesNotContain("known product defect", section, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("to be able to compare the Long Rest counters at all", section, StringComparison.Ordinal);
+        Assert.Contains("The Mutiny Scenario", section, StringComparison.Ordinal);
+        Assert.Contains("--all-embedding-models", section, StringComparison.Ordinal);
+        Assert.Contains("Background Floor", section, StringComparison.Ordinal);
+        Assert.DoesNotContain("LexicalMinimumScore", section, StringComparison.Ordinal);
+        Assert.DoesNotContain("MinimumVectorCosine", section, StringComparison.Ordinal);
         Assert.Contains("without an operator", section, StringComparison.Ordinal);
         Assert.Contains("LongRest.InvalidOutput", section, StringComparison.Ordinal);
         Assert.Contains("billed", section, StringComparison.OrdinalIgnoreCase);
@@ -908,6 +996,27 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
 
         return string.Concat(
             Directory.EnumerateFiles(packaging, "LongRestQualificationRun*.cs").Order(StringComparer.Ordinal).Select(File.ReadAllText));
+    }
+
+    private static HttpRequestMessage AdjudicationRequest(Uri endpoint, int memories)
+    {
+        string user = string.Concat(Enumerable.Range(1, memories).Select(static index => $"Memory {index:D2}\\nFact number {index}.\\n\\n"));
+
+        HttpRequestMessage request = new(HttpMethod.Post, new Uri(endpoint, "chat/completions"))
+        {
+            Content = new StringContent(
+                "{\"model\":\"gemma4:e4b\",\"reasoning_effort\":\"none\",\"messages\":[{\"role\":\"system\",\"content\":\"Memory 01\\nAn example in the instructions.\"},{\"role\":\"user\",\"content\":\""
+                + user
+                + "\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\""
+                + LongRestPromptLayout.AdjudicationSchemaName
+                + "\"}}}",
+                Encoding.UTF8,
+                new MediaTypeHeaderValue("application/json")),
+        };
+
+        request.Headers.TryAddWithoutValidation("Authorization", "Bearer synthetic-test-key");
+
+        return request;
     }
 
     private static HttpRequestMessage SummaryRequest(Uri endpoint)

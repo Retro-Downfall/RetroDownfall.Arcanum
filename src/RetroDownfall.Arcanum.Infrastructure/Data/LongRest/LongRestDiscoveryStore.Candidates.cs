@@ -70,7 +70,9 @@ internal sealed partial class LongRestDiscoveryStore
 
         LongRestLaneBuffer vector = new(LongRestDiscoveryLane.Vector);
 
-        float[] direction = SphericalKMeans.NormalizedDirection(source.Vector.ToArray());
+        // The pass reads every captured leaf once per anchor, in memory id order, so it also reads the anchor's Background Floor from them: the
+        // median of the anchor's cosine to every other leaf, eligible or not, and the spread of a fixed sample of the generation's leaves.
+        LongRestBackgroundSampler background = new(source.Vector);
 
         // Every captured leaf is read and verified once per anchor, so the pass also counts the generation's documents.
         long documents = 0;
@@ -101,6 +103,9 @@ internal sealed partial class LongRestDiscoveryStore
             {
                 LongRestSourceLeaf candidate = await ReadFrozenLeafAsync(connection, transaction, generation, memory, capability, cancellationToken).ConfigureAwait(false);
 
+                // Every leaf the generation froze counts toward the floor, whether or not the sweep has since consolidated it.
+                double cosine = background.Observe(memory == anchor.MemoryId, candidate.Vector);
+
                 if (memory == anchor.MemoryId || !CandidateEligible(candidate))
                 {
                     continue;
@@ -111,15 +116,11 @@ internal sealed partial class LongRestDiscoveryStore
                     exact.Add(new(candidate.Target, LongRestDiscoveryLane.ExactHash, 0));
                 }
 
-                if (direction.Length > 0 && candidate.Vector.Length == direction.Length)
+                if (!double.IsNaN(cosine))
                 {
-                    // A candidate below the minimum cosine is never evidence, so it never reaches the lane.
-                    double cosine = SphericalKMeans.CosineToDirection(direction, candidate.Vector.AsSpan());
-
-                    if (cosine >= LongRestDiscoveryLimits.MinimumVectorCosine)
-                    {
-                        vector.Add(new(candidate.Target, LongRestDiscoveryLane.Vector, Math.Clamp(cosine, -1, 1)));
-                    }
+                    // The lane keeps its nearest eight; the floor is known only once the pass is done, and the nearest eight that clear it
+                    // are the nearest eight of all with those below it dropped, so nothing is lost by dropping them afterwards.
+                    vector.Add(new(candidate.Target, LongRestDiscoveryLane.Vector, Math.Clamp(cosine, -1, 1)));
                 }
             }
 
@@ -165,8 +166,13 @@ internal sealed partial class LongRestDiscoveryStore
 
         ImmutableArray<LongRestCandidate> hierarchy = await HierarchyCandidatesAsync(connection, transaction, generation, anchor, capability, cancellationToken).ConfigureAwait(false);
 
+        // The anchor's Background Floor travels with its groups: the packer judges every nominee, lexical and hierarchical ones included, by it.
+        int floor = background.FloorPermille();
+
+        double floorCosine = floor / 1000.0;
+
         Result<ImmutableArray<LongRestCandidate>> merged = LongRestDiscoveryPolicy.MergeCandidates(anchor,
-            exact.Items.Concat(lexical.Items).Concat(vector.Items).Concat(hierarchy));
+            exact.Items.Concat(lexical.Items).Concat(vector.Items.Where(item => item.Score >= floorCosine)).Concat(hierarchy));
 
         if (merged.IsFailure)
         {
@@ -180,7 +186,7 @@ internal sealed partial class LongRestDiscoveryStore
             return Result<LongRestCandidateGroup[]>.Failure(authority.Error);
         }
 
-        return LongRestDiscoveryPolicy.GroupCandidates(anchor, merged.Value).Value.ToArray();
+        return LongRestDiscoveryPolicy.GroupCandidates(anchor, merged.Value, floor).Value.ToArray();
     }
 
     private sealed record LexicalHit(string MemoryId, long Score);
@@ -232,13 +238,33 @@ internal sealed partial class LongRestDiscoveryStore
 
         List<LexicalHit> hits = [];
 
+        List<LexicalHit> scored = [];
+
+        // What the anchor scores against itself under these weights is the most any document can cover of it.
+        long self = 0;
+
         foreach ((string memory, LongRestLexicalDocument document) in matched)
         {
             long score = LongRestLexicalScorer.Score(weights, document);
 
-            if (memory != anchorMemory && score >= generation.Recipe.LexicalMinimumScore)
+            if (memory == anchorMemory)
             {
-                hits.Add(new(memory, score));
+                self = score;
+            }
+            else
+            {
+                scored.Add(new(memory, score));
+            }
+        }
+
+        // A hit is nominated when it covers at least the recipe's share of the anchor's own score. The share is of the anchor's score, not
+        // a fixed number, so it does not drift with the size of the corpus; an anchor whose own terms weigh nothing (every one is in every
+        // memory) nominates nothing, and a hit that scores nothing is never a hit.
+        foreach (LexicalHit hit in scored)
+        {
+            if (self > 0 && hit.Score > 0 && hit.Score * 1000 >= self * generation.Recipe.LexicalMinimumCoveragePermille)
+            {
+                hits.Add(hit);
             }
         }
 

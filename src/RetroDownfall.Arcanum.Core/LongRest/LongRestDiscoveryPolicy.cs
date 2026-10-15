@@ -26,18 +26,56 @@ public static class LongRestDiscoveryLimits
     public const int LexicalTopK = 8;
 
     /// <summary>
-    /// The least <see cref="LongRestLexicalScorer"/> score (sixteenths of a bit) a lexical hit needs to be evidence at all, so a
-    /// token nearly every memory shares cannot make an anchor's neighbours. Bound into the recipe. This initial value is the largest
-    /// round number the retained small-corpus expectations allow (a term in 3 of 4 documents, twice, still counts); it is calibrated
-    /// against a real corpus during the live qualification.
+    /// The share of the anchor's own lexical score (in thousandths) a lexical hit needs to be nominated at all, so a token nearly every
+    /// memory shares cannot make an anchor's neighbours and the bar does not drift with the size of the corpus: it is a fraction of what
+    /// the anchor scores against itself under the same weights. Lexical evidence only nominates: it is not separable from unrelated text
+    /// (the weakest paraphrase pair of a labelled corpus covers about a tenth of the anchor, a pair of different pets covers almost half),
+    /// so the Pairing Gate, not this bar, decides which nominees are ever put to the model. Bound into the recipe.
     /// </summary>
-    public const int LexicalMinimumScore = 12;
+    public const int LexicalMinimumCoveragePermille = 200;
 
     public const int VectorTopK = 8;
 
     public const int SummaryTopK = 8;
 
-    public const double MinimumVectorCosine = 0.92;
+    /// <summary>
+    /// The least cosine (in thousandths) a summary needs to the anchor's nearest ancestor-excluded neighbour summaries to be selected by
+    /// the hierarchy lane. Leaves, including those a summary expands to, are judged by the Pairing Gate instead. Bound into the recipe.
+    /// </summary>
+    public const int SummaryMinimumCosinePermille = 920;
+
+    /// <summary>The version of the pairing arithmetic (<see cref="LongRestPairing"/>); a test pins a digest of its outputs to it. Bound into the recipe.</summary>
+    public const int PairingRecipeVersion = 1;
+
+    /// <summary>The share (in thousandths) of the distance from an anchor's median similarity to a perfect match a nominee must close to be paired.</summary>
+    public const int PairingClosenessPermille = 550;
+
+    /// <summary>The spread multiplier of the pairing floor, in tenths, for a generation of at most sixty-three leaves.</summary>
+    public const int PairingSpreadTenths = 35;
+
+    /// <summary>What the spread multiplier grows by, in tenths, for every doubling of the generation beyond sixty-four leaves.</summary>
+    public const int PairingSpreadStepTenths = 2;
+
+    /// <summary>The least spread (in thousandths) the pairing floor trusts, so a generation whose sample is degenerate cannot narrow the floor.</summary>
+    public const int PairingSpreadMinimumThousandths = 20;
+
+    /// <summary>The leaves, in memory id order, whose pairwise similarities estimate the spread of the generation.</summary>
+    public const int PairingSampleLeaves = 64;
+
+    /// <summary>The fewest other leaves a generation needs for its own distribution to set the floor.</summary>
+    public const int PairingMinimumLeaves = 16;
+
+    /// <summary>The floor (in thousandths) a generation too small to estimate its own distribution uses.</summary>
+    public const int PairingFallbackPermille = 920;
+
+    /// <summary>The lowest floor (in thousandths) any generation may use.</summary>
+    public const int PairingAbsoluteMinimumPermille = 500;
+
+    /// <summary>The bins of the fixed histogram over similarities from -1 to 1 that the median and the spread are read from.</summary>
+    public const int PairingHistogramBins = 1024;
+
+    /// <summary>The most pair units an anchor queues beside its clique packs.</summary>
+    public const int PairFallbackLimit = 15;
 
     public const int ExpandedLeaves = 32;
 
@@ -75,11 +113,6 @@ public static class LongRestDiscoveryPolicy
                     return Invalid<ImmutableArray<LongRestCandidate>>("An anchor cannot have conflicting exact versions.");
                 }
 
-                continue;
-            }
-
-            if (candidate.Lane == LongRestDiscoveryLane.Vector && candidate.Score < LongRestDiscoveryLimits.MinimumVectorCosine)
-            {
                 continue;
             }
 
@@ -182,11 +215,17 @@ public static class LongRestDiscoveryPolicy
         return [.. taken];
     }
 
-    public static Result<ImmutableArray<LongRestCandidateGroup>> GroupCandidates(LongRestTarget anchor, ImmutableArray<LongRestCandidate> candidates)
+    /// <summary>
+    /// Merges the lanes' nominations and groups them in chunks of fifteen beside the anchor. Every nominee is only a nomination: the group
+    /// carries the anchor's pairing floor so that the packer, which holds the nominees' full leaves, admits only those the Pairing Gate pairs
+    /// with the anchor (<see cref="LongRestPairing"/>).
+    /// </summary>
+    public static Result<ImmutableArray<LongRestCandidateGroup>> GroupCandidates(LongRestTarget anchor, ImmutableArray<LongRestCandidate> candidates, int pairingFloorPermille)
     {
-        if (candidates.IsDefault || candidates.Length > LongRestDiscoveryLimits.MergedNeighbors)
+        if (candidates.IsDefault || candidates.Length > LongRestDiscoveryLimits.MergedNeighbors
+            || pairingFloorPermille is < LongRestDiscoveryLimits.PairingAbsoluteMinimumPermille or > 1000)
         {
-            return Invalid<ImmutableArray<LongRestCandidateGroup>>("Candidate grouping requires one bounded merged neighbor vector.");
+            return Invalid<ImmutableArray<LongRestCandidateGroup>>("Candidate grouping requires one bounded merged neighbor vector and a pairing floor within its bounds.");
         }
 
         Result<ImmutableArray<LongRestCandidate>> merged = MergeCandidates(anchor, candidates);
@@ -202,7 +241,7 @@ public static class LongRestDiscoveryPolicy
         {
             ImmutableArray<LongRestCandidate> evidence = merged.Value.Slice(offset, Math.Min(LongRestDiscoveryLimits.Targets - 1, merged.Value.Length - offset));
 
-            groups.Add(new([anchor, .. evidence.Select(item => item.Target)], evidence));
+            groups.Add(new([anchor, .. evidence.Select(item => item.Target)], evidence, pairingFloorPermille));
         }
 
         return groups.ToImmutable();

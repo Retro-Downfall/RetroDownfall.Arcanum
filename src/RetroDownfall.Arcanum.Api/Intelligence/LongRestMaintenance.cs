@@ -234,7 +234,7 @@ internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epo
             return;
         }
 
-        if (work.Inputs.Length >= 2 && work.Inputs.All(input => input.Snapshot.ContentHash == work.Inputs[0].Snapshot.ContentHash))
+        if (work.Inputs.Length >= 2 && work.Inputs.All(input => LongRestPairing.SameContent(input, work.Inputs[0])))
         {
             await EnsureCurrentAsync(generation, capability, workerOwner, LongRestVerificationDepth.Step, used, ct).ConfigureAwait(false);
 

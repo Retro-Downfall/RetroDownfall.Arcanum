@@ -112,7 +112,7 @@ internal sealed partial class LongRestDiscoveryStore
 
                 double score = Math.Clamp(cosine, -1, 1);
 
-                if (score < LongRestDiscoveryLimits.MinimumVectorCosine)
+                if (score < LongRestDiscoveryLimits.SummaryMinimumCosinePermille / 1000.0)
                 {
                     continue;
                 }

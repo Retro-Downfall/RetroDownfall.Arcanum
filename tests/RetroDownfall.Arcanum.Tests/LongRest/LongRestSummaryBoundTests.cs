@@ -442,21 +442,21 @@ public sealed class LongRestSummaryBoundTests
         Assert.Equal(valid, LongRestDiscoveryHash.Recipe(Recipe(bound)).IsSuccess);
 
     // Independently assembled preimages (Python struct.pack and hashlib.sha256 over the recipe fields in their canonical order, with the summary
-    // bound as the third Int32BE of the bounds block). The same script reproduces the four existing 8,192-byte goldens in
-    // LongRestDiscoveryPolicyTests (CF9B0D84... at 32768, 7BDFE21E... at 4096, 226A14F8... at 5328, 9264684C... at 20000), so only the bound
-    // moved the rows below. 7109 at 5328 is the recipe the default 8,192-token window resolves; 1024 is the smallest bound a recipe may carry
-    // (the digest does not encode the minimum, so the 2,048 row is unchanged by it); 1766 is the bound of a 2,048-token embedding window.
+    // bound as the third Int32BE of the bounds block). The same script reproduces the four 8,192-byte goldens in LongRestDiscoveryPolicyTests
+    // (FBE16305... at 32768, E110ACC5... at 4096, 6E5AB933... at 5328, 62905848... at 20000), so only the bound moved the rows below. 7109 at
+    // 5328 is the recipe the default 8,192-token window resolves; 1024 is the smallest bound a recipe may carry (the digest does not encode the
+    // minimum); 1766 is the bound of a 2,048-token embedding window.
     [Theory]
-    [InlineData(1024, 32768, "44EBB675073E16C2FCD5B380D94B0C877D11D8E465940D8C724ED1F97F5BB969")]
-    [InlineData(1024, 5328, "1AE81E71B6874A3CA11283C35B14CA2DB5CB6438DE3EC77DA044596B1FA6942D")]
-    [InlineData(1766, 32768, "387DB9D8EDBDD7C384B02C8C4A70C93C3933FC64681C7941E6A47DAE8B6ABFA5")]
-    [InlineData(1766, 5328, "E187FB3174EDF42B556946272C56B732D0EC535DE35B1805CACDBE4AF435DE99")]
-    [InlineData(2048, 32768, "8B329D584F3415C54B327F27935626DB3B71A7DF2D827EBB75AA44A296E8F57E")]
-    [InlineData(7109, 32768, "DF871C156F94D4D2AF889B0B10049307E0EDC4E26C61814CFDAD7D7DA5B87151")]
-    [InlineData(7109, 5328, "4542ECCE136C9BD996515E21F68598593FFB54175813A4A3179D1679F8606DE0")]
-    [InlineData(8191, 32768, "96C8CC2954F8490E20F9331F03880295DE1A469B394DD1310E69777022AD0464")]
-    [InlineData(8192, 32768, "CF9B0D84FBD2D8B8CB823EE814682AC04DAF9F4CE8E93EE72564CDDEAA7AB054")]
-    [InlineData(8192, 5328, "226A14F8FE41E3E1DE3A8C777D52B75C2BB9C64552C02E2DCEAA7FE75B4D4A37")]
+    [InlineData(1024, 32768, "4EFD540282F202AD12D9AF3035306BFBF594ED91EA66248F32E4771233154CAC")]
+    [InlineData(1024, 5328, "6731FEC5B7FEE52E460C060073F513B6F331E39C7D72605C58FDAF495EAA1249")]
+    [InlineData(1766, 32768, "7F19827E1D3A00EE8D76D9A80EF90E2C5EADE9AA3544BCC84001AD1C0F5EAA2B")]
+    [InlineData(1766, 5328, "96C147380DFF87BF70F3137F932A56B74C298DA8621673B4AABB86AB37DB8784")]
+    [InlineData(2048, 32768, "700ED36714BE03A5EC07C72BD7AC31458070738EAD641902029AC66331305464")]
+    [InlineData(7109, 32768, "3AA12813954E0E9D34AFB1786ACF261FBF612A1170A5AC27D600E0AA436E54BA")]
+    [InlineData(7109, 5328, "419772F4D440657BACF9B2B5F38E0DB929499490341ED086F9BA017F21312CC6")]
+    [InlineData(8191, 32768, "F3303C7169F00EF3110D9D07B43E224D625EA1C6DB14D927216DD01D2E8C9524")]
+    [InlineData(8192, 32768, "FBE16305FB75AF048057D7F028102A62DDCD643871F7C18CA069E4E3C3499127")]
+    [InlineData(8192, 5328, "6E5AB9331FBA6D235783F5257E7436DAB88E646C5828484DCEDC9839BFBB9E72")]
     public void Recipe_digest_golden_vectors_pin_the_summary_bound(int bound, int budget, string expected) =>
         Assert.Equal(expected, LongRestDiscoveryHash.Recipe(Recipe(bound, budget)).Value.ToString());
 
@@ -595,7 +595,7 @@ public sealed class LongRestSummaryBoundTests
         bodies.Add(f.Handler.LastBody!);
 
         f.Handler.ChatText = f.Handler.LastBody!.Contains("long_rest_summary", StringComparison.Ordinal)
-            ? Summary(summaryBytes) : "{\"kind\":\"NoChange\",\"survivorVersionId\":null}";
+            ? Summary(summaryBytes) : LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!);
 
         return Task.CompletedTask;
     };
@@ -622,7 +622,7 @@ public sealed class LongRestSummaryBoundTests
 
         LongRestSweepProgress progress = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
 
-        Assert.Equal(LongRestSweepPhase.Completed, progress.Phase);
+        Assert.True(progress.Phase == LongRestSweepPhase.Completed, "phase " + progress.Phase + " deferred " + progress.DeferredReason);
 
         Assert.Equal(0, metrics.Sum(RefusedMetric));
 

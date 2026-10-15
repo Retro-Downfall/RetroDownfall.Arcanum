@@ -22,7 +22,14 @@ internal sealed partial class LongRestSweepStore
 
         internal int PackLimit;
 
+        internal int Unpaired;
+
+        internal int Incohesive;
+
         internal int Reused;
+
+        // The floors the anchors of this read were queued under: one value each, published as a histogram of permille with no identity.
+        internal readonly List<int> Floors = [];
 
         internal void Reset()
         {
@@ -30,7 +37,13 @@ internal sealed partial class LongRestSweepStore
 
             PackLimit = 0;
 
+            Unpaired = 0;
+
+            Incohesive = 0;
+
             Reused = 0;
+
+            Floors.Clear();
         }
 
         internal void Publish()
@@ -40,9 +53,24 @@ internal sealed partial class LongRestSweepStore
                 ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(Oversize, new KeyValuePair<string, object?>("reason", "oversize"));
             }
 
+            if (Unpaired > 0)
+            {
+                ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(Unpaired, new KeyValuePair<string, object?>("reason", "unpaired"));
+            }
+
+            if (Incohesive > 0)
+            {
+                ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(Incohesive, new KeyValuePair<string, object?>("reason", "incohesive"));
+            }
+
             if (PackLimit > 0)
             {
                 ArcanumMetrics.LongRestPackSkippedCandidatesTotal.Add(PackLimit, new KeyValuePair<string, object?>("reason", "pack_limit"));
+            }
+
+            foreach (int floor in Floors)
+            {
+                ArcanumMetrics.LongRestPairingFloor.Record(floor);
             }
 
             if (Reused > 0)
@@ -167,7 +195,7 @@ internal sealed partial class LongRestSweepStore
                     throw new InvalidDataException();
                 }
 
-                ImmutableArray<ImmutableArray<LongRestSourceLeaf>> packs = await PackAsync(connection, transaction, generation, anchor, found.Value, capability, counts, ct).ConfigureAwait(false);
+                (ImmutableArray<ImmutableArray<LongRestSourceLeaf>> packs, int floor) = await PackAsync(connection, transaction, generation, anchor, found.Value, capability, counts, ct).ConfigureAwait(false);
 
                 if (packs.Length == 0)
                 {
@@ -186,7 +214,8 @@ internal sealed partial class LongRestSweepStore
                     ImmutableArray<LongRestSourceLeaf> inputs = packs[index];
 
                     LongRestWorkIdentity work = new(generation.GenerationId, generation.OperationId, prefix + ":" + index.ToString("D2", System.Globalization.CultureInfo.InvariantCulture),
-                        LongRestWorkKind.Anchor, generation.Scope, generation.Fence, LongRestDiscoveryHash.SourcePage(generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(generation.Recipe).Value);
+                        LongRestWorkKind.Anchor, generation.Scope, generation.Fence, LongRestDiscoveryHash.SourcePage(generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(generation.Recipe).Value,
+                        floor);
 
                     // The digest is of the set, whichever member it was found from, and the recipe binds the request text, so a set this generation has
                     // already decided NoChange under this recipe is the same question with the same answer: no work item and no request. Only that
@@ -214,10 +243,11 @@ internal sealed partial class LongRestSweepStore
                     string unit = Format(Guid.NewGuid());
 
                     await ExecuteAsync(connection, transaction, """
-                        INSERT INTO long_rest_work_items (WorkItemId, WorkDigest, GenerationId, OperationId, KindCode, ItemId, SourceDigest, RecipeDigest, Revision, DispositionCode)
-                        VALUES ($unit, $work, $generation, $operation, 3, $item, $source, $recipe, 0, 1);
+                        INSERT INTO long_rest_work_items (WorkItemId, WorkDigest, GenerationId, OperationId, KindCode, ItemId, SourceDigest, RecipeDigest, PairingFloorPermille, Revision, DispositionCode)
+                        VALUES ($unit, $work, $generation, $operation, 3, $item, $source, $recipe, $floor, 0, 1);
                         """, ct, ("$unit", unit), ("$work", LongRestDiscoveryHash.Work(work).Value.Bytes), ("$generation", Format(work.GenerationId)),
-                        ("$operation", work.OperationId.ToString("N")), ("$item", work.ItemId), ("$source", work.SourceDigest.Bytes), ("$recipe", work.RecipeDigest.Bytes)).ConfigureAwait(false);
+                        ("$operation", work.OperationId.ToString("N")), ("$item", work.ItemId), ("$source", work.SourceDigest.Bytes), ("$recipe", work.RecipeDigest.Bytes),
+                        ("$floor", work.PairingFloorPermille)).ConfigureAwait(false);
 
                     for (int ordinal = 0; ordinal < inputs.Length; ordinal++)
                     {
@@ -242,19 +272,27 @@ internal sealed partial class LongRestSweepStore
     }, ct);
 
     /// <summary>
-    /// Loads the exact leaves of every discovered neighbour and packs them behind the anchor so that each pack renders within the
-    /// recipe's input budget. A neighbour left out is counted by reason and never by identity, in <paramref name="counts"/>, which the
-    /// caller publishes once the transaction has committed.
+    /// Loads the exact leaves of every nominated neighbour and packs them behind the anchor: duplicates first, then cliques, then pairs, each
+    /// within the recipe's input budget and every pair of memories in a clique unit paired at the anchor's floor (<see cref="LongRestGroupPacker"/>).
+    /// A neighbour left out is counted by reason and never by identity, in <paramref name="counts"/>, which the caller publishes once the
+    /// transaction has committed. The floor is the one discovery computed from the generation; every group carries the same one.
     /// </summary>
-    private static async Task<ImmutableArray<ImmutableArray<LongRestSourceLeaf>>> PackAsync(SqliteConnection connection, SqliteTransaction transaction,
+    private static async Task<(ImmutableArray<ImmutableArray<LongRestSourceLeaf>> Packs, int Floor)> PackAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestDiscoveryGeneration generation, LongRestSourceLeaf anchor, LongRestCandidateGroup[] groups, LongRestMaintenanceCapability? capability,
         PendingWorkCounts counts, CancellationToken ct)
     {
         ImmutableArray<LongRestSourceLeaf>.Builder neighbors = ImmutableArray.CreateBuilder<LongRestSourceLeaf>();
 
+        if (groups.Length == 0)
+        {
+            return ([], 0);
+        }
+
+        int floor = groups[0].PairingFloorPermille;
+
         foreach (LongRestCandidateGroup group in groups)
         {
-            if (group.Targets.Length < 2 || group.Targets[0] != anchor.Target)
+            if (group.Targets.Length < 2 || group.Targets[0] != anchor.Target || group.PairingFloorPermille != floor)
             {
                 throw new InvalidDataException();
             }
@@ -274,7 +312,7 @@ internal sealed partial class LongRestSweepStore
             }
         }
 
-        Result<LongRestGroupPacking> packing = LongRestGroupPacker.Pack(anchor, neighbors.ToImmutable(), generation.Recipe.ProviderInputUtf8Bytes);
+        Result<LongRestGroupPacking> packing = LongRestGroupPacker.Pack(anchor, neighbors.ToImmutable(), generation.Recipe.ProviderInputUtf8Bytes, floor);
 
         if (packing.IsFailure)
         {
@@ -285,7 +323,13 @@ internal sealed partial class LongRestSweepStore
 
         counts.PackLimit += packing.Value.SkippedPackLimit;
 
-        return packing.Value.Packs;
+        counts.Unpaired += packing.Value.SkippedUnpaired;
+
+        counts.Incohesive += packing.Value.SkippedIncohesive;
+
+        counts.Floors.Add(floor);
+
+        return (packing.Value.Packs, floor);
     }
 
     private async Task AdvanceDiscoveryAsync(SqliteConnection connection, SqliteTransaction transaction, LongRestSweep expected,
@@ -344,7 +388,9 @@ internal sealed partial class LongRestSweepStore
 
         CovenantDigest source;
 
-        await using (SqliteCommand command = Command(connection, transaction, "SELECT WorkItemId, SourceDigest, RecipeDigest FROM long_rest_work_items WHERE GenerationId = $generation AND OperationId = $operation AND KindCode = 3 AND ItemId = $item AND DispositionCode = 1;",
+        int floor;
+
+        await using (SqliteCommand command = Command(connection, transaction, "SELECT WorkItemId, SourceDigest, RecipeDigest, PairingFloorPermille FROM long_rest_work_items WHERE GenerationId = $generation AND OperationId = $operation AND KindCode = 3 AND ItemId = $item AND DispositionCode = 1;",
             ("$generation", Format(generation.GenerationId)), ("$operation", generation.OperationId.ToString("N")), ("$item", item)))
         {
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -357,6 +403,8 @@ internal sealed partial class LongRestSweepStore
             unit = reader.GetString(0);
 
             source = new((byte[])reader[1]);
+
+            floor = reader.GetInt32(3);
         }
 
         await using (SqliteCommand command = Command(connection, transaction, "SELECT Ordinal, MemoryId, VersionId, SourceEvidenceJson FROM long_rest_work_inputs WHERE WorkItemId = $unit ORDER BY Ordinal LIMIT 17;", ("$unit", unit)))
@@ -435,7 +483,7 @@ internal sealed partial class LongRestSweepStore
         }
 
         LongRestWorkIdentity work = new(generation.GenerationId, generation.OperationId, item, LongRestWorkKind.Anchor,
-            generation.Scope, generation.Fence, source, LongRestDiscoveryHash.Recipe(generation.Recipe).Value);
+            generation.Scope, generation.Fence, source, LongRestDiscoveryHash.Recipe(generation.Recipe).Value, floor);
 
         if (capability is not null && (await capability.ValidateWorkAsync(work, work.Fence.Configuration, ct).ConfigureAwait(false)).IsFailure)
         {

@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Tests.LongRest;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -78,29 +79,7 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     /// A vector of its own: SplitMix64 from the number, so two numbers that differ by one are as unrelated as any two, which the framework's
     /// seeded generator does not promise. In sixty-four dimensions the cosine of two such vectors sits near zero, far below the recall floor.
     /// </summary>
-    internal float[] DistinctVector(int number)
-    {
-        ulong state = checked((ulong)number) * 0x9E3779B97F4A7C15UL + 0xD1B54A32D192ED03UL;
-
-        float[] vector = new float[64];
-
-        for (int index = 0; index < vector.Length; index++)
-        {
-            state += 0x9E3779B97F4A7C15UL;
-
-            ulong mixed = state;
-
-            mixed = (mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9UL;
-
-            mixed = (mixed ^ (mixed >> 27)) * 0x94D049BB133111EBUL;
-
-            mixed ^= mixed >> 31;
-
-            vector[index] = (float)((mixed >> 11) * (1.0 / (1UL << 53)) * 2.0 - 1.0);
-        }
-
-        return vector;
-    }
+    internal float[] DistinctVector(int number) => LongRestClusters.Background(number);
 
     internal async Task<LongRestDiscoveryGeneration> StartAsync(Guid? campaign = null, CovenantDigest? partition = null, CovenantTurnLease? authority = null,
         Guid? operationId = null)

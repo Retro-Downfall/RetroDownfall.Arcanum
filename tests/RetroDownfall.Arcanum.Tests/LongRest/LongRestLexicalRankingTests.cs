@@ -39,7 +39,7 @@ public sealed class LongRestLexicalRankingTests
     }
 
     // The independent expectation: tokenise, count document frequencies over exactly this generation's texts, weigh, score, apply the
-    // floor and the top-K, order by score and then memory id.
+    // coverage share and the top-K, order by score and then memory id.
     private static (string Name, double Score)[] Expected(IReadOnlyList<(string Name, string Text)> generation)
     {
         ImmutableArray<string> terms = LongRestLexicalScorer.QueryTerms(generation.Single(static item => item.Name == "anchor").Text);
@@ -58,8 +58,13 @@ public sealed class LongRestLexicalRankingTests
 
         ImmutableArray<int> weights = LongRestLexicalScorer.Weights(generation.Count, [.. frequencies]);
 
-        return [.. generation.Select((item, index) => (item.Name, Score: LongRestLexicalScorer.Score(weights, documents[index])))
-            .Where(item => item.Name != "anchor" && item.Score >= LongRestDiscoveryLimits.LexicalMinimumScore)
+        (string Name, long Score)[] scored = [.. generation.Select((item, index) => (item.Name, Score: LongRestLexicalScorer.Score(weights, documents[index])))];
+
+        // A hit is nominated when it covers at least a fifth of what the anchor scores against itself under the same weights.
+        long self = scored.Single(static item => item.Name == "anchor").Score;
+
+        return [.. scored
+            .Where(item => item.Name != "anchor" && self > 0 && item.Score > 0 && item.Score * 1000 >= self * LongRestDiscoveryLimits.LexicalMinimumCoveragePermille)
             .OrderByDescending(static item => item.Score).ThenBy(static item => item.Name, StringComparer.Ordinal)
             .Take(LongRestDiscoveryLimits.LexicalTopK).Select(static item => (item.Name, -(double)item.Score))];
     }
@@ -264,7 +269,7 @@ public sealed class LongRestLexicalRankingTests
 
         Assert.Equal(LongRestDiscoveryLane.Lexical, candidate.Lane);
 
-        Assert.True(candidate.Score <= -LongRestDiscoveryLimits.LexicalMinimumScore);
+        Assert.True(candidate.Score < 0);
     }
 
     [SkippableTheory]
@@ -321,14 +326,15 @@ public sealed class LongRestLexicalRankingTests
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        // 400 memories; the next 60 or 200 (m-001 onward) share one rare-enough token with the anchor, so every one of them is a hit
-        // that clears the floor and all of them score alike, which makes the order memory id. The first five are pinned: ineligible.
+        // 400 memories; the next 60 or 200 (m-001 onward) share the anchor's only token, so every one of them is a hit that covers
+        // the anchor's whole score (a token in half the corpus weighs little, but it is all the anchor has, and the share is of the anchor's
+        // own score) and all of them score alike, which makes the order memory id. The first five are pinned: ineligible.
         // No two texts are equal, so no hit is an exact duplicate of the anchor.
         for (int index = 0; index < 400; index++)
         {
             string memory = $"m-{index:D3}";
 
-            await h.SeedAsync(memory, index <= hits ? $"zircon w{index:D3}" : $"unique{index}");
+            await h.SeedAsync(memory, index == 0 ? "zircon" : index <= hits ? $"zircon w{index:D3}" : $"unique{index}");
 
             await h.SetEmbeddingAsync(memory, OneHot(400, index));
         }

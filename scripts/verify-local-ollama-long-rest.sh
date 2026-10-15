@@ -15,6 +15,8 @@ EMBEDDING_WINDOW="2048"
 EMBEDDING_DIMENSIONS="768"
 ENDPOINT="http://127.0.0.1:11434/v1/"
 REPORT_DIR=""
+MUTINY="1"
+ALL_EMBEDDING_MODELS=0
 
 usage() {
   cat <<'EOF'
@@ -33,6 +35,13 @@ Local qualification options:
                              own size, which the test measures before it starts anything (default: 768, the size of
                              embeddinggemma; qwen3-embedding:8b returns 4096).
   --endpoint <uri>           Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
+  --all-embedding-models     Run the qualification once for each embedding model installed in Ollama, instead of
+                             once for --embedding-model. Each model's window and vector size are read from Ollama
+                             itself (`/api/show`), so --embedding-window and --embedding-dimensions are ignored. The
+                             report of each run goes to its own sub-directory of --report-dir named for the model.
+                             Needs curl and jq. The wrapper fails if any run does, after all of them have run.
+  --no-mutiny                Skip the Mutiny Scenario (a second sweep over a freshly seeded corpus in which the
+                             forwarder rewrites every adjudication answer into "all of these are the same fact").
   --report-dir <directory>   Existing directory that receives the progress log, the summary and the calibration
                              report (text and JSON). Without it they live in the wrapper's temporary directory,
                              which is removed when the wrapper exits (the calibration is still printed).
@@ -42,8 +51,9 @@ The test creates and removes an isolated temporary Arcanum home. It never reads 
 operator's Arcanum configuration, never touches the operating-system keychain, never starts or
 stops Ollama, and never publishes a product. It refuses GitHub Actions. It seeds a labelled Saga
 corpus, then qualifies a clean Long Rest sweep, a sweep interrupted by a kill -9 of the host and
-recovered after a restart, and one ordinary Session turn on the default model, and always prints a
-calibration report of the lexical and vector discovery thresholds against that corpus.
+recovered after a restart, one ordinary Session turn on the default model and the Mutiny Scenario,
+and always prints a calibration report of the lexical nomination bar, the vectors and each memory's
+Pairing Gate floor against that corpus.
 EOF
 }
 
@@ -77,6 +87,14 @@ while [[ $# -gt 0 ]]; do
       ENDPOINT="${2:?--endpoint requires a URI}"
       shift 2
       ;;
+    --all-embedding-models)
+      ALL_EMBEDDING_MODELS=1
+      shift
+      ;;
+    --no-mutiny)
+      MUTINY="0"
+      shift
+      ;;
     --report-dir)
       REPORT_DIR="${2:?--report-dir requires a directory}"
       shift 2
@@ -102,7 +120,13 @@ if [[ "${GITHUB_ACTIONS:-}" =~ ^([Tt][Rr][Uu][Ee]|1)$ ]]; then
   exit 2
 fi
 
-for command in dotnet rg; do
+REQUIRED_COMMANDS=(dotnet rg)
+
+if [[ "$ALL_EMBEDDING_MODELS" -eq 1 ]]; then
+  REQUIRED_COMMANDS+=(curl jq)
+fi
+
+for command in "${REQUIRED_COMMANDS[@]}"; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "error: required command not found: $command" >&2
     exit 2
@@ -279,62 +303,159 @@ dotnet build "$TEST_PROJECT" \
 
 reject_warnings "$BUILD_LOG"
 
-rm -f "$QUALIFICATION_RECEIPT"
+# Ollama's own API (the native one beside /v1) says which installed models are embedding models and what their window and vector size are.
+ollama_origin() {
+  local origin="${ENDPOINT%/}"
 
-echo "==> Running isolated Native AOT + Ollama Long Rest qualification (real models: expect tens of minutes)"
-echo "==> Progress is appended to $RESULTS_DIR/progress.log while it runs"
-# The one selected test seeds a Saga corpus through the host's own extraction, then spends real-model
-# time on a complete sweep, an interrupted sweep that is recovered after a restart, and one turn on
-# the default model, so the suite-wide 15 minute hang bound would kill a slow but live local model.
-# Ninety minutes still names and kills a test host that has stopped making progress.
-ARCANUM_RUN_LOCAL_OLLAMA_LONG_REST_QUALIFICATION=1 \
-ARCANUM_PUBLISHED_EXECUTABLE="$EXECUTABLE_FOR_TEST" \
-ARCANUM_OLLAMA_LONG_REST_CHAT_MODEL="$CHAT_MODEL" \
-ARCANUM_OLLAMA_LONG_REST_DEFAULT_MODEL="$DEFAULT_MODEL" \
-ARCANUM_OLLAMA_LONG_REST_EMBEDDING_MODEL="$EMBEDDING_MODEL" \
-ARCANUM_OLLAMA_LONG_REST_EMBEDDING_WINDOW="$EMBEDDING_WINDOW" \
-ARCANUM_OLLAMA_LONG_REST_EMBEDDING_DIMENSIONS="$EMBEDDING_DIMENSIONS" \
-ARCANUM_OLLAMA_LONG_REST_ENDPOINT="$ENDPOINT" \
-ARCANUM_OLLAMA_LONG_REST_RESULTS="$RESULTS_DIR_FOR_TEST" \
-ARCANUM_OLLAMA_LONG_REST_RECEIPT="$QUALIFICATION_RECEIPT_FOR_TEST" \
-dotnet test "$TEST_PROJECT" \
-  -c "$CONFIGURATION" \
-  --blame-hang-timeout 90m \
-  --blame-hang-dump-type none \
-  --logger "console;verbosity=detailed" \
-  --filter 'FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaLongRestQualificationTests.Published_native_aot_long_rest_sweeps_recovers_a_killed_host_and_leaves_turns_unharmed' \
-  --artifacts-path "$WORK/test-artifacts" \
-  --disable-build-servers \
-  -m:1 \
-  --no-build \
-  --no-restore \
-  2>&1 | tee "$TEST_LOG"
+  printf '%s\n' "${origin%/v1}"
+}
 
-reject_warnings "$TEST_LOG"
+installed_embedding_models() {
+  local origin
+  local name
+  local capabilities
 
-if [[ -f "$RESULTS_DIR/long-rest-calibration.txt" ]]; then
-  echo "==> Calibration report"
-  cat "$RESULTS_DIR/long-rest-calibration.txt"
+  origin="$(ollama_origin)"
+
+  while IFS= read -r name; do
+    capabilities="$(curl -fsS --max-time 30 -X POST "$origin/api/show" -d "$(jq -cn --arg model "$name" '{model: $model}')" 2>/dev/null | jq -r '.capabilities // [] | join(",")' 2>/dev/null || true)"
+
+    if [[ ",$capabilities," == *",embedding,"* ]]; then
+      printf '%s\n' "$name"
+    fi
+  done < <(curl -fsS --max-time 30 "$origin/api/tags" | jq -r '.models[].name')
+}
+
+# The model's own context length and embedding length, from /api/show; the keys carry the architecture's name.
+embedding_model_shape() {
+  local model="$1"
+  local origin
+
+  origin="$(ollama_origin)"
+
+  curl -fsS --max-time 30 -X POST "$origin/api/show" -d "$(jq -cn --arg model "$model" '{model: $model}')" \
+    | jq -r '[(.model_info // {} | to_entries[] | select(.key | endswith(".context_length")) | .value), (.model_info // {} | to_entries[] | select(.key | endswith(".embedding_length")) | .value)] | map(tostring) | join(" ")'
+}
+
+run_qualification() {
+  local run_status=0
+
+  rm -f "$QUALIFICATION_RECEIPT"
+
+  echo "==> Running isolated Native AOT + Ollama Long Rest qualification with embedding model $EMBEDDING_MODEL (real models: expect tens of minutes)"
+  echo "==> Progress is appended to $RESULTS_DIR/progress.log while it runs"
+  # The one selected test seeds a Saga corpus through the host's own extraction, then spends real-model
+  # time on a complete sweep, an interrupted sweep that is recovered after a restart, one turn on
+  # the default model and the Mutiny Scenario (a second seeded installation), so the suite-wide 15 minute
+  # hang bound would kill a slow but live local model. Ninety minutes still names and kills a test host
+  # that has stopped making progress.
+  ARCANUM_RUN_LOCAL_OLLAMA_LONG_REST_QUALIFICATION=1 \
+  ARCANUM_PUBLISHED_EXECUTABLE="$EXECUTABLE_FOR_TEST" \
+  ARCANUM_OLLAMA_LONG_REST_CHAT_MODEL="$CHAT_MODEL" \
+  ARCANUM_OLLAMA_LONG_REST_DEFAULT_MODEL="$DEFAULT_MODEL" \
+  ARCANUM_OLLAMA_LONG_REST_EMBEDDING_MODEL="$EMBEDDING_MODEL" \
+  ARCANUM_OLLAMA_LONG_REST_EMBEDDING_WINDOW="$EMBEDDING_WINDOW" \
+  ARCANUM_OLLAMA_LONG_REST_EMBEDDING_DIMENSIONS="$EMBEDDING_DIMENSIONS" \
+  ARCANUM_OLLAMA_LONG_REST_ENDPOINT="$ENDPOINT" \
+  ARCANUM_OLLAMA_LONG_REST_MUTINY="$MUTINY" \
+  ARCANUM_OLLAMA_LONG_REST_RESULTS="$RESULTS_DIR_FOR_TEST" \
+  ARCANUM_OLLAMA_LONG_REST_RECEIPT="$QUALIFICATION_RECEIPT_FOR_TEST" \
+  dotnet test "$TEST_PROJECT" \
+    -c "$CONFIGURATION" \
+    --blame-hang-timeout 90m \
+    --blame-hang-dump-type none \
+    --logger "console;verbosity=detailed" \
+    --filter 'FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaLongRestQualificationTests.Published_native_aot_long_rest_sweeps_recovers_a_killed_host_and_leaves_turns_unharmed' \
+    --artifacts-path "$WORK/test-artifacts" \
+    --disable-build-servers \
+    -m:1 \
+    --no-build \
+    --no-restore \
+    2>&1 | tee "$TEST_LOG" || true
+
+  reject_warnings "$TEST_LOG"
+
+  if [[ -f "$RESULTS_DIR/long-rest-calibration.txt" ]]; then
+    echo "==> Calibration report ($EMBEDDING_MODEL)"
+    cat "$RESULTS_DIR/long-rest-calibration.txt"
+  fi
+
+  if [[ ! -f "$QUALIFICATION_RECEIPT" ]]; then
+    echo "error: selected local qualification test did not execute successfully with embedding model $EMBEDDING_MODEL (success receipt was not created)" >&2
+    return 1
+  fi
+
+  IFS= read -r actual_qualification_receipt <"$QUALIFICATION_RECEIPT" || true
+  qualification_receipt_byte_count="$(wc -c <"$QUALIFICATION_RECEIPT" | tr -d '[:space:]')"
+  expected_qualification_receipt_byte_count=$((${#EXPECTED_QUALIFICATION_RECEIPT} + 1))
+
+  if [[ "$actual_qualification_receipt" == *$'\r' ]]; then
+    actual_qualification_receipt="${actual_qualification_receipt%$'\r'}"
+    expected_qualification_receipt_byte_count=$((${#EXPECTED_QUALIFICATION_RECEIPT} + 2))
+  fi
+
+  if [[ "$actual_qualification_receipt" != "$EXPECTED_QUALIFICATION_RECEIPT" \
+    || "$qualification_receipt_byte_count" != "$expected_qualification_receipt_byte_count" ]]; then
+    echo "error: selected local qualification test did not execute successfully with embedding model $EMBEDDING_MODEL (invalid success receipt)" >&2
+    return 1
+  fi
+
+  return "$run_status"
+}
+
+FAILED_EMBEDDING_MODELS=()
+
+if [[ "$ALL_EMBEDDING_MODELS" -eq 1 ]]; then
+  # A while loop rather than mapfile, which macOS's bash 3.2 does not have.
+  MODELS_TO_RUN=()
+
+  while IFS= read -r installed; do
+    if [[ -n "$installed" ]]; then
+      MODELS_TO_RUN+=("$installed")
+    fi
+  done < <(installed_embedding_models)
+
+  if [[ "${#MODELS_TO_RUN[@]}" -eq 0 ]]; then
+    echo "error: --all-embedding-models found no installed embedding model at $(ollama_origin)" >&2
+    exit 2
+  fi
+
+  echo "==> Embedding models to qualify, one run each: ${MODELS_TO_RUN[*]}"
+
+  BASE_RESULTS_DIR="$RESULTS_DIR"
+
+  for model in "${MODELS_TO_RUN[@]}"; do
+    read -r model_window model_dimensions < <(embedding_model_shape "$model") || true
+
+    if [[ ! "${model_window:-}" =~ ^[1-9][0-9]{0,6}$ || ! "${model_dimensions:-}" =~ ^[0-9]{1,4}$ ]]; then
+      echo "error: could not read the context length and embedding length of $model from Ollama" >&2
+      FAILED_EMBEDDING_MODELS+=("$model")
+      continue
+    fi
+
+    EMBEDDING_MODEL="$model"
+    EMBEDDING_WINDOW="$model_window"
+    EMBEDDING_DIMENSIONS="$model_dimensions"
+    RESULTS_DIR="$BASE_RESULTS_DIR/${model//[^A-Za-z0-9._-]/_}"
+    RESULTS_DIR_FOR_TEST="$RESULTS_DIR"
+
+    if [[ "$WINDOWS_HOST" -eq 1 ]]; then
+      RESULTS_DIR_FOR_TEST="$(cygpath -w "$RESULTS_DIR")"
+    fi
+
+    mkdir -p "$RESULTS_DIR"
+
+    if ! run_qualification; then
+      FAILED_EMBEDDING_MODELS+=("$model")
+    fi
+  done
+
+  if [[ "${#FAILED_EMBEDDING_MODELS[@]}" -gt 0 ]]; then
+    echo "error: the qualification failed for embedding model(s): ${FAILED_EMBEDDING_MODELS[*]}" >&2
+    exit 1
+  fi
+else
+  run_qualification || exit 1
 fi
 
-if [[ ! -f "$QUALIFICATION_RECEIPT" ]]; then
-  echo "error: selected local qualification test did not execute successfully (success receipt was not created)" >&2
-  exit 1
-fi
-
-IFS= read -r actual_qualification_receipt <"$QUALIFICATION_RECEIPT" || true
-qualification_receipt_byte_count="$(wc -c <"$QUALIFICATION_RECEIPT" | tr -d '[:space:]')"
-expected_qualification_receipt_byte_count=$((${#EXPECTED_QUALIFICATION_RECEIPT} + 1))
-
-if [[ "$actual_qualification_receipt" == *$'\r' ]]; then
-  actual_qualification_receipt="${actual_qualification_receipt%$'\r'}"
-  expected_qualification_receipt_byte_count=$((${#EXPECTED_QUALIFICATION_RECEIPT} + 2))
-fi
-
-if [[ "$actual_qualification_receipt" != "$EXPECTED_QUALIFICATION_RECEIPT" \
-  || "$qualification_receipt_byte_count" != "$expected_qualification_receipt_byte_count" ]]; then
-  echo "error: selected local qualification test did not execute successfully (invalid success receipt)" >&2
-  exit 1
-fi
-
-echo "==> Native AOT Long Rest sweep, kill and recovery, and an unharmed ordinary turn are healthy"
+echo "==> Native AOT Long Rest sweep, kill and recovery, an unharmed ordinary turn and the Mutiny Scenario are healthy"

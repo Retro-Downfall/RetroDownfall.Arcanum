@@ -19,8 +19,17 @@ internal sealed partial class LongRestDiscoveryStore
 {
     // The immutable binding, never Sessions.CampaignId, supplies ownership. Canonical identity
     // spelling is enforced by the persisted binding schema; the reader also uses the shared classifier.
+    //
+    // The version the memory is currently at proves the owner by naming the same Session. The one version that cannot name one is the operator's
+    // own (OriginCode 1): a correction or a reinstatement is stated by no Session, so the Annals write it as a version with no source Session while
+    // the memory keeps its owner. That memory stays a source on its row and the Session's immutable binding, which the next condition checks, so
+    // an operator's correction does not take a Session's memory out of every sweep. The relaxation is for a memory with no sensitivity label: a
+    // labelled memory is a protected one, whose label names the Session and the revision it proves, and keeps the exact match.
     private const string SourceOwnerEligible = """
-        memory.SessionId IS version.SourceSessionId COLLATE NOCASE
+        (memory.SessionId IS version.SourceSessionId COLLATE NOCASE
+            OR (version.OriginCode = 1 AND version.SourceSessionId IS NULL AND memory.SessionId IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 6
+                    AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(memory.Id, '-', '')))))
         AND ((memory.SessionId IS NULL AND memory.ScopeKindCode = 1 AND memory.CampaignId IS NULL)
             OR (memory.SessionId IS NOT NULL AND EXISTS (
                 SELECT 1 FROM Sessions owner JOIN session_campaign_bindings binding ON binding.SessionId = owner.Id
@@ -193,7 +202,10 @@ internal sealed partial class LongRestDiscoveryStore
         // Measure before loading so a corrupt or oversized source never becomes an unbounded allocation.
         await using SqliteCommand metadata = Command(connection, transaction, """
             SELECT length(CAST(memory.Content AS BLOB)), embedding.Dim, length(embedding.Embedding), memory.SessionId,
-                version.SourceSessionId, memory.ScopeKindCode, memory.CampaignId, owner.Id, binding.BindingKindCode, binding.CampaignId
+                version.SourceSessionId, memory.ScopeKindCode, memory.CampaignId, owner.Id, binding.BindingKindCode, binding.CampaignId,
+                version.OriginCode,
+                EXISTS (SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 6
+                    AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(memory.Id, '-', '')))
             FROM saga_memories memory
             LEFT JOIN saga_memory_embeddings embedding ON embedding.MemoryId = memory.Id
             LEFT JOIN annal_versions version ON version.VersionId = $version
@@ -225,7 +237,11 @@ internal sealed partial class LongRestDiscoveryStore
 
             string? expectedCampaign = generation.Scope.CampaignId is { } campaign ? Format(campaign) : null;
 
-            if (session != retainedSession || (session is not null && reader.IsDBNull(7))
+            // The operator's own version of a memory with no label names no Session (see SourceOwnerEligible); every other version names its owner.
+            bool operatorVersion = session is not null && retainedSession is null && !reader.IsDBNull(10) && reader.GetInt32(10) == (int)AnnalOrigin.OperatorStated
+                && reader.GetInt64(11) == 0;
+
+            if ((session != retainedSession && !operatorVersion) || (session is not null && reader.IsDBNull(7))
                 || (int)kind != (int)generation.Scope.Kind || ownerCampaign != expectedCampaign
                 || reader.GetInt32(5) != (int)kind || (reader.IsDBNull(6) ? null : reader.GetString(6)) != ownerCampaign)
             {

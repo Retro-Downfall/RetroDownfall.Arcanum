@@ -52,9 +52,9 @@ public sealed class LongRestHierarchyPlanningTests
 
         LongRestCandidate[] candidates = inputs.Select(input => new LongRestCandidate(input.Child.ExpandedTargets[0], LongRestDiscoveryLane.Vector, 1)).ToArray();
 
-        var groups = LongRestDiscoveryPolicy.GroupCandidates(anchor, LongRestDiscoveryPolicy.MergeCandidates(anchor, candidates).Value).Value;
+        var groups = LongRestDiscoveryPolicy.GroupCandidates(anchor, LongRestDiscoveryPolicy.MergeCandidates(anchor, candidates).Value, 920).Value;
 
-        var reversed = LongRestDiscoveryPolicy.GroupCandidates(anchor, LongRestDiscoveryPolicy.MergeCandidates(anchor, candidates.Reverse()).Value).Value;
+        var reversed = LongRestDiscoveryPolicy.GroupCandidates(anchor, LongRestDiscoveryPolicy.MergeCandidates(anchor, candidates.Reverse()).Value, 920).Value;
 
         Assert.Equal(groups.SelectMany(group => group.Targets), reversed.SelectMany(group => group.Targets));
 

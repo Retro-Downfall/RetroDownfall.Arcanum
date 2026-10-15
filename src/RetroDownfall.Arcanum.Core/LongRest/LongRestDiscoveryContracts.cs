@@ -25,7 +25,10 @@ public sealed record LongRestCandidate(LongRestTarget Target, LongRestDiscoveryL
 /// <summary>The leaves one selected summary expanded to, in the order its own traversal produced them.</summary>
 public sealed record LongRestHierarchyExpansion(double Score, ImmutableArray<LongRestTarget> Leaves);
 
-public sealed record LongRestCandidateGroup(ImmutableArray<LongRestTarget> Targets, ImmutableArray<LongRestCandidate> Evidence);
+/// <param name="Targets">The anchor first, then at most fifteen nominated neighbours.</param>
+/// <param name="Evidence">The lane evidence that nominated them.</param>
+/// <param name="PairingFloorPermille">The anchor's Background Floor in thousandths (500 to 1000): the cosine a nominee needs to be paired with it.</param>
+public sealed record LongRestCandidateGroup(ImmutableArray<LongRestTarget> Targets, ImmutableArray<LongRestCandidate> Evidence, int PairingFloorPermille);
 
 public sealed record LongRestEmbeddingBinding(string Provider, string Model, int Dimensions, CovenantDigest ValueDigest);
 
@@ -99,11 +102,22 @@ public sealed record LongRestRecipeIdentity(
     int LexicalTopK = LongRestDiscoveryLimits.LexicalTopK,
     int VectorTopK = LongRestDiscoveryLimits.VectorTopK,
     int SummaryTopK = LongRestDiscoveryLimits.SummaryTopK,
-    double MinimumVectorCosine = LongRestDiscoveryLimits.MinimumVectorCosine,
+    int SummaryMinimumCosinePermille = LongRestDiscoveryLimits.SummaryMinimumCosinePermille,
     int ExpandedLeafLimit = LongRestDiscoveryLimits.ExpandedLeaves,
     int TraversalFrontierLimit = LongRestDiscoveryLimits.TraversalFrontier,
     int MergedNeighborLimit = LongRestDiscoveryLimits.MergedNeighbors,
-    int LexicalMinimumScore = LongRestDiscoveryLimits.LexicalMinimumScore,
+    int LexicalMinimumCoveragePermille = LongRestDiscoveryLimits.LexicalMinimumCoveragePermille,
+    int PairingRecipeVersion = LongRestDiscoveryLimits.PairingRecipeVersion,
+    int PairingClosenessPermille = LongRestDiscoveryLimits.PairingClosenessPermille,
+    int PairingSpreadTenths = LongRestDiscoveryLimits.PairingSpreadTenths,
+    int PairingSpreadStepTenths = LongRestDiscoveryLimits.PairingSpreadStepTenths,
+    int PairingSpreadMinimumThousandths = LongRestDiscoveryLimits.PairingSpreadMinimumThousandths,
+    int PairingSampleLeaves = LongRestDiscoveryLimits.PairingSampleLeaves,
+    int PairingMinimumLeaves = LongRestDiscoveryLimits.PairingMinimumLeaves,
+    int PairingFallbackPermille = LongRestDiscoveryLimits.PairingFallbackPermille,
+    int PairingAbsoluteMinimumPermille = LongRestDiscoveryLimits.PairingAbsoluteMinimumPermille,
+    int PairingHistogramBins = LongRestDiscoveryLimits.PairingHistogramBins,
+    int PairFallbackLimit = LongRestDiscoveryLimits.PairFallbackLimit,
     int AdjudicationRecipeVersion = LongRestPromptLayout.AdjudicationRecipeVersion,
     int LexicalScorerVersion = LongRestLexicalScorer.Version);
 
