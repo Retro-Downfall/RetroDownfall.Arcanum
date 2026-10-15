@@ -349,12 +349,14 @@ R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestService.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestSweepCoordinator.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestSweepStore.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestCanonicalHash.cs
+R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestCapabilityState.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestContracts.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestDiscoveryContracts.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestDiscoveryHash.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestDiscoveryPolicy.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestEmbeddingPayloadHash.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestFaultPolicy.cs
+R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestFenceCurrency.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestGroupPacker.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestHierarchy.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestLexicalScorer.cs
