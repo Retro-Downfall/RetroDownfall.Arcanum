@@ -6783,9 +6783,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal("Worker.StartAsync@work:" + source.FilePath + ":" + work.SpanStart, target.WorkFrontier);
 
-        Assert.Equal("Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart, target.EffectFrontier);
+        // The Effect names its group and the origin of the lease the group was begun on, which is the acquisition whose Work this is.
+        string effectFrontier = "Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart + "@lease:" + source.FilePath + ":" + work.SpanStart;
 
-        Assert.Equal("Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart, target.RecoveryEffectFrontier);
+        Assert.Equal(effectFrontier, target.EffectFrontier);
+
+        Assert.Equal(effectFrontier, target.RecoveryEffectFrontier);
 
         Assert.True(target.CompletionOwned);
     }
@@ -23567,6 +23570,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             + "internal static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate) { "
             + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return; "
             + "using var lease = work; "
+            + "if (!lease.TryBeginExternalEffectGroup(out var group)) return; "
+            + "using var held = group; "
             + effects
             + " } }";
 
