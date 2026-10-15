@@ -44,6 +44,73 @@ public sealed class LongRestReplayDocumentationTests
         "capability generations the request fence",
     ];
 
+    /// <summary>
+    /// Sentences that narrate how the hosted-producer checker, its CI lanes or their measurements came to stand where they stand, or that
+    /// describe an intermediate state of the work: a root that was still missing its admission, a lane nobody had run, a row raised or
+    /// lowered by a change. A governed document states the checker, the lanes and the tripwire as the delivered code has them; a
+    /// measurement is dated and belongs to the tree it was taken on.
+    /// </summary>
+    private static readonly string[] NarratedCheckerHistory =
+    [
+        "Startup recovery also links revocation",
+        "recovery kinds without that per-unit binding",
+        "the Long Rest recovery handler mints and carries its own sweep lease",
+        "neither root admits Work anywhere",
+        "both roots also exceed the 8192-state cap",
+        "consequences of the missing admission of those two roots",
+        "measured on the shipped tree at three root workers",
+        "byte-identical before and after",
+        "and the open Serve, scoped-lease and keyed-construction gates",
+        "The base admitted such a call",
+        "the former rule accepted a group on any lease receiver",
+        "across frames it did not",
+        "The Effect now carries the origin of the lease",
+        "rests on the Authority Carrier Ban of the admitted entry census until that lands",
+        "abstractness is the guard until the checker resolves lifetime",
+        "enforces the unchanged line, branch, and security thresholds",
+        "excluded by this split",
+        "keep the existing 1,740-second per-worker deadline",
+        "The seven unrelated job names remain unchanged",
+        "The primary production lane did not fit",
+        "at the start of this work",
+        "predate this work",
+        "no CI run of the four lanes exists yet",
+        "a prediction to check against the first run",
+        "as the second one was",
+        "Before this split",
+        "measured once more at the end of the review fixes",
+        "added with this work",
+        "refused the 6,463 cases",
+        "still stale against the discovery",
+        "was seen at 3,440, 1,720 and 3,110",
+        "The two Long Rest rows were raised by the change that earned the room",
+        "the delivery that grew them raises their rows",
+        "the same one `HOSTED_SITE_WORK_FRONTIER_MISSING` and no other diagnostic",
+        "the shapes the work reshaped",
+        "the group shapes the work replaced",
+        "The gate stays after the asset landed",
+    ];
+
+    /// <summary>
+    /// The words that mark such a sentence, refused wherever the checker, the testing contract and the CI jobs are described. Each region
+    /// below is a statement about the delivered code, so none of them says what a thing no longer does, what this work changed, or what the
+    /// delivery tree measured.
+    /// </summary>
+    private static readonly string[] NarratingWords =
+    [
+        " no longer ",
+        "this work ",
+        "this work,",
+        "this work.",
+        "this work)",
+        "this split",
+        "delivery tree",
+        "delivery head",
+        "at delivery",
+        "at the start of",
+        "until that lands",
+    ];
+
     [Fact]
     public void No_governed_document_narrates_the_long_rests_history_or_a_calibration_still_to_come()
     {
@@ -63,6 +130,93 @@ public sealed class LongRestReplayDocumentationTests
         }
 
         Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void No_governed_document_narrates_how_the_checker_its_lanes_or_its_measurements_came_to_be()
+    {
+        List<string> offenders = [];
+
+        foreach (string file in GovernedDocuments)
+        {
+            string document = ReadDocument(file);
+
+            foreach (string phrase in NarratedCheckerHistory)
+            {
+                if (document.Contains(phrase, StringComparison.Ordinal))
+                {
+                    offenders.Add($"{file} still says \"{phrase}\"");
+                }
+            }
+        }
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        (string Name, string Text)[] regions =
+        [
+            (
+                "the hosted-producer checker",
+                DocumentSection(
+                    design,
+                    "**Authored hosted-producer inventory (24 services).**",
+                    "Closed-period ledger cleanup preserves")),
+            (
+                "the testing contract (13.1)",
+                DocumentSection(
+                    design,
+                    "### 13.1 Commands and coverage authority",
+                    "### 13.2 Test data, ownership, and parallel collections")),
+            (
+                "the CI jobs (13.8)",
+                DocumentSection(
+                    design,
+                    "### 13.8 Exclusions, runtime budget, and CI",
+                    "## 14. Extension guidelines")),
+        ];
+
+        foreach ((string name, string text) in regions)
+        {
+            foreach (string word in NarratingWords)
+            {
+                if (text.Contains(word, StringComparison.OrdinalIgnoreCase))
+                {
+                    offenders.Add($"Arcanum.DESIGN.md, {name}, still says \"{word.Trim()}\"");
+                }
+            }
+        }
+
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void The_ci_section_lists_exactly_the_jobs_ci_yml_defines()
+    {
+        string workflow = File
+            .ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), ".github", "workflows", "ci.yml"))
+            .Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string[] jobNames =
+        [
+            .. workflow
+                .Split('\n')
+                .Where(static line => line.StartsWith("    name: ", StringComparison.Ordinal))
+                .Select(static line => line["    name: ".Length..].Trim()),
+        ];
+
+        // Steps carry a name too, at a deeper indent; a job's name sits directly under its id.
+        Assert.Equal(12, jobNames.Length);
+
+        string design = DocumentSection(
+            ReadDocument("Arcanum.DESIGN.md"),
+            "### 13.1 Commands and coverage authority",
+            "### 13.2 Test data, ownership, and parallel collections");
+
+        Assert.Contains("`ci.yml` defines twelve jobs:", design, StringComparison.Ordinal);
+
+        foreach (string name in jobNames)
+        {
+            Assert.Contains($"`{name}`", design, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
