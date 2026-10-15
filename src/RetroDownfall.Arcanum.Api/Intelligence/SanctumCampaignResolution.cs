@@ -231,9 +231,10 @@ internal static class SanctumCampaignResolution
         /// Records what one source on its own says. A Campaign the request names explicitly stays a claim whatever the resolver answers: its
         /// identifier is the evidence, and a Campaign nobody can load is a Sanctum nobody can read. Any other source that names no Campaign
         /// (no such Session, a Session that predates binding, a Campaign that is gone, a conflict that cannot arise from one source) claims
-        /// nothing, and so does a Session that has no binding row: a Session's immutable binding is written when its first turn begins, so
-        /// one created and not yet used is bound to nothing yet. Any other failure means the source could not be read, and a Sanctum that
-        /// cannot be read is not a Sanctum that is off.
+        /// nothing, and so does a Session that exists with no binding row (<see cref="SessionCampaignBindingErrors.IsNoBinding"/>): the
+        /// legacy paths create a Session before any Campaign question is asked, so it was never bound to one. Any other failure means the
+        /// source could not be read, and a Sanctum that cannot be read is not a Sanctum that is off. That includes a binding row that is
+        /// malformed, which the reader reports under the same code as a missing row but which is a stored answer that cannot be trusted.
         /// </summary>
         public void Absorb(Result<CanonicalCampaignContext> answer, Guid? naming, SourceKind source)
         {
@@ -257,7 +258,7 @@ internal static class SanctumCampaignResolution
                 or ErrorCodes.Session.CampaignBindingRequired
                 or ErrorCodes.Covenant.CampaignBindingConflict
                 or ErrorCodes.Campaign.NotFound
-                || (source == SourceKind.Session && code == ErrorCodes.Covenant.IntegrityFailure))
+                || (source == SourceKind.Session && SessionCampaignBindingErrors.IsNoBinding(answer.Error)))
             {
                 return;
             }

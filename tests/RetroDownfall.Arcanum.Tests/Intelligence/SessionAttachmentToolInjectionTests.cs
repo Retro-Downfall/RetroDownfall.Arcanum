@@ -1144,6 +1144,232 @@ public sealed class SessionAttachmentToolInjectionTests
         }
     }
 
+    // The source read of refresh_session_file is a Sanctum-governed path read: the refreshed file must be inside the Campaign the turn is
+    // bound to, in Strict and in audit-only alike unless the guard says the refusal is only a policy one an audit-only Sanctum may record.
+    [Theory]
+    [InlineData(SanctumMode.Strict, SanctumDenialKind.Policy, false)]
+    [InlineData(SanctumMode.Strict, SanctumDenialKind.PolicyUnavailable, false)]
+    [InlineData(SanctumMode.Strict, SanctumDenialKind.AuditRecordFailed, false)]
+    [InlineData(SanctumMode.AuditOnly, SanctumDenialKind.Policy, true)]
+    [InlineData(SanctumMode.AuditOnly, SanctumDenialKind.PolicyUnavailable, false)]
+    [InlineData(SanctumMode.AuditOnly, SanctumDenialKind.AuditRecordFailed, false)]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_AppliesTheSanctumToTheSourceRead(
+        SanctumMode mode,
+        SanctumDenialKind denial,
+        bool refreshed)
+    {
+        SourceReadGuard guard = new(denial);
+
+        string result = await RefreshUnderSanctumAsync(guard, campaignId: Guid.NewGuid().ToString("D"), mode);
+
+        Assert.Equal(["attachment source read"], guard.PathOperations);
+
+        Assert.Equal(["/workspace/notes.txt"], guard.PathsAsked);
+
+        Assert.Equal(refreshed, result.Contains("\"success\":true", StringComparison.Ordinal));
+
+        if (!refreshed)
+        {
+            Assert.Contains("source_unavailable", result, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(SanctumMode.Strict)]
+    [InlineData(SanctumMode.AuditOnly)]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_AdmitsASourceInsideTheCampaign(SanctumMode mode)
+    {
+        SourceReadGuard guard = new(denial: null);
+
+        string result = await RefreshUnderSanctumAsync(guard, campaignId: Guid.NewGuid().ToString("D"), mode);
+
+        Assert.Equal(["attachment source read"], guard.PathOperations);
+
+        Assert.Contains("\"success\":true", result, StringComparison.Ordinal);
+    }
+
+    // The turn is not bound to a Campaign, so there is no Sanctum to ask.
+    [Fact]
+    public async Task ProcessSingleToolCall_RefreshSessionFile_AsksNoSanctumWhenTheTurnIsBoundToNoCampaign()
+    {
+        SourceReadGuard guard = new(SanctumDenialKind.Policy);
+
+        string result = await RefreshUnderSanctumAsync(guard, campaignId: null, SanctumMode.Strict);
+
+        Assert.Empty(guard.PathOperations);
+
+        Assert.Contains("\"success\":true", result, StringComparison.Ordinal);
+    }
+
+    private static async Task<string> RefreshUnderSanctumAsync(SourceReadGuard guard, string? campaignId, SanctumMode mode)
+    {
+        Guid sessionId = Guid.NewGuid();
+        Guid originalId = Guid.NewGuid();
+        AttachmentSourceMetadata source = new(
+            AttachmentSourceKind.WorkspaceFile,
+            "workspace",
+            "notes.txt",
+            "/workspace/notes.txt",
+            "OLD",
+            "1:1",
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            3,
+            AttachmentSourceStatus.Refreshable,
+            null);
+        FakeSessionAttachmentStore store = new();
+        store.Records.Add(RefreshRecord(originalId, sessionId, "notes.txt", source));
+        AuthorizingAttachmentSourceResolver resolver = new(
+            new AttachmentSourceResolution(
+                source with
+                {
+                    LastObservedContentSha256 = "NEW",
+                    LastObservedWriteTime = DateTimeOffset.UtcNow,
+                    LastObservedByteLength = 7,
+                    Status = AttachmentSourceStatus.PriorVersion,
+                },
+                Encoding.UTF8.GetBytes("changed"),
+                "text/plain"));
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { Attachments = true },
+            Security = new SecuritySettings { AllowedUploadMimeTypes = ["text/plain"] },
+        };
+        ToolExecutionPipeline pipeline = CreatePipeline(settings, store, resolver, guard);
+        FunctionCallContent call = new(
+            "refresh-sanctum",
+            "refresh_session_file",
+            new Dictionary<string, object?> { ["logicalKey"] = "notes.txt" });
+        ChatOptions options = new()
+        {
+            Tools = [AIFunctionFactory.Create(() => "accepted", "refresh_session_file")],
+        };
+        SessionAttachmentTurnBudget.BeginTurn();
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            ToolExecutionPipeline.ProcessedToolCall processed = await pipeline.ProcessSingleToolCallAsync(
+                call,
+                new PingRequest("refresh", Model: "vision-model", WorkingDirectory: "/workspace"),
+                options,
+                activeSpell: null,
+                sessionId.ToString("D"),
+                new ToolExecutionPipeline.TurnContext
+                {
+                    CampaignId = campaignId,
+                    SanctumEnabled = false,
+                    SanctumMode = mode,
+                    VisibleAttachmentIds = new HashSet<Guid> { originalId },
+                    AssistantEntryId = Guid.NewGuid(),
+                },
+                suppressInvocationFailures: false,
+                CancellationToken.None);
+
+            return processed.ResultText;
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+            SessionAttachmentTurnBudget.EndTurn();
+        }
+    }
+
+    /// <summary>Asks the path authorizer it is handed about the source's canonical path, as the real resolver does, and gives up when it says no.</summary>
+    private sealed class AuthorizingAttachmentSourceResolver(AttachmentSourceResolution resolution) : IAttachmentSourceResolver
+    {
+        public Task<AttachmentSourceResolution> ResolveForPersistenceAsync(
+            AttachmentSourceClaim claim,
+            ReadOnlyMemory<byte> snapshotBytes,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(resolution);
+
+        public Task<AttachmentSourceMetadata> RevalidateAsync(
+            AttachmentSourceMetadata source,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(resolution.Metadata);
+
+        public async Task<AttachmentSourceResolution> ResolveCurrentAsync(
+            AttachmentSourceMetadata source,
+            string expectedSnapshotSha256,
+            long maxBytes,
+            AttachmentSourcePathAuthorizer authorizeCanonicalPath,
+            CancellationToken cancellationToken = default)
+        {
+            if (!await authorizeCanonicalPath(source.LastKnownCanonicalPath!, cancellationToken))
+            {
+                return new AttachmentSourceResolution(
+                    source with
+                    {
+                        Status = AttachmentSourceStatus.Inaccessible,
+                        DiagnosticReason = "Sanctum denied access to the attachment source.",
+                    },
+                    ReadOnlyMemory<byte>.Empty);
+            }
+
+            return resolution;
+        }
+    }
+
+    /// <summary>A guard that refuses (or admits) the attachment source read with the denial kind it is given, and records what it was asked.</summary>
+    private sealed class SourceReadGuard(SanctumDenialKind? denial) : ISanctumGuard
+    {
+        public List<string> PathOperations { get; } = [];
+
+        public List<string> PathsAsked { get; } = [];
+
+        public Task<SanctumResult> ValidatePathAsync(
+            string campaignId,
+            string requestedPath,
+            string operationType,
+            string toolName,
+            CancellationToken ct = default)
+        {
+            PathOperations.Add(operationType);
+
+            PathsAsked.Add(requestedPath);
+
+            return Task.FromResult(
+                denial is { } kind
+                    ? new SanctumResult
+                    {
+                        Allowed = false,
+                        DenyReason = "the source is outside the Campaign",
+                        Breach = new SanctumBreach { BreachType = "PathEscape" },
+                        DenialKind = kind,
+                    }
+                    : new SanctumResult { Allowed = true });
+        }
+
+        public Task<SanctumResult> ValidateNetworkAsync(
+            string campaignId,
+            string url,
+            string toolName,
+            CancellationToken ct = default) =>
+            Task.FromResult(new SanctumResult { Allowed = true });
+
+        public Task<SanctumResult> ValidateToolAsync(string campaignId, string toolName, CancellationToken ct = default) =>
+            Task.FromResult(new SanctumResult { Allowed = true });
+
+        public Task<ResourceLimits> GetEffectiveResourceLimitsForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult(new ResourceLimits());
+
+        public Task<SanctumChildProcessBoundary?> GetChildProcessBoundaryForWorkspaceAsync(
+            string? workspaceRoot,
+            CancellationToken ct = default) =>
+            Task.FromResult<SanctumChildProcessBoundary?>(null);
+
+        public Task RecordResourceLimitBreachAsync(
+            string? workspaceRoot,
+            string toolName,
+            ResourceLimitKind resource,
+            string limitValue,
+            string? actualValue,
+            CancellationToken ct = default) =>
+            Task.CompletedTask;
+    }
+
     private static SessionAttachmentRecord RefreshRecord(
         Guid id,
         Guid sessionId,
@@ -1191,11 +1417,12 @@ public sealed class SessionAttachmentToolInjectionTests
     private static ToolExecutionPipeline CreatePipeline(
         ArcanumSettings settings,
         ISessionAttachmentStore store,
-        IAttachmentSourceResolver? resolver = null) =>
+        IAttachmentSourceResolver? resolver = null,
+        ISanctumGuard? sanctumGuard = null) =>
         new(
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             new FakeWard(),
-            new AllowAllSanctumGuard(),
+            sanctumGuard ?? new AllowAllSanctumGuard(),
             store,
             NullLogger<ToolExecutionPipeline>.Instance,
             attachmentSourceResolver: resolver);

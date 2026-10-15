@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource connections)
     : ISessionCampaignBindingReader
 {
-
     private const string Sql = """
         SELECT b.BindingKindCode,
                b.CampaignId
@@ -39,7 +38,6 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
         Guid? sessionId,
         CancellationToken cancellationToken)
     {
-
         if (sessionId is not { } id || id == Guid.Empty)
         {
             return Result<SessionCampaignBindingRecord?>.Success(null);
@@ -62,20 +60,15 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             await reader.CloseAsync().ConfigureAwait(false);
 
             // Distinguish "no such Session" from "Session without a binding". The first is an ordinary
             // client error; the second is corruption, and reporting it as a missing Session would send
             // an operator looking for the wrong problem.
             return await SessionExistsAsync(connection, id, cancellationToken).ConfigureAwait(false)
-                ? Result<SessionCampaignBindingRecord?>.Failure(
-                    new Error(
-                        ErrorCodes.Covenant.IntegrityFailure,
-                        "This Session has no immutable Campaign binding."))
+                ? Result<SessionCampaignBindingRecord?>.Failure(SessionCampaignBindingErrors.NoBinding)
                 : Result<SessionCampaignBindingRecord?>.Failure(
                     new Error(ErrorCodes.Session.NotFound, "Session not found."));
-
         }
 
         long kindCode = reader.GetInt64(0);
@@ -96,7 +89,6 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
             new SessionCampaignBindingRecord(
                 id,
                 SessionCampaignBinding.Create((SessionCampaignBindingKind)kindCode, campaignId)));
-
     }
 
     private static async Task<bool> SessionExistsAsync(
@@ -104,7 +96,6 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
         Guid sessionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = SessionExistsSql;
@@ -114,7 +105,5 @@ internal sealed class SessionCampaignBindingReader(ICovenantConnectionSource con
         _ = command.Parameters.AddWithValue("$sessionId", sessionId.ToString("D").ToUpperInvariant());
 
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
-
     }
-
 }
