@@ -373,11 +373,11 @@ internal static partial class HostedGrimoireProducerInventory
                 return "the caller is a root of another service";
             }
 
-            // No handoff fixture builds a holder-era caller: each context is produced only by its own binder, whose exact shape the fixtures of
-            // that holder own, and no root of a handoff service reaches one. The refusal only removes authority.
-            if (caller.RecoveryContext is not null || caller.OrdinaryScopedHolder is not null || caller.ReadinessSource is not null || caller.ScopedLeaseInstance is not null)
+            // No root of a handoff service reaches a recovery handler, so a caller that carries a recovery tuple is not one. The refusal only
+            // removes authority.
+            if (caller.RecoveryContext is not null)
             {
-                return "the caller carries a holder-era context";
+                return "the caller carries a recovery context";
             }
 
             if (caller.Syntax is not MethodDeclarationSyntax || call.Ancestors().TakeWhile(ancestor => ancestor != caller.Syntax).Any(static ancestor => ancestor is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))

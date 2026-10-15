@@ -18,21 +18,63 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     //   lease-parameter  the shipped shape: every send uses the lease formal.
     //   holder-read      the first send reads a holder's lease property instead of using its formal (the Ambient Holder).
     //   holder-group     the first send begins its group on that holder lease.
-    //   holder-read-renamed-binder   holder-read, with the holder's binder named Attach instead of Bind (and never called).
-    //   holder-read-without-binder   holder-read, with a holder that declares no binder at all.
+    // The remaining rows are the same holder read, with a holder that came by its lease some other way. None of them is bound by a
+    // binder named Bind, because the refusal is of the read and not of the holder's name:
+    //   holder-read-renamed-binder      the holder's binder is named Attach instead of Bind (and is never called).
+    //   holder-read-without-binder      the holder declares no binder at all.
+    //   holder-read-property-setter     the holder's lease property has a setter, which is how a container or an initializer would hand
+    //                                   the lease in. Nothing traversed calls it, because a call that stores the lease is itself the
+    //                                   escape that ends the admission, and these rows isolate the read.
+    //   holder-read-constructor-captured  the holder takes the lease in its constructor, and the first send builds one from its formal.
+    //   holder-read-field               the holder keeps the lease in a public field.
+    //   holder-read-conditional-access  the first send reads the holder's lease property through a conditional access.
     // The holder is the deleted LongRestWorkAdmission, kept here only as the hazard the Ambient Holder Refusal exists to refuse.
+    private static readonly string[] OrdinaryLeaseParameterShapes =
+    [
+        "lease-parameter", "holder-read", "holder-group", "holder-read-renamed-binder", "holder-read-without-binder",
+        "holder-read-property-setter", "holder-read-constructor-captured", "holder-read-field", "holder-read-conditional-access",
+    ];
+
     private static string OrdinaryLeaseParameterFixture(string shape = "lease-parameter")
     {
-        Assert.Contains(shape, new[] { "lease-parameter", "holder-read", "holder-group", "holder-read-renamed-binder", "holder-read-without-binder" });
+        Assert.Contains(shape, OrdinaryLeaseParameterShapes);
 
         bool holder = shape != "lease-parameter";
 
+        // The sweep is handed the holder by its constructor, except where the first send builds its own from the lease formal.
+        bool injected = holder && shape != "holder-read-constructor-captured";
+
         string binder = shape == "holder-read-renamed-binder" ? "Attach" : "Bind";
 
-        string binderMember = shape == "holder-read-without-binder"
-            ? ""
-            : $$"""
-                internal IDisposable {{binder}}(IGrimoireWorkLease lease)
+        string holderMembers = shape switch
+        {
+            "holder-read-without-binder" => """
+                private IGrimoireWorkLease? current;
+
+                    internal IGrimoireWorkLease Lease => current ?? throw new InvalidOperationException();
+                """,
+            "holder-read-property-setter" => """
+                internal IGrimoireWorkLease Lease { get; set; } = null!;
+                """,
+            "holder-read-constructor-captured" => """
+                private readonly IGrimoireWorkLease captured;
+
+                    internal LongRestWorkAdmission(IGrimoireWorkLease lease)
+                    {
+                        captured = lease;
+                    }
+
+                    internal IGrimoireWorkLease Lease => captured;
+                """,
+            "holder-read-field" => """
+                internal IGrimoireWorkLease Lease = null!;
+                """,
+            _ => $$"""
+                private IGrimoireWorkLease? current;
+
+                    internal IGrimoireWorkLease Lease => current ?? throw new InvalidOperationException();
+
+                    internal IDisposable {{binder}}(IGrimoireWorkLease lease)
                     {
                         current = lease;
 
@@ -45,13 +87,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
                         {
                         }
                     }
-                """;
+                """,
+        };
 
-        string constructor = holder ? "(LongRestWorkAdmission holder)" : "";
+        string constructor = injected ? "(LongRestWorkAdmission holder)" : "";
 
-        string registration = holder ? "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission>(); " : "";
+        string registration = injected ? "services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestWorkAdmission>(); " : "";
 
-        string firstLease = holder ? "IGrimoireWorkLease ambient = holder.Lease;" : "";
+        string firstLease = shape switch
+        {
+            "lease-parameter" => "",
+            "holder-read-constructor-captured" => "LongRestWorkAdmission holder = new(admission); IGrimoireWorkLease ambient = holder.Lease;",
+            "holder-read-conditional-access" => "IGrimoireWorkLease? ambient = holder?.Lease;",
+            _ => "IGrimoireWorkLease ambient = holder.Lease;",
+        };
 
         string firstGroup = shape switch
         {
@@ -68,11 +117,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
                 internal sealed class LongRestWorkAdmission
                 {
-                    private IGrimoireWorkLease? current;
-
-                    internal IGrimoireWorkLease Lease => current ?? throw new InvalidOperationException();
-
-                    {{binderMember}}
+                    {{holderMembers}}
                 }
             }
             """ : "";
