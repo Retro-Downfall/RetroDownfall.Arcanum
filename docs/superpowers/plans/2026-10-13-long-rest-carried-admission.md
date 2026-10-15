@@ -1,6 +1,6 @@
 # The Long Rest Carried Admission implementation plan (#91)
 
-> **For agentic workers:** This plan records the work as delivered, workstream by workstream, with the evidence each one produced. A checked box is delivered and merged into the delivery branch; an unchecked box is still to run. Do not re-execute a checked workstream; read its outcome and evidence. The 2026-10-09 plan keeps its history ([2026-10-09-long-rest-hybrid-sweeps.md](2026-10-09-long-rest-hybrid-sweeps.md)); its Tasks 1 to 4 and 7 stand, and this plan replaces the authority, recovery and hosting internals of its Tasks 5, 6 and 8.
+> **For agentic workers:** This plan records the work as delivered, workstream by workstream, with the evidence each one produced. A checked box is delivered and merged into the delivery branch; an unchecked box is still to run. Do not re-execute a checked workstream; read its outcome and evidence. The 2026-10-09 plan keeps its history ([2026-10-09-long-rest-hybrid-sweeps.md](2026-10-09-long-rest-hybrid-sweeps.md)); its Tasks 1, 2 and 4 stand (with the schema 18 additions, the capture changes and the model-window-derived bounds recorded below), its Task 3 stands except that the lexical lane and hierarchy recall are re-specified (Scoped Lexical Ranking, Ancestor-Excluded Cross-Cluster Recall, a generation-scoped index, no summary indexing), its Task 7 stands with two exceptions, the dispatch internals of its Task 5 change (bounds, one connection per send, unknown-usage settlement, release of unsent attempts), the hosting and recovery internals of its Task 6 are replaced, and the lifecycle closure of its Task 8 stands while its qualification and delivery list is replaced by WS14 below.
 
 **Goal:** Deliver #91's hybrid Saga discovery and resumable authority-scoped consolidation with one authority architecture (Carried Admission) that the repository's hosted-producer proof can verify, and a recovery model that never runs paid work (Park-and-Readmit), then qualify the exact final commit and merge it into `memory-enhancement`.
 
@@ -58,8 +58,8 @@
 | WS8d | 096dae85 | 7b37f7eb | Review fixes and CI partitions. |
 | CW | 5576e2d0 and e384011d | 49bdba58 and 763e012a | Closing wave: checker (cwc) and product (cwp). |
 | SX | 1f926446 | aa3c83c6 | Sanctum Campaign resolution. |
-| WS12 | in progress (branch created at aa3c83c6) | none | Docs, contract and compliance. |
-| WS13 | in progress (branch created at aa3c83c6) | none | Final convergence. |
+| WS12 | not merged (branch claude/91-ws12 at aa3c83c6, work paused) | none | Docs, contract and compliance. |
+| WS13 | not merged (branch claude/91-ws13 at aa3c83c6, work paused) | none | Final convergence. |
 | WS14 | not started | none | Qualification and delivery. |
 
 The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
@@ -67,11 +67,11 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 ## WS0: Evidence harness and baselines
 
 - [x] **Goal.** Measure before building, so every later claim is judged against a recorded number. Nothing in WS0 changes a verdict.
-- **Outcome.** All measurement ran in scratch worktrees and left no production or committed test change. The two committed pieces the plan had assigned to WS0 landed inside later workstreams: the Production Discovery Entry in WS6a and the frozen-limits pin in WS8b. The Old-Source Parity Gate was run by the scratch harness through Build-then-Swap; no committed parity script exists.
+- **Outcome.** All measurement ran in scratch worktrees and left no production or committed test change. The two committed pieces the plan had assigned to WS0 landed inside later workstreams: the Production Discovery Entry in WS6a and the frozen-limits pin in WS8b. The parity checks the scratch harness ran through Build-then-Swap were the residue and state-limit parts of the Old-Source Parity Gate (the residue and the overflow roots); its manifest-delta part waits for the Diff Row Classifier (`scripts/classify-manifest-diff.py`), which does not exist yet and arrives in WS13. No committed parity script exists.
 - **Evidence.**
-  - Full production graph on dcc2a12a: failed in 12 minutes 57 seconds with 8,538 diagnostics (7,602 `WORK_FRONTIER_MISSING`, 889 `UNCLASSIFIED`, 28 `RECOVERY_HANDLER_UNPROVEN`, 7 recovery-owner, 7 disposal-target, 2 call-target, 2 state limits).
+  - Full production graph on dcc2a12a: failed in 12 minutes 57 seconds with 8,538 diagnostics (7,602 `WORK_FRONTIER_MISSING`, 889 `UNCLASSIFIED`, 28 `RECOVERY_HANDLER_UNPROVEN`, 7 recovery-owner, 7 disposal-target, 2 call-target, 1 recovery-dispatch, 2 state limits).
   - Attribution: new checker on old source 665 primary and 287 additional; old checker on new source 64 and 1,661; new on new 8,538 and 534 (total 9,072), reproduced exactly. The new checker ran about 75 percent slower.
-  - Runtime baseline (excluding the hosted-analysis categories): 22,695 passed, 7 failed, 117 skipped in 38 minutes 59 seconds. The seven are stale benchmark input catalogs (2), keyed-registration failures (3), a stale production-lane list (1) and a console-scan failure that also occurs on the base commit in Release (1).
+  - Runtime baseline (excluding the hosted-analysis categories): 22,695 passed, 7 failed, 117 skipped in 38 minutes 58 seconds. The seven are stale benchmark input catalogs (2), keyed-registration failures (3), a stale production-lane list (1) and a console-scan failure that also occurs on the base commit in Release (1).
   - Fixture Baseline Multiset on dcc2a12a: 3,003 passed, 47 failed in 15 minutes 44 seconds. Eight are deliberate (the scoped-lease discovery fixtures, 7, and the keyed known-selected row, 1); 39 were unknown and went to triage.
   - Triage: 13 confirmed false grants (a widened `DbDataReader` indexer certified as Sqlite database access), environment metrics (a record `with` clone defeated the exact-token cache), 11 stale cleanup and factory fixtures, 4 Serve fixtures that were red by design because the Long Rest closure was 16,453 states, and a pre-existing `DbConnection.CreateCommand` grant by name.
 
@@ -104,15 +104,15 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 ## WS0G: Implicit enumeration
 
 - [x] **Goal.** Model the calls a `foreach`, `await foreach` and collection spread make without writing them.
-- **Outcome (fe379f80).** `GetEnumerator`, `MoveNext` and `Current` (async too), extension `GetEnumerator`, `ICollection` members and lazy iterators modeled; the premise `AuthoredEnumerablesAbsentByUse` added. Eleven Opus major findings fixed. Merged 45e466b8.
+- **Outcome (fe379f80).** `GetEnumerator`, `MoveNext` and `Current` (async too), extension `GetEnumerator`, `ICollection` members and lazy iterators modeled; the premise `AuthoredEnumerablesAbsentByUse` added, the second premise of the Premise Ledger (the panel had one; the growth is a decision listed in the spec). Eleven Opus major findings fixed. Merged 45e466b8.
 - **Evidence.** Graph byte-identical to the wave-1 graph; fixture partition: exactly the 11 deliberate failures.
 
 ## WS3: Lease Spine and Park-and-Readmit Recovery
 
 - [x] **Goal.** One compiling production change set that carries the lease by value and makes recovery park instead of run, then measure the new graph.
-- **Outcome (38d64921).** WS3a (cabed5a0): `LongRestWorkAdmission` deleted, `ILongRestAdmittedSweep` and `ILongRestAdmittedMaintenance`, the Session shell, the Admission Kind Guard. WS3b (efaa633f): the Pure Park Handler, Atomic Readmission, Sweep Failure Budget (`ReadmitCount`, `ParkedAt` in the head table and the V18 transition), `LongRestFaultPolicy`, Parked Rescan, Parked-Is-Active, the per-lease token and holder `Bind` removed from settlement while the inline acquisition (Finisher Ambient Fix) stays. Merged c1c8ae01.
+- **Outcome (38d64921).** WS3a (cabed5a0): `LongRestWorkAdmission` deleted, `ILongRestAdmittedSweep` and `ILongRestAdmittedMaintenance`, the Session shell, the Admission Kind Guard. WS3b (efaa633f): the Pure Park Handler, Atomic Readmission, Sweep Failure Budget (`ReadmitCount`, `ParkedAt` in the head table and the V18 transition), `LongRestFaultPolicy`, Parked Rescan, Parked-Is-Active, the per-lease token and holder `Bind` removed from settlement while the inline acquisition (Finisher Ambient Fix) stays. `AttestCleanAdmission` is tightened to kind 17 only, which removes WS1's transitional kind-14 acceptance. Merged c1c8ae01.
 - **Review.** Opus: one major finding (a stale budget count) and eight minor ones, all fixed. One deviation: `LongRunningOperationStore.AcquireLeaseAsync` stamps `long_rest.readmit_requested` when it adopts a Pending Long Rest row, because the pure handler cannot see Pending. The restart-generation parks that still answered 409 `SweepParked` were handed to WS9.
-- **Evidence.** Kill-Switch Run (unchanged checker, scratch cap) on the compiled tree: primary 2,228 diagnostics, all under the worker root (1,494 handle-escape, 729 work-frontier), additional 0; recovery roots clean (the background recovery root at 3,444 states). State Census at a 65,536 cap: `ExecuteAsync` 14,536 states (over 8,192, which triggered WS5), `RecoverBeforeBootstrap` 7,602, `InstallationReset` 7,562, `WorkspaceIndexing` 6,564.
+- **Evidence.** Kill-Switch Run at the real 8,192 cap, with the delivery checker as of WS0G (before WS4 and WS5), on the compiled tree: primary 2,228 diagnostics (1,494 handle-escape and 729 work-frontier under the worker root, 3 callback-ownership, 1 state limit and 1 `Histogram.Record`), additional 0; recovery roots clean (the background recovery root at 3,444 states). State Census at a 65,536 scratch cap: `ExecuteAsync` 14,536 states (over 8,192, which triggered WS5), `RecoverBeforeBootstrap` 7,602, `InstallationReset` 7,562, `WorkspaceIndexing` 6,564.
 
 ## WS8a: Handle-incapable values and a one-read wake
 
@@ -124,7 +124,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 
 - [x] **Goal.** Close the gap that let a group begun on any lease receiver satisfy a send site, in both the old and new checker.
 - **Outcome (b2544fe6).** The Must-Alias Lease Demand and the receiver proof at the effect site, the retained-admission scan and the recovery effect frontier; code `HOSTED_ADMISSION_RECEIVER_MISMATCH`; the attachment-batch flush takes its lease as an argument (a production reshape). Merged 1417c8ab.
-- **Review.** Opus: two HIGH findings fixed (unsound local null-test pruning, now `LocalWrites`; cache poisoning, now a declaration-qualified binding identity). Open items taken into later work: the holder-era exemption (removed in WS13) and a forged-gate case (closed in the closing wave by the Single Gate Census).
+- **Review.** Opus: two HIGH findings fixed (unsound local null-test pruning, now `LocalWrites`; cache poisoning, now a declaration-qualified binding identity). Open items taken into later work: the holder-era exemption (to be removed in WS13) and a forged-gate case (closed in the closing wave by the Single Gate Census).
 - **Evidence.** Validation on the integrated tree: graph primary 2, additional 0; fixture partition only the 11 deliberate failures.
 
 ## WS5: Lease-Handoff Root
@@ -164,7 +164,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 ## WS0H: EF and ADO.NET completeness
 
 - [x] **Goal.** Close the checker's Entity Framework and ADO.NET holes by fixing them, not by accepting a documented boundary.
-- **Outcome (c8123c17).** Exact operator verdicts and a census for query execution sites; context hooks fail closed; the Interceptor and Logger Lane (callbacks entered at the raising operations, with a disposal lane); the Context Universe; the Provider Dispatch Closure and the premise `DbProviderTypesClosedByUse`; Connection State Handlers; once-per-discovery Inventory Facts. A core rule changed: `Task` is no longer a lease carrier merely because it is disposable.
+- **Outcome (c8123c17).** Exact operator verdicts and a census for query execution sites; context hooks fail closed; the Interceptor and Logger Lane (callbacks entered at the raising operations, with a disposal lane); the Context Universe; the Provider Dispatch Closure and the premise `DbProviderTypesClosedByUse` (the third premise of the Premise Ledger); Connection State Handlers; once-per-discovery Inventory Facts. A core rule changed: `Task` is no longer a lease carrier merely because it is disposable.
 - **Review.** Opus: eight CRITICAL, one HIGH, three MEDIUM and two LOW findings, all fixed.
 
 ## WS0I: Implicit Call Census
@@ -207,7 +207,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 
 - [x] **Goal.** Fix WS8c's dropped findings and make the analysis fit CI.
 - **Outcome (096dae85, plus doc fix 3309e973).** Whole-anchor keys for both callback memos, a work pin, the Unresolved-as-set fixture, shared-state documentation. The runner has four partitions (primary, additional, fixtures, serve-host), each its own CI job with one test process per fixture job; receipts are schema 2 and an aggregate job reconciles the four so every method and case appears exactly once; `ci.yml` has 12 jobs. Worker jobs build with build servers disabled and shut them down. A per-graph string pool fixed an out-of-memory under the memory proxy (cleanup-binding identity strings of up to 96,000 characters rebuilt per key). Merged 7b37f7eb.
-- **Evidence.** Under a 5.5 GB heap limit and three processors: peaks of 5.9 GB (primary), 5.4 to 5.8 GB (fixtures), 4.1 GB (serve-host) and 4.9 GB (additional); lane times 172 to 669 s, which is 35 percent of the 1,740 s cap two at a time and 51 percent four at once. No branch protection exists on `main` or `memory-enhancement`, so renaming jobs is safe. Doc, CI and collection tests: 158 of 158.
+- **Evidence.** Under a 5.5 GB heap limit and three processors: peaks of 5.9 GB (primary), 5.4 to 5.8 GB (fixtures), 4.1 GB (serve-host) and 4.9 GB (additional); the longest lane took 35 percent of the 1,740 s cap two at a time and 51 percent four at a time. Re-measured after the review fixes, the lanes took 172 to 669 s, with the longest at 38 percent. No branch protection exists on `main` or `memory-enhancement`, so renaming jobs is safe. Doc, CI and collection tests: 158 of 158.
 
 ## CW: Closing wave
 
@@ -220,7 +220,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 
 - [x] **Goal.** Fix the Sanctum defect the closing-wave security review found: the Sanctum was activated only by an exact working-directory path lookup, so a subdirectory, trailing separator, case variant, symlink or Session-bound turn ran unsandboxed under a Strict Campaign. The defect also exists on `main`.
 - **Outcome (1f926446).** `SanctumCampaignResolution`: the governing Campaign is the strictest claim among the canonical binding, the per-source asks (Session, explicit id, workspace identity) and the registered root that contains the working directory (`CampaignRootContainment`: NFC text, case folding on macOS and Windows, symlink-resolved spellings, physical identity walk, no depth bound); an unreadable policy refuses every tool call; denial kinds `Policy`, `PolicyUnavailable` and `AuditRecordFailed`; AuditOnly overrides only policy refusals and a failed breach write refuses; the research ward comes from the same resolution; Campaign registration refuses equivalent spellings (`Campaign.DuplicatePath`). Merged aa3c83c6.
-- **Review.** Two independent Opus security reviews: the first found one HIGH and five LOW, which the fix stream addressed; the second two medium and four low, which were fixed.
+- **Review.** The closing-wave security review of the Sanctum AuditOnly change found one HIGH and five LOW, which is what SX fixes. SX then had two independent Opus security reviews of its own; the second found two medium and four low findings, all fixed.
 - **Open.** Lookup reads every `(Id, Path)` row per call, linear in Campaign count and uncached; Windows spellings are unverified on a Windows host; the owner has not said whether the fix should also land on `main` separately.
 
 ## WS12: Docs, contract and compliance
@@ -249,7 +249,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
   - [ ] `./scripts/verify-shipping-publish.sh --rid osx-arm64`: the exact Native AOT apphost and the in-process provider-contract smoke.
   - [ ] `./scripts/verify-native-sqlcipher.sh --rid osx-arm64`: native provenance, hashes, symbols and compile options.
   - [ ] Live qualification with `./scripts/verify-local-ollama-aot.sh`: Ollama `gemma4:e4b` (vision and tools) and `ornith1.5:35b`, the stop-sign vision turn, a Perplexity web-search turn, and a forced mid-sweep restart that exercises park, readmission and unknown-usage settlement against a real provider.
-  - [ ] Calibration on live data: `LexicalMinimumScore` (12), the scorer constants and the 0.92 summary cosine gate; the live embedding model's window against the 2,372-token minimum; the effect of the default 8,192-token chat window (memories of about 2.4 KiB or more are not paired). If a calibration changes a recipe digest, rerun the focused suites and one root-scoped run, and requalify only the gates the change touched.
+  - [ ] Calibration on live data: `LexicalMinimumScore` (12), the scorer constants and the 0.92 minimum cosine (`MinimumVectorCosine`, applied to the vector and hierarchy lanes); the live embedding model's window against the 2,372-token minimum; the effect of the default 8,192-token chat window (memories of about 2.4 KiB or more are not paired). If a calibration changes a recipe digest, rerun the focused suites and one root-scoped run, and requalify only the gates the change touched.
   - [ ] A final independent Opus review of the whole branch against this plan and the spec.
   - [ ] History cleanup, then proof that the committed tree equals the tested bytes.
   - [ ] Exact-SHA CI, all 12 jobs, including both native Windows lanes (x64 and arm64) with their focused Long Rest selection and the complete producer-analysis aggregate. Measure the four hosted-producer lanes against the 1,740 s cap; add a third fixture lane if the first run exceeds 85 percent of it.
