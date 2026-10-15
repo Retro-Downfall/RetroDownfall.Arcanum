@@ -226,6 +226,20 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Empty(UnresolvedReadsThatCouldCount("Probe.cs", "class Probe { void Read(dynamic targets, dynamic dispatch, dynamic other, System.Collections.Generic.List<string> Unresolved) { " + statement + " } }"));
     }
 
+    // The key of a cleanup cache holds the string of the bindings of a member, which can be tens of thousands of characters and is built again for every
+    // expression asked about. The keys share one instance per content (so the caches do not hold a copy per entry) and are still compared by content.
+    [Fact]
+    public void TheKeysOfTheCleanupCachesShareTheStringOfTheBindingsOfAMember()
+    {
+        (bool shared, bool equalToCopy, int pooled) = HostedGrimoireProducerInventory.ProbeCleanupBindingPool(HostedGrimoireProducerInventory.ProductionCompilations);
+
+        Assert.True(shared, "Two keys for one expression of one member hold two copies of the string of its bindings.");
+
+        Assert.True(equalToCopy, "A key is no longer equal, by content, to a key made with a copy of the string.");
+
+        Assert.Equal(1, pooled);
+    }
+
     // The program-wide queries a graph answers from an index or a memo (the call sites of a method, the constructors of a type, the implementers
     // of an interface method, whether a parameter is written, whether a callable mutates a local) return what the pass or computation they replace returns, in the same order, over a
     // sample of the production source.
