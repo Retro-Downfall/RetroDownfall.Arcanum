@@ -8958,6 +8958,41 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
     }
 
+    // The per-unit external-effect disposition was retired with the lane that accepted it. A classifier arm that names it again is
+    // no known disposition, so the recovery matrix fails closed (HOSTED_RECOVERY_MATRIX_UNPROVEN) instead of reaching a handler
+    // under a grant nothing proves. The unmutated fixture is the twin: its matrix is proven.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AClassifierArmThatNamesTheRetiredPerUnitDispositionFailsTheRecoveryMatrixClosed(bool namesRetiredDisposition)
+    {
+        string source = RecoveryMatrixFixture();
+
+        if (namesRetiredDisposition)
+        {
+            const string enumTail = "UnsupportedCheckpointVersion = 5,";
+
+            const string externalArm = "(LongRunningOperationKinds.External, 0) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,";
+
+            Assert.Equal(1, source.Split(enumTail, StringSplitOptions.None).Length - 1);
+
+            Assert.Equal(1, source.Split(externalArm, StringSplitOptions.None).Length - 1);
+
+            source = source.Replace(enumTail, enumTail + " OrdinaryPerUnitExternalEffect = 6,", StringComparison.Ordinal)
+                .Replace(externalArm, "(LongRunningOperationKinds.External, 0) => LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect,", StringComparison.Ordinal);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Equal(namesRetiredDisposition, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN"
+            && diagnostic.Detail.Contains("resolve to one known disposition", StringComparison.Ordinal)));
+
+        if (!namesRetiredDisposition)
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
+        }
+    }
+
     [Fact]
     public void ClosedRecoveryMatrixSeparatesDbExternalOwnerUnsupportedAndCliOnlyHandlers()
     {
