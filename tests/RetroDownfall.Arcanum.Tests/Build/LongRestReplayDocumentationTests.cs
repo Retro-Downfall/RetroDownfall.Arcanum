@@ -385,9 +385,17 @@ public sealed class LongRestReplayDocumentationTests
 
         Assert.Contains("put the same question to a Campaign chosen the same way (`AttachmentSourceSanctum`)", design, StringComparison.Ordinal);
 
-        Assert.Contains("a link that lies inside a Campaign's root and leaves it is still that Campaign's read", design, StringComparison.Ordinal);
+        Assert.Contains("link that lies inside a Campaign's root and leaves it is still that Campaign's read", design, StringComparison.Ordinal);
 
         Assert.Contains("a source that no claim names is unrestricted", design, StringComparison.Ordinal);
+
+        Assert.Contains("`ICampaignRepository.GetBySpelledPathAsync`", design, StringComparison.Ordinal);
+
+        Assert.Contains("however the root is reached", design, StringComparison.Ordinal);
+
+        Assert.Contains("`attachment_reference`, `attachment_refresh`, or `refresh_session_file`", design, StringComparison.Ordinal);
+
+        Assert.Contains("and they take no Sanctum decision: a poll that recorded a breach for every refused source would fill the bounded breach history", design, StringComparison.Ordinal);
 
         Assert.DoesNotContain("The Campaign it asks is the Session's stored `CampaignId` alone", design, StringComparison.Ordinal);
 
@@ -400,6 +408,12 @@ public sealed class LongRestReplayDocumentationTests
         Assert.Contains("neither mode lets through a Sanctum that cannot be read or a breach that cannot be recorded", api, StringComparison.Ordinal);
 
         Assert.Contains("Its Sanctum decision is the live reference's", api, StringComparison.Ordinal);
+
+        Assert.Contains("the root that contains the directory it stands in with its links resolved", api, StringComparison.Ordinal);
+
+        Assert.Contains("with its breach recorded under the surface `attachment_refresh`", api, StringComparison.Ordinal);
+
+        Assert.Contains("takes no Sanctum decision (DESIGN §11.15)", api, StringComparison.Ordinal);
     }
 
     private static string ReadDocument(string fileName) =>

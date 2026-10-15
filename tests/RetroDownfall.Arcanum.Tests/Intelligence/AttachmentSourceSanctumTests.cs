@@ -25,6 +25,10 @@ public sealed class AttachmentSourceSanctumTests
 
     private static readonly Guid Contained = Guid.Parse("1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9");
 
+    private static readonly Guid Spelled = Guid.Parse("2B3C4D5E-6F70-4182-93A4-B5C6D7E8F901");
+
+    private static readonly Guid InDirectory = Guid.Parse("3C4D5E6F-7081-4293-A4B5-C6D7E8F90112");
+
     private static readonly AttachmentSourceRead Read = new("/work/app/link.txt", "/work/elsewhere/target.txt");
 
     [Fact]
@@ -105,7 +109,98 @@ public sealed class AttachmentSourceSanctumTests
 
         Assert.Equal(Contained.ToString("D"), Assert.Single(guard.Calls).CampaignId);
 
-        Assert.Equal(Read.SourcePath, campaigns.ContainedPaths.Single());
+        Assert.Contains(Read.SourcePath, campaigns.ContainedPaths);
+    }
+
+    // The spelling is looked at three ways, and each is a claim: the full path as the operating system reads it (the root that contains the
+    // path or what its links lead to), the directory the spelling stands in with its links resolved (a root reached through a link to it),
+    // and the text of the spelling alone (a link inside a root that leads into another). Where claims tie, the spelling's own come first.
+    [Fact]
+    public async Task The_campaign_whose_root_contains_the_text_of_the_spelling_is_a_claim_beside_the_one_that_contains_the_resolved_target()
+    {
+        ScriptedGuard guard = new(SanctumDenial.Policy);
+
+        CampaignTable campaigns = new(Build(Spelled, SanctumMode.Strict), Build(Contained, SanctumMode.Strict))
+        {
+            ContainingRoot = Contained,
+            SpelledRoot = Spelled,
+        };
+
+        bool allowed = await AuthorizeAsync(guard, campaigns, sessionCampaignId: null);
+
+        Assert.False(allowed);
+
+        Assert.Equal(Spelled.ToString("D"), Assert.Single(guard.Calls).CampaignId);
+
+        Assert.Equal(Read.SourcePath, Assert.Single(campaigns.SpelledPaths));
+    }
+
+    [Fact]
+    public async Task The_campaign_whose_root_contains_the_spelled_directory_with_its_links_resolved_is_a_claim()
+    {
+        ScriptedGuard guard = new(SanctumDenial.Policy);
+
+        string directory = Path.GetDirectoryName(Read.SourcePath)!;
+
+        CampaignTable campaigns = new(Build(InDirectory, SanctumMode.Strict));
+
+        campaigns.ContainingRootByPath[directory] = InDirectory;
+
+        bool allowed = await AuthorizeAsync(guard, campaigns, sessionCampaignId: null);
+
+        Assert.False(allowed);
+
+        Assert.Equal(InDirectory.ToString("D"), Assert.Single(guard.Calls).CampaignId);
+
+        Assert.Contains(directory, campaigns.ContainedPaths);
+    }
+
+    [Theory]
+    [InlineData(SanctumMode.AuditOnly, SanctumMode.Strict, false)]
+    [InlineData(SanctumMode.Strict, SanctumMode.AuditOnly, false)]
+    [InlineData(SanctumMode.AuditOnly, SanctumMode.AuditOnly, true)]
+    public async Task The_stricter_of_the_campaigns_the_spelling_and_the_target_name_governs(
+        SanctumMode spelledMode,
+        SanctumMode containedMode,
+        bool expectedAllowed)
+    {
+        ScriptedGuard guard = new(SanctumDenial.Policy);
+
+        CampaignTable campaigns = new(Build(Spelled, spelledMode), Build(Contained, containedMode))
+        {
+            ContainingRoot = Contained,
+            SpelledRoot = Spelled,
+        };
+
+        bool allowed = await AuthorizeAsync(guard, campaigns, sessionCampaignId: null);
+
+        Assert.Equal(expectedAllowed, allowed);
+
+        string governing = (spelledMode == containedMode || spelledMode == SanctumMode.Strict ? Spelled : Contained).ToString("D");
+
+        Assert.Equal(governing, Assert.Single(guard.Calls).CampaignId);
+    }
+
+    [Fact]
+    public async Task A_spelling_whose_campaign_sanctum_cannot_be_read_refuses_the_read_without_asking_the_guard()
+    {
+        ScriptedGuard guard = new(SanctumDenial.None);
+
+        Campaign unreadable = Build(Spelled, SanctumMode.AuditOnly);
+
+        unreadable.SanctumConfigJson = "{ this is not a sanctum policy";
+
+        CampaignTable campaigns = new(unreadable, Build(Contained, SanctumMode.Strict))
+        {
+            ContainingRoot = Contained,
+            SpelledRoot = Spelled,
+        };
+
+        bool allowed = await AuthorizeAsync(guard, campaigns, sessionCampaignId: null);
+
+        Assert.False(allowed);
+
+        Assert.Empty(guard.Calls);
     }
 
     [Fact]

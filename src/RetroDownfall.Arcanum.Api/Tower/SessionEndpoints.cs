@@ -1124,7 +1124,7 @@ internal static class SessionEndpoints
 
                             session.CampaignId,
 
-                            "refresh_session_file",
+                            "attachment_refresh",
 
                             campaignResolver,
 

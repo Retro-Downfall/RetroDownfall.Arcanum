@@ -205,7 +205,7 @@ public sealed class SessionAttachmentSanctumEndpointTests
 
         Assert.Equal("PathEscape", breach.BreachType);
 
-        Assert.Equal("refresh_session_file", breach.ToolName);
+        Assert.Equal("attachment_refresh", breach.ToolName);
     }
 
     [SkippableFact]
@@ -290,11 +290,177 @@ public sealed class SessionAttachmentSanctumEndpointTests
         Assert.Empty(await scenario.BreachesAsync(elsewhereId));
     }
 
+    // The path claim is the Campaign whose root contains the way the source is spelled, so it does not depend on where the spelling's links
+    // lead: a root reached through a link to it, a link inside the root that points into another registered root, and a directory link
+    // inside the root that points into another registered root are each still the first Campaign's read.
+    [SkippableFact]
+    public async Task A_reference_spelled_through_a_link_to_a_strict_campaign_root_is_refused_and_recorded()
+    {
+        SkipUnlessLinksCanBeMade();
+
+        using Scenario scenario = await Scenario.CreateAsync(_factory);
+
+        Guid sessionId = await scenario.CreateSessionAsync(campaignId: null);
+
+        Guid campaignId = await scenario.RegisterCampaignAsync(scenario.Area, SanctumMode.Strict);
+
+        HttpResponseMessage response = await scenario.PostReferenceAsync(sessionId, scenario.LinkOutOfAreaThroughAlias);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(ErrorCodes.Attachment.SourceUnavailable, await ReadErrorCodeAsync(response));
+
+        Assert.Empty(await scenario.BoundAttachmentsAsync(sessionId));
+
+        SanctumBreachRecord breach = Assert.Single(await scenario.BreachesAsync(campaignId));
+
+        Assert.Equal("PathEscape", breach.BreachType);
+
+        Assert.Equal("attachment_reference", breach.ToolName);
+    }
+
+    [SkippableFact]
+    public async Task A_refresh_spelled_through_a_link_to_a_strict_campaign_root_is_refused_and_recorded()
+    {
+        SkipUnlessLinksCanBeMade();
+
+        using Scenario scenario = await Scenario.CreateAsync(_factory);
+
+        Guid sessionId = await scenario.CreateSessionAsync(campaignId: null);
+
+        Guid attachmentId = await scenario.ReferenceAsync(sessionId, scenario.LinkOutOfAreaThroughAlias);
+
+        Guid campaignId = await scenario.RegisterCampaignAsync(scenario.Area, SanctumMode.Strict);
+
+        HttpResponseMessage response = await scenario.PostRefreshAsync(sessionId, attachmentId);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(ErrorCodes.Attachment.SourceUnavailable, await ReadErrorCodeAsync(response));
+
+        SanctumBreachRecord breach = Assert.Single(await scenario.BreachesAsync(campaignId));
+
+        Assert.Equal("PathEscape", breach.BreachType);
+
+        Assert.Equal("attachment_refresh", breach.ToolName);
+    }
+
+    [SkippableTheory]
+    [InlineData(SanctumMode.Strict)]
+    [InlineData(SanctumMode.AuditOnly)]
+    public async Task A_reference_through_a_link_deeper_in_a_strict_campaign_than_the_root_it_points_into_is_refused_and_recorded(SanctumMode otherMode)
+    {
+        SkipUnlessLinksCanBeMade();
+
+        using Scenario scenario = await Scenario.CreateAsync(_factory);
+
+        Guid sessionId = await scenario.CreateSessionAsync(campaignId: null);
+
+        Guid strictId = await scenario.RegisterCampaignAsync(scenario.Area, SanctumMode.Strict);
+
+        Guid otherId = await scenario.RegisterCampaignAsync(scenario.Other, otherMode);
+
+        HttpResponseMessage response = await scenario.PostReferenceAsync(sessionId, scenario.DeepLinkIntoOther);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Empty(await scenario.BoundAttachmentsAsync(sessionId));
+
+        SanctumBreachRecord breach = Assert.Single(await scenario.BreachesAsync(strictId));
+
+        Assert.Equal("PathEscape", breach.BreachType);
+
+        Assert.Empty(await scenario.BreachesAsync(otherId));
+    }
+
+    [SkippableTheory]
+    [InlineData(SanctumMode.Strict)]
+    [InlineData(SanctumMode.AuditOnly)]
+    public async Task A_reference_through_a_directory_link_out_of_a_strict_campaign_into_another_campaign_is_refused_and_recorded(SanctumMode otherMode)
+    {
+        SkipUnlessLinksCanBeMade();
+
+        using Scenario scenario = await Scenario.CreateAsync(_factory);
+
+        Guid sessionId = await scenario.CreateSessionAsync(campaignId: null);
+
+        Guid strictId = await scenario.RegisterCampaignAsync(scenario.Area, SanctumMode.Strict);
+
+        Guid otherId = await scenario.RegisterCampaignAsync(scenario.Other, otherMode);
+
+        HttpResponseMessage response = await scenario.PostReferenceAsync(sessionId, scenario.FileThroughDirectoryLinkIntoOther);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Empty(await scenario.BoundAttachmentsAsync(sessionId));
+
+        _ = Assert.Single(await scenario.BreachesAsync(strictId));
+
+        Assert.Empty(await scenario.BreachesAsync(otherId));
+    }
+
+    [SkippableFact]
+    public async Task A_reference_through_a_link_into_another_campaign_from_a_directory_no_campaign_contains_is_governed_by_the_other_campaign()
+    {
+        SkipUnlessLinksCanBeMade();
+
+        using Scenario scenario = await Scenario.CreateAsync(_factory);
+
+        Guid sessionId = await scenario.CreateSessionAsync(campaignId: null);
+
+        Guid otherId = await scenario.RegisterCampaignAsync(scenario.Other, SanctumMode.Strict);
+
+        HttpResponseMessage response = await scenario.PostReferenceAsync(sessionId, scenario.DeepLinkIntoOther);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        Assert.Empty(await scenario.BreachesAsync(otherId));
+    }
+
+    // Listing a Session's attachments revalidates each bound source (its status, digest, length and write time) and takes no Sanctum decision:
+    // the stored snapshot is what a turn reads, and a passive poll that recorded a breach for every refused source would fill the bounded
+    // breach history. DESIGN 11.15 states this exception, so a change that governs the listing must change that sentence with it.
+    [SkippableFact]
+    public async Task Listing_attachments_revalidates_a_source_outside_a_strict_campaign_without_a_Sanctum_decision()
+    {
+        SkipUnlessLinksCanBeMade();
+
+        using Scenario scenario = await Scenario.CreateAsync(_factory);
+
+        Guid sessionId = await scenario.CreateSessionAsync(campaignId: null);
+
+        Guid attachmentId = await scenario.ReferenceAsync(sessionId, scenario.FileOutsideArea);
+
+        Guid campaignId = await scenario.RegisterCampaignAsync(scenario.Area, SanctumMode.Strict);
+
+        await scenario.BindSessionAsync(sessionId, campaignId);
+
+        await File.WriteAllTextAsync(scenario.FileOutsideArea, "outside, rewritten");
+
+        HttpResponseMessage response = await scenario.GetAttachmentsAsync(sessionId);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        SessionAttachmentDto listed = Assert.Single(await ReadListAsync(response));
+
+        Assert.Equal(attachmentId, listed.Id);
+
+        Assert.Empty(await scenario.BreachesAsync(campaignId));
+    }
+
     private static void SkipUnlessLinksCanBeMade()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+    }
+
+    private static async Task<SessionAttachmentDto[]> ReadListAsync(HttpResponseMessage response)
+    {
+        ApiResponse<SessionAttachmentDto[]>? payload = await response.Content
+            .ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+
+        return payload?.Data ?? [];
     }
 
     private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage response)
@@ -330,6 +496,16 @@ public sealed class SessionAttachmentSanctumEndpointTests
             FileOutsideArea = Path.Combine(factory.TempHome, "sanctum-outside-" + suffix + ".txt");
 
             LinkOutOfArea = Path.Combine(Area, "link.txt");
+
+            Alias = Path.Combine(factory.TempHome, "sanctum-alias-" + suffix);
+
+            Other = Path.Combine(factory.TempHome, "sanctum-other-" + suffix);
+
+            LinkOutOfAreaThroughAlias = Path.Combine(Alias, "link.txt");
+
+            DeepLinkIntoOther = Path.Combine(Area, "sub", "deep.txt");
+
+            FileThroughDirectoryLinkIntoOther = Path.Combine(Area, "dirlink", "target.txt");
         }
 
         public string Area { get; }
@@ -341,6 +517,20 @@ public sealed class SessionAttachmentSanctumEndpointTests
         public string FileOutsideArea { get; }
 
         public string LinkOutOfArea { get; }
+
+        /// <summary>A directory link to <see cref="Area"/>; the same link out of the area, spelled through it.</summary>
+        public string Alias { get; }
+
+        public string LinkOutOfAreaThroughAlias { get; }
+
+        /// <summary>A second directory, holding <c>target.txt</c>, for a Campaign that contains what a link in the area points at.</summary>
+        public string Other { get; }
+
+        /// <summary>A link two components below the area that points at <c>target.txt</c> one component below <see cref="Other"/>.</summary>
+        public string DeepLinkIntoOther { get; }
+
+        /// <summary>The way into <c>target.txt</c> through a directory link in the area that points at <see cref="Other"/>.</summary>
+        public string FileThroughDirectoryLinkIntoOther { get; }
 
         public static async Task<Scenario> CreateAsync(ArcanumWebApplicationFactory factory)
         {
@@ -355,6 +545,20 @@ public sealed class SessionAttachmentSanctumEndpointTests
             if (!OperatingSystem.IsWindows())
             {
                 File.CreateSymbolicLink(scenario.LinkOutOfArea, scenario.FileOutsideArea);
+
+                _ = Directory.CreateDirectory(scenario.Other);
+
+                string target = Path.Combine(scenario.Other, "target.txt");
+
+                await File.WriteAllTextAsync(target, "inside the other campaign");
+
+                Directory.CreateSymbolicLink(scenario.Alias, scenario.Area);
+
+                _ = Directory.CreateDirectory(Path.GetDirectoryName(scenario.DeepLinkIntoOther)!);
+
+                File.CreateSymbolicLink(scenario.DeepLinkIntoOther, target);
+
+                Directory.CreateSymbolicLink(Path.Combine(scenario.Area, "dirlink"), scenario.Other);
             }
 
             return scenario;
@@ -444,6 +648,13 @@ public sealed class SessionAttachmentSanctumEndpointTests
             return created.Data.Id;
         }
 
+        public async Task<HttpResponseMessage> GetAttachmentsAsync(Guid sessionId)
+        {
+            HttpClient client = _factory.CreateAuthenticatedClient();
+
+            return await client.GetAsync($"/api/sessions/{sessionId:D}/attachments");
+        }
+
         public async Task<HttpResponseMessage> PostRefreshAsync(Guid sessionId, Guid attachmentId)
         {
             HttpClient client = _factory.CreateAuthenticatedClient();
@@ -480,9 +691,17 @@ public sealed class SessionAttachmentSanctumEndpointTests
                 _ = repository.DeleteAsync(id).GetAwaiter().GetResult();
             }
 
+            // The alias is a link, so it goes before the directory it points at and is removed without removing what it points at.
+            if (Directory.Exists(Alias))
+            {
+                Directory.Delete(Alias);
+            }
+
             _ = TestDirectoryCleanup.TryDelete(Area, nameof(SessionAttachmentSanctumEndpointTests));
 
             _ = TestDirectoryCleanup.TryDelete(Elsewhere, nameof(SessionAttachmentSanctumEndpointTests));
+
+            _ = TestDirectoryCleanup.TryDelete(Other, nameof(SessionAttachmentSanctumEndpointTests));
 
             if (File.Exists(FileOutsideArea))
             {

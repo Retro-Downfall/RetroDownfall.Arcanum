@@ -106,10 +106,19 @@ public sealed class CampaignRepository : ICampaignRepository
     /// case variant, another Unicode normalisation form). There is no prefix predicate, no limit on how many components deep the directory
     /// is, and the Campaign table is small enough that reading each registered root costs less than a missed Sanctum.
     /// </remarks>
-    public async Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default)
-    {
-        CampaignRootContainment? containment = CampaignRootContainment.TryCreate(path);
+    public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+        ReadContainingAsync(CampaignRootContainment.TryCreate(path), cancellationToken);
 
+    /// <summary>
+    /// The registered Campaign whose root the text of <paramref name="path"/> places it under: the same rule as
+    /// <see cref="GetByContainedPathAsync"/> (the deepest root wins, the strictest Sanctum governs a directory registered more than once), over
+    /// the path as it is spelled, so no link in the path is followed.
+    /// </summary>
+    public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+        ReadContainingAsync(CampaignRootContainment.TryCreate(path, followLinks: false), cancellationToken);
+
+    private async Task<Campaign?> ReadContainingAsync(CampaignRootContainment? containment, CancellationToken cancellationToken)
+    {
         if (containment is null)
         {
             return null;

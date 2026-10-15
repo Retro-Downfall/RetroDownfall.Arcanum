@@ -28,6 +28,23 @@ public interface ICampaignRepository
     Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
         GetByPathAsync(path, cancellationToken);
 
+    /// <summary>
+    /// The registered Campaign whose root the text of <paramref name="path"/> places it under, reading the path as it is spelled: no link in
+    /// the path is followed, so a link that stands inside a root is a name inside that root whatever it points at, and a path spelled through
+    /// a link to a root is not spelled inside it. The deepest root wins, and when several rows name the same directory the one whose Sanctum
+    /// is strictest governs it, as for <see cref="GetByContainedPathAsync"/>; a root matches by whole directory components, by every
+    /// spelling of the root itself (its own links resolved, the case of a name where file systems fold case, its Unicode normalisation
+    /// form and a trailing separator), and never by string prefix.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="GetByContainedPathAsync"/> answers the nearest root over every form the path can be read in, which for a link that leads
+    /// into another root is the root of its target. This answers the other question: whose workspace a path is written in. A surface that
+    /// judges a read of a file by the Sanctum of the Campaign it is spelled inside asks both. The default answers the exact match, as
+    /// <see cref="GetByContainedPathAsync"/> does; the production repository overrides it.
+    /// </remarks>
+    Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+        GetByPathAsync(path, cancellationToken);
+
     Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default);
 
     Task<ListPageResult<Campaign>> ListAsync(

@@ -40,7 +40,15 @@ internal sealed class CampaignTable : ICampaignRepository
 
     internal Guid? ContainingRoot { get; init; }
 
+    /// <summary>The registered root that contains one particular path, for a path that is not the one <see cref="ContainingRoot"/> answers.</summary>
+    internal Dictionary<string, Guid> ContainingRootByPath { get; } = [];
+
+    /// <summary>The registered root whose text contains the way a path is spelled, answered by <see cref="GetBySpelledPathAsync"/>.</summary>
+    internal Guid? SpelledRoot { get; init; }
+
     internal List<string> ContainedPaths { get; } = [];
+
+    internal List<string> SpelledPaths { get; } = [];
 
     public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
         Task.FromResult(_rows.GetValueOrDefault(id));
@@ -52,7 +60,16 @@ internal sealed class CampaignTable : ICampaignRepository
     {
         ContainedPaths.Add(path);
 
-        return Task.FromResult(ContainingRoot is { } id ? _rows.GetValueOrDefault(id) : null);
+        Guid? id = ContainingRootByPath.TryGetValue(path, out Guid byPath) ? byPath : ContainingRoot;
+
+        return Task.FromResult(id is { } found ? _rows.GetValueOrDefault(found) : null);
+    }
+
+    public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default)
+    {
+        SpelledPaths.Add(path);
+
+        return Task.FromResult(SpelledRoot is { } id ? _rows.GetValueOrDefault(id) : null);
     }
 
     public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>

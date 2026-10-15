@@ -106,6 +106,66 @@ public sealed class SanctumCampaignResolutionTests
         Assert.False(nothing.PolicyUnreadable);
     }
 
+    // A surface that names a path in more than one way hands the Campaigns each way names as path claims. They are claims like any other, so
+    // the stricter Sanctum governs, and on a tie they come before the root that contains the working directory.
+    [Fact]
+    public async Task A_path_claim_is_a_claim_that_comes_before_the_root_containing_the_directory_on_a_tie()
+    {
+        Table campaigns = new(Strict(Named), Strict(Contained));
+
+        campaigns.ContainingRoot = Contained;
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            null, null, "/work/app/file.txt", CanonicalCampaignContext.GlobalOnly, [Strict(Named)], RefusingCampaignResolver.Instance, campaigns, Token);
+
+        Assert.Equal(Named, resolved.CampaignId);
+
+        Assert.NotNull(resolved.Loaded);
+
+        Assert.False(resolved.PolicyUnreadable);
+    }
+
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, false)]
+    public async Task The_stricter_of_a_path_claim_and_the_root_containing_the_directory_governs(
+        bool pathClaimIsStrict,
+        bool containedIsStrict,
+        bool expectPathClaim)
+    {
+        Table campaigns = new(containedIsStrict ? Strict(Contained) : AuditOnly(Contained));
+
+        campaigns.ContainingRoot = Contained;
+
+        Campaign pathClaim = pathClaimIsStrict ? Strict(Named) : AuditOnly(Named);
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            null, null, "/work/app/file.txt", CanonicalCampaignContext.GlobalOnly, [pathClaim], RefusingCampaignResolver.Instance, campaigns, Token);
+
+        Assert.Equal(expectPathClaim ? Named : Contained, resolved.CampaignId);
+    }
+
+    [Fact]
+    public async Task A_path_claim_whose_sanctum_cannot_be_read_makes_the_whole_resolution_unreadable()
+    {
+        Campaign unreadable = Strict(Named);
+
+        unreadable.SanctumConfigJson = "{ this is not a sanctum policy";
+
+        Table campaigns = new(Strict(Contained));
+
+        campaigns.ContainingRoot = Contained;
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            null, null, "/work/app/file.txt", CanonicalCampaignContext.GlobalOnly, [unreadable], RefusingCampaignResolver.Instance, campaigns, Token);
+
+        Assert.Equal(Named, resolved.CampaignId);
+
+        Assert.True(resolved.PolicyUnreadable);
+
+        Assert.Null(resolved.Loaded);
+    }
+
     [Fact]
     public async Task An_uninitialised_context_counts_as_no_answer()
     {
