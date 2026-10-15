@@ -68,7 +68,7 @@ public static class LongRestProviderCallFreezer
             }
         }
 
-        LongRestChatRequest request = new(system, user.ToString(), schema, name, description, payload.MaxOutputTokens);
+        LongRestChatRequest request = new(system, user.ToString(), schema, name, description, LongRestPromptLayout.ReservedAnswerTokens);
 
         try
         {

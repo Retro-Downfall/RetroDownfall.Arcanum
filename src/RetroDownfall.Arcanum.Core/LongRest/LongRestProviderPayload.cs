@@ -47,13 +47,6 @@ public sealed class LongRestProviderPayload
         InputBudgetBytes = inputBudgetBytes;
 
         SummaryBoundBytes = summaryBoundBytes;
-
-        MaxOutputTokens = kind switch
-        {
-            LongRestProviderPayloadKind.Summary => LongRestPromptLayout.SummaryMaxOutputTokens(summaryBoundBytes),
-            LongRestProviderPayloadKind.Adjudication => LongRestPromptLayout.ReservedAnswerTokens,
-            _ => 0,
-        };
     }
 
     public LongRestProviderPayloadKind Kind { get; }
@@ -81,16 +74,10 @@ public sealed class LongRestProviderPayload
     public int InputBudgetBytes { get; }
 
     /// <summary>
-    /// For a summary, the most bytes the recipe lets the answer take: the request states it and caps its answer with it
-    /// (<see cref="MaxOutputTokens"/>). Zero for every other kind.
+    /// For a summary, the most bytes the recipe lets the answer take: the request states it. It does not lower the answer's output cap, which
+    /// stays the fixed <see cref="LongRestPromptLayout.ReservedAnswerTokens"/>: a byte bound cannot prove a token count. Zero for every other kind.
     /// </summary>
     public int SummaryBoundBytes { get; }
-
-    /// <summary>
-    /// The output tokens this request's answer is capped at, which is also what the call's admission reserves: derived from the summary
-    /// bound for a summary, the fixed answer reservation for an adjudication, and zero for an embedding, which has no answer.
-    /// </summary>
-    public int MaxOutputTokens { get; }
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 

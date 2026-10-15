@@ -44,13 +44,6 @@ public static class LongRestPromptLayout
     public const int MinimumEmbeddingWindowTokens = ReservedAnswerTokens + (ReservedAnswerTokens * TokenSafetyMarginPercent + 99) / 100 + FramingTokens;
 
     /// <summary>
-    /// The bytes of summary text a chat answer token is assumed to carry when an answer is capped: the code-owned maximum summary
-    /// (<see cref="LongRestDiscoveryLimits.SummaryUtf8Bytes"/>) over the tokens a chat answer reserves (<see cref="ReservedAnswerTokens"/>), so the
-    /// largest bound keeps the largest cap. It is the cap's assumption and not a guarantee: the embedding window gate stays the last guard.
-    /// </summary>
-    public const int AnswerBytesPerToken = LongRestDiscoveryLimits.SummaryUtf8Bytes / ReservedAnswerTokens;
-
-    /// <summary>
     /// The summary bound a recipe gets from the smallest embedding window a recipe may have, which is also the smallest bound a recipe may
     /// carry: <see cref="SummaryBoundUtf8Bytes"/> of <see cref="MinimumEmbeddingWindowTokens"/>.
     /// </summary>
@@ -168,11 +161,17 @@ public static class LongRestPromptLayout
     /// <paramref name="embeddingWindowTokens"/> tokens (Embedding-Bounded Summary): what is left after the framing, divided by the shared token
     /// estimator's worst case, capped at <see cref="LongRestDiscoveryLimits.SummaryUtf8Bytes"/>. A summary of this size, charged at the estimator's
     /// worst case (one token per byte, as for any model it does not know, plus the 15% margin) and its framing, always fits the window, so the
-    /// embedding of an answer that respects the bound is never refused. The summary request states this bound and caps its answer with it
-    /// (<see cref="SummarySystemPromptFor"/>, <see cref="SummaryMaxOutputTokens"/>), and the recipe binds it. A window that is zero or less is one the
-    /// admission does not check, so it keeps the full bound. The window is clamped the way the context-budget check clamps it. Zero when the window
-    /// leaves nothing; a recipe below <see cref="MinimumSummaryUtf8Bytes"/> is never resolved.
+    /// embedding of an answer that respects the bound is never refused. The summary request states this bound (<see cref="SummarySystemPromptFor"/>)
+    /// and the recipe binds it. A window that is zero or less is one the admission does not check, so it keeps the full bound. The window is
+    /// clamped the way the context-budget check clamps it. Zero when the window leaves nothing; a recipe below
+    /// <see cref="MinimumSummaryUtf8Bytes"/> is never resolved.
     /// </summary>
+    /// <remarks>
+    /// The request's output cap is not derived from the bound. A byte bound cannot prove a token count (a byte-level tokenizer needs anywhere from
+    /// a fraction of a token to a whole token per byte), so any cap computed from it would cut off some answer that is within the bound, and a cut
+    /// off answer is invalid JSON that parks the sweep for an operator. The cap stays the fixed <see cref="ReservedAnswerTokens"/>, and the
+    /// embedding window gate stays the last guard for a model that ignores the bound.
+    /// </remarks>
     public static int SummaryBoundUtf8Bytes(int embeddingWindowTokens)
     {
         if (embeddingWindowTokens <= 0)
@@ -201,21 +200,6 @@ public static class LongRestPromptLayout
         }
 
         return SummarySystemPrompt + SummaryBoundHead + summaryBoundBytes.ToString(SummaryBoundFormat, CultureInfo.InvariantCulture) + SummaryBoundTail;
-    }
-
-    /// <summary>
-    /// The output tokens a summary request caps its answer at: the bound over <see cref="AnswerBytesPerToken"/>, rounded up. The largest bound keeps
-    /// <see cref="ReservedAnswerTokens"/>, and a smaller one asks for proportionally fewer, so a model that stays within the cap stays within the bound
-    /// at the ratio the cap assumes. The chat input budget still reserves <see cref="ReservedAnswerTokens"/>, so a smaller cap only adds headroom.
-    /// </summary>
-    public static int SummaryMaxOutputTokens(int summaryBoundBytes)
-    {
-        if (!IsSummaryBound(summaryBoundBytes))
-        {
-            throw new ArgumentOutOfRangeException(nameof(summaryBoundBytes));
-        }
-
-        return (summaryBoundBytes + AnswerBytesPerToken - 1) / AnswerBytesPerToken;
     }
 
     /// <summary>

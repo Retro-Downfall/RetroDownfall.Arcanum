@@ -53,7 +53,7 @@ internal sealed partial class LongRestMaintenance
         LongRestProviderAdmission providerAdmission = payload.Kind == LongRestProviderPayloadKind.Embedding
             ? new LongRestProviderAdmission.Embedding(selected.Provider, selected.Model, selected.Dimensions,
                 estimator.EstimateLongRestEmbedding(selected.Provider, selected.Model, payload).TokenCount, payloadDigest)
-            : new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, payload.MaxOutputTokens, 0,
+            : new LongRestProviderAdmission.Chat(new(selected.Provider, selected.Model, 2048, 0,
                 estimator.EstimateLongRestChat(selected.Provider, selected.Model, payload)));
 
         // Admit-then-Prepare: the deterministic local refusals this layer can see (the rendered size above, the context window here) happen

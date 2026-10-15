@@ -27,7 +27,7 @@ public sealed partial class ModelCallExecutor
 
         if (_tokenEstimator is null || payload.Kind is not (LongRestProviderPayloadKind.Summary or LongRestProviderPayloadKind.Adjudication)
             || admission is not LongRestProviderAdmission.Chat chat || chat.Context.PrecomputedBreakdown is not { } admitted
-            || chat.Context.ReservedAnswerTokens != payload.MaxOutputTokens || chat.Context.ReservedReasoningTokens != 0 || chat.Context.PromptCachePlan is not null)
+            || chat.Context.ReservedAnswerTokens != 2048 || chat.Context.ReservedReasoningTokens != 0 || chat.Context.PromptCachePlan is not null)
         {
             return ClosedLongRestAdmissionError();
         }
