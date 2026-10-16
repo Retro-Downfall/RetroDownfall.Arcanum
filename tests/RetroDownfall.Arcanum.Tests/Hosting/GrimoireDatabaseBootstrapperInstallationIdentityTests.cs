@@ -2,6 +2,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.Extensions.DependencyInjection;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
@@ -23,6 +25,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
+
+using RetroDownfall.Arcanum.Tests.Security;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -193,11 +197,185 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
                 "c0ffee00-1234-4abc-8def-0123456789ab").Status);
 
         GrimoireDatabaseUnavailableException refused =
-            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(BootstrapAsync);
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
 
         Assert.Contains("installation identity", refused.Message, StringComparison.Ordinal);
 
+        // The credential store answered, so telling the operator to unlock or repair it names a cause
+        // that is not there; the value is what is wrong, and the message says so.
+        Assert.Contains("not one canonical identity", refused.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Unlock or repair", refused.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Local Grimoire reinstall", refused.Message, StringComparison.Ordinal);
+
         AssertNothingOfTheGrimoireExists();
+    }
+
+    [Fact]
+    public async Task A_refusal_over_a_damaged_identity_holds_for_every_start_and_changes_nothing()
+    {
+        const string damaged = "c0ffee00-1234-4abc-8def-0123456789ab";
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _store.Set(ArcanumCredentialIdentity.Service, IdentityAccount(), damaged).Status);
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
+
+            AssertNothingOfTheGrimoireExists();
+        }
+
+        // Never repaired, replaced, or removed: the value is the evidence the refusal is about.
+        OsCredentialStoreResult stored = _store.TryGet(ArcanumCredentialIdentity.Service, IdentityAccount());
+
+        Assert.Equal(OsCredentialStoreStatus.Ok, stored.Status);
+
+        Assert.Equal(damaged, stored.Value);
+
+        Assert.Equal(0, _credentials.SetCount(IdentityAccount()));
+    }
+
+    [Fact]
+    public async Task Once_the_damaged_identity_is_removed_the_next_start_creates_a_Grimoire_that_mints_its_own()
+    {
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _store.Set(
+                ArcanumCredentialIdentity.Service,
+                IdentityAccount(),
+                "c0ffee00-1234-4abc-8def-0123456789ab").Status);
+
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _store.Delete(ArcanumCredentialIdentity.Service, IdentityAccount()).Status);
+
+        await BootstrapAsync();
+
+        Assert.NotEqual(Guid.Empty, await ReadDatabaseIdentityAsync());
+
+        Assert.Null(ReadCarried());
+    }
+
+    /// <summary>
+    /// A first start that stopped after it opened the database and before it committed the authority
+    /// row leaves a database file with no row, and the next start still takes the carried identity.
+    /// </summary>
+    /// <remarks>
+    /// Opening the install connection creates the file, so any failure between that open and the
+    /// commit of the core tier strands one. The identity the next start must take then cannot be read
+    /// on the strength of the file's absence, and a start that decided by the file alone would mint a
+    /// different identity from the binding and be refused by every later restore, reset, and offline
+    /// transition, with nothing able to change either side.
+    /// </remarks>
+    [Theory]
+    [InlineData(UnfinishedStart.HostToolsHardBlock)]
+    [InlineData(UnfinishedStart.InstallFailure)]
+    [InlineData(UnfinishedStart.Cancellation)]
+    [InlineData(UnfinishedStart.SchemaRefusal)]
+    public async Task A_database_left_without_an_authority_row_still_takes_the_carried_identity(
+        UnfinishedStart cause)
+    {
+        Guid carried = Guid.Parse("C0FFEE00-1234-4ABC-8DEF-0123456789AB");
+
+        Carry(carried);
+
+        await LeaveDatabaseWithoutAuthorityRowAsync(cause);
+
+        await BootstrapAsync();
+
+        Assert.Equal(carried, await ReadDatabaseIdentityAsync());
+
+        Assert.Equal(carried, ReadCarried());
+
+        // Read, never written.
+        Assert.Equal(0, _credentials.SetCount(IdentityAccount()));
+    }
+
+    [Fact]
+    public async Task A_database_left_without_an_authority_row_in_a_profile_with_no_identity_mints_and_writes_none()
+    {
+        await LeaveDatabaseWithoutAuthorityRowAsync(UnfinishedStart.InstallFailure);
+
+        await BootstrapAsync();
+
+        Assert.NotEqual(Guid.Empty, await ReadDatabaseIdentityAsync());
+
+        Assert.Null(ReadCarried());
+
+        Assert.Equal(0, _credentials.SetCount(IdentityAccount()));
+    }
+
+    [Fact]
+    public async Task A_database_left_without_an_authority_row_is_refused_when_the_carried_identity_cannot_be_read()
+    {
+        Guid carried = Guid.Parse("C0FFEE00-1234-4ABC-8DEF-0123456789AB");
+
+        Carry(carried);
+
+        await LeaveDatabaseWithoutAuthorityRowAsync(UnfinishedStart.InstallFailure);
+
+        _credentials.FailAccount(IdentityAccount(), OsCredentialStoreStatus.Unavailable);
+
+        GrimoireDatabaseUnavailableException refused =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
+
+        Assert.Contains("installation identity", refused.Message, StringComparison.Ordinal);
+
+        Assert.Contains("Unlock or repair", refused.Message, StringComparison.Ordinal);
+
+        // Failing closed means no authority row was minted behind the unreadable binding.
+        await AssertNoAuthorityRowAsync();
+
+        _credentials.ClearFailure(IdentityAccount());
+
+        await BootstrapAsync();
+
+        Assert.Equal(carried, await ReadDatabaseIdentityAsync());
+    }
+
+    [Fact]
+    public async Task A_database_left_without_an_authority_row_is_refused_when_the_carried_identity_is_damaged()
+    {
+        await LeaveDatabaseWithoutAuthorityRowAsync(UnfinishedStart.InstallFailure);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _store.Set(
+                ArcanumCredentialIdentity.Service,
+                IdentityAccount(),
+                "c0ffee00-1234-4abc-8def-0123456789ab").Status);
+
+        GrimoireDatabaseUnavailableException refused =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
+
+        Assert.Contains("not one canonical identity", refused.Message, StringComparison.Ordinal);
+
+        await AssertNoAuthorityRowAsync();
+    }
+
+    [Fact]
+    public async Task A_database_that_already_has_an_authority_row_keeps_it_whatever_the_profile_now_carries()
+    {
+        await LeaveDatabaseWithoutAuthorityRowAsync(UnfinishedStart.InstallFailure);
+
+        await BootstrapAsync();
+
+        Guid own = await ReadDatabaseIdentityAsync();
+
+        Carry(Guid.Parse("C0FFEE00-1234-4ABC-8DEF-0123456789AB"));
+
+        int readsBefore = _credentials.TryGetCount(IdentityAccount());
+
+        await BootstrapAsync();
+
+        Assert.Equal(readsBefore, _credentials.TryGetCount(IdentityAccount()));
+
+        Assert.Equal(own, await ReadDatabaseIdentityAsync());
     }
 
     [Fact]
@@ -249,7 +427,7 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         _credentials.FailAccount(IdentityAccount(), status);
 
         GrimoireDatabaseUnavailableException refused =
-            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(BootstrapAsync);
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
 
         Assert.Contains("installation identity", refused.Message, StringComparison.Ordinal);
 
@@ -265,7 +443,7 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
         _credentials.FailAccount(IdentityAccount(), OsCredentialStoreStatus.Unavailable);
 
-        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(BootstrapAsync);
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
 
         // Had the refused start written a salt or opened a connection, the next one would find a
         // database file or a sidecar and take the existing-Grimoire path, which mints no identity.
@@ -278,7 +456,113 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         Assert.Equal(carried, await ReadDatabaseIdentityAsync());
     }
 
-    private async Task BootstrapAsync()
+    /// <summary>
+    /// Why a first start stopped after it opened the database and before the core tier committed.
+    /// </summary>
+    public enum UnfinishedStart
+    {
+        HostToolsHardBlock,
+
+        InstallFailure,
+
+        Cancellation,
+
+        SchemaRefusal,
+    }
+
+    /// <summary>
+    /// Runs a first start that fails for <paramref name="cause"/> after the database file exists, and
+    /// proves it left a database with no authority row behind.
+    /// </summary>
+    private async Task LeaveDatabaseWithoutAuthorityRowAsync(UnfinishedStart cause)
+    {
+        switch (cause)
+        {
+            case UnfinishedStart.HostToolsHardBlock:
+                _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync(
+                    ScopeFactory(static services =>
+                    {
+                        HostProcessToolsRuntimePolicy policy = new();
+
+                        services.AddSingleton(policy);
+
+                        services.AddSingleton<IHostProcessToolsRuntimePolicy>(policy);
+
+                        services.AddSingleton<IHostProcessToolsMarkerStore>(
+                            new FakeHostProcessToolsMarkerStore
+                            {
+                                ReadStatusOverride = HostProcessToolsMarkerReadStatus.Malformed,
+                            });
+
+                        services.AddSingleton<IHostProcessToolsEnvironmentProbe>(
+                            new FakeHostProcessToolsEnvironmentProbe
+                            {
+                                Edition = ArcanumEdition.Local,
+                                EscapeHatchOptIn = false,
+                            });
+                    })));
+
+                break;
+
+            case UnfinishedStart.InstallFailure:
+                _ = await Assert.ThrowsAsync<IOException>(() => BootstrapAsync(
+                    ScopeFactory(static services =>
+                        services.AddSingleton<GrimoireSchemaInstaller>(
+                            static _ => throw new IOException("The disk failed before the core tier committed.")))));
+
+                break;
+
+            case UnfinishedStart.Cancellation:
+                using (CancellationTokenSource cancellation = new())
+                {
+                    _ = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => BootstrapAsync(
+                        ScopeFactory(services =>
+                            services.AddSingleton(sp =>
+                            {
+                                // The host is stopping as the installer is about to run.
+                                cancellation.Cancel();
+
+                                return new GrimoireSchemaInstaller(
+                                    sp.GetRequiredService<GrimoireSchemaManifestInspector>(),
+                                    sp.GetRequiredService<GrimoireSchemaDataInitializers>(),
+                                    sp.GetRequiredService<GrimoireSchemaVersionChainSet>(),
+                                    sp.GetRequiredService<TimeProvider>());
+                            })),
+                        cancellation.Token));
+                }
+
+                break;
+
+            case UnfinishedStart.SchemaRefusal:
+                // The first start stops, so the database exists with the key it was created under and no
+                // schema. An object of the wrong shape is then in the way of the core tier, which the
+                // tier refuses to converge over.
+                _ = await Assert.ThrowsAsync<IOException>(() => BootstrapAsync(
+                    ScopeFactory(static services =>
+                        services.AddSingleton<GrimoireSchemaInstaller>(
+                            static _ => throw new IOException("The disk failed before the core tier committed.")))));
+
+                await CreateIncompatibleCoreObjectAsync();
+
+                _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync());
+
+                await RemoveIncompatibleCoreObjectAsync();
+
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(cause), cause, null);
+        }
+
+        // Not vacuous: the file the failed start opened is still there, and it holds no authority row.
+        Assert.True(File.Exists(_database));
+
+        await AssertNoAuthorityRowAsync();
+    }
+
+    private async Task BootstrapAsync(
+        IServiceScopeFactory? scopes = null,
+        CancellationToken cancellationToken = default)
     {
         using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
             ArcanumMaintenanceLock.TryAcquire(_grimoire));
@@ -286,15 +570,15 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         await GrimoireDatabaseBootstrapper.EnsureInitializedAsync(
             _secrets,
             _passphrase,
-            ScopeFactory(),
+            scopes ?? ScopeFactory(),
             _database,
             _grimoire,
             held,
             expectedInstallationId: null,
-            CancellationToken.None);
+            cancellationToken);
     }
 
-    private IServiceScopeFactory ScopeFactory()
+    private IServiceScopeFactory ScopeFactory(Action<IServiceCollection>? configure = null)
     {
         ServiceCollection services = new();
 
@@ -307,9 +591,75 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
         _ = services.AddGrimoireSchemaInstallation();
 
+        configure?.Invoke(services);
+
         return services
             .BuildServiceProvider()
             .GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private async Task AssertNoAuthorityRowAsync()
+    {
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _database,
+            Password = _passphrase.Passphrase,
+            Pooling = false,
+        }.ToString());
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand tables = connection.CreateCommand();
+
+        tables.CommandText =
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'covenant_authority_state';";
+
+        if (Convert.ToInt64(await tables.ExecuteScalarAsync()) == 0)
+        {
+            return;
+        }
+
+        await using SqliteCommand rows = connection.CreateCommand();
+
+        rows.CommandText = "SELECT COUNT(*) FROM covenant_authority_state;";
+
+        Assert.Equal(0L, Convert.ToInt64(await rows.ExecuteScalarAsync()));
+    }
+
+    private async Task CreateIncompatibleCoreObjectAsync()
+    {
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _database,
+            Password = _passphrase.Passphrase,
+            Pooling = false,
+        }.ToString());
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand create = connection.CreateCommand();
+
+        create.CommandText = "CREATE TABLE \"Entries\" (\"Unrelated\" TEXT);";
+
+        _ = await create.ExecuteNonQueryAsync();
+    }
+
+    private async Task RemoveIncompatibleCoreObjectAsync()
+    {
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _database,
+            Password = _passphrase.Passphrase,
+            Pooling = false,
+        }.ToString());
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand drop = connection.CreateCommand();
+
+        drop.CommandText = "DROP TABLE IF EXISTS \"Entries\";";
+
+        _ = await drop.ExecuteNonQueryAsync();
     }
 
     private void AssertNothingOfTheGrimoireExists()

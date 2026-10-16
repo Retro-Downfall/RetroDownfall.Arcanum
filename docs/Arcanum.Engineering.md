@@ -546,14 +546,14 @@ The current canonical schema requires recreation of any database whose `Entries`
 | Config directory | `arcanum.db`, `arcanum.db-wal`, `arcanum.db-shm` | These are the database and its write-ahead sidecars. |
 | Config directory | `arcanum.db.kdf`, `arcanum.db.kdf.pending` | The sidecar holds the key-derivation salt. A new database created beside a surviving sidecar is keyed from the **old** salt and the **old** dedicated secret instead of fresh ones, so it is not a reinstall at all. The pending file is the salt of an interrupted upgrade of the old database and means nothing to the new one. |
 | Config directory | `attachments/`, `files/` | These hold encrypted blobs that only the old database's rows name. An empty new database names none of them: the one-shot attachment reconciliation at the first start deletes the unreferenced attachment blobs, and the uploads under `files/` are left unreachable. |
-| Config directory | `cli-context.json` | The CLI's remembered Campaign, Session, and Model references name rows that only the old database holds. |
+| Config directory | `cli-context.json`, `cli-session.txt`, `recent-resources.txt` | The CLI's remembered Campaign, Session, and Model references name rows that only the old database holds. `cli-session.txt` is the last-Session mirror the CLI still falls back to when `cli-context.json` is absent, so moving only `cli-context.json` leaves it pointing at a Session the new database has never heard of, and `recent-resources.txt` orders the picker by resource IDs the old database owned. |
 | Secret-store directory | `grimoire-key.dat` | This is the dedicated secret the old database is keyed from. A new database generates a fresh one and overwrites this file, after which the old database cannot be opened again. |
 
 The config directory is `~/.config/arcanum` on every platform (`%USERPROFILE%\.config\arcanum` on Windows). The secret-store directory is `~/Library/Application Support/arcanum` on macOS, `%APPDATA%\arcanum` on Windows, and `$XDG_CONFIG_HOME/arcanum` (default `~/.config/arcanum`) on Linux, so on macOS and Windows `grimoire-key.dat` is **not** beside `arcanum.db`.
 
 Two things are deliberately **not** moved. The Data Protection key ring, `keys/` under the config directory, wraps every encrypted secret mirror in the secret-store directory (`security.dat`, `grimoire-key.dat`, `file-encryption-key.dat`, and the provider and web-research mirrors); moving it would leave every mirror that stays undecryptable. And the mirrors other than `grimoire-key.dat` — the master API key and the file-encryption key — are independent of the database and are reused by the new one. Copy `keys/` and every mirror before moving anything, so a mistake can be undone, and never move the ring or those mirrors.
 
-Stop every Arcanum host and daemon first, and create and verify a `.arcbackup` of anything that must be preserved. Then move the binding set aside as one unit, to a directory on the same volume so each move is a rename. `mv -n` and `Move-Item` without `-Force` refuse to overwrite, so a second run cannot clobber an earlier set.
+Stop every Arcanum host and daemon first, and create and verify a `.arcbackup` of anything that must be preserved. Make sure no factory reset, backup restore, or offline Grimoire transition is active, and if one is, resume it to completion before you move anything: each holds recovery evidence that names the database and key material being moved, so a start that finds them gone under an unfinished one either finishes it against files that are no longer there or refuses (an active reset's recovery host will not create a database it finds missing). A host start that reports an active reset, restore, or transition has found one. Then move the binding set aside as one unit, to a directory on the same volume so each move is a rename. `mv -n` and `Move-Item` without `-Force` refuse to overwrite, so a second run cannot clobber an earlier set.
 
 macOS/Linux (Bash):
 
@@ -579,7 +579,7 @@ for mirror in "$secrets"/*.dat; do
 done
 
 # Move the whole binding set aside.
-for item in arcanum.db arcanum.db-wal arcanum.db-shm arcanum.db.kdf arcanum.db.kdf.pending attachments files cli-context.json; do
+for item in arcanum.db arcanum.db-wal arcanum.db-shm arcanum.db.kdf arcanum.db.kdf.pending attachments files cli-context.json cli-session.txt recent-resources.txt; do
   if [ -e "$config/$item" ]; then mv -n -- "$config/$item" "$aside/config/"; fi
 done
 
@@ -606,7 +606,7 @@ Get-ChildItem -Path $secrets -Filter '*.dat' -File -ErrorAction SilentlyContinue
   Copy-Item -Destination (Join-Path $aside 'copies')
 
 # Move the whole binding set aside.
-foreach ($item in 'arcanum.db', 'arcanum.db-wal', 'arcanum.db-shm', 'arcanum.db.kdf', 'arcanum.db.kdf.pending', 'attachments', 'files', 'cli-context.json') {
+foreach ($item in 'arcanum.db', 'arcanum.db-wal', 'arcanum.db-shm', 'arcanum.db.kdf', 'arcanum.db.kdf.pending', 'attachments', 'files', 'cli-context.json', 'cli-session.txt', 'recent-resources.txt') {
   $path = Join-Path $config $item
   if (Test-Path -LiteralPath $path) { Move-Item -LiteralPath $path -Destination (Join-Path $aside 'config') }
 }
@@ -618,6 +618,8 @@ if (Test-Path -LiteralPath $key) { Move-Item -LiteralPath $key -Destination (Joi
 Start Arcanum. It creates a new database, a new salt, and a new dedicated Grimoire secret. To undo, stop every host, move the new set out of the way the same way, and move the saved items back to the directories they came from, with `grimoire-key.dat` returning to the secret-store directory. A saved database restores only together with its own `.kdf`, `grimoire-key.dat`, `attachments/`, and `files/`; mixing a saved database with a new salt or secret fails closed.
 
 The profile's restore-journal installation identity lives in the operating-system credential store, not in these files, and it does not need to be touched: a Grimoire created while the profile carries one takes that identity as its own, so a later restore, installation reset, or Covenant reset is not refused for naming a different installation. Only an externally attested full installation reset removes it ([DESIGN §10.19.6](Arcanum.DESIGN.md#10196-the-authenticated-v2-restore-journal-and-its-anti-rollback-anchor)).
+
+If startup instead refuses with "This profile's installation identity is not one canonical identity", the stored value itself is damaged, and unlocking or repairing the credential store does not change it. Arcanum never repairs, replaces, or removes that value, and it creates no Grimoire while the value stands, so the move-aside procedure above changes nothing and every start repeats the refusal ([DESIGN §10.19.13](Arcanum.DESIGN.md#101913-what-is-deliberately-absent)). The attested full installation reset is the one place Arcanum removes the item itself, but that reset names the installation from a Grimoire database row, and a profile in this state has none to read. The operator removes the one item instead, by hand, once and only after confirming that its value is not a canonical identity (an uppercase UUID in the `D` format, for example `0A1B2C3D-4E5F-4A6B-8C7D-8E9F0A1B2C3D`). A valid identity is never removed this way, and none may be removed while a restore, reset, or offline transition is unfinished. The item is the generic credential at service `arcanum` with the account `backup-restore-journal-installation-` followed by the profile's 64-character namespace digest. Search for that prefix: on macOS in Keychain Access, or read a candidate with `security find-generic-password -s arcanum -a <account> -w` and remove the damaged one with `security delete-generic-password -s arcanum -a <account>`; on Windows, delete the generic credential `arcanum/<account>` in Credential Manager. More than one result means more than one profile root has used this machine, and only the damaged one goes. The next start then behaves as a profile that carries no identity: it mints one for its database and writes none.
 
 There is intentionally no data migration or EF-model regeneration for the raw-SQL accounting tables. See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency) and [§22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumcost).
 

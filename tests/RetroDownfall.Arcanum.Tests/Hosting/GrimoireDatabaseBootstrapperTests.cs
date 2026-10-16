@@ -2723,8 +2723,9 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         // The database the host will open: it takes the canonical leaf under the directory it is
         // given. A database anywhere else is one the host never sees, and a host that finds none
-        // creates its own — which now takes the installation identity the profile already carries,
-        // so the disagreement this case needs would not exist at all.
+        // under an active reset refuses to create one (the absent-database case below), so this case
+        // needs the disagreement to be between the row of the database the host does open and the
+        // identity the active envelope names.
         string hostDatabase = Path.Combine(
             _tempDir,
             Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
@@ -2746,20 +2747,7 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         Assert.NotEqual(databaseInstallationId, activeInstallationId);
 
-        InstallationResetActiveStore store = new(_tempDir, _credentialStore);
-
-        using (ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
-                   ArcanumMaintenanceLock.TryAcquire(_tempDir)))
-        {
-            _ = Value(await store.BeginAsync(
-                held,
-                activeInstallationId,
-                CreateResetActiveRecord(
-                    InstallationResetScope.Global,
-                    InstallationResetPhase.Prepared,
-                    InstallationResetDataHandoff.HostFactoryErasure),
-                CancellationToken.None));
-        }
+        InstallationResetActiveStore store = await BeginHostFactoryErasureResetAsync(activeInstallationId);
 
         IServiceScopeFactory hostScopes = CreateScopeFactory(
             _credentialStore,
@@ -2768,7 +2756,124 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         InstallationResetApiAdmission admission = new();
 
-        GrimoireDatabaseHostedService service = new(
+        GrimoireDatabaseHostedService service = CreateActiveResetHost(store, hostScopes, admission);
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.DoesNotContain(
+            activeInstallationId.ToString("D"),
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        AssertRecoveryHostRefusedBeforeReadiness(hostScopes, admission);
+    }
+
+    /// <summary>
+    /// An active reset names the installation whose database it is resuming, so a host that finds that
+    /// database missing has nothing to verify and must not make one.
+    /// </summary>
+    /// <remarks>
+    /// The reset's active binding is seeded from the envelope's own installation identity, and a new
+    /// Grimoire takes the identity the profile carries. A recovery host that created an empty database
+    /// here would therefore give it exactly the identity the envelope names, the comparison would pass,
+    /// and recovery would be published over a database that holds none of the installation's data. The
+    /// refusal is made before the passphrase is resolved, so it also writes no salt or dedicated secret.
+    /// </remarks>
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task StartAsync_refuses_an_active_reset_whose_database_is_absent_and_creates_nothing(
+        bool otherDatabaseExists,
+        bool escapeHatchOptIn)
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        if (otherDatabaseExists)
+        {
+            // The original shape of the case above: a database at a path the host never opens, so the
+            // host finds none at its own.
+            await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
+                _secretStore,
+                new GrimoireDbPassphraseSource(),
+                CreateScopeFactory(_credentialStore),
+                _dbPath,
+                _tempDir,
+                CancellationToken.None);
+        }
+
+        string? dedicatedBefore = _secretStore.DedicatedSecret;
+
+        Assert.Equal(otherDatabaseExists, dedicatedBefore is not null);
+
+        Guid activeInstallationId = Guid.Parse(
+            "81515151-5151-4151-8151-515151515151");
+
+        InstallationResetActiveStore store = await BeginHostFactoryErasureResetAsync(activeInstallationId);
+
+        IServiceScopeFactory hostScopes = CreateScopeFactory(
+            _credentialStore,
+            includeHostProcessTools: true,
+            escapeHatchOptIn);
+
+        InstallationResetApiAdmission admission = new();
+
+        GrimoireDatabaseHostedService service = CreateActiveResetHost(store, hostScopes, admission);
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.DoesNotContain(
+            activeInstallationId.ToString("D"),
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        string hostDatabase = Path.Combine(
+            _tempDir,
+            Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
+
+        foreach (string suffix in (string[])["", "-wal", "-shm", ".kdf", ".kdf.pending"])
+        {
+            Assert.False(
+                File.Exists(hostDatabase + suffix),
+                $"The refused recovery host created {Path.GetFileName(hostDatabase)}{suffix}.");
+        }
+
+        // A new database would have generated a dedicated secret and overwritten the stored one.
+        Assert.Equal(dedicatedBefore, _secretStore.DedicatedSecret);
+
+        AssertRecoveryHostRefusedBeforeReadiness(hostScopes, admission);
+    }
+
+    private async Task<InstallationResetActiveStore> BeginHostFactoryErasureResetAsync(
+        Guid activeInstallationId)
+    {
+        InstallationResetActiveStore store = new(_tempDir, _credentialStore);
+
+        using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(_tempDir));
+
+        _ = Value(await store.BeginAsync(
+            held,
+            activeInstallationId,
+            CreateResetActiveRecord(
+                InstallationResetScope.Global,
+                InstallationResetPhase.Prepared,
+                InstallationResetDataHandoff.HostFactoryErasure),
+            CancellationToken.None));
+
+        return store;
+    }
+
+    private GrimoireDatabaseHostedService CreateActiveResetHost(
+        InstallationResetActiveStore store,
+        IServiceScopeFactory hostScopes,
+        InstallationResetApiAdmission admission) =>
+        new(
             hostScopes,
             _secretStore,
             new GrimoireDbPassphraseSource(),
@@ -2782,15 +2887,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
                     GrimoireOfflineTransitionHandlerRegistry.Production)),
             admission);
 
-        GrimoireDatabaseUnavailableException error =
-            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
-                service.StartAsync(CancellationToken.None));
-
-        Assert.DoesNotContain(
-            activeInstallationId.ToString("D"),
-            error.Message,
-            StringComparison.OrdinalIgnoreCase);
-
+    private static void AssertRecoveryHostRefusedBeforeReadiness(
+        IServiceScopeFactory hostScopes,
+        InstallationResetApiAdmission admission)
+    {
         using IServiceScope scope = hostScopes.CreateScope();
 
         GrimoireDbReadiness readiness =
@@ -3720,6 +3820,38 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             "CheckpointOnShutdownAsync opens a SQLCipher connection on a path that never installs "
             + "the provider, so a host that shuts down without having opened the Grimoire fails with "
             + "a raw provider error instead of the typed one.");
+    }
+
+    /// <summary>
+    /// A recovery message that tells the operator to remove the database alone, or that puts the whole
+    /// Grimoire under one directory, contradicts the reinstall procedure and sends them to a state worse
+    /// than the one they are in.
+    /// </summary>
+    /// <remarks>
+    /// An inventory over the source, because these messages are logged on paths no unit test can reach
+    /// without destroying key material. The procedure moves the whole binding set (the database and its
+    /// sidecars, the salt, the blobs, the CLI state files, and the dedicated secret, which on macOS and
+    /// Windows lives in the secret-store directory rather than beside the database), so none of them may
+    /// say otherwise.
+    /// </remarks>
+    [Theory]
+    [InlineData("src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseBootstrapper.cs")]
+    [InlineData("src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/GrimoireSchemaInstaller.cs")]
+    [InlineData("src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs")]
+    public void Recovery_guidance_never_tells_the_operator_to_remove_the_database_alone(string relativePath)
+    {
+        ProductionSource source = ProductionSourceInventory.Sources().Single(
+            candidate => candidate.IsExactOwner(relativePath));
+
+        foreach (string stale in (string[])
+                 [
+                     "delete arcanum.db",
+                     "moving arcanum.db and",
+                     "the Grimoire .db under ~/.config/arcanum/",
+                 ])
+        {
+            Assert.DoesNotContain(stale, source.Text, StringComparison.Ordinal);
+        }
     }
 
     private static ActiveInstallationReset CreateHostRecoveryActive(

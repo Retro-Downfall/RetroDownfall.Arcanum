@@ -443,8 +443,11 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
 
         string otherDirectory = Path.Combine(_root, "not-the-guarded-root");
 
-        _ = Assert.ThrowsAny<Exception>(() =>
+        // The lock proves it guards one path, and AssertHeldFor refuses every other with this type.
+        InvalidOperationException refused = Assert.Throws<InvalidOperationException>(() =>
             identities.ReadForNewDatabase(_lock, otherDirectory, profile));
+
+        Assert.Contains("guards a different control path", refused.Message, StringComparison.Ordinal);
     }
 
     // ---------------------------------------------------------------- envelope authentication

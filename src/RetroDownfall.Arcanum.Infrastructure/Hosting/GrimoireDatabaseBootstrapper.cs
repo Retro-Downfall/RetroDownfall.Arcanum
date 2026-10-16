@@ -265,15 +265,8 @@ public static class GrimoireDatabaseBootstrapper
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(grimoireDirectory);
 
-        // Before the passphrase is resolved and before any connection exists: a new Grimoire writes its
-        // salt and its dedicated secret and then creates the database file, and a start that stopped
-        // after any of those would leave the next one looking at a profile that already has a database.
-        Guid? adoptedInstallationId = await ReadAdoptableInstallationIdentityAsync(
-            scopeFactory,
-            heldInstallationLock,
-            dbPath,
-            grimoireDirectory).ConfigureAwait(false);
-
+        // The master key is resolved first, as it always has been: an absent key stops a start with its
+        // own exception before either check below is considered.
         string? apiKey = bootstrappedKey?.ApiKey;
 
         if (apiKey is null)
@@ -286,6 +279,43 @@ public static class GrimoireDatabaseBootstrapper
             Log.Fatal("Grimoire startup aborted: master API key is not present. Persist a key before enabling the database.");
 
             throw new MissingMasterApiKeyException();
+        }
+
+        if (expectedInstallationId is not null && !File.Exists(dbPath))
+        {
+            // After the topology passes above, which are the only things that can put the database
+            // back, and before the passphrase is resolved or any connection exists. An active reset
+            // names the installation whose database it is resuming, so a missing database leaves
+            // nothing to verify. Creating one here would give it exactly that identity, because the
+            // reset's binding was seeded from the envelope, and the comparison against it would pass.
+            Log.Fatal(
+                "Grimoire startup aborted: an installation reset is active, but the Grimoire database it must "
+                + "verify is not present at {DbPath}. Arcanum will not create a database under an active reset.",
+                dbPath);
+
+            throw new GrimoireDatabaseUnavailableException(
+                "An installation reset is active, but the Grimoire database it belongs to is missing. "
+                + "Arcanum will not create a new database while the reset is unfinished. See logs for recovery steps.");
+        }
+
+        Guid? adoptedInstallationId = null;
+
+        bool bindingRead = false;
+
+        // A start that finds no database file creates the Grimoire, so the binding is read now: the read
+        // precedes OpenAsync so that a refused read leaves no database file behind (and, being before the
+        // passphrase is resolved, no new salt or dedicated secret either). A start that finds a file
+        // reads nothing yet, because a file says nothing about its authority row: opening the install
+        // connection creates it, and an unfinished first start strands one with no row. That case is
+        // decided after the file is opened, below.
+        if (heldInstallationLock is not null && !File.Exists(dbPath))
+        {
+            adoptedInstallationId = await ReadAdoptableInstallationIdentityAsync(
+                scopeFactory,
+                heldInstallationLock,
+                grimoireDirectory).ConfigureAwait(false);
+
+            bindingRead = true;
         }
 
         string passphrase = await ResolveGrimoirePassphraseAsync(secretStore, apiKey, dbPath, cancellationToken).ConfigureAwait(false);
@@ -355,6 +385,19 @@ public static class GrimoireDatabaseBootstrapper
                 installConnection,
                 scopeFactory,
                 cancellationToken).ConfigureAwait(false);
+
+        // Before the schema installs and the row is written. The file existed when this start began, so
+        // its presence proves nothing about its authority row; the row's own absence is what means the
+        // identity is still to be chosen, and an existing row is never read past or replaced.
+        if (heldInstallationLock is not null
+            && !bindingRead
+            && !await AuthorityRowExistsAsync(installConnection, cancellationToken).ConfigureAwait(false))
+        {
+            adoptedInstallationId = await ReadAdoptableInstallationIdentityAsync(
+                scopeFactory,
+                heldInstallationLock,
+                grimoireDirectory).ConfigureAwait(false);
+        }
 
         await InstallSchemaAsync(
             installConnection,
@@ -1316,29 +1359,26 @@ public static class GrimoireDatabaseBootstrapper
     /// different one would be refused by all three from its first start, with nothing able to change
     /// either side. Taking the identity is therefore the only birth that leaves the profile usable.
     ///
-    /// <para>It is read only when this start creates the database, under the installation lock, and
-    /// never written: an ordinary start of an existing Grimoire touches the credential store no more
-    /// than it did, and a profile that carries no identity mints a fresh one and still writes none —
-    /// seeding stays with the restore and the authenticated reset publication (§10.19.6). A value that
-    /// exists and cannot be read as one canonical identity stops the start. Minting over it would
-    /// silently replace the binding it exists to hold.</para>
+    /// <para>It is read only by a start that is about to give a database its authority row, under the
+    /// installation lock, and never written: an ordinary start of an existing Grimoire touches the
+    /// credential store no more than it did, and a profile that carries no identity mints a fresh one
+    /// and still writes none — seeding stays with the restore and the authenticated reset publication
+    /// (§10.19.6). A value that exists and cannot be read as one canonical identity stops the start.
+    /// Minting over it would silently replace the binding it exists to hold, so no database is created
+    /// until the value is canonical or gone (§10.19.13).</para>
     ///
-    /// <para>The caller reads it before the start writes the new salt or dedicated secret and before
-    /// any connection exists. A start that stopped at this read therefore leaves nothing behind that
-    /// would make the next one look like it was starting an existing Grimoire, which is the one
-    /// circumstance in which the identity is not taken.</para>
+    /// <para>The start that finds no database file reads it before the passphrase is resolved and
+    /// before any connection exists, so a read that stops that start leaves no file, salt, or
+    /// dedicated secret behind. The start that finds a file reads it only when the file has no
+    /// authority row (<see cref="AuthorityRowExistsAsync"/>), because the file is created by opening
+    /// the install connection and an unfinished first start strands one. Whether a database
+    /// exists is not the question; whether its row does is.</para>
     /// </remarks>
     private static async Task<Guid?> ReadAdoptableInstallationIdentityAsync(
         IServiceScopeFactory scopeFactory,
-        ArcanumMaintenanceLock? heldInstallationLock,
-        string dbPath,
+        ArcanumMaintenanceLock heldInstallationLock,
         string grimoireDirectory)
     {
-        if (heldInstallationLock is null || File.Exists(dbPath))
-        {
-            return null;
-        }
-
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
         if (scope.ServiceProvider.GetService<IOsCredentialStore>() is not { } credentials)
@@ -1349,24 +1389,47 @@ public static class GrimoireDatabaseBootstrapper
         Result<BackupRestoreProfileNamespace> profile =
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(grimoireDirectory);
 
-        Result<Guid?> adopted = profile.IsFailure
-            ? Result<Guid?>.Failure(profile.Error)
-            : new BackupRestoreJournalInstallationIdentityProvider(credentials).ReadForNewDatabase(
-                heldInstallationLock,
-                grimoireDirectory,
-                profile.Value);
+        if (profile.IsFailure)
+        {
+            Log.Fatal(
+                "Grimoire startup aborted: this profile's root could not be resolved, so its installation "
+                + "identity cannot be located. {Code}",
+                profile.Error.Code);
+
+            throw new GrimoireDatabaseUnavailableException(
+                "This profile's installation identity could not be located because the profile root could "
+                + "not be resolved safely, so Arcanum cannot create its Grimoire. " + profile.Error.Message);
+        }
+
+        Result<Guid?> adopted = new BackupRestoreJournalInstallationIdentityProvider(credentials)
+            .ReadForNewDatabase(heldInstallationLock, grimoireDirectory, profile.Value);
 
         if (adopted.IsFailure)
         {
+            // A value the store answered with and that is not one canonical identity is a different
+            // failure from a store that did not answer, and it has a different remedy. Telling the
+            // operator to unlock a store that is open would send them after a cause that is not there.
+            bool damaged = adopted.Error.Code == ErrorCodes.Covenant.IntegrityFailure;
+
             Log.Fatal(
-                "Grimoire startup aborted: this profile's installation identity could not be read, so a new "
-                + "Grimoire cannot be bound to it. {Code}",
+                damaged
+                    ? "Grimoire startup aborted: this profile's installation identity is present in the "
+                        + "operating-system credential store but is not one canonical identity. Arcanum "
+                        + "will not create a Grimoire that would replace it. {Code}"
+                    : "Grimoire startup aborted: this profile's installation identity could not be read, "
+                        + "so a new Grimoire cannot be bound to it. {Code}",
                 adopted.Error.Code);
 
             throw new GrimoireDatabaseUnavailableException(
-                "This profile's installation identity could not be read, so Arcanum cannot create its "
-                + "Grimoire. Unlock or repair the operating-system credential store and start again. "
-                + adopted.Error.Message);
+                damaged
+                    ? "This profile's installation identity is not one canonical identity, so Arcanum "
+                        + "will not create a Grimoire that would replace it. Nothing was created. The "
+                        + "operating-system credential store answered, so unlocking or repairing it will "
+                        + "not help; see docs/Arcanum.Engineering.md, \"Local Grimoire reinstall\", for the "
+                        + "recovery. " + adopted.Error.Message
+                    : "This profile's installation identity could not be read, so Arcanum cannot create its "
+                        + "Grimoire. Unlock or repair the operating-system credential store and start again. "
+                        + adopted.Error.Message);
         }
 
         if (adopted.Value is not null)
@@ -1376,6 +1439,36 @@ public static class GrimoireDatabaseBootstrapper
         }
 
         return adopted.Value;
+    }
+
+    /// <summary>
+    /// Whether the database on this connection already holds its authority row.
+    /// </summary>
+    /// <remarks>
+    /// The core tier inserts the row inside the transaction that creates the tier, so a database
+    /// either has it or never finished its first install. The table may not exist yet, which is the
+    /// same answer as an empty one. Any row counts: what a row holds is the initializer's to judge, and
+    /// the identity of an existing row is never replaced (§10.19.13).
+    /// </remarks>
+    private static async Task<bool> AuthorityRowExistsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand tables = connection.CreateCommand();
+
+        tables.CommandText =
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'covenant_authority_state' LIMIT 1;";
+
+        if (await tables.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is null)
+        {
+            return false;
+        }
+
+        await using SqliteCommand rows = connection.CreateCommand();
+
+        rows.CommandText = "SELECT 1 FROM covenant_authority_state LIMIT 1;";
+
+        return await rows.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
     }
 
     private static async Task<string> ResolveGrimoirePassphraseAsync(
@@ -1443,7 +1536,7 @@ public static class GrimoireDatabaseBootstrapper
                 + "It holds the only copy of the salt the database was keyed with, so the Grimoire cannot be opened without it. "
                 + "Restore arcanum.db.kdf from backup alongside the arcanum.db it belongs to, "
                 + "run 'arcanum backup restore' against a verified .arcbackup generation, "
-                + "or reset the Grimoire (delete arcanum.db and arcanum.db.kdf under ~/.config/arcanum/) to start fresh — session data is otherwise unrecoverable.",
+                + "or " + StartFreshGuidance + " to start fresh — session data is otherwise unrecoverable.",
                 GrimoireKdfSidecarFile.GetSidecarPath(dbPath),
                 ex.Message);
 
@@ -1614,7 +1707,8 @@ public static class GrimoireDatabaseBootstrapper
             Log.Fatal(
                 "Grimoire encryption secret store is present but cannot be decrypted ({Message}). "
                 + "The Data Protection key that sealed grimoire-key.dat is missing from ~/.config/arcanum/keys/. "
-                + "Restore the matching key-*.xml from backup, or reset the Grimoire (delete arcanum.db, arcanum.db.kdf under ~/.config/arcanum/, and grimoire-key.dat under the Application Support arcanum folder) to start fresh — session data is otherwise unrecoverable.",
+                + "Restore the matching key-*.xml from backup, or " + StartFreshGuidance
+                + " to start fresh — session data is otherwise unrecoverable.",
                 dedicated.Message ?? "unknown");
 
             throw new GrimoireDatabaseUnavailableException(
@@ -1642,7 +1736,8 @@ public static class GrimoireDatabaseBootstrapper
             "Grimoire encryption secret grimoire-key.dat is missing while a KDF sidecar exists. "
             + "The database was keyed from the dedicated Grimoire secret, not the master API key, so it cannot be opened without it. "
             + "Restore grimoire-key.dat (it lives under the Application Support arcanum folder on macOS/Windows, not beside arcanum.db) together with the matching key-*.xml from ~/.config/arcanum/keys/, "
-            + "run 'arcanum backup restore' against a verified .arcbackup generation, or reset the Grimoire (delete arcanum.db and arcanum.db.kdf) to start fresh — session data is otherwise unrecoverable.");
+            + "run 'arcanum backup restore' against a verified .arcbackup generation, or " + StartFreshGuidance
+            + " to start fresh — session data is otherwise unrecoverable.");
 
         throw new GrimoireDatabaseUnavailableException(
             "Arcanum Grimoire encryption secret (grimoire-key.dat) is missing. See logs for recovery steps.");
@@ -1689,6 +1784,19 @@ public static class GrimoireDatabaseBootstrapper
     private const int SqliteCorrupt = 11;
 
     private const int SqliteNotADatabase = 26;
+
+    /// <summary>
+    /// The one description of starting fresh that the recovery logs use. Removing the database alone
+    /// leaves a new one keyed from the old salt and dedicated secret and standing on blobs only the
+    /// old rows name, so the instruction is the whole binding set, and it names the secret-store
+    /// directory because on macOS and Windows that is not the directory holding the database
+    /// (docs/Arcanum.Engineering.md, "Local Grimoire reinstall").
+    /// </summary>
+    private const string StartFreshGuidance =
+        "reset the Grimoire by moving its whole binding set aside as the \"Local Grimoire reinstall\" section of "
+        + "docs/Arcanum.Engineering.md describes (the database and its sidecars, the .kdf salt, attachments/, files/, "
+        + "the CLI state files, and grimoire-key.dat, which on macOS and Windows lives in the secret-store directory "
+        + "rather than beside arcanum.db)";
 
     /// <summary>
     /// SQLCipher answers a wrong key as "file is not a database" (26), and a damaged file as corrupt (11).

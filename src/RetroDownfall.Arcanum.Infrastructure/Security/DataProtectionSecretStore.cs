@@ -18,8 +18,12 @@ public sealed class DataProtectionSecretStore(
 
     private const string CorruptApiKeyRecoveryMessage =
         "security.dat is present but could not be decrypted (corrupt or wrong Data Protection key ring). "
-        + "Stop the host, then follow the \"Local Grimoire reinstall\" guidance in docs/Arcanum.Engineering.md: remove both security.dat and the Grimoire .db under ~/.config/arcanum/, or restore from backup. "
-        + "Do not delete the Grimoire database alone if you need to keep session data.";
+        + "Stop the host. To keep session data, restore the matching Data Protection key ring or a backup. "
+        + "To start fresh, remove this corrupt security.dat from the secret-store directory "
+        + "(~/Library/Application Support/arcanum on macOS, %APPDATA%\\arcanum on Windows, "
+        + "$XDG_CONFIG_HOME/arcanum or ~/.config/arcanum on Linux) and move the Grimoire's whole binding set "
+        + "aside as the \"Local Grimoire reinstall\" section of docs/Arcanum.Engineering.md describes. "
+        + "Removing the Grimoire database alone is not enough.";
 
     private readonly IDataProtector _protector = dataProtectionProvider.CreateProtector(ProtectorPurpose);
 
