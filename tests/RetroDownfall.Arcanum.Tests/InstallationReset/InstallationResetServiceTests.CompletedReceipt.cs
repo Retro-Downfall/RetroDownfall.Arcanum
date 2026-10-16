@@ -7,14 +7,18 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 /// <summary>
-/// A nested erasure that stored its completion is never retired on the strength of an error code.
+/// A nested erasure that stored its completion receipt is never retired on the strength of an error code.
 /// </summary>
+/// <remarks>
+/// The receipt records that the nested transition reached its terminal verdict, which a rollback before
+/// any effect reaches as well as a commit, so what it keeps is the evidence of the verdict.
+/// </remarks>
 public sealed partial class InstallationResetServiceTests
 {
     /// <summary>
     /// The codes the data step answers with before it has changed anything. A call that failed on the
     /// way into an erasure which had already committed returns the same ones, so none of them can be
-    /// allowed to retire the record once the receipt says the erasure finished.
+    /// allowed to retire the record once the receipt records the nested transition's terminal verdict.
     /// </summary>
     [Theory]
     [InlineData(ErrorCodes.Data.InvalidRequest)]

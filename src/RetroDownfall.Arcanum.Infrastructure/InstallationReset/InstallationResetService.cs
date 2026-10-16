@@ -2174,10 +2174,12 @@ internal sealed class InstallationResetService(
                                     or StoppedHostNestedLaunchState.Unlaunched;
                         }
 
-                        // A stored completion receipt means the erasure committed, whatever the failed
-                        // call says: a refusal made by a read that failed on the way in (the reset record,
-                        // the Grimoire secret) is the same code a refusal before any effect carries, and
-                        // acting on the code alone would retire the only evidence of a finished erasure.
+                        // A stored completion receipt means the nested transition reached its terminal
+                        // verdict, whatever the failed call says. It does not say which: a transition
+                        // that rolled back before any effect publishes one as well. A refusal made by a
+                        // read that failed on the way in (the reset record, the Grimoire secret) is the
+                        // same code a refusal before any effect carries, and acting on the code alone
+                        // would retire the only evidence of that verdict.
                         if (!provenPreEffect
                             || active.NestedTransitionReceipt is
                             {

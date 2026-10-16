@@ -1545,6 +1545,58 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
+    /// A completion receipt in the reset record is the nested transition's terminal verdict, committed
+    /// or rolled back, and not a statement that the erasure committed; no document, and no comment in
+    /// the service that acts on it, says so, and each says where the verdict is.
+    /// </summary>
+    [Fact]
+    public void The_nested_completion_receipt_is_documented_as_a_terminal_verdict_and_not_as_a_commit()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        string service = ReadSource("Infrastructure", "InstallationReset", "InstallationResetService.cs");
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference), ("InstallationResetService", service) })
+        {
+            foreach (string stale in (string[])[
+                "that says the erasure happened",
+                "stored receipt says the erasure committed",
+                "A stored completion receipt means the erasure committed",
+            ])
+            {
+                Assert.False(text.Contains(stale, StringComparison.Ordinal), name + " still says: " + stale);
+            }
+        }
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference) })
+        {
+            Assert.True(
+                text.Contains("`data-retention-factory-reset` operation's terminal row", StringComparison.Ordinal),
+                name + " does not say where the verdict of a nested erasure is recorded.");
+
+            Assert.True(
+                text.Contains("`arcanum operation show`", StringComparison.Ordinal),
+                name + " does not say where the operator reads it.");
+
+            Assert.True(
+                text.Contains("grimoire.offline_transition_not_applied", StringComparison.Ordinal),
+                name + " does not name the terminal code of a transition that rolled back.");
+        }
+
+        Assert.Contains(
+            "it is published for a transition that rolled back before any effect as well as for one that committed",
+            design,
+            StringComparison.Ordinal);
+
+        // The code the documents name is the one the reconciler records.
+        Assert.Equal(
+            "grimoire.offline_transition_not_applied",
+            RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode);
+    }
+
+    /// <summary>
     /// What the documents say about the stopped-host reset and the identity repair is what the code
     /// does: the codes they name, the conditions they list, and the places they send an operator.
     /// </summary>
