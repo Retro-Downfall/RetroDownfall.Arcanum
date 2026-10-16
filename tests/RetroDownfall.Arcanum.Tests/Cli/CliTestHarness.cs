@@ -119,7 +119,10 @@ internal static class CliTestHarness
             Console.SetIn(originalIn);
             AnsiConsole.Console = originalAnsiConsole;
 
-            provider.Dispose();
+            // Asynchronously, as the executable does: a command that composes the Covenant erasure
+            // resolves singletons that only implement IAsyncDisposable, and a synchronous dispose of a
+            // provider holding one throws.
+            await provider.DisposeAsync().ConfigureAwait(false);
         }
     }
 

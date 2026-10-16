@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 
+using System.Text.Json;
+
 using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +16,11 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
+using RetroDownfall.Arcanum.Cli.UX;
+
 using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
@@ -24,7 +30,11 @@ using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Core.Operations;
+
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -58,18 +68,18 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// substitutions are the ones the CLI harness always makes (an in-memory operating-system credential
 /// store and an installed-startup probe) and a no-op daemon mutation.
 ///
-/// <para>The switch is varied because the question is whether it matters. It does not: the
-/// installation-reset graph never reads it, and neither does the Covenant gate the serving host
-/// leases from. What decides the outcome is that the stopped-host data service is built without a
-/// Covenant gate, so it cannot attach the Covenant inventory that a global plan has to carry and
-/// cannot run the protected erasure that a global apply has to run (§10.20.3). Both refusals happen
-/// before anything changes, which is what these cases pin.</para>
+/// <para>The switch is varied because the question is whether it matters. It does not: neither the
+/// installation-reset graph nor the Covenant gate the planner leases from reads it, so a family the
+/// feature never used is a measured zero, not an absent inventory. What decides the outcome is the
+/// installation's own evidence: a settled clean host-tools pair, an intact canonical catalog, the
+/// master key, and a state row. The plan measures the family through the real gate, and the apply runs
+/// the protected erasure over the process's own composition, under a claim an authenticated reset
+/// record made (§10.20.3).</para>
 /// </remarks>
 [Collection("ProcessEnvironment")]
 public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 {
-    private const string CovenantInventoryUnavailableMessage =
-        "The local Covenant inventory is unavailable.";
+    private const string MasterApiKey = "stopped-host-reset-master-api-key";
 
     private const string NoRegisteredCampaignMessage =
         "No registered Campaign contains the current directory.";
@@ -109,7 +119,7 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task The_stopped_host_plan_for_the_global_scope_carries_no_Covenant_inventory_whatever_the_switch_says(
+    public async Task The_stopped_host_plan_for_the_global_scope_carries_a_measured_Covenant_inventory_whatever_the_switch_says(
         bool covenantFeature)
     {
         Skip.IfNot(
@@ -135,9 +145,21 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         Assert.Equal(DataRetentionOperation.FactoryReset, plan.Value.Request.Operation);
 
-        // The plan is the ordinary factory plan and nothing more: no Covenant family was inventoried,
-        // because nothing in this composition can take the read capability that inventories it.
-        Assert.Null(plan.Value.Covenant);
+        // Measured, not absent: a family the feature never used is a zero that was counted.
+        DataRetentionCovenantInventory inventory = Assert.IsType<DataRetentionCovenantInventory>(
+            plan.Value.Covenant);
+
+        Assert.Equal(0, inventory.Rows);
+
+        Assert.Equal(0, inventory.ManagedFiles);
+
+        Assert.Equal(0, inventory.LocalArtifacts);
+
+        Assert.Equal(0, inventory.AffectedSessions);
+
+        Assert.Equal(0, inventory.PossibleDisclosures);
+
+        Assert.Equal(CovenantDisclosureCountKind.Exact, inventory.DisclosureCountKind);
     }
 
     /// <summary>
@@ -149,8 +171,9 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
     /// apply still had no lifecycle would let a fresh reset publish its record, uninstall the daemon,
     /// pass the point of no return and only then be refused: it would end at
     /// <c>Data.RecoveryRequired</c> with the database intact and the host's registration gone, instead
-    /// of at a refusal before anything changed. The plan's missing inventory is today's only guard
-    /// against that, so this holds whichever way the gap is eventually closed.
+    /// of at a refusal before anything changed. Now that both halves exist, a direct apply that no
+    /// authenticated record claimed is refused before anything is touched, which is how the lifecycle
+    /// shows it is there and not merely absent.
     /// </remarks>
     [SkippableTheory]
     [InlineData(false)]
@@ -201,7 +224,7 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task The_stopped_host_data_service_refuses_the_global_apply_and_leaves_Covenant_bearing_data_alone(
+    public async Task The_stopped_host_data_service_refuses_a_global_apply_no_reset_record_claimed_and_leaves_Covenant_bearing_data_alone(
         bool covenantFeature)
     {
         Skip.IfNot(
@@ -237,21 +260,24 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
                 issuer,
                 token));
 
-        // A missing Covenant lifecycle is a typed refusal, never permission to erase only the ordinary
-        // data (§10.19.13): the row the label protects, and the label itself, are exactly where they were.
-        Assert.True(applied.IsFailure, "The stopped-host composition erased data without the Covenant lifecycle.");
+        // An apply that no authenticated record claimed is a typed refusal, never permission to erase
+        // only the ordinary data (§10.19.13): the row the label protects, and the label itself, are
+        // exactly where they were, and no durable operation was created to hold a half-done erasure.
+        Assert.True(applied.IsFailure, "The stopped-host composition erased data without a claim.");
 
-        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, applied.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, applied.Error.Code);
 
         Assert.Equal(1, await LabeledSagaMemorySeed.CountRowsAsync(_fixture, "saga_memories", "Id", memoryId));
 
         Assert.Equal(1, await LabeledSagaMemorySeed.CountRowsAsync(_fixture, "artifact_sensitivity", "ArtifactId", memoryId));
+
+        Assert.Equal(0, await CountRowsAsync("LongRunningOperations"));
     }
 
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task The_global_dry_run_refuses_before_any_effect_whatever_the_switch_says(
+    public async Task The_global_dry_run_shows_the_measured_inventory_and_changes_nothing(
         bool covenantFeature)
     {
         Skip.IfNot(
@@ -270,13 +296,13 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
             "--global",
             "--dry-run");
 
-        AssertRefusedWithoutEffect(result, before);
+        AssertDryRunMeasuredInventory(result, before);
     }
 
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task The_global_apply_refuses_before_any_effect_whatever_the_switch_says(
+    public async Task The_all_dry_run_inside_a_registered_Campaign_shows_the_measured_inventory_and_changes_nothing(
         bool covenantFeature)
     {
         Skip.IfNot(
@@ -285,10 +311,38 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         await InstallPriorGrimoireAsync(covenantFeature);
 
+        await RegisterCampaignAtCurrentDirectoryAsync();
+
         Dictionary<string, string> before = CaptureStableFiles();
+
+        CliTestResult result = await RunAsync(covenantFeature, AllScopeArguments(apply: false));
+
+        AssertDryRunMeasuredInventory(result, before);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task The_global_apply_runs_the_protected_erasure_and_completes_the_reset(
+        bool covenantFeature)
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InstallPriorGrimoireAsync(covenantFeature);
+
+        Guid memoryId = Guid.NewGuid();
+
+        await LabeledSagaMemorySeed.SeedAsync(_fixture, memoryId);
+
+        _ = await StoppedHostResetTestSupport.SeedOrdinarySessionAsync(_fixture);
+
+        ErasureObservation observation = new(_credentials);
 
         CliTestResult result = await RunAsync(
             covenantFeature,
+            observation.Observe,
             "--json",
             "--yes",
             "data",
@@ -297,13 +351,42 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
             "--apply",
             "--force");
 
-        AssertRefusedWithoutEffect(result, before);
+        AssertCompletedThroughTheProtectedLifecycle(result, observation, memoryId);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task The_all_apply_inside_a_registered_Campaign_runs_the_protected_erasure_and_completes_the_reset(
+        bool covenantFeature)
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InstallPriorGrimoireAsync(covenantFeature);
+
+        await RegisterCampaignAtCurrentDirectoryAsync();
+
+        Guid memoryId = Guid.NewGuid();
+
+        await LabeledSagaMemorySeed.SeedAsync(_fixture, memoryId);
+
+        _ = await StoppedHostResetTestSupport.SeedOrdinarySessionAsync(_fixture);
+
+        ErasureObservation observation = new(_credentials);
+
+        CliTestResult result = await RunAsync(
+            covenantFeature,
+            observation.Observe,
+            AllScopeArguments(apply: true));
+
+        AssertCompletedThroughTheProtectedLifecycle(result, observation, memoryId);
     }
 
     /// <summary>
-    /// <c>--all</c> is refused entirely, not just its global half: it captures the current Campaign
-    /// first, so outside a registered Campaign it never reaches the Covenant question and fails with
-    /// the workspace-resolution error.
+    /// <c>--all</c> captures the current Campaign first, so outside a registered Campaign it never
+    /// reaches the Covenant question and fails with the workspace-resolution error.
     /// </summary>
     [SkippableTheory]
     [InlineData(false, false)]
@@ -324,37 +407,116 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         CliTestResult result = await RunAsync(covenantFeature, AllScopeArguments(apply));
 
-        AssertRefusedWithoutEffect(result, before, NoRegisteredCampaignMessage);
-
-        Assert.DoesNotContain(CovenantInventoryUnavailableMessage, result.Output, StringComparison.Ordinal);
+        AssertRefusedWithoutEffect(result, before, ErrorCodes.Data.InventoryUnavailable, NoRegisteredCampaignMessage);
     }
 
-    /// <summary>
-    /// Inside a registered Campaign the workspace half resolves, and the same missing Covenant
-    /// inventory that refuses <c>--global</c> refuses the whole <c>--all</c> plan before any effect.
-    /// </summary>
-    [SkippableTheory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public async Task The_all_scope_inside_a_registered_Campaign_is_refused_for_the_missing_Covenant_inventory_before_any_effect(
-        bool covenantFeature,
-        bool apply)
+    private void AssertDryRunMeasuredInventory(
+        CliTestResult result,
+        Dictionary<string, string> before)
     {
-        Skip.IfNot(
-            GrimoireFixture.SqlCipherAvailable,
-            GrimoireFixture.SqlCipherUnavailableReason);
+        string described = $"exit {result.ExitCode}\nstdout: {result.Output}\nstderr: {result.Error}";
 
-        await InstallPriorGrimoireAsync(covenantFeature);
+        Assert.True(result.ExitCode == (int)CliExitCode.Success, described);
 
-        await RegisterCampaignAtCurrentDirectoryAsync();
+        using JsonDocument document = JsonDocument.Parse(result.Output);
 
-        Dictionary<string, string> before = CaptureStableFiles();
+        JsonElement root = document.RootElement;
 
-        CliTestResult result = await RunAsync(covenantFeature, AllScopeArguments(apply));
+        Assert.True(root.TryGetProperty("planId", out JsonElement planId), described);
 
-        AssertRefusedWithoutEffect(result, before, CovenantInventoryUnavailableMessage);
+        Assert.False(string.IsNullOrWhiteSpace(planId.GetString()), described);
+
+        JsonElement inventory = root.GetProperty("covenantInventory");
+
+        Assert.Equal(0, inventory.GetProperty("rows").GetInt64());
+
+        Assert.Equal(0, inventory.GetProperty("managedFiles").GetInt64());
+
+        Assert.Equal(0, inventory.GetProperty("localArtifacts").GetInt64());
+
+        Assert.Equal(0, inventory.GetProperty("affectedSessions").GetInt64());
+
+        Assert.Equal(0, inventory.GetProperty("possibleDisclosures").GetInt64());
+
+        // The disclosure is diagnostics, in every mode: under --json a payload write would land ahead
+        // of the one document a script parses.
+        Assert.Contains(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            result.Error,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            CovenantExternalRetentionDisclosure.DestructiveOperationText,
+            result.Output,
+            StringComparison.Ordinal);
+
+        Assert.Equal(before, CaptureStableFiles());
+
+        AssertNoActiveResetOrJournal();
+    }
+
+    private void AssertCompletedThroughTheProtectedLifecycle(
+        CliTestResult result,
+        ErasureObservation observation,
+        Guid memoryId)
+    {
+        string described = $"exit {result.ExitCode}\nstdout: {result.Output}\nstderr: {result.Error}";
+
+        Assert.True(result.ExitCode == (int)CliExitCode.Success, described);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal("Completed", document.RootElement.GetProperty("phase").GetString());
+
+        Assert.False(document.RootElement.GetProperty("resumeRequired").GetBoolean(), described);
+
+        // The protected lifecycle ran: the coordinator advanced through its phases, and the managed
+        // artifacts were processed while the ordinary data was still there to be deleted afterwards.
+        Assert.True(observation.Completed(CovenantResetPhase.CanonicalApplied), described);
+
+        Assert.True(observation.Completed(CovenantResetPhase.ManagedArtifactsProcessed), described);
+
+        Assert.True(observation.Completed(CovenantResetPhase.HandlesClosed), described);
+
+        Assert.Equal(1, observation.SessionsWhenManagedArtifactsFinished);
+
+        Assert.Contains(GrimoireOfflineTransitionTerminalSuffixBoundary.Retired, observation.SuffixBoundaries);
+
+        // What the snapshot taken just before offline cleanup deleted the database found: the labelled
+        // memory and its label gone, the ordinary data gone, one completed launch at the owner version,
+        // and the nested receipt reported.
+        ErasureSnapshot after = Assert.IsType<ErasureSnapshot>(observation.BeforeOfflineCleanup);
+
+        Assert.Equal(0, after.SagaMemories);
+
+        Assert.Equal(0, after.ArtifactSensitivityRows);
+
+        Assert.Equal(0, after.Sessions);
+
+        Assert.Equal(1, after.CompletedFactoryResetOperations);
+
+        Assert.Equal(2, after.FactoryResetCheckpointVersion);
+
+        Assert.Equal(InstallationResetNestedTransitionPhase.Completed, after.ReceiptPhase);
+
+        AssertNoActiveResetOrJournal();
+
+        Assert.False(Directory.Exists(ArcanumPaths.GrimoireDirectory));
+
+        Assert.False(Directory.Exists(ArcanumPaths.SecretStoreDirectory));
+
+        Assert.NotEqual(Guid.Empty, memoryId);
+    }
+
+    private void AssertNoActiveResetOrJournal()
+    {
+        if (Directory.Exists(ArcanumPaths.GrimoireDirectory))
+        {
+            Assert.Empty(Directory.GetFiles(
+                ArcanumPaths.GrimoireDirectory,
+                "*.factory-reset.active.json",
+                SearchOption.TopDirectoryOnly));
+        }
     }
 
     private static string[] AllScopeArguments(bool apply) => apply
@@ -387,24 +549,25 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
     }
 
-    private void AssertRefusedWithoutEffect(CliTestResult result, Dictionary<string, string> before) =>
-        AssertRefusedWithoutEffect(result, before, CovenantInventoryUnavailableMessage);
-
+    /// <summary>
+    /// A refusal that changed nothing, identified by its code and by its own message.
+    /// </summary>
+    /// <remarks>
+    /// The code alone is shared by several refusals on this path, so a refusal is identified by its
+    /// message too: a Grimoire that stopped opening must not be able to satisfy a case about a
+    /// different refusal.
+    /// </remarks>
     private void AssertRefusedWithoutEffect(
         CliTestResult result,
         Dictionary<string, string> before,
+        string expectedCode,
         string expectedMessage)
     {
         string described = $"exit {result.ExitCode}\nstdout: {result.Output}\nstderr: {result.Error}";
 
         Assert.True(result.ExitCode == (int)CliExitCode.GenericError, described);
 
-        // The code alone is shared by the refusals on this path (the existing Grimoire cannot be
-        // opened without creating or repairing state, the registered Campaign inventory is
-        // unavailable, no registered Campaign contains the directory, and the Covenant inventory is
-        // missing), so a refusal is identified by its own message: a Grimoire that stopped opening
-        // must not be able to satisfy these cases.
-        Assert.Contains(ErrorCodes.Data.InventoryUnavailable, result.Output, StringComparison.Ordinal);
+        Assert.Contains(expectedCode, result.Output, StringComparison.Ordinal);
 
         Assert.Contains(expectedMessage, result.Output, StringComparison.Ordinal);
 
@@ -412,10 +575,7 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         Assert.Equal(before, CaptureStableFiles());
 
-        Assert.Empty(Directory.GetFiles(
-            ArcanumPaths.GrimoireDirectory,
-            "*.factory-reset.active.json",
-            SearchOption.TopDirectoryOnly));
+        AssertNoActiveResetOrJournal();
     }
 
     private async Task InstallPriorGrimoireAsync(bool covenantFeature)
@@ -436,10 +596,26 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
         await seeding
             .GetRequiredService<DataProtectionSecretStore>()
             .SaveGrimoireEncryptionSecretAsync(GrimoireFixture.TestGrimoireSecret);
+
+        await seeding
+            .GetRequiredService<ISecretStore>()
+            .SaveApiKeyAsync(MasterApiKey);
     }
 
     private Task<CliTestResult> RunAsync(bool covenantFeature, params string[] args) =>
         CliTestHarness.RunAsync(Compose(covenantFeature), args);
+
+    private Task<CliTestResult> RunAsync(
+        bool covenantFeature,
+        Action<IServiceCollection> configure,
+        params string[] args)
+    {
+        ServiceCollection services = Compose(covenantFeature);
+
+        configure(services);
+
+        return CliTestHarness.RunAsync(services, args);
+    }
 
     private ServiceCollection Compose(bool covenantFeature)
     {
@@ -484,25 +660,130 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
     /// <summary>
     /// A digest of every file under the profile that is installation state, which is to say every file
-    /// but the ones <see cref="IsLockOrIdleSqliteSidecar"/> names.
+    /// but the maintenance lock a refused command legitimately creates and releases.
     /// </summary>
     private Dictionary<string, string> CaptureStableFiles() =>
         Directory.GetFiles(_home.Root, "*", SearchOption.AllDirectories)
-            .Where(static path => !IsLockOrIdleSqliteSidecar(path))
+            .Where(static path => !path.EndsWith(".lock", StringComparison.Ordinal))
             .Order(StringComparer.Ordinal)
             .ToDictionary(
                 static path => path,
                 static path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
                 StringComparer.Ordinal);
 
-    /// <summary>
-    /// The maintenance lock, which a refused command legitimately creates and releases, and the
-    /// write-ahead sidecars SQLite leaves beside a database it was asked to read: the shared-memory
-    /// index, which holds no data, and a write-ahead log with no frames in it. A log that holds a
-    /// frame, and the database file itself, still count.
-    /// </summary>
-    private static bool IsLockOrIdleSqliteSidecar(string path) =>
-        path.EndsWith(".lock", StringComparison.Ordinal)
-            || path.EndsWith("-shm", StringComparison.Ordinal)
-            || (path.EndsWith("-wal", StringComparison.Ordinal) && new FileInfo(path).Length == 0);
+    private async Task<int> CountRowsAsync(string table)
+    {
+        await using ArcanumDbContext context = _fixture.CreateContext(
+            ArcanumPaths.GrimoireDatabaseFile);
+
+        SqliteConnection connection = (SqliteConnection)context.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = $"SELECT COUNT(*) FROM \"{table}\";";
+
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(CancellationToken.None),
+            global::System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>What the protected erasure did, observed from the seams it already exposes.</summary>
+    private sealed class ErasureObservation(IOsCredentialStore credentials)
+    {
+        private readonly object _sync = new();
+
+        public List<(CovenantErasureFaultBoundary Boundary, CovenantResetPhase Phase)> Events { get; } = [];
+
+        public List<GrimoireOfflineTransitionTerminalSuffixBoundary> SuffixBoundaries { get; } = [];
+
+        public long? SessionsWhenManagedArtifactsFinished { get; private set; }
+
+        public ErasureSnapshot? BeforeOfflineCleanup { get; private set; }
+
+        public bool Completed(CovenantResetPhase phase)
+        {
+            lock (_sync)
+            {
+                return Events.Contains((CovenantErasureFaultBoundary.AfterPhaseComplete, phase));
+            }
+        }
+
+        public void Observe(IServiceCollection services)
+        {
+            ArgumentNullException.ThrowIfNull(services);
+
+            StoppedHostResetTestSupport.UseFaultSeams(
+                services,
+                async (boundary, phase, _) =>
+                {
+                    lock (_sync)
+                    {
+                        Events.Add((boundary, phase));
+                    }
+
+                    if (boundary is CovenantErasureFaultBoundary.AfterPhaseComplete
+                        && phase is CovenantResetPhase.ManagedArtifactsProcessed)
+                    {
+                        SessionsWhenManagedArtifactsFinished = await StoppedHostResetTestSupport
+                            .ScalarAsync("SELECT COUNT(*) FROM \"Sessions\";")
+                            .ConfigureAwait(false);
+                    }
+
+                    return Result.Success();
+                },
+                (boundary, _) =>
+                {
+                    lock (_sync)
+                    {
+                        SuffixBoundaries.Add(boundary);
+                    }
+
+                    return Task.FromResult(Result.Success());
+                });
+
+            StoppedHostResetTestSupport.BeforeOfflineCleanup(
+                services,
+                async () => BeforeOfflineCleanup ??= await SnapshotAsync().ConfigureAwait(false));
+        }
+
+        private async Task<ErasureSnapshot> SnapshotAsync()
+        {
+            InstallationResetActiveStore store = new(ArcanumPaths.GrimoireDirectory, credentials);
+
+            Result<InstallationResetActiveRecoveryState> inspected = await store
+                .InspectAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+
+            return new ErasureSnapshot(
+                (int)await StoppedHostResetTestSupport.ScalarAsync("SELECT COUNT(*) FROM saga_memories;")
+                    .ConfigureAwait(false),
+                (int)await StoppedHostResetTestSupport.ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;")
+                    .ConfigureAwait(false),
+                (int)await StoppedHostResetTestSupport.ScalarAsync("SELECT COUNT(*) FROM \"Sessions\";")
+                    .ConfigureAwait(false),
+                (int)await StoppedHostResetTestSupport.ScalarAsync(
+                    "SELECT COUNT(*) FROM \"LongRunningOperations\" WHERE \"Kind\" = $kind AND \"State\" = $state;",
+                    ("$kind", LongRunningOperationKinds.DataRetentionFactoryReset),
+                    ("$state", (int)LongRunningOperationState.Completed)).ConfigureAwait(false),
+                (int)await StoppedHostResetTestSupport.ScalarAsync(
+                    "SELECT COALESCE(MAX(\"CheckpointVersion\"), 0) FROM \"LongRunningOperations\" WHERE \"Kind\" = $kind;",
+                    ("$kind", LongRunningOperationKinds.DataRetentionFactoryReset)).ConfigureAwait(false),
+                inspected.IsSuccess
+                    ? inspected.Value.Publication?.Payload.NestedTransitionReceipt?.Phase
+                    : null);
+        }
+    }
+
+    private sealed record ErasureSnapshot(
+        int SagaMemories,
+        int ArtifactSensitivityRows,
+        int Sessions,
+        int CompletedFactoryResetOperations,
+        int FactoryResetCheckpointVersion,
+        InstallationResetNestedTransitionPhase? ReceiptPhase);
 }

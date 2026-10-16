@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -339,6 +341,17 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (dryRun)
         {
+            // The disclosure an apply writes before its question, written here too, so a dry-run shows
+            // the operator what exactly they would be asked to confirm. To diagnostics, as the apply
+            // does: under --json a payload write would land ahead of the one document a script parses.
+            // A plan with no inventory (a pair needing external remediation lists its blocker instead)
+            // has no disclosure to give.
+            if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+            {
+                disclosureWriter.Write(
+                    stoppedHostPlan?.CovenantDisclosure ?? onlinePlan?.Covenant);
+            }
+
             WritePlan(plan);
 
             return (int)CliExitCode.Success;
@@ -533,6 +546,20 @@ internal sealed class InstallationFactoryResetCommand(
         dispatcher.WritePayload(
             $"Data inventory available: {FormatBoolean(plan.DataInventoryAvailable)}; "
             + $"credential inventory available: {FormatBoolean(plan.CredentialInventoryAvailable)}");
+
+        if (plan.CovenantInventory is { } covenant)
+        {
+            dispatcher.WritePayload(
+                $"Covenant inventory: {FormatCount(covenant.Rows)} rows, "
+                + $"{FormatCount(covenant.ManagedFiles)} managed files, "
+                + $"{FormatCount(covenant.LocalArtifacts)} local erasure artifacts, "
+                + $"{FormatCount(covenant.AffectedSessions)} affected sessions; "
+                + "nonrevocable disclosures: "
+                + (covenant.DisclosureCountKind is CovenantDisclosureCountKind.LowerBound
+                    ? "at least "
+                    : "exactly ")
+                + FormatCount(covenant.PossibleDisclosures));
+        }
 
         foreach (InstallationResetTargetDescriptor target in plan.Targets)
         {

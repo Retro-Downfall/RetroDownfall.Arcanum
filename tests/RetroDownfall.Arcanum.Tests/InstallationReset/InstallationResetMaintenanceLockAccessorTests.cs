@@ -14,6 +14,9 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
     private const string HostedServiceOwner =
         "src/RetroDownfall.Arcanum.Infrastructure/Hosting/GrimoireDatabaseHostedService.cs";
 
+    private const string LoanOwner =
+        "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireAuthorityIssuer.cs";
+
     private const string AccessorOwner =
         "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetMaintenanceLockAccessor.cs";
 
@@ -117,7 +120,7 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
     }
 
     [Fact]
-    public void Only_the_hosted_service_attaches_detaches_and_disposes_the_accessor_lock()
+    public void Only_the_hosted_service_and_the_issuer_minted_loan_attach_and_detach_the_accessor_lock()
     {
 
         IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
@@ -138,13 +141,30 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
 
         Assert.False(recovery.Names(".Dispose("));
 
+        // Two owners, and no third. The serving host attaches the lock it holds for its lifetime. A
+        // stopped-host process has no such host, and the one other thing that may attach is the loan its
+        // own issuer mints from the lock the issuer was created over, for the length of one nested
+        // erasure or one journal-first recovery (a nested type of the issuer, spent by a one-shot
+        // authority). An ambient lookup of a held lock must never be enough to start either.
         Assert.All(
             sources.Where(static source => source.Names(".AttachHostLock(")),
-            source => Assert.True(source.IsExactOwner(HostedServiceOwner), source.RelativePath));
+            source => Assert.True(
+                source.IsExactOwner(HostedServiceOwner) || source.IsExactOwner(LoanOwner),
+                source.RelativePath));
 
         Assert.All(
             sources.Where(static source => source.Names(".DetachHostLock(")),
-            source => Assert.True(source.IsExactOwner(HostedServiceOwner), source.RelativePath));
+            source => Assert.True(
+                source.IsExactOwner(HostedServiceOwner) || source.IsExactOwner(LoanOwner),
+                source.RelativePath));
+
+        ProductionSource loan = Assert.Single(
+            sources,
+            source => source.IsExactOwner(LoanOwner));
+
+        Assert.True(loan.Names("FactoryErasureLockLoan"));
+
+        Assert.True(loan.Names("InstallationResetFactoryErasure"));
 
     }
 

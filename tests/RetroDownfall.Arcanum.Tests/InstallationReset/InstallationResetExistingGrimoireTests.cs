@@ -634,14 +634,21 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             Assert.IsType<LongRunningOperation>(await ReadOperationAsync(secondId)));
     }
 
+    /// <summary>
+    /// A completed row whose summary names the plan is not a claim. The stopped-host data service used
+    /// to treat it as one, matching rows by summary text and reporting them done, which is also how it
+    /// restarted an unlaunched row with the ordinary deletes and none of the protected lifecycle. A
+    /// global apply now acts only on the operation an authenticated reset record claimed, by exact
+    /// requested identity, so a row that merely looks like it is nothing to act on.
+    /// </summary>
     [SkippableFact]
-    public async Task Global_apply_recognizes_the_exact_completed_factory_reset_plan()
+    public async Task Global_apply_does_not_recognize_a_completed_factory_reset_row_by_its_summary()
     {
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ServiceProvider provider = CreateProvider();
+        await using ServiceProvider provider = CreateProvider();
 
         await InstallExistingGrimoireAsync(provider);
 
@@ -653,10 +660,21 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
             CancellationToken.None);
 
-        Assert.True(plan.IsSuccess, plan.Error.Message);
+        // The measured plan needs the master key the envelope keys are derived from; without it the
+        // plan is refused with its own typed code and there is no apply to look at.
+        Assert.True(plan.IsFailure);
 
-        Guid completedOperationId = await InsertCompletedFactoryResetAsync(
-            plan.Value.PlanId);
+        Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, plan.Error.Code);
+
+        await provider.GetRequiredService<ISecretStore>().SaveApiKeyAsync("existing-grimoire-test-master-key");
+
+        plan = await dataService.PlanAsync(
+            new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
+            CancellationToken.None);
+
+        Assert.True(plan.IsSuccess, plan.IsFailure ? plan.Error.Message : string.Empty);
+
+        _ = await InsertCompletedFactoryResetAsync(plan.Value.PlanId);
 
         Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
             new DataRetentionApplyRequest(
@@ -664,11 +682,9 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 plan.Value.PlanId),
             CancellationToken.None);
 
-        Assert.True(applied.IsSuccess, applied.Error.Message);
+        Assert.True(applied.IsFailure, "A completed row was taken for a claim.");
 
-        Assert.Equal(completedOperationId, applied.Value.OperationId);
-
-        Assert.True(applied.Value.Reconciled);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, applied.Error.Code);
     }
 
     [SkippableFact]

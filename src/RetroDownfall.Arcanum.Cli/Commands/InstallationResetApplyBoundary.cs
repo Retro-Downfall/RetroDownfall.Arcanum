@@ -272,6 +272,22 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
 
         if (request.Request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
         {
+            if (hostHandoff is not { } handoff)
+            {
+                // A reset the stopped host began carries no host handoff: its data step is the
+                // protected erasure this process runs, so there is nothing to complete online first.
+                // The resume reads the marker pair itself, under the held lock and from the right
+                // place for the phase the record is in. A boundary-level read here would go to the
+                // database even when offline cleanup has already removed it, and would answer
+                // "remediation required" for ever.
+                return await ApplyOfflineAsync(
+                        request,
+                        handoff: null,
+                        confirmedPlan: null,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             Result cleanPair = await RequireCleanPairAsync(cancellationToken)
                 .ConfigureAwait(false);
 
@@ -280,26 +296,19 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 return Result<InstallationResetResult>.Failure(cleanPair.Error);
             }
 
-            if (hostHandoff is { } handoff)
-            {
-                Result online = onlineCompletionDurable
-                    ? Result.Success()
-                    : await CompleteOnlineDataResetAsync(
-                        handoff,
-                        cancellationToken).ConfigureAwait(false);
+            Result online = onlineCompletionDurable
+                ? Result.Success()
+                : await CompleteOnlineDataResetAsync(
+                    handoff,
+                    cancellationToken).ConfigureAwait(false);
 
-                return online.IsFailure
-                    ? Result<InstallationResetResult>.Failure(online.Error)
-                    : await ApplyOfflineAsync(
-                        request,
-                        handoff,
-                        confirmedPlan: null,
-                        cancellationToken).ConfigureAwait(false);
-            }
-
-            return Result<InstallationResetResult>.Failure(new Error(
-                ErrorCodes.Data.ResetInProgress,
-                "The authenticated installation reset host handoff is unavailable."));
+            return online.IsFailure
+                ? Result<InstallationResetResult>.Failure(online.Error)
+                : await ApplyOfflineAsync(
+                    request,
+                    handoff,
+                    confirmedPlan: null,
+                    cancellationToken).ConfigureAwait(false);
         }
 
         return await ApplyOfflineAsync(

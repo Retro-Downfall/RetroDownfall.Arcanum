@@ -18,6 +18,10 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal interface IInstallationResetDeferredServices
@@ -25,6 +29,23 @@ internal interface IInstallationResetDeferredServices
     IHostToolsMarkerPairResetCoordinator ResolveMarkerPairResetCoordinator();
 
     IFullInstallationResetTerminalContinuation ResolveTerminalContinuation();
+
+    /// <summary>
+    /// The pass that reads the reset record and the offline-transition journal as one pair, or null
+    /// where a composition has none to resolve.
+    /// </summary>
+    IInstallationResetStartupRecovery? ResolveStartupRecovery() => null;
+
+    /// <summary>
+    /// The pass that finishes an interrupted offline transition before the database is opened, or null.
+    /// </summary>
+    IGrimoireOfflineTransitionStartupRecovery? ResolveTransitionRecovery() => null;
+
+    /// <summary>
+    /// The accessor the transition-journal phase authority borrows the held installation lock from, or
+    /// null. A stopped-host reset lends the lock to it through an issuer-minted loan.
+    /// </summary>
+    InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() => null;
 }
 
 internal sealed class InstallationResetDeferredServices(IServiceProvider services)
@@ -35,6 +56,15 @@ internal sealed class InstallationResetDeferredServices(IServiceProvider service
 
     public IFullInstallationResetTerminalContinuation ResolveTerminalContinuation() =>
         services.GetRequiredService<IFullInstallationResetTerminalContinuation>();
+
+    public IInstallationResetStartupRecovery? ResolveStartupRecovery() =>
+        services.GetService<IInstallationResetStartupRecovery>();
+
+    public IGrimoireOfflineTransitionStartupRecovery? ResolveTransitionRecovery() =>
+        services.GetService<IGrimoireOfflineTransitionStartupRecovery>();
+
+    public InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() =>
+        services.GetService<InstallationResetMaintenanceLockAccessor>();
 }
 
 internal interface IInstallationResetLockedService
@@ -308,17 +338,32 @@ internal sealed class InstallationResetService(
 
         DataRetentionCovenantInventory? disclosure = dataPlan?.Covenant;
 
+        // A pair that needs external remediation is reported as the blocker it is, with no inventory:
+        // Covenant is not permitted for such an installation, so there is nothing to measure, and the
+        // plan's own blocker is the one thing the operator can act on.
+        bool unmeasuredForRemediation = planned.Value.Blockers.Any(static blocker =>
+            blocker.Code == ErrorCodes.Data.ExternalRemediationRequired);
+
+        // The structural backstop. Every refusal that can reach this line was returned by the data plan
+        // itself, with its own code and message, so the one that is left is a plan that succeeded and
+        // still carries no inventory (the exposure reader failed, or the gate's lease stopped
+        // revalidating after it was granted). This message names that, and only that.
         if ((request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
-            && disclosure is null)
+            && disclosure is null
+            && !unmeasuredForRemediation)
         {
             return Result<StoppedHostInstallationResetPlan>.Failure(new Error(
                 ErrorCodes.Data.InventoryUnavailable,
                 "The local Covenant inventory is unavailable."));
         }
 
+        InstallationResetPlan plan = request.Scope is InstallationResetScope.Workspace
+            ? planned.Value
+            : planned.Value with { CovenantInventory = disclosure };
+
         return Result<StoppedHostInstallationResetPlan>.Success(
             new StoppedHostInstallationResetPlan(
-                planned.Value,
+                plan,
                 request.Scope is InstallationResetScope.Workspace
                     ? null
                     : disclosure));
@@ -374,34 +419,10 @@ internal sealed class InstallationResetService(
                 workspace),
         };
 
-        Result<DataRetentionPlan> dataPlan = issuer is null
-            ? await dataService
-                .PlanAsync(dataRequest, cancellationToken)
-                .ConfigureAwait(false)
-            : await _stoppedHostDataService!
-                .PlanUnderStoppedHostAuthorityAsync(
-                    dataRequest,
-                    issuer,
-                    cancellationToken).ConfigureAwait(false);
-
-        bool dataInventoryAvailable = dataPlan.IsSuccess;
-
-        DataRetentionPlan? canonical = dataInventoryAvailable
-            ? dataPlan.Value
-            : null;
-
-        if (dataPlan.IsFailure
-            && (request.Scope is InstallationResetScope.Workspace
-                || dataPlan.Error.Code != ErrorCodes.Data.InventoryUnavailable))
-        {
-            return Result<InstallationResetPlan>.Failure(dataPlan.Error);
-        }
-
-        InstallationResetCredentialSummary[] credentials =
-            request.Scope is InstallationResetScope.Workspace
-                ? []
-                : credentialService.Probe();
-
+        // The marker pair is read before the data plan, in every arm. For a stopped host that order is
+        // what lets a pair needing external remediation show as that blocker: Covenant is not
+        // permitted for such an installation, so planning its Covenant inventory could only end in a
+        // Covenant refusal, and the blocker is the thing the operator can act on.
         bool externalRemediationRequired = false;
 
         if (request.Scope is InstallationResetScope.Global or InstallationResetScope.All)
@@ -417,6 +438,51 @@ internal sealed class InstallationResetService(
             externalRemediationRequired = pair.IsFailure
                 || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean;
         }
+
+        bool stoppedHostGlobal = issuer is not null
+            && request.Scope is InstallationResetScope.Global or InstallationResetScope.All;
+
+        Result<DataRetentionPlan> dataPlan = stoppedHostGlobal && externalRemediationRequired
+            ? Result<DataRetentionPlan>.Failure(new Error(
+                ErrorCodes.Data.InventoryUnavailable,
+                "The host-process-tools marker pair requires external remediation, so the Covenant inventory was not measured."))
+            : issuer is null
+                ? await dataService
+                    .PlanAsync(dataRequest, cancellationToken)
+                    .ConfigureAwait(false)
+                : await _stoppedHostDataService!
+                    .PlanUnderStoppedHostAuthorityAsync(
+                        dataRequest,
+                        issuer,
+                        cancellationToken).ConfigureAwait(false);
+
+        bool dataInventoryAvailable = dataPlan.IsSuccess;
+
+        DataRetentionPlan? canonical = dataInventoryAvailable
+            ? dataPlan.Value
+            : null;
+
+        // A stopped-host global plan returns the data plan's refusal as it is, whatever its code: the
+        // inventory is measured or it is refused, and a refusal swallowed into an absent inventory is
+        // relabeled later as a message that means something else. The one exception is the plan this
+        // method deliberately skipped, above, for a pair that needs remediation. A plan with no
+        // stopped-host authority keeps its older reading of an unavailable inventory.
+        bool unavailableIsAnAbsentInventory = stoppedHostGlobal
+            ? externalRemediationRequired
+            : dataPlan.IsFailure
+                && dataPlan.Error.Code == ErrorCodes.Data.InventoryUnavailable;
+
+        if (dataPlan.IsFailure
+            && (request.Scope is InstallationResetScope.Workspace
+                || !unavailableIsAnAbsentInventory))
+        {
+            return Result<InstallationResetPlan>.Failure(dataPlan.Error);
+        }
+
+        InstallationResetCredentialSummary[] credentials =
+            request.Scope is InstallationResetScope.Workspace
+                ? []
+                : credentialService.Probe();
 
         string[] accounts =
             [.. credentials.Select(static item => item.Account).Order(StringComparer.Ordinal)];
@@ -475,6 +541,25 @@ internal sealed class InstallationResetService(
             BindingId = bindingId,
         };
 
+        // What a stopped host cannot drain becomes a blocker, here, before any effect. Today these
+        // surface only in the nested erasure, after the daemon is uninstalled and the claim is durable,
+        // where every refusal keeps the record and the host then refuses to start. A running host
+        // settles each of them on the way up (it reconciles stale durable operations and releases
+        // budget reservations, inference runs, idempotency leases and batches it finds left over), so
+        // the remedy is to give it that chance.
+        InstallationResetIssueSummary[] undrainable = stoppedHostGlobal && canonical is not null
+            ?
+            [
+                .. canonical.Conflicts.Select(static conflict =>
+                    new InstallationResetIssueSummary(
+                        conflict.Code,
+                        conflict.Message + " " + StartHostOnceRemedy,
+                        conflict.ResourceId)),
+                .. await ReadStandaloneTransitionBlockersAsync(issuer!, cancellationToken)
+                    .ConfigureAwait(false),
+            ]
+            : [];
+
         InstallationResetIssueSummary[] blockers =
         [
             .. (canonical?.Blockers ?? []).Select(static blocker =>
@@ -482,6 +567,7 @@ internal sealed class InstallationResetService(
                     blocker.ReasonCode,
                     blocker.Message,
                     blocker.ResourceId)),
+            .. undrainable,
             .. credentials
                 .Where(static credential =>
                     credential.Status is InstallationResetItemStatus.Unavailable)
@@ -562,6 +648,94 @@ internal sealed class InstallationResetService(
 
         return Result<InstallationResetPlan>.Success(plan);
     }
+
+    internal const string StartHostOnceRemedy =
+        "Start the host once with `arcanum serve`, stop it with `arcanum serve quit`, and retry.";
+
+    internal const string ClaimRetiredNote =
+        "Nothing was erased and the reset record was retired, but this attempt had already removed the "
+        + "background daemon's registration; run `arcanum daemon install` to restore it.";
+
+    /// <summary>The way a nested data apply is run, and how its position is read afterwards.</summary>
+    /// <param name="Apply">Runs the nested data apply for the claim the record already holds.</param>
+    /// <param name="ReadLaunchState">
+    /// Reads where the claimed nested operation stands, or null where the arm has no such read (the
+    /// attested full-reset arm, whose data was reset online and whose claim is never retired).
+    /// </param>
+    private sealed record NestedDataStep(
+        Func<DataRetentionApplyRequest, CancellationToken, Task<Result<DataRetentionApplyResult>>> Apply,
+        Func<Guid, CancellationToken, Task<Result<StoppedHostNestedLaunchState>>>? ReadLaunchState = null);
+
+    /// <summary>
+    /// Reads the offline-transition journal under the held lock and reports an active one as a blocker.
+    /// </summary>
+    /// <remarks>
+    /// The reset record and the journal are read as one pair through the same startup recovery the
+    /// serving host runs, lent the held lock for the length of the read. A journal here is a standalone
+    /// transition (a Covenant reset or erasure that crashed): the global reset refuses to begin beside
+    /// it, because it would then claim a nested transition into a slot another operation still holds.
+    /// A composition without the deferred services reads nothing, as it never did.
+    /// </remarks>
+    private async Task<InstallationResetIssueSummary[]> ReadStandaloneTransitionBlockersAsync(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+        if (deferredServices?.ResolveStartupRecovery() is not { } pairRecovery
+            || deferredServices.ResolveLockAccessor() is not { } accessor)
+        {
+            return [];
+        }
+
+        Result<IStoppedHostGrimoireConnectionAuthority> issued =
+            issuer.IssueStoppedHostFactoryErasureLockLoan();
+
+        if (issued.IsFailure)
+        {
+            return [TransitionBlocker(issued.Error.Code, issued.Error.Message)];
+        }
+
+        await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
+
+        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+            authority,
+            accessor,
+            _canonicalDatabasePath);
+
+        if (lent.IsFailure)
+        {
+            return [TransitionBlocker(lent.Error.Code, lent.Error.Message)];
+        }
+
+        await using IAsyncDisposable loan = lent.Value;
+
+        Result<ArcanumMaintenanceLock> borrowed = accessor.BorrowHeldLock(activeStore.GuardedRoot);
+
+        if (borrowed.IsFailure)
+        {
+            return [TransitionBlocker(borrowed.Error.Code, borrowed.Error.Message)];
+        }
+
+        Result<InstallationResetStartupRecoveryState> pair = await pairRecovery
+            .RecoverBeforeBootstrapAsync(borrowed.Value, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (pair.IsFailure)
+        {
+            return [TransitionBlocker(pair.Error.Code, pair.Error.Message)];
+        }
+
+        return pair.Value.NestedTransitionEvidence
+            is InstallationResetNestedTransitionEvidenceOutcome.StandaloneTransition
+            or InstallationResetNestedTransitionEvidenceOutcome.NestedBound
+            or InstallationResetNestedTransitionEvidenceOutcome.NestedReceiptStoredRetirementSuffix
+                ? [TransitionBlocker(
+                    ErrorCodes.Covenant.LifecycleConflict,
+                    "An offline Grimoire transition is active, so a global reset cannot begin beside it.")]
+                : [];
+    }
+
+    private static InstallationResetIssueSummary TransitionBlocker(string code, string message) =>
+        new(code, message + " " + StartHostOnceRemedy);
 
     public Result<InstallationResetPlan> BindOnlineDataPlan(
         InstallationResetPlanRequest request,
@@ -996,6 +1170,8 @@ internal sealed class InstallationResetService(
                 writer,
                 progress,
                 ReproduceAcceptedPlan(active),
+                new NestedDataStep(
+                    (dataApplyRequest, token) => dataService.ApplyAsync(dataApplyRequest, token)),
                 cancellationToken,
                 async token =>
                 {
@@ -1238,14 +1414,23 @@ internal sealed class InstallationResetService(
 
         InstallationResetApplyProgress progress = new(active);
 
+        IInstallationResetStoppedHostDataService stoppedHostData = _stoppedHostDataService;
+
         try
         {
             return await ContinueApplyAsync(
                 writer,
                 progress,
                 plan,
-                cancellationToken,
-                stoppedHostIssuer: issuer).ConfigureAwait(false);
+                new NestedDataStep(
+                    (dataApplyRequest, token) => stoppedHostData
+                        .ApplyUnderStoppedHostAuthorityAsync(dataApplyRequest, issuer, token),
+                    (nestedOperationId, token) => stoppedHostData
+                        .ReadNestedLaunchStateUnderStoppedHostAuthorityAsync(
+                            nestedOperationId,
+                            issuer,
+                            token)),
+                cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -1276,36 +1461,96 @@ internal sealed class InstallationResetService(
                 "The stopped-host installation-reset data path is unavailable."));
         }
 
-        Result<HostProcessToolsMarkerPairJoinResult> pair =
-            await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
-                issuer,
-                cancellationToken).ConfigureAwait(false);
+        IInstallationResetStoppedHostDataService stoppedHostData = _stoppedHostDataService;
 
-        if (pair.IsFailure
-            || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
+        // The journal first, before the database is opened for anything. An unfinished nested
+        // transition is a statement about the catalog itself, and the host refuses to start while this
+        // reset is active, so this resume is the only actor that can finish it. It is the host's own
+        // pass, run under the held lock lent to the journal's phase authority for its length.
+        Result journalFirst = await FinishInterruptedTransitionAsync(
+            issuer,
+            heldInstallationLock,
+            cancellationToken).ConfigureAwait(false);
+
+        if (journalFirst.IsFailure)
         {
-            return ExternalRemediationRequired<InstallationResetResult>();
+            return Result<InstallationResetResult>.Failure(journalFirst.Error);
         }
 
-        IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
-            identityReader
-            ?? activeStore as IInstallationResetDatabaseIdentityReader;
+        // A global or all record past its data phase has had its Grimoire erased, and offline cleanup
+        // deletes the database and the secret store. Its pair and its identity can no longer be read
+        // from a database, and reading them would answer "remediation required" for ever. The
+        // identity is the one the authenticated envelope carries (the record was checked clean, and
+        // against the database, before its point of no return), and the rest of the resume is
+        // cleanup, credentials and verification, none of which opens the database. The phase comes
+        // from the lockless read, so that a dirty pair on a record that still has its database is
+        // refused before anything is recovered or written.
+        Result<InstallationResetActiveRecoveryState> inspected = await activeStore
+            .InspectAsync(cancellationToken)
+            .ConfigureAwait(false);
 
-        if (effectiveIdentityReader is null)
+        InstallationResetActivePublication? inspectedPublication = inspected.IsSuccess
+            ? inspected.Value.Publication
+            : null;
+
+        bool databaseErased = inspectedPublication is not null
+            && inspectedPublication.Payload is
+            {
+                Scope: InstallationResetScope.Global or InstallationResetScope.All,
+                Phase: not InstallationResetPhase.Prepared,
+            };
+
+        Guid installationId;
+
+        if (databaseErased)
         {
-            return Result<InstallationResetResult>.Failure(new Error(
-                ErrorCodes.Data.ControlPathUnavailable,
-                "The authenticated installation-reset store is unavailable."));
+            installationId = inspectedPublication!.Envelope.InstallationId;
         }
-
-        Result<Guid> installation = await _stoppedHostDataService
-            .ReadIdentityUnderStoppedHostAuthorityAsync(
-                issuer,
-                cancellationToken).ConfigureAwait(false);
-
-        if (installation.IsFailure)
+        else
         {
-            return Result<InstallationResetResult>.Failure(installation.Error);
+            Result<HostProcessToolsMarkerPairJoinResult> pair =
+                await _stoppedHostPairReader.ReadUnderStoppedHostAuthorityAsync(
+                    issuer,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (pair.IsFailure
+                || pair.Value.Disposition is not HostProcessToolsMarkerPairDisposition.Clean)
+            {
+                return ExternalRemediationRequired<InstallationResetResult>();
+            }
+
+            IInstallationResetDatabaseIdentityReader? effectiveIdentityReader =
+                identityReader
+                ?? activeStore as IInstallationResetDatabaseIdentityReader;
+
+            if (effectiveIdentityReader is null)
+            {
+                return Result<InstallationResetResult>.Failure(new Error(
+                    ErrorCodes.Data.ControlPathUnavailable,
+                    "The authenticated installation-reset store is unavailable."));
+            }
+
+            Result<Guid> installation = await stoppedHostData
+                .ReadIdentityUnderStoppedHostAuthorityAsync(
+                    issuer,
+                    cancellationToken).ConfigureAwait(false);
+
+            if (installation.IsFailure)
+            {
+                return Result<InstallationResetResult>.Failure(installation.Error);
+            }
+
+            installationId = installation.Value;
+
+            // A resume must not run against a swapped Grimoire: the record names the installation it
+            // was begun for, and the database in front of it has to be that one.
+            if (inspectedPublication is not null
+                && inspectedPublication.Envelope.InstallationId != installationId)
+            {
+                return Result<InstallationResetResult>.Failure(new Error(
+                    ErrorCodes.Data.RecoveryRequired,
+                    "The Grimoire's installation identity is not the one the active reset record names."));
+            }
         }
 
         Result<InstallationResetActiveRecoveryState> recovered = await activeStore
@@ -1340,7 +1585,7 @@ internal sealed class InstallationResetService(
             Result<InstallationResetActivePublication> migrated = await activeStore
                 .MigrateLegacyV1Async(
                     heldInstallationLock,
-                    installation.Value,
+                    installationId,
                     legacy,
                     legacyIdentity,
                     cancellationToken)
@@ -1365,7 +1610,7 @@ internal sealed class InstallationResetService(
             activeStore,
             heldInstallationLock,
             activeStore.GuardedRoot,
-            installation.Value,
+            installationId,
             publication);
 
         InstallationResetActiveRecord active;
@@ -1458,14 +1703,96 @@ internal sealed class InstallationResetService(
                 writer,
                 progress,
                 plan,
-                cancellationToken,
-                stoppedHostIssuer: issuer)
+                new NestedDataStep(
+                    (dataApplyRequest, token) => stoppedHostData
+                        .ApplyUnderStoppedHostAuthorityAsync(dataApplyRequest, issuer, token),
+                    (nestedOperationId, token) => stoppedHostData
+                        .ReadNestedLaunchStateUnderStoppedHostAuthorityAsync(
+                            nestedOperationId,
+                            issuer,
+                            token)),
+                cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             return await CheckpointAfterCancellationAsync(writer, progress).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Finishes an interrupted nested offline transition through the host's own recovery pass, under
+    /// the held lock lent to the journal's phase authority for the pass's length.
+    /// </summary>
+    /// <remarks>
+    /// Skipped, successfully, where nothing is unfinished or where a composition has no such pass. The
+    /// pair is read first and without a database: the reset record and the journal are two records
+    /// about one erasure, and only the pair says whether the journal is the nested transition of this
+    /// reset, a standalone transition, or already retired. Every refusal of the pair, and every pass
+    /// that does not reach a durable verdict, stops the resume with the record intact.
+    /// </remarks>
+    private async Task<Result> FinishInterruptedTransitionAsync(
+        StoppedHostGrimoireAuthorityIssuer issuer,
+        ArcanumMaintenanceLock heldInstallationLock,
+        CancellationToken cancellationToken)
+    {
+        if (deferredServices?.ResolveStartupRecovery() is not { } pairRecovery
+            || deferredServices.ResolveTransitionRecovery() is not { } transitions
+            || deferredServices.ResolveLockAccessor() is not { } accessor)
+        {
+            return Result.Success();
+        }
+
+        Result<InstallationResetStartupRecoveryState> pair = await pairRecovery
+            .RecoverBeforeBootstrapAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (pair.IsFailure)
+        {
+            return Result.Failure(pair.Error);
+        }
+
+        if (!InstallationResetHostStartupAdmission.LeavesTransitionUnfinished(
+                pair.Value.NestedTransitionEvidence))
+        {
+            return Result.Success();
+        }
+
+        Result<IStoppedHostGrimoireConnectionAuthority> issued =
+            issuer.IssueStoppedHostFactoryErasureLockLoan();
+
+        if (issued.IsFailure)
+        {
+            return Result.Failure(issued.Error);
+        }
+
+        await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
+
+        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+            authority,
+            accessor,
+            _canonicalDatabasePath);
+
+        if (lent.IsFailure)
+        {
+            return Result.Failure(lent.Error);
+        }
+
+        await using IAsyncDisposable loan = lent.Value;
+
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> resumed = await transitions
+            .RecoverBeforeBootstrapAsync(
+                heldInstallationLock,
+                activeStore.GuardedRoot,
+                _canonicalDatabasePath,
+                pair.Value.NestedTransitionEvidence,
+                pair.Value.TransitionJournal,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return resumed.IsSuccess
+            ? Result.Success()
+            : Result.Failure(resumed.Error);
     }
 
     /// <summary>
@@ -1594,13 +1921,19 @@ internal sealed class InstallationResetService(
     /// state of its own. Continuing from the record this method was already holding would write that
     /// state straight back out of existence on the very next checkpoint.</para>
     /// </param>
+    /// <param name="dataStep">
+    /// How the nested data apply is run, built by the arm that creates it. The arm builds it, rather
+    /// than this method choosing between a stopped-host and an issuer-free service, so that the code a
+    /// stopped-host arm reaches (the protected erasure and the position read) is attributed to that
+    /// arm alone and not to every other root that continues an apply.
+    /// </param>
     private async Task<Result<InstallationResetResult>> ContinueApplyAsync(
         IInstallationResetActiveWriter writer,
         InstallationResetApplyProgress progress,
         InstallationResetPlan plan,
+        NestedDataStep dataStep,
         CancellationToken cancellationToken,
-        Func<CancellationToken, Task<Result<InstallationResetActiveRecord>>>? terminalGate = null,
-        IStoppedHostGrimoireAuthorityIssuer? stoppedHostIssuer = null)
+        Func<CancellationToken, Task<Result<InstallationResetActiveRecord>>>? terminalGate = null)
     {
         InstallationResetActiveRecord active = progress.Active;
 
@@ -1746,16 +2079,9 @@ internal sealed class InstallationResetService(
                         dataPlanId,
                         active.NestedTransitionReceipt?.NestedOperationId);
 
-                    Result<DataRetentionApplyResult> applied =
-                        stoppedHostIssuer is null
-                            ? await dataService.ApplyAsync(
-                                dataApplyRequest,
-                                cancellationToken).ConfigureAwait(false)
-                            : await _stoppedHostDataService!
-                                .ApplyUnderStoppedHostAuthorityAsync(
-                                    dataApplyRequest,
-                                    stoppedHostIssuer,
-                                    cancellationToken).ConfigureAwait(false);
+                    Result<DataRetentionApplyResult> applied = await dataStep
+                        .Apply(dataApplyRequest, cancellationToken)
+                        .ConfigureAwait(false);
 
                     // Adopted whether the apply succeeded or not: a nested transition that reached its
                     // terminal compare-exchange and then failed afterwards has still published its
@@ -1786,11 +2112,40 @@ internal sealed class InstallationResetService(
                         // data service proved it made before touching anything lets the record go. Any
                         // other ending - including a committed-but-unfinished one - may have changed
                         // state, and retiring the record would delete the only evidence of that.
-                        if (!IsProvenPreEffectRefusal(applied.Error)
+                        //
+                        // A claim that has not reported is the exception to the exception. The claim is
+                        // published before the data step re-checks the plan, so a refusal at that
+                        // re-check (a plan that changed, a conflict that appeared) would otherwise keep
+                        // a record for good that no resume can finish, with the host refusing to start
+                        // beside it. Effects cannot happen structurally before the erasure's launch
+                        // checkpoint, so a read that finds the claimed operation absent, or created and
+                        // never launched, with no journal, proves nothing was erased, and then the
+                        // record may go. Anything else, and a read that cannot be made, keeps it.
+                        bool provenPreEffect = IsProvenPreEffectRefusal(applied.Error);
+
+                        bool claimNeverLaunched = false;
+
+                        if (provenPreEffect
+                            && active.NestedTransitionReceipt is
+                            {
+                                Phase: InstallationResetNestedTransitionPhase.Claimed,
+                            } claimedReceipt
+                            && dataStep.ReadLaunchState is { } readLaunchState)
+                        {
+                            Result<StoppedHostNestedLaunchState> launch = await readLaunchState(
+                                claimedReceipt.NestedOperationId,
+                                cancellationToken).ConfigureAwait(false);
+
+                            claimNeverLaunched = launch.IsSuccess
+                                && launch.Value is StoppedHostNestedLaunchState.Absent
+                                    or StoppedHostNestedLaunchState.Unlaunched;
+                        }
+
+                        if (!provenPreEffect
                             || active.NestedTransitionReceipt is
                             {
                                 Phase: InstallationResetNestedTransitionPhase.Claimed,
-                            })
+                            } && !claimNeverLaunched)
                         {
                             active = active with
                             {
@@ -1815,8 +2170,16 @@ internal sealed class InstallationResetService(
                             active.OperationId,
                             cancellationToken).ConfigureAwait(false);
 
+                        // The daemon registration was already removed by the time this reset got here,
+                        // and retiring the record does not put it back, so a refusal that retired a
+                        // claim says so rather than reporting only the refusal.
                         return retired.IsSuccess
-                            ? Result<InstallationResetResult>.Failure(applied.Error)
+                            ? Result<InstallationResetResult>.Failure(
+                                claimNeverLaunched
+                                    ? new Error(
+                                        applied.Error.Code,
+                                        applied.Error.Message + " " + ClaimRetiredNote)
+                                    : applied.Error)
                             : Resumable(active, retired.Error);
                     }
 

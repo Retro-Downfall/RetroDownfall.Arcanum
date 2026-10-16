@@ -52,13 +52,13 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// database row and refuses on disagreement, so the two must agree for any of them to run again.
 ///
 /// <para>These cases run the real active store, credential catalog, offline cleanup, identity
-/// provider and Grimoire bootstrap over a real SQLCipher database. The one double is the data phase:
-/// the stopped-host composition has no Covenant gate, so it can neither attach the Covenant inventory
-/// that a global plan requires nor run the protected erasure. The decorator below supplies an empty
-/// inventory and an effect-free apply; the sweep that deletes the database does not depend on either.</para>
+/// provider, stopped-host data service, protected erasure and Grimoire bootstrap over a real SQLCipher
+/// database. Nothing in the data phase is a double: the stopped-host composition measures the
+/// Covenant family through the real gate and runs the protected erasure over its own composition, so
+/// the sweep that deletes the database follows a real erasure.</para>
 /// </remarks>
 [Collection("ProcessEnvironment")]
-public sealed class InstallationResetIdentityContinuityTests : IDisposable
+public sealed class InstallationResetIdentityContinuityTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 
@@ -73,11 +73,15 @@ public sealed class InstallationResetIdentityContinuityTests : IDisposable
         _fixture = fixture;
     }
 
-    public void Dispose()
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
     {
+        // Asynchronously: a provider that ran the protected erasure holds a singleton that only
+        // implements IAsyncDisposable.
         foreach (ServiceProvider provider in _providers)
         {
-            provider.Dispose();
+            await provider.DisposeAsync();
         }
 
         _home.Dispose();
@@ -106,7 +110,18 @@ public sealed class InstallationResetIdentityContinuityTests : IDisposable
 
         Rebirth rebirth = await ResetAndRebirthAsync();
 
-        Result<InstallationResetResult> second = await FactoryResetAsync(rebirth.Provider);
+        // A new provider: a reset is the whole life of one process, and the Covenant runtime the first
+        // one established describes a Grimoire that no longer exists. The secret store is carried over
+        // from the first, because the reset deleted the key ring it protected its mirrors with and the
+        // store still holds the one it was running on; a new process would meet a fresh ring.
+        ServiceProvider secondProcess = CreateProvider(
+            rebirth.Provider.GetRequiredService<DataProtectionSecretStore>());
+
+        _providers.Add(secondProcess);
+
+        await SeedMasterKeyAsync(secondProcess);
+
+        Result<InstallationResetResult> second = await FactoryResetAsync(secondProcess);
 
         Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : string.Empty);
 
@@ -267,7 +282,7 @@ public sealed class InstallationResetIdentityContinuityTests : IDisposable
         return new Rebirth(provider, prior, retained, await ReadDatabaseIdentityAsync(provider));
     }
 
-    private ServiceProvider CreateProvider()
+    private ServiceProvider CreateProvider(DataProtectionSecretStore? carriedSecrets = null)
     {
         ServiceCollection services = new();
 
@@ -277,11 +292,13 @@ public sealed class InstallationResetIdentityContinuityTests : IDisposable
 
         services.AddArcanumCliClientStack();
 
+        if (carriedSecrets is not null)
+        {
+            services.AddSingleton(carriedSecrets);
+        }
+
         services.AddSingleton<IInstallationResetPreDataMutation>(
             NoopInstallationResetPreDataMutation.Instance);
-
-        services.AddScoped<IInstallationResetStoppedHostDataService>(sp =>
-            new CovenantInventoryDataService(sp.GetRequiredService<InstallationResetExistingGrimoire>()));
 
         services.AddArcanumInstallationReset(new ArcanumSettings());
 
@@ -308,7 +325,15 @@ public sealed class InstallationResetIdentityContinuityTests : IDisposable
         await provider
             .GetRequiredService<DataProtectionSecretStore>()
             .SaveGrimoireEncryptionSecretAsync(GrimoireFixture.TestGrimoireSecret);
+
+        await SeedMasterKeyAsync(provider);
     }
+
+    /// <summary>The measured Covenant inventory is taken under envelope keys derived from the master key.</summary>
+    private static Task SeedMasterKeyAsync(ServiceProvider provider) =>
+        provider
+            .GetRequiredService<ISecretStore>()
+            .SaveApiKeyAsync("identity-continuity-master-api-key");
 
     private static async Task<Guid> ReadDatabaseIdentityAsync(ServiceProvider provider)
     {
@@ -447,69 +472,5 @@ public sealed class InstallationResetIdentityContinuityTests : IDisposable
 
         public Task<SecretStoreReadResult> ReadMasterApiKeyAsync() =>
             Task.FromResult(SecretStoreReadResult.Ok("rebirth-bootstrap-api-key"));
-    }
-
-    private sealed class CovenantInventoryDataService(IInstallationResetStoppedHostDataService inner)
-        : IInstallationResetStoppedHostDataService
-    {
-        public async Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
-            InstallationResetDataPlanRequest request,
-            IStoppedHostGrimoireAuthorityIssuer issuer,
-            CancellationToken cancellationToken)
-        {
-            Result<DataRetentionPlan> plan = await inner.PlanUnderStoppedHostAuthorityAsync(
-                request,
-                issuer,
-                cancellationToken);
-
-            return plan.IsFailure
-                ? plan
-                : Result<DataRetentionPlan>.Success(plan.Value with
-                {
-                    Covenant = new DataRetentionCovenantInventory(
-                        Rows: 0,
-                        ManagedFiles: 0,
-                        LocalArtifacts: 0,
-                        AffectedSessions: 0,
-                        PossibleDisclosures: 0,
-                        DisclosureCountKind: CovenantDisclosureCountKind.Exact),
-                });
-        }
-
-        public Task<Result<InstallationResetWorkspaceResolution>>
-            ResolveWorkspaceUnderStoppedHostAuthorityAsync(
-                string invocationDirectory,
-                IStoppedHostGrimoireAuthorityIssuer issuer,
-                CancellationToken cancellationToken) =>
-            inner.ResolveWorkspaceUnderStoppedHostAuthorityAsync(
-                invocationDirectory,
-                issuer,
-                cancellationToken);
-
-        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
-            IStoppedHostGrimoireAuthorityIssuer issuer,
-            CancellationToken cancellationToken) =>
-            inner.ReadIdentityUnderStoppedHostAuthorityAsync(issuer, cancellationToken);
-
-        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
-            ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
-                IStoppedHostGrimoireAuthorityIssuer issuer,
-                CancellationToken cancellationToken) =>
-            inner.ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(issuer, cancellationToken);
-
-        public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
-            DataRetentionApplyRequest request,
-            IStoppedHostGrimoireAuthorityIssuer issuer,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(Result<DataRetentionApplyResult>.Success(new DataRetentionApplyResult(
-                Guid.NewGuid(),
-                request.ExpectedPlanId ?? string.Empty,
-                RowsDeleted: 0,
-                FilesDeleted: 0,
-                EstimatedBytesDeleted: 0,
-                DerivedRecordsDeleted: 0,
-                Reconciled: true,
-                Blockers: [],
-                Conflicts: [])));
     }
 }

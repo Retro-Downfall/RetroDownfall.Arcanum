@@ -1553,6 +1553,9 @@ public sealed class InstallationFactoryResetCommandTests
         public Result<IStoppedHostGrimoireConnectionAuthority>
             IssueStoppedHostMarkerPairResetAuthority() => Throw();
 
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostFactoryErasureLockLoan() => Throw();
+
         private static Result<IStoppedHostGrimoireConnectionAuthority> Throw() =>
             throw new InvalidOperationException(
                 "The planner fake must not mint a database capability.");
