@@ -29,7 +29,7 @@ internal static class WindowsFileBackingProbe
     /// <summary><c>IO_REPARSE_TAG_DEDUP</c>: data the volume deduplicates.</summary>
     internal const uint ReparseTagDedup = 0x80000013;
 
-    /// <summary><c>IO_REPARSE_TAG_CLOUD</c>: a cloud placeholder (the base tag; its variants differ in the low bits of the high word).</summary>
+    /// <summary><c>IO_REPARSE_TAG_CLOUD</c>: a cloud placeholder (the base tag; its variants <c>IO_REPARSE_TAG_CLOUD_1</c> to <c>_F</c> differ in bits 12 to 15 of the low word, <c>IO_REPARSE_TAG_CLOUD_MASK</c> 0x0000F000).</summary>
     internal const uint ReparseTagCloud = 0x9000001A;
 
     /// <summary><c>IO_REPARSE_TAG_HSM</c>: data a storage-management service moved off the volume.</summary>

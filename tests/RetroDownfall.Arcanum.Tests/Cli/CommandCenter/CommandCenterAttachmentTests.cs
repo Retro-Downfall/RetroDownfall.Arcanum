@@ -556,14 +556,19 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 
         string fixture = $"Before compact.exe, {before.Detail} {compact} After it, {after.Detail}";
 
-        // The reading before the compaction is the control: a file nobody compressed that already reads as
-        // externally backed would mean the answer below proves nothing.
-        if (before is { Answered: true, IsExternal: true }
+        // Observed before the gate so the failure the lane would report carries what the host showed too.
+        HostView host = ObserveHost(path);
+
+        string evidence = $"{fixture} {host.Description}";
+
+        // The reading before the compaction is the control: it must answer, and answer that the file is not
+        // externally backed (a successful call says so for a physical file), or the answer after it proves nothing.
+        if (before is not { Answered: true, IsExternal: false }
             || after is not { Answered: true, IsExternal: true, Provider: WindowsFileBackingProbe.FileProvider })
         {
             string reason =
                 "The volume did not back the file with the Windows Overlay Filter's file provider, so it is not the "
-                + "fixture this test needs. " + fixture;
+                + "fixture this test needs. " + evidence;
 
             if (WindowsLaneRequired())
             {
@@ -572,9 +577,6 @@ public sealed class CommandCenterTurnAttachmentBuilderTests : IDisposable
 
             Skip.If(true, reason);
         }
-
-        HostView host = ObserveHost(path);
-        string evidence = $"{fixture} {host.Description}";
 
         Assert.True(
             host.LinkTarget is null,
