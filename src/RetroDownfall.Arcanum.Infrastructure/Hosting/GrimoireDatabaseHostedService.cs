@@ -321,6 +321,16 @@ public sealed class GrimoireDatabaseHostedService(
 
             if (activeRead.IsFailure)
             {
+                // The pair compares the anchor a finished reset or transition keeps with the profile's
+                // installation identity on every start, so a damaged identity stops the start here,
+                // before the bootstrap that would otherwise refuse it. It is the same refusal, with
+                // the same words and the command that clears it (§10.19.13), and not a failure to read
+                // evidence: nothing about the evidence is in doubt.
+                if (BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(activeRead.Error))
+                {
+                    throw GrimoireDatabaseBootstrapper.DamagedInstallationIdentityRefusal(activeRead.Error);
+                }
+
                 throw new InvalidOperationException(
                     "Installation reset recovery state could not be read safely. "
                     + activeRead.Error.Message);

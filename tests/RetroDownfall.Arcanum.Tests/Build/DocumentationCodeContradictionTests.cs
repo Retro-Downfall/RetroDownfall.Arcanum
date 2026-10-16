@@ -1496,6 +1496,55 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
+    /// A start refuses a damaged installation identity in the same words from both places that read it
+    /// before a Grimoire exists, and the words have one owner: the host maps the pair's failure to the
+    /// bootstrapper's refusal and does not carry a second copy of the command it names.
+    /// </summary>
+    [Fact]
+    public void The_damaged_installation_identity_refusal_has_one_owner_that_the_host_and_the_bootstrap_both_use()
+    {
+        string bootstrapper = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs");
+
+        string host = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseHostedService.cs");
+
+        string provider = ReadSource("Infrastructure", "Backup", "BackupRestoreJournalInstallationIdentityProvider.cs");
+
+        // The words are in the one method, and nowhere else in the bootstrapper or in the host.
+        int refusal = bootstrapper.IndexOf("internal static GrimoireDatabaseUnavailableException DamagedInstallationIdentityRefusal(", StringComparison.Ordinal);
+
+        Assert.True(refusal > 0, "The bootstrapper does not own the damaged installation identity refusal.");
+
+        int refusalEnd = bootstrapper.IndexOf("\n    /// <summary>", refusal, StringComparison.Ordinal);
+
+        string owner = bootstrapper[refusal..refusalEnd];
+
+        Assert.Contains("arcanum data repair-installation-identity", owner, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("repair-installation-identity", bootstrapper.Remove(refusal, refusalEnd - refusal), StringComparison.Ordinal);
+
+        Assert.Equal(
+            2,
+            Regex.Count(bootstrapper, @"DamagedInstallationIdentityRefusal\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+
+        Assert.Contains("throw GrimoireDatabaseBootstrapper.DamagedInstallationIdentityRefusal(", host, StringComparison.Ordinal);
+
+        Assert.Contains("BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(", host, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("repair-installation-identity", host, StringComparison.Ordinal);
+
+        // The recognizer reads the probe's own words, and the words are written in one place.
+        Assert.Equal(
+            1,
+            Regex.Count(provider, @"is not one canonical uppercase UUID", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.Contains("`GrimoireDatabaseBootstrapper.DamagedInstallationIdentityRefusal`", design, StringComparison.Ordinal);
+
+        Assert.Contains("`BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity`", design, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// What the documents say about the stopped-host reset and the identity repair is what the code
     /// does: the codes they name, the conditions they list, and the places they send an operator.
     /// </summary>

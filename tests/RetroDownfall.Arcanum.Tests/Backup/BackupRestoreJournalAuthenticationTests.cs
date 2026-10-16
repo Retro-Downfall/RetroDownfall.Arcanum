@@ -450,6 +450,63 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         Assert.Contains("guards a different control path", refused.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A damaged installation identity is recognized by the probe's own answer, wherever up a chain
+    /// that returns the error as it found it the caller holds it, and by nothing else: the same code
+    /// with other words is evidence that failed another contract, and the same words under another
+    /// code is not the probe's answer.
+    /// </summary>
+    [Fact]
+    public void A_damaged_installation_identity_is_told_from_every_other_failure_by_the_probes_own_answer()
+    {
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(_credentials);
+
+        Guid carried = Guid.Parse("3a3b3c3d-3e3f-4a4b-8c4d-5e6f7a8b9c0d");
+
+        _ = Value(identities.SeedFromDatabase(_lock, _guarded, profile, carried));
+
+        // A well-formed identity that names another installation is a refusal, and not a damaged value.
+        Result mismatch = identities.RequireMatchesDatabase(
+            profile,
+            Guid.Parse("0a0b0c0d-1111-4222-8333-444455556666"));
+
+        Assert.True(mismatch.IsFailure);
+
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(mismatch.Error));
+
+        // The lowercase spelling of the same value is a different spelling, which is damage.
+        _ = _credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(profile.AccountSuffix),
+            carried.ToString("D"));
+
+        Result<BackupRestoreJournalIdentityProbe> probed = identities.Probe(profile);
+
+        Assert.True(probed.IsFailure);
+
+        Assert.True(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(probed.Error));
+
+        Assert.True(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            identities.ReadForNewDatabase(_lock, _guarded, profile).Error));
+
+        Assert.True(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            identities.RequireMatchesDatabase(profile, carried).Error));
+
+        // The same code with other words is some other evidence that failed its own contract.
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "This profile's external installation identity did not read back as written.")));
+
+        // The probe's words under another code are not the probe's answer.
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            new Error(ErrorCodes.Covenant.Unavailable, probed.Error.Message)));
+
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(Error.None));
+    }
+
     // ---------------------------------------------------------------- envelope authentication
 
     [Theory]

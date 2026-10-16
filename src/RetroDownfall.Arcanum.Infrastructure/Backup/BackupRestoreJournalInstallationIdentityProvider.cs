@@ -93,10 +93,28 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
             ? new BackupRestoreJournalIdentityProbe(
                 BackupRestoreJournalIdentityPresence.Present,
                 installationId)
-            : new Error(
-                ErrorCodes.Covenant.IntegrityFailure,
-                "This profile's external installation identity is not one canonical uppercase UUID.");
+            : new Error(ErrorCodes.Covenant.IntegrityFailure, DamagedMessage);
     }
+
+    private const string DamagedMessage =
+        "This profile's external installation identity is not one canonical uppercase UUID.";
+
+    /// <summary>
+    /// Whether <paramref name="error"/> is <see cref="Probe"/>'s answer for a value that exists and is
+    /// not one canonical identity.
+    /// </summary>
+    /// <remarks>
+    /// The code alone is not the answer: <see cref="ErrorCodes.Covenant.IntegrityFailure"/> is also what
+    /// a write that did not read back and every other piece of evidence that fails its own contract
+    /// report, and only a damaged value is something the installation-identity repair puts right. The
+    /// probe is the one place that builds this error and this is the one place that recognizes it, so a
+    /// caller that holds the error from further up a chain that returns it as it found it (the
+    /// transition journal's recovery pass, the pair recovery, the host's start) can tell a damaged
+    /// identity from any other refusal without reading the credential store a second time.
+    /// </remarks>
+    internal static bool IsDamagedIdentity(Error error) =>
+        error.Code == ErrorCodes.Covenant.IntegrityFailure
+        && string.Equals(error.Message, DamagedMessage, StringComparison.Ordinal);
 
     /// <summary>
     /// Seeds a missing identity from the database authority row, or requires the existing one to agree.
