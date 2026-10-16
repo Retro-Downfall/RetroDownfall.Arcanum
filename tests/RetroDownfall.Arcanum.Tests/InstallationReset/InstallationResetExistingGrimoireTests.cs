@@ -1106,85 +1106,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(1, await CountRowsAsync("artifact_sensitivity", "ArtifactId", memoryId));
     }
 
-    private async Task SeedLabeledSagaMemoryAsync(Guid memoryId)
-    {
-        await using ArcanumDbContext context = _fixture.CreateContext(
-            ArcanumPaths.GrimoireDatabaseFile);
+    private Task SeedLabeledSagaMemoryAsync(Guid memoryId) =>
+        LabeledSagaMemorySeed.SeedAsync(_fixture, memoryId);
 
-        SqliteConnection connection = (SqliteConnection)context.Database.GetDbConnection();
-
-        if (connection.State is not System.Data.ConnectionState.Open)
-        {
-            await connection.OpenAsync(CancellationToken.None);
-        }
-
-        await using (SqliteCommand memory = connection.CreateCommand())
-        {
-            memory.CommandText = """
-                INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode)
-                VALUES ($id, 'labelled saga fact', $created, 1);
-                """;
-
-            _ = memory.Parameters.AddWithValue("$id", memoryId.ToString("D").ToUpperInvariant());
-
-            _ = memory.Parameters.AddWithValue("$created", "2026-01-01T00:00:00.0000000Z");
-
-            _ = await memory.ExecuteNonQueryAsync(CancellationToken.None);
-        }
-
-        // Written through the ledger the serving host writes labels with, so the row this test
-        // protects is shaped by production rather than by the test's idea of a label.
-        CovenantConnectionSource connections = new(
-            context,
-            FixtureOrdinaryConnectionFactory.For(context));
-
-        try
-        {
-            ArtifactSensitivityLedger ledger = new(connections);
-
-            Result<LabeledArtifactWriteReceipt> receipt = await ledger.LabelAsync(
-                new DerivedArtifactWrite(
-                    SensitiveArtifactKind.Saga,
-                    memoryId,
-                    null,
-                    null,
-                    null,
-                    1,
-                    CovenantTask6Fixture.D(11),
-                    ContentSensitivity.CovenantDerived,
-                    GenerationProvenance.CreateExact([Guid.Parse("5E6F7081-92A3-4B5C-8D9E-0F1A2B3C4D5E")])),
-                CancellationToken.None);
-
-            Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
-        }
-        finally
-        {
-            connections.Dispose();
-        }
-    }
-
-    private async Task<int> CountRowsAsync(string table, string column, Guid id)
-    {
-        await using ArcanumDbContext context = _fixture.CreateContext(
-            ArcanumPaths.GrimoireDatabaseFile);
-
-        SqliteConnection connection = (SqliteConnection)context.Database.GetDbConnection();
-
-        if (connection.State is not System.Data.ConnectionState.Open)
-        {
-            await connection.OpenAsync(CancellationToken.None);
-        }
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE {column} = $id;";
-
-        _ = command.Parameters.AddWithValue("$id", id.ToString("D").ToUpperInvariant());
-
-        return Convert.ToInt32(
-            await command.ExecuteScalarAsync(CancellationToken.None),
-            global::System.Globalization.CultureInfo.InvariantCulture);
-    }
+    private Task<int> CountRowsAsync(string table, string column, Guid id) =>
+        LabeledSagaMemorySeed.CountRowsAsync(_fixture, table, column, id);
 
     private async Task AddWorkspaceDataAsync(Guid campaignId, string workspaceRoot)
     {
