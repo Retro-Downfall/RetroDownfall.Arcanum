@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Api.Operations;
@@ -19,6 +20,26 @@ public sealed partial class LongRestMaintenanceTests
 
         public void Wake(Guid operationId) => Woken.Add(operationId);
     }
+
+    private sealed class FailingDiscovery(Exception failure) : ILongRunningOperationGenericRecoveryDiscovery
+    {
+        public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(DateTimeOffset utcNow, int limit, CancellationToken cancellationToken = default) =>
+            Task.FromException<IReadOnlyList<LongRunningOperation>>(failure);
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        internal List<(LogLevel Level, Exception? Exception)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) => Entries.Add((logLevel, exception));
+    }
+
+    private static LongRunningOperationReconciler ReconcilerFailingWith(MaintenanceFixture f, Exception failure) => new(f.Operations, [new LongRestSweepRecoveryHandler()], TimeProvider.System,
+        NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership(), new FailingDiscovery(failure), f.Operations, null);
 
     private static LongRunningOperationReconciler Reconciler(MaintenanceFixture f) => new(f.Operations, [new LongRestSweepRecoveryHandler()], TimeProvider.System,
         NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
@@ -51,7 +72,7 @@ public sealed partial class LongRestMaintenanceTests
 
         RecordingWake wake = new();
 
-        await LongRunningOperationEndpoints.WakeAfterRetryAsync(retried, reconciler, wake, CancellationToken.None);
+        await LongRunningOperationEndpoints.WakeAfterRetryAsync(retried, reconciler, wake, NullLogger.Instance, CancellationToken.None);
 
         LongRunningOperation settled = (await f.Operations.GetAsync(f.Operation))!;
 
@@ -89,10 +110,56 @@ public sealed partial class LongRestMaintenanceTests
 
         RecordingWake wake = new();
 
-        await LongRunningOperationEndpoints.WakeAfterRetryAsync(other, Reconciler(f), wake, CancellationToken.None);
+        await LongRunningOperationEndpoints.WakeAfterRetryAsync(other, Reconciler(f), wake, NullLogger.Instance, CancellationToken.None);
 
         Assert.Empty(wake.Woken);
 
         Assert.Equal(LongRunningOperationState.Pending, (await f.Operations.GetAsync(other.Id))!.State);
+    }
+
+    // The retry is already durable when the settling pass runs, and the pass and the wake are hints: a pass that fails is logged and does not turn the
+    // recorded retry into an error response, and the worker is still woken.
+    [Fact]
+    public async Task A_failure_of_the_pass_that_settles_an_operator_retry_is_logged_and_does_not_fail_the_retry()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        LongRunningOperation retried = (await f.Operations.GetAsync(f.Operation))!;
+
+        RecordingWake wake = new();
+
+        RecordingLogger logger = new();
+
+        IOException failure = new("The Grimoire could not be read.");
+
+        await LongRunningOperationEndpoints.WakeAfterRetryAsync(retried, ReconcilerFailingWith(f, failure), wake, logger, CancellationToken.None);
+
+        Assert.Equal([f.Operation], wake.Woken);
+
+        (LogLevel level, Exception? exception) = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, level);
+
+        Assert.Same(failure, exception);
+    }
+
+    // A cancelled request is not a failure of the pass: it propagates and no worker is woken for a retry the caller has given up on.
+    [Fact]
+    public async Task A_cancellation_of_the_pass_that_settles_an_operator_retry_propagates_and_wakes_no_worker()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        LongRunningOperation retried = (await f.Operations.GetAsync(f.Operation))!;
+
+        RecordingWake wake = new();
+
+        RecordingLogger logger = new();
+
+        _ = await Assert.ThrowsAsync<OperationCanceledException>(() => LongRunningOperationEndpoints.WakeAfterRetryAsync(
+            retried, ReconcilerFailingWith(f, new OperationCanceledException()), wake, logger, CancellationToken.None));
+
+        Assert.Empty(wake.Woken);
+
+        Assert.Empty(logger.Entries);
     }
 }
