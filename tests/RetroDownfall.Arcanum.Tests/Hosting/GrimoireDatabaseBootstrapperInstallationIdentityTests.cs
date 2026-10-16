@@ -110,7 +110,8 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
         Assert.NotEqual(Guid.Empty, await ReadDatabaseIdentityAsync());
 
-        // Seeding stays with the replacement restore and the authenticated reset publication.
+        // Seeding stays with the replacement restore, the authenticated reset publication, and the
+        // offline transition's opening journal.
         Assert.Null(ReadCarried());
 
         Assert.Equal(0, _credentials.SetCount(IdentityAccount()));
@@ -378,6 +379,124 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         Assert.Equal(own, await ReadDatabaseIdentityAsync());
     }
 
+    /// <summary>
+    /// An active installation reset names the installation whose database it resumes, so a database
+    /// that is there but holds no authority row for it is as absent as a missing file.
+    /// </summary>
+    /// <remarks>
+    /// The reset seeds the binding from the envelope's own identity, and adoption takes the binding. A
+    /// start that adopted here would install a fresh schema carrying exactly the identity the reset is
+    /// about to verify, the comparison would pass, and recovery would be published over a database that
+    /// holds none of the installation's data. Both ways the file can be present without the row are
+    /// covered: emptied to zero bytes, and replaced by a database that is not the Grimoire.
+    /// </remarks>
+    [Theory]
+    [InlineData(RowlessDatabase.ZeroBytes)]
+    [InlineData(RowlessDatabase.UnrelatedDatabase)]
+    public async Task A_database_without_an_authority_row_is_refused_under_an_active_reset_and_is_left_as_found(
+        RowlessDatabase shape)
+    {
+        await BootstrapAsync();
+
+        Guid envelope = Guid.Parse("81515151-5151-4151-8151-515151515151");
+
+        // What the reset's publication does: the binding names the envelope's installation.
+        Carry(envelope);
+
+        await ReplaceDatabaseAsync(shape);
+
+        GrimoireDatabaseUnavailableException refused = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(
+            () => BootstrapAsync(expectedInstallationId: envelope));
+
+        Assert.Contains("no authority row", refused.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            envelope.ToString("D"),
+            refused.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        // Nothing was installed or written: not the row, and not the schema that would hold it.
+        Assert.Equal(shape is RowlessDatabase.ZeroBytes ? 0L : 1L, await CountTablesAsync());
+
+        await AssertNoAuthorityRowAsync();
+
+        // The binding is read by the adopting start and never written by any start.
+        Assert.Equal(envelope, ReadCarried());
+
+        Assert.Equal(0, _credentials.SetCount(IdentityAccount()));
+
+        // Refused for every start, because the file is still not the database the reset names.
+        _ = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(
+            () => BootstrapAsync(expectedInstallationId: envelope));
+
+        Assert.Equal(shape is RowlessDatabase.ZeroBytes ? 0L : 1L, await CountTablesAsync());
+    }
+
+    /// <summary>
+    /// The refusal's message points at the log for the steps, so the log has to give them: put the
+    /// original installation back and resume, not start fresh.
+    /// </summary>
+    [Theory]
+    [InlineData(ActiveResetRefusal.DatabaseMissing)]
+    [InlineData(ActiveResetRefusal.NoAuthorityRow)]
+    public async Task The_refusal_under_an_active_reset_logs_the_recovery_steps_its_message_points_to(
+        ActiveResetRefusal refusal)
+    {
+        if (refusal is ActiveResetRefusal.NoAuthorityRow)
+        {
+            await BootstrapAsync();
+
+            await ReplaceDatabaseAsync(RowlessDatabase.ZeroBytes);
+        }
+
+        CapturingSink sink = new();
+
+        Serilog.ILogger previous = Serilog.Log.Logger;
+
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+
+        try
+        {
+            GrimoireDatabaseUnavailableException refused =
+                await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() => BootstrapAsync(
+                    expectedInstallationId: Guid.Parse("81515151-5151-4151-8151-515151515151")));
+
+            Assert.Contains("See logs for recovery steps", refused.Message, StringComparison.Ordinal);
+
+            // Other tests log through the same static logger while this one holds it, so the event is
+            // found by what it says rather than by being the only one.
+            string rendered = Assert.Single(
+                sink.Messages,
+                static message => message.Contains("installation reset is active", StringComparison.Ordinal));
+
+            Assert.Contains("Recovery: stop every Arcanum host and daemon", rendered, StringComparison.Ordinal);
+
+            Assert.Contains("put the original Grimoire back", rendered, StringComparison.Ordinal);
+
+            Assert.Contains("start the host again so the reset resumes", rendered, StringComparison.Ordinal);
+
+            Assert.Contains("Do not start fresh while the reset is unfinished", rendered, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+    }
+
+    [Fact]
+    public async Task A_database_that_holds_the_authority_row_the_active_reset_names_is_accepted()
+    {
+        await BootstrapAsync();
+
+        Guid own = await ReadDatabaseIdentityAsync();
+
+        // The refusal is about a missing row, not about an active reset: the same database, with its row
+        // intact, is exactly what the recovery host exists to verify.
+        await BootstrapAsync(expectedInstallationId: own);
+
+        Assert.Equal(own, await ReadDatabaseIdentityAsync());
+    }
+
     [Fact]
     public void An_adopted_identity_is_spelled_as_the_row_spells_every_identity_and_is_never_empty()
     {
@@ -454,6 +573,22 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         await BootstrapAsync();
 
         Assert.Equal(carried, await ReadDatabaseIdentityAsync());
+    }
+
+    /// <summary>How the database file came to be present without the Grimoire's authority row.</summary>
+    public enum RowlessDatabase
+    {
+        ZeroBytes,
+
+        UnrelatedDatabase,
+    }
+
+    /// <summary>Which of the two refusals an active reset makes over the database it must verify.</summary>
+    public enum ActiveResetRefusal
+    {
+        DatabaseMissing,
+
+        NoAuthorityRow,
     }
 
     /// <summary>
@@ -562,7 +697,8 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
     private async Task BootstrapAsync(
         IServiceScopeFactory? scopes = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Guid? expectedInstallationId = null)
     {
         using ArcanumMaintenanceLock held = Assert.IsType<ArcanumMaintenanceLock>(
             ArcanumMaintenanceLock.TryAcquire(_grimoire));
@@ -574,7 +710,7 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
             _database,
             _grimoire,
             held,
-            expectedInstallationId: null,
+            expectedInstallationId,
             cancellationToken);
     }
 
@@ -662,6 +798,60 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
         _ = await drop.ExecuteNonQueryAsync();
     }
 
+    /// <summary>
+    /// Replaces the Grimoire at the host path with a file that is present and holds no authority row,
+    /// keeping the salt sidecar and the dedicated secret that key whatever is created there.
+    /// </summary>
+    private async Task ReplaceDatabaseAsync(RowlessDatabase shape)
+    {
+        SqliteConnection.ClearAllPools();
+
+        foreach (string suffix in (string[])["", "-wal", "-shm"])
+        {
+            File.Delete(_database + suffix);
+        }
+
+        if (shape is RowlessDatabase.ZeroBytes)
+        {
+            File.WriteAllBytes(_database, []);
+
+            return;
+        }
+
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _database,
+            Password = _passphrase.Passphrase,
+            Pooling = false,
+        }.ToString());
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand create = connection.CreateCommand();
+
+        create.CommandText = "CREATE TABLE \"Unrelated\" (\"Value\" TEXT);";
+
+        _ = await create.ExecuteNonQueryAsync();
+    }
+
+    private async Task<long> CountTablesAsync()
+    {
+        await using SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = _database,
+            Password = _passphrase.Passphrase,
+            Pooling = false,
+        }.ToString());
+
+        await connection.OpenAsync();
+
+        await using SqliteCommand tables = connection.CreateCommand();
+
+        tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table';";
+
+        return Convert.ToInt64(await tables.ExecuteScalarAsync());
+    }
+
     private void AssertNothingOfTheGrimoireExists()
     {
         Assert.False(File.Exists(_database));
@@ -720,6 +910,35 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
     private string IdentityAccount() =>
         ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(
             BackupRestoreJournalAuthenticator.ResolveProfileNamespace(_grimoire).Value.AccountSuffix);
+
+    private sealed class CapturingSink : Serilog.Core.ILogEventSink
+    {
+        private readonly List<string> _messages = [];
+
+        public IReadOnlyList<string> Messages
+        {
+            get
+            {
+                lock (_messages)
+                {
+                    return [.. _messages];
+                }
+            }
+        }
+
+        public void Emit(Serilog.Events.LogEvent logEvent)
+        {
+            if (logEvent.Level != Serilog.Events.LogEventLevel.Fatal)
+            {
+                return;
+            }
+
+            lock (_messages)
+            {
+                _messages.Add(logEvent.RenderMessage());
+            }
+        }
+    }
 
     private sealed class IdentitySecretStore : ISecretStore
     {

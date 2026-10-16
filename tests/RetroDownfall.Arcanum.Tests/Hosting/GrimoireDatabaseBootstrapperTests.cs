@@ -2849,6 +2849,118 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
         AssertRecoveryHostRefusedBeforeReadiness(hostScopes, admission);
     }
 
+    /// <summary>
+    /// The refusal for an absent database holds for a database that is present and is not the
+    /// installation's: a file emptied to zero bytes, or replaced by a database with no authority row.
+    /// </summary>
+    /// <remarks>
+    /// Present is not the same as there. The reset seeds its binding from the envelope's own identity,
+    /// so a fresh schema installed over such a file would take exactly the identity being verified, the
+    /// comparison would pass, and recovery would be published over a database that holds none of the
+    /// installation's data. The host stops before the schema installs, so no authority row is written
+    /// and admission stays unpublished.
+    /// </remarks>
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task StartAsync_refuses_an_active_reset_whose_database_has_no_authority_row_and_writes_none(
+        bool unrelatedDatabase,
+        bool escapeHatchOptIn)
+    {
+        _secretStore.SetApiKey("test-api-key");
+
+        string hostDatabase = Path.Combine(
+            _tempDir,
+            Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
+
+        GrimoireDbPassphraseSource setupPassphrase = new();
+
+        await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
+            _secretStore,
+            setupPassphrase,
+            CreateScopeFactory(_credentialStore),
+            hostDatabase,
+            _tempDir,
+            CancellationToken.None);
+
+        SqliteConnection.ClearAllPools();
+
+        foreach (string suffix in (string[])["", "-wal", "-shm"])
+        {
+            File.Delete(hostDatabase + suffix);
+        }
+
+        // The salt sidecar and the dedicated secret stay, so the passphrase the host derives is the one
+        // the file below is keyed with and nothing but the missing row can stop the start.
+        if (unrelatedDatabase)
+        {
+            await using SqliteConnection create = new(new SqliteConnectionStringBuilder
+            {
+                DataSource = hostDatabase,
+                Password = setupPassphrase.Passphrase,
+                Pooling = false,
+            }.ToString());
+
+            await create.OpenAsync();
+
+            await using SqliteCommand statement = create.CreateCommand();
+
+            statement.CommandText = "CREATE TABLE \"Unrelated\" (\"Value\" TEXT);";
+
+            _ = await statement.ExecuteNonQueryAsync();
+        }
+        else
+        {
+            File.WriteAllBytes(hostDatabase, []);
+        }
+
+        Guid activeInstallationId = Guid.Parse(
+            "81515151-5151-4151-8151-515151515151");
+
+        InstallationResetActiveStore store = await BeginHostFactoryErasureResetAsync(activeInstallationId);
+
+        IServiceScopeFactory hostScopes = CreateScopeFactory(
+            _credentialStore,
+            includeHostProcessTools: true,
+            escapeHatchOptIn);
+
+        InstallationResetApiAdmission admission = new();
+
+        GrimoireDatabaseHostedService service = CreateActiveResetHost(store, hostScopes, admission);
+
+        GrimoireDatabaseUnavailableException error =
+            await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(() =>
+                service.StartAsync(CancellationToken.None));
+
+        Assert.Contains("no authority row", error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(
+            activeInstallationId.ToString("D"),
+            error.Message,
+            StringComparison.OrdinalIgnoreCase);
+
+        await using (SqliteConnection inspect = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = hostDatabase,
+            Password = setupPassphrase.Passphrase,
+            Pooling = false,
+        }.ToString()))
+        {
+            await inspect.OpenAsync();
+
+            await using SqliteCommand tables = inspect.CreateCommand();
+
+            tables.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table';";
+
+            // Nothing was installed over the file, so there is no table that could hold a row.
+            Assert.Equal(unrelatedDatabase ? 1L : 0L, Convert.ToInt64(await tables.ExecuteScalarAsync()));
+        }
+
+        AssertRecoveryHostRefusedBeforeReadiness(hostScopes, admission);
+    }
+
     private async Task<InstallationResetActiveStore> BeginHostFactoryErasureResetAsync(
         Guid activeInstallationId)
     {

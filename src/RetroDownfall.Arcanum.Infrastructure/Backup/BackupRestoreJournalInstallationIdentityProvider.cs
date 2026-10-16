@@ -18,7 +18,7 @@ internal enum BackupRestoreJournalIdentityPresence : byte
 /// <remarks>
 /// Absence and a malformed value are different answers, and only absence is reported here — a value
 /// that exists but is not one canonical identity is a typed failure, because "there is no identity"
-/// is what lets a clean bootstrap seed one.
+/// is what lets an authenticated publication seed one.
 /// </remarks>
 internal sealed record BackupRestoreJournalIdentityProbe(
     BackupRestoreJournalIdentityPresence Presence,
@@ -97,9 +97,13 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
     /// Seeds a missing identity from the database authority row, or requires the existing one to agree.
     /// </summary>
     /// <remarks>
-    /// Runs only on a clean bootstrap after core authority becomes readable and only when no active
-    /// restore evidence exists. Seeding a value that disagrees with the row would let the external
-    /// binding drift from the installation it names, which is the one thing it exists to pin.
+    /// Called only by the three authenticated publications that may create the binding, each under the
+    /// exact installation lock and after core authority is readable: a replacement restore, the
+    /// installation-reset V2 record, and the offline transition's opening journal (a standalone Covenant
+    /// reset included). It never runs on an ordinary bootstrap, which reads the binding and writes
+    /// nothing (<see cref="ReadForNewDatabase"/>). Seeding a value that disagrees with the row would let
+    /// the external binding drift from the installation it names, which is the one thing it exists to
+    /// pin.
     /// </remarks>
     internal Result<Guid> SeedFromDatabase(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -191,7 +195,8 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
     /// row that differs from this account, and none of them can change either side.
     ///
     /// <para>This reads and never writes. Absence stays absence, because seeding is something only an
-    /// authenticated replacement restore or an authenticated reset publication may do, and a value that
+    /// authenticated replacement restore, an authenticated reset publication, or an authenticated offline
+    /// transition's opening journal may do (<see cref="SeedFromDatabase"/>), and a value that
     /// exists but is not one canonical identity is a typed failure rather than a reason to mint another:
     /// minting over it would silently replace what it was there to pin.</para>
     /// </remarks>
