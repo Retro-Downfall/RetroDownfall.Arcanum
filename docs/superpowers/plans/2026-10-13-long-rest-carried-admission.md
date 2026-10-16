@@ -232,7 +232,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
 ## WS13: Final convergence
 
 - [ ] **Goal.** With production frozen, run the full graph and settle the manifest, the benchmark input catalog and the holder-era retirement.
-- **Method.** (A) Holder-era retirement (the per-unit and readiness acceptance lanes, the ordinary-holder witness acceptance, the scoped-lease instance hook and its fixtures, the Lease Receiver Proof's holder-era exemption), the ambient-holder refusal widened from the `Bind` name to any holder read, with Site Digest equality at two root workers (CI runs two) as the neutrality proof; if the digest differs, the retirement commit is dropped and a follow-up filed. (B) A one-time manifest regeneration reviewed by a diff-row classifier (`scripts/classify-manifest-diff.py`) with zero unexplained rows, the benchmark input catalog regenerated, the headroom ceilings re-measured as the maximum over one, two and three workers, the four runner partitions and the aggregate green, and a graph of 0 and 0. Two Opus reviews and a fixer. Branch `claude/91-ws13` from aa3c83c6.
+- **Method.** (A) Holder-era retirement (the per-unit and readiness acceptance lanes, the ordinary-holder witness acceptance, the scoped-lease instance hook and its fixtures, the Lease Receiver Proof's holder-era exemption), the ambient-holder refusal widened from the `Bind` name to any holder read, with Site Digest equality at two root workers (CI runs two) as the neutrality proof; if the digest differs, the retirement commit is dropped and a follow-up filed. (B) A one-time manifest regeneration reviewed by a diff-row classifier (`scripts/classify-manifest-diff.py`) with zero unexplained rows, the benchmark input catalog regenerated, the headroom ceilings re-measured as the maximum over one, two and three workers, the five runner partitions and the aggregate green, and a graph of 0 and 0. Two Opus reviews and a fixer. Branch `claude/91-ws13` from aa3c83c6.
 - **Outcome.** To be recorded at merge.
 
 ## WS14: Qualification and delivery
@@ -243,7 +243,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
   - [ ] Compendium tests and Forge tests: `dotnet test tests/RetroDownfall.Compendium.Tests/RetroDownfall.Compendium.Tests.csproj` and the Forge test project.
   - [ ] Helper tests: the coverage-threshold, coverage-workflow, hosted-producer runner and AOT warning-script tests.
   - [ ] Coverage with the tiered gates and the mandatory uninstrumented source analysis: `./scripts/coverage.sh --threshold`, which supplies the authoritative full-runtime pass; do not run a duplicate full suite beside it.
-  - [ ] The four runner partitions with SHA-bound receipts and the aggregate reconciliation (primary, additional, fixtures, serve-host).
+  - [ ] The five runner partitions with SHA-bound receipts and the aggregate reconciliation (primary, additional, fixtures, fixtures-build, serve-host).
   - [ ] Formatter and lint: `dotnet format RetroDownfall.Arcanum.slnx --verify-no-changes`, `./scripts/align-csharp-blanklines.sh --check`, and the commands of CI's formatting and shell lint job (the formatter's own tests, shellcheck over `scripts`, actionlint over the workflows).
   - [ ] `./scripts/verify-aot-il-warnings.sh`: the publish closure free of first-party IL and AOT warnings.
   - [ ] `./scripts/verify-shipping-publish.sh --rid osx-arm64`: the exact Native AOT apphost and the in-process provider-contract smoke.
