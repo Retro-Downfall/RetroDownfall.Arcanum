@@ -533,26 +533,91 @@ Known official OpenAI `gpt-4o`, `chatgpt-4o`, `gpt-4.1`, `gpt-5`, `o1`, `o3`, an
 
 ### Local Grimoire reinstall
 
-Arcanum carries an existing database forward only through a version step the build itself declares ([DESIGN §10.25](Arcanum.DESIGN.md)). There is no migration chain and no supported path for an **undeclared** schema change: the declarative tree installs the head shape and every head statement is `CREATE ... IF NOT EXISTS`, so re-opening a database whose shape changed without its version adds what is missing and leaves incompatible objects exactly as they are. It does not upgrade them, and it does not pretend to — a tier whose recorded source fingerprint disagrees with the one this build declares for that version refuses to open rather than converging over it. A developer database created before an undeclared schema change must be recreated. Before replacing the binary that can still read it, create and verify a supported `.arcbackup` for anything that must be preserved. Then stop every Arcanum host and daemon, delete the database and its WAL/SHM sidecars, and restart. A database created by the current schema needs no reinstall.
+Arcanum carries an existing database forward only through a version step the build itself declares ([DESIGN §10.25](Arcanum.DESIGN.md)). There is no migration chain and no supported path for an **undeclared** schema change: the declarative tree installs the head shape and every head statement is `CREATE ... IF NOT EXISTS`, so re-opening a database whose shape changed without its version adds what is missing and leaves incompatible objects exactly as they are. It does not upgrade them, and it does not pretend to — a tier whose recorded source fingerprint disagrees with the one this build declares for that version refuses to open rather than converging over it. A developer database created before an undeclared schema change must be recreated. Before replacing the binary that can still read it, create and verify a supported `.arcbackup` for anything that must be preserved. Then stop every Arcanum host and daemon, move the Grimoire's binding set aside as described below, and restart. A database created by the current schema needs no reinstall.
 
-If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails closed with a sanitized database-unavailable error and never falls back to the API key. The failure is controlled, so host/CLI cleanup completes. Restore the matching secret and Data Protection key ring, or follow the destructive reinstall procedure only after preserving anything recoverable. The same controlled rule applies when the master API-key credential/mirror is corrupt and a Grimoire database exists: Arcanum does not log the underlying decryption message or generate a replacement key. Safe key regeneration is limited to the no-database case. All Data Protection credential mirrors are accepted only as no-follow, single-link regular files of at most 64 KiB. Only ciphertext that is present and does not decrypt (or is empty) is *corrupt*, and only a corrupt store carries the recovery text above. A mirror that could not be read at all — access denied, an I/O error, over the size ceiling, or linked — is *unreadable*: it fails closed exactly like a corrupt one and never authorizes a replacement key (not even with no database), but its remedy is to make it an owner-only regular file and retry. Never delete an unreadable `security.dat`, `grimoire-key.dat`, or `file-encryption-key.dat`, or the Grimoire beside it, on that report alone: its content is unknown, not bad. The Grimoire `.kdf` sidecar follows the same identity rule with a 4 KiB ceiling and owner-only, durable atomic publication.
+If the dedicated Grimoire secret is corrupt or cannot decrypt the current database, startup fails closed with a sanitized database-unavailable error and never falls back to the API key. The failure is controlled, so host/CLI cleanup completes. Restore the matching secret and Data Protection key ring, or follow the reinstall procedure below only after preserving anything recoverable. The same controlled rule applies when the master API-key credential/mirror is corrupt and a Grimoire database exists: Arcanum does not log the underlying decryption message or generate a replacement key. Safe key regeneration is limited to the no-database case. All Data Protection credential mirrors are accepted only as no-follow, single-link regular files of at most 64 KiB. Only ciphertext that is present and does not decrypt (or is empty) is *corrupt*, and only a corrupt store carries the recovery text above. A mirror that could not be read at all — access denied, an I/O error, over the size ceiling, or linked — is *unreadable*: it fails closed exactly like a corrupt one and never authorizes a replacement key (not even with no database), but its remedy is to make it an owner-only regular file and retry. Never delete an unreadable `security.dat`, `grimoire-key.dat`, or `file-encryption-key.dat`, or the Grimoire beside it, on that report alone: its content is unknown, not bad. The Grimoire `.kdf` sidecar follows the same identity rule with a 4 KiB ceiling and owner-only, durable atomic publication.
 
 The current canonical schema requires recreation of any database whose `Entries` table lacks the `Sequence` column and unique `(SessionId, Sequence)` index. Those fields give a session's transcript an explicit append order instead of inferring one from timestamps that a prompt and its answer share. Existing rows never recorded that order, so there is nothing to backfill and the database is recreated instead ([DESIGN §5.4.1](Arcanum.DESIGN.md#541-grimoire-data-model), [§5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency)).
+
+**A Grimoire is bound to more than its database file.** Removing only `arcanum.db` and its sidecars leaves a new database standing on the old one's key material and blobs:
+
+| Where | Item | What goes wrong if it stays |
+| --- | --- | --- |
+| Config directory | `arcanum.db`, `arcanum.db-wal`, `arcanum.db-shm` | These are the database and its write-ahead sidecars. |
+| Config directory | `arcanum.db.kdf`, `arcanum.db.kdf.pending` | The sidecar holds the key-derivation salt. A new database created beside a surviving sidecar is keyed from the **old** salt and the **old** dedicated secret instead of fresh ones, so it is not a reinstall at all. The pending file is the salt of an interrupted upgrade of the old database and means nothing to the new one. |
+| Config directory | `attachments/`, `files/` | These hold encrypted blobs that only the old database's rows name. An empty new database names none of them: the one-shot attachment reconciliation at the first start deletes the unreferenced attachment blobs, and the uploads under `files/` are left unreachable. |
+| Config directory | `cli-context.json` | The CLI's remembered Campaign, Session, and Model references name rows that only the old database holds. |
+| Secret-store directory | `grimoire-key.dat` | This is the dedicated secret the old database is keyed from. A new database generates a fresh one and overwrites this file, after which the old database cannot be opened again. |
+
+The config directory is `~/.config/arcanum` on every platform (`%USERPROFILE%\.config\arcanum` on Windows). The secret-store directory is `~/Library/Application Support/arcanum` on macOS, `%APPDATA%\arcanum` on Windows, and `$XDG_CONFIG_HOME/arcanum` (default `~/.config/arcanum`) on Linux, so on macOS and Windows `grimoire-key.dat` is **not** beside `arcanum.db`.
+
+Two things are deliberately **not** moved. The Data Protection key ring, `keys/` under the config directory, wraps every encrypted secret mirror in the secret-store directory (`security.dat`, `grimoire-key.dat`, `file-encryption-key.dat`, and the provider and web-research mirrors); moving it would leave every mirror that stays undecryptable. And the mirrors other than `grimoire-key.dat` — the master API key and the file-encryption key — are independent of the database and are reused by the new one. Copy `keys/` and every mirror before moving anything, so a mistake can be undone, and never move the ring or those mirrors.
+
+Stop every Arcanum host and daemon first, and create and verify a `.arcbackup` of anything that must be preserved. Then move the binding set aside as one unit, to a directory on the same volume so each move is a rename. `mv -n` and `Move-Item` without `-Force` refuse to overwrite, so a second run cannot clobber an earlier set.
 
 macOS/Linux (Bash):
 
 ```bash
-rm -f -- "$HOME/.config/arcanum/arcanum.db" "$HOME/.config/arcanum/arcanum.db-wal" "$HOME/.config/arcanum/arcanum.db-shm"
+set -eu
+
+config="$HOME/.config/arcanum"
+
+case "$(uname -s)" in
+  Darwin) secrets="$HOME/Library/Application Support/arcanum" ;;
+  *) secrets="${XDG_CONFIG_HOME:-$HOME/.config}/arcanum" ;;
+esac
+
+aside="$HOME/arcanum-reinstall-$(date -u +%Y%m%dT%H%M%SZ)"
+
+mkdir -p -- "$aside/config" "$aside/secrets" "$aside/copies"
+
+# Copy first: the key ring and the mirrors other than grimoire-key.dat then stay where they are.
+if [ -d "$config/keys" ]; then cp -Rp -- "$config/keys" "$aside/copies/keys"; fi
+
+for mirror in "$secrets"/*.dat; do
+  if [ -e "$mirror" ]; then cp -p -- "$mirror" "$aside/copies/"; fi
+done
+
+# Move the whole binding set aside.
+for item in arcanum.db arcanum.db-wal arcanum.db-shm arcanum.db.kdf arcanum.db.kdf.pending attachments files cli-context.json; do
+  if [ -e "$config/$item" ]; then mv -n -- "$config/$item" "$aside/config/"; fi
+done
+
+if [ -e "$secrets/grimoire-key.dat" ]; then mv -n -- "$secrets/grimoire-key.dat" "$aside/secrets/"; fi
 ```
 
 Windows (PowerShell):
 
 ```powershell
-Remove-Item -Force -ErrorAction SilentlyContinue `
-  "$HOME\.config\arcanum\arcanum.db", `
-  "$HOME\.config\arcanum\arcanum.db-wal", `
-  "$HOME\.config\arcanum\arcanum.db-shm"
+$ErrorActionPreference = 'Stop'
+
+$config = Join-Path $HOME '.config\arcanum'
+$secrets = Join-Path $env:APPDATA 'arcanum'
+$aside = Join-Path $HOME ('arcanum-reinstall-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))
+
+New-Item -ItemType Directory -Force -Path (Join-Path $aside 'config'), (Join-Path $aside 'secrets'), (Join-Path $aside 'copies') | Out-Null
+
+# Copy first: the key ring and the mirrors other than grimoire-key.dat then stay where they are.
+if (Test-Path -LiteralPath (Join-Path $config 'keys')) {
+  Copy-Item -Recurse -Path (Join-Path $config 'keys') -Destination (Join-Path $aside 'copies\keys')
+}
+
+Get-ChildItem -Path $secrets -Filter '*.dat' -File -ErrorAction SilentlyContinue |
+  Copy-Item -Destination (Join-Path $aside 'copies')
+
+# Move the whole binding set aside.
+foreach ($item in 'arcanum.db', 'arcanum.db-wal', 'arcanum.db-shm', 'arcanum.db.kdf', 'arcanum.db.kdf.pending', 'attachments', 'files', 'cli-context.json') {
+  $path = Join-Path $config $item
+  if (Test-Path -LiteralPath $path) { Move-Item -LiteralPath $path -Destination (Join-Path $aside 'config') }
+}
+
+$key = Join-Path $secrets 'grimoire-key.dat'
+if (Test-Path -LiteralPath $key) { Move-Item -LiteralPath $key -Destination (Join-Path $aside 'secrets') }
 ```
+
+Start Arcanum. It creates a new database, a new salt, and a new dedicated Grimoire secret. To undo, stop every host, move the new set out of the way the same way, and move the saved items back to the directories they came from, with `grimoire-key.dat` returning to the secret-store directory. A saved database restores only together with its own `.kdf`, `grimoire-key.dat`, `attachments/`, and `files/`; mixing a saved database with a new salt or secret fails closed.
+
+The profile's restore-journal installation identity lives in the operating-system credential store, not in these files, and it does not need to be touched: a Grimoire created while the profile carries one takes that identity as its own, so a later restore, installation reset, or Covenant reset is not refused for naming a different installation. Only an externally attested full installation reset removes it ([DESIGN §10.19.6](Arcanum.DESIGN.md#10196-the-authenticated-v2-restore-journal-and-its-anti-rollback-anchor)).
 
 There is intentionally no data migration or EF-model regeneration for the raw-SQL accounting tables. See [DESIGN §5.4.5](Arcanum.DESIGN.md#545-schema-installation-serialization-and-crash-consistency) and [§22.2](Arcanum.DESIGN.md#222-cost-tracking-and-budget-enforcement-arcanumcost).
 
