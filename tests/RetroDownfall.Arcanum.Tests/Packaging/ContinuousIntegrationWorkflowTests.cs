@@ -29,6 +29,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         ("hosted-producer-primary-analysis", "Hosted producer primary analysis", "primary", 2),
         ("hosted-producer-additional-analysis", "Hosted producer additional analysis", "additional", 2),
         ("hosted-producer-fixture-analysis", "Hosted producer fixture analysis", "fixtures", 1),
+        ("hosted-producer-fixture-build-analysis", "Hosted producer fixture build analysis", "fixtures-build", 1),
         ("hosted-producer-serve-host-analysis", "Hosted producer serve host analysis", "serve-host", 1),
     ];
 
@@ -86,7 +87,7 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void A_fixture_partition_is_one_process_on_one_slot_and_never_runs_production()
     {
-        foreach ((string jobId, _, string partition, _) in SourceAnalysisPartitions.Where(static entry => entry.Partition is "fixtures" or "serve-host"))
+        foreach ((string jobId, _, string partition, _) in SourceAnalysisPartitions.Where(static entry => entry.Partition is "fixtures" or "fixtures-build" or "serve-host"))
         {
             WorkflowJob lane = Assert.Single(SourceAnalysisWorkers(FindRepositoryRoot()), job => job.Id == jobId);
 

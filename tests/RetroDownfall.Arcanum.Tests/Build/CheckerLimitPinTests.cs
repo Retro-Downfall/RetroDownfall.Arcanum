@@ -24,6 +24,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
+[Trait("Category", "HostedProducerBuildAnalysis")]
 public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     /// <summary>One stated limit: the id, the words of docs/Arcanum.DESIGN.md that state it, and the test that pins the production source against it.</summary>

@@ -31,24 +31,29 @@ ADDITIONAL_FILTER = "Category=HostedProducerAdditionalAnalysis"
 
 SERVE_HOST_FILTER = "Category=HostedProducerServeHostAnalysis"
 
+BUILD_FIXTURE_FILTER = "Category=HostedProducerBuildAnalysis"
+
 # The closed list of partitions, each run by one CI job and each reconciled by the aggregate. "primary" is the production
 # methods that are not additional, "additional" the production methods marked HostedProducerAdditionalAnalysis, "serve-host" the
 # fixtures marked HostedProducerServeHostAnalysis (each case analyses the production compilations with trees replaced, so each
-# case is a whole discovery), and "fixtures" every other fixture. "full" runs everything and is not a CI job.
-PARTITIONS = ("primary", "additional", "fixtures", "serve-host")
+# case is a whole discovery), "fixtures-build" the fixtures marked HostedProducerBuildAnalysis (the Build scan classes and the Serve
+# worker theories, each of which reads the production source as a whole), and "fixtures" every other fixture. "full" runs everything
+# and is not a CI job.
+PARTITIONS = ("primary", "additional", "fixtures", "fixtures-build", "serve-host")
 
 # A fixture partition holds a process that keeps the bound production compilations in memory, and the CI runner has about 7 GB, so
 # a fixture partition is always planned as exactly one process whatever the number of worker slots.
-FIXTURE_PARTITIONS = ("fixtures", "serve-host")
+FIXTURE_PARTITIONS = ("fixtures", "fixtures-build", "serve-host")
 
 PARTITION_JOBS = {
     "primary": "Hosted producer primary analysis",
     "additional": "Hosted producer additional analysis",
     "fixtures": "Hosted producer fixture analysis",
+    "fixtures-build": "Hosted producer fixture build analysis",
     "serve-host": "Hosted producer serve host analysis",
 }
 
-RECEIPT_SCHEMA_VERSION = 2
+RECEIPT_SCHEMA_VERSION = 3
 
 SUMMARY_SCHEMA_VERSION = 3
 
@@ -200,6 +205,7 @@ def select_partition(
     additional: Sequence[DiscoveredMethod],
     fixtures: Sequence[DiscoveredMethod],
     serve_host: Sequence[DiscoveredMethod],
+    build_fixtures: Sequence[DiscoveredMethod],
     partition: str,
 ) -> Tuple[list[DiscoveredMethod], list[DiscoveredMethod]]:
     """Select one complete partition after validating the shared universe."""
@@ -214,6 +220,8 @@ def select_partition(
     fixture_by_name = _method_map(fixtures, "fixture")
 
     serve_host_by_name = _method_map(serve_host, "serve host")
+
+    build_by_name = _method_map(build_fixtures, "build fixture")
 
     overlap = set(production_by_name).intersection(fixture_by_name)
 
@@ -267,6 +275,36 @@ def select_partition(
             "a nonempty proper subset of the fixture universe"
         )
 
+    outside = set(build_by_name).difference(fixture_by_name)
+
+    if outside:
+        raise ValueError(
+            "build fixture methods outside the fixture universe: "
+            + ", ".join(sorted(outside))
+        )
+
+    for name, method in build_by_name.items():
+        if fixture_by_name[name].case_count != method.case_count:
+            raise ValueError(
+                "build fixture method case count does not match the fixtures: "
+                f"{name} ({method.case_count} != "
+                f"{fixture_by_name[name].case_count})"
+            )
+
+    if not build_by_name or len(build_by_name) >= len(fixture_by_name):
+        raise ValueError(
+            "build fixture partition is empty or its fixture methods are not "
+            "a nonempty proper subset of the fixture universe"
+        )
+
+    overlap = set(serve_host_by_name).intersection(build_by_name)
+
+    if overlap:
+        raise ValueError(
+            "methods selected by both serve host and build fixture partitions: "
+            + ", ".join(sorted(overlap))
+        )
+
     primary = [
         method
         for method in production
@@ -277,6 +315,7 @@ def select_partition(
         method
         for method in fixtures
         if method.name not in serve_host_by_name
+        and method.name not in build_by_name
     ]
 
     if not primary:
@@ -293,6 +332,9 @@ def select_partition(
 
     if partition == "fixtures":
         return [], other_fixtures
+
+    if partition == "fixtures-build":
+        return [], list(build_fixtures)
 
     if partition == "serve-host":
         return [], list(serve_host)
@@ -502,6 +544,7 @@ def write_partition_receipt(
     additional: Sequence[DiscoveredMethod],
     fixtures: Sequence[DiscoveredMethod],
     serve_host: Sequence[DiscoveredMethod],
+    build_fixtures: Sequence[DiscoveredMethod],
     selected_production: Sequence[DiscoveredMethod],
     selected_fixtures: Sequence[DiscoveredMethod],
     shards: Sequence[AnalysisShard],
@@ -523,6 +566,7 @@ def write_partition_receipt(
         ],
         "additionalProduction": [_entry(method) for method in additional],
         "serveHostFixtures": [_entry(method) for method in serve_host],
+        "buildFixtures": [_entry(method) for method in build_fixtures],
         "selected": selected,
         "shards": [
             {
@@ -652,6 +696,12 @@ def _validate_receipt(
         require_kind=False,
     )
 
+    build_fixtures = _parse_receipt_entries(
+        receipt.get("buildFixtures"),
+        f"{partition} build fixtures",
+        require_kind=False,
+    )
+
     selected = _parse_receipt_entries(
         receipt.get("selected"),
         f"{partition} selected methods",
@@ -711,6 +761,30 @@ def _validate_receipt(
             f"{partition} serve host fixtures are not a nonempty proper subset"
         )
 
+    build_map = {name: count for name, count, _ in build_fixtures}
+
+    outside = set(build_map).difference(fixtures)
+
+    if outside:
+        raise RuntimeError(
+            f"{partition} build fixtures are outside the full universe"
+        )
+
+    if any(fixtures[name] != count for name, count in build_map.items()):
+        raise RuntimeError(
+            f"{partition} build fixture case counts do not match"
+        )
+
+    if not build_map or len(build_map) >= len(fixtures):
+        raise RuntimeError(
+            f"{partition} build fixtures are not a nonempty proper subset"
+        )
+
+    if set(serve_host_map).intersection(build_map):
+        raise RuntimeError(
+            f"{partition} serve host fixtures and build fixtures overlap"
+        )
+
     if partition == "primary":
         expected = Counter(
             (name, count, "production")
@@ -726,7 +800,12 @@ def _validate_receipt(
         expected = Counter(
             (name, count, "fixture")
             for name, count in fixtures.items()
-            if name not in serve_host_map
+            if name not in serve_host_map and name not in build_map
+        )
+    elif partition == "fixtures-build":
+        expected = Counter(
+            (name, count, "fixture")
+            for name, count in build_map.items()
         )
     else:
         expected = Counter(
@@ -895,6 +974,12 @@ def aggregate_partition_evidence(
             PARTITIONS[0], "serveHostFixtures", "serve host fixtures"
         ):
             raise RuntimeError("partition serve host discovery manifests do not agree")
+
+    for partition in PARTITIONS[1:]:
+        if subset_of(partition, "buildFixtures", "build fixtures") != subset_of(
+            PARTITIONS[0], "buildFixtures", "build fixtures"
+        ):
+            raise RuntimeError("partition build fixture discovery manifests do not agree")
 
     selected: dict[str, Counter[Tuple[str, int, str]]] = {}
 
@@ -1878,6 +1963,8 @@ def _parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--aggregate-fixtures-results", type=Path)
 
+    parser.add_argument("--aggregate-fixtures-build-results", type=Path)
+
     parser.add_argument("--aggregate-serve-host-results", type=Path)
 
     parser.add_argument("--aggregate-summary", type=Path)
@@ -1892,6 +1979,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "primary": arguments.aggregate_primary_results,
         "additional": arguments.aggregate_additional_results,
         "fixtures": arguments.aggregate_fixtures_results,
+        "fixtures-build": arguments.aggregate_fixtures_build_results,
         "serve-host": arguments.aggregate_serve_host_results,
     }
 
@@ -2051,11 +2139,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             discovery_timeout(),
         )
 
+        build_fixtures = _discover(
+            arguments.dotnet,
+            arguments.project,
+            BUILD_FIXTURE_FILTER,
+            arguments.configuration,
+            discovery_timeout(),
+        )
+
         selected_production, selected_fixtures = select_partition(
             production,
             additional,
             fixtures,
             serve_host,
+            build_fixtures,
             arguments.partition,
         )
 
@@ -2080,6 +2177,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 additional,
                 fixtures,
                 serve_host,
+                build_fixtures,
                 selected_production,
                 selected_fixtures,
                 shards,

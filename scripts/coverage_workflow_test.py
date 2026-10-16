@@ -58,10 +58,13 @@ class CoverageWorkflowTests(unittest.TestCase):
             "                print('    Example.Tests.Additional')\n"
             "            elif selected == 'Category=HostedProducerServeHostAnalysis':\n"
             "                print('    Example.Tests.ServeFixture')\n"
+            "            elif selected == 'Category=HostedProducerBuildAnalysis':\n"
+            "                print('    Example.Tests.BuildFixture')\n"
             "            else:\n"
             "                print('    Example.Tests.Fixture(value: 1)')\n"
             "                print('    Example.Tests.Fixture(value: 2)')\n"
             "                print('    Example.Tests.ServeFixture')\n"
+            "                print('    Example.Tests.BuildFixture')\n"
             "        sys.exit(0)\n"
             "    code = int(os.environ.get('COVERAGE_EXIT' if covered else 'ANALYSIS_EXIT', '0'))\n"
             "    if code: sys.exit(code)\n"
@@ -88,6 +91,9 @@ class CoverageWorkflowTests(unittest.TestCase):
             "        if 'Example.Tests.ServeFixture' in selected:\n"
             "            print(f'  {label} Example.Tests.ServeFixture [1 ms]')\n"
             "            results.append('Example.Tests.ServeFixture')\n"
+            "        if 'Example.Tests.BuildFixture' in selected:\n"
+            "            print(f'  {label} Example.Tests.BuildFixture [1 ms]')\n"
+            "            results.append('Example.Tests.BuildFixture')\n"
             "        dest = pathlib.Path(args[args.index('--results-directory') + 1])\n"
             "        dest.mkdir(parents=True, exist_ok=True)\n"
             "        trx = next(a for a in args if a.startswith('trx;LogFileName='))\n"
@@ -116,7 +122,7 @@ class CoverageWorkflowTests(unittest.TestCase):
     def test_delivery_runs_disjoint_coverage_and_required_analysis(self):
         result, calls = self.run_gate("--threshold")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(7, len(calls))
+        self.assertEqual(8, len(calls))
         all_calls = [json.loads(line) for line in self.log.read_text().splitlines()]
         covered = calls[0]
         discovery = [call for call in calls if "--list-tests" in call]
@@ -162,7 +168,7 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertIn("--collect:XPlat Code Coverage", covered)
         self.assertNotIn("--configuration", covered)
         self.assertNotIn("-c", covered)
-        self.assertEqual(4, len(discovery))
+        self.assertEqual(5, len(discovery))
         self.assertIn("Category=HostedProducerProductionAnalysis", discovery[0])
         self.assertIn("Category=HostedProducerAdditionalAnalysis", discovery[1])
         self.assertIn(
@@ -170,6 +176,7 @@ class CoverageWorkflowTests(unittest.TestCase):
             discovery[2],
         )
         self.assertIn("Category=HostedProducerServeHostAnalysis", discovery[3])
+        self.assertIn("Category=HostedProducerBuildAnalysis", discovery[4])
         self.assertEqual(2, len(analysis))
         self.assertTrue(all("--logger" in call for call in analysis))
         self.assertTrue(all("--settings" in call for call in analysis))
@@ -199,7 +206,7 @@ class CoverageWorkflowTests(unittest.TestCase):
     def test_analysis_failure_fails_delivery(self):
         result, calls = self.run_gate("--threshold", ANALYSIS_EXIT="17")
         self.assertEqual(17, result.returncode)
-        self.assertEqual(7, len(calls))
+        self.assertEqual(8, len(calls))
 
     @unittest.skipUnless(os.name == "posix", "requires a POSIX PTY")
     def test_runtime_stdin_is_redirected_and_eof_when_parent_has_pty(self):
@@ -231,7 +238,7 @@ class CoverageWorkflowTests(unittest.TestCase):
 
         self.assertNotEqual(0, result.returncode)
 
-        self.assertEqual(7, len(calls))
+        self.assertEqual(8, len(calls))
 
         self.assertIn("only 0 passed", result.stderr)
 
@@ -290,7 +297,8 @@ class CoverageWorkflowTests(unittest.TestCase):
         workers = (
             ("primary", "hosted-producer-primary-analysis", "hosted-producer-additional-analysis"),
             ("additional", "hosted-producer-additional-analysis", "hosted-producer-fixture-analysis"),
-            ("fixtures", "hosted-producer-fixture-analysis", "hosted-producer-serve-host-analysis"),
+            ("fixtures", "hosted-producer-fixture-analysis", "hosted-producer-fixture-build-analysis"),
+            ("fixtures-build", "hosted-producer-fixture-build-analysis", "hosted-producer-serve-host-analysis"),
             ("serve-host", "hosted-producer-serve-host-analysis", "hosted-producer-analysis"),
         )
 
@@ -360,17 +368,18 @@ class CoverageWorkflowTests(unittest.TestCase):
 
         discovery = [call for call in calls if "--list-tests" in call]
 
-        self.assertEqual(16, len(discovery))
+        self.assertEqual(25, len(discovery))
 
         for marker in (
             "Category=HostedProducerProductionAnalysis",
             "Category=HostedProducerAdditionalAnalysis",
             "Category=HostedProducerServeHostAnalysis",
+            "Category=HostedProducerBuildAnalysis",
         ):
-            self.assertEqual(4, sum(marker in call for call in discovery), marker)
+            self.assertEqual(5, sum(marker in call for call in discovery), marker)
 
         self.assertEqual(
-            4,
+            5,
             sum(
                 "Category=HostedProducerAnalysis&Category!=HostedProducerProductionAnalysis"
                 in call
@@ -400,12 +409,20 @@ class CoverageWorkflowTests(unittest.TestCase):
         self.assertEqual("PASS", summary["partitionAccounting"]["status"])
 
         self.assertEqual(
-            5,
+            6,
             summary["partitionAccounting"]["fullUniverse"]["discoveredCases"],
         )
 
         self.assertEqual(
-            [1, 1, 2, 1],
+            ["primary", "additional", "fixtures", "fixtures-build", "serve-host"],
+            [
+                partition["name"]
+                for partition in summary["partitionAccounting"]["partitions"]
+            ],
+        )
+
+        self.assertEqual(
+            [1, 1, 2, 1, 1],
             [
                 partition["selectedCases"]
                 for partition in summary["partitionAccounting"]["partitions"]

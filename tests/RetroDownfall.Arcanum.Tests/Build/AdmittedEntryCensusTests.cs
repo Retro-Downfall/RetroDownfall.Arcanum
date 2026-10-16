@@ -25,6 +25,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 [Collection(HostedProducerAnalysisCollection.Name)]
 [Trait("Category", "HostedProducerAnalysis")]
+[Trait("Category", "HostedProducerBuildAnalysis")]
 public sealed class AdmittedEntryCensusTests(ITestOutputHelper output) : IClassFixture<SemanticModelScope>
 {
     private const string Infrastructure = "RetroDownfall.Arcanum.Infrastructure";

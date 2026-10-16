@@ -37663,6 +37663,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerBuildAnalysis")]
     public void CanonicalServeCallbackHasConditionalBuildStartWorkerSourceAssociation() =>
         AnalyzeActualHostedLongRestActivation("actual", true);
 
@@ -37670,6 +37671,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("worker-other-scopefactory")]
     [InlineData("custom-serve-callback")]
     [InlineData("other-started-app")]
+    [Trait("Category", "HostedProducerBuildAnalysis")]
     public void ServeWorkerMutationHasExplicitConditionalSourceAssociation(string shape) =>
         AnalyzeActualHostedLongRestActivation(shape, false);
 

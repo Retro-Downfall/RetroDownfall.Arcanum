@@ -258,7 +258,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
     - If a calibration changes a recipe digest, rerun the focused suites and one root-scoped run, and requalify only the gates the change touched.
   - [ ] A final independent Opus review of the whole branch against this plan and the spec.
   - [ ] History cleanup, then proof that the committed tree equals the tested bytes.
-  - [ ] Exact-SHA CI, all 12 jobs, including both native Windows lanes (x64 and arm64) with their focused Long Rest selection and the complete producer-analysis aggregate. Measure the four hosted-producer lanes against the 1,740 s cap; add a third fixture lane if the first run exceeds 85 percent of it.
+  - [ ] Exact-SHA CI, all 13 jobs, including both native Windows lanes (x64 and arm64) with their focused Long Rest selection and the complete producer-analysis aggregate. Measure the five hosted-producer lanes against the 1,740 s cap.
 - Delivery steps, each after its gates are green:
   - [ ] `--no-ff` merge into `memory-enhancement` only (through the worktree that has it checked out), push, and prove remote ref and tree equality without redundant post-merge suites.
   - [ ] Install the retained candidate only after the owner approves the keychain prompt and takes a backup (schema 18 has no downgrade).
