@@ -9,6 +9,11 @@ namespace RetroDownfall.Arcanum.Tests.Daemons;
 
 public sealed class InMemoryDaemonExecutionRepositoryTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
 
     [Fact]
     public async Task Start_complete_and_history_track_execution_lifecycle()
@@ -151,7 +156,7 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         await lease.DisposeAsync();
 
-        string executionId = await start.WaitAsync(TimeSpan.FromSeconds(2));
+        string executionId = await start.WaitAsync(HangGuard);
 
         Assert.True(repository.HasRunningExecution("daemon-gated"));
 
@@ -187,7 +192,7 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         await lease.DisposeAsync();
 
-        Assert.True(await start.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await start.WaitAsync(HangGuard));
 
         Assert.True(repository.HasRunningExecution("daemon-gated-try"));
 

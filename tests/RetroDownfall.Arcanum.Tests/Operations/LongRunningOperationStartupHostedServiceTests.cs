@@ -15,6 +15,11 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 public sealed class LongRunningOperationStartupHostedServiceTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task Expired_host_shutdown_budget_cannot_release_the_background_owner_early()
     {
@@ -42,7 +47,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         release.TrySetResult();
 
-        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        await stop.WaitAsync(HangGuard);
     }
 
     [Fact]
@@ -78,7 +83,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         release.TrySetResult();
 
-        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        await stop.WaitAsync(HangGuard);
     }
 
     [Fact]
@@ -111,7 +116,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         release.TrySetResult();
 
         Exception failure = await Assert.ThrowsAnyAsync<Exception>(
-            () => stop.WaitAsync(TimeSpan.FromSeconds(2)));
+            () => stop.WaitAsync(HangGuard));
 
         Assert.Contains(
             "shutdown callback failed",
