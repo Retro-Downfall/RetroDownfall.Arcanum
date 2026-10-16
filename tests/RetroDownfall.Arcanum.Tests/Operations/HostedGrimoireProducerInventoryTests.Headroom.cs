@@ -97,14 +97,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // a family lands on is decided by timing. So the serial count is the largest, and it is the one a table row must hold. A selection
     // root is named without the digest after its tilde. A row whose comment names a count per arrangement is held at the largest.
     //
-    // Measured on 2026-10-16 at ecb83083, once under each of one, two and three root workers (the primary discovery reported the
+    // Measured on 2026-10-16 at 77cec11f, once under each of one, two and three root workers (the primary discovery reported the
     // committed 6,729 manifest rows and no diagnostic under all three), every one of the sixty-nine primary roots equals its maximum plus
     // the margin to the state. The three arrangements agree on every root but the two handoff roots named above, and the largest ceiling
     // is 7,192 of the 7,372 the cap allows (the pre-bootstrap transition recovery, at 6,849 states). The plan of a global or all reset
     // inspects the offline-transition journal and does not recover it, so the two stopped-host apply roots and the attested apply stand
     // at 5,008, 5,861 and 6,263 states; the attested apply is the larger because its shared data step reaches the stopped-host fresh and
-    // resume arms' steps as well. The startup root stands at 5,616 states, which includes the outage clause of the healthy-catalog
-    // inspection it reaches. The additional partition was measured once, at two workers, since none of its roots is re-rooted into.
+    // resume arms' steps as well. The startup root stands at 5,620 states, which includes the outage clause of the healthy-catalog
+    // inspection it reaches. The additional partition was measured under each too and stands the same under all three, since none of
+    // its roots is re-rooted into.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -116,7 +117,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.PauseAsync", 216), // measured 201
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ResumeAsync", 232), // measured 215
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.ReweaveAsync", 224), // measured 207
-        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3248), // measured 3090 under one worker, 1545 under two and three
+        new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.RunApprenticeAsync", 3248), // measured 3090 under one worker and under three, 1545 under two
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StartAsync", 240), // measured 223
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.StopAsync", 16), // measured 5
         new("ApprenticeService", "RetroDownfall.Arcanum.Infrastructure.Hosting.ApprenticeService.SubscribeChronicleAsync", 24), // measured 12
@@ -135,7 +136,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("EntryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.EntryWeavingService.ExecuteAsync", 776), // measured 736
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StartAsync", 296), // measured 278
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StopAsync", 16), // measured 1
-        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync", 5904), // measured 5616
+        new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StartAsync", 5904), // measured 5620
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.StopAsync", 200), // measured 186
         new("GrimoireDatabaseHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.GrimoireDatabaseHostedService.TakeGeneratedMasterApiKey", 16), // measured 1
         new("GrimoireSchemaTransitionHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.GrimoireSchemaTransitionHostedService.ExecuteAsync", 816), // measured 772
@@ -152,7 +153,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 1408), // measured 1340
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync", 16), // measured 5
         new("Loremaster", "RetroDownfall.Arcanum.Infrastructure.Hosting.Loremaster.ExecuteAsync", 4432), // measured 4216
-        new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.RunOrdinaryBootstrapAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 512), // measured 484
+        new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.RunOrdinaryBootstrapAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 512), // measured 484 under one worker and under three, 242 under two
         new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StartAsync", 16), // measured 3
         new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpGlobalInitializationCoordinator.InitializeGlobalAsync#0", 232), // measured 217
         new("McpServerBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Mcp.McpServerBootstrapHostedService.StopAsync", 72), // measured 57
