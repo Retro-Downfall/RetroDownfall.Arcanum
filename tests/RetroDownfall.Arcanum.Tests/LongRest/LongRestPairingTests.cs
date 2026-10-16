@@ -186,15 +186,15 @@ public sealed class LongRestPairingTests
     [Fact]
     public void The_pairing_recipe_version_pins_a_digest_of_the_arithmetics_outputs()
     {
-        Assert.Equal(1, LongRestPairing.Version);
+        Assert.Equal(2, LongRestPairing.Version);
 
         Assert.Equal(LongRestDiscoveryLimits.PairingRecipeVersion, LongRestPairing.Version);
 
         StringBuilder table = new();
 
-        foreach (int leaves in new[] { 15, 16, 17, 63, 64, 100, 127, 128, 255, 256, 1000 })
+        foreach (int leaves in new[] { 1, 3, 15, 16, 17, 63, 64, 100, 127, 128, 255, 256, 1000 })
         {
-            foreach (int median in new[] { -500, 0, 300, 500, 700, 900, 990 })
+            foreach (int median in new[] { -500, 0, 300, 500, 700, 900, 990, 1000 })
             {
                 foreach (int spread in new[] { 0, 10, 20, 50, 100, 120 })
                 {
@@ -210,7 +210,7 @@ public sealed class LongRestPairingTests
             table.Append(Quantiles(Enumerable.Range(0, count).Select(index => ((index * 53 + 7) % 1999 - 999) / 1000.0)));
         }
 
-        Assert.Equal("8303EBAC979C37F121E9D9A3F58861A7F300A00CBFEBCD36493718CFFFEFA535", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(table.ToString()))));
+        Assert.Equal("07CB965A8C0EC245442E654AD00A1D94306A72C899EA4734121C3BCD29899FA4", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(table.ToString()))));
 
         static string Quantiles(IEnumerable<double> values)
         {
@@ -302,6 +302,56 @@ public sealed class LongRestPairingTests
 
             Assert.Equal(expected, sampler.FloorPermille());
         }
+    }
+
+    // Small generations built from a few directions with copies of them: some are collapsed (one direction, or nearly), some are a cluster among
+    // others, and which is which depends on the anchor. The streaming scan and the plain reference must call the same ones collapsed.
+    [Fact]
+    public void The_sampler_reads_the_same_floor_the_plain_reference_computes_over_small_collapsed_and_clustered_generations()
+    {
+        Random random = new(15102027);
+
+        int collapsed = 0;
+
+        int fallback = 0;
+
+        for (int round = 0; round < 400; round++)
+        {
+            int directions = random.Next(1, 4);
+
+            int count = random.Next(1, 40);
+
+            float[][] basis = [.. Enumerable.Range(0, directions).Select(direction => Enumerable.Range(0, 6).Select(axis => (float)(random.NextDouble() * 2 - 1)).ToArray())];
+
+            // Mostly the first direction, so a generation is often collapsed; a share are another direction or nudged by a hair.
+            List<float[]> leaves = [];
+
+            for (int leaf = 0; leaf < count; leaf++)
+            {
+                float[] direction = basis[random.NextDouble() < 0.75 ? 0 : random.Next(directions)];
+
+                leaves.Add(random.NextDouble() < 0.2 ? direction.Select(value => value + (float)(random.NextDouble() - 0.5) * 0.01f).ToArray() : [.. direction]);
+            }
+
+            int anchor = random.Next(count);
+
+            LongRestBackgroundSampler sampler = new([.. leaves[anchor]]);
+
+            for (int index = 0; index < leaves.Count; index++) _ = sampler.Observe(index == anchor, [.. leaves[index]]);
+
+            int expected = LongRestPairingReference.Floor(leaves, anchor);
+
+            Assert.Equal(expected, sampler.FloorPermille());
+
+            if (expected == 1000) collapsed++;
+
+            if (expected == LongRestDiscoveryLimits.PairingFallbackPermille) fallback++;
+        }
+
+        // Both calls were made often enough for the comparison to mean something.
+        Assert.True(collapsed > 50, $"collapsed {collapsed}");
+
+        Assert.True(fallback > 50, $"fallback {fallback}");
     }
 
     [Fact]

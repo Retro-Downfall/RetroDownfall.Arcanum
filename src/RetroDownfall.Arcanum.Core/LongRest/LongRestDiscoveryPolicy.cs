@@ -45,7 +45,7 @@ public static class LongRestDiscoveryLimits
     public const int SummaryMinimumCosinePermille = 920;
 
     /// <summary>The version of the pairing arithmetic (<see cref="LongRestPairing"/>); a test pins a digest of its outputs to it. Bound into the recipe.</summary>
-    public const int PairingRecipeVersion = 1;
+    public const int PairingRecipeVersion = 2;
 
     /// <summary>The share (in thousandths) of the distance from an anchor's median similarity to a perfect match a nominee must close to be paired.</summary>
     public const int PairingClosenessPermille = 550;

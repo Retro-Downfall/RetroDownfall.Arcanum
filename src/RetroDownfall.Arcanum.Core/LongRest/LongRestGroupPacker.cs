@@ -86,7 +86,7 @@ public static class LongRestGroupPacker
 
                 double cosine = vectors.Cosine(anchor, neighbor);
 
-                if (!(cosine >= floorPermille / 1000.0))
+                if (!LongRestPairing.Clears(cosine, floorPermille))
                 {
                     unpaired++;
 

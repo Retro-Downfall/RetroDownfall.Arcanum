@@ -55,8 +55,28 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     /// <summary>Every memory a fold's children expand to, in child order.</summary>
     internal static string[] MemoriesOf(LongRestHierarchyWork work) => [.. work.Fold.Children.SelectMany(static child => child.ExpandedTargets).Select(static target => target.MemoryId)];
 
+    private int _seeded;
+
+    /// <summary>
+    /// Seeds a memory whose vector is near every other seeded memory's and its own: all of them lean 0.98 on one shared axis and each takes an axis
+    /// of its own, so two are 0.96 alike. A generation of fewer than sixteen other leaves pairs them at the fallback floor, as a model would pair
+    /// paraphrases, and the space is not collapsed (a collapsed space, in which every memory has the same vector, pairs nothing but byte-identical
+    /// content). A test that wants memories to differ more, or to be unrelated, gives them vectors itself.
+    /// </summary>
     internal Task SeedAsync(string id, string text, Guid? session = null) => Saga.Store.InsertAsync(id, text,
-        new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", Saga.Embedding(), CancellationToken.None);
+        new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", Related(Interlocked.Increment(ref _seeded)), CancellationToken.None);
+
+    /// <summary>The vector of the <paramref name="number"/>th memory seeded with <see cref="SeedAsync"/>: 0.98 on the shared axis and the rest on an axis of its own.</summary>
+    internal float[] Related(int number)
+    {
+        float[] vector = new float[Saga.Embedding().Length];
+
+        vector[0] = 0.98f;
+
+        vector[1 + number % (vector.Length - 1)] = (float)Math.Sqrt(1 - 0.98 * 0.98);
+
+        return vector;
+    }
 
     /// <summary>
     /// A memory no other memory resembles: its text shares no word with another's and its vector is its own, so a corpus of them has

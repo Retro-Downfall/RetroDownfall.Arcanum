@@ -1,4 +1,6 @@
 using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
@@ -45,6 +47,91 @@ public sealed partial class LongRestSweepStoreTests
         Assert.Equal(0L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts;"));
 
         Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3 AND DispositionCode = 2;"));
+    }
+
+    // Two memories 0.95 alike in a space of their own: paired under the fallback floor (0.92) that a generation of two is queued under.
+    private static float[] Alike(int index)
+    {
+        float[] vector = new float[LongRestClusters.Width];
+
+        vector[0] = index == 1 ? 1f : 0.95f;
+
+        if (index != 1)
+        {
+            vector[1] = (float)Math.Sqrt(1 - 0.95 * 0.95);
+        }
+
+        return vector;
+    }
+
+    // The memories recall may return: the projection the recall queries filter by, in id order.
+    private static Task<object?> RecallableAsync(Fixture fixture) => fixture.H.ScalarAsync(
+        $"SELECT group_concat(\"Id\", ',') FROM (SELECT memory.\"Id\" FROM \"saga_memories\" memory WHERE memory.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("memory", true)} ORDER BY memory.\"Id\");");
+
+    // The geometric half of the Fold Check, at the mutation point. The unit below is a mixed one in every way the store can check but the one this
+    // test is about: its digests are consistent with its recorded floor (the floor and the work digest are rewritten together, and the accepted
+    // adjudication is made against that identity), its leaves are the frozen ones, and the model "accepted" an equivalence. Only the pair under the
+    // recorded floor stands in the way. Unforged, the same unit is applied, so the refusal is the floor's and nothing else's.
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task A_unit_whose_pair_is_under_the_floor_recorded_for_it_is_not_folded_whatever_was_accepted(bool protect, bool forge)
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(protect, vector: Alike);
+
+        LongRestSweep sweep = await fixture.BeginAsync();
+
+        LongRestSweepWork queued = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
+
+        Assert.Equal(LongRestDiscoveryLimits.PairingFallbackPermille, queued.Identity.PairingFloorPermille);
+
+        Assert.True(LongRestPairing.Paired(queued.Inputs[0], queued.Inputs[1], queued.Identity.PairingFloorPermille));
+
+        object? recallableBefore = await RecallableAsync(fixture);
+
+        Assert.NotNull(recallableBefore);
+
+        LongRestWorkIdentity identity = queued.Identity;
+
+        if (forge)
+        {
+            // A floor the 0.95 pair is under, recorded for the unit together with the digest that names it.
+            identity = queued.Identity with { PairingFloorPermille = 990 };
+
+            Assert.False(LongRestPairing.Paired(queued.Inputs[0], queued.Inputs[1], identity.PairingFloorPermille));
+
+            await fixture.H.ExecuteAsync("UPDATE long_rest_work_items SET PairingFloorPermille = $floor, WorkDigest = $digest WHERE KindCode = 3 AND DispositionCode = 1;",
+                ("$floor", identity.PairingFloorPermille), ("$digest", LongRestDiscoveryHash.Work(identity).Value.Bytes));
+        }
+
+        LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, queued with { Identity = identity });
+
+        Result<LongRestSweep> committed = await fixture.Store.CommitDecisionAsync(sweep, accepted, fixture.Capability, CancellationToken.None);
+
+        if (!forge)
+        {
+            Assert.True(committed.IsSuccess);
+
+            Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts;"));
+
+            Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_suppressions;"));
+
+            Assert.NotEqual(recallableBefore, await RecallableAsync(fixture));
+
+            return;
+        }
+
+        Assert.True(committed.IsFailure);
+
+        Assert.Equal(0L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts;"));
+
+        Assert.Equal(0L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_suppressions;"));
+
+        Assert.Equal(recallableBefore, await RecallableAsync(fixture));
+
+        Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3 AND DispositionCode = 1;"));
     }
 
     [Fact]

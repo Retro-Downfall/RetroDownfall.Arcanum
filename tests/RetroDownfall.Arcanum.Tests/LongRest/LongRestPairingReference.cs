@@ -50,11 +50,13 @@ internal static class LongRestPairingReference
             return -1.0 + (bin + 1.0) / 512.0;
         }
 
-        if (background.Count < LongRestDiscoveryLimits.PairingMinimumLeaves) return LongRestDiscoveryLimits.PairingFallbackPermille;
+        // Nothing was seen to judge by: the fallback. A generation too small for a distribution of its own still has its median and its spread
+        // read, because a collapsed one is recognised by them and not by its size.
+        if (background.Count == 0) return LongRestDiscoveryLimits.PairingFallbackPermille;
 
         double median = Edge(background, (background.Count + 1) / 2);
 
-        double spread = (Edge(pairs, (3 * pairs.Count + 3) / 4) - Edge(pairs, (pairs.Count + 3) / 4)) / 1.349;
+        double spread = pairs.Count == 0 ? double.NaN : (Edge(pairs, (3 * pairs.Count + 3) / 4) - Edge(pairs, (pairs.Count + 3) / 4)) / 1.349;
 
         return LongRestPairing.BackgroundFloor(median, spread, background.Count);
     }

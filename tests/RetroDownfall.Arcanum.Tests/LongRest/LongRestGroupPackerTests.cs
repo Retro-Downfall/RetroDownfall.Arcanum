@@ -365,7 +365,7 @@ public sealed class LongRestGroupPackerTests
 
             ImmutableArray<LongRestSourceLeaf> neighbors = [.. Enumerable.Range(1, random.Next(1, 33)).Select(index => LongRestPackingData.Leaf(index, "n" + index, null, Draw(tightness)))];
 
-            int floor = random.Next(500, 1000);
+            int floor = random.Next(500, 1001);
 
             LongRestGroupPacking packing = LongRestGroupPacker.Pack(anchor, neighbors, LongRestDiscoveryLimits.ProviderInputUtf8Bytes, floor).Value;
 
@@ -379,7 +379,7 @@ public sealed class LongRestGroupPackerTests
                 {
                     for (int right = left + 1; right < pack.Length; right++)
                     {
-                        Assert.True(LongRestPairing.SameContent(pack[left], pack[right]) || vectors.Cosine(pack[left], pack[right]) >= floor / 1000.0,
+                        Assert.True(LongRestPairing.SameContent(pack[left], pack[right]) || LongRestPairing.Clears(vectors.Cosine(pack[left], pack[right]), floor),
                             "Every pair in a pack must clear the anchor's floor.");
                     }
                 }

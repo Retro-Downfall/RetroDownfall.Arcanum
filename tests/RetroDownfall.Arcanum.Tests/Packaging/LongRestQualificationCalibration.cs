@@ -222,7 +222,7 @@ internal static class LongRestQualificationCalibration
                     lowestWithin = Math.Min(lowestWithin, margin);
 
                     // A byte-identical memory is paired whatever its vector says.
-                    if (margin >= 0 || string.Equals(corpus[anchor].Text, corpus[other].Text, StringComparison.Ordinal))
+                    if (LongRestPairing.Clears(cosine, floor[anchor]) || string.Equals(corpus[anchor].Text, corpus[other].Text, StringComparison.Ordinal))
                     {
                         withinAtOrAbove++;
                     }
@@ -235,14 +235,14 @@ internal static class LongRestQualificationCalibration
 
                     lowestCross = Math.Min(lowestCross, margin);
 
-                    if (margin <= 0)
+                    if (LongRestPairing.Clears(cosine, floor[anchor]))
                     {
                         crossAtOrAbove++;
 
                         crossAbove++;
                     }
 
-                    if (other > anchor && cosine >= Math.Min(floor[anchor], floor[other]) / 1000.0)
+                    if (other > anchor && LongRestPairing.Clears(cosine, Math.Min(floor[anchor], floor[other])))
                     {
                         crossEither++;
                     }

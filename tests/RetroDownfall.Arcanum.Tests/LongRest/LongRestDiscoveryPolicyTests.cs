@@ -211,7 +211,7 @@ public sealed class LongRestDiscoveryPolicyTests
 
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { SummaryMinimumCosinePermille = 919 }).IsFailure);
 
-        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingRecipeVersion = 2 }).IsFailure);
+        Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingRecipeVersion = 3 }).IsFailure);
 
         Assert.True(LongRestDiscoveryHash.Recipe(recipe with { PairingClosenessPermille = 540 }).IsFailure);
 
@@ -242,10 +242,10 @@ public sealed class LongRestDiscoveryPolicyTests
     // integers of discovery (the summary gate in thousandths, the lexical coverage share, the pairing recipe version and its eleven constants),
     // the adjudication recipe version and then the lexical scorer version, each an Int32BE. No floating-point value is bound into the recipe.
     [Theory]
-    [InlineData(32768, "FBE16305FB75AF048057D7F028102A62DDCD643871F7C18CA069E4E3C3499127")]
-    [InlineData(4096, "E110ACC55E97F9D86E77A5D9447E798A6CD3B0D311997BBE52CDD0EDE3E3DC98")]
-    [InlineData(5328, "6E5AB9331FBA6D235783F5257E7436DAB88E646C5828484DCEDC9839BFBB9E72")]
-    [InlineData(20000, "629058485F4B4F6A423BD443DE6DE7E4F77809476B302A5C6F1A41EC961AE4FD")]
+    [InlineData(32768, "C586814358D7150D5403675DEEB6F2A52DEBB6B6191BB94A3A676B00A44DD265")]
+    [InlineData(4096, "E0AD1885D78418AE539922489018436E8A54DD640871F61AD6686CE2BB218CBA")]
+    [InlineData(5328, "D342DB88C680E33226C252E9C65C3969B57B07CD0B6F5D526A2B964E4642FFCE")]
+    [InlineData(20000, "248A4AB413C9F5BDC46300823C3E3867C5E825FC1FE55B4A94DA00E3D88AA5DE")]
     public void Recipe_digest_golden_vectors_pin_the_default_the_window_derived_budgets_the_pairing_constants_and_the_versions(int budget, string expected)
     {
         CovenantDigest digest = new(new byte[32]);

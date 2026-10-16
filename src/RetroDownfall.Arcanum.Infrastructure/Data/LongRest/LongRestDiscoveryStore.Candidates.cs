@@ -169,10 +169,8 @@ internal sealed partial class LongRestDiscoveryStore
         // The anchor's Background Floor travels with its groups: the packer judges every nominee, lexical and hierarchical ones included, by it.
         int floor = background.FloorPermille();
 
-        double floorCosine = floor / 1000.0;
-
         Result<ImmutableArray<LongRestCandidate>> merged = LongRestDiscoveryPolicy.MergeCandidates(anchor,
-            exact.Items.Concat(lexical.Items).Concat(vector.Items.Where(item => item.Score >= floorCosine)).Concat(hierarchy));
+            exact.Items.Concat(lexical.Items).Concat(vector.Items.Where(item => LongRestPairing.Clears(item.Score, floor))).Concat(hierarchy));
 
         if (merged.IsFailure)
         {

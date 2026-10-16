@@ -83,8 +83,10 @@ public sealed class LongRestCosineHistogram
 /// at one, where the median is that of the anchor's cosine to every other leaf of the generation, sigma is the interquartile range of the
 /// pairwise cosines of a fixed sample of leaves divided by 1.349 (never below 0.02), and <c>Z(N) = 3.5 + 0.2 * max(0, bitlength(N) - 6)</c>. The
 /// first clause keeps a nominee at least as far above the background as chance allows for a corpus of this size; the second keeps it close to the
-/// anchor in the scale of the space. A generation of fewer than sixteen other leaves has no distribution of its own and uses 0.92. Every degenerate
-/// input raises the floor or leaves a nominee unpaired: the gate loses recall, never precision.
+/// anchor in the scale of the space. A generation of fewer than sixteen other leaves has no distribution of its own and uses 0.92, unless what it
+/// has is already collapsed (see <see cref="BackgroundFloor"/>). A floor of one thousand is the gate failing closed: it admits nothing but a
+/// byte-identical memory (see <see cref="Clears"/>). Every degenerate input raises the floor to that or leaves a nominee unpaired: the gate loses
+/// recall, never precision.
 /// </remarks>
 public static class LongRestPairing
 {
@@ -102,8 +104,20 @@ public static class LongRestPairing
     /// its generation is <paramref name="median"/> and whose generation spreads by <paramref name="spread"/> (see <see cref="Spread"/>). A
     /// generation too small to have a distribution uses the fallback; a median or spread that is not a number gives the highest floor.
     /// </summary>
+    /// <remarks>
+    /// A collapsed generation is judged before its size: when the median is the top edge of the histogram (more than half of the other leaves sit
+    /// on the anchor's own direction to within one bin) and the sampled pairwise cosines have no spread at all (their quartiles are one edge), the
+    /// space cannot tell the memories apart, and the floor is the highest whatever the count. The fallback of a small generation is a guess about a
+    /// sane model and is not applied to a space that has shown it is not one. A generation of more than fifteen other leaves reaches the same floor
+    /// through the formula, because a median of one puts both clauses at or above it.
+    /// </remarks>
     public static int BackgroundFloor(double median, double spread, int leaves)
     {
+        if (leaves > 0 && median >= 1.0 && spread <= 0.0)
+        {
+            return 1000;
+        }
+
         if (leaves < LongRestDiscoveryLimits.PairingMinimumLeaves)
         {
             return LongRestDiscoveryLimits.PairingFallbackPermille;
@@ -177,6 +191,14 @@ public static class LongRestPairing
     public static bool SameContent(LongRestSourceLeaf left, LongRestSourceLeaf right) =>
         left.Snapshot.ContentHashFormat == right.Snapshot.ContentHashFormat
         && string.Equals(left.Snapshot.ContentHash, right.Snapshot.ContentHash, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether <paramref name="cosine"/> clears a floor of <paramref name="floorPermille"/> thousandths: it is at least the floor, and the floor is
+    /// under one thousand. A floor of one thousand is the highest the gate sets, and it means byte-identical content only: the cosine of a vector
+    /// with itself comes out a little over one, exactly one or a little under it depending on the width and on rounding, and that must not decide
+    /// whether two different memories are put to the model together. A cosine that is not a number clears nothing.
+    /// </summary>
+    public static bool Clears(double cosine, int floorPermille) => floorPermille < 1000 && cosine >= floorPermille / 1000.0;
 
     /// <summary>
     /// True when <paramref name="other"/> is paired with <paramref name="anchor"/> at <paramref name="floorPermille"/>: byte-identical, or both
@@ -412,7 +434,7 @@ public sealed class LongRestPairingVectors
     }
 
     public bool Paired(LongRestSourceLeaf anchor, LongRestSourceLeaf other, int floorPermille) =>
-        LongRestPairing.SameContent(anchor, other) || Cosine(anchor, other) >= floorPermille / 1000.0;
+        LongRestPairing.SameContent(anchor, other) || LongRestPairing.Clears(Cosine(anchor, other), floorPermille);
 
     public bool Cohesive(IReadOnlyList<LongRestSourceLeaf> pack, LongRestSourceLeaf candidate, int floorPermille)
     {

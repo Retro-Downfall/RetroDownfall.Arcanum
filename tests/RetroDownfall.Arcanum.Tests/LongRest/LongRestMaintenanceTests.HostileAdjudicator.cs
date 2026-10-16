@@ -143,7 +143,7 @@ public sealed partial class LongRestMaintenanceTests
 
                 bool sameTopic = corpus[anchor].Label == corpus[other].Label && corpus[anchor].Label != "foreigner";
 
-                bool paired = geometry.Cosine(Leaf(anchor), Leaf(other)) >= floors[anchor] / 1000.0;
+                bool paired = LongRestPairing.Clears(geometry.Cosine(Leaf(anchor), Leaf(other)), floors[anchor]);
 
                 Assert.Equal(sameTopic, paired);
             }
@@ -255,5 +255,81 @@ public sealed partial class LongRestMaintenanceTests
         Assert.True(metrics.Sum("arcanum.long_rest.sweep.skipped_candidates", "reason", "unpaired") > 0);
 
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_provider_effects WHERE StateCode IN (1, 2, 3);"));
+    }
+
+    private static readonly string[] CollapsedUnrelated =
+    [
+        "The user's dog is a beagle called Biscuit.", "The project is released under the MIT license.", "Production deploys go to Frankfurt.",
+        "The user avoids writing Python.", "The user prefers dark mode in every editor.", "The user plans a trip to Lisbon.",
+        "The staging database is refreshed on Sunday nights.", "The user's favourite colour is teal.", "The user drinks black coffee.",
+        "The office wifi password rotates quarterly.", "The user's cat is a grey tabby.", "The team standup is on Tuesdays.",
+        "The user reads science fiction.", "The user's bike is a road bike.", "The user commutes by train.",
+        "The user's sister lives in Oslo.", "The user is learning Japanese.", "The user plays chess on weekends.",
+        "The user's laptop is an ultrabook.", "The user dislikes cilantro.",
+    ];
+
+    // An embedding model that has collapsed answers one direction for every input. Nothing then says which memories resemble which, and the
+    // Pairing Gate must fail closed whether the generation is large enough to have a distribution of its own (twenty memories) or small enough to
+    // use the fallback (ten): a hostile adjudicator that asserts every pair folds nothing but the one pair of byte-identical memories.
+    [Theory]
+    [InlineData(false, 10)]
+    [InlineData(true, 10)]
+    [InlineData(false, 20)]
+    [InlineData(true, 20)]
+    public async Task A_collapsed_embedding_with_a_hostile_adjudicator_folds_nothing_but_exact_duplicates(bool protectedSources, int count)
+    {
+        // The last memory repeats the first one's text, which is the one thing a collapsed space can still tell: they are the same bytes.
+        string Text(int index) => index == count - 1 ? CollapsedUnrelated[0] : CollapsedUnrelated[index];
+
+        string Id(int index) => $"00000000-0000-4000-8000-{index + 1:D12}";
+
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: protectedSources, sourceCount: count,
+            sourceId: index => Guid.Parse(Id(index)), sourceText: Text, sessionless: true);
+
+        float[] collapsed = new float[HostileDimensions];
+
+        collapsed[0] = 1;
+
+        for (int index = 0; index < count; index++) await f.H.SetEmbeddingAsync(Id(index), collapsed);
+
+        int sends = 0;
+
+        f.Handler.VectorFor = body =>
+        {
+            float[] vector = new float[64];
+
+            vector[int.Parse(Regex.Match(body, @"Summary (\d+)").Groups[1].Value) % 64] = 1;
+
+            return vector;
+        };
+
+        f.Handler.InsideSend = () =>
+        {
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.AllPairs(f.Handler.LastBody!) : "{\"summary\":\"Summary " + ++sends + "\"}";
+
+            return Task.CompletedTask;
+        };
+
+        LongRestMaintenanceCapability? capability = protectedSources
+            ? LongRestSweepHarness.Require(await f.Maintenance.CreateCapabilityAsync(f.Operation, f.Invocation, f.Claim, f.Scope, f.Authority, CancellationToken.None)) : null;
+
+        LongRestSweepProgress progress = LongRestSweepHarness.Require(protectedSources
+            ? await f.Coordinator.ResumeAsync(f.Operation, capability, CancellationToken.None)
+            : await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
+
+        Assert.True(progress.Phase == LongRestSweepPhase.Completed, progress.DeferredReason);
+
+        // No memory was put to the model beside another: every unit that was queued is a pair of byte-identical memories, which the maintenance
+        // folds locally.
+        Assert.DoesNotContain(f.Payloads, static payload => payload.Kind == LongRestProviderPayloadKind.Adjudication);
+
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts;"));
+
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_receipts WHERE KindCode = 1;"));
+
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_suppressions;"));
+
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3 AND PairingFloorPermille <> 1000;"));
     }
 }

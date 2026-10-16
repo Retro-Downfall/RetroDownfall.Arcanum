@@ -288,7 +288,7 @@ public sealed class LongRestDiscoveryOracleTests
                     double cosine = Math.Clamp(SphericalKMeans.DirectionCosine(direction, other), -1, 1);
 
                     // Only what clears the anchor's floor is ranked; the scan ranks every cosine and drops those below it afterwards.
-                    if (cosine >= floor / 1000.0)
+                    if (LongRestPairing.Clears(cosine, floor))
                     {
                         Rank(new(candidate.Target, LongRestDiscoveryLane.Vector, cosine));
                     }
