@@ -81,7 +81,8 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
 
         // One diagnostic for both assertions. A broker that refused its own setup exits with a code in
         // the 70s (WindowsAppContainerBrokerExit) and says why on the one stderr it shares with the
-        // target, which an assertion on the bare exit code would discard.
+        // target, which an assertion on the bare exit code would discard; the captured stdout rides
+        // along because the exit-code assertion fails before the stdout one can say what the target printed.
         string diagnostic = Describe(result);
 
         Assert.True(result.Outcome == CappedChildProcessOutcome.Completed, diagnostic);
@@ -281,7 +282,7 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
     }
 
     private static string Describe(CappedChildProcessRunResult result) =>
-        $"Outcome {result.Outcome}; exit {result.ExitCode}; stderr: {result.Stderr.Text}; detail: {result.FilesystemSandboxDenialMessage}";
+        $"Outcome {result.Outcome}; exit {result.ExitCode}; stdout: {result.Stdout.Text}; stderr: {result.Stderr.Text}; detail: {result.FilesystemSandboxDenialMessage}";
 
     /// <summary>
     /// Creates the probe directory with a protected DACL that grants the current user alone, whatever
