@@ -9,11 +9,9 @@ public sealed class GrimoireDbReadinessTests
     /// enough on a loaded CI runner.</summary>
     private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
-
     [Fact]
     public void MarkReady_sets_IsReady_true()
     {
-
         GrimoireDbReadiness readiness = new();
 
         Assert.False(readiness.IsReady);
@@ -21,7 +19,6 @@ public sealed class GrimoireDbReadinessTests
         readiness.MarkReady();
 
         Assert.True(readiness.IsReady);
-
     }
 
     [Fact]
@@ -72,5 +69,4 @@ public sealed class GrimoireDbReadinessTests
 
         await readiness.WaitUntilReadyAsync().WaitAsync(HangGuard);
     }
-
 }
