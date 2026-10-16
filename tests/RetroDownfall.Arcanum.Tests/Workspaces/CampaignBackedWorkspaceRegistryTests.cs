@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Workspaces;
 [Collection("Grimoire")]
 public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -27,14 +26,11 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
     public CampaignBackedWorkspaceRegistryTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -44,39 +40,29 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         Directory.CreateDirectory(_workspaceRoot);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_workspaceRoot))
         {
-
             Directory.Delete(_workspaceRoot, recursive: true);
-
         }
-
     }
 
     [SkippableFact]
     public async Task RegisterAsync_GetAsync_and_GetAllAsync_use_grimoire_campaigns()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ArcanumSettings settings = new()
@@ -122,13 +108,11 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         WorkspaceInfo[] all = await registry.GetAllAsync(CancellationToken.None);
 
         Assert.Equal(["Alpha", "Beta"], all.Select(w => w.Name).ToArray());
-
     }
 
     [SkippableFact]
     public async Task UnregisterAsync_removes_campaign_from_grimoire()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         ArcanumSettings settings = new()
@@ -160,13 +144,11 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         Assert.True(removed.IsSuccess);
 
         Assert.Null(await registry.GetAsync(registered.Value.Id, CancellationToken.None));
-
     }
 
     [Fact]
     public async Task RegisterAsync_preserves_repository_failure()
     {
-
         ArcanumSettings settings = new()
         {
             Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
@@ -196,13 +178,11 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         Assert.Equal(
             "Repository failure selected by code, not legacy exception text.",
             result.Error.Message);
-
     }
 
     [Fact]
     public async Task RegisterAsync_does_not_persist_campaign_when_arcanum_directory_cannot_be_created()
     {
-
         ArcanumSettings settings = new()
         {
             Security = new SecuritySettings { CampaignRoots = [_workspaceRoot] },
@@ -234,13 +214,11 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Workspace.WriteFailed, result.Error.Code);
 
         Assert.Empty(repository.Added);
-
     }
 
     [Fact]
     public async Task GetAllAsync_reads_every_campaign_page()
     {
-
         ArcanumSettings settings = new();
 
         GrimoireDbReadiness readiness = new();
@@ -269,7 +247,6 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             all.Select(workspace => workspace.Name).ToArray());
 
         Assert.Equal([0, 2, 4], repository.RequestedOffsets);
-
     }
 
     private static Campaign CreateCampaign(string name) =>
@@ -283,7 +260,6 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
     private sealed class MaxReachedCampaignRepository : ICampaignRepository
     {
-
         public Task<Campaign?> GetByIdAsync(
             Guid id,
             CancellationToken cancellationToken = default) =>
@@ -293,6 +269,15 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             string path,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+
+        // No root is registered in these scenarios, so the exact match, which finds none, is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(
             string name,
@@ -327,12 +312,10 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
-
     }
 
     private sealed class RecordingCampaignRepository : ICampaignRepository
     {
-
         public List<Campaign> Added { get; } = [];
 
         public Task<Campaign?> GetByIdAsync(
@@ -345,6 +328,15 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult(
                 Added.FirstOrDefault(campaign => string.Equals(campaign.Path, path, StringComparison.Ordinal)));
+
+        // These scenarios only ask about the roots they registered, so the exact match is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(
             string name,
@@ -363,11 +355,9 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             Campaign campaign,
             CancellationToken cancellationToken = default)
         {
-
             Added.Add(campaign);
 
             return Task.FromResult(Result<Campaign>.Success(campaign));
-
         }
 
         public Task<Campaign> UpdateAsync(
@@ -382,14 +372,12 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(Added.Count);
-
     }
 
     private sealed class PagedCampaignRepository(
         Campaign[] campaigns,
         int pageSize) : ICampaignRepository
     {
-
         public List<int> RequestedOffsets { get; } = [];
 
         public Task<ListPageResult<Campaign>> ListAsync(
@@ -398,7 +386,6 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             int offset = 0,
             CancellationToken cancellationToken = default)
         {
-
             RequestedOffsets.Add(offset);
 
             Campaign[] page = campaigns.Skip(offset).Take(pageSize).ToArray();
@@ -412,7 +399,6 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
                     page,
                     hasMore,
                     hasMore ? nextOffset : null));
-
         }
 
         public Task<Campaign?> GetByIdAsync(
@@ -424,6 +410,17 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             string path,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        // Only the listing is expected here, so a lookup by path of any kind is refused.
+        public Task<Campaign?> GetByContainedPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(
+            string path,
+            CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(
             string name,
@@ -447,21 +444,17 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class FixedCampaignRepositoryScopeFactory(
         ICampaignRepository repository) : IServiceScopeFactory
     {
-
         public IServiceScope CreateScope() => new FixedCampaignRepositoryScope(repository);
-
     }
 
     private sealed class FixedCampaignRepositoryScope(
         ICampaignRepository repository) : IServiceScope
     {
-
         public IServiceProvider ServiceProvider { get; } =
             new FixedCampaignRepositoryProvider(repository);
 
@@ -470,48 +463,39 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class FixedCampaignRepositoryProvider(
         ICampaignRepository repository) : IServiceProvider
     {
-
         public object? GetService(Type serviceType) =>
             serviceType == typeof(ICampaignRepository)
                 ? repository
                 : null;
-
     }
 
     private sealed class CampaignRepositoryScopeFactory : IServiceScopeFactory
     {
-
         private readonly ArcanumDbContext _db;
 
         private readonly ArcanumSettings _settings;
 
         public CampaignRepositoryScopeFactory(ArcanumDbContext db, ArcanumSettings settings)
         {
-
             _db = db;
 
             _settings = settings;
-
         }
 
         public IServiceScope CreateScope() => new CampaignRepositoryScope(_db, _settings);
-
     }
 
     private sealed class CampaignRepositoryScope : IServiceScope
     {
-
         private readonly IServiceProvider _provider;
 
         public CampaignRepositoryScope(ArcanumDbContext db, ArcanumSettings settings)
         {
-
             ServiceCollection services = new();
 
             services.AddSingleton(db);
@@ -524,7 +508,6 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
                     FixtureLabeledArtifactGuard.For(db)));
 
             _provider = services.BuildServiceProvider();
-
         }
 
         public IServiceProvider ServiceProvider => _provider;
@@ -534,7 +517,5 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
-
 }

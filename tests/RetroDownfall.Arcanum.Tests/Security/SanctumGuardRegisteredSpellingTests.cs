@@ -68,7 +68,7 @@ public sealed class SanctumGuardRegisteredSpellingTests : IAsyncLifetime
 
         Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
 
-        Assert.True(WorkspacePathPolicy.TryCanonicalize(_parent, out string? canonicalParent, out _));
+        string canonicalParent = PhysicalTestPaths.Resolve(_parent);
 
         string physicalRoot = Directory.CreateDirectory(Path.Combine(canonicalParent, "real", "proj")).FullName;
 

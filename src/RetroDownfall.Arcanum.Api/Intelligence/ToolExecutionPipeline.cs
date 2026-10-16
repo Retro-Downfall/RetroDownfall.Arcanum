@@ -1869,8 +1869,10 @@ public sealed class ToolExecutionPipeline(
     /// <summary>
     /// Publishes a per-hop network ward for the native web tools when the turn runs inside an enabled
     /// Sanctum. The ward re-runs <see cref="ISanctumGuard.ValidateNetworkAsync"/>, so a redirect that
-    /// leaves the campaign's allowed domains is recorded as a breach in both modes and blocked only in Strict mode,
-    /// exactly as the initial target is (<see cref="SanctumEnforcement.AllowsContinuation"/>).
+    /// leaves the campaign's allowed domains is both blocked and recorded as a breach, in every Sanctum mode: the initial target is a
+    /// destination the model named and an audit-only Sanctum may let it go on once the breach is recorded
+    /// (<see cref="SanctumEnforcement.AllowsContinuation"/>), but a redirect hop is a destination the remote server chose, so the ward asks
+    /// no such question and fails closed.
     /// Returns <c>null</c> for every other tool and for unrestricted turns.
     /// </summary>
     private IDisposable? BeginSanctumEgressWard(FunctionCallContent fcc, TurnContext turnContext)
@@ -1896,7 +1898,7 @@ public sealed class ToolExecutionPipeline(
                 .ValidateNetworkAsync(campaignId, target.AbsoluteUri, toolName, token)
                 .ConfigureAwait(false);
 
-            return SanctumEnforcement.AllowsContinuation(result, turnContext.SanctumMode);
+            return result.Allowed;
         });
     }
 

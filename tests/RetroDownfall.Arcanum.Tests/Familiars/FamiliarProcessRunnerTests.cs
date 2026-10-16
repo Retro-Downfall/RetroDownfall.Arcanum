@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Familiars;
 
@@ -12,9 +13,25 @@ namespace RetroDownfall.Arcanum.Tests.Familiars;
 /// turn — are properties of the spawn, not of the abstraction over it.
 /// </summary>
 [Collection("ChildProcess")]
-public sealed class FamiliarProcessRunnerTests
+public sealed class FamiliarProcessRunnerTests : IAsyncLifetime
 {
+    /// <summary>
+    /// The deadline of a run that is expected to finish on its own. On Windows the stub is a PowerShell script, whose
+    /// start-up counts against a deadline measured from the process start and has taken longer than ten seconds on a
+    /// loaded runner, so the deadline is only a guard against a hang and sits far above a warm start. Nothing waits
+    /// it out unless the behaviour under test has regressed.
+    /// </summary>
+    private static readonly TimeSpan StubCompletionLimit = TimeSpan.FromSeconds(60);
+
     private readonly FamiliarProcessRunner _runner = new();
+
+    /// <summary>
+    /// Runs PowerShell once, outside every test's deadline and stopwatch, so no test measures its cold start. A
+    /// no-op wherever the stub is a shell script.
+    /// </summary>
+    public Task InitializeAsync() => WindowsPowerShellWarmUp.EnsureAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Lines_are_streamed_in_order()
@@ -137,7 +154,7 @@ public sealed class FamiliarProcessRunnerTests
         await foreach (string line in RunAsync(
             stub,
             standardInput: prompt,
-            timeout: TimeSpan.FromSeconds(15)))
+            timeout: StubCompletionLimit))
         {
             lines.Add(line);
         }
@@ -461,7 +478,10 @@ public sealed class FamiliarProcessRunnerTests
 
         int delivered = 0;
 
-        System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        // Started by the first frame, not before the run: the frame is the stub saying it is up, and the time from
+        // spawning it to that point is the stub interpreter's start-up (Windows PowerShell's is seconds on a loaded
+        // runner), which is not what the ceiling bounds.
+        System.Diagnostics.Stopwatch sinceFirstFrame = new();
 
         FamiliarProcessException failure = await Assert.ThrowsAsync<FamiliarProcessException>(
             async () =>
@@ -476,11 +496,16 @@ public sealed class FamiliarProcessRunnerTests
                     },
                     CancellationToken.None))
                 {
+                    if (delivered == 0)
+                    {
+                        sinceFirstFrame.Start();
+                    }
+
                     delivered++;
                 }
             });
 
-        stopwatch.Stop();
+        sinceFirstFrame.Stop();
 
         Assert.Equal(FamiliarProcessFailure.OutputLimitExceeded, failure.Failure);
 
@@ -488,8 +513,8 @@ public sealed class FamiliarProcessRunnerTests
         Assert.InRange(delivered, 1, 20);
 
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(20),
-            $"The run took {stopwatch.Elapsed.TotalSeconds:F1}s; the child was not stopped at the ceiling.");
+            sinceFirstFrame.Elapsed < TimeSpan.FromSeconds(20),
+            $"The run took {sinceFirstFrame.Elapsed.TotalSeconds:F1}s after its first frame; the child was not stopped at the ceiling.");
     }
 
     /// <summary>

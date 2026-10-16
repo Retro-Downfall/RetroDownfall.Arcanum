@@ -15,8 +15,10 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 /// <summary>
-/// The per-hop egress ward research publishes for every citation it fetches follows the same Sanctum rule as the read_url tool: a target
-/// outside the allowed domains is a recorded breach in both modes, and is refused only in Strict mode.
+/// The per-hop egress ward research publishes for every citation it fetches fails closed in every Sanctum mode: a target outside the
+/// allowed domains is a recorded breach and is refused, in Strict and in AuditOnly alike. A citation is a destination the search provider
+/// chose and a redirect is one the remote server chose, so neither is the kind of target an audit-only Sanctum records and carries on
+/// from (the initial target of a read_url call is, and it is the one place that rule is asked).
 /// </summary>
 public sealed class WebResearchSanctumWardTests : IDisposable
 {
@@ -53,16 +55,15 @@ public sealed class WebResearchSanctumWardTests : IDisposable
         RefusingCampaignResolver.Instance);
 
     [Theory]
-    [InlineData(SanctumMode.Strict, false)]
-    [InlineData(SanctumMode.AuditOnly, true)]
-    public async Task A_citation_outside_the_allowed_domains_is_recorded_in_both_modes_and_fetched_only_in_audit_only(SanctumMode mode, bool fetched)
+    [InlineData(SanctumMode.Strict)]
+    [InlineData(SanctumMode.AuditOnly)]
+    public async Task A_citation_outside_the_allowed_domains_is_recorded_and_refused_in_both_modes(SanctumMode mode)
     {
         SanctumPipelineHarness harness = Harness(mode);
 
-        Func<Uri, CancellationToken, ValueTask<bool>> ward =
-            (await Service(harness).BuildCampaignEgressWardAsync(harness.Campaign.Id, CancellationToken.None))!;
+        Func<Uri, CancellationToken, ValueTask<bool>> ward = Service(harness).BuildCampaignEgressWard(harness.Campaign.Id)!;
 
-        Assert.Equal(fetched, await ward(new Uri(Citation), CancellationToken.None));
+        Assert.False(await ward(new Uri(Citation), CancellationToken.None));
 
         SanctumBreachRecord breach = Assert.Single(harness.Breaches.Records);
 
@@ -82,8 +83,7 @@ public sealed class WebResearchSanctumWardTests : IDisposable
     {
         SanctumPipelineHarness harness = Harness(mode);
 
-        Func<Uri, CancellationToken, ValueTask<bool>> ward =
-            (await Service(harness).BuildCampaignEgressWardAsync(harness.Campaign.Id, CancellationToken.None))!;
+        Func<Uri, CancellationToken, ValueTask<bool>> ward = Service(harness).BuildCampaignEgressWard(harness.Campaign.Id)!;
 
         Assert.True(await ward(new Uri(AllowedCitation), CancellationToken.None));
 
@@ -97,30 +97,29 @@ public sealed class WebResearchSanctumWardTests : IDisposable
 
         WebResearchWorkflowService service = Service(harness);
 
-        Func<Uri, CancellationToken, ValueTask<bool>> ward = (await service.BuildCampaignEgressWardAsync(harness.Campaign.Id, CancellationToken.None))!;
+        Func<Uri, CancellationToken, ValueTask<bool>> ward = service.BuildCampaignEgressWard(harness.Campaign.Id)!;
 
         Assert.True(await ward(new Uri(Citation), CancellationToken.None));
 
         Assert.Empty(harness.Breaches.Records);
 
         // An uncontained run has no ward at all: redirects are bounded by the address guard alone, as before.
-        Assert.Null(await service.BuildCampaignEgressWardAsync(null, CancellationToken.None));
+        Assert.Null(service.BuildCampaignEgressWard(null));
     }
 
     [Fact]
-    public async Task A_campaign_that_cannot_be_read_stays_strict_whatever_mode_it_would_have_had()
+    public async Task A_campaign_that_cannot_be_read_is_refused_whatever_mode_it_would_have_had()
     {
         SanctumPipelineHarness harness = Harness(SanctumMode.AuditOnly);
 
-        Func<Uri, CancellationToken, ValueTask<bool>> ward =
-            (await Service(harness).BuildCampaignEgressWardAsync(Guid.NewGuid(), CancellationToken.None))!;
+        Func<Uri, CancellationToken, ValueTask<bool>> ward = Service(harness).BuildCampaignEgressWard(Guid.NewGuid())!;
 
         // The guard cannot resolve the campaign and denies; no audit-only decision can be honoured for it.
         Assert.False(await ward(new Uri(Citation), CancellationToken.None));
     }
 
-    // The ward reads the mode once, when it is built. A campaign deleted while the citation loop runs leaves the guard with no Sanctum to read,
-    // and an audit-only decision cannot be honoured for it: every later citation and redirect is refused, with no fetch and no breach row.
+    // A campaign deleted while the citation loop runs leaves the guard with no Sanctum to read, and an audit-only decision cannot be
+    // honoured for it: every later citation and redirect is refused, with no fetch and no breach row.
     [Theory]
     [InlineData(SanctumMode.Strict)]
     [InlineData(SanctumMode.AuditOnly)]
@@ -160,8 +159,7 @@ public sealed class WebResearchSanctumWardTests : IDisposable
             guard,
             RefusingCampaignResolver.Instance);
 
-        Func<Uri, CancellationToken, ValueTask<bool>> ward =
-            (await service.BuildCampaignEgressWardAsync(campaigns.Campaign!.Id, CancellationToken.None))!;
+        Func<Uri, CancellationToken, ValueTask<bool>> ward = service.BuildCampaignEgressWard(campaigns.Campaign!.Id)!;
 
         Assert.True(await ward(new Uri(AllowedCitation), CancellationToken.None));
 
@@ -194,6 +192,12 @@ public sealed class WebResearchSanctumWardTests : IDisposable
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);

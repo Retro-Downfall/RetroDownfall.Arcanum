@@ -272,6 +272,9 @@ public sealed class SanctumGuardWorkspaceCampaignTests : IDisposable
                 candidate == root || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) ? campaign : null);
         }
 
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
+
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 

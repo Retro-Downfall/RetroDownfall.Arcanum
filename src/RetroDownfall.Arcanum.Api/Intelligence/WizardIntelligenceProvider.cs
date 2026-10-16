@@ -4596,6 +4596,13 @@ public sealed partial class WizardIntelligenceProvider(
             toolSet,
             humanInteractionAvailable);
 
+        // The spell-script tool looks the Campaign's limits and boundary up for each script it runs. It was built before the turn was
+        // bound, from the working directory alone, and a Session-bound turn has none: tell it which Campaign governs the turn.
+        foreach (ArcanumSpellScriptTool spellScriptTool in toolSet.OfType<ArcanumSpellScriptTool>())
+        {
+            spellScriptTool.BindGoverningCampaignRoot(sanctum.Campaign?.Path);
+        }
+
         // W3.5: capture every spell-script root (active spell + resonant dependencies) so the Sanctum
         // preflight validates each candidate path the tool may resolve, not just the active spell's.
         IReadOnlyList<string> spellScriptRoots = toolSet

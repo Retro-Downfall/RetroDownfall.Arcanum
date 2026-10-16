@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -56,11 +57,6 @@ internal static class CliTestHarness
         string[] args,
         string? input = null)
     {
-        // Spectre's GitHub profile enrichment enables ANSI after the explicit No settings below.
-        // Captured tests need plain bytes, including diagnostics that create a console per write.
-        // This scope keeps CI enabled and restores the runner signal even if setup throws.
-        using CliTestConsoleEnvironment consoleEnvironment = new();
-
         // Production dependency injection resolves every persistent path through ArcanumPaths, which
         // outside a Testing environment is the developer's real profile directory: the command
         // would read the operator's arcanum.json and a name-resolved selection would write
@@ -98,7 +94,11 @@ internal static class CliTestHarness
         // returns and the whole suite hangs on it forever. An empty reader is the answer CI gives,
         // given deterministically.
         Console.SetIn(input is null ? TextReader.Null : new StringReader(input));
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+
+        // Built through the production factory: a bare AnsiConsole.Create would let a CI runner's
+        // environment turn ANSI back on, and every assertion on rendered text would then fail there
+        // for a reason that has nothing to do with what it checks.
+        AnsiConsole.Console = CliConsoleFactory.Create(new AnsiConsoleSettings
         {
             Out = new AnsiConsoleOutput(outWriter),
             Ansi = AnsiSupport.No,
@@ -189,8 +189,11 @@ internal static class CliTestHarness
 internal readonly record struct CliTestResult(int ExitCode, string Output, string Error);
 
 /// <summary>
-/// Controls Spectre's GitHub runner enrichment inside captured CLI tests. Callers belong to the
-/// nonparallel <c>GlobalConsole</c> collection because this signal is process-global.
+/// Sets, or clears, the <c>GITHUB_ACTIONS</c> signal Spectre's GitHub runner enrichment reads, for a test that asserts what the CLI
+/// writes on a runner that announces itself (or on one that does not). The harness does not scrub that signal itself: the production
+/// console factory is what keeps an ANSI opt-out final under a runner's enrichment, and a harness that cleared the signal would hide
+/// the very behaviour the captured tests exist to run under. Callers belong to the nonparallel <c>GlobalConsole</c> collection because
+/// this signal is process-global.
 /// </summary>
 internal sealed class CliTestConsoleEnvironment : IDisposable
 {

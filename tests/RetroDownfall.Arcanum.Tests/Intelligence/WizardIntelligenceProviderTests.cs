@@ -11108,6 +11108,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             return Task.FromResult(contained ? _campaign : null);
         }
 
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
+
         private static Campaign PlainCampaign(Guid id) =>
             new()
             {

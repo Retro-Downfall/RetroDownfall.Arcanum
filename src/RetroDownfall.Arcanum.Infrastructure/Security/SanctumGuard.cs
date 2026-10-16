@@ -479,7 +479,7 @@ public sealed class SanctumGuard(
 
     private static bool IsUnderAllowedRoots(string workspaceRoot, string candidateFull, IReadOnlyList<string> allowedPaths)
     {
-        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, candidateFull, out _))
+        if (IsUnderRoot(workspaceRoot, candidateFull))
         {
             return true;
         }
@@ -502,13 +502,35 @@ public sealed class SanctumGuard(
                 continue;
             }
 
-            if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(allowedFull, candidateFull, out _))
+            if (IsUnderRoot(allowedFull, candidateFull))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether a path is inside a root, whatever spelling reaches it. The ordinary containment rule (lexical prefix, then the canonical
+    /// candidate under the canonical root, so an in-root link that leads out stays refused) is the verdict; it compares the root and the
+    /// path as text first, which is wrong for a path the operating system reports under another spelling than the root was registered
+    /// with (<c>/private/var</c> for <c>/var</c>, another case or Unicode normalisation form where the volume folds them, a symbolic link
+    /// into the root). Such a path is re-expressed under the root's own spelling by the physical identity of the directories above it
+    /// (<see cref="CampaignRootContainment.RebaseOntoRoot"/>) and then judged by that same rule, so a spelling only changes how the path
+    /// reaches the root, never what the root contains.
+    /// </summary>
+    private static bool IsUnderRoot(string rootFull, string candidateFull)
+    {
+        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(rootFull, candidateFull, out _))
+        {
+            return true;
+        }
+
+        string? rebased = CampaignRootContainment.RebaseOntoRoot(rootFull, candidateFull);
+
+        return rebased is not null
+            && WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(rootFull, rebased, out _);
     }
 
     private SanctumResult? DenyIfInvalidCampaignId(string campaignId, string toolName, string breachType) =>

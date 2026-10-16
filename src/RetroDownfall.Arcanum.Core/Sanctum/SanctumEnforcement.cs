@@ -12,8 +12,9 @@ public static class SanctumEnforcement
     /// as its audit row and lets the operation proceed. <see cref="SanctumMode.Strict"/> stops at the first verdict that is not allowed.
     /// AuditOnly overrides a <see cref="SanctumDenialKind.Policy"/> refusal and nothing else: when the guard could not evaluate the policy at
     /// all (<see cref="SanctumDenialKind.PolicyUnavailable"/>) or could not record the breach (<see cref="SanctumDenialKind.AuditRecordFailed"/>)
-    /// there is no audit control left to rely on, so every mode refuses. Every network operation the Sanctum governs (the initial target of
-    /// <c>read_url</c> and its legacy alias, every redirect hop, and every research citation) asks this one question.
+    /// there is no audit control left to rely on, so every mode refuses. The initial target of <c>read_url</c> and its legacy alias, the
+    /// preflight of every other governed tool call and the attachment source read ask this one question; a redirect hop and a research
+    /// citation are refused in every mode, and so never ask it.
     /// </summary>
     public static bool AllowsContinuation(SanctumResult result, SanctumMode mode)
     {

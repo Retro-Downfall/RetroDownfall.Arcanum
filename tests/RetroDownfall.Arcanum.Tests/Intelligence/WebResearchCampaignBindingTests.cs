@@ -172,8 +172,9 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
         Assert.Single(run.Breaches.Records);
     }
 
+    // A research citation is refused at an off-list redirect hop in either Sanctum mode: the hop is recorded as a breach and not followed.
     [Fact]
-    public async Task A_citation_whose_redirect_hop_an_audit_only_sanctum_records_is_followed_and_kept()
+    public async Task A_citation_whose_redirect_hop_an_audit_only_sanctum_records_is_reported_as_denied_and_not_kept()
     {
         Run run = Start(SanctumMode.AuditOnly);
 
@@ -183,11 +184,13 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
 
         List<WebResearchStreamFrame> frames = await run.ResearchAsync(workingDirectory: _root);
 
-        Assert.DoesNotContain(frames, static frame => frame.Stage == "source_denied");
+        WebResearchStreamFrame denied = Assert.Single(frames, static frame => frame.Stage == "source_denied");
 
-        Assert.Equal([AllowedCitation, OffListHop], run.Http.Requests);
+        Assert.Contains("Sanctum", denied.Message, StringComparison.Ordinal);
 
-        Assert.Contains("controlled page", run.Synthesis.Prompt, StringComparison.Ordinal);
+        Assert.Equal([AllowedCitation], run.Http.Requests);
+
+        Assert.DoesNotContain("controlled page", run.Synthesis.Prompt, StringComparison.Ordinal);
 
         Assert.Single(run.Breaches.Records);
     }
@@ -738,6 +741,9 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
                     .OrderByDescending(static campaign => campaign.Path.Length)
                     .FirstOrDefault());
         }
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);

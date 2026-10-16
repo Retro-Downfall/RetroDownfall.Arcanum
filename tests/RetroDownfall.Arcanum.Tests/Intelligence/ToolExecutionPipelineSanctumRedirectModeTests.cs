@@ -30,8 +30,11 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
 
     private readonly string _root = Path.Combine(Path.GetTempPath(), "arcanum-sanctum-redirect-mode-" + Guid.NewGuid().ToString("N"));
 
+    // An audit-only Sanctum records the breach of a redirect hop that leaves the allowed domains and refuses it all the same, exactly as a
+    // Strict one does: a hop's destination is chosen by the remote server, not named by the model, so recording it and carrying on is not
+    // a trade the operator asked for. The first target is the other case, and it is recorded and allowed in AuditOnly (see below).
     [Fact]
-    public async Task AuditOnly_public_off_list_redirect_returns_second_hop_content_and_records_one_breach()
+    public async Task AuditOnly_public_off_list_redirect_is_refused_before_second_request_and_records_one_breach()
     {
         SanctumPipelineHarness harness = CreateHarness(SanctumMode.AuditOnly, ["allowed.test"]);
 
@@ -45,17 +48,9 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
 
         Assert.False(processed.Denied);
 
-        using JsonDocument result = JsonDocument.Parse(processed.ResultText);
+        AssertReadRefused(processed.ResultText);
 
-        // The current ambient ward records the violation but refuses the public hop in AuditOnly.
-        // RED must be this observable result (error rather than ok), not fixture/setup failure.
-        Assert.Equal("ok", result.RootElement.GetProperty("status").GetString());
-
-        Assert.Equal(PublicTarget, result.RootElement.GetProperty("data").GetProperty("finalUrl").GetString());
-
-        Assert.Contains("controlled second-hop page", result.RootElement.GetProperty("data").GetProperty("markdown").GetString(), StringComparison.Ordinal);
-
-        Assert.Equal([InitialUrl, PublicTarget], http.Requests);
+        Assert.Equal([InitialUrl], http.Requests);
 
         AssertOneTargetBreach(harness, PublicTarget);
     }
@@ -107,8 +102,9 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
         Assert.Empty(harness.Breaches.Records);
     }
 
-    // The initial target and the legacy alias follow the rule the redirect hop does: a target outside the allowed domains is recorded
-    // as a breach in both modes, refused before any request in Strict, and fetched in AuditOnly.
+    // The initial target of read_url and of the legacy alias is the one target an audit-only Sanctum lets through: a target outside the
+    // allowed domains is recorded as a breach in both modes, refused before any request in Strict, and fetched in AuditOnly. A redirect
+    // hop and a research citation are not asked this question; they are refused in both modes.
     [Theory]
     [InlineData("read_url", SanctumMode.Strict)]
     [InlineData("read_url", SanctumMode.AuditOnly)]
@@ -171,11 +167,11 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
         Assert.Empty(harness.Breaches.Records);
     }
 
-    // The legacy alias publishes the same ward as read_url, so its redirect hop is recorded in both modes and refused only in Strict.
+    // The legacy alias publishes the same ward as read_url, so its redirect hop is recorded as a breach and refused in both modes.
     [Theory]
     [InlineData(SanctumMode.AuditOnly)]
     [InlineData(SanctumMode.Strict)]
-    public async Task The_legacy_alias_redirect_outside_the_allowed_domains_is_recorded_in_both_modes_and_followed_only_in_audit_only(SanctumMode mode)
+    public async Task The_legacy_alias_redirect_outside_the_allowed_domains_is_recorded_and_refused_in_both_modes(SanctumMode mode)
     {
         SanctumPipelineHarness harness = CreateHarness(mode, ["allowed.test"]);
 
@@ -188,20 +184,11 @@ public sealed class ToolExecutionPipelineSanctumRedirectModeTests : IDisposable
 
         Assert.False(processed.Denied);
 
-        if (mode == SanctumMode.AuditOnly)
-        {
-            Assert.Contains("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
+        Assert.Contains("WebBrowsing.SsrfBlocked", processed.ResultText, StringComparison.Ordinal);
 
-            Assert.Equal([InitialUrl, PublicTarget], http.Requests);
-        }
-        else
-        {
-            Assert.Contains("WebBrowsing.SsrfBlocked", processed.ResultText, StringComparison.Ordinal);
+        Assert.DoesNotContain("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
 
-            Assert.DoesNotContain("controlled second-hop page", processed.ResultText, StringComparison.Ordinal);
-
-            Assert.Equal([InitialUrl], http.Requests);
-        }
+        Assert.Equal([InitialUrl], http.Requests);
 
         AssertOneTargetBreach(harness, PublicTarget, "browse_web");
     }

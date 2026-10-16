@@ -28,7 +28,6 @@ using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
-using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -450,7 +449,7 @@ public sealed class WebResearchWorkflowService(
         // citation is refused rather than fetched ungated.
         Func<Uri, CancellationToken, ValueTask<bool>>? egressWard = governing.PolicyUnreadable
             ? static (Uri _, CancellationToken _) => ValueTask.FromResult(false)
-            : await BuildCampaignEgressWardAsync(governing.CampaignId, cancellationToken).ConfigureAwait(false);
+            : BuildCampaignEgressWard(governing.CampaignId);
 
         // Whether the Sanctum, rather than the outbound address guard, is what refused the citation being fetched: a refused redirect hop and
         // a refused address both come back from the reader as SsrfBlocked, and the run tells the operator which control said no.
@@ -806,13 +805,13 @@ public sealed class WebResearchWorkflowService(
     /// <c>ToolExecutionPipeline.BeginSanctumEgressWard</c> publishes for the <c>read_url</c> tool.
     /// Citation URLs are chosen by the search provider, so the campaign's network policy has to gate
     /// them and every redirect they follow — otherwise one <c>302</c> off an allowed host turns a
-    /// contained campaign into arbitrary outbound egress. A target outside the allowed domains is recorded as a breach
-    /// in both Sanctum modes and refused only in Strict mode. <c>null</c> for an uncontained run, which
-    /// leaves redirects bounded by the SSRF guard alone exactly as before.
+    /// contained campaign into arbitrary outbound egress. A target outside the allowed domains is recorded as a breach by the guard and
+    /// refused in every Sanctum mode: a citation and the redirects it follows are destinations the search provider and the remote server
+    /// chose, not ones the model named, so an audit-only Sanctum does not wave them through
+    /// (<see cref="SanctumEnforcement.AllowsContinuation"/> answers for the initial target of a <c>read_url</c> call, not for these).
+    /// <c>null</c> for an uncontained run, which leaves redirects bounded by the SSRF guard alone exactly as before.
     /// </summary>
-    internal async Task<Func<Uri, CancellationToken, ValueTask<bool>>?> BuildCampaignEgressWardAsync(
-        Guid? campaignId,
-        CancellationToken cancellationToken)
+    internal Func<Uri, CancellationToken, ValueTask<bool>>? BuildCampaignEgressWard(Guid? campaignId)
     {
         if (campaignId is not Guid resolved)
         {
@@ -820,17 +819,6 @@ public sealed class WebResearchWorkflowService(
         }
 
         string campaign = resolved.ToString();
-
-        // The guard records a breach in either mode and reports it as not allowed; whether the fetch goes on is the mode's decision, the
-        // same one the read_url tool makes for its initial target and every redirect hop. A campaign that cannot be read is not a
-        // campaign whose audit-only mode can be honoured, so it stays strict.
-        Campaign? found = await campaigns
-            .GetByIdAsync(resolved, cancellationToken)
-            .ConfigureAwait(false);
-
-        SanctumMode mode = found is null
-            ? SanctumMode.Strict
-            : CampaignRepository.GetSanctumConfig(found).Mode;
 
         return async (Uri target, CancellationToken token) =>
         {
@@ -842,7 +830,7 @@ public sealed class WebResearchWorkflowService(
                     token)
                 .ConfigureAwait(false);
 
-            return SanctumEnforcement.AllowsContinuation(verdict, mode);
+            return verdict.Allowed;
         };
     }
 

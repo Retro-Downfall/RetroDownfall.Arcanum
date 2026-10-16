@@ -420,8 +420,8 @@ public sealed class SanctumCampaignResolutionTests
         Assert.True(resolved.PolicyUnreadable);
     }
 
-    // A Session's immutable binding is written when its first turn begins, so a Session created and not yet used has no binding row and the
-    // reader reports it as an integrity failure. It is bound to nothing yet: it names no Campaign, and the other sources still claim.
+    // A Session that exists with no binding row (the legacy paths create one before any Campaign question is asked) is reported by the
+    // reader as an integrity failure of its own kind. It was never bound to a Campaign: it names none, and the other sources still claim.
     [Fact]
     public async Task A_session_with_no_binding_row_names_no_campaign_and_the_other_sources_still_govern()
     {
@@ -429,7 +429,7 @@ public sealed class SanctumCampaignResolutionTests
 
         ShapeResolver resolver = ShapeResolver.RefusingTheCombination(
             explicitCampaign: Named,
-            sessionFailure: ErrorCodes.Covenant.IntegrityFailure);
+            sessionFailure: SessionCampaignBindingErrors.NoBinding);
 
         SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
             Guid.NewGuid(), Named, "/somewhere/else", null, resolver, campaigns, Token);
@@ -442,7 +442,7 @@ public sealed class SanctumCampaignResolutionTests
     [Fact]
     public async Task A_session_with_no_binding_row_and_nothing_else_to_claim_binds_the_turn_to_no_campaign()
     {
-        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(sessionFailure: ErrorCodes.Covenant.IntegrityFailure);
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(sessionFailure: SessionCampaignBindingErrors.NoBinding);
 
         SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
             Guid.NewGuid(), null, null, null, resolver, new Table(), Token);
@@ -450,6 +450,49 @@ public sealed class SanctumCampaignResolutionTests
         Assert.Null(resolved.CampaignId);
 
         Assert.False(resolved.PolicyUnreadable);
+    }
+
+    // The reader reports a Session with no binding row and a Session whose stored binding is malformed under the same code. Only the first
+    // is a Session bound to nothing; the second is a stored answer that cannot be trusted, and a Sanctum that cannot be read is not off.
+    [Fact]
+    public async Task A_session_whose_binding_is_malformed_and_nothing_else_to_claim_leaves_the_sanctum_unreadable()
+    {
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(
+            sessionFailure: new Error(ErrorCodes.Covenant.IntegrityFailure, "This Session's Campaign binding is malformed."));
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            Guid.NewGuid(), null, null, null, resolver, new Table(), Token);
+
+        Assert.True(resolved.PolicyUnreadable);
+    }
+
+    [Fact]
+    public async Task A_session_whose_binding_is_malformed_is_not_a_reason_to_govern_less_strictly_than_the_other_sources()
+    {
+        Table campaigns = new(Strict(Named));
+
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(
+            explicitCampaign: Named,
+            sessionFailure: new Error(ErrorCodes.Covenant.IntegrityFailure, "This Session's Campaign binding is malformed."));
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            Guid.NewGuid(), Named, "/somewhere/else", null, resolver, campaigns, Token);
+
+        Assert.True(resolved.PolicyUnreadable);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure, "This Session has no immutable Campaign binding")]
+    [InlineData(ErrorCodes.Covenant.IntegrityFailure, "")]
+    [InlineData(ErrorCodes.Covenant.Unavailable, "This Session has no immutable Campaign binding.")]
+    public async Task Only_the_readers_own_no_binding_refusal_names_no_campaign(string code, string message)
+    {
+        ShapeResolver resolver = ShapeResolver.RefusingTheCombination(sessionFailure: new Error(code, message));
+
+        SanctumCampaignResolution.Resolved resolved = await SanctumCampaignResolution.ResolveAsync(
+            Guid.NewGuid(), null, null, null, resolver, new Table(), Token);
+
+        Assert.True(resolved.PolicyUnreadable);
     }
 
     [Fact]
@@ -524,7 +567,7 @@ public sealed class SanctumCampaignResolutionTests
 
         private Guid? _missingExplicit;
 
-        private string? _sessionFailure;
+        private Error? _sessionFailure;
 
         private string? _directoryFailure;
 
@@ -533,7 +576,7 @@ public sealed class SanctumCampaignResolutionTests
             Guid? explicitCampaign = null,
             Guid? directory = null,
             Guid? missingExplicit = null,
-            string? sessionFailure = null,
+            Error? sessionFailure = null,
             string? directoryFailure = null) =>
             new()
             {
@@ -560,7 +603,9 @@ public sealed class SanctumCampaignResolutionTests
 
             if (request.SessionId is not null)
             {
-                return _sessionFailure is { } sessionFailure ? Refused(sessionFailure) : Answer(_session);
+                return _sessionFailure is { } sessionFailure
+                    ? ValueTask.FromResult(Result<CanonicalCampaignContext>.Failure(sessionFailure))
+                    : Answer(_session);
             }
 
             if (request.ExplicitCampaignId is { } explicitId)
@@ -617,6 +662,9 @@ public sealed class SanctumCampaignResolutionTests
 
             return Task.FromResult(ContainingRoot is { } id ? _rows.GetValueOrDefault(id) : null);
         }
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Campaign?>(null);
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);

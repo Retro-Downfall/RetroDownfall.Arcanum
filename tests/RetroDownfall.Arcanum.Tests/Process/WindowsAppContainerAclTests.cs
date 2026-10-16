@@ -211,7 +211,12 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         Skip.IfNot(OperatingSystem.IsWindows(), "The AppContainer ACL removal is Windows-only.");
 
         string shared = Directory.CreateDirectory(Path.Combine(_root, "workspace")).FullName;
-        string original = Sddl(shared);
+
+        // Compared exactly, not through WindowsDaclText.Of: every removal below is refused before the
+        // root is locked, so nothing may write its DACL, and even the AI bookkeeping flag that a
+        // SetAccessControl write leaves behind would be a refused purge that still rewrote the root.
+        string original = WindowsDaclText.Exact(shared);
+
         string currentUser = WindowsIdentity.GetCurrent().User!.Value;
 
         // The owner's own explicit ACE and the built-in Administrators group are exactly what a tampered
@@ -219,7 +224,8 @@ public sealed class WindowsAppContainerAclTests : IDisposable
         Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, currentUser, WindowsAppContainerRootLockBudget.StartPerRun()));
         Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, "S-1-5-32-544", WindowsAppContainerRootLockBudget.StartPerRun()));
         Assert.False(WindowsAppContainerLauncher.RemoveGrant(shared, "S-1-15-2-1", WindowsAppContainerRootLockBudget.StartPerRun()));
-        Assert.Equal(original, Sddl(shared));
+
+        Assert.Equal(original, WindowsDaclText.Exact(shared));
     }
 
     [SkippableFact]

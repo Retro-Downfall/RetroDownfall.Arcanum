@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Cli.Infrastructure;
+using RetroDownfall.Arcanum.Cli.UX;
 
 using Spectre.Console;
 
@@ -95,12 +96,23 @@ internal static class SensitiveValueInput
     /// process under <c>--plain</c>, which would otherwise make Spectre throw
     /// <see cref="InvalidOperationException"/> the moment the hidden prompt reads a key.
     /// </summary>
-    internal static AnsiConsoleSettings CreatePromptSettings(CliInvocationOptions options) =>
-        new()
-        {
-            Ansi = options.Plain ? AnsiSupport.No : AnsiSupport.Detect,
+    /// <remarks>
+    /// Colour is declined under <c>--plain</c> and under <c>NO_COLOR</c> or <c>ARCANUM_NO_COLOR</c>,
+    /// the same opt-outs the other stderr consoles answer
+    /// (<see cref="CliConsoleFactory.CreateDiagnosticSettings"/>). Spectre's own detector knows
+    /// <c>NO_COLOR</c> but not the Arcanum variable, so the decision is made here rather than left to
+    /// <see cref="AnsiSupport.Detect"/>. <c>--json</c> and <c>--print</c> never reach the prompt: with no
+    /// redirected stdin the read is unavailable under either.
+    /// </remarks>
+    internal static AnsiConsoleSettings CreatePromptSettings(CliInvocationOptions options)
+    {
+        bool declined = options.Plain || CliEnvironment.NoColorRequested;
 
-            ColorSystem = options.Plain ? ColorSystemSupport.NoColors : ColorSystemSupport.Detect,
+        return new()
+        {
+            Ansi = declined ? AnsiSupport.No : AnsiSupport.Detect,
+
+            ColorSystem = declined ? ColorSystemSupport.NoColors : ColorSystemSupport.Detect,
 
             Interactive = InteractionSupport.Yes,
 
@@ -108,6 +120,7 @@ internal static class SensitiveValueInput
             // stdout belongs to the command's payload, and the operator may have redirected it.
             Out = new AnsiConsoleOutput(Console.Error),
         };
+    }
 }
 
 internal sealed class SystemSensitiveValueConsole : ISensitiveValueConsole
@@ -120,12 +133,12 @@ internal sealed class SystemSensitiveValueConsole : ISensitiveValueConsole
         Console.In.ReadLineAsync(cancellationToken).AsTask();
 
     public string PromptHidden(string prompt, CliInvocationOptions options) =>
-        AnsiConsole
+        CliConsoleFactory
             .Create(SensitiveValueInput.CreatePromptSettings(options))
             .Prompt(new TextPrompt<string>(prompt).Secret());
 
     public string PromptVisible(string prompt, string defaultValue, CliInvocationOptions options) =>
-        AnsiConsole
+        CliConsoleFactory
             .Create(SensitiveValueInput.CreatePromptSettings(options))
             .Prompt(new TextPrompt<string>(prompt).DefaultValue(defaultValue));
 }
