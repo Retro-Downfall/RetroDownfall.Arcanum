@@ -40,10 +40,22 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 {
     private const string SentinelToken = "ARCANUM_TEST_SENTINEL";
 
+    /// <summary>
+    /// How long a test waits for the server's response to a call that has to start a child process, and for the
+    /// teardown of one it cancelled. On Windows the child is PowerShell, whose start-up has taken more than ten
+    /// seconds on a loaded runner, so this is only a guard against a hang: a passing run returns as soon as the
+    /// response arrives and never comes near it.
+    /// </summary>
+    private static readonly TimeSpan ChildCallResponseLimit = TimeSpan.FromSeconds(60);
+
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
     {
+        // Runs Windows PowerShell once, outside every test's deadline, for the tests whose child is a PowerShell
+        // command (see the Resolve*Command helpers). A no-op on every other host.
+        await WindowsPowerShellWarmUp.EnsureAsync();
+
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -619,11 +631,15 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     // handshake indifferent to which of the two wins the id: the winner is the long-running call
     // either way, and the loser is the rejection.
     //
-    // The 100_000-'a' file and the 1_000 ms timeout are what hold the winner in flight across the
+    // The 100_000-'a' file and the 10_000 ms timeout are what hold the winner in flight across the
     // handshake; they are not being measured. NonBacktracking rejects the lookahead, so the search
     // falls back to the backtracking engine, which cannot finish this pattern against input with no
     // 'b' -- it runs until the per-match timeout. Shortening either one shrinks the interval the
-    // cancel has to arrive in.
+    // duplicate line and the cancel line each have to be dispatched in. Each of them is its own
+    // Task.Run work item, so on a loaded runner either can lag by well over a second; the timeout is
+    // the ceiling the setting allows, so it outlasts the worst dispatch lag a runner shows. A regex
+    // match cannot be interrupted, so the cancellation is only seen when the match times out, and the
+    // read that waits for it allows far longer than the timeout.
     [Fact]
     public async Task NotificationsCancelled_cancels_in_flight_search_workspace_regex()
     {
@@ -634,7 +650,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         {
             Search = ArcanumRuntimeDefaults.CodingTools.Search with
             {
-                RegexTimeoutMilliseconds = 1_000,
+                RegexTimeoutMilliseconds = 10_000,
             },
         };
 
@@ -663,7 +679,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.WriteRequestWithFixedIdAsync(requestId, "tools/call", callParams);
 
         JsonRpcResponse rejected = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.NotNull(rejected.Error);
         Assert.Equal(-32600, rejected.Error!.Code);
@@ -671,7 +687,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.SendCancelNotificationAsync(requestId);
 
         JsonRpcResponse response = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Null(response.Error);
 
@@ -2161,7 +2177,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         await session.SendCancelNotificationAsync(requestId);
 
-        JsonRpcResponse response = await responseTask.WaitAsync(TimeSpan.FromSeconds(10));
+        JsonRpcResponse response = await responseTask.WaitAsync(ChildCallResponseLimit);
 
         Assert.Null(response.Error);
 
@@ -2287,8 +2303,9 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         // Reuses the exact same request id for a brand new, unrelated call.
         await session.WriteRequestWithFixedIdAsync(reusedId, "tools/call", secondCallParams);
 
+        // The reused id's call runs a command to completion, and on Windows that command is a PowerShell start.
         JsonRpcResponse secondResponse = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(ChildCallResponseLimit);
 
         Assert.Null(secondResponse.Error);
 
@@ -2344,7 +2361,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.SendCancelNotificationAsync(sharedId);
 
         JsonRpcResponse first = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(ChildCallResponseLimit);
 
         Assert.Null(first.Error);
 
@@ -2456,7 +2473,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.SendCancelNotificationAsync(sharedId);
 
         _ = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(ChildCallResponseLimit);
     }
 
     [Fact]

@@ -66,13 +66,24 @@ public sealed record ResourceLimitError(string Message);
 /// path, so a caller seeing exit 126 with the token reports an apply failure, while a target's own
 /// exit 126 stays an ordinary result.
 /// </param>
+/// <param name="ReserveBrokerSlot">
+/// Non-null on Windows alongside <paramref name="AssignAfterStart"/>. When the filesystem jail has
+/// replaced the target with the trusted sandbox broker, the broker is the process assigned to the Job
+/// Object and it creates the target inside that same job, so it occupies one of the job's active-process
+/// slots (and some of its committed memory) for the whole run. The caller invokes this once, after the
+/// jail has been applied and before <paramref name="AssignAfterStart"/>, so the job makes room for the
+/// broker and the tool's own tree gets exactly the configured process count. A run whose started process
+/// is the tool itself does not call it. Returns a <see cref="ResourceLimitError"/> on failure, which the
+/// caller treats exactly like a failed assignment.
+/// </param>
 public sealed record ProcessResourceLimiterResult(
     ResourceLimitError? Error,
     Func<int, Task>? CleanupAsync,
     Func<Task<bool>>? WasOomKilledAsync = null,
     Func<Process, ResourceLimitError?>? AssignAfterStart = null,
     long? MonitoredMemoryLimitBytes = null,
-    string? PreExecFailureMarker = null);
+    string? PreExecFailureMarker = null,
+    Func<ResourceLimitError?>? ReserveBrokerSlot = null);
 
 /// <summary>
 /// Applies OS-enforced resource limits (CPU time, memory, open file descriptors / process count)

@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 using RetroDownfall.Arcanum.Cli.Services;
+using RetroDownfall.Arcanum.Cli.UX;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -93,7 +94,11 @@ internal static class CliTestHarness
         // returns and the whole suite hangs on it forever. An empty reader is the answer CI gives,
         // given deterministically.
         Console.SetIn(input is null ? TextReader.Null : new StringReader(input));
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+
+        // Built through the production factory: a bare AnsiConsole.Create would let a CI runner's
+        // environment turn ANSI back on, and every assertion on rendered text would then fail there
+        // for a reason that has nothing to do with what it checks.
+        AnsiConsole.Console = CliConsoleFactory.Create(new AnsiConsoleSettings
         {
             Out = new AnsiConsoleOutput(outWriter),
             Ansi = AnsiSupport.No,

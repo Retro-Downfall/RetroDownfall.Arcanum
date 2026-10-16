@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -258,21 +260,38 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         int passes = 0;
 
+        bool sweepSettledBeforeSleep = false;
+
         SemaphoreSlim signal = (SemaphoreSlim)typeof(WorkspaceIndexingService)
             .GetField("_watcherSignal", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .GetValue(service)!;
 
         // The first pass finds the retry still in the future; this holds it past the deadline before the
-        // loop works out how long to sleep. The wake-up the settled sweep leaves behind is consumed too,
-        // because it would otherwise end the sleep early and hide the deadline that was missed.
+        // loop works out how long to sleep. While the first reconciliation sweep is outstanding the loop
+        // sleeps without a timeout, and the sweep's own wake-up would run the retry whatever deadline the
+        // loop computes, so the hold lasts until that sweep has settled too. The wake-up the settled sweep
+        // leaves behind is consumed as well, because it would otherwise end the sleep early and hide the
+        // deadline that was missed. The settle releases that wake-up after it leaves the scheduler gate, so
+        // it is drained over a short grace period rather than once.
         service.AfterWatcherPassForTests = () =>
         {
             if (Interlocked.Increment(ref passes) == 1)
             {
-                Thread.Sleep(TimeSpan.FromMilliseconds(500));
+                Stopwatch held = Stopwatch.StartNew();
 
-                while (signal.Wait(0))
+                while (held.Elapsed < TimeSpan.FromMilliseconds(500)
+                    || (service.GetScheduledSweepSnapshot().Outstanding != 0 && held.Elapsed < TimeSpan.FromSeconds(10)))
                 {
+                    Thread.Sleep(10);
+                }
+
+                Volatile.Write(ref sweepSettledBeforeSleep, service.GetScheduledSweepSnapshot().Outstanding == 0);
+
+                Stopwatch grace = Stopwatch.StartNew();
+
+                while (grace.Elapsed < TimeSpan.FromMilliseconds(200))
+                {
+                    _ = signal.Wait(10);
                 }
             }
         };
@@ -283,9 +302,15 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
+            // Watching, not the count: the count is a reservation taken before the factory runs, so a
+            // failing attempt still in flight would satisfy it.
             Assert.True(
-                await BecomesTrueAsync(() => Task.FromResult(service.ActiveWatcherCount == 1), TimeSpan.FromSeconds(10)),
+                await BecomesTrueAsync(() => Task.FromResult(service.GetRuntimeStatus(_workspace.Root).Watching), TimeSpan.FromSeconds(10)),
                 "The watcher was not re-created: the loop slept through its retry deadline.");
+
+            Assert.True(
+                Volatile.Read(ref sweepSettledBeforeSleep),
+                "The first sweep had not settled before the loop computed its sleep, so the wait was unbounded and this run did not exercise the retry deadline.");
         }
         finally
         {
@@ -304,18 +329,29 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         int attempts = 0;
 
+        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
+
+        IGrimoireClosingOwner? closingOwner = null;
+
         FakeWorkspaceFileWatcherFactory watchers = new()
         {
             BeforeReturn = () =>
             {
-                if (Interlocked.Increment(ref attempts) <= 2)
+                int attempt = Interlocked.Increment(ref attempts);
+
+                if (attempt == 2)
+                {
+                    // Maintenance takes admission while the immediate retry still holds its lease, so the
+                    // deadline retry can never find it open, however late the test thread runs.
+                    Volatile.Write(ref closingOwner, BeginWorkspaceClosing(inner));
+                }
+
+                if (attempt <= 2)
                 {
                     throw new InvalidOperationException("The inotify watch budget is exhausted.");
                 }
             },
         };
-
-        GrimoireConnectionAdmissionGate inner = new(TimeProvider.System);
 
         WorkspaceIndexingService service = CreateService(new FakeWeaveService(), out _, watcherFactory: watchers, workAdmission: inner);
 
@@ -327,10 +363,11 @@ public sealed partial class WorkspaceIndexingServiceTests
 
         try
         {
-            // The immediate retry failed too, so the third attempt is a deadline half a second away.
-            await WaitForWorkspaceConditionAsync(() => Volatile.Read(ref attempts) == 2);
+            // The immediate retry failed too, and closed the gate from inside that attempt, so the third
+            // attempt is a deadline half a second away that finds admission already closed.
+            await WaitForWorkspaceConditionAsync(() => Volatile.Read(ref closingOwner) is not null);
 
-            await using IGrimoireClosingOwner closing = BeginWorkspaceClosing(inner);
+            await using IGrimoireClosingOwner closing = Volatile.Read(ref closingOwner)!;
 
             await using IGrimoireExclusiveClosedLease closed = await CloseWorkspaceGateAsync(inner, closing);
 
@@ -341,8 +378,9 @@ public sealed partial class WorkspaceIndexingServiceTests
 
             Assert.True((await closed.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None)).IsSuccess);
 
+            // Watching, not the count: the count is a reservation taken before the factory runs.
             Assert.True(
-                await BecomesTrueAsync(() => Task.FromResult(service.ActiveWatcherCount == 1), TimeSpan.FromSeconds(10)),
+                await BecomesTrueAsync(() => Task.FromResult(service.GetRuntimeStatus(_workspace.Root).Watching), TimeSpan.FromSeconds(10)),
                 "The watcher was not re-created after maintenance reopened Grimoire admission.");
         }
         finally

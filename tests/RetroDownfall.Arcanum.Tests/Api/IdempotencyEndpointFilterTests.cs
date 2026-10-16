@@ -1203,6 +1203,11 @@ public sealed class IdempotencyEndpointFilterTests
 
 public sealed class IdempotencyEndpointFilterOwnershipTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     [Fact]
     public void OwnerIds_UseStableProcessComponentAndUniqueRequestComponent()
     {
@@ -1890,7 +1895,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
 
             _ = await invocation;
 
-            await response.CompleteAsync().WaitAsync(TimeSpan.FromMilliseconds(500));
+            await response.CompleteAsync().WaitAsync(HangGuard);
 
             Assert.Equal(IdempotencyClaimState.Completed, store.Claim?.State);
         }
@@ -1950,7 +1955,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
             }
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                async () => await invocation.WaitAsync(TimeSpan.FromSeconds(1)));
+                async () => await invocation.WaitAsync(HangGuard));
 
             Assert.True(store.HeartbeatCallCount >= 1);
 
@@ -2344,7 +2349,7 @@ public sealed class IdempotencyEndpointFilterOwnershipTests
         waiterCancellation.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () => await waiter.WaitAsync(TimeSpan.FromSeconds(2)));
+            async () => await waiter.WaitAsync(HangGuard));
 
         Assert.Equal(1, handlerCalls);
 

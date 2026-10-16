@@ -1407,7 +1407,15 @@ internal static partial class FileHandleIdentityInterop
         }
     }
 
-    private static FileSystemObjectKind ClassifyWindowsAttributes(
+    /// <summary>
+    /// The kind a Windows file-attribute word stands for. The reparse-point attribute decides before the
+    /// directory one, so every entry that carries it is <see cref="FileSystemObjectKind.Other"/>: a
+    /// symbolic link, a junction, and the reparse points that name no other location alike. The reparse
+    /// tag is never read, so telling those apart is left to the caller. An entry whose attribute a file
+    /// system filter hides (a file compressed in place, as <c>compact.exe /exe</c> does) never reaches
+    /// that branch and reads as an ordinary file.
+    /// </summary>
+    internal static FileSystemObjectKind ClassifyWindowsAttributes(
         uint attributes)
     {
         const uint directory = 0x10;

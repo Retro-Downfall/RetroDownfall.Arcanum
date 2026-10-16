@@ -8,9 +8,25 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.ProcessExecution;
 
 [Collection("ChildProcess")]
-public sealed class CappedChildProcessRunnerTests
+public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
 {
     private const string SentinelToken = "ARCANUM_RUNNER_TEST";
+
+    /// <summary>
+    /// The deadline of a run whose child is expected to finish on its own. On Windows the child is PowerShell,
+    /// whose start-up counts against a deadline measured from the process start and has taken longer than ten
+    /// seconds on a loaded runner, so the deadline is only a guard against a hang and sits far above a warm
+    /// start. Nothing waits it out unless the behaviour under test has regressed.
+    /// </summary>
+    private static readonly TimeSpan ChildCompletionLimit = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Runs PowerShell once, outside every test's deadline and stopwatch, so no test measures its cold start.
+    /// A no-op wherever the children are POSIX tools.
+    /// </summary>
+    public Task InitializeAsync() => WindowsPowerShellWarmUp.EnsureAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task RunAsync_infinite_timeout_harmless_echo_returns_exit_code_zero()
@@ -41,20 +57,20 @@ public sealed class CappedChildProcessRunnerTests
         // stdin (`cat`, `git commit`, `ssh`, `sudo`) blocks on the operator's terminal, and since
         // execute_command / run_spell_script / workspace_check all pass Timeout.InfiniteTimeSpan
         // there is no deadline that would ever unwedge the tool call.
-        ProcessStartInfo psi = CreateStdinReadingProcessStartInfo();
+        using ReadyMarker ready = new();
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
+        ProcessStartInfo psi = CreateStdinReadingProcessStartInfo(ready);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
             totalOutputCapBytes: 65_536,
-            timeout: TimeSpan.FromSeconds(15),
+            timeout: ChildCompletionLimit,
             resourceLimits: null,
             resourceLimiter: null,
             CancellationToken.None);
 
-        stopwatch.Stop();
+        DateTime returnedUtc = DateTime.UtcNow;
 
         Assert.True(
             psi.RedirectStandardInput,
@@ -66,9 +82,16 @@ public sealed class CappedChildProcessRunnerTests
 
         Assert.Equal(SentinelToken, result.Stdout.Text.Trim());
 
+        // Measured from the moment the child is up and about to read, not from Process.Start: the question is how
+        // long the read took to see EOF, and the child's start-up (seconds, for Windows PowerShell on a loaded
+        // runner) is not part of that.
+        Assert.True(ready.Exists, "The child never reached its stdin read.");
+
+        TimeSpan readToEof = ready.ElapsedUntil(returnedUtc);
+
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(5),
-            $"A child reading stdin must see EOF immediately; took {stopwatch.Elapsed}.");
+            readToEof < TimeSpan.FromSeconds(5),
+            $"A child reading stdin must see EOF immediately; took {readToEof} from reaching its read.");
     }
 
     [Fact]
@@ -80,7 +103,7 @@ public sealed class CappedChildProcessRunnerTests
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 2048,
-            timeout: TimeSpan.FromSeconds(30),
+            timeout: ChildCompletionLimit,
             resourceLimits: null,
             resourceLimiter: null,
             CancellationToken.None);
@@ -111,7 +134,7 @@ public sealed class CappedChildProcessRunnerTests
                 psi,
                 ChildProcessEnvironmentProfile.SpellScript,
                 totalOutputCapBytes: 2048,
-                timeout: TimeSpan.FromSeconds(30),
+                timeout: ChildCompletionLimit,
                 resourceLimits: null,
                 resourceLimiter: null,
                 CancellationToken.None,
@@ -152,17 +175,38 @@ public sealed class CappedChildProcessRunnerTests
                 payloadCharCount: 500_000,
                 seconds: 60);
 
-            using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(750));
+            // The run is cancelled once the partial spill file exists, not after a fixed delay: a timer that
+            // fired before the child had written past the preview cap (Windows PowerShell needs longer than
+            // 750 ms to start) would cancel a run with nothing spilled, and the empty directory afterwards would
+            // prove nothing about deleting a partial spill.
+            using CancellationTokenSource cancellation = new();
 
-            CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
-                psi,
-                ChildProcessEnvironmentProfile.SpellScript,
-                totalOutputCapBytes: 2048,
-                timeout: Timeout.InfiniteTimeSpan,
-                resourceLimits: null,
-                resourceLimiter: null,
-                cancellation.Token,
-                outputSpillDirectory: spillDirectory);
+            using CancellationTokenSource runEnded = new();
+
+            Task<bool> spillObserved = CancelOnceSpillExistsAsync(spillDirectory, cancellation, runEnded.Token);
+
+            CappedChildProcessRunResult result;
+
+            try
+            {
+                result = await CappedChildProcessRunner.RunAsync(
+                    psi,
+                    ChildProcessEnvironmentProfile.SpellScript,
+                    totalOutputCapBytes: 2048,
+                    timeout: Timeout.InfiniteTimeSpan,
+                    resourceLimits: null,
+                    resourceLimiter: null,
+                    cancellation.Token,
+                    outputSpillDirectory: spillDirectory);
+            }
+            finally
+            {
+                await runEnded.CancelAsync();
+            }
+
+            Assert.True(
+                await spillObserved,
+                "The child never wrote past the preview cap, so there was no partial spill file to delete.");
 
             Assert.Equal(CappedChildProcessOutcome.Canceled, result.Outcome);
 
@@ -231,11 +275,12 @@ public sealed class CappedChildProcessRunnerTests
             "arcanum-command-output-missing-test-" + Guid.NewGuid().ToString("N"),
             "not-created");
 
+        using ReadyMarker ready = new();
+
         ProcessStartInfo psi = CreateLargeOutputThenSleepProcessStartInfo(
             payloadCharCount: 500_000,
-            seconds: 60);
-
-        Stopwatch stopwatch = Stopwatch.StartNew();
+            seconds: 60,
+            ready);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
@@ -247,15 +292,22 @@ public sealed class CappedChildProcessRunnerTests
             CancellationToken.None,
             outputSpillDirectory: missingSpillDirectory);
 
-        stopwatch.Stop();
+        DateTime returnedUtc = DateTime.UtcNow;
 
         Assert.Equal(
             CappedChildProcessOutcome.OutputPreservationFailed,
             result.Outcome);
 
+        // The child sleeps for sixty seconds after it writes, so a run that waited for it would return a minute
+        // after the child was up. Measured from that moment and not from Process.Start, because Windows
+        // PowerShell's start-up is not part of how promptly the runner kills a child it cannot keep the output of.
+        Assert.True(ready.Exists, "The child never started its script.");
+
+        TimeSpan afterReady = ready.ElapsedUntil(returnedUtc);
+
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(10),
-            $"Expected output preservation failure to terminate the child promptly; took {stopwatch.Elapsed}.");
+            afterReady < TimeSpan.FromSeconds(10),
+            $"Expected output preservation failure to terminate the child promptly; took {afterReady} from the child being up.");
 
         Assert.False(Directory.Exists(missingSpillDirectory));
     }
@@ -303,22 +355,22 @@ public sealed class CappedChildProcessRunnerTests
     {
         // A payload well beyond a typical OS pipe buffer (a few tens of KB): without continuing to
         // drain the pipe after the cap is hit, the child would block on its next write() once the
-        // kernel pipe buffer fills, and RunAsync would only unblock via the timeout below — this
-        // test's timeout is intentionally short so a regression here fails fast instead of hanging.
-        ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 500_000);
+        // kernel pipe buffer fills, and RunAsync would only unblock via the timeout below, which is
+        // what fails the Completed assertion instead of leaving the test hung.
+        using ReadyMarker ready = new();
 
-        Stopwatch stopwatch = Stopwatch.StartNew();
+        ProcessStartInfo psi = CreateLargeOutputProcessStartInfo(payloadCharCount: 500_000, ready);
 
         CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
             psi,
             ChildProcessEnvironmentProfile.SpellScript,
             totalOutputCapBytes: 2048,
-            timeout: TimeSpan.FromSeconds(30),
+            timeout: ChildCompletionLimit,
             resourceLimits: null,
             resourceLimiter: null,
             CancellationToken.None);
 
-        stopwatch.Stop();
+        DateTime returnedUtc = DateTime.UtcNow;
 
         Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 
@@ -326,7 +378,12 @@ public sealed class CappedChildProcessRunnerTests
 
         // Well under the timeout — proves the child exited on its own because the pipe kept
         // draining, rather than RunAsync only unblocking once the timeout killed the process tree.
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(20), $"Expected a prompt exit; took {stopwatch.Elapsed}.");
+        // Measured from the child being up, so the start-up of the interpreter is not part of the bound.
+        Assert.True(ready.Exists, "The child never started its script.");
+
+        TimeSpan afterReady = ready.ElapsedUntil(returnedUtc);
+
+        Assert.True(afterReady < TimeSpan.FromSeconds(20), $"Expected a prompt exit; took {afterReady} from the child being up.");
     }
 
     [Fact]
@@ -1520,7 +1577,7 @@ public sealed class CappedChildProcessRunnerTests
             psi,
             ChildProcessEnvironmentProfile.ToolExec,
             totalOutputCapBytes: 65_536,
-            timeout: TimeSpan.FromSeconds(15),
+            timeout: ChildCompletionLimit,
             resourceLimits: null,
             resourceLimiter: null,
             CancellationToken.None,
@@ -1709,7 +1766,7 @@ public sealed class CappedChildProcessRunnerTests
     /// Drains fd 0 to completion and only then prints the sentinel, so the child finishes promptly
     /// exactly when the runner handed it a closed pipe and blocks when it inherited a console.
     /// </summary>
-    private static ProcessStartInfo CreateStdinReadingProcessStartInfo()
+    private static ProcessStartInfo CreateStdinReadingProcessStartInfo(ReadyMarker ready)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -1729,7 +1786,7 @@ public sealed class CappedChildProcessRunnerTests
                 {
                     "-NoProfile",
                     "-Command",
-                    $"$null = [Console]::In.ReadToEnd(); Write-Output {SentinelToken}",
+                    $"{ready.PowerShellSignal}$null = [Console]::In.ReadToEnd(); Write-Output {SentinelToken}",
                 },
             };
         }
@@ -1746,11 +1803,13 @@ public sealed class CappedChildProcessRunnerTests
 
             CreateNoWindow = true,
 
-            ArgumentList = { "-c", $"cat > /dev/null; echo {SentinelToken}" },
+            ArgumentList = { "-c", $"{ready.ShellSignal}cat > /dev/null; echo {SentinelToken}" },
         };
     }
 
-    private static ProcessStartInfo CreateLargeOutputProcessStartInfo(int payloadCharCount)
+    private static ProcessStartInfo CreateLargeOutputProcessStartInfo(
+        int payloadCharCount,
+        ReadyMarker? ready = null)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -1770,7 +1829,7 @@ public sealed class CappedChildProcessRunnerTests
                 {
                     "-NoProfile",
                     "-Command",
-                    $"Write-Output ('x' * {payloadCharCount})",
+                    $"{ready?.PowerShellSignal}Write-Output ('x' * {payloadCharCount})",
                 },
             };
         }
@@ -1787,13 +1846,14 @@ public sealed class CappedChildProcessRunnerTests
 
             CreateNoWindow = true,
 
-            ArgumentList = { "-c", $"printf '%*s' {payloadCharCount} | tr ' ' 'x'" },
+            ArgumentList = { "-c", $"{ready?.ShellSignal}printf '%*s' {payloadCharCount} | tr ' ' 'x'" },
         };
     }
 
     private static ProcessStartInfo CreateLargeOutputThenSleepProcessStartInfo(
         int payloadCharCount,
-        int seconds)
+        int seconds,
+        ReadyMarker? ready = null)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -1813,7 +1873,7 @@ public sealed class CappedChildProcessRunnerTests
                 {
                     "-NoProfile",
                     "-Command",
-                    $"[Console]::Out.Write(('x' * {payloadCharCount})); Start-Sleep -Seconds {seconds}",
+                    $"{ready?.PowerShellSignal}[Console]::Out.Write(('x' * {payloadCharCount})); Start-Sleep -Seconds {seconds}",
                 },
             };
         }
@@ -1833,9 +1893,84 @@ public sealed class CappedChildProcessRunnerTests
             ArgumentList =
             {
                 "-c",
-                $"printf '%*s' {payloadCharCount} | tr ' ' 'x'; sleep {seconds}",
+                $"{ready?.ShellSignal}printf '%*s' {payloadCharCount} | tr ' ' 'x'; sleep {seconds}",
             },
         };
+    }
+
+    /// <summary>
+    /// Cancels <paramref name="cancellation"/> as soon as a file exists in <paramref name="spillDirectory"/>, which
+    /// is the moment the runner has begun spilling a child's output. Gives up when <paramref name="runEnded"/> is
+    /// cancelled, or after <see cref="ChildCompletionLimit"/> (cancelling the run then too, so a child that never
+    /// writes cannot hold the test for its whole sleep).
+    /// </summary>
+    /// <returns>Whether a spill file was seen before the poll stopped.</returns>
+    private static async Task<bool> CancelOnceSpillExistsAsync(
+        string spillDirectory,
+        CancellationTokenSource cancellation,
+        CancellationToken runEnded)
+    {
+        DateTime giveUpAt = DateTime.UtcNow + ChildCompletionLimit;
+
+        while (!runEnded.IsCancellationRequested && DateTime.UtcNow < giveUpAt)
+        {
+            if (Directory.EnumerateFiles(spillDirectory).Any())
+            {
+                await cancellation.CancelAsync();
+
+                return true;
+            }
+
+            await Task.Delay(10);
+        }
+
+        if (!runEnded.IsCancellationRequested)
+        {
+            await cancellation.CancelAsync();
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A file the child creates when its script is running, so a test can bound the time after the child is up
+    /// rather than the time since <c>Process.Start</c>. On Windows the child is PowerShell, whose start-up is the
+    /// slow, load-dependent part, and a bound that includes it asserts how quickly PowerShell starts as much as
+    /// what the runner did.
+    /// </summary>
+    private sealed class ReadyMarker : IDisposable
+    {
+        private readonly string _path = Path.Combine(
+            Path.GetTempPath(),
+            "arcanum-runner-ready-" + Guid.NewGuid().ToString("N"));
+
+        /// <summary>The script prefix, in PowerShell, that creates the marker before the rest of the script runs.</summary>
+        public string PowerShellSignal =>
+            $"[System.IO.File]::WriteAllText('{_path.Replace("'", "''", StringComparison.Ordinal)}', 'ready'); ";
+
+        /// <summary>The same prefix for <c>/bin/sh</c>.</summary>
+        public string ShellSignal =>
+            $": > '{_path.Replace("'", "'\\''", StringComparison.Ordinal)}'; ";
+
+        public bool Exists => File.Exists(_path);
+
+        /// <summary>How long before <paramref name="instantUtc"/> the child created the marker.</summary>
+        public TimeSpan ElapsedUntil(DateTime instantUtc) =>
+            instantUtc - File.GetLastWriteTimeUtc(_path);
+
+        public void Dispose()
+        {
+            try
+            {
+                File.Delete(_path);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     private static async Task<bool> WaitForProcessExitOrZombieAsync(

@@ -22,7 +22,7 @@ internal static class ExecuteResultRendering
             return;
         }
 
-        IAnsiConsole stderrConsole = AnsiConsole.Create(new AnsiConsoleSettings { Out = new AnsiConsoleOutput(Console.Error) });
+        IAnsiConsole stderrConsole = CliConsoleFactory.CreateDiagnostic();
 
         stderrConsole.MarkupLine(themePalette.MutedMarkup(Markup.Escape("Tool calls during execution:")));
 

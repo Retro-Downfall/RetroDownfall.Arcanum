@@ -148,7 +148,7 @@ public enum NetworkPolicy
 /// per-process ceiling, i.e. the omission would remove the ceiling rather than keep it.
 /// </remarks>
 /// <param name="MaxProcessMemoryMb">Per-process memory ceiling in megabytes (clamped to 64-8192, so never "unlimited"). Combined with <see cref="MaxMemoryMb"/> into one effective child-process memory ceiling, the smaller of the two non-zero values, on every platform.</param>
-/// <param name="MaxProcessCount">Maximum concurrent child processes.</param>
+/// <param name="MaxProcessCount">Maximum concurrent processes in the tool's process tree. The trusted Windows sandbox broker that runs beside the tool is not counted: the Job Object it shares with the tool allows one more active process than this value.</param>
 /// <param name="MaxFileWriteMb">Maximum single file-write size in megabytes.</param>
 /// <param name="ProcessTimeoutSeconds">Maximum wall-clock seconds per child process. Clamped to 10-3600 by <c>ArcanumSettingClamps.SanctumProcessTimeoutSeconds</c>, so 0 is not "unlimited" - it becomes the 10-second floor.</param>
 /// <param name="MaxCpuSeconds">Maximum CPU time in seconds per tool invocation, enforced at the OS level. 0 = unlimited.</param>

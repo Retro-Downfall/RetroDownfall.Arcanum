@@ -1351,8 +1351,12 @@ public sealed class MemoryErasureLifecycleSurvivalTests
         /// </summary>
         /// <remarks>
         /// No synchronous writer of workspace chunks is reachable, so the row waits, bounded, for the
-        /// queued reconciliation to persist them. Nothing re-indexes the workspace afterwards: its file
-        /// does not change again, and the periodic reconciliation is an hour away.
+        /// queued reconciliation to persist them. The first chunk is not the end of the indexer's work: the
+        /// host's first full reconciliation is due as soon as the first workspace is registered, whatever the
+        /// re-index route queued, and a pass that starts after the path under test has deleted the chunks
+        /// would write them back. The row therefore also waits for the indexer to go idle with its next
+        /// reconciliation one interval away, after which nothing re-indexes the workspace: its file does not
+        /// change again.
         /// </remarks>
         private async Task<string> SeedIndexedWorkspaceAsync()
         {
@@ -1397,6 +1401,34 @@ public sealed class MemoryErasureLifecycleSurvivalTests
 
                 await Task.Delay(TimeSpan.FromMilliseconds(50), Token);
             }
+
+            WorkspaceIndexingService indexer = Factory.Services.GetRequiredService<WorkspaceIndexingService>();
+
+            while (true)
+            {
+                (int outstanding, DateTimeOffset next) = indexer.GetScheduledSweepSnapshot();
+
+                WorkspaceIndexingService.WorkspaceSchedulerSnapshot units = indexer.GetSchedulerSnapshot();
+
+                // The next reconciliation being in the future is what covers the debounce gap, in which no
+                // unit is active yet the first full sweep is still owed; the unit counts cover a follow-up
+                // unit that is published but has not started.
+                if (outstanding == 0
+                    && next > DateTimeOffset.UtcNow
+                    && units.ActiveCount == 0
+                    && units.QueuedCount == 0
+                    && !indexer.GetRuntimeStatus(workspace.Path).Reconciling)
+                {
+                    break;
+                }
+
+                Assert.True(DateTime.UtcNow < deadline, "the workspace indexer never settled");
+
+                await Task.Delay(TimeSpan.FromMilliseconds(50), Token);
+            }
+
+            Assert.True(
+                await CountAsync("SELECT count(*) FROM workspace_file_chunks WHERE WorkspacePath = $id;", workspace.Path) > 0);
 
             return workspace.Path;
         }

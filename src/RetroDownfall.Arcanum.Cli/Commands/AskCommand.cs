@@ -472,7 +472,7 @@ public sealed class AskCommand(
         TextWriter output,
         bool colorEnabled,
         bool interactive) =>
-        AnsiConsole.Create(
+        CliConsoleFactory.Create(
             new AnsiConsoleSettings
             {
                 Ansi = colorEnabled

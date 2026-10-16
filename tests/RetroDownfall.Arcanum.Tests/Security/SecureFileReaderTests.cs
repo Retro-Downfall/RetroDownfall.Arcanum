@@ -8,6 +8,11 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("WorkspacePathPolicy")]
 public sealed class SecureFileReaderTests : IAsyncLifetime
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
@@ -451,7 +456,7 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
         try
         {
             (SecureFileOpenStatus status, FileStream? stream) =
-                await openTask.WaitAsync(TimeSpan.FromSeconds(2));
+                await openTask.WaitAsync(HangGuard);
 
             stream?.Dispose();
 
@@ -518,7 +523,7 @@ public sealed class SecureFileReaderTests : IAsyncLifetime
         Assert.True(writer.Start());
 
         (SecureFileOpenStatus _, FileStream? stream) =
-            await openTask.WaitAsync(TimeSpan.FromSeconds(2));
+            await openTask.WaitAsync(HangGuard);
 
         stream?.Dispose();
 

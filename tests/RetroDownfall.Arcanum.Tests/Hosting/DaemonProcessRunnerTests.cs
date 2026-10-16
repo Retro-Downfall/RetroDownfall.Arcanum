@@ -10,6 +10,25 @@ public sealed class DaemonProcessRunnerTests : IDisposable
         Path.GetTempPath(),
         "arcanum-daemon-runner-" + Guid.NewGuid().ToString("N"));
 
+    /// <summary>
+    /// The runner's deadline in the Windows tree-kill test. The child has to start Windows PowerShell, launch ping and
+    /// record its pid inside it, and on a loaded runner that has taken longer than ten seconds, so the deadline is
+    /// many times a warm start. The test always waits it out, because the child is hung on purpose.
+    /// </summary>
+    private static readonly TimeSpan WindowsDeadline = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long after its deadline the runner may take to return: the tree kill and the teardown, which are not
+    /// part of the deadline. Relative to the deadline, so changing one never leaves the other as a stale constant.
+    /// </summary>
+    private static readonly TimeSpan ReturnMargin = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// How long the warm-up may take. It is not a measured deadline; it only keeps a Windows PowerShell that never
+    /// answers from hanging the suite.
+    /// </summary>
+    private static readonly TimeSpan WarmUpLimit = TimeSpan.FromMinutes(2);
+
     public DaemonProcessRunnerTests() => Directory.CreateDirectory(_directory);
 
     public void Dispose()
@@ -90,6 +109,13 @@ public sealed class DaemonProcessRunnerTests : IDisposable
     /// runner, and a shell-free child that outlives the deadline has to be stopped there too. PowerShell starts a
     /// grandchild, so this also proves the whole tree is killed, not only the process the runner started.
     /// </summary>
+    /// <remarks>
+    /// The deadline is the thing under test, so the child must be up and have recorded its grandchild's pid
+    /// before it, and a cold Windows PowerShell 5.1 can take longer than a short deadline to get that far. The
+    /// test therefore runs the same cmdlets once, outside the measured run, so the runner's deadline covers a
+    /// warm start, and gives that deadline <see cref="WindowsDeadline"/> of headroom. The bound on how long the
+    /// runner takes to return is relative to the deadline, not a constant that has to be revised with it.
+    /// </remarks>
     [SkippableFact]
     public async Task Windows_HungChild_AndItsGrandchild_AreKilledAtTimeout()
     {
@@ -103,20 +129,15 @@ public sealed class DaemonProcessRunnerTests : IDisposable
             "v1.0",
             "powershell.exe");
 
-        // PowerShell has to start and launch ping before the deadline, so the deadline allows a cold start.
-        DaemonProcessRunner runner = new(TimeSpan.FromSeconds(10));
+        await WarmUpPowerShellAsync(powerShell, Path.Combine(_directory, "warm-up.pid"));
+
+        DaemonProcessRunner runner = new(WindowsDeadline);
 
         Stopwatch elapsed = Stopwatch.StartNew();
 
         DaemonProcessOutcome outcome = await runner.RunAsync(
             powerShell,
-            [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                $"$p = Start-Process -FilePath ping.exe -ArgumentList '-n','120','127.0.0.1' -PassThru -WindowStyle Hidden; "
-                + $"Set-Content -Path '{pidFile}' -Value $p.Id; Wait-Process -Id $p.Id",
-            ],
+            ["-NoProfile", "-NonInteractive", "-Command", RecordGrandchildPidScript(pidFile, pings: "120")],
             CancellationToken.None);
 
         elapsed.Stop();
@@ -125,7 +146,9 @@ public sealed class DaemonProcessRunnerTests : IDisposable
 
         Assert.Equal(DaemonProcessRunner.TimeoutErrorCode, outcome.FatalError.Value.Code);
 
-        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(30), $"The runner waited {elapsed.Elapsed}.");
+        Assert.True(
+            elapsed.Elapsed < WindowsDeadline + ReturnMargin,
+            $"The runner waited {elapsed.Elapsed} for a deadline of {WindowsDeadline}.");
 
         await AssertChildGoneAsync(pidFile);
     }
@@ -208,6 +231,49 @@ public sealed class DaemonProcessRunnerTests : IDisposable
         Assert.Equal("out", outcome.StdOut.Trim());
 
         Assert.Equal("err", outcome.StdErr.Trim());
+    }
+
+    /// <summary>
+    /// Starts a grandchild <c>ping.exe</c> that sends <paramref name="pings"/> echo requests, records its pid in
+    /// <paramref name="pidFile"/> and waits for it, so the process the runner starts stays alive for as long as the
+    /// grandchild does.
+    /// </summary>
+    private static string RecordGrandchildPidScript(string pidFile, string pings) =>
+        $"$p = Start-Process -FilePath ping.exe -ArgumentList '-n','{pings}','127.0.0.1' -PassThru -WindowStyle Hidden; "
+        + $"Set-Content -Path '{pidFile}' -Value $p.Id; Wait-Process -Id $p.Id";
+
+    /// <summary>
+    /// Runs the cmdlets the measured child runs, with one echo request instead of a hundred and twenty, and waits
+    /// for them. Windows PowerShell 5.1 loads its assemblies and has them scanned on first use, which is what a
+    /// loaded runner makes slow, and none of that is behaviour of <see cref="DaemonProcessRunner"/>. The exit status
+    /// is not read: the grandchild may already be gone when the script waits for it, and all that matters is that the
+    /// engine, the cmdlets and <c>ping.exe</c> are in the file cache afterwards.
+    /// </summary>
+    private static async Task WarmUpPowerShellAsync(string powerShell, string pidFile)
+    {
+        ProcessStartInfo startInfo = new(
+            powerShell,
+            ["-NoProfile", "-NonInteractive", "-Command", RecordGrandchildPidScript(pidFile, pings: "1")])
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using System.Diagnostics.Process warmUp = System.Diagnostics.Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Windows PowerShell did not start for its warm-up.");
+
+        using CancellationTokenSource limit = new(WarmUpLimit);
+
+        try
+        {
+            await warmUp.WaitForExitAsync(limit.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            warmUp.Kill(entireProcessTree: true);
+
+            Assert.Fail($"Windows PowerShell did not finish its warm-up within {WarmUpLimit}.");
+        }
     }
 
     private static async Task AssertChildGoneAsync(string pidFile)

@@ -111,6 +111,12 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 
+        // This double answers by identifier only. A Campaign it holds governs its root and every directory below it, so answering
+        // "no Campaign" to a containment lookup would leave that directory ungoverned without a word; a lookup by containing path
+        // is refused instead.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
 
@@ -218,6 +224,12 @@ public sealed class CampaignWorkspaceFillTests
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+
+        // This double answers by identifier only. A Campaign it holds governs its root and every directory below it, so answering
+        // "no Campaign" to a containment lookup would leave that directory ungoverned without a word; a lookup by containing path
+        // is refused instead.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
