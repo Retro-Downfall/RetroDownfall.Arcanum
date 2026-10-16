@@ -9,6 +9,8 @@ internal sealed partial class LongRestQualificationRun
 
     private static readonly TimeSpan ExtractionBudget = TimeSpan.FromMinutes(8);
 
+    private const int MaximumSeedingAttempts = 3;
+
     /// <summary>The seeded corpus, labelled, after the operator retired one memory and pinned another.</summary>
     public IReadOnlyList<LongRestSeededMemory> Corpus => _corpus;
 
@@ -33,23 +35,7 @@ internal sealed partial class LongRestQualificationRun
 
             int before = await Api.SagaCountAsync(cancellationToken);
 
-            _ = await LongRestPublishedCli.RunAsync(
-                _options.Executable,
-                Installation,
-                TurnBudget,
-                "--plain",
-                "--print",
-                "--no-context",
-                "run",
-                "--new",
-                "--model",
-                _options.ChatModel,
-                "--temperature",
-                "0",
-                "--max-tokens",
-                "64",
-                "--unattended",
-                LongRestQualificationCorpus.PromptFor(session));
+            await TellFactsAsync(session, before, cancellationToken);
 
             await WaitForExtractionAsync(before, cancellationToken);
 
@@ -101,6 +87,54 @@ internal sealed partial class LongRestQualificationRun
             CultureInfo.InvariantCulture,
             $"Corpus: {corpus.Count} memories ({remembered} matched to told facts), {corpus.Select(static memory => memory.Label).Where(static label => label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel)).Distinct().Count()} labelled clusters, "
             + $"{corpus.Count(static memory => memory.Role == LongRestCorpusRole.Retired)} retired, {corpus.Count(static memory => memory.Role == LongRestCorpusRole.Pinned)} pinned; seeding took {Took(clock)}"));
+    }
+
+    /// <summary>
+    /// Sends one seeding Session's prompt through the published CLI. A small local model sometimes answers a seeding prompt with a tool call the
+    /// isolated host refuses (a delegated subagent needs a budget the qualification does not give it), which ends the turn with exit code 1 before
+    /// anything was remembered. That is the seeding model's behavior and not Long Rest's, so a turn that failed and left the Saga as it was is told
+    /// again, up to three attempts, and each retry is an observation; a failure that left memories behind cannot be attributed and is not retried.
+    /// </summary>
+    private async Task TellFactsAsync(int session, int before, CancellationToken cancellationToken)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                _ = await LongRestPublishedCli.RunAsync(
+                    _options.Executable,
+                    Installation,
+                    TurnBudget,
+                    "--plain",
+                    "--print",
+                    "--no-context",
+                    "run",
+                    "--new",
+                    "--model",
+                    _options.ChatModel,
+                    "--temperature",
+                    "0",
+                    "--max-tokens",
+                    "64",
+                    "--unattended",
+                    LongRestQualificationCorpus.PromptFor(session));
+
+                return;
+            }
+            catch (InvalidOperationException exception)
+            {
+                if (attempt >= MaximumSeedingAttempts || await Api.SagaCountAsync(cancellationToken) != before)
+                {
+                    throw;
+                }
+
+                string reason = LongRestQualificationChecks.NoValues(exception.Message.Split('\n')[0]);
+
+                Observe(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"Seeding Session {session}: the CLI turn failed before anything was remembered ({reason}); telling it again (attempt {attempt + 1} of {MaximumSeedingAttempts})"));
+            }
+        }
     }
 
     /// <summary>

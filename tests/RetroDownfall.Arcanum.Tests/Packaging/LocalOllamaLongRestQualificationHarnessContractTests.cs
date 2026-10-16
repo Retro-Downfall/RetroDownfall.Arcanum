@@ -732,6 +732,10 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains("LongRestQualificationChecks.ExporterStartFinding", run, StringComparison.Ordinal);
         Assert.DoesNotContain("temporary workaround", run, StringComparison.OrdinalIgnoreCase);
 
+        // A seeding turn that failed before anything was remembered is told again, a bounded number of times, and never when it left memories behind.
+        Assert.Contains("MaximumSeedingAttempts = 3", run, StringComparison.Ordinal);
+        Assert.Contains("await Api.SagaCountAsync(cancellationToken) != before", run, StringComparison.Ordinal);
+
         // The runtime gate on the in-memory credential backend precedes the first host start.
         Assert.True(
             run.IndexOf("AssertInMemoryCredentialBackend", StringComparison.Ordinal)
