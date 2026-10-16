@@ -2721,16 +2721,24 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
 
         GrimoireDbPassphraseSource setupPassphrase = new();
 
+        // The database the host will open: it takes the canonical leaf under the directory it is
+        // given. A database anywhere else is one the host never sees, and a host that finds none
+        // creates its own — which now takes the installation identity the profile already carries,
+        // so the disagreement this case needs would not exist at all.
+        string hostDatabase = Path.Combine(
+            _tempDir,
+            Path.GetFileName(ArcanumPaths.GrimoireDatabaseFile));
+
         await GrimoireDatabaseBootstrapper.EnsureInitializedWithoutInstallationLockForTestsAsync(
             _secretStore,
             setupPassphrase,
             setupScopes,
-            _dbPath,
+            hostDatabase,
             _tempDir,
             CancellationToken.None);
 
         Guid databaseInstallationId = await ReadDatabaseInstallationIdAsync(
-            _dbPath,
+            hostDatabase,
             setupPassphrase.Passphrase);
 
         Guid activeInstallationId = Guid.Parse(

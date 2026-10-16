@@ -56,11 +56,18 @@ internal sealed class CovenantAuthorityBootstrapper
     /// <param name="guardedDirectory">The Grimoire directory the lock guards.</param>
     /// <param name="masterApiKey">The master key this process holds. Never stored, only digested.</param>
     /// <param name="installedAtUtc">The single timestamp every tier records for this installation.</param>
+    /// <param name="adoptedInstallationId">
+    /// The installation identity this profile already carries outside any database, when it carries one.
+    /// A new database takes it as its own instead of minting another, because the profile's restore,
+    /// reset, and offline-transition evidence is bound to that identity and refuses a database row that
+    /// differs. The initializer ignores it when an authority row already exists.
+    /// </param>
     public GrimoireSchemaInitializationContext PrepareUnderInstallationLock(
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         string masterApiKey,
-        DateTimeOffset installedAtUtc)
+        DateTimeOffset installedAtUtc,
+        Guid? adoptedInstallationId = null)
     {
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
@@ -68,10 +75,17 @@ internal sealed class CovenantAuthorityBootstrapper
 
         ArgumentException.ThrowIfNullOrEmpty(masterApiKey);
 
+        if (adoptedInstallationId == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "An adopted installation identity cannot be empty.",
+                nameof(adoptedInstallationId));
+        }
+
         // Identity, not liveness, and deliberately no acquisition: see the type remarks.
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
-        return Prepare(masterApiKey, installedAtUtc);
+        return Prepare(masterApiKey, installedAtUtc, adoptedInstallationId);
     }
 
     /// <summary>
@@ -89,7 +103,7 @@ internal sealed class CovenantAuthorityBootstrapper
     {
         ArgumentException.ThrowIfNullOrEmpty(masterApiKey);
 
-        return Prepare(masterApiKey, installedAtUtc);
+        return Prepare(masterApiKey, installedAtUtc, adoptedInstallationId: null);
     }
 
     /// <summary>
@@ -132,23 +146,24 @@ internal sealed class CovenantAuthorityBootstrapper
     /// durable row inside the install transaction; a bootstrapper that guessed at the next generation
     /// from outside that transaction could only ever disagree with it.
     ///
-    /// <para>The identity is minted the same way, and for the same reason. Both entry points used to
-    /// accept an already-recorded identity to pass through instead, documented as what keeps an
-    /// installation stable across restarts and key rotations — and no caller under <c>src</c> ever
-    /// passed one, because none of them has one to pass: a fresh database has no row to read, and the
-    /// restore path that does read one builds the whole context from that row without coming here.
-    /// Stability is real, but it is the initializer's: it inserts only when no row exists, and its
-    /// convergence statement lists the key-derived columns and deliberately not the identity. A
-    /// parameter that documented someone else's guarantee and that nothing could supply was a promise
-    /// this type was in no position to make.</para>
+    /// <para>The identity has exactly two sources. A database created into a profile that carries no
+    /// installation identity of its own mints a fresh one, because there is no row to read and nothing
+    /// to inherit. A database created into a profile that does carry one — the pre-database identity
+    /// that every cleanup short of an attested full reset retains — takes that identity, handed in by
+    /// the one caller that holds the installation lock and has read it. Neither is a promise about an
+    /// existing database: the initializer inserts only when no row exists, and its convergence
+    /// statement lists the key-derived columns and deliberately not the identity, so a row that is
+    /// already there keeps the identity it has. The lockless entry point never takes one, because
+    /// reading the binding is something only the lock holder may do.</para>
     /// </remarks>
     private static GrimoireSchemaInitializationContext Prepare(
         string masterApiKey,
-        DateTimeOffset installedAtUtc) =>
+        DateTimeOffset installedAtUtc,
+        Guid? adoptedInstallationId) =>
         new(
             // Uppercase, matching how the rest of the Grimoire stores identities, so a value written
             // here compares equal to the same value written anywhere else.
-            Guid.NewGuid().ToString().ToUpperInvariant(),
+            (adoptedInstallationId ?? Guid.NewGuid()).ToString("D").ToUpperInvariant(),
             FreshAuthorityEpoch,
             FreshMasterKeyVersion,
             ComputeMasterKeyFingerprint(masterApiKey),

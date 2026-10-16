@@ -265,6 +265,15 @@ public static class GrimoireDatabaseBootstrapper
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(grimoireDirectory);
 
+        // Before the passphrase is resolved and before any connection exists: a new Grimoire writes its
+        // salt and its dedicated secret and then creates the database file, and a start that stopped
+        // after any of those would leave the next one looking at a profile that already has a database.
+        Guid? adoptedInstallationId = await ReadAdoptableInstallationIdentityAsync(
+            scopeFactory,
+            heldInstallationLock,
+            dbPath,
+            grimoireDirectory).ConfigureAwait(false);
+
         string? apiKey = bootstrappedKey?.ApiKey;
 
         if (apiKey is null)
@@ -354,6 +363,7 @@ public static class GrimoireDatabaseBootstrapper
             grimoireDirectory,
             apiKey,
             expectedInstallationId,
+            adoptedInstallationId,
             hostProcessToolsDecision,
             cancellationToken).ConfigureAwait(false);
 
@@ -797,6 +807,7 @@ public static class GrimoireDatabaseBootstrapper
         string grimoireDirectory,
         string masterApiKey,
         Guid? expectedInstallationId,
+        Guid? adoptedInstallationId,
         DeferredHostProcessToolsDecision? hostProcessToolsDecision,
         CancellationToken cancellationToken)
     {
@@ -817,7 +828,8 @@ public static class GrimoireDatabaseBootstrapper
         GrimoireSchemaInitializationContext context = BuildInitializationContext(
             heldInstallationLock,
             grimoireDirectory,
-            masterApiKey);
+            masterApiKey,
+            adoptedInstallationId);
 
         GrimoireSchemaInstallResult result;
 
@@ -1273,7 +1285,8 @@ public static class GrimoireDatabaseBootstrapper
     private static GrimoireSchemaInitializationContext BuildInitializationContext(
         ArcanumMaintenanceLock? heldInstallationLock,
         string grimoireDirectory,
-        string masterApiKey)
+        string masterApiKey,
+        Guid? adoptedInstallationId = null)
     {
         DateTimeOffset installedAtUtc = DateTimeOffset.UtcNow;
 
@@ -1288,7 +1301,81 @@ public static class GrimoireDatabaseBootstrapper
             heldInstallationLock,
             grimoireDirectory,
             masterApiKey,
-            installedAtUtc);
+            installedAtUtc,
+            adoptedInstallationId);
+    }
+
+    /// <summary>
+    /// Reads the installation identity a Grimoire created by this start must take, or none.
+    /// </summary>
+    /// <remarks>
+    /// The profile's pre-database installation identity outlives the database it was seeded from:
+    /// every cleanup short of an attested full reset retains it, and an ordinary installation reset
+    /// sweeps the database away while leaving it. The restore, reset, and offline-transition evidence
+    /// is bound to that identity and refuses a database row that differs, so a Grimoire that minted a
+    /// different one would be refused by all three from its first start, with nothing able to change
+    /// either side. Taking the identity is therefore the only birth that leaves the profile usable.
+    ///
+    /// <para>It is read only when this start creates the database, under the installation lock, and
+    /// never written: an ordinary start of an existing Grimoire touches the credential store no more
+    /// than it did, and a profile that carries no identity mints a fresh one and still writes none —
+    /// seeding stays with the restore and the authenticated reset publication (§10.19.6). A value that
+    /// exists and cannot be read as one canonical identity stops the start. Minting over it would
+    /// silently replace the binding it exists to hold.</para>
+    ///
+    /// <para>The caller reads it before the start writes the new salt or dedicated secret and before
+    /// any connection exists. A start that stopped at this read therefore leaves nothing behind that
+    /// would make the next one look like it was starting an existing Grimoire, which is the one
+    /// circumstance in which the identity is not taken.</para>
+    /// </remarks>
+    private static async Task<Guid?> ReadAdoptableInstallationIdentityAsync(
+        IServiceScopeFactory scopeFactory,
+        ArcanumMaintenanceLock? heldInstallationLock,
+        string dbPath,
+        string grimoireDirectory)
+    {
+        if (heldInstallationLock is null || File.Exists(dbPath))
+        {
+            return null;
+        }
+
+        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
+
+        if (scope.ServiceProvider.GetService<IOsCredentialStore>() is not { } credentials)
+        {
+            return null;
+        }
+
+        Result<BackupRestoreProfileNamespace> profile =
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(grimoireDirectory);
+
+        Result<Guid?> adopted = profile.IsFailure
+            ? Result<Guid?>.Failure(profile.Error)
+            : new BackupRestoreJournalInstallationIdentityProvider(credentials).ReadForNewDatabase(
+                heldInstallationLock,
+                grimoireDirectory,
+                profile.Value);
+
+        if (adopted.IsFailure)
+        {
+            Log.Fatal(
+                "Grimoire startup aborted: this profile's installation identity could not be read, so a new "
+                + "Grimoire cannot be bound to it. {Code}",
+                adopted.Error.Code);
+
+            throw new GrimoireDatabaseUnavailableException(
+                "This profile's installation identity could not be read, so Arcanum cannot create its "
+                + "Grimoire. Unlock or repair the operating-system credential store and start again. "
+                + adopted.Error.Message);
+        }
+
+        if (adopted.Value is not null)
+        {
+            Log.Information(
+                "The new Grimoire takes the installation identity this profile already carries.");
+        }
+
+        return adopted.Value;
     }
 
     private static async Task<string> ResolveGrimoirePassphraseAsync(

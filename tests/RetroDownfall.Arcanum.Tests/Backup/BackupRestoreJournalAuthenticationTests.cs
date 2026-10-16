@@ -384,6 +384,69 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Restore_journal_installation_identity_is_read_for_a_new_database_and_never_written()
+    {
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        SecretAccessRecordingCredentialStore recording = new(_credentials);
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(recording);
+
+        string account =
+            ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(profile.AccountSuffix);
+
+        // Absence is an answer, and it stays absence: reading is not seeding.
+        Assert.Null(Value(identities.ReadForNewDatabase(_lock, _guarded, profile)));
+
+        Assert.Equal(0, recording.SetCount(account));
+
+        Assert.Equal(
+            BackupRestoreJournalIdentityPresence.Absent,
+            Value(identities.Probe(profile)).Presence);
+
+        Guid carried = Guid.Parse("3a3b3c3d-3e3f-4a4b-8c4d-5e6f7a8b9c0d");
+
+        _ = Value(identities.SeedFromDatabase(_lock, _guarded, profile, carried));
+
+        int writes = recording.SetCount(account);
+
+        Assert.Equal(carried, Value(identities.ReadForNewDatabase(_lock, _guarded, profile)));
+
+        Assert.Equal(writes, recording.SetCount(account));
+
+        // A value that exists and is not one canonical identity is a failure, never absence: reporting
+        // absence would let a new database mint over the binding it exists to hold.
+        _ = _credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            account,
+            carried.ToString("D"));
+
+        Assert.True(identities.ReadForNewDatabase(_lock, _guarded, profile).IsFailure);
+
+        // An unreadable store is a failure too, and a distinct one from absence.
+        recording.FailAccount(account, OsCredentialStoreStatus.Unavailable);
+
+        Result<Guid?> unavailable = identities.ReadForNewDatabase(_lock, _guarded, profile);
+
+        Assert.True(unavailable.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, unavailable.Error.Code);
+    }
+
+    [Fact]
+    public void Restore_journal_installation_identity_read_for_a_new_database_requires_the_held_lock()
+    {
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(_credentials);
+
+        string otherDirectory = Path.Combine(_root, "not-the-guarded-root");
+
+        _ = Assert.ThrowsAny<Exception>(() =>
+            identities.ReadForNewDatabase(_lock, otherDirectory, profile));
+    }
+
     // ---------------------------------------------------------------- envelope authentication
 
     [Theory]

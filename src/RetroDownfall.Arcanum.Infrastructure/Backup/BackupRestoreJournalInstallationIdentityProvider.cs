@@ -7,11 +7,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 /// <summary>Whether a profile's external installation identity exists.</summary>
 internal enum BackupRestoreJournalIdentityPresence : byte
 {
-
     Absent = 1,
 
     Present = 2,
-
 }
 
 /// <summary>
@@ -37,12 +35,13 @@ internal sealed record BackupRestoreJournalIdentityProbe(
 /// rather than after it (§10.19.6).
 ///
 /// <para>Ordinary restore, Covenant reset, family reinitialize, credential cleanup, and key rotation
-/// all preserve it. Only an attested full installation reset may remove it, and only after proving no
-/// active restore owner remains.</para>
+/// all preserve it, and so does an ordinary installation reset, whose sweep deletes the database the
+/// identity was seeded from: the Grimoire the next start creates takes the identity as its own
+/// (<see cref="ReadForNewDatabase"/>). Only an attested full installation reset may remove it, and
+/// only after proving no active restore owner remains.</para>
 /// </remarks>
 internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCredentialStore credentials)
 {
-
     private readonly IOsCredentialStore _credentials =
         credentials ?? throw new ArgumentNullException(nameof(credentials));
 
@@ -52,16 +51,13 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
     internal Result<BackupRestoreJournalIdentityProbe> Probe(
         BackupRestoreProfileNamespace profileNamespace)
     {
-
         ArgumentNullException.ThrowIfNull(profileNamespace);
 
         OsCredentialStoreResult result;
 
         try
         {
-
             result = _credentials.TryGet(ArcanumCredentialIdentity.Service, Account(profileNamespace));
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -69,29 +65,23 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's external installation identity could not be read.");
-
         }
 
         if (result.Status is OsCredentialStoreStatus.NotFound)
         {
-
             return new BackupRestoreJournalIdentityProbe(
                 BackupRestoreJournalIdentityPresence.Absent,
                 Guid.Empty);
-
         }
 
         if (result.Status is not OsCredentialStoreStatus.Ok)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's external installation identity could not be read.");
-
         }
 
         return TryParseCanonical(result.Value, out Guid installationId)
@@ -101,7 +91,6 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
             : new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "This profile's external installation identity is not one canonical uppercase UUID.");
-
     }
 
     /// <summary>
@@ -118,7 +107,6 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
         BackupRestoreProfileNamespace profileNamespace,
         Guid databaseInstallationId)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
@@ -130,36 +118,29 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
 
         if (databaseInstallationId == Guid.Empty)
         {
-
             return new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "A profile's external installation identity cannot be seeded from an empty row.");
-
         }
 
         Result<BackupRestoreJournalIdentityProbe> probe = Probe(profileNamespace);
 
         if (probe.IsFailure)
         {
-
             return Result<Guid>.Failure(probe.Error);
-
         }
 
         if (probe.Value.Presence is BackupRestoreJournalIdentityPresence.Present)
         {
-
             return probe.Value.InstallationId == databaseInstallationId
                 ? probe.Value.InstallationId
                 : new Error(
                     ErrorCodes.Covenant.ForbiddenAuthority,
                     "This profile's external installation identity names a different installation than "
                     + "the database row.");
-
         }
 
         return Write(profileNamespace, databaseInstallationId);
-
     }
 
     /// <summary>
@@ -175,7 +156,6 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
         string guardedDirectory,
         BackupRestoreProfileNamespace profileNamespace)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
@@ -188,9 +168,7 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
 
         if (probe.IsFailure)
         {
-
             return Result<Guid>.Failure(probe.Error);
-
         }
 
         return probe.Value.Presence is BackupRestoreJournalIdentityPresence.Present
@@ -198,7 +176,50 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
                 ErrorCodes.Covenant.LifecycleConflict,
                 "This profile root already carries an external installation identity.")
             : Write(profileNamespace, Guid.NewGuid());
+    }
 
+    /// <summary>
+    /// Reads the identity a Grimoire that does not exist yet must be born under, or reports that this
+    /// profile carries none.
+    /// </summary>
+    /// <remarks>
+    /// The binding exists before any database does, and every cleanup short of an attested full reset
+    /// retains it — including an ordinary installation reset, whose sweep deletes the database it was
+    /// seeded from. A database created afterwards is therefore created into a profile that already names
+    /// an installation, and taking that name is what keeps the row and the binding from disagreeing the
+    /// first time anything compares them: every later restore, reset, and offline transition refuses a
+    /// row that differs from this account, and none of them can change either side.
+    ///
+    /// <para>This reads and never writes. Absence stays absence, because seeding is something only an
+    /// authenticated replacement restore or an authenticated reset publication may do, and a value that
+    /// exists but is not one canonical identity is a typed failure rather than a reason to mint another:
+    /// minting over it would silently replace what it was there to pin.</para>
+    /// </remarks>
+    internal Result<Guid?> ReadForNewDatabase(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
+
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        // Identity, not liveness, and deliberately no acquisition.
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        Result<BackupRestoreJournalIdentityProbe> probe = Probe(profileNamespace);
+
+        if (probe.IsFailure)
+        {
+            return Result<Guid?>.Failure(probe.Error);
+        }
+
+        return Result<Guid?>.Success(
+            probe.Value.Presence is BackupRestoreJournalIdentityPresence.Present
+                ? probe.Value.InstallationId
+                : null);
     }
 
     /// <summary>
@@ -208,23 +229,18 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
         BackupRestoreProfileNamespace profileNamespace,
         Guid databaseInstallationId)
     {
-
         Result<BackupRestoreJournalIdentityProbe> probe = Probe(profileNamespace);
 
         if (probe.IsFailure)
         {
-
             return probe.Error;
-
         }
 
         if (probe.Value.Presence is not BackupRestoreJournalIdentityPresence.Present)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "This profile has no external installation identity to compare the database row with.");
-
         }
 
         return probe.Value.InstallationId == databaseInstallationId
@@ -233,12 +249,10 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This profile's external installation identity names a different installation than the "
                 + "database row.");
-
     }
 
     private Result<Guid> Write(BackupRestoreProfileNamespace profileNamespace, Guid installationId)
     {
-
         string account = Account(profileNamespace);
 
         string canonical = Canonical(installationId);
@@ -247,9 +261,7 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
 
         try
         {
-
             written = _credentials.Set(ArcanumCredentialIdentity.Service, account, canonical);
-
         }
         catch (Exception exception) when (
             exception is IOException
@@ -257,29 +269,23 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
                 or InvalidOperationException
                 or NotSupportedException)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's external installation identity could not be written.");
-
         }
 
         if (written.Status is not OsCredentialStoreStatus.Ok)
         {
-
             return new Error(
                 ErrorCodes.Covenant.Unavailable,
                 "This profile's external installation identity could not be written.");
-
         }
 
         Result<BackupRestoreJournalIdentityProbe> readback = Probe(profileNamespace);
 
         if (readback.IsFailure)
         {
-
             return Result<Guid>.Failure(readback.Error);
-
         }
 
         return readback.Value.Presence is BackupRestoreJournalIdentityPresence.Present
@@ -288,7 +294,6 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
                 : new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "This profile's external installation identity did not read back as written.");
-
     }
 
     private static string Account(BackupRestoreProfileNamespace profileNamespace) =>
@@ -307,7 +312,6 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
     /// </remarks>
     private static bool TryParseCanonical(string? value, out Guid installationId)
     {
-
         installationId = Guid.Empty;
 
         if (value is null
@@ -315,15 +319,11 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
             || parsed == Guid.Empty
             || !string.Equals(Canonical(parsed), value, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         installationId = parsed;
 
         return true;
-
     }
-
 }
