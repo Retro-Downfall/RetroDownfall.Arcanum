@@ -93,7 +93,7 @@ public sealed partial class InstallationResetServiceTests
 
         InstallationResetMaintenanceLockAccessor accessor = new();
 
-        BorrowRecordingStartupRecovery recovery = new(accessor, active.GuardedRoot, evidence);
+        RecordingStartupRecovery recovery = new(evidence);
 
         FakeDataService data = new(dataPlan);
 
@@ -124,10 +124,11 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
 
-        Assert.Equal(1, recovery.Reads);
+        // A plan is a dry run: it asks what recovery would find and never runs recovery, which renames
+        // and deletes journal files, advances anchors and removes leftover credentials.
+        Assert.Equal(1, recovery.Inspections);
 
-        // The held lock was lent to the journal for the length of the read and not a moment longer.
-        Assert.True(recovery.LockWasBorrowableDuringTheRead);
+        Assert.Equal(0, recovery.Recoveries);
 
         Assert.True(accessor.BorrowHeldLock(active.GuardedRoot).IsFailure);
 
@@ -167,6 +168,11 @@ public sealed partial class InstallationResetServiceTests
 
         Assert.Contains("Local Grimoire reinstall", InstallationResetService.InterruptedWorkRemedy, StringComparison.Ordinal);
 
+        // It names what that procedure costs, and the one case it is for: a host killed mid-turn.
+        Assert.Contains("killed mid-turn", InstallationResetService.InterruptedWorkRemedy, StringComparison.Ordinal);
+
+        Assert.Contains("without the protected erasure", InstallationResetService.InterruptedWorkRemedy, StringComparison.Ordinal);
+
         Assert.Contains("does not shorten", InstallationResetService.LeaseExpiryRemedy, StringComparison.Ordinal);
     }
 
@@ -186,31 +192,37 @@ public sealed partial class InstallationResetServiceTests
         public StoppedHostLockLender? ResolveStoppedHostLockLender() => lender;
     }
 
-    private sealed class BorrowRecordingStartupRecovery(
-        InstallationResetMaintenanceLockAccessor accessor,
-        string guardedRoot,
+    private sealed class RecordingStartupRecovery(
         InstallationResetNestedTransitionEvidenceOutcome evidence)
         : IInstallationResetStartupRecovery
     {
-        public int Reads { get; private set; }
+        public int Inspections { get; private set; }
 
-        public bool LockWasBorrowableDuringTheRead { get; private set; }
+        public int Recoveries { get; private set; }
 
         public Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default)
         {
-            Reads++;
+            Recoveries++;
 
-            LockWasBorrowableDuringTheRead = accessor.BorrowHeldLock(guardedRoot).IsSuccess;
-
-            return Task.FromResult(
-                Result<InstallationResetStartupRecoveryState>.Success(
-                    new InstallationResetStartupRecoveryState(
-                        ActiveReset: null,
-                        ExpectedInstallationId: null,
-                        IsLegacyV1: false,
-                        evidence)));
+            return Task.FromResult(Report());
         }
+
+        public Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Inspections++;
+
+            return Task.FromResult(Report());
+        }
+
+        private Result<InstallationResetStartupRecoveryState> Report() =>
+            Result<InstallationResetStartupRecoveryState>.Success(
+                new InstallationResetStartupRecoveryState(
+                    ActiveReset: null,
+                    ExpectedInstallationId: null,
+                    IsLegacyV1: false,
+                    evidence));
     }
 }

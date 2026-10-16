@@ -323,8 +323,20 @@ internal sealed class StoppedHostFactoryErasure(
             .RecoverAsync(heldInstallationLock, cancellationToken)
             .ConfigureAwait(false);
 
-        if (recovered.IsFailure
-            || recovered.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
+        // A read that fails says nothing about the claim, and this runs on a resume as well as on a
+        // fresh apply: the erasure the record claimed may already have committed, and a refusal that
+        // reads as "not authorized" would let the reset service retire the one record that proves it.
+        // Only an answer that no authenticated record exists, or that the one which does exist claims
+        // something else, is a refusal of authority.
+        if (recovered.IsFailure)
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Data.RecoveryRequired,
+                "The authenticated installation-reset record could not be reread, so the claim cannot "
+                + "be confirmed."));
+        }
+
+        if (recovered.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
             || recovered.Value.Publication is not { } publication)
         {
             return Result.Failure(Forbidden());

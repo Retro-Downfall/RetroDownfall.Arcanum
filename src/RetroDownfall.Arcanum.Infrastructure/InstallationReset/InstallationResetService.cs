@@ -564,7 +564,7 @@ internal sealed class InstallationResetService(
                         conflict.Code,
                         conflict.Message + " " + RemedyFor(conflict.Code),
                         conflict.ResourceId)),
-                .. await ReadStandaloneTransitionBlockersAsync(issuer!, cancellationToken)
+                .. await ReadStandaloneTransitionBlockersAsync(cancellationToken)
                     .ConfigureAwait(false),
             ]
             : [];
@@ -663,9 +663,10 @@ internal sealed class InstallationResetService(
 
     internal const string InterruptedWorkRemedy =
         "Start the host once with `arcanum serve`, stop it with `arcanum serve quit`, and retry; that settles "
-        + "what an interrupted batch or subagent left behind. A record left by an interrupted chat turn is "
-        + "not settled by a host start, and then only the \"Local Grimoire reinstall\" procedure in "
-        + "docs/Arcanum.Engineering.md remains.";
+        + "what an interrupted batch or subagent left behind. A record left by a chat turn whose host was "
+        + "killed mid-turn is not settled by a host start, and then only the \"Local Grimoire reinstall\" "
+        + "procedure in docs/Arcanum.Engineering.md remains, which moves the Covenant family aside without "
+        + "the protected erasure.";
 
     internal const string LeaseExpiryRemedy =
         "The lease is time-bounded and starting the host does not shorten it. Retry once it has expired.";
@@ -679,8 +680,8 @@ internal sealed class InstallationResetService(
     };
 
     internal const string ClaimRetiredNote =
-        "Nothing was erased and the reset record was retired, but this attempt had already removed the "
-        + "background daemon's registration; run `arcanum daemon install` to restore it.";
+        "Nothing was erased and the reset record was retired, but this attempt had already removed any "
+        + "background daemon registration; if one was installed, run `arcanum daemon install` to restore it.";
 
     /// <summary>The way a nested data apply is run, and how its position is read afterwards.</summary>
     /// <param name="Apply">Runs the nested data apply for the claim the record already holds.</param>
@@ -693,30 +694,32 @@ internal sealed class InstallationResetService(
         Func<Guid, CancellationToken, Task<Result<StoppedHostNestedLaunchState>>>? ReadLaunchState = null);
 
     /// <summary>
-    /// Reads the offline-transition journal under the held lock and reports an active one as a blocker.
+    /// Reads the offline-transition journal and reports an active one as a blocker, changing nothing.
     /// </summary>
     /// <remarks>
-    /// The reset record and the journal are read as one pair through the same startup recovery the
-    /// serving host runs, lent the held lock for the length of the read. A journal here is a standalone
-    /// transition (a Covenant reset or erasure that crashed): the global reset refuses to begin beside
-    /// it, because it would then claim a nested transition into a slot another operation still holds.
-    /// A composition without the deferred services reads nothing, as it never did.
+    /// The reset record and the journal are read as one pair through the inspection of the startup
+    /// recovery the serving host runs: the same evidence, authenticated the same way, without the
+    /// repairs. A plan is a dry run before it is anything else, and recovery renames and deletes
+    /// journal files, advances anchors and removes leftover credentials; those belong to a start and
+    /// to a resume, which own the effect. A shape recovery would repair is answered with the outcome
+    /// the repair converges to, so a journal that recovery would resume is a blocker and one it would
+    /// merely tidy is not.
+    ///
+    /// <para>A journal here is a standalone transition (a Covenant reset or erasure that crashed): the
+    /// global reset refuses to begin beside it, because it would then claim a nested transition into a
+    /// slot another operation still holds. A composition without the deferred services reads nothing,
+    /// as it never did.</para>
     /// </remarks>
     private async Task<InstallationResetIssueSummary[]> ReadStandaloneTransitionBlockersAsync(
-        IStoppedHostGrimoireAuthorityIssuer issuer,
         CancellationToken cancellationToken)
     {
-        if (deferredServices?.ResolveStartupRecovery() is not { } pairRecovery
-            || deferredServices.ResolveStoppedHostLockLender() is not { } lender)
+        if (deferredServices?.ResolveStartupRecovery() is not { } pairRecovery)
         {
             return [];
         }
 
-        Result<InstallationResetStartupRecoveryState> pair = await lender
-            .RunAsync(
-                issuer,
-                activeStore.GuardedRoot,
-                borrowed => pairRecovery.RecoverBeforeBootstrapAsync(borrowed, cancellationToken))
+        Result<InstallationResetStartupRecoveryState> pair = await pairRecovery
+            .InspectPairAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (pair.IsFailure)
@@ -2171,7 +2174,15 @@ internal sealed class InstallationResetService(
                                     or StoppedHostNestedLaunchState.Unlaunched;
                         }
 
+                        // A stored completion receipt means the erasure committed, whatever the failed
+                        // call says: a refusal made by a read that failed on the way in (the reset record,
+                        // the Grimoire secret) is the same code a refusal before any effect carries, and
+                        // acting on the code alone would retire the only evidence of a finished erasure.
                         if (!provenPreEffect
+                            || active.NestedTransitionReceipt is
+                            {
+                                Phase: InstallationResetNestedTransitionPhase.Completed,
+                            }
                             || active.NestedTransitionReceipt is
                             {
                                 Phase: InstallationResetNestedTransitionPhase.Claimed,
@@ -2200,9 +2211,10 @@ internal sealed class InstallationResetService(
                             active.OperationId,
                             cancellationToken).ConfigureAwait(false);
 
-                        // The daemon registration was already removed by the time this reset got here,
-                        // and retiring the record does not put it back, so a refusal that retired a
-                        // claim says so rather than reporting only the refusal.
+                        // Any daemon registration was already removed by the time this reset got here,
+                        // and retiring the record does not put it back. The uninstall does not say
+                        // whether there was one, so a refusal that retired a claim says what the attempt
+                        // did rather than reporting only the refusal.
                         return retired.IsSuccess
                             ? Result<InstallationResetResult>.Failure(
                                 claimNeverLaunched

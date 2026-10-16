@@ -651,6 +651,10 @@ public sealed class CovenantResetBootstrapBarrierTests
                         PlanId: "blocked-plan"),
                     ExpectedInstallationId: null,
                     IsLegacyV1: false)));
+
+        public Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+            CancellationToken cancellationToken = default) =>
+            RecoverBeforeBootstrapAsync(heldInstallationLock: null!, cancellationToken);
     }
 
     private sealed class FixedArcanumSettingsMonitor(

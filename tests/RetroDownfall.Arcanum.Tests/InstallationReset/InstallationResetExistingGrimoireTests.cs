@@ -794,10 +794,37 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
     }
 
     [Fact]
-    public async Task Apply_without_a_database_reports_inventory_unavailable_because_nothing_ran()
+    public async Task A_workspace_apply_without_a_database_reports_inventory_unavailable_because_nothing_ran()
     {
         // The other half of the split: a failure before the canonical action starts has changed
         // nothing, so it keeps the code the service's closed set of pre-effect refusals names.
+        using ServiceProvider provider = CreateProvider();
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetDataService dataService = StoppedHostDataService(scope);
+
+        DataRetentionWorkspaceBinding binding = new(Guid.NewGuid(), "/workspace");
+
+        Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
+            new DataRetentionApplyRequest(
+                new DataRetentionRequest(
+                    DataRetentionOperation.ResetWorkspace,
+                    Workspace: binding),
+                "plan"),
+            CancellationToken.None);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.InventoryUnavailable, applied.Error.Code);
+    }
+
+    [Fact]
+    public async Task A_global_apply_without_a_database_is_recovery_required_because_the_erasure_may_have_committed()
+    {
+        // The protected erasure runs only on a record that claimed it and is past its point of no
+        // return, so a Grimoire that is not there to be keyed is not a refusal made before any effect:
+        // the reset service retires its record on that code, and the erasure may already have committed.
         using ServiceProvider provider = CreateProvider();
 
         using IServiceScope scope = provider.CreateScope();
@@ -812,7 +839,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         Assert.True(applied.IsFailure);
 
-        Assert.Equal(ErrorCodes.Data.InventoryUnavailable, applied.Error.Code);
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
     }
 
     private ServiceProvider CreateProvider(

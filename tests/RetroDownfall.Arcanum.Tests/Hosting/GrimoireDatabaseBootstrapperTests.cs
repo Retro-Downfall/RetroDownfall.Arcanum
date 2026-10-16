@@ -4201,6 +4201,10 @@ public sealed class GrimoireDatabaseBootstrapperTests : IDisposable
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
             recover(heldInstallationLock, cancellationToken);
+
+        public Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Startup does not inspect the pair; it recovers it.");
     }
 
     private sealed class DelegateDisposable(Action dispose) : IDisposable

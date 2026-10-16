@@ -601,6 +601,13 @@ public sealed class GrimoireOfflineTransitionStartupRecoveryTests : IAsyncLifeti
                 ErrorCodes.Covenant.Unavailable,
                 "The transition journal anchor credential is unavailable.")));
 
+        public Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> InspectAsync(
+            string guardedDirectory,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "The transition journal anchor credential is unavailable.")));
+
         public Task<Result> RetireAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             GrimoireOfflineTransitionJournalPublication terminal,

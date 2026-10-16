@@ -31,11 +31,22 @@ internal sealed record InstallationResetStartupRecoveryState(
 
 internal interface IInstallationResetStartupRecovery
 {
-
     Task<Result<InstallationResetStartupRecoveryState>> RecoverBeforeBootstrapAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// What <see cref="RecoverBeforeBootstrapAsync"/> would report for the two records as they stand,
+    /// read without converging either of them.
+    /// </summary>
+    /// <remarks>
+    /// Recovery renames and deletes journal files, advances anchors and removes leftover credentials,
+    /// which is right where a start or a resume owns the effect and wrong for a read that promises to
+    /// change nothing. This reads the same evidence, takes no lock, and answers each shape recovery
+    /// would repair with the outcome the repair converges to.
+    /// </remarks>
+    Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -47,7 +58,6 @@ internal sealed class InstallationResetStartupRecovery(
     IInstallationResetActiveStore activeStore,
     GrimoireOfflineTransitionLifecycleStore transitionJournal) : IInstallationResetStartupRecovery
 {
-
     private readonly string _guardedRoot = Path.TrimEndingDirectorySeparator(
         Path.GetFullPath(
             string.IsNullOrWhiteSpace(guardedRoot)
@@ -66,7 +76,6 @@ internal sealed class InstallationResetStartupRecovery(
         ArcanumMaintenanceLock heldInstallationLock,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         heldInstallationLock.AssertHeldFor(_guardedRoot);
@@ -77,10 +86,8 @@ internal sealed class InstallationResetStartupRecovery(
 
         if (recovered.IsSuccess)
         {
-
             return await PairAsync(heldInstallationLock, recovered.Value, cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         Result cleanup = await _activeStore
@@ -89,9 +96,7 @@ internal sealed class InstallationResetStartupRecovery(
 
         if (cleanup.IsFailure)
         {
-
             return Result<InstallationResetStartupRecoveryState>.Failure(cleanup.Error);
-
         }
 
         Result<InstallationResetActiveRecoveryState> afterCleanup = await _activeStore
@@ -100,21 +105,34 @@ internal sealed class InstallationResetStartupRecovery(
 
         if (afterCleanup.IsFailure)
         {
-
             return Result<InstallationResetStartupRecoveryState>.Failure(afterCleanup.Error);
-
         }
 
         if (afterCleanup.Value.Outcome is not InstallationResetActiveRecoveryOutcome.NoActiveRecord)
         {
-
             return EvidenceFailure();
-
         }
 
         return await PairAsync(heldInstallationLock, afterCleanup.Value, cancellationToken)
             .ConfigureAwait(false);
+    }
 
+    public async Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+        CancellationToken cancellationToken = default)
+    {
+        Result<InstallationResetActiveRecoveryState> inspected = await _activeStore
+            .InspectAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (inspected.IsFailure)
+        {
+            return Result<InstallationResetStartupRecoveryState>.Failure(inspected.Error);
+        }
+
+        return await PairAsync(
+                inspected.Value,
+                () => _transitionJournal.InspectAsync(_guardedRoot, cancellationToken))
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -126,30 +144,31 @@ internal sealed class InstallationResetStartupRecovery(
     /// deliberately does not share this: an answer it could not have computed honestly is worse than
     /// no answer.
     /// </remarks>
-    private async Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
+    private Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         InstallationResetActiveRecoveryState recovered,
-        CancellationToken cancellationToken)
-    {
+        CancellationToken cancellationToken) =>
+        PairAsync(
+            recovered,
+            () => _transitionJournal.RecoverAsync(heldInstallationLock, _guardedRoot, cancellationToken));
 
+    private async Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
+        InstallationResetActiveRecoveryState recovered,
+        Func<Task<Result<GrimoireOfflineTransitionTypedRecoveryState>>> readJournal)
+    {
         Result<InstallationResetStartupRecoveryState> projected = Project(recovered);
 
         if (projected.IsFailure)
         {
-
             return projected;
-
         }
 
-        Result<GrimoireOfflineTransitionTypedRecoveryState> journal = await _transitionJournal
-            .RecoverAsync(heldInstallationLock, _guardedRoot, cancellationToken)
+        Result<GrimoireOfflineTransitionTypedRecoveryState> journal = await readJournal()
             .ConfigureAwait(false);
 
         if (journal.IsFailure)
         {
-
             return Result<InstallationResetStartupRecoveryState>.Failure(journal.Error);
-
         }
 
         InstallationResetNestedTransitionEvidenceOutcome outcome =
@@ -162,13 +181,10 @@ internal sealed class InstallationResetStartupRecovery(
             : Result<InstallationResetStartupRecoveryState>.Success(
                 projected.Value with
                 {
-
                     NestedTransitionEvidence = outcome,
 
                     TransitionJournal = Evidence(journal.Value),
-
                 });
-
     }
 
     private static InstallationResetNestedTransitionEvidence.OuterRecord? Outer(
@@ -235,7 +251,6 @@ internal sealed class InstallationResetStartupRecovery(
     private static ActiveInstallationReset ToActiveReset(
         InstallationResetActiveRecord record)
     {
-
         bool requiresExternalRemediation =
             record.FullInstallationResetRemediationClaim is not null;
 
@@ -260,12 +275,10 @@ internal sealed class InstallationResetStartupRecovery(
             record.OnlineDataCompletion is not null,
             hostHandoff,
             requiresExternalRemediation);
-
     }
 
     private static Result<InstallationResetStartupRecoveryState> EvidenceFailure() =>
         new Error(
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "The installation-reset active evidence requires authenticated recovery.");
-
 }

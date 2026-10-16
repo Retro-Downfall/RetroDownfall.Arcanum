@@ -323,6 +323,35 @@ internal static class StoppedHostResetTestSupport
     }
 
     /// <summary>
+    /// Replaces the active-record store with one whose next read of the record fails once the fault is
+    /// armed, as an operating-system credential store that does not answer for a single call does.
+    /// </summary>
+    internal static void FailActiveRecoveryOnce(IServiceCollection services, OneShotFault fault)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        ArgumentNullException.ThrowIfNull(fault);
+
+        services.RemoveAll<IInstallationResetActiveStore>();
+
+        services.AddScoped<IInstallationResetActiveStore>(
+            sp => new DyingActiveStore(
+                sp.GetRequiredService<InstallationResetActiveStore>(),
+                static (_, _) => false,
+                fault));
+    }
+
+    /// <summary>A failure a test arms from inside one seam, so that the next read of another fails once.</summary>
+    internal sealed class OneShotFault
+    {
+        private int _armed;
+
+        internal void Arm() => Volatile.Write(ref _armed, 1);
+
+        internal bool TryTrip() => Interlocked.Exchange(ref _armed, 0) == 1;
+    }
+
+    /// <summary>
     /// Replaces the operation ledger store with one that ends the process on either side of a chosen
     /// checkpoint commit.
     /// </summary>
@@ -528,7 +557,8 @@ internal static class StoppedHostResetTestSupport
 
     private sealed class DyingActiveStore(
         IInstallationResetActiveStore inner,
-        Func<InstallationResetActivePublication, InstallationResetActiveRecord, bool> dieBefore)
+        Func<InstallationResetActivePublication, InstallationResetActiveRecord, bool> dieBefore,
+        OneShotFault? failRecoveryOnce = null)
         : IInstallationResetActiveStore
     {
         public string GuardedRoot => inner.GuardedRoot;
@@ -536,7 +566,11 @@ internal static class StoppedHostResetTestSupport
         public Task<Result<InstallationResetActiveRecoveryState>> RecoverAsync(
             ArcanumMaintenanceLock heldInstallationLock,
             CancellationToken cancellationToken = default) =>
-            inner.RecoverAsync(heldInstallationLock, cancellationToken);
+            failRecoveryOnce?.TryTrip() is true
+                ? Task.FromResult(Result<InstallationResetActiveRecoveryState>.Failure(new Error(
+                    ErrorCodes.Covenant.Unavailable,
+                    "The credential store did not answer this one read.")))
+                : inner.RecoverAsync(heldInstallationLock, cancellationToken);
 
         public Task<Result<InstallationResetActivePublication>> BeginAsync(
             ArcanumMaintenanceLock heldInstallationLock,

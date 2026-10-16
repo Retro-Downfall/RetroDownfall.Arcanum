@@ -272,6 +272,12 @@ internal sealed class InstallationResetExistingGrimoire(
     /// record made. The legacy summary-matching recovery the leased path used to run for a factory
     /// reset is gone for this scope: a row it found at version zero was restarted with the ordinary
     /// deletes and none of the protected lifecycle.
+    ///
+    /// <para>This runs only on a claimed record that is past its point of no return, so a database or a
+    /// key that is not there to be prepared is not "inventory unavailable": the erasure may already
+    /// have committed, and the reset service must keep its record (<c>Data.RecoveryRequired</c>). A
+    /// key whose preparation throws, before the erasure is entered, is the one case that is still the
+    /// honest "nothing ran", which the service then settles by reading the position of the claim.</para>
     /// </remarks>
     private async Task<Result<DataRetentionApplyResult>> ApplyFactoryErasureAsync(
         DataRetentionApplyRequest request,
@@ -280,14 +286,20 @@ internal sealed class InstallationResetExistingGrimoire(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile)
-            || !await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
-        {
-            return Unavailable<DataRetentionApplyResult>();
-        }
+        // Set the moment the erasure is about to be entered. Everything before it - reading the sidecar
+        // and the secret - has changed nothing.
+        bool erasureEntered = false;
 
         try
         {
+            if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile)
+                || !await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
+            {
+                return OutcomeUnconfirmed<DataRetentionApplyResult>();
+            }
+
+            erasureEntered = true;
+
             return await secretStoreProvider
                 .GetRequiredService<StoppedHostFactoryErasure>()
                 .ApplyAsync(request, issuer, cancellationToken)
@@ -306,8 +318,10 @@ internal sealed class InstallationResetExistingGrimoire(
                 or SqliteException
                 or CryptographicException)
         {
-            // The erasure started before it failed, so this is not "nothing ran".
-            return OutcomeUnconfirmed<DataRetentionApplyResult>();
+            // Once the erasure was entered it started before it failed, so this is not "nothing ran".
+            return erasureEntered
+                ? OutcomeUnconfirmed<DataRetentionApplyResult>()
+                : Unavailable<DataRetentionApplyResult>();
         }
     }
 
@@ -319,14 +333,14 @@ internal sealed class InstallationResetExistingGrimoire(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile)
-            || !await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
-        {
-            return Unavailable<StoppedHostNestedLaunchState>();
-        }
-
         try
         {
+            if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile)
+                || !await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
+            {
+                return Unavailable<StoppedHostNestedLaunchState>();
+            }
+
             return await secretStoreProvider
                 .GetRequiredService<StoppedHostFactoryErasure>()
                 .ReadLaunchStateAsync(nestedOperationId, issuer, cancellationToken)
