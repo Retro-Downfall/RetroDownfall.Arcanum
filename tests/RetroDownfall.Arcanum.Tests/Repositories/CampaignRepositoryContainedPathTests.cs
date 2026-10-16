@@ -16,8 +16,8 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 /// <see cref="ICampaignRepository.GetByContainedPathAsync"/> against the real Campaign table: a directory is recognised as a registered
 /// Campaign's workspace when the Campaign's root is the directory or one of its ancestors, matched by whole components.
 /// </summary>
-[Collection("Grimoire")]
-public sealed class CampaignRepositoryContainedPathTests : IAsyncLifetime
+[Collection("WorkspacePathPolicy")]
+public sealed class CampaignRepositoryContainedPathTests : IClassFixture<GrimoireFixture>, IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 
