@@ -8,6 +8,11 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class ArcanumApiCredentialLeaseTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private const string ApiKey = "credential-lease-test-key";
 
     private static readonly Uri PresenceUri =
@@ -299,7 +304,7 @@ public sealed class ArcanumApiCredentialLeaseTests
             TimeSpan.FromMilliseconds(10),
             CancellationToken.None);
 
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await entered.Task.WaitAsync(HangGuard);
         await Task.Delay(TimeSpan.FromMilliseconds(50));
 
         Assert.False(resolution.IsCompleted);
@@ -330,7 +335,7 @@ public sealed class ArcanumApiCredentialLeaseTests
             TimeSpan.FromSeconds(2),
             cancellation.Token);
 
-        await mirror.FirstReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await mirror.FirstReadStarted.Task.WaitAsync(HangGuard);
 
         Task<ApiCredentialLeaseResult> second = lease.ResolveAsync(
             TimeSpan.FromSeconds(2),
@@ -372,7 +377,7 @@ public sealed class ArcanumApiCredentialLeaseTests
             TimeSpan.FromSeconds(2),
             cancellation.Token);
 
-        await mirror.FirstReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await mirror.FirstReadStarted.Task.WaitAsync(HangGuard);
 
         cancellation.Cancel();
 
@@ -418,7 +423,7 @@ public sealed class ArcanumApiCredentialLeaseTests
                     CancellationToken.None)),
         ];
 
-        await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await hold.Started.Task.WaitAsync(HangGuard);
         await Task.Yield();
         hold.Release();
 
@@ -462,7 +467,7 @@ public sealed class ArcanumApiCredentialLeaseTests
             TimeSpan.FromSeconds(2),
             CancellationToken.None);
 
-        await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await hold.Started.Task.WaitAsync(HangGuard);
 
         lease.Dispose();
 
@@ -501,9 +506,9 @@ public sealed class ArcanumApiCredentialLeaseTests
             TimeSpan.FromSeconds(2),
             CancellationToken.None);
 
-        await requestHold.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await requestHold.Started.Task.WaitAsync(HangGuard);
         requestHold.Release();
-        await publicationReached.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await publicationReached.Task.WaitAsync(HangGuard);
 
         lease.Dispose();
         releasePublication.Set();
@@ -580,7 +585,7 @@ public sealed class ArcanumApiCredentialLeaseTests
                     CancellationToken.None)),
         ];
 
-        await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await hold.Started.Task.WaitAsync(HangGuard);
         await Task.Yield();
         hold.Release();
 
@@ -748,7 +753,7 @@ public sealed class ArcanumApiCredentialLeaseTests
                     CancellationToken.None)),
         ];
 
-        await hold.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await hold.Started.Task.WaitAsync(HangGuard);
         await Task.Yield();
         hold.Release();
 
