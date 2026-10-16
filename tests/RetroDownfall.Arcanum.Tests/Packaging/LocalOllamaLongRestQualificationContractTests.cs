@@ -26,7 +26,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
     private static readonly LongRestQualificationOptions Options = new(
         "/published/RetroDownfall.Arcanum.Cli",
         "gemma4:e4b",
-        "ornith1.5:35b",
+        "qwen3.8:27b",
         "embeddinggemma",
         2048,
         768,
@@ -447,7 +447,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         LongRestQualificationOptions options = LongRestQualificationOptions.Read(name => environment.GetValueOrDefault(name));
 
         Assert.Equal("gemma4:e4b", options.ChatModel);
-        Assert.Equal("ornith1.5:35b", options.DefaultModel);
+        Assert.Equal("qwen3.8:27b", options.DefaultModel);
         Assert.Equal("embeddinggemma", options.EmbeddingModel);
         Assert.Equal(2048, options.EmbeddingWindow);
         Assert.Equal(768, options.EmbeddingDimensions);
@@ -517,13 +517,19 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.Equal(chat.Endpoint, embeddings.Endpoint);
         Assert.Equal(131_072, chat.ContextWindowLimit);
         Assert.Equal(2048, embeddings.ContextWindowLimit);
-        Assert.Equal(["gemma4:e4b", "ornith1.5:35b"], chat.Models.Select(static model => model.Name));
+        Assert.Equal(["gemma4:e4b", "qwen3.8:27b"], chat.Models.Select(static model => model.Name));
         Assert.Equal(["embeddinggemma"], embeddings.Models.Select(static model => model.Name));
+        Assert.All(chat.Models, static model =>
+        {
+            Assert.True(model.SupportsVision);
+            Assert.True(model.SupportsTools);
+        });
+        Assert.False(Assert.Single(embeddings.Models).SupportsVision);
         Assert.NotEqual(
             chat.CredentialEnvironmentVariable,
             embeddings.CredentialEnvironmentVariable,
             StringComparer.OrdinalIgnoreCase);
-        Assert.Equal("ornith1.5:35b", settings.DefaultModel);
+        Assert.Equal("qwen3.8:27b", settings.DefaultModel);
         Assert.Equal("gemma4:e4b", settings.FastModel);
         Assert.Equal("Ollama Embeddings", settings.Integrations.Embeddings.Provider);
         Assert.Equal("embeddinggemma", settings.Integrations.Embeddings.Model);

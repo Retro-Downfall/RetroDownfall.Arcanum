@@ -248,7 +248,7 @@ The delivery head with every row above merged except WS12 to WS14 is aa3c83c6.
   - [ ] `./scripts/verify-aot-il-warnings.sh`: the publish closure free of first-party IL and AOT warnings.
   - [ ] `./scripts/verify-shipping-publish.sh --rid osx-arm64`: the exact Native AOT apphost and the in-process provider-contract smoke.
   - [ ] `./scripts/verify-native-sqlcipher.sh --rid osx-arm64`: native provenance, hashes, symbols and compile options.
-  - [ ] Live qualification with `./scripts/verify-local-ollama-aot.sh`: Ollama `gemma4:e4b` (vision and tools) and `ornith1.5:35b`, the stop-sign vision turn, a Perplexity web-search turn, and a forced mid-sweep restart that exercises park, readmission and unknown-usage settlement against a real provider.
+  - [ ] Live qualification with `./scripts/verify-local-ollama-aot.sh`: Ollama `gemma4:e4b` and `qwen3.8:27b` (both with vision and tools), the stop-sign vision turn, a Perplexity web-search turn, and a forced mid-sweep restart that exercises park, readmission and unknown-usage settlement against a real provider.
   - [ ] Calibration on live data: `LexicalMinimumScore` (12), the scorer constants and the 0.92 minimum cosine (`MinimumVectorCosine`, applied to the vector and hierarchy lanes); the live embedding model (qwen3-embedding:8b, 8-bit, 40,960-token window) against the 1,194-token minimum; the effect of the default 8,192-token chat window (memories of about 2.4 KiB or more are not paired). If a calibration changes a recipe digest, rerun the focused suites and one root-scoped run, and requalify only the gates the change touched.
   - [ ] A final independent Opus review of the whole branch against this plan and the spec.
   - [ ] History cleanup, then proof that the committed tree equals the tested bytes.

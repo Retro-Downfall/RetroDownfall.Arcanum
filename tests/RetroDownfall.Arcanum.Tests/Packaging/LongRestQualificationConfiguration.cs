@@ -79,8 +79,8 @@ internal static class LongRestQualificationConfiguration
                         Models =
                         [
                             // The fast model declares reasoning, so Long Rest asks it to answer an adjudication with reasoning off (DESIGN §21.16.4).
-                            new ModelEntry(options.ChatModel, SupportsVision: false, SupportsTools: true, Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard }),
-                            new ModelEntry(options.DefaultModel, SupportsVision: false, SupportsTools: true),
+                            new ModelEntry(options.ChatModel, SupportsVision: true, SupportsTools: true, Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard }),
+                            new ModelEntry(options.DefaultModel, SupportsVision: true, SupportsTools: true),
                         ],
                         ContextWindowLimit = ChatContextWindow,
                     },

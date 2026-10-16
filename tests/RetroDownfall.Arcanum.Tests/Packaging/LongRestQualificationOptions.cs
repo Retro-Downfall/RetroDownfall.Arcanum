@@ -46,7 +46,7 @@ internal sealed record LongRestQualificationOptions(
 
     public const string DefaultChatModel = "gemma4:e4b";
 
-    public const string DefaultDefaultModel = "ornith1.5:35b";
+    public const string DefaultDefaultModel = "qwen3.8:27b";
 
     public const string DefaultEmbeddingModel = "embeddinggemma";
 

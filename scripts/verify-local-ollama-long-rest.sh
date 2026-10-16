@@ -9,7 +9,7 @@ TEST_PROJECT="$REPO_ROOT/tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum
 CONFIGURATION=Release
 EXECUTABLE=""
 CHAT_MODEL="gemma4:e4b"
-DEFAULT_MODEL="ornith1.5:35b"
+DEFAULT_MODEL="qwen3.8:27b"
 EMBEDDING_MODEL="embeddinggemma"
 EMBEDDING_WINDOW="2048"
 EMBEDDING_DIMENSIONS="768"
@@ -27,7 +27,7 @@ Local qualification options:
   --chat-model <tag>         Installed Ollama chat model used as the FastModel, so it serves every Long Rest
                              chat call (default: gemma4:e4b).
   --default-model <tag>      Installed Ollama chat model used as the DefaultModel, so it serves the ordinary
-                             Session turn (default: ornith1.5:35b).
+                             Session turn (default: qwen3.8:27b).
   --embedding-model <tag>    Installed Ollama embedding model (default: embeddinggemma).
   --embedding-window <n>     Context window, in tokens, configured on the separate embedding provider entry
                              (default: 2048, the context length embeddinggemma reports).
