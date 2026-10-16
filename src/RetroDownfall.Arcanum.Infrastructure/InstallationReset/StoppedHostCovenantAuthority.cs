@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
+
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
@@ -188,9 +190,17 @@ internal sealed class StoppedHostCovenantAuthority(
 
         if (inspected.IsFailure)
         {
-            return Result.Failure(new Error(
-                ErrorCodes.Covenant.IntegrityFailure,
-                "The Covenant catalog could not be proved intact. " + IntegrityRemedy));
+            // A catalog that could not be read right now is an outage with the outage's remedy, and a
+            // catalog that was read and does not match is an integrity failure with its own. Telling an
+            // operator whose database was merely busy to reinstall would be the wrong direction.
+            return Result.Failure(
+                inspected.Error.Code == ErrorCodes.Covenant.Unavailable
+                    ? new Error(
+                        ErrorCodes.Covenant.Unavailable,
+                        "The Covenant catalog could not be read right now. " + OutageRemedy)
+                    : new Error(
+                        ErrorCodes.Covenant.IntegrityFailure,
+                        "The Covenant catalog could not be proved intact. " + IntegrityRemedy));
         }
 
         _ = availability.PublishInspectedSchema(inspected.Value, CovenantHealthTransition.Bootstrap);
@@ -202,9 +212,12 @@ internal sealed class StoppedHostCovenantAuthority(
                 CovenantHealthTransition.Bootstrap,
                 cancellationToken).ConfigureAwait(false))
         {
+            // The facts read already found the state row on this connection, so a publication that
+            // reports it absent means the row could not be read the second time: an outage, not a
+            // Grimoire that holds no state.
             return Result.Failure(new Error(
-                ErrorCodes.Data.InventoryUnavailable,
-                "The Grimoire holds no Covenant state row. " + StateRemedy));
+                ErrorCodes.Covenant.Unavailable,
+                "The Covenant state could not be read right now. " + OutageRemedy));
         }
 
         // The peek, never the ordinary read: the ordinary read of a credential may migrate or repair
@@ -354,9 +367,11 @@ internal sealed class StoppedHostCovenantAuthority(
                     new Guid(generation),
                     reader.GetInt64(4)));
         }
-        catch (SqliteException)
+        catch (SqliteException exception) when (!GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
         {
             // The state tables do not exist: the canonical tier was never installed at this version.
+            // A database that is busy, locked or failing its I/O is none of that: it falls through to
+            // the outage answer EnsureAsync gives for the same failure met anywhere else.
             return Result<StoppedHostCovenantFacts>.Failure(new Error(
                 ErrorCodes.Data.InventoryUnavailable,
                 "The Grimoire holds no Covenant state tables. " + StateRemedy));

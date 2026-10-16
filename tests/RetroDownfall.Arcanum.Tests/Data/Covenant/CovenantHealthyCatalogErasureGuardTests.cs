@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantHealthyCatalogErasureGuardTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     [Theory]
@@ -28,13 +27,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     [InlineData(true)]
     public async Task Healthy_canonical_with_absent_or_complete_accelerator_succeeds(bool withAccelerator)
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator);
 
         Result result = await Guard(database).RequireHealthyAsync(Token);
 
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
-
     }
 
     [Theory]
@@ -44,31 +41,26 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     [InlineData("ALTER TABLE covenant_turn_receipt_aggregate ADD COLUMN DriftColumn TEXT NULL;")]
     public async Task Missing_or_changed_canonical_manifest_object_refuses(string damage)
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         await database.ExecuteAsync(damage, Token);
 
         AssertRefused(await Guard(database).RequireHealthyAsync(Token), database);
-
     }
 
     [Fact]
     public async Task Accelerator_metadata_with_a_missing_object_refuses()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         await database.ExecuteAsync("DROP TRIGGER covenant_search_documents_ai;", Token);
 
         AssertRefused(await Guard(database).RequireHealthyAsync(Token), database);
-
     }
 
     [Fact]
     public async Task One_trusted_accelerator_index_without_the_tier_or_metadata_is_not_absent()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: false);
 
         // This trusted name is nested under a manifest table entry, not a top-level entry. Counting
@@ -83,7 +75,6 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
             Token);
 
         AssertRefused(await Guard(database).RequireHealthyAsync(Token), database);
-
     }
 
     [Theory]
@@ -92,13 +83,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     [InlineData("CREATE INDEX covenant_unexpected_index ON covenant_entries(AuthoredKey);")]
     public async Task Unexpected_Covenant_table_trigger_or_index_refuses(string unexpected)
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: false);
 
         await database.ExecuteAsync(unexpected, Token);
 
         AssertRefused(await Guard(database).RequireHealthyAsync(Token), database);
-
     }
 
     [Theory]
@@ -111,19 +100,16 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     [InlineData(MetadataDamage.DiagnosticBearing)]
     public async Task Invalid_canonical_metadata_refuses_even_when_manifest_is_valid(MetadataDamage damage)
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         await DamageCanonicalMetadataAsync(database, damage);
 
         AssertRefused(await Guard(database).RequireHealthyAsync(Token), database);
-
     }
 
     [Fact]
     public async Task An_unreadable_encrypted_catalog_refuses_content_free()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         CovenantHealthyCatalogErasureGuard guard = new(
@@ -133,13 +119,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
             Inspector());
 
         AssertRefused(await guard.RequireHealthyAsync(Token), database);
-
     }
 
     [Fact]
     public async Task Committed_definition_damage_in_a_live_WAL_refuses()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: false);
 
         await database.ExecuteAsync(
@@ -155,13 +139,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         Assert.True(new FileInfo(database.DatabasePath + "-wal").Length > 0);
 
         AssertRefused(await Guard(database).RequireHealthyAsync(Token), database);
-
     }
 
     [Fact]
     public async Task Owning_proof_opens_one_read_only_ordinary_lease_and_releases_it()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         RecordingFreshOrdinaryConnectionFactory connections =
@@ -183,13 +165,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         Assert.Equal(ConnectionState.Closed, candidate.State);
 
         Assert.Equal(0, connections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Owning_proof_holds_one_fresh_read_only_ordinary_lease_through_final_read()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         await using SqliteConnection template = await database.MaintenanceConnections()
@@ -230,7 +210,6 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
 
         try
         {
-
             Task first = await Task.WhenAny(entered, reading);
 
             Assert.Same(entered, first);
@@ -244,15 +223,12 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
                 connections.Kinds);
 
             Assert.Equal(ConnectionState.Open, connections.LastConnection!.State);
-
         }
         finally
         {
-
             pause.Release();
 
             _ = await reading.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         Result result = await reading;
@@ -262,13 +238,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         Assert.Equal(0, connections.LiveLeaseCount);
 
         Assert.Equal(ConnectionState.Closed, connections.LastConnection!.State);
-
     }
 
     [Fact]
     public async Task Owning_failure_closes_disposes_and_unregisters_the_direct_handle()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         await database.ExecuteAsync("DROP TRIGGER covenant_entries_guard_delete;", Token);
@@ -285,13 +259,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         Assert.Equal(ConnectionState.Closed, Assert.Single(connections.Opened).State);
 
         Assert.Equal(0, connections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Caller_cancellation_is_rethrown_after_the_direct_handle_is_cleaned_up()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         using CancellationTokenSource cancellation = new();
@@ -311,13 +283,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         Assert.Empty(connections.Opened);
 
         Assert.Equal(0, connections.LiveLeaseCount);
-
     }
 
     [Fact]
     public async Task Borrowed_proof_uses_the_callers_open_connection_and_active_snapshot_without_lifecycle_actions()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         CovenantHealthyCatalogErasureGuard guard = new(
@@ -345,13 +315,58 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         Assert.Equal(1L, await command.ExecuteScalarAsync(Token));
 
         await transaction.RollbackAsync(Token);
+    }
 
+    /// <summary>
+    /// A catalog that cannot be read right now is not a catalog that is not intact. The inspection
+    /// tells the two apart, so a caller that publishes what it inspected can give an outage its own
+    /// remedy; the verdict that only asks whether erasure may begin keeps its one refusal.
+    /// </summary>
+    [Fact]
+    public async Task A_catalog_that_cannot_be_read_right_now_is_unavailable_to_the_inspection_and_unsafe_to_the_verdict()
+    {
+        await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
+
+        CovenantHealthyCatalogErasureGuard guard = new(
+            new UnreachableOrdinaryConnectionFactory(),
+            Inspector());
+
+        await using SqliteConnection holder = await OpenSharedAsync(database);
+
+        await using SqliteConnection reader = await OpenSharedAsync(database);
+
+        // A locked table of a shared cache is waited for up to the command timeout before it is
+        // reported; a second is as long as this case needs to hear it.
+        reader.DefaultTimeout = 1;
+
+        await ExecuteAsync(holder, "BEGIN;");
+
+        await ExecuteAsync(holder, "UPDATE grimoire_feature_schemas SET FamilyCode = FamilyCode WHERE 0;");
+
+        await using SqliteTransaction transaction = reader.BeginTransaction(IsolationLevel.ReadCommitted, deferred: true);
+
+        Result<CovenantInspectedCatalog> inspected = await guard.InspectHealthyWithinAsync(
+            reader,
+            transaction,
+            Token);
+
+        Assert.True(inspected.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, inspected.Error.Code);
+
+        Assert.Equal(
+            ErrorCodes.Covenant.IntegrityFailure,
+            (await guard.RequireHealthyWithinAsync(reader, transaction, Token)).Error.Code);
+
+        await ExecuteAsync(holder, "ROLLBACK;");
+
+        // The same catalog, readable again, is intact: the outage was the only thing wrong with it.
+        Assert.True((await guard.InspectHealthyWithinAsync(reader, transaction, Token)).IsSuccess);
     }
 
     [Fact]
     public async Task Borrowed_proof_refuses_a_completed_transaction_without_touching_the_connection()
     {
-
         await using CovenantSchemaScratchDatabase database = await HealthyAsync(withAccelerator: true);
 
         CovenantHealthyCatalogErasureGuard guard = Guard(database);
@@ -369,7 +384,6 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         AssertRefused(result, database);
 
         Assert.Equal(ConnectionState.Open, database.Connection.State);
-
     }
 
     private static CovenantHealthyCatalogErasureGuard Guard(
@@ -382,36 +396,60 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
     private static GrimoireSchemaManifestInspector Inspector() =>
         new(GrimoireSchemaTierOwnershipRegistry.CreateDefault());
 
+    /// <summary>
+    /// A connection to the scratch file in shared-cache mode, so that a table one of two such
+    /// connections has written is locked to the other.
+    /// </summary>
+    private static async Task<SqliteConnection> OpenSharedAsync(CovenantSchemaScratchDatabase database)
+    {
+        SqliteConnection connection = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = database.DatabasePath,
+
+            Password = CovenantSchemaScratchDatabase.ScratchPassphrase,
+
+            Cache = SqliteCacheMode.Shared,
+
+            Pooling = false,
+        }.ToString());
+
+        await connection.OpenAsync(Token);
+
+        return connection;
+    }
+
+    private static async Task ExecuteAsync(SqliteConnection connection, string sql)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = sql;
+
+        _ = await command.ExecuteNonQueryAsync(Token);
+    }
+
     private static async Task<CovenantSchemaScratchDatabase> HealthyAsync(bool withAccelerator)
     {
-
         CovenantSchemaScratchDatabase database =
             await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
         try
         {
-
             await database.InstallHealthyCovenantCatalogAsync(withAccelerator, Token);
 
             return database;
-
         }
         catch
         {
-
             await database.DisposeAsync();
 
             throw;
-
         }
-
     }
 
     private static void AssertRefused(
         Result result,
         CovenantSchemaScratchDatabase database)
     {
-
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
@@ -426,23 +464,16 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
 
         foreach (GrimoireSchemaManifest manifest in Manifests())
         {
-
             foreach (GrimoireSchemaManifestEntry entry in manifest.Entries)
             {
-
                 Assert.DoesNotContain(entry.Name, result.Error.Message, StringComparison.Ordinal);
 
                 foreach (GrimoireExpectedIndex index in entry.Indexes)
                 {
-
                     Assert.DoesNotContain(index.Name, result.Error.Message, StringComparison.Ordinal);
-
                 }
-
             }
-
         }
-
     }
 
     private static IReadOnlyList<GrimoireSchemaManifest> Manifests() =>
@@ -455,10 +486,8 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         CovenantSchemaScratchDatabase database,
         MetadataDamage damage)
     {
-
         if (damage is MetadataDamage.Duplicated)
         {
-
             GrimoireSchemaInspectionResult inspected = await Inspector().InspectAsync(
                 database.Connection,
                 transaction: null,
@@ -488,12 +517,10 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
             await InsertMetadataAsync(database, inspected.InstalledCatalogFingerprint!);
 
             return;
-
         }
 
         string mutation = damage switch
         {
-
             MetadataDamage.Absent => "DELETE FROM grimoire_feature_schemas WHERE TransactionTierCode = 1;",
 
             MetadataDamage.Unhealthy =>
@@ -520,18 +547,15 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
                     + "WHERE TransactionTierCode = 1;",
 
             _ => throw new ArgumentOutOfRangeException(nameof(damage)),
-
         };
 
         await database.ExecuteAsync(mutation, Token);
-
     }
 
     private static async Task InsertMetadataAsync(
         CovenantSchemaScratchDatabase database,
         string installedFingerprint)
     {
-
         GrimoireSchemaManifest manifest = GrimoireSchemaManifests.CovenantCanonical;
 
         await using SqliteCommand command = database.Connection.CreateCommand();
@@ -554,12 +578,10 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         _ = command.Parameters.AddWithValue("$installed", installedFingerprint);
 
         _ = await command.ExecuteNonQueryAsync(Token);
-
     }
 
     public enum MetadataDamage
     {
-
         Absent,
 
         Duplicated,
@@ -573,13 +595,11 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
         WrongInstalledFingerprint,
 
         DiagnosticBearing,
-
     }
 
     private sealed class UnreachableOrdinaryConnectionFactory
         : IGrimoireOrdinaryConnectionFactory
     {
-
         public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
@@ -590,7 +610,5 @@ public sealed class CovenantHealthyCatalogErasureGuardTests
             GrimoireOrdinaryFreshConnectionKind kind,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
-
 }

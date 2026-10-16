@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -41,6 +42,10 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         ErrorCodes.Covenant.IntegrityFailure,
         "Healthy-catalog Covenant erasure requires an intact catalog. Restore a known-good backup, "
             + "run Covenant-family reinitialize, or perform a full installation reset.");
+
+    private static readonly Error CatalogUnavailable = new(
+        ErrorCodes.Covenant.Unavailable,
+        "The Covenant catalog could not be read right now.");
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
@@ -123,7 +128,10 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
             transaction,
             cancellationToken).ConfigureAwait(false);
 
-        return inspected.IsSuccess ? Result.Success() : Result.Failure(inspected.Error);
+        // This verdict keeps its one content-free refusal. The outage that a caller of the inspection
+        // can tell apart is for the caller that publishes what it inspected, not for one that only
+        // asks whether erasure may begin.
+        return inspected.IsSuccess ? Result.Success() : Result.Failure(UnsafeCatalog);
     }
 
     /// <summary>
@@ -159,6 +167,11 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (Exception exception) when (GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        {
+            // The catalog could not be read right now, which says nothing about whether it is intact.
+            return Result<CovenantInspectedCatalog>.Failure(CatalogUnavailable);
         }
         catch
         {
