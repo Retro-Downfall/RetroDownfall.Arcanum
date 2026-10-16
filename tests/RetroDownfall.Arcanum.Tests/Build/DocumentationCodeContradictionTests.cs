@@ -1397,6 +1397,7 @@ public sealed class DocumentationCodeContradictionTests
             "`StoppedHostFactoryErasure`",
             "`PlanAdmissionAsync(Installation)`",
             "`IssueStoppedHostFactoryErasureLockLoan`",
+            "`StoppedHostLockLender`",
             "`Covenant.OperatorAuthorityUnavailable`",
             "`Covenant.HostToolsTransitionRequired`",
             "**Resuming a reset the stopped host began.**",
@@ -1473,14 +1474,15 @@ public sealed class DocumentationCodeContradictionTests
         Assert.Contains("data repair-installation-identity", File.ReadAllText(
             Path.Combine(TestRepositoryPaths.RepositoryRoot(), "AGENTS.md")), StringComparison.Ordinal);
 
-        string removal = ReadSource("Infrastructure", "InstallationReset", "InstallationIdentityRepair.cs");
+        // The only credential the repair removes is the identity item, and the removal is the identity
+        // provider's own: one delete, of the account it derives, refused for a valid identity.
+        string provider = ReadSource("Infrastructure", "Backup", "BackupRestoreJournalInstallationIdentityProvider.cs");
 
-        // The only credential this code deletes is the identity item, by the account it names.
-        Assert.Equal(1, Regex.Count(removal, @"_credentials\.Delete\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+        Assert.Equal(1, Regex.Count(provider, @"_credentials\.Delete\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
 
         Assert.Contains(
-            "_credentials.Delete(ArcanumCredentialIdentity.Service, account)",
-            removal,
+            "_credentials.Delete(ArcanumCredentialIdentity.Service, Account(profileNamespace))",
+            provider,
             StringComparison.Ordinal);
     }
 

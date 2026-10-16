@@ -225,19 +225,13 @@ public sealed class InstallationIdentityRepairTests : IAsyncLifetime
     [InlineData("restore journal anchor")]
     [InlineData("offline transition journal key")]
     [InlineData("offline transition journal anchor")]
-    [InlineData("installation reset record key")]
-    [InlineData("installation reset record anchor")]
     public async Task Evidence_bound_to_the_identity_blocks_the_repair(string evidence)
     {
         SetIdentity(DamagedValue);
 
         SetOther(EvidenceAccount(evidence));
 
-        // The credential evidence is what is under test here: the probe is told no record is active,
-        // so a reset key or anchor on its own is judged by the repair and not by the probe that would
-        // otherwise refuse it first (see the real-probe cases below).
-        InstallationIdentityRepair repair = Create(
-            startupProbe: new FixedStartupProbe(Result<ActiveInstallationReset?>.Success(null)));
+        InstallationIdentityRepair repair = Create();
 
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
@@ -251,16 +245,45 @@ public sealed class InstallationIdentityRepairTests : IAsyncLifetime
         AssertIdentityIs(DamagedValue);
     }
 
-    [Fact]
-    public async Task Evidence_whose_presence_cannot_be_proved_blocks_the_repair()
+    [Theory]
+    [InlineData("restore journal key")]
+    [InlineData("restore journal anchor")]
+    [InlineData("offline transition journal key")]
+    [InlineData("offline transition journal anchor")]
+    public async Task Evidence_whose_presence_cannot_be_proved_blocks_the_repair(string evidence)
     {
         SetIdentity(DamagedValue);
 
-        _credentials.IndeterminateAccounts.Add(EvidenceAccount("restore journal anchor"));
+        _credentials.IndeterminateAccounts.Add(EvidenceAccount(evidence));
 
         Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync();
 
-        AssertRefused(result, ErrorCodes.Covenant.Unavailable, "restore journal anchor credential could not be proved");
+        AssertRefused(result, ErrorCodes.Covenant.Unavailable, evidence + " credential could not be proved");
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_store_with_no_metadata_only_lookup_cannot_prove_the_evidence_absent_and_is_never_read_instead()
+    {
+        SetIdentity(DamagedValue);
+
+        NoLookupStore store = new(_inner);
+
+        InstallationIdentityRepair repair = new(
+            store,
+            new FixedStartupProbe(Result<ActiveInstallationReset?>.Success(null)),
+            new RowProbe(Result<bool>.Success(false)),
+            _root,
+            _database);
+
+        Result<InstallationIdentityRepairReport> result = await repair.ApplyAsync();
+
+        AssertRefused(result, ErrorCodes.Covenant.Unavailable, "restore journal key credential could not be proved");
+
+        // Only the identity item itself was ever read: no evidence account was fetched in place of a
+        // lookup that would not prompt for secret bytes.
+        Assert.Equal([IdentityAccount()], store.Reads);
 
         AssertIdentityIs(DamagedValue);
     }
@@ -678,6 +701,26 @@ public sealed class InstallationIdentityRepairTests : IAsyncLifetime
             CredentialResults: [],
             LastErrorCode: null,
             DataHandoff: InstallationResetDataHandoff.HostFactoryErasure);
+    }
+
+    private sealed class NoLookupStore(InMemoryOsCredentialStore inner) : IOsCredentialStore
+    {
+        public List<string> Reads { get; } = [];
+
+        public bool IsAvailable => true;
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            Reads.Add(account);
+
+            return inner.TryGet(service, account);
+        }
+
+        public OsCredentialStoreResult Set(string service, string account, string secret) =>
+            inner.Set(service, account, secret);
+
+        public OsCredentialStoreResult Delete(string service, string account) =>
+            inner.Delete(service, account);
     }
 
     private sealed class FixedStartupProbe(Result<ActiveInstallationReset?> active) : IInstallationStartupProbe

@@ -110,7 +110,9 @@ public sealed partial class InstallationResetServiceTests
             null,
             CleanPairReader(),
             null,
-            new TransitionDeferredServices(recovery, accessor),
+            new TransitionDeferredServices(
+                recovery,
+                new StoppedHostLockLender(accessor, Path.Combine(active.GuardedRoot, "arcanum.db"))),
             new TestStoppedHostDataService(data, null, active),
             new TestStoppedHostPairReader(CleanPairReader()),
             Path.Combine(active.GuardedRoot, "arcanum.db"));
@@ -170,7 +172,7 @@ public sealed partial class InstallationResetServiceTests
 
     private sealed class TransitionDeferredServices(
         IInstallationResetStartupRecovery recovery,
-        InstallationResetMaintenanceLockAccessor accessor)
+        StoppedHostLockLender lender)
         : IInstallationResetDeferredServices
     {
         public IHostToolsMarkerPairResetCoordinator ResolveMarkerPairResetCoordinator() =>
@@ -181,7 +183,7 @@ public sealed partial class InstallationResetServiceTests
 
         public IInstallationResetStartupRecovery? ResolveStartupRecovery() => recovery;
 
-        public InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() => accessor;
+        public StoppedHostLockLender? ResolveStoppedHostLockLender() => lender;
     }
 
     private sealed class BorrowRecordingStartupRecovery(

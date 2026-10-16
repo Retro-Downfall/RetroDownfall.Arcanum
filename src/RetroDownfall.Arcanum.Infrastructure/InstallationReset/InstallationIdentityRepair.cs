@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Secrets.Security;
@@ -51,11 +53,17 @@ internal sealed record InstallationIdentityRepairReport(
 /// Arcanum credential service) and nothing else, and only when every one of these holds, each proved
 /// under the exact installation lock this call takes for itself: the stored value is present and
 /// is not one canonical identity (a valid identity is never removed, and an unreadable store is not a
-/// damaged value); no installation reset record is active; none of the restore, offline-transition or
-/// installation-reset key and anchor credentials of this profile exists, so no evidence is bound to
+/// damaged value); no installation reset record is active, which the startup probe proves by the
+/// record and by the key and anchor credentials that authenticate it; none of the restore or
+/// offline-transition key and anchor credentials of this profile exists, so no evidence is bound to
 /// the identity; and the Grimoire has no database file or no authority row, so no installation exists
 /// that the item could be named for. Any of those that cannot be proved is a refusal, never a guess.
 /// The lock is what proves no host is running: a running host, a restore and a reset all hold it.</para>
+///
+/// <para>This type names no account. Each credential is asked about by its own owner (the identity
+/// provider, the two restore-journal stores, the two offline-transition stores) and the one removal is
+/// the identity provider's, so the account names keep the single owners the call-site pins hold them
+/// to.</para>
 ///
 /// <para>Planning and applying are separate calls with the same checks, so the operator confirms
 /// against the state the apply then finds again. An apply that finds the item already gone reports
@@ -70,6 +78,9 @@ internal sealed class InstallationIdentityRepair(
 {
     private readonly IOsCredentialStore _credentials =
         credentials ?? throw new ArgumentNullException(nameof(credentials));
+
+    private readonly BackupRestoreJournalInstallationIdentityProvider _identities =
+        new(credentials);
 
     private readonly IInstallationStartupProbe _startupProbe =
         startupProbe ?? throw new ArgumentNullException(nameof(startupProbe));
@@ -165,11 +176,9 @@ internal sealed class InstallationIdentityRepair(
                 + "be located and nothing was changed.");
         }
 
-        string account = ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(
-            profile.Value.AccountSuffix);
+        string account = _identities.AccountFor(profile.Value);
 
-        Result<BackupRestoreJournalIdentityProbe> identity =
-            new BackupRestoreJournalInstallationIdentityProvider(_credentials).Probe(profile.Value);
+        Result<BackupRestoreJournalIdentityProbe> identity = _identities.Probe(profile.Value);
 
         if (identity.IsSuccess)
         {
@@ -206,7 +215,18 @@ internal sealed class InstallationIdentityRepair(
             return Report(InstallationIdentityRepairState.Damaged, account);
         }
 
-        return Remove(profile.Value, account);
+        Result<bool> removed = _identities.RemoveDamaged(held, _guardedRoot, profile.Value);
+
+        if (removed.IsFailure)
+        {
+            return Result<InstallationIdentityRepairReport>.Failure(removed.Error);
+        }
+
+        return Report(
+            removed.Value
+                ? InstallationIdentityRepairState.Removed
+                : InstallationIdentityRepairState.Absent,
+            account);
     }
 
     private async Task<Result<InstallationIdentityRepairReport>> RequireNoBoundEvidenceAsync(
@@ -235,19 +255,28 @@ internal sealed class InstallationIdentityRepair(
                 + "scope it names, and run the repair again afterwards. Nothing was changed.");
         }
 
-        (string Name, string Account)[] evidence =
+        // Each credential is asked about by the type that owns its account. The reset record's own key
+        // and anchor are not listed: the startup probe above proves them with the record, and refuses
+        // a key or an anchor it cannot pair with one.
+        (string Name, OsCredentialStoreStatus Status)[] evidence =
         [
-            ("restore journal key", ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(profile.AccountSuffix)),
-            ("restore journal anchor", ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount(profile.AccountSuffix)),
-            ("offline transition journal key", ArcanumCredentialIdentity.GrimoireTransitionJournalKeyAccount(profile.AccountSuffix)),
-            ("offline transition journal anchor", ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(profile.AccountSuffix)),
-            ("installation reset record key", ArcanumCredentialIdentity.InstallationResetActiveKeyAccount(profile.AccountSuffix)),
-            ("installation reset record anchor", ArcanumCredentialIdentity.InstallationResetActiveAnchorAccount(profile.AccountSuffix)),
+            ("restore journal key", new BackupRestoreJournalKeyProvider(_credentials).ProbePresence(profile)),
+            (
+                "restore journal anchor",
+                new BackupRestoreJournalAnchorStore(
+                    _credentials,
+                    new BackupRestoreJournalKeyProvider(_credentials),
+                    _identities).ProbeAnchorPresence(profile)),
+            (
+                "offline transition journal key",
+                new GrimoireOfflineTransitionJournalKeyProvider(_credentials).ProbePresence(profile)),
+            (
+                "offline transition journal anchor",
+                new GrimoireOfflineTransitionJournalAnchorStore(_credentials).ProbeAnchorPresence(profile)),
         ];
 
-        foreach ((string name, string evidenceAccount) in evidence)
+        foreach ((string name, OsCredentialStoreStatus status) in evidence)
         {
-            OsCredentialStoreStatus status = Presence(evidenceAccount);
 
             if (status is OsCredentialStoreStatus.NotFound)
             {
@@ -299,68 +328,6 @@ internal sealed class InstallationIdentityRepair(
         }
 
         return Report(InstallationIdentityRepairState.Damaged, account);
-    }
-
-    private OsCredentialStoreStatus Presence(string account)
-    {
-        try
-        {
-            if (_credentials is IOsCredentialPresenceProbe probe)
-            {
-                return probe.ProbePresence(ArcanumCredentialIdentity.Service, account);
-            }
-
-            return _credentials.TryGet(ArcanumCredentialIdentity.Service, account).Status;
-        }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
-        {
-            return OsCredentialStoreStatus.Failed;
-        }
-    }
-
-    private Result<InstallationIdentityRepairReport> Remove(
-        BackupRestoreProfileNamespace profile,
-        string account)
-    {
-        OsCredentialStoreResult deleted;
-
-        try
-        {
-            deleted = _credentials.Delete(ArcanumCredentialIdentity.Service, account);
-        }
-        catch (Exception exception) when (
-            exception is IOException
-                or UnauthorizedAccessException
-                or InvalidOperationException
-                or NotSupportedException)
-        {
-            return Refuse(
-                ErrorCodes.Covenant.Unavailable,
-                "The damaged installation identity could not be removed from the operating-system "
-                + "credential store. Unlock or repair the store and run the repair again.");
-        }
-
-        if (deleted.Status is not (OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound))
-        {
-            return Refuse(
-                ErrorCodes.Covenant.Unavailable,
-                "The damaged installation identity could not be removed from the operating-system "
-                + "credential store. Unlock or repair the store and run the repair again.");
-        }
-
-        Result<BackupRestoreJournalIdentityProbe> readback =
-            new BackupRestoreJournalInstallationIdentityProvider(_credentials).Probe(profile);
-
-        return readback.IsSuccess
-            && readback.Value.Presence is BackupRestoreJournalIdentityPresence.Absent
-                ? Report(InstallationIdentityRepairState.Removed, account)
-                : Refuse(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "The installation identity item did not read back as removed. Run the repair again.");
     }
 
     private static Result<InstallationIdentityRepairReport> Report(

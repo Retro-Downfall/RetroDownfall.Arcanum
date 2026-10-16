@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -161,6 +163,14 @@ internal sealed class GrimoireOfflineTransitionJournalKeyProvider(IOsCredentialS
 
         return false;
 
+    }
+
+    /// <summary>Whether this profile's offline-transition journal key exists, by metadata alone.</summary>
+    internal OsCredentialStoreStatus ProbePresence(BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        return CredentialPresenceProbe.Probe(_credentials, Account(profileNamespace));
     }
 
     private static string Account(BackupRestoreProfileNamespace profileNamespace) =>

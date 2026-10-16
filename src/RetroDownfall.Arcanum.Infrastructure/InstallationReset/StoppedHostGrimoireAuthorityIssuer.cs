@@ -134,7 +134,7 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
     /// <see cref="ErrorCodes.Data.ControlPathUnavailable"/> and changes nothing. A lock that is no longer
     /// held is refused the way every stopped-host authority refuses one.</para>
     /// </remarks>
-    internal static Result<IAsyncDisposable> LendHeldLock(
+    internal static Result<StoppedHostLockLoan> LendHeldLock(
         IStoppedHostGrimoireConnectionAuthority authority,
         InstallationResetMaintenanceLockAccessor accessor,
         string expectedCanonicalDatabasePath)
@@ -143,7 +143,7 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
 
         if (authority is not StoppedHostGrimoireConnectionAuthority stoppedHost)
         {
-            return Result<IAsyncDisposable>.Failure(RefusalError());
+            return Result<StoppedHostLockLoan>.Failure(RefusalError());
         }
 
         Result consumed = stoppedHost.Consume(
@@ -153,12 +153,12 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
 
         if (consumed.IsFailure)
         {
-            return Result<IAsyncDisposable>.Failure(consumed.Error);
+            return Result<StoppedHostLockLoan>.Failure(consumed.Error);
         }
 
         if (accessor.BorrowHeldLock(stoppedHost.GuardedGrimoireDirectory).IsSuccess)
         {
-            return Result<IAsyncDisposable>.Failure(new Error(
+            return Result<StoppedHostLockLoan>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "An installation maintenance lock is already attached, so the factory-erasure loan was refused."));
         }
@@ -176,28 +176,11 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
         {
             // Either the lock stopped being held between the consumption above and this line, or another
             // lock was attached in that instant. Both leave nothing attached by this call.
-            return Result<IAsyncDisposable>.Failure(RefusalError());
+            return Result<StoppedHostLockLoan>.Failure(RefusalError());
         }
 
-        return Result<IAsyncDisposable>.Success(
-            new FactoryErasureLockLoan(accessor, stoppedHost.HeldInstallationLock));
-    }
-
-    private sealed class FactoryErasureLockLoan(
-        InstallationResetMaintenanceLockAccessor accessor,
-        ArcanumMaintenanceLock heldInstallationLock) : IAsyncDisposable
-    {
-        private int _detached;
-
-        public ValueTask DisposeAsync()
-        {
-            if (Interlocked.Exchange(ref _detached, 1) == 0)
-            {
-                accessor.DetachHostLock(heldInstallationLock);
-            }
-
-            return ValueTask.CompletedTask;
-        }
+        return Result<StoppedHostLockLoan>.Success(
+            new StoppedHostLockLoan(accessor, stoppedHost.HeldInstallationLock));
     }
 
     private Result<IStoppedHostGrimoireConnectionAuthority> Issue(
@@ -379,5 +362,44 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
         }
 
         private static Result Refusal() => Result.Failure(RefusalError());
+    }
+}
+
+/// <summary>
+/// The held installation lock, lent to the offline-transition phase authority until this handle is
+/// disposed, and handed to the borrower that spent the loan authority as an explicit value.
+/// </summary>
+/// <remarks>
+/// The holder reads the exact lock from <see cref="HeldLock"/> and never looks one up through the
+/// accessor: a lookup of a held lock must not be enough to start an erasure or a recovery, and the
+/// loan is how a stopped-host caller that spent the one-shot authority names the lock it was lent.
+/// Disposing detaches the lock once, whichever way the call ended.
+/// </remarks>
+internal sealed class StoppedHostLockLoan : IAsyncDisposable
+{
+    private readonly InstallationResetMaintenanceLockAccessor _accessor;
+
+    private int _detached;
+
+    internal StoppedHostLockLoan(
+        InstallationResetMaintenanceLockAccessor accessor,
+        ArcanumMaintenanceLock heldInstallationLock)
+    {
+        _accessor = accessor ?? throw new ArgumentNullException(nameof(accessor));
+
+        HeldLock = heldInstallationLock ?? throw new ArgumentNullException(nameof(heldInstallationLock));
+    }
+
+    /// <summary>The exact installation lock the issuer that minted the loan authority was created over.</summary>
+    internal ArcanumMaintenanceLock HeldLock { get; }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _detached, 1) == 0)
+        {
+            _accessor.DetachHostLock(HeldLock);
+        }
+
+        return ValueTask.CompletedTask;
     }
 }

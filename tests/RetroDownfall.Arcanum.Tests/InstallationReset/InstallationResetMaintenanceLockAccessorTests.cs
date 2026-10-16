@@ -137,12 +137,15 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
 
         await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
 
-        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+        Result<StoppedHostLockLoan> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
             authority,
             accessor,
             databasePath);
 
         Assert.True(lent.IsSuccess);
+
+        // The borrower is handed the exact lock as a value, so it never has to look one up.
+        Assert.Same(held, lent.Value.HeldLock);
 
         Result<ArcanumMaintenanceLock> during = accessor.BorrowHeldLock(guardedRoot);
 
@@ -189,7 +192,7 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
 
         await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
 
-        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+        Result<StoppedHostLockLoan> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
             authority,
             accessor,
             databasePath);
@@ -226,7 +229,7 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
         await using (IStoppedHostGrimoireConnectionAuthority wrongPath =
             issuer.IssueStoppedHostFactoryErasureLockLoan().Value)
         {
-            Result<IAsyncDisposable> refused = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+            Result<StoppedHostLockLoan> refused = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
                 wrongPath,
                 accessor,
                 Path.Combine(guardedRoot, "other.db"));
@@ -240,7 +243,7 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
         await using (IStoppedHostGrimoireConnectionAuthority once =
             issuer.IssueStoppedHostFactoryErasureLockLoan().Value)
         {
-            Result<IAsyncDisposable> first = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+            Result<StoppedHostLockLoan> first = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
                 once,
                 accessor,
                 databasePath);
@@ -249,7 +252,7 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
 
             await first.Value.DisposeAsync();
 
-            Result<IAsyncDisposable> second = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+            Result<StoppedHostLockLoan> second = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
                 once,
                 accessor,
                 databasePath);
@@ -264,7 +267,7 @@ public sealed class InstallationResetMaintenanceLockAccessorTests : IAsyncLifeti
 
         held.Dispose();
 
-        Result<IAsyncDisposable> afterRelease = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+        Result<StoppedHostLockLoan> afterRelease = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
             stale,
             accessor,
             databasePath);

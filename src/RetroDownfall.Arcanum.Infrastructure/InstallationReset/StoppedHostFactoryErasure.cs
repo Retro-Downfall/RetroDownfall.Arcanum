@@ -139,7 +139,7 @@ internal sealed class StoppedHostFactoryErasure(
 
         await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
 
-        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+        Result<StoppedHostLockLoan> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
             authority,
             lockAccessor,
             Path.GetFullPath(ArcanumPaths.GrimoireDatabaseFile));
@@ -150,12 +150,14 @@ internal sealed class StoppedHostFactoryErasure(
         }
 
         // The loan ends with this call, in this block's finally, whichever way it ends. Nothing else in
-        // the process can borrow the held lock once it has.
-        await using IAsyncDisposable loan = lent.Value;
+        // the process can borrow the held lock once it has. The lock this call acts under is the one the
+        // loan names, handed over as a value: it is never looked up through the accessor.
+        await using StoppedHostLockLoan loan = lent.Value;
 
         try
         {
-            return await ApplyUnderLoanAsync(request, issuer, cancellationToken).ConfigureAwait(false);
+            return await ApplyUnderLoanAsync(request, issuer, loan.HeldLock, cancellationToken)
+                .ConfigureAwait(false);
         }
         finally
         {
@@ -183,7 +185,7 @@ internal sealed class StoppedHostFactoryErasure(
 
         await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
 
-        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
+        Result<StoppedHostLockLoan> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
             authority,
             lockAccessor,
             Path.GetFullPath(ArcanumPaths.GrimoireDatabaseFile));
@@ -193,18 +195,11 @@ internal sealed class StoppedHostFactoryErasure(
             return Result<StoppedHostNestedLaunchState>.Failure(lent.Error);
         }
 
-        await using IAsyncDisposable loan = lent.Value;
+        await using StoppedHostLockLoan loan = lent.Value;
 
         try
         {
-            Result<ArcanumMaintenanceLock> held = lockAccessor.BorrowHeldLock(activeStore.GuardedRoot);
-
-            if (held.IsFailure)
-            {
-                return Result<StoppedHostNestedLaunchState>.Failure(held.Error);
-            }
-
-            return await ClassifyAsync(held.Value, nestedOperationId, cancellationToken)
+            return await ClassifyAsync(loan.HeldLock, nestedOperationId, cancellationToken)
                 .ConfigureAwait(false);
         }
         finally
@@ -216,16 +211,10 @@ internal sealed class StoppedHostFactoryErasure(
     private async Task<Result<DataRetentionApplyResult>> ApplyUnderLoanAsync(
         DataRetentionApplyRequest request,
         IStoppedHostGrimoireAuthorityIssuer issuer,
+        ArcanumMaintenanceLock held,
         CancellationToken cancellationToken)
     {
-        Result<ArcanumMaintenanceLock> held = lockAccessor.BorrowHeldLock(activeStore.GuardedRoot);
-
-        if (held.IsFailure)
-        {
-            return Result<DataRetentionApplyResult>.Failure(Forbidden());
-        }
-
-        Result claim = await RequireClaimAsync(held.Value, request, cancellationToken).ConfigureAwait(false);
+        Result claim = await RequireClaimAsync(held, request, cancellationToken).ConfigureAwait(false);
 
         if (claim.IsFailure)
         {
@@ -235,7 +224,7 @@ internal sealed class StoppedHostFactoryErasure(
         Guid nestedOperationId = request.RequestedOperationId!.Value;
 
         Result<StoppedHostNestedLaunchState> classified = await ClassifyAsync(
-            held.Value,
+            held,
             nestedOperationId,
             cancellationToken).ConfigureAwait(false);
 
@@ -254,7 +243,7 @@ internal sealed class StoppedHostFactoryErasure(
 
                 {
                     Result resumed = await ResumeLaunchedAsync(
-                        held.Value,
+                        held,
                         issuer,
                         nestedOperationId,
                         cancellationToken).ConfigureAwait(false);

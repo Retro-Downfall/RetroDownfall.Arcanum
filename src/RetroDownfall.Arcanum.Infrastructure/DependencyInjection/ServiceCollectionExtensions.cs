@@ -773,6 +773,15 @@ public static class ServiceCollectionExtensions
                 provider.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
                 provider.GetRequiredService<ISecretStore>()));
 
+        // Lends the held installation lock to the transition journal's phase authority for one call, so
+        // the reset service receives the exact held lock explicitly and never looks one up.
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
+
+        services.TryAddScoped(static provider =>
+            new StoppedHostLockLender(
+                provider.GetRequiredService<InstallationResetMaintenanceLockAccessor>(),
+                ArcanumPaths.GrimoireDatabaseFile));
+
         // The reset-only protected erasure. Never registered as IDataRetentionService: the CLI
         // container still has none, and this type refuses every operation but a factory reset, and
         // acts only on an operation an authenticated reset record claimed.

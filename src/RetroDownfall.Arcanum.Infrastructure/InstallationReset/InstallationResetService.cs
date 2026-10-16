@@ -42,10 +42,10 @@ internal interface IInstallationResetDeferredServices
     IGrimoireOfflineTransitionStartupRecovery? ResolveTransitionRecovery() => null;
 
     /// <summary>
-    /// The accessor the transition-journal phase authority borrows the held installation lock from, or
-    /// null. A stopped-host reset lends the lock to it through an issuer-minted loan.
+    /// The lender that lends the held installation lock to the transition journal's phase authority
+    /// for the length of one call, or null. A stopped-host reset lends it through an issuer-minted loan.
     /// </summary>
-    InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() => null;
+    StoppedHostLockLender? ResolveStoppedHostLockLender() => null;
 
     /// <summary>
     /// The store of the transition-journal slot, or null. The resume reads the slot itself to tell a
@@ -69,8 +69,8 @@ internal sealed class InstallationResetDeferredServices(IServiceProvider service
     public IGrimoireOfflineTransitionStartupRecovery? ResolveTransitionRecovery() =>
         services.GetService<IGrimoireOfflineTransitionStartupRecovery>();
 
-    public InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() =>
-        services.GetService<InstallationResetMaintenanceLockAccessor>();
+    public StoppedHostLockLender? ResolveStoppedHostLockLender() =>
+        services.GetService<StoppedHostLockLender>();
 
     public GrimoireOfflineTransitionLifecycleStore? ResolveTransitionJournal() =>
         services.GetService<GrimoireOfflineTransitionLifecycleStore>();
@@ -707,42 +707,16 @@ internal sealed class InstallationResetService(
         CancellationToken cancellationToken)
     {
         if (deferredServices?.ResolveStartupRecovery() is not { } pairRecovery
-            || deferredServices.ResolveLockAccessor() is not { } accessor)
+            || deferredServices.ResolveStoppedHostLockLender() is not { } lender)
         {
             return [];
         }
 
-        Result<IStoppedHostGrimoireConnectionAuthority> issued =
-            issuer.IssueStoppedHostFactoryErasureLockLoan();
-
-        if (issued.IsFailure)
-        {
-            return [TransitionBlocker(issued.Error.Code, issued.Error.Message)];
-        }
-
-        await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
-
-        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
-            authority,
-            accessor,
-            _canonicalDatabasePath);
-
-        if (lent.IsFailure)
-        {
-            return [TransitionBlocker(lent.Error.Code, lent.Error.Message)];
-        }
-
-        await using IAsyncDisposable loan = lent.Value;
-
-        Result<ArcanumMaintenanceLock> borrowed = accessor.BorrowHeldLock(activeStore.GuardedRoot);
-
-        if (borrowed.IsFailure)
-        {
-            return [TransitionBlocker(borrowed.Error.Code, borrowed.Error.Message)];
-        }
-
-        Result<InstallationResetStartupRecoveryState> pair = await pairRecovery
-            .RecoverBeforeBootstrapAsync(borrowed.Value, cancellationToken)
+        Result<InstallationResetStartupRecoveryState> pair = await lender
+            .RunAsync(
+                issuer,
+                activeStore.GuardedRoot,
+                borrowed => pairRecovery.RecoverBeforeBootstrapAsync(borrowed, cancellationToken))
             .ConfigureAwait(false);
 
         if (pair.IsFailure)
@@ -1764,7 +1738,7 @@ internal sealed class InstallationResetService(
     {
         if (deferredServices?.ResolveStartupRecovery() is not { } pairRecovery
             || deferredServices.ResolveTransitionRecovery() is not { } transitions
-            || deferredServices.ResolveLockAccessor() is not { } accessor)
+            || deferredServices.ResolveStoppedHostLockLender() is not { } lender)
         {
             return Result.Success();
         }
@@ -1794,36 +1768,19 @@ internal sealed class InstallationResetService(
             return Result.Success();
         }
 
-        Result<IStoppedHostGrimoireConnectionAuthority> issued =
-            issuer.IssueStoppedHostFactoryErasureLockLoan();
-
-        if (issued.IsFailure)
-        {
-            return Result.Failure(issued.Error);
-        }
-
-        await using IStoppedHostGrimoireConnectionAuthority authority = issued.Value;
-
-        Result<IAsyncDisposable> lent = StoppedHostGrimoireAuthorityIssuer.LendHeldLock(
-            authority,
-            accessor,
-            _canonicalDatabasePath);
-
-        if (lent.IsFailure)
-        {
-            return Result.Failure(lent.Error);
-        }
-
-        await using IAsyncDisposable loan = lent.Value;
-
-        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> resumed = await transitions
-            .RecoverBeforeBootstrapAsync(
-                heldInstallationLock,
+        // The explicit held lock is what the recovery is handed; the lender only makes that same lock
+        // borrowable by the journal's phase authority while the pass runs.
+        Result<GrimoireOfflineTransitionStartupRecoveryOutcome> resumed = await lender
+            .RunAsync(
+                issuer,
                 activeStore.GuardedRoot,
-                _canonicalDatabasePath,
-                pair.Value.NestedTransitionEvidence,
-                pair.Value.TransitionJournal,
-                cancellationToken)
+                _ => transitions.RecoverBeforeBootstrapAsync(
+                    heldInstallationLock,
+                    activeStore.GuardedRoot,
+                    _canonicalDatabasePath,
+                    pair.Value.NestedTransitionEvidence,
+                    pair.Value.TransitionJournal,
+                    cancellationToken))
             .ConfigureAwait(false);
 
         return resumed.IsSuccess

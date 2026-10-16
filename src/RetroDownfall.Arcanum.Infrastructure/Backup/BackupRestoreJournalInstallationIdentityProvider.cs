@@ -37,8 +37,10 @@ internal sealed record BackupRestoreJournalIdentityProbe(
 /// <para>Ordinary restore, Covenant reset, family reinitialize, credential cleanup, and key rotation
 /// all preserve it, and so does an ordinary installation reset, whose sweep deletes the database the
 /// identity was seeded from: the Grimoire the next start creates takes the identity as its own
-/// (<see cref="ReadForNewDatabase"/>). Only an attested full installation reset may remove it, and
-/// only after proving no active restore owner remains.</para>
+/// (<see cref="ReadForNewDatabase"/>). Only an attested full installation reset may remove a valid
+/// identity, and only after proving no active restore owner remains. A value that is not one canonical
+/// identity is the one other thing removed, by <see cref="RemoveDamaged"/>, for the installation-identity
+/// repair that has proved under the held lock that nothing is bound to it.</para>
 /// </remarks>
 internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCredentialStore credentials)
 {
@@ -254,6 +256,97 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This profile's external installation identity names a different installation than the "
                 + "database row.");
+    }
+
+    /// <summary>
+    /// The account this profile's identity is stored under, for a caller that reports it.
+    /// </summary>
+    /// <remarks>
+    /// The owner names the account so that no other file derives it: an account name has one owner, and
+    /// a second opinion about which account holds the identity is how the wrong one gets deleted.
+    /// </remarks>
+    internal string AccountFor(BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        return Account(profileNamespace);
+    }
+
+    /// <summary>
+    /// Removes a stored value that is present and is not one canonical identity, reads its absence
+    /// back, and removes nothing else.
+    /// </summary>
+    /// <remarks>
+    /// The one path that removes this account outside the terminal cleanup of an attested full reset,
+    /// called only by the installation-identity repair after it has proved every other condition under
+    /// the held installation lock. It does not trust that proof: a valid identity is never removed, and a
+    /// store that does not answer is not a damaged value, so each is refused here too. The result is
+    /// true when this call removed the item and false when it was already gone.
+    /// </remarks>
+    internal Result<bool> RemoveDamaged(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
+
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        // Identity, not liveness, and deliberately no acquisition.
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        Result<BackupRestoreJournalIdentityProbe> probe = Probe(profileNamespace);
+
+        if (probe.IsSuccess)
+        {
+            return probe.Value.Presence is BackupRestoreJournalIdentityPresence.Absent
+                ? Result<bool>.Success(false)
+                : new Error(
+                    ErrorCodes.Data.Conflict,
+                    "This profile's installation identity is a valid canonical identity. A valid identity "
+                    + "is never removed, so nothing was changed.");
+        }
+
+        if (probe.Error.Code != ErrorCodes.Covenant.IntegrityFailure)
+        {
+            return Result<bool>.Failure(probe.Error);
+        }
+
+        OsCredentialStoreResult deleted;
+
+        try
+        {
+            deleted = _credentials.Delete(ArcanumCredentialIdentity.Service, Account(profileNamespace));
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or InvalidOperationException
+                or NotSupportedException)
+        {
+            return new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "The damaged installation identity could not be removed from the operating-system credential "
+                + "store. Unlock or repair the store and run the repair again.");
+        }
+
+        if (deleted.Status is not (OsCredentialStoreStatus.Ok or OsCredentialStoreStatus.NotFound))
+        {
+            return new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "The damaged installation identity could not be removed from the operating-system credential "
+                + "store. Unlock or repair the store and run the repair again.");
+        }
+
+        Result<BackupRestoreJournalIdentityProbe> readback = Probe(profileNamespace);
+
+        return readback.IsSuccess && readback.Value.Presence is BackupRestoreJournalIdentityPresence.Absent
+            ? Result<bool>.Success(true)
+            : new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "The installation identity item did not read back as removed. Run the repair again.");
     }
 
     private Result<Guid> Write(BackupRestoreProfileNamespace profileNamespace, Guid installationId)
