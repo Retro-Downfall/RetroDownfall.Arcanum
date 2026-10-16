@@ -1,5 +1,9 @@
 using System.Security.Cryptography;
 
+using Microsoft.Data.Sqlite;
+
+using Microsoft.EntityFrameworkCore;
+
 using Microsoft.Extensions.Configuration;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +23,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Core.Storage;
+
+using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
@@ -42,8 +48,8 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 /// <summary>
 /// What the shipped composition does with the Covenant family when an ordinary installation reset
-/// of the global scope plans and applies under stopped-host authority, with
-/// <c>Arcanum:Features:Covenant</c> off and on.
+/// of the global scope, or of the all scope that includes it, plans and applies under stopped-host
+/// authority, with <c>Arcanum:Features:Covenant</c> off and on.
 /// </summary>
 /// <remarks>
 /// Every case composes the command line exactly as the executable does, through
@@ -62,6 +68,12 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 [Collection("ProcessEnvironment")]
 public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 {
+    private const string CovenantInventoryUnavailableMessage =
+        "The local Covenant inventory is unavailable.";
+
+    private const string NoRegisteredCampaignMessage =
+        "No registered Campaign contains the current directory.";
+
     private readonly GrimoireFixture _fixture;
 
     private readonly ArcanumTestHomeScope _home = new("arcanum-reset-covenant");
@@ -288,13 +300,113 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
         AssertRefusedWithoutEffect(result, before);
     }
 
-    private void AssertRefusedWithoutEffect(CliTestResult result, Dictionary<string, string> before)
+    /// <summary>
+    /// <c>--all</c> is refused entirely, not just its global half: it captures the current Campaign
+    /// first, so outside a registered Campaign it never reaches the Covenant question and fails with
+    /// the workspace-resolution error.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task The_all_scope_outside_a_registered_Campaign_fails_at_workspace_resolution_before_any_effect(
+        bool covenantFeature,
+        bool apply)
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InstallPriorGrimoireAsync(covenantFeature);
+
+        Dictionary<string, string> before = CaptureStableFiles();
+
+        CliTestResult result = await RunAsync(covenantFeature, AllScopeArguments(apply));
+
+        AssertRefusedWithoutEffect(result, before, NoRegisteredCampaignMessage);
+
+        Assert.DoesNotContain(CovenantInventoryUnavailableMessage, result.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Inside a registered Campaign the workspace half resolves, and the same missing Covenant
+    /// inventory that refuses <c>--global</c> refuses the whole <c>--all</c> plan before any effect.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task The_all_scope_inside_a_registered_Campaign_is_refused_for_the_missing_Covenant_inventory_before_any_effect(
+        bool covenantFeature,
+        bool apply)
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        await InstallPriorGrimoireAsync(covenantFeature);
+
+        await RegisterCampaignAtCurrentDirectoryAsync();
+
+        Dictionary<string, string> before = CaptureStableFiles();
+
+        CliTestResult result = await RunAsync(covenantFeature, AllScopeArguments(apply));
+
+        AssertRefusedWithoutEffect(result, before, CovenantInventoryUnavailableMessage);
+    }
+
+    private static string[] AllScopeArguments(bool apply) => apply
+        ? ["--json", "--yes", "data", "factory-reset", "--all", "--apply", "--force"]
+        : ["--json", "data", "factory-reset", "--all", "--dry-run"];
+
+    private async Task RegisterCampaignAtCurrentDirectoryAsync()
+    {
+        await using ArcanumDbContext context = _fixture.CreateContext(
+            ArcanumPaths.GrimoireDatabaseFile);
+
+        SqliteConnection connection = (SqliteConnection)context.Database.GetDbConnection();
+
+        if (connection.State is not System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(CancellationToken.None);
+        }
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            INSERT INTO "Campaigns" ("Id", "Name", "NameLower", "Path", "Type", "Settings", "CreatedAt", "UpdatedAt")
+            VALUES ($id, 'reset-covenant', 'reset-covenant', $path, 1, '{}', '2026-10-01T00:00:00.0000000Z', '2026-10-01T00:00:00.0000000Z');
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$path", global::System.Environment.CurrentDirectory);
+
+        _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
+    }
+
+    private void AssertRefusedWithoutEffect(CliTestResult result, Dictionary<string, string> before) =>
+        AssertRefusedWithoutEffect(result, before, CovenantInventoryUnavailableMessage);
+
+    private void AssertRefusedWithoutEffect(
+        CliTestResult result,
+        Dictionary<string, string> before,
+        string expectedMessage)
     {
         string described = $"exit {result.ExitCode}\nstdout: {result.Output}\nstderr: {result.Error}";
 
         Assert.True(result.ExitCode == (int)CliExitCode.GenericError, described);
 
+        // The code alone is shared by the refusals on this path (the existing Grimoire cannot be
+        // opened without creating or repairing state, the registered Campaign inventory is
+        // unavailable, no registered Campaign contains the directory, and the Covenant inventory is
+        // missing), so a refusal is identified by its own message: a Grimoire that stopped opening
+        // must not be able to satisfy these cases.
         Assert.Contains(ErrorCodes.Data.InventoryUnavailable, result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(expectedMessage, result.Output, StringComparison.Ordinal);
 
         Assert.DoesNotContain("planId", result.Output, StringComparison.Ordinal);
 
@@ -371,15 +483,26 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
     }
 
     /// <summary>
-    /// A digest of every file under the profile except the maintenance lock, which a refused command
-    /// legitimately creates and releases.
+    /// A digest of every file under the profile that is installation state, which is to say every file
+    /// but the ones <see cref="IsLockOrIdleSqliteSidecar"/> names.
     /// </summary>
     private Dictionary<string, string> CaptureStableFiles() =>
         Directory.GetFiles(_home.Root, "*", SearchOption.AllDirectories)
-            .Where(static path => !path.EndsWith(".lock", StringComparison.Ordinal))
+            .Where(static path => !IsLockOrIdleSqliteSidecar(path))
             .Order(StringComparer.Ordinal)
             .ToDictionary(
                 static path => path,
                 static path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
                 StringComparer.Ordinal);
+
+    /// <summary>
+    /// The maintenance lock, which a refused command legitimately creates and releases, and the
+    /// write-ahead sidecars SQLite leaves beside a database it was asked to read: the shared-memory
+    /// index, which holds no data, and a write-ahead log with no frames in it. A log that holds a
+    /// frame, and the database file itself, still count.
+    /// </summary>
+    private static bool IsLockOrIdleSqliteSidecar(string path) =>
+        path.EndsWith(".lock", StringComparison.Ordinal)
+            || path.EndsWith("-shm", StringComparison.Ordinal)
+            || (path.EndsWith("-wal", StringComparison.Ordinal) && new FileInfo(path).Length == 0);
 }
