@@ -210,6 +210,14 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
         Assert.Contains("Local Grimoire reinstall", refused.Message, StringComparison.Ordinal);
 
+        // The way out is a command, not a hand edit of the credential store: the refusal names it, says
+        // what it does, and says when it will not.
+        Assert.Contains(
+            "Run 'arcanum data repair-installation-identity' to remove the damaged item, which it does only "
+            + "when nothing is bound to it, and start again",
+            refused.Message,
+            StringComparison.Ordinal);
+
         AssertNothingOfTheGrimoireExists();
     }
 

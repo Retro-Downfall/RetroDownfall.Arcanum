@@ -53,6 +53,7 @@ public sealed class CliInfrastructureBoundaryTests
         "DoctorCommand.cs",
         "FullInstallationResetAttestationFileReader.cs",
         "InstallationFactoryResetCommand.cs",
+        "InstallationIdentityRepairCommand.cs",
         "InstallationResetApplyBoundary.cs",
         "KeyCommands.cs",
         "ServeCommand.cs",

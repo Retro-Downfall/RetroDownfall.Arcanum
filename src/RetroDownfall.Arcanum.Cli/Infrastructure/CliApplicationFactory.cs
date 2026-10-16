@@ -323,6 +323,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<InstallationFactoryResetCommand>();
 
+        services.AddTransient<InstallationIdentityRepairCommand>();
+
         services.AddSingleton<IInstallationResetConfirmationPrompt, InstallationResetConfirmationPrompt>();
 
         services.AddSingleton<

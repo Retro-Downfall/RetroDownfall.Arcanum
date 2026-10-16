@@ -435,6 +435,46 @@ internal sealed class InstallationResetExistingGrimoire(
                     .ConfigureAwait(false),
             cancellationToken);
 
+    /// <summary>
+    /// Whether the Grimoire has its authority row, on the read-only identity lane.
+    /// </summary>
+    /// <remarks>
+    /// No file is the same answer as no row, and so is a file that never finished its first install: the
+    /// start that creates a Grimoire asks the same question of the same table with the same rule
+    /// (<see cref="Hosting.GrimoireDatabaseBootstrapper.AuthorityRowExistsAsync"/>). A database that
+    /// exists and cannot be opened and read is not "no row": it is an unprovable position, reported as an
+    /// unavailable inventory, so a caller that removes something only when there is no row never removes
+    /// it on a guess.
+    /// </remarks>
+    public Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(issuer);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile))
+        {
+            return Task.FromResult(Result<bool>.Success(false));
+        }
+
+        return ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetIdentityReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetIdentityReadAsync(authority, token),
+            static async (_, _, context, token) =>
+                Result<bool>.Success(
+                    await Hosting.GrimoireDatabaseBootstrapper
+                        .AuthorityRowExistsAsync(
+                            (SqliteConnection)context.Database.GetDbConnection(),
+                            token)
+                        .ConfigureAwait(false)),
+            cancellationToken);
+    }
+
     Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
         IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken)

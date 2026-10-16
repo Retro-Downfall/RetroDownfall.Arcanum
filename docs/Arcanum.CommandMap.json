@@ -8803,6 +8803,29 @@
           "commands": []
         },
         {
+          "path": "data repair-installation-identity",
+          "name": "repair-installation-identity",
+          "description": "Remove a damaged installation identity credential item when nothing is bound to it.",
+          "runnable": true,
+          "aliases": [],
+          "arguments": [],
+          "options": [
+            {
+              "name": "--dry-run",
+              "aliases": [],
+              "description": "Preview the repair without changing anything.",
+              "recursive": false,
+              "takesValue": false,
+              "repeatable": false,
+              "values": []
+            }
+          ],
+          "examples": [
+            "arcanum data repair-installation-identity --dry-run"
+          ],
+          "commands": []
+        },
+        {
           "path": "data encryption",
           "name": "encryption",
           "description": "Migrate, verify, and rotate authenticated encrypted blob storage.",

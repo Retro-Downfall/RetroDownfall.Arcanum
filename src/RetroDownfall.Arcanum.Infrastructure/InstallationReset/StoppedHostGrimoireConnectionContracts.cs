@@ -122,4 +122,23 @@ internal interface IInstallationResetStoppedHostDataService
             Result<StoppedHostNestedLaunchState>.Failure(new Error(
                 ErrorCodes.Data.InventoryUnavailable,
                 "The nested erasure's position cannot be proved by this data service.")));
+
+    /// <summary>
+    /// Reads whether the Grimoire holds its authority row: true when it does, false when there is no
+    /// database file or the file never finished its first install.
+    /// </summary>
+    /// <remarks>
+    /// The same question, answered by the same rule, the Grimoire's own start asks before it decides a
+    /// database is not yet born (<see cref="Hosting.GrimoireDatabaseBootstrapper"/>). A default member,
+    /// answering that the position cannot be proved, so an implementation that does not read the
+    /// database keeps the conservative behavior: the installation-identity repair refuses unless this
+    /// read proves the row absent.
+    /// </remarks>
+    Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(
+            Result<bool>.Failure(new Error(
+                ErrorCodes.Data.InventoryUnavailable,
+                "The Grimoire's authority row cannot be read by this data service.")));
 }

@@ -98,6 +98,27 @@ public sealed record CliFailure(
     string SafeMessage);
 
 /// <summary>
+/// What <c>arcanum data repair-installation-identity</c> found or did.
+/// </summary>
+/// <param name="Outcome">
+/// <c>absent</c> when the profile carries no such item, <c>damaged</c> for a dry run that found one it
+/// would remove, and <c>removed</c> when it was removed.
+/// </param>
+/// <param name="DryRun">Whether the run was a preview.</param>
+/// <param name="Removed">Whether the item was removed.</param>
+/// <param name="CredentialService">The credential service the item is stored under.</param>
+/// <param name="CredentialAccount">
+/// The account the item is stored under: a fixed prefix and this profile root's namespace digest. The
+/// stored value is never reported.
+/// </param>
+public sealed record InstallationIdentityRepairPayload(
+    string Outcome,
+    bool DryRun,
+    bool Removed,
+    string CredentialService,
+    string CredentialAccount);
+
+/// <summary>
 /// One Covenant entry as <c>arcanum memory covenant list</c> and <c>show</c> render it.
 /// </summary>
 /// <remarks>
@@ -967,6 +988,8 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(InstallationResetPlan))]
 
 [JsonSerializable(typeof(InstallationResetResult))]
+
+[JsonSerializable(typeof(InstallationIdentityRepairPayload))]
 
 [JsonSerializable(typeof(FullInstallationResetExternalRemediationAttestation))]
 

@@ -1455,7 +1455,8 @@ public static class GrimoireDatabaseBootstrapper
                 damaged
                     ? "Grimoire startup aborted: this profile's installation identity is present in the "
                         + "operating-system credential store but is not one canonical identity. Arcanum "
-                        + "will not create a Grimoire that would replace it. {Code}"
+                        + "will not create a Grimoire that would replace it. Run 'arcanum data "
+                        + "repair-installation-identity' to remove the damaged item. {Code}"
                     : "Grimoire startup aborted: this profile's installation identity could not be read, "
                         + "so a new Grimoire cannot be bound to it. {Code}",
                 adopted.Error.Code);
@@ -1465,7 +1466,9 @@ public static class GrimoireDatabaseBootstrapper
                     ? "This profile's installation identity is not one canonical identity, so Arcanum "
                         + "will not create a Grimoire that would replace it. Nothing was created. The "
                         + "operating-system credential store answered, so unlocking or repairing it will "
-                        + "not help; see docs/Arcanum.Engineering.md, \"Local Grimoire reinstall\", for the "
+                        + "not help. Run 'arcanum data repair-installation-identity' to remove the damaged "
+                        + "item, which it does only when nothing is bound to it, and start again; see "
+                        + "docs/Arcanum.Engineering.md, \"Local Grimoire reinstall\", for the whole "
                         + "recovery. " + adopted.Error.Message
                     : "This profile's installation identity could not be read, so Arcanum cannot create its "
                         + "Grimoire. Unlock or repair the operating-system credential store and start again. "
@@ -1490,7 +1493,7 @@ public static class GrimoireDatabaseBootstrapper
     /// same answer as an empty one. Any row counts: what a row holds is the initializer's to judge, and
     /// the identity of an existing row is never replaced (§10.19.13).
     /// </remarks>
-    private static async Task<bool> AuthorityRowExistsAsync(
+    internal static async Task<bool> AuthorityRowExistsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {

@@ -746,6 +746,17 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<IInstallationResetStoppedHostPlanner>(provider =>
             provider.GetRequiredService<InstallationResetService>());
 
+        // The guarded repair of a damaged pre-database installation identity. It takes the installation
+        // lock itself, so it is registered over the stopped-host data service and the credential store
+        // and nothing that opens a Grimoire.
+        services.TryAddScoped(static provider =>
+            new InstallationIdentityRepair(
+                provider.GetRequiredService<IOsCredentialStore>(),
+                provider.GetRequiredService<IInstallationStartupProbe>(),
+                provider.GetRequiredService<IInstallationResetStoppedHostDataService>(),
+                ArcanumPaths.GrimoireDirectory,
+                ArcanumPaths.GrimoireDatabaseFile));
+
         // The recovery chain a resumed global reset runs before it opens the Grimoire for anything
         // else, shared with the serving host so there is one rule against opening a database over an
         // active offline transition.
