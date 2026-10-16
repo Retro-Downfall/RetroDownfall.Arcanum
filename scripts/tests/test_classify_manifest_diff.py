@@ -820,11 +820,20 @@ class ClassifyManifestDiffTests(unittest.TestCase):
         for entry in CLASSIFIER.REACHED_THROUGH:
             caller = (REPOSITORY / entry.caller).read_text(encoding="utf-8")
 
-            self.assertIn(entry.marker, caller, entry.caller)
+            # The call that reaches an added row is in the caller now; the call that reached a removed row is gone from it.
+            if entry.side == "+":
+                self.assertIn(entry.marker, caller, entry.caller)
+            else:
+                self.assertNotIn(entry.marker, caller, entry.caller)
 
             holder = (REPOSITORY / entry.source_path).read_text(encoding="utf-8")
 
             self.assertTrue(CLASSIFIER.member_bodies(holder, entry.member), entry.member)
+
+            if entry.side != "+":
+                # The row a removed chain explains is not in the manifest any more, and a site with the same member and callee can
+                # have other rows that stay, so the committed manifest says nothing about it.
+                continue
 
             self.assertTrue(
                 any(
@@ -834,6 +843,18 @@ class ClassifyManifestDiffTests(unittest.TestCase):
                 ),
                 f"{entry.root_type}|{entry.operation}|{entry.member}|{entry.callee} is no row of the committed manifest",
             )
+
+    def test_every_reviewed_call_chain_names_one_side_a_marker_and_a_reason(self) -> None:
+        keys = [(e.root_type, e.operation, e.source_path, e.member, e.callee, e.side) for e in CLASSIFIER.REACHED_THROUGH]
+
+        self.assertEqual(len(keys), len(set(keys)))
+
+        for entry in CLASSIFIER.REACHED_THROUGH:
+            self.assertIn(entry.side, ("+", "-"))
+
+            self.assertTrue(entry.marker.strip())
+
+            self.assertTrue(entry.reason.strip())
 
     def test_every_base_constructor_site_is_a_subclass_the_source_declares_and_builds_and_a_row_of_the_committed_manifest(self) -> None:
         reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")
@@ -1060,6 +1081,96 @@ class ClassifyManifestDiffTests(unittest.TestCase):
         self.assertEqual("c", labelled[0].label)
 
         self.assertEqual([], violations["provider-call-removals"])
+
+    def test_every_row_of_a_reviewed_new_root_is_n_whatever_source_it_comes_from(self) -> None:
+        entry = CLASSIFIER.NEW_ROOTS[0]
+
+        old = site("src/A.cs")
+
+        fresh = site("src/Unedited.cs", root=entry.root_type, operation=entry.operation)
+
+        edited = site("src/Edited.cs", root=entry.root_type, operation=entry.operation)
+
+        result = classify(manifest(old), manifest(old, fresh, edited), edited={"src/Edited.cs"})
+
+        self.assertEqual("n", result[("+", fresh)].label)
+
+        self.assertEqual("n", result[("+", edited)].label)
+
+    def test_a_row_of_a_root_nobody_reviewed_is_not_n(self) -> None:
+        old = site("src/A.cs")
+
+        foreign = site("src/Unedited.cs", root="Other", operation="Other.ExecuteAsync")
+
+        result = classify(manifest(old), manifest(old, foreign))
+
+        self.assertEqual("d", result[("+", foreign)].label)
+
+    def test_a_row_of_a_reviewed_root_the_committed_manifest_already_had_is_not_n(self) -> None:
+        entry = CLASSIFIER.NEW_ROOTS[0]
+
+        held = site("src/A.cs", root=entry.root_type, operation=entry.operation)
+
+        added = site("src/Unedited.cs", root=entry.root_type, operation=entry.operation)
+
+        result = classify(manifest(held), manifest(held, added))
+
+        self.assertEqual("d", result[("+", added)].label)
+
+    def test_a_reviewed_new_root_passes_the_new_roots_invariant_and_an_unreviewed_one_fails_it(self) -> None:
+        entry = CLASSIFIER.NEW_ROOTS[0]
+
+        old = site("src/A.cs")
+
+        reviewed = site("src/B.cs", root=entry.root_type, operation=entry.operation)
+
+        violations = {
+            invariant.name: invariant.violations
+            for invariant in CLASSIFIER.check_invariants(manifest(old), manifest(old, reviewed))
+        }
+
+        self.assertEqual([], violations["new-roots"])
+
+    def test_the_reviewed_new_roots_are_unique_and_each_states_its_reason(self) -> None:
+        named = {(entry.root_type, entry.operation) for entry in CLASSIFIER.NEW_ROOTS}
+
+        self.assertEqual(len(CLASSIFIER.NEW_ROOTS), len(named))
+
+        for entry in CLASSIFIER.NEW_ROOTS:
+            self.assertTrue(entry.reason.strip(), entry.operation)
+
+    def test_every_reviewed_new_root_is_a_root_of_the_committed_manifest(self) -> None:
+        reviewed = CLASSIFIER.parse_manifest(MANIFEST_PATH.read_text(encoding="utf-8"), "reviewed")
+
+        roots = {CLASSIFIER.selection_root(row) for row in reviewed.rows}
+
+        for entry in CLASSIFIER.NEW_ROOTS:
+            self.assertIn((entry.root_type, entry.operation), roots)
+
+    def test_an_unframed_provider_call_under_a_reviewed_new_root_is_held_to_the_reviewed_list_and_not_to_the_committed_manifest(self) -> None:
+        entry = CLASSIFIER.NEW_ROOTS[0]
+
+        old = site("src/A.cs")
+
+        unframed = site(
+            "src/Daemon.cs",
+            callee="System.Diagnostics.Process.Start",
+            kind="ProviderCall",
+            root=entry.root_type,
+            operation=entry.operation,
+        )
+
+        reviewed = {(item.root_type, item.operation) for item in CLASSIFIER.UNFRAMED_PROVIDER_CALL_ROOTS}
+
+        violations = {
+            invariant.name: invariant.violations
+            for invariant in CLASSIFIER.check_invariants(manifest(old), manifest(old, unframed))
+        }
+
+        if (entry.root_type, entry.operation) in reviewed:
+            self.assertEqual([], violations["provider-call-frames"])
+        else:
+            self.assertEqual(1, len(violations["provider-call-frames"]))
 
     def test_a_new_root_that_is_not_a_long_rest_root_violates_the_invariants(self) -> None:
         old = site("src/A.cs")

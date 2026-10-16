@@ -1834,6 +1834,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPair
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetDatabase.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/HostToolsMarkerPairResetDatabaseContracts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/IInstallationResetStartupRecovery.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationIdentityRepair.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActiveAnchorStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActivePersistence.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetActiveRecordAuthenticator.cs
@@ -1854,10 +1855,13 @@ R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetRe
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetWorkspaceResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationStartupProbe.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostCovenantAuthority.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostFactoryErasure.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireAuthorityIssuer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionContracts.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostGrimoireConnectionFactory.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostInstallationResetPlan.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostLockLender.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/ArcanumBrowseWebConstants.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/ArtifactAttunement.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/SpellCastPreviewService.cs
@@ -2070,6 +2074,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantEnvelopeMasterKeyPro
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantRecoveryAuthorityBootstrapper.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantRuntimeGenerationProvider.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/CredentialMirror.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/CredentialPresenceProbe.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionKeyPaths.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/DataProtectionSecretStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/EncryptedBlobPresenceInspector.cs
