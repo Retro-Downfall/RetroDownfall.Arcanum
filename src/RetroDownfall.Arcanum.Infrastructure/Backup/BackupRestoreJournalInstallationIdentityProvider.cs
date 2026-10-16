@@ -39,8 +39,11 @@ internal sealed record BackupRestoreJournalIdentityProbe(
 /// identity was seeded from: the Grimoire the next start creates takes the identity as its own
 /// (<see cref="ReadForNewDatabase"/>). Only an attested full installation reset may remove a valid
 /// identity, and only after proving no active restore owner remains. A value that is not one canonical
-/// identity is the one other thing removed, by <see cref="RemoveDamaged"/>, for the installation-identity
-/// repair that has proved under the held lock that nothing is bound to it.</para>
+/// identity is the one other thing changed, and only by the installation-identity repair, which has
+/// proved under the held lock that no evidence is active and no database row exists: it puts back the
+/// identity a closed restore or offline-transition anchor names
+/// (<see cref="ReplaceDamagedFromClosedEvidence"/>), and where no anchor exists it removes the value
+/// (<see cref="RemoveDamaged"/>).</para>
 /// </remarks>
 internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCredentialStore credentials)
 {
@@ -347,6 +350,75 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
             : new Error(
                 ErrorCodes.Covenant.IntegrityFailure,
                 "The installation identity item did not read back as removed. Run the repair again.");
+    }
+
+    /// <summary>
+    /// Replaces a stored value that is present and is not one canonical identity with the identity a
+    /// closed anchor of this profile names, and reads it back.
+    /// </summary>
+    /// <remarks>
+    /// The other way out of a damaged value, for a profile whose closed restore or offline-transition
+    /// anchor is the kept tombstone of work that finished. Such an anchor still names its installation,
+    /// and later work compares that name with the identity: the transition journal refuses to open
+    /// beside an anchor that names a different installation, and the attested full reset needs the
+    /// identity beside it to be the one the anchor names. Removing the damaged value would let the next
+    /// start mint another, and every later reset would then be refused for good, so the value is put
+    /// back as the anchor holds it.
+    ///
+    /// <para>Called only by the installation-identity repair, which has proved under the held lock that
+    /// no evidence is active and that no database authority row exists. It does not trust that proof
+    /// for the one thing it can check itself: a valid identity is never replaced, and a store that does
+    /// not answer is not a damaged value. The result is true when this call wrote the identity and
+    /// false when the item was already gone, or already held exactly this identity.</para>
+    /// </remarks>
+    internal Result<bool> ReplaceDamagedFromClosedEvidence(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        BackupRestoreProfileNamespace profileNamespace,
+        Guid closedEvidenceInstallationId)
+    {
+        ArgumentNullException.ThrowIfNull(heldInstallationLock);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(guardedDirectory);
+
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        // Identity, not liveness, and deliberately no acquisition.
+        heldInstallationLock.AssertHeldFor(guardedDirectory);
+
+        if (closedEvidenceInstallationId == Guid.Empty)
+        {
+            return new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "A profile's external installation identity cannot be restored from an empty installation.");
+        }
+
+        Result<BackupRestoreJournalIdentityProbe> probe = Probe(profileNamespace);
+
+        if (probe.IsSuccess)
+        {
+            if (probe.Value.Presence is BackupRestoreJournalIdentityPresence.Absent
+                || probe.Value.InstallationId == closedEvidenceInstallationId)
+            {
+                return Result<bool>.Success(false);
+            }
+
+            return new Error(
+                ErrorCodes.Data.Conflict,
+                "This profile's installation identity is a valid canonical identity. A valid identity "
+                + "is never replaced, so nothing was changed.");
+        }
+
+        if (probe.Error.Code != ErrorCodes.Covenant.IntegrityFailure)
+        {
+            return Result<bool>.Failure(probe.Error);
+        }
+
+        Result<Guid> written = Write(profileNamespace, closedEvidenceInstallationId);
+
+        return written.IsSuccess
+            ? Result<bool>.Success(true)
+            : Result<bool>.Failure(written.Error);
     }
 
     private Result<Guid> Write(BackupRestoreProfileNamespace profileNamespace, Guid installationId)

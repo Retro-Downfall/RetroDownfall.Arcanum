@@ -58,7 +58,7 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// the sweep that deletes the database follows a real erasure.</para>
 /// </remarks>
 [Collection("ProcessEnvironment")]
-public sealed class InstallationResetIdentityContinuityTests : IAsyncLifetime
+public sealed partial class InstallationResetIdentityContinuityTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 
@@ -184,6 +184,15 @@ public sealed class InstallationResetIdentityContinuityTests : IAsyncLifetime
 
         Rebirth rebirth = await ResetAndRebirthAsync();
 
+        await ReplacementRestoreAsync(rebirth);
+    }
+
+    /// <summary>
+    /// A real replacement restore of a backup of the reborn Grimoire, run through the restore service
+    /// over the real journal, anchor and identity stores, which leaves its anchor closed.
+    /// </summary>
+    private async Task ReplacementRestoreAsync(Rebirth rebirth)
+    {
         DataProtectionSecretStore secrets = rebirth.Provider.GetRequiredService<DataProtectionSecretStore>();
 
         string archives = Path.Combine(_home.Root, "archives");

@@ -85,6 +85,10 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
 
         Assert.False(root.GetProperty("removed").GetBoolean());
 
+        Assert.False(root.GetProperty("restored").GetBoolean());
+
+        Assert.Equal("remove", root.GetProperty("action").GetString());
+
         Assert.Equal(ArcanumCredentialIdentity.Service, root.GetProperty("credentialService").GetString());
 
         Assert.Equal(IdentityAccount(), root.GetProperty("credentialAccount").GetString());
@@ -139,6 +143,10 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
 
         Assert.True(root.GetProperty("removed").GetBoolean());
 
+        Assert.False(root.GetProperty("restored").GetBoolean());
+
+        Assert.Equal("remove", root.GetProperty("action").GetString());
+
         Assert.Equal(IdentityAccount(), root.GetProperty("credentialAccount").GetString());
 
         Assert.Equal(
@@ -175,10 +183,38 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
         Assert.Contains(
-            "Confirmation is required to remove the damaged installation identity. Re-run interactively, "
+            ErrorCodes.Data.ConfirmationRequired
+            + ": Confirmation is required to repair the damaged installation identity. Re-run interactively, "
             + "pass --yes, or pass --dry-run to preview. Nothing was changed.",
             result.Error,
             StringComparison.Ordinal);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    /// <summary>
+    /// A confirmation that could not be asked is one document with the exit code, and carries its code
+    /// the way every other refusal of this command does, so a script that splits the error on the
+    /// separator finds a code.
+    /// </summary>
+    [Fact]
+    public async Task A_confirmation_refusal_in_json_is_one_document_with_exit_code_2()
+    {
+        SetIdentity(DamagedValue);
+
+        CliTestResult result = await RunAsync("--json", "data", "repair-installation-identity");
+
+        Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
+
+        using JsonDocument document = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(
+            ErrorCodes.Data.ConfirmationRequired
+            + ": Confirmation is required to repair the damaged installation identity. Re-run interactively, "
+            + "pass --yes, or pass --dry-run to preview. Nothing was changed.",
+            document.RootElement.GetProperty("error").GetString());
+
+        Assert.Equal(2, document.RootElement.GetProperty("exitCode").GetInt32());
 
         AssertIdentityIs(DamagedValue);
     }
@@ -227,7 +263,10 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
 
         Assert.Equal((int)CliExitCode.ConfigurationError, result.ExitCode);
 
-        Assert.Contains("The repair was not confirmed. Nothing was changed.", result.Error, StringComparison.Ordinal);
+        Assert.Contains(
+            ErrorCodes.Data.ConfirmationRequired + ": The repair was not confirmed. Nothing was changed.",
+            result.Error,
+            StringComparison.Ordinal);
 
         Assert.Single(prompt.Questions);
 
@@ -294,7 +333,7 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
     {
         SetIdentity(DamagedValue);
 
-        SetOther(ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount(ProfileSuffix()));
+        SetRestoreAnchor(Named, BackupRestoreJournalAnchorState.Active);
 
         CliTestResult result = await RunAsync("--yes", "data", "repair-installation-identity");
 
@@ -302,9 +341,82 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
 
         Assert.Contains(ErrorCodes.Data.Blocked + ": ", result.Error, StringComparison.Ordinal);
 
-        Assert.Contains("restore journal anchor credential", result.Error, StringComparison.Ordinal);
+        Assert.Contains("replacement restore is unfinished", result.Error, StringComparison.Ordinal);
 
         AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_dry_run_beside_a_closed_anchor_says_the_identity_is_written_back_and_changes_nothing()
+    {
+        SetIdentity(DamagedValue);
+
+        SetRestoreAnchor(Named, BackupRestoreJournalAnchorState.Closed);
+
+        CliTestResult text = await RunAsync("data", "repair-installation-identity", "--dry-run");
+
+        Assert.Equal((int)CliExitCode.Success, text.ExitCode);
+
+        Assert.Contains("writes that identity back into the one item", text.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("removes that one item", text.Output, StringComparison.Ordinal);
+
+        CliTestResult json = await RunAsync("--json", "data", "repair-installation-identity", "--dry-run");
+
+        using JsonDocument document = JsonDocument.Parse(json.Output);
+
+        Assert.Equal("damaged", document.RootElement.GetProperty("outcome").GetString());
+
+        Assert.Equal("restore", document.RootElement.GetProperty("action").GetString());
+
+        Assert.False(document.RootElement.GetProperty("removed").GetBoolean());
+
+        Assert.False(document.RootElement.GetProperty("restored").GetBoolean());
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task An_acknowledged_repair_beside_a_closed_anchor_writes_the_identity_back_and_says_so()
+    {
+        SetIdentity(DamagedValue);
+
+        SetRestoreAnchor(Named, BackupRestoreJournalAnchorState.Closed);
+
+        RecordingPrompt prompt = new(answer: true);
+
+        CliTestResult text = await RunAsync(["data", "repair-installation-identity"], prompt);
+
+        Assert.Equal((int)CliExitCode.Success, text.ExitCode);
+
+        Assert.Equal(
+            "Write back into this profile's damaged installation identity credential item "
+            + $"(service {ArcanumCredentialIdentity.Service}, account {IdentityAccount()}) the identity a "
+            + "closed anchor names, and change nothing else?",
+            Assert.Single(prompt.Questions));
+
+        Assert.Contains("Wrote the identity a closed anchor names back", text.Output, StringComparison.Ordinal);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
+
+        // Again, as a script reads it.
+        SetIdentity(DamagedValue);
+
+        CliTestResult json = await RunAsync("--json", "--yes", "data", "repair-installation-identity");
+
+        using JsonDocument document = JsonDocument.Parse(json.Output);
+
+        Assert.Equal("restored", document.RootElement.GetProperty("outcome").GetString());
+
+        Assert.True(document.RootElement.GetProperty("restored").GetBoolean());
+
+        Assert.False(document.RootElement.GetProperty("removed").GetBoolean());
+
+        Assert.Equal("restore", document.RootElement.GetProperty("action").GetString());
+
+        Assert.DoesNotContain(Named.ToString("D"), json.Output + json.Error, StringComparison.OrdinalIgnoreCase);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
     }
 
     [Fact]
@@ -430,6 +542,32 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
         Assert.Equal(
             OsCredentialStoreStatus.Ok,
             _credentials.Set(ArcanumCredentialIdentity.Service, IdentityAccount(), value).Status);
+    }
+
+    private static readonly Guid Named = Guid.Parse("0a0b0c0d-1111-4222-8333-444455556666");
+
+    /// <summary>A restore anchor in the exact form the store writes it, for this profile.</summary>
+    private void SetRestoreAnchor(Guid installation, BackupRestoreJournalAnchorState state)
+    {
+        BackupRestoreProfileNamespace profile =
+            BackupRestoreJournalAuthenticator.ResolveProfileNamespace(ArcanumPaths.GrimoireDirectory).Value;
+
+        BackupRestoreJournalAnchorV1 anchor = new(
+            Version: 1,
+            profile.Digest,
+            installation,
+            Guid.Parse("22222222-2222-4222-8222-222222222222"),
+            Revision: 3,
+            new CovenantDigest([.. Enumerable.Repeat((byte)0x11, 32)]),
+            new CovenantDigest([.. Enumerable.Repeat((byte)0x22, 32)]),
+            state);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _credentials.Set(
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount(profile.AccountSuffix),
+                BackupRestoreJournalAuthenticator.EncodeAnchor(anchor).Value).Status);
     }
 
     private void SetOther(string account)

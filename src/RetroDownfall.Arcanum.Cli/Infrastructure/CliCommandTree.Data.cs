@@ -309,7 +309,7 @@ internal static partial class CliCommandTree
 
         Command repairIdentity = new(
             "repair-installation-identity",
-            "Remove a damaged installation identity credential item when nothing is bound to it.");
+            "Put a damaged installation identity credential item right when no unfinished work is bound to it.");
 
         Option<bool> repairDryRun = new("--dry-run")
         {

@@ -1456,7 +1456,7 @@ public static class GrimoireDatabaseBootstrapper
                     ? "Grimoire startup aborted: this profile's installation identity is present in the "
                         + "operating-system credential store but is not one canonical identity. Arcanum "
                         + "will not create a Grimoire that would replace it. Run 'arcanum data "
-                        + "repair-installation-identity' to remove the damaged item. {Code}"
+                        + "repair-installation-identity' to put the damaged item right. {Code}"
                     : "Grimoire startup aborted: this profile's installation identity could not be read, "
                         + "so a new Grimoire cannot be bound to it. {Code}",
                 adopted.Error.Code);
@@ -1466,8 +1466,9 @@ public static class GrimoireDatabaseBootstrapper
                     ? "This profile's installation identity is not one canonical identity, so Arcanum "
                         + "will not create a Grimoire that would replace it. Nothing was created. The "
                         + "operating-system credential store answered, so unlocking or repairing it will "
-                        + "not help. Run 'arcanum data repair-installation-identity' to remove the damaged "
-                        + "item, which it does only when nothing is bound to it, and start again; see "
+                        + "not help. Run 'arcanum data repair-installation-identity' to put the damaged "
+                        + "item right, which it does only when no restore, offline transition or "
+                        + "installation reset is unfinished, and start again; see "
                         + "docs/Arcanum.Engineering.md, \"Local Grimoire reinstall\", for the whole "
                         + "recovery. " + adopted.Error.Message
                     : "This profile's installation identity could not be read, so Arcanum cannot create its "

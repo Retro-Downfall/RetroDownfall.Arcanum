@@ -23,7 +23,7 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// Each refusal asserts the code and the message a script and an operator read, that the damaged item
 /// is still there afterwards, and that no delete was even attempted.
 /// </remarks>
-public sealed class InstallationIdentityRepairTests : IAsyncLifetime
+public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 {
     private const string DamagedValue = "c0ffee00-1234-4abc-8def-0123456789ab";
 
@@ -218,74 +218,6 @@ public sealed class InstallationIdentityRepairTests : IAsyncLifetime
         }
 
         Assert.Equal(0, _credentials.DeleteCount);
-    }
-
-    [Theory]
-    [InlineData("restore journal key")]
-    [InlineData("restore journal anchor")]
-    [InlineData("offline transition journal key")]
-    [InlineData("offline transition journal anchor")]
-    public async Task Evidence_bound_to_the_identity_blocks_the_repair(string evidence)
-    {
-        SetIdentity(DamagedValue);
-
-        SetOther(EvidenceAccount(evidence));
-
-        InstallationIdentityRepair repair = Create();
-
-        foreach (Result<InstallationIdentityRepairReport> result in new[]
-                 {
-                     await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
-                 })
-        {
-            AssertRefused(result, ErrorCodes.Data.Blocked, evidence + " credential");
-        }
-
-        AssertIdentityIs(DamagedValue);
-    }
-
-    [Theory]
-    [InlineData("restore journal key")]
-    [InlineData("restore journal anchor")]
-    [InlineData("offline transition journal key")]
-    [InlineData("offline transition journal anchor")]
-    public async Task Evidence_whose_presence_cannot_be_proved_blocks_the_repair(string evidence)
-    {
-        SetIdentity(DamagedValue);
-
-        _credentials.IndeterminateAccounts.Add(EvidenceAccount(evidence));
-
-        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync();
-
-        AssertRefused(result, ErrorCodes.Covenant.Unavailable, evidence + " credential could not be proved");
-
-        AssertIdentityIs(DamagedValue);
-    }
-
-    [Fact]
-    public async Task A_store_with_no_metadata_only_lookup_cannot_prove_the_evidence_absent_and_is_never_read_instead()
-    {
-        SetIdentity(DamagedValue);
-
-        NoLookupStore store = new(_inner);
-
-        InstallationIdentityRepair repair = new(
-            store,
-            new FixedStartupProbe(Result<ActiveInstallationReset?>.Success(null)),
-            new RowProbe(Result<bool>.Success(false)),
-            _root,
-            _database);
-
-        Result<InstallationIdentityRepairReport> result = await repair.ApplyAsync();
-
-        AssertRefused(result, ErrorCodes.Covenant.Unavailable, "restore journal key credential could not be proved");
-
-        // Only the identity item itself was ever read: no evidence account was fetched in place of a
-        // lookup that would not prompt for secret bytes.
-        Assert.Equal([IdentityAccount()], store.Reads);
-
-        AssertIdentityIs(DamagedValue);
     }
 
     [Fact]
@@ -528,12 +460,12 @@ public sealed class InstallationIdentityRepairTests : IAsyncLifetime
 
         Assert.True(planned.IsSuccess);
 
-        // Between the question and the answer, a restore anchor is published for this profile.
-        SetOther(EvidenceAccount("restore journal anchor"));
+        // Between the question and the answer, a restore begins for this profile.
+        SetRestoreAnchor(Guid.Parse("c0ffee00-1234-4abc-8def-0123456789ab"), BackupRestoreJournalAnchorState.Active);
 
         Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
 
-        AssertRefused(applied, ErrorCodes.Data.Blocked, "restore journal anchor credential");
+        AssertRefused(applied, ErrorCodes.Data.Blocked, "replacement restore is unfinished");
 
         AssertIdentityIs(DamagedValue);
     }

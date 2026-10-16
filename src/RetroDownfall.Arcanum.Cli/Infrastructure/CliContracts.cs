@@ -102,10 +102,16 @@ public sealed record CliFailure(
 /// </summary>
 /// <param name="Outcome">
 /// <c>absent</c> when the profile carries no such item, <c>damaged</c> for a dry run that found one it
-/// would remove, and <c>removed</c> when it was removed.
+/// would put right, <c>removed</c> when it was removed, and <c>restored</c> when it was replaced by
+/// the identity a closed anchor names.
 /// </param>
 /// <param name="DryRun">Whether the run was a preview.</param>
 /// <param name="Removed">Whether the item was removed.</param>
+/// <param name="Restored">Whether the item was replaced by the identity a closed anchor names.</param>
+/// <param name="Action">
+/// How the item is, or was, put right: <c>remove</c> when no anchor names an installation, <c>restore</c>
+/// when a closed anchor does, and <c>none</c> when there was nothing to put right.
+/// </param>
 /// <param name="CredentialService">The credential service the item is stored under.</param>
 /// <param name="CredentialAccount">
 /// The account the item is stored under: a fixed prefix and this profile root's namespace digest. The
@@ -115,6 +121,8 @@ public sealed record InstallationIdentityRepairPayload(
     string Outcome,
     bool DryRun,
     bool Removed,
+    bool Restored,
+    string Action,
     string CredentialService,
     string CredentialAccount);
 

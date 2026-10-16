@@ -7,19 +7,20 @@ using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 namespace RetroDownfall.Arcanum.Cli.Commands;
 
 /// <summary>
-/// <c>arcanum data repair-installation-identity</c>: removes a profile's damaged pre-database
-/// installation identity, and nothing else, when nothing is bound to it.
+/// <c>arcanum data repair-installation-identity</c>: puts a profile's damaged pre-database installation
+/// identity right, and changes nothing else, when no unfinished work is bound to it.
 /// </summary>
 /// <remarks>
 /// A local-only verb. It works on the installation's credential store and Grimoire directly through
 /// Infrastructure, takes the installation maintenance lock itself, and needs no running host: a running
-/// host is one of the things it refuses for. Every precondition and the removal live in
+/// host is one of the things it refuses for. Every precondition and the change live in
 /// <see cref="InstallationIdentityRepair"/>; this handler plans, asks, and applies, so the operator
 /// confirms against the state the apply proves again.
 ///
-/// <para>Exit codes: <c>0</c> for a removal, for a dry run, and for a profile with nothing to repair;
+/// <para>Exit codes: <c>0</c> for a repair, for a dry run, and for a profile with nothing to repair;
 /// <c>1</c> for a refused precondition, with the refusal's code and its own message; <c>2</c> for a
-/// confirmation that was declined or could not be asked; <c>130</c> for cancellation.</para>
+/// confirmation that was declined or could not be asked, with <c>Data.ConfirmationRequired</c> and its
+/// own message; <c>130</c> for cancellation.</para>
 /// </remarks>
 internal sealed class InstallationIdentityRepairCommand(
     InstallationIdentityRepair repair,
@@ -46,9 +47,11 @@ internal sealed class InstallationIdentityRepairCommand(
                 "absent",
                 plan,
                 dryRun,
-                removed: false,
+                changed: false,
                 "This profile carries no installation identity credential item. There is nothing to repair.");
         }
+
+        bool restores = plan.Action is InstallationIdentityRepairAction.Restore;
 
         if (dryRun)
         {
@@ -56,11 +59,17 @@ internal sealed class InstallationIdentityRepairCommand(
                 "damaged",
                 plan,
                 dryRun,
-                removed: false,
+                changed: false,
                 "Dry run. This profile's installation identity credential item "
                 + $"(service {plan.CredentialService}, account {plan.CredentialAccount}) is present and is "
-                + "not one canonical identity, and nothing is bound to it. Applying the repair removes that "
-                + "one item and nothing else. Nothing was changed.");
+                + "not one canonical identity, and no unfinished work is bound to it. "
+                + (restores
+                    ? "A closed restore or offline-transition anchor of this profile names the installation, "
+                        + "so applying the repair writes that identity back into the one item and changes "
+                        + "nothing else."
+                    : "No anchor names an installation, so applying the repair removes that one item and "
+                        + "nothing else.")
+                + " Nothing was changed.");
         }
 
         bool confirmed;
@@ -69,23 +78,30 @@ internal sealed class InstallationIdentityRepairCommand(
         {
             confirmed = await confirmationPrompt
                 .PromptForConfirmationAsync(
-                    "Remove this profile's damaged installation identity credential item "
-                    + $"(service {plan.CredentialService}, account {plan.CredentialAccount}), and nothing else?",
+                    (restores
+                        ? "Write back into this profile's damaged installation identity credential item "
+                        : "Remove this profile's damaged installation identity credential item ")
+                    + $"(service {plan.CredentialService}, account {plan.CredentialAccount})"
+                    + (restores ? " the identity a closed anchor names, and change nothing else?" : ", and nothing else?"),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (NonInteractiveConfirmationException)
         {
             return Fail(
-                "Confirmation is required to remove the damaged installation identity. Re-run "
-                + "interactively, pass --yes, or pass --dry-run to preview. Nothing was changed.",
+                new Error(
+                    ErrorCodes.Data.ConfirmationRequired,
+                    "Confirmation is required to repair the damaged installation identity. Re-run "
+                    + "interactively, pass --yes, or pass --dry-run to preview. Nothing was changed."),
                 CliExitCode.ConfigurationError);
         }
 
         if (!confirmed)
         {
             return Fail(
-                "The repair was not confirmed. Nothing was changed.",
+                new Error(
+                    ErrorCodes.Data.ConfirmationRequired,
+                    "The repair was not confirmed. Nothing was changed."),
                 CliExitCode.ConfigurationError);
         }
 
@@ -100,28 +116,38 @@ internal sealed class InstallationIdentityRepairCommand(
 
         InstallationIdentityRepairReport result = applied.Value;
 
-        return result.State is InstallationIdentityRepairState.Removed
-            ? WriteOutcome(
+        return result.State switch
+        {
+            InstallationIdentityRepairState.Removed => WriteOutcome(
                 "removed",
                 result,
                 dryRun,
-                removed: true,
+                changed: true,
                 "Removed this profile's damaged installation identity credential item "
                 + $"(service {result.CredentialService}, account {result.CredentialAccount}). The next "
-                + "start creates its Grimoire under a new identity.")
-            : WriteOutcome(
+                + "start creates its Grimoire under a new identity."),
+            InstallationIdentityRepairState.Restored => WriteOutcome(
+                "restored",
+                result,
+                dryRun,
+                changed: true,
+                "Wrote the identity a closed anchor names back into this profile's installation identity "
+                + $"credential item (service {result.CredentialService}, account {result.CredentialAccount}). "
+                + "The next start creates its Grimoire under that identity."),
+            _ => WriteOutcome(
                 "absent",
                 result,
                 dryRun,
-                removed: false,
-                "The damaged installation identity credential item was already gone. Nothing was changed.");
+                changed: false,
+                "The damaged installation identity credential item was already gone. Nothing was changed."),
+        };
     }
 
     private int WriteOutcome(
         string outcome,
         InstallationIdentityRepairReport report,
         bool dryRun,
-        bool removed,
+        bool changed,
         string text)
     {
         if (invocationContext.Options.Json)
@@ -130,7 +156,14 @@ internal sealed class InstallationIdentityRepairCommand(
                 new InstallationIdentityRepairPayload(
                     outcome,
                     dryRun,
-                    removed,
+                    Removed: changed && report.State is InstallationIdentityRepairState.Removed,
+                    Restored: changed && report.State is InstallationIdentityRepairState.Restored,
+                    Action: report.Action switch
+                    {
+                        InstallationIdentityRepairAction.Remove => "remove",
+                        InstallationIdentityRepairAction.Restore => "restore",
+                        _ => "none",
+                    },
                     report.CredentialService,
                     report.CredentialAccount),
                 CliJsonContext.Default.InstallationIdentityRepairPayload);
@@ -143,11 +176,12 @@ internal sealed class InstallationIdentityRepairCommand(
         return (int)CliExitCode.Success;
     }
 
-    private int Fail(Error error) =>
-        Fail($"{error.Code}: {error.Message}", CliExitCode.GenericError);
+    private int Fail(Error error) => Fail(error, CliExitCode.GenericError);
 
-    private int Fail(string message, CliExitCode exitCode)
+    private int Fail(Error error, CliExitCode exitCode)
     {
+        string message = $"{error.Code}: {error.Message}";
+
         dispatcher.WriteDiagnostic(message);
 
         if (invocationContext.Options.Json)

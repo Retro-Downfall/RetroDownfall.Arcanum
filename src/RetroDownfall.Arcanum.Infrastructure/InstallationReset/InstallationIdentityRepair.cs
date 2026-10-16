@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Coordination;
+
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
@@ -20,25 +22,44 @@ internal enum InstallationIdentityRepairState : byte
     /// <summary>The profile carries no such item. There is nothing to repair.</summary>
     Absent = 1,
 
-    /// <summary>The item is present and is not one canonical identity. A repair would remove it.</summary>
+    /// <summary>The item is present and is not one canonical identity. A repair would put it right.</summary>
     Damaged = 2,
 
     /// <summary>The damaged item was removed and its absence was read back.</summary>
     Removed = 3,
+
+    /// <summary>The damaged item was replaced by the identity a closed anchor names, and read back.</summary>
+    Restored = 4,
+}
+
+/// <summary>How the repair puts a damaged identity right.</summary>
+internal enum InstallationIdentityRepairAction : byte
+{
+    /// <summary>There is nothing to put right.</summary>
+    None = 0,
+
+    /// <summary>No anchor names an installation, so the damaged item is removed.</summary>
+    Remove = 1,
+
+    /// <summary>A closed anchor names the installation, so it is written back from that anchor.</summary>
+    Restore = 2,
 }
 
 /// <summary>
 /// The one credential-store item the repair concerns, named without its value.
 /// </summary>
+/// <param name="State">What the repair found, or did.</param>
 /// <param name="CredentialService">The credential service the item is stored under.</param>
 /// <param name="CredentialAccount">
 /// The account: a fixed prefix and this profile root's namespace digest. Neither it nor the service
 /// is a secret; the stored value is never read into a report.
 /// </param>
+/// <param name="Action">How a damaged item is, or was, put right.</param>
 internal sealed record InstallationIdentityRepairReport(
     InstallationIdentityRepairState State,
     string CredentialService,
-    string CredentialAccount);
+    string CredentialAccount,
+    InstallationIdentityRepairAction Action = InstallationIdentityRepairAction.None);
 
 /// <summary>
 /// The guarded repair of a profile's damaged pre-database installation identity.
@@ -46,28 +67,36 @@ internal sealed record InstallationIdentityRepairReport(
 /// <remarks>
 /// The identity item outlives every Grimoire (§10.19.13), and a Grimoire is never created over a value
 /// that is present and not one canonical identity: minting over it would silently replace what it
-/// exists to pin. That refusal has exactly one way out, which is to remove the item, and this is the
-/// only code that does so.
+/// exists to pin. That refusal has one way out, which is to put the item right, and this is the only
+/// code that does so. How depends on what else the profile still names.
 ///
-/// <para>It removes that one item (the identity account of this profile's namespace, under the
-/// Arcanum credential service) and nothing else, and only when every one of these holds, each proved
-/// under the exact installation lock this call takes for itself: the stored value is present and
-/// is not one canonical identity (a valid identity is never removed, and an unreadable store is not a
-/// damaged value); no installation reset record is active, which the startup probe proves by the
-/// record and by the key and anchor credentials that authenticate it; none of the restore or
-/// offline-transition key and anchor credentials of this profile exists, so no evidence is bound to
-/// the identity; and the Grimoire has no database file or no authority row, so no installation exists
-/// that the item could be named for. Any of those that cannot be proved is a refusal, never a guess.
-/// The lock is what proves no host is running: a running host, a restore and a reset all hold it.</para>
+/// <para>The restore journal and the offline-transition journal each keep their anchor after the work
+/// closes, as a tombstone that still names its installation (§10.19.6), and every later transition and
+/// reset compares that name with the identity. So an identity that a closed anchor names is written
+/// back from the anchor, never removed: removing it would let the next start mint another, and the
+/// transition journal would then refuse every later opening beside the anchor that names the old one,
+/// for good. An identity that no anchor names is removed, and the next Grimoire takes a fresh one.</para>
+///
+/// <para>It changes that one item (the identity account of this profile's namespace, under the Arcanum
+/// credential service) and nothing else, and only when every one of these holds, each proved under the
+/// exact installation lock this call takes for itself: the stored value is present and is not one
+/// canonical identity (a valid identity is never changed, and an unreadable store is not a damaged
+/// value); no installation reset record is active, which the startup probe proves by the record and by
+/// the key and anchor credentials that authenticate it; no restore or offline transition is
+/// unfinished, which is to say that no anchor of either is active and no restore journal is in flight;
+/// the closed anchors that remain agree on one installation; and the Grimoire has no database file or
+/// no authority row, so no installation exists that the item could be named for. Any of those that
+/// cannot be proved is a refusal, never a guess. The lock is what proves no host is running: a running
+/// host, a restore and a reset all hold it.</para>
 ///
 /// <para>This type names no account. Each credential is asked about by its own owner (the identity
-/// provider, the two restore-journal stores, the two offline-transition stores) and the one removal is
-/// the identity provider's, so the account names keep the single owners the call-site pins hold them
-/// to.</para>
+/// provider, the restore-journal anchor store, the offline-transition anchor store) and the one change
+/// is the identity provider's, so the account names keep the single owners the call-site pins hold
+/// them to.</para>
 ///
 /// <para>Planning and applying are separate calls with the same checks, so the operator confirms
 /// against the state the apply then finds again. An apply that finds the item already gone reports
-/// that, and removes nothing.</para>
+/// that, and changes nothing.</para>
 /// </remarks>
 internal sealed class InstallationIdentityRepair(
     IOsCredentialStore credentials,
@@ -106,7 +135,7 @@ internal sealed class InstallationIdentityRepair(
         RunAsync(apply: false, cancellationToken);
 
     /// <summary>
-    /// Proves every precondition again and removes the damaged item.
+    /// Proves every precondition again and puts the damaged item right.
     /// </summary>
     public Task<Result<InstallationIdentityRepairReport>> ApplyAsync(
         CancellationToken cancellationToken = default) =>
@@ -199,40 +228,74 @@ internal sealed class InstallationIdentityRepair(
                 + "changed. Unlock or repair the store and run the repair again.");
         }
 
-        Result<InstallationIdentityRepairReport> evidence = await RequireNoBoundEvidenceAsync(
+        Result<Guid?> named = await ProveNothingIsActiveAsync(
             held,
             profile.Value,
-            account,
             cancellationToken).ConfigureAwait(false);
 
-        if (evidence.IsFailure)
+        if (named.IsFailure)
         {
-            return evidence;
+            return Result<InstallationIdentityRepairReport>.Failure(named.Error);
         }
+
+        InstallationIdentityRepairAction action = named.Value is null
+            ? InstallationIdentityRepairAction.Remove
+            : InstallationIdentityRepairAction.Restore;
 
         if (!apply)
         {
-            return Report(InstallationIdentityRepairState.Damaged, account);
+            return Report(InstallationIdentityRepairState.Damaged, account, action);
         }
 
-        Result<bool> removed = _identities.RemoveDamaged(held, _guardedRoot, profile.Value);
-
-        if (removed.IsFailure)
+        if (named.Value is not { } installation)
         {
-            return Result<InstallationIdentityRepairReport>.Failure(removed.Error);
+            Result<bool> removed = _identities.RemoveDamaged(held, _guardedRoot, profile.Value);
+
+            if (removed.IsFailure)
+            {
+                return Result<InstallationIdentityRepairReport>.Failure(removed.Error);
+            }
+
+            return Report(
+                removed.Value
+                    ? InstallationIdentityRepairState.Removed
+                    : InstallationIdentityRepairState.Absent,
+                account,
+                action);
+        }
+
+        Result<bool> restored = _identities.ReplaceDamagedFromClosedEvidence(
+            held,
+            _guardedRoot,
+            profile.Value,
+            installation);
+
+        if (restored.IsFailure)
+        {
+            return Result<InstallationIdentityRepairReport>.Failure(restored.Error);
         }
 
         return Report(
-            removed.Value
-                ? InstallationIdentityRepairState.Removed
+            restored.Value
+                ? InstallationIdentityRepairState.Restored
                 : InstallationIdentityRepairState.Absent,
-            account);
+            account,
+            action);
     }
 
-    private async Task<Result<InstallationIdentityRepairReport>> RequireNoBoundEvidenceAsync(
+    /// <summary>
+    /// Proves that nothing is active that the identity is bound to, and reports the installation the
+    /// closed evidence names, or none.
+    /// </summary>
+    /// <remarks>
+    /// Active evidence is unfinished work and blocks the repair: an installation reset record, a
+    /// restore, an offline transition. Closed evidence is the kept tombstone of work that finished, and
+    /// it does not block: it names the installation the identity has to go on naming. A key with no
+    /// anchor names nothing and is not evidence of anything in flight (§10.19.6).
+    /// </remarks>
+    private async Task<Result<Guid?>> ProveNothingIsActiveAsync(
         ArcanumMaintenanceLock held,
         BackupRestoreProfileNamespace profile,
-        string account,
         CancellationToken cancellationToken)
     {
         Result<ActiveInstallationReset?> reset = await _startupProbe
@@ -241,7 +304,7 @@ internal sealed class InstallationIdentityRepair(
 
         if (reset.IsFailure)
         {
-            return Refuse(
+            return RefuseNaming(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "Whether an installation reset is active could not be proved, so nothing was changed. "
                 + reset.Error.Message);
@@ -249,53 +312,37 @@ internal sealed class InstallationIdentityRepair(
 
         if (reset.Value is not null)
         {
-            return Refuse(
+            return RefuseNaming(
                 ErrorCodes.Data.ResetInProgress,
                 "An installation reset is active. Resume it with 'arcanum data factory-reset' and the "
                 + "scope it names, and run the repair again afterwards. Nothing was changed.");
         }
 
-        // Each credential is asked about by the type that owns its account. The reset record's own key
-        // and anchor are not listed: the startup probe above proves them with the record, and refuses
-        // a key or an anchor it cannot pair with one.
-        (string Name, OsCredentialStoreStatus Status)[] evidence =
-        [
-            ("restore journal key", new BackupRestoreJournalKeyProvider(_credentials).ProbePresence(profile)),
-            (
-                "restore journal anchor",
-                new BackupRestoreJournalAnchorStore(
-                    _credentials,
-                    new BackupRestoreJournalKeyProvider(_credentials),
-                    _identities).ProbeAnchorPresence(profile)),
-            (
-                "offline transition journal key",
-                new GrimoireOfflineTransitionJournalKeyProvider(_credentials).ProbePresence(profile)),
-            (
-                "offline transition journal anchor",
-                new GrimoireOfflineTransitionJournalAnchorStore(_credentials).ProbeAnchorPresence(profile)),
-        ];
+        Result<Guid?> restore = await ReadRestoreSlotAsync(profile, cancellationToken).ConfigureAwait(false);
 
-        foreach ((string name, OsCredentialStoreStatus status) in evidence)
+        if (restore.IsFailure)
         {
-
-            if (status is OsCredentialStoreStatus.NotFound)
-            {
-                continue;
-            }
-
-            return status is OsCredentialStoreStatus.Ok
-                ? Refuse(
-                    ErrorCodes.Data.Blocked,
-                    $"This profile carries a {name} credential, so evidence is bound to the installation "
-                    + "identity. Finish or close the restore, offline transition, or installation reset "
-                    + "that owns it; the repair removes only an identity nothing is bound to. Nothing was "
-                    + "changed.")
-                : Refuse(
-                    ErrorCodes.Covenant.Unavailable,
-                    $"Whether this profile carries a {name} credential could not be proved, so nothing "
-                    + "was changed. Unlock or repair the operating-system credential store and run the "
-                    + "repair again.");
+            return restore;
         }
+
+        Result<Guid?> transition = ReadTransitionSlot();
+
+        if (transition.IsFailure)
+        {
+            return transition;
+        }
+
+        if (restore.Value is { } fromRestore
+            && transition.Value is { } fromTransition
+            && fromRestore != fromTransition)
+        {
+            return RefuseNaming(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                "The closed restore anchor and the closed offline-transition anchor of this profile name "
+                + "different installations, so there is no one identity to put back. Nothing was changed.");
+        }
+
+        Guid? named = restore.Value ?? transition.Value;
 
         if (File.Exists(_canonicalDatabasePath))
         {
@@ -310,16 +357,16 @@ internal sealed class InstallationIdentityRepair(
 
             if (row.IsFailure)
             {
-                return Refuse(
+                return RefuseNaming(
                     ErrorCodes.Data.InventoryUnavailable,
                     "Whether the Grimoire holds its authority row could not be proved, so nothing was "
-                    + "changed. The repair removes the identity only for a Grimoire that has no database "
+                    + "changed. The repair changes the identity only for a Grimoire that has no database "
                     + "or no authority row.");
             }
 
             if (row.Value)
             {
-                return Refuse(
+                return RefuseNaming(
                     ErrorCodes.Data.Blocked,
                     "The Grimoire holds its authority row, so an installation exists that this identity "
                     + "is the external binding of. The repair applies only before a Grimoire exists, so "
@@ -327,13 +374,127 @@ internal sealed class InstallationIdentityRepair(
             }
         }
 
-        return Report(InstallationIdentityRepairState.Damaged, account);
+        return Result<Guid?>.Success(named);
     }
+
+    /// <summary>
+    /// The installation a closed restore anchor names, or none when no restore left an anchor.
+    /// </summary>
+    private async Task<Result<Guid?>> ReadRestoreSlotAsync(
+        BackupRestoreProfileNamespace profile,
+        CancellationToken cancellationToken)
+    {
+        BackupRestoreJournalAnchorStore anchors = new(
+            _credentials,
+            new BackupRestoreJournalKeyProvider(_credentials),
+            _identities);
+
+        Result<BackupRestoreJournalAnchorV1?> anchor = anchors.TryReadAnchor(profile);
+
+        if (anchor.IsFailure)
+        {
+            return RefuseNaming(
+                anchor.Error.Code == ErrorCodes.Covenant.Unavailable
+                    ? ErrorCodes.Covenant.Unavailable
+                    : ErrorCodes.Covenant.ManualRecoveryRequired,
+                "Whether this profile's restore journal anchor is closed could not be proved, so nothing "
+                + "was changed. " + anchor.Error.Message);
+        }
+
+        if (anchor.Value is { State: BackupRestoreJournalAnchorState.Active })
+        {
+            return RefuseNaming(ErrorCodes.Data.Blocked, UnfinishedRestoreMessage);
+        }
+
+        // The anchor says no restore is active; the sweep says there is no journal either, including
+        // the plain journal of a build that predates the authenticated one.
+        Result<ActiveReplacementRestore?> active = await new BackupRestoreActiveEvidenceInspector(
+                _guardedRoot,
+                _credentials)
+            .InspectAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (active.IsFailure)
+        {
+            return RefuseNaming(
+                active.Error.Code,
+                "Whether a replacement restore is in flight for this profile could not be proved, so "
+                + "nothing was changed. " + active.Error.Message);
+        }
+
+        if (active.Value is not null)
+        {
+            return RefuseNaming(ErrorCodes.Data.Blocked, UnfinishedRestoreMessage);
+        }
+
+        return Result<Guid?>.Success(anchor.Value?.InstallationId);
+    }
+
+    /// <summary>
+    /// The installation a closed offline-transition anchor names, or none when no transition left one.
+    /// </summary>
+    private Result<Guid?> ReadTransitionSlot()
+    {
+        GrimoireOfflineTransitionJournalFileStore files = new();
+
+        Result<GrimoireOfflineTransitionJournalLocation> location = files.ResolveLocation(_guardedRoot);
+
+        if (location.IsFailure)
+        {
+            return RefuseNaming(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "This profile's offline-transition journal could not be located safely, so nothing was "
+                + "changed.");
+        }
+
+        Result<GrimoireOfflineTransitionAnchorV1?> anchor =
+            new GrimoireOfflineTransitionJournalAnchorStore(_credentials).Read(location.Value);
+
+        if (anchor.IsFailure)
+        {
+            return RefuseNaming(
+                anchor.Error.Code == ErrorCodes.Covenant.Unavailable
+                    ? ErrorCodes.Covenant.Unavailable
+                    : ErrorCodes.Covenant.ManualRecoveryRequired,
+                "Whether this profile's offline-transition journal anchor is closed could not be proved, "
+                + "so nothing was changed. " + anchor.Error.Message);
+        }
+
+        if (anchor.Value is { State: GrimoireOfflineTransitionAnchorState.Active })
+        {
+            return RefuseNaming(
+                ErrorCodes.Data.Blocked,
+                "An offline Grimoire transition is unfinished and its journal is bound to this "
+                + "installation identity. The repair does not change an identity that unfinished work is "
+                + "bound to. Nothing was changed.");
+        }
+
+        // A journal file with no anchor, or beside a closed one, is not nothing: it is evidence the
+        // repair cannot classify without the recovery that needs the identity it is about to change.
+        if (files.RequireNoEvidence(location.Value).IsFailure)
+        {
+            return RefuseNaming(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                "This profile's offline-transition journal slot holds a file that no active anchor "
+                + "accounts for, so whether the transition is finished could not be proved and nothing "
+                + "was changed.");
+        }
+
+        return Result<Guid?>.Success(anchor.Value?.InstallationId);
+    }
+
+    private const string UnfinishedRestoreMessage =
+        "A replacement restore is unfinished and its journal is bound to this installation identity. "
+        + "The repair does not change an identity that unfinished work is bound to. Nothing was changed.";
 
     private static Result<InstallationIdentityRepairReport> Report(
         InstallationIdentityRepairState state,
-        string account) =>
-        new InstallationIdentityRepairReport(state, ArcanumCredentialIdentity.Service, account);
+        string account,
+        InstallationIdentityRepairAction action = InstallationIdentityRepairAction.None) =>
+        new InstallationIdentityRepairReport(state, ArcanumCredentialIdentity.Service, account, action);
+
+    private static Result<Guid?> RefuseNaming(string code, string message) =>
+        Result<Guid?>.Failure(new Error(code, message));
 
     private static Result<InstallationIdentityRepairReport> Refuse(string code, string message) =>
         Result<InstallationIdentityRepairReport>.Failure(new Error(code, message));
