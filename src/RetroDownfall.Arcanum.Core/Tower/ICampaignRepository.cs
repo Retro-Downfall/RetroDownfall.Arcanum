@@ -18,9 +18,10 @@ public interface ICampaignRepository
     /// root contains it. The deepest root wins, so a Campaign nested inside another governs its own tree; when several registrations name
     /// the same directory, the one whose Sanctum is strictest governs it. A root matches by whole directory components, never by string
     /// prefix (<c>/work/app</c> does not contain <c>/work/app-legacy</c>), and by every spelling the same directory can have: a trailing
-    /// separator, a symbolic link on either side, the case of a name on a platform whose file systems fold case, and the Unicode
-    /// normalisation form of an accented name. This is how a directory below a Campaign root (or the root spelled differently) is
-    /// recognised as that Campaign's workspace.
+    /// separator, a symbolic link on either side, and the case of a name and the Unicode normalisation form of an accented name, which
+    /// are judged per volume (two spellings that differ only that way are one directory on a volume that folds them and two on one that
+    /// does not). This is how a directory below a Campaign root (or the root spelled differently) is recognised as that Campaign's
+    /// workspace.
     /// </summary>
     /// <remarks>
     /// This member deliberately has no default body. A store that fell back to <see cref="GetByPathAsync"/> would silently leave every
@@ -34,8 +35,9 @@ public interface ICampaignRepository
     /// the path is followed, so a link that stands inside a root is a name inside that root whatever it points at, and a path spelled through
     /// a link to a root is not spelled inside it. The deepest root wins, and when several rows name the same directory the one whose Sanctum
     /// is strictest governs it, as for <see cref="GetByContainedPathAsync"/>; a root matches by whole directory components, by every
-    /// spelling of the root itself (its own links resolved, the case of a name where file systems fold case, its Unicode normalisation
-    /// form and a trailing separator), and never by string prefix.
+    /// spelling of the root itself (its own links resolved, a trailing separator, and the case and Unicode normalisation form of a name,
+    /// which are judged per volume: a case sibling on a case-sensitive volume is a different directory and does not match, and the text
+    /// decides only where the file system cannot be asked), and never by string prefix.
     /// </summary>
     /// <remarks>
     /// <see cref="GetByContainedPathAsync"/> answers the nearest root over every form the path can be read in, which for a link that leads

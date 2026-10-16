@@ -20,8 +20,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// <item>when either side cannot be asked (the root is not on disk, or the working directory is too long for any file system), the text of
 /// both, with trailing separators dropped, in Unicode normalisation form C, compared by whole directory components and without regard to
 /// case where the platform's file systems fold case, over the spelling as given and over the symbolic-link-resolved spelling of each side.
-/// That comparison can only over-match (a case sibling on a case-sensitive volume), which is the safe direction for a Sanctum, and it is
-/// never consulted once the file system has answered.</item>
+/// That comparison errs toward containment (a case sibling on a case-sensitive volume is taken for the root), so it is used only where the
+/// file system has no answer and never once it has one;</item>
+/// <item>for a path read as it is spelled, with no link in it followed, the identity of each directory the spelling names (its last
+/// component read without following it) against the identity of the directory a root reaches. A case or normalisation fold between the
+/// text of the path and the text of a root is judged by it: the fold is dropped when the two are shown to be different directories, as a
+/// case sibling is on a case-sensitive volume, and a root whose directory is none of those the spelling names is settled by its own text
+/// without asking about its resolved spelling. The text decides alone only where one side cannot be asked: a root that is not on disk, or
+/// a prefix of the path that does not exist or is itself a link.</item>
 /// </list>
 /// A directory's physical identity is read when it is asked for, never stored: a stored copy would go stale the moment a link is repointed
 /// or a directory is replaced, and a stale answer here is a Sanctum that silently does not apply. There is no prefix predicate (a root
@@ -30,7 +36,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 /// text is compared.
 ///
 /// <para>Asking about one registered root costs one query of the file system (the root is followed to the directory it reaches), because
-/// every turn asks about every registered root and most of them are unrelated to the directory it stands in.</para>
+/// every turn asks about every registered root and most of them are unrelated to the directory it stands in. A path read as it is spelled
+/// costs one more query for each directory its own spelling names, once, and then one query per root as well; the walk of a root's own
+/// components (to find the spelling with its links resolved) is made only for a root whose directory is one of those the spelling names, or
+/// that cannot be queried because it is not on disk.</para>
 /// </remarks>
 internal sealed class CampaignRootContainment
 {
@@ -49,12 +58,15 @@ internal sealed class CampaignRootContainment
 
     private readonly Dictionary<FileHandleIdentity, int>? _identities;
 
+    private readonly SpelledAncestor[]? _spelled;
+
     private CampaignRootContainment(
         string exactKey,
         string? exactCanonicalKey,
         string logicalKey,
         string? canonicalKey,
-        Dictionary<FileHandleIdentity, int>? identities)
+        Dictionary<FileHandleIdentity, int>? identities,
+        SpelledAncestor[]? spelled)
     {
         _exactKey = exactKey;
 
@@ -65,7 +77,16 @@ internal sealed class CampaignRootContainment
         _canonicalKey = canonicalKey;
 
         _identities = identities;
+
+        _spelled = spelled;
     }
+
+    /// <summary>
+    /// A directory the spelling of a path names, <c>Text</c> being that prefix as written. <c>Identity</c> is the identity of what the last
+    /// component of the prefix is on disk, read without following it, and is <see langword="null"/> unless that is a directory: a prefix
+    /// that does not exist, a file and a link have none, so the file system has nothing to say against a text match with them.
+    /// </summary>
+    private readonly record struct SpelledAncestor(string Text, FileHandleIdentity? Identity);
 
     /// <summary>Whether this platform's file systems usually fold case, so a root and a differently cased spelling are probably one directory.</summary>
     private static bool FoldsCase => OperatingSystem.IsWindows() || OperatingSystem.IsMacOS();
@@ -76,10 +97,12 @@ internal sealed class CampaignRootContainment
 
     /// <summary>
     /// The working directory as a path the operating system can resolve, or <see langword="null"/> when it cannot be spelled as one.
-    /// <paramref name="followLinks"/> false reads the path as it is spelled instead: no link in it is followed and no identity is asked
-    /// for, so only its own text is compared, with the roots' spellings (their links resolved) but not with the path's. A link inside a root
-    /// then counts as inside it whatever it points at, and a link to a root does not. That comparison is the text one, so it can only
-    /// over-match (a case sibling on a case-sensitive volume), which is the safe direction for a Sanctum.
+    /// <paramref name="followLinks"/> false reads the path as it is spelled instead: no link in it is followed, so its own text is what is
+    /// compared, with the roots' spellings (their links resolved) but not with the path's. A link inside a root then counts as inside it
+    /// whatever it points at, and a link to a root does not. A case or normalisation fold between that text and a root is judged per
+    /// volume, because a fold the file system does not make would name a case sibling as the root, and a case sibling that outranks the
+    /// real Campaign judges a file it does not own: the fold stands only while the file system cannot show the two to be different
+    /// directories (the root is not on disk, or the prefix does not exist or is a link).
     /// </summary>
     internal static CampaignRootContainment? TryCreate(string path, bool followLinks = true)
     {
@@ -104,7 +127,13 @@ internal sealed class CampaignRootContainment
             || full.Length > MaxExistingPathCharacters
             || !WorkspacePathPolicy.TryCanonicalize(full, out string? canonical, out _))
         {
-            return new CampaignRootContainment(exactKey, exactCanonicalKey: null, logicalKey, canonicalKey: null, identities: null);
+            return new CampaignRootContainment(
+                exactKey,
+                exactCanonicalKey: null,
+                logicalKey,
+                canonicalKey: null,
+                identities: null,
+                spelled: followLinks ? null : ReadSpelledAncestors(full));
         }
 
         string exactCanonicalKey = ExactKey(canonical);
@@ -116,7 +145,8 @@ internal sealed class CampaignRootContainment
             string.Equals(exactCanonicalKey, exactKey, StringComparison.Ordinal) ? null : exactCanonicalKey,
             logicalKey,
             string.Equals(canonicalKey, logicalKey, StringComparison.Ordinal) ? null : canonicalKey,
-            ReadAncestorIdentities(canonical));
+            ReadAncestorIdentities(canonical),
+            spelled: null);
     }
 
     /// <summary>A path as written, with trailing separators dropped: two paths with the same exact key are the same text.</summary>
@@ -259,12 +289,33 @@ internal sealed class CampaignRootContainment
         return null;
     }
 
-    /// <summary>The comparison of last resort, used only while the file system cannot say whether two spellings are one directory.</summary>
+    /// <summary>
+    /// The comparison of last resort, used while the file system cannot say whether two spellings are one directory. For a path read as it
+    /// is spelled it still asks the file system what it can: a fold-only match is dropped when the prefix and the root are shown to be two
+    /// directories, and a root whose directory is none of the spelling's own is not walked.
+    /// </summary>
     private int? FoldedTextDepth(string registeredRoot)
     {
         string rootKey = TextKey(registeredRoot);
 
-        int? depth = Min(TextDepth(_logicalKey, rootKey, Comparison), TextDepth(_canonicalKey, rootKey, Comparison));
+        // One following query for the root. A spelled path is the only one with directories to compare it with.
+        FileHandleIdentity? rootIdentity = _spelled is not null && TryReadDirectoryIdentity(registeredRoot, out FileHandleIdentity reached)
+            ? reached
+            : null;
+
+        int? depth = Judged(
+            Min(TextDepth(_logicalKey, rootKey, Comparison), TextDepth(_canonicalKey, rootKey, Comparison)),
+            ExactKey(registeredRoot),
+            rootIdentity);
+
+        // The spelling of the root with its links resolved can place the path below it only if the root's directory is one the spelling
+        // names: a spelled ancestor that has the root's resolved spelling has only real directories along it, so reading it without
+        // following the last component reaches the root's own directory. Any other root is settled by its own text, without the walk of
+        // each component of it that canonicalising the root costs.
+        if (rootIdentity is { } identity && !Names(identity))
+        {
+            return depth;
+        }
 
         if (registeredRoot.Length > MaxExistingPathCharacters
             || !Path.IsPathFullyQualified(registeredRoot)
@@ -282,9 +333,48 @@ internal sealed class CampaignRootContainment
 
         return Min(
             depth,
-            Min(
-                TextDepth(_logicalKey, rootCanonicalKey, Comparison),
-                TextDepth(_canonicalKey, rootCanonicalKey, Comparison)));
+            Judged(
+                Min(
+                    TextDepth(_logicalKey, rootCanonicalKey, Comparison),
+                    TextDepth(_canonicalKey, rootCanonicalKey, Comparison)),
+                ExactKey(rootCanonical),
+                rootIdentity));
+    }
+
+    /// <summary>
+    /// <paramref name="depth"/> unless the file system shows it to be a fold the volume does not make. The text of the spelled path
+    /// <paramref name="depth"/> components up equal to <paramref name="rootText"/> is the same text and stands; text that equals it only
+    /// by case or normalisation names the same directory on a volume that folds it and a different one on a volume that does not, and the
+    /// answer is the file system's whenever both sides can be asked: the prefix read without following its last component is a directory
+    /// of another identity than the one the root reaches. A prefix that does not exist or is a link, a root that is not on disk, and a
+    /// path that is not read as it is spelled have nothing to compare, so the text decides.
+    /// </summary>
+    private int? Judged(int? depth, string rootText, FileHandleIdentity? rootIdentity)
+    {
+        if (depth is not { } components || rootIdentity is not { } root || _spelled is not { } spelled || components >= spelled.Length)
+        {
+            return depth;
+        }
+
+        SpelledAncestor prefix = spelled[components];
+
+        return string.Equals(prefix.Text, rootText, StringComparison.Ordinal) || prefix.Identity is not { } identity || identity == root
+            ? depth
+            : null;
+    }
+
+    /// <summary>Whether <paramref name="identity"/> is that of a directory the spelling of the path names (see <see cref="SpelledAncestor"/>).</summary>
+    private bool Names(FileHandleIdentity identity)
+    {
+        foreach (SpelledAncestor ancestor in _spelled!)
+        {
+            if (ancestor.Identity == identity)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -344,6 +434,42 @@ internal sealed class CampaignRootContainment
         }
 
         return identities;
+    }
+
+    /// <summary>
+    /// The path and each of its ancestors as it is spelled, nearest first (so an entry's index is how many components it is above the
+    /// path), each with the identity of what its last component is on disk when that is a directory. The query reads that component
+    /// without following it and so never leaves the spelling; a longer path than any file system can hold names nothing on disk, so it
+    /// has none.
+    /// </summary>
+    private static SpelledAncestor[]? ReadSpelledAncestors(string full)
+    {
+        if (full.Length > MaxExistingPathCharacters)
+        {
+            return null;
+        }
+
+        List<SpelledAncestor> ancestors = [];
+
+        string? cursor = Path.TrimEndingDirectorySeparator(full);
+
+        while (cursor is not null)
+        {
+            FileHandleIdentity? identity = FileHandleIdentityInterop.TryGetPathMetadataNoFollowIgnoringTestSeam(cursor, out FileHandleMetadata metadata)
+                && metadata.Kind == FileSystemObjectKind.Directory
+                    ? metadata.Identity
+                    : null;
+
+            ancestors.Add(new SpelledAncestor(ExactKey(cursor), identity));
+
+            string? parent = Path.GetDirectoryName(cursor);
+
+            cursor = string.IsNullOrEmpty(parent) || string.Equals(parent, cursor, StringComparison.Ordinal)
+                ? null
+                : parent;
+        }
+
+        return [.. ancestors];
     }
 
     /// <summary>How many whole components <paramref name="subject"/> has below <paramref name="root"/>, or null when it is not below it.</summary>
