@@ -25465,6 +25465,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("BackupCommands", "Create")]
     [InlineData("BackupRestoreService", "RestoreAsync")]
     [InlineData("InstallationResetService", "ApplyFullUnderMaintenanceLockAsync")]
+    [InlineData("InstallationResetService", "ApplyFreshUnderMaintenanceLockAsync")]
+    [InlineData("InstallationResetService", "ApplyUnderMaintenanceLockAsync")]
+    [InlineData("StoppedHostFactoryErasure", "ApplyAsync")]
     [InlineData("GrimoireOfflineTransitionStartupRecovery", "RecoverBeforeBootstrapAsync")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionNonHostedGraphsRetainTheirExactLifetimes(

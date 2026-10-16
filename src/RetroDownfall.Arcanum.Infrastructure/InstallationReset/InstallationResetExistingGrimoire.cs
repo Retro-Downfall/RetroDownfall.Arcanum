@@ -35,6 +35,11 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+/// <param name="covenantOperationGate">
+/// The process gate the global plan leases its installation read from. Injected rather than looked up,
+/// so that the origin of the gate is the container's own registration and not a provider this service
+/// holds. Only the global plan passes it on; every other path builds its retention service with none.
+/// </param>
 /// <param name="secretStoreProvider">
 /// Resolved at first use on purpose. Creating the secret store creates the Data Protection key
 /// ring, and the planning and lockless-refusal paths have to work on an installation that has no
@@ -48,7 +53,8 @@ internal sealed class InstallationResetExistingGrimoire(
     ILoggerFactory loggerFactory,
     IGrimoireOrdinaryConnectionFactory ordinaryConnections,
     IGrimoireDbPassphraseSource passphraseSource,
-    IStoppedHostGrimoireConnectionFactory stoppedHostConnections)
+    IStoppedHostGrimoireConnectionFactory stoppedHostConnections,
+    ICovenantOperationGate covenantOperationGate)
     : IInstallationResetDataService,
       IInstallationResetStoppedHostDataService,
       IInstallationResetWorkspaceResolver,
@@ -189,7 +195,7 @@ internal sealed class InstallationResetExistingGrimoire(
                 return Result<DataRetentionPlan>.Success(admitted.Value.Plan);
             },
             cancellationToken,
-            covenantGate: secretStoreProvider.GetRequiredService<ICovenantOperationGate>())
+            measureCovenant: true)
             .ConfigureAwait(false);
     }
 
@@ -483,7 +489,7 @@ internal sealed class InstallationResetExistingGrimoire(
             Task<Result<T>>> action,
         CancellationToken cancellationToken,
         bool actionMayChangeState = false,
-        ICovenantOperationGate? covenantGate = null)
+        bool measureCovenant = false)
     {
         ArgumentNullException.ThrowIfNull(issuer);
 
@@ -562,7 +568,7 @@ internal sealed class InstallationResetExistingGrimoire(
                 new CovenantLabeledArtifactGuard(
                     new ArtifactSensitivityLedger(covenantConnections),
                     loggerFactory.CreateLogger<CovenantLabeledArtifactGuard>()),
-                covenantGate: covenantGate);
+                covenantGate: measureCovenant ? covenantOperationGate : null);
 
             actionStarted = true;
 

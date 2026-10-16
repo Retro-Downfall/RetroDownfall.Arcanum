@@ -43,6 +43,21 @@ internal interface IInstallationResetApplyBoundary
         bool onlineCompletionDurable,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Resumes the unfinished reset whose authenticated record names <paramref name="resumedOperationId"/>.
+    /// </summary>
+    /// <remarks>
+    /// The identity is what lets a resume adopt the durable client-mutation blocker an earlier process
+    /// published for the same reset: a blocker is adopted by the operation that owns the record, and a
+    /// reset the stopped host began has no host handoff to name it.
+    /// </remarks>
+    Task<Result<InstallationResetResult>> ApplyAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetHostHandoff? hostHandoff,
+        bool onlineCompletionDurable,
+        Guid resumedOperationId,
+        CancellationToken cancellationToken);
+
     Task<Result<InstallationResetResult>> ApplyFreshAsync(
         InstallationResetPlanRequest request,
         StoppedHostInstallationResetPlan confirmedPlan,
@@ -236,6 +251,7 @@ internal sealed class InstallationFactoryResetCommand(
                         applyRequest,
                         active.HostHandoff,
                         active.OnlineDataCompletionDurable,
+                        active.OperationId,
                         cancellationToken)
                     .ConfigureAwait(false)
                 : await applyBoundary

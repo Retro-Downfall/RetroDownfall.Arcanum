@@ -77,7 +77,7 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// record made (§10.20.3).</para>
 /// </remarks>
 [Collection("ProcessEnvironment")]
-public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
+public sealed partial class InstallationResetStoppedHostCovenantTests : IDisposable
 {
     private const string MasterApiKey = "stopped-host-reset-master-api-key";
 
@@ -89,6 +89,8 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
     private readonly ArcanumTestHomeScope _home = new("arcanum-reset-covenant");
 
     private readonly InMemoryOsCredentialStore _credentials = new();
+
+    private readonly StoppedHostResetTestSupport.RecordingPreDataMutation _mutations = new();
 
     public InstallationResetStoppedHostCovenantTests(GrimoireFixture fixture)
     {
@@ -286,6 +288,8 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         await InstallPriorGrimoireAsync(covenantFeature);
 
+        await StoppedHostResetTestSupport.UseWriteAheadLoggingAsync(_fixture);
+
         Dictionary<string, string> before = CaptureStableFiles();
 
         CliTestResult result = await RunAsync(
@@ -313,6 +317,8 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         await RegisterCampaignAtCurrentDirectoryAsync();
 
+        await StoppedHostResetTestSupport.UseWriteAheadLoggingAsync(_fixture);
+
         Dictionary<string, string> before = CaptureStableFiles();
 
         CliTestResult result = await RunAsync(covenantFeature, AllScopeArguments(apply: false));
@@ -337,6 +343,8 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
         await LabeledSagaMemorySeed.SeedAsync(_fixture, memoryId);
 
         _ = await StoppedHostResetTestSupport.SeedOrdinarySessionAsync(_fixture);
+
+        await StoppedHostResetTestSupport.UseWriteAheadLoggingAsync(_fixture);
 
         ErasureObservation observation = new(_credentials);
 
@@ -374,6 +382,8 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         _ = await StoppedHostResetTestSupport.SeedOrdinarySessionAsync(_fixture);
 
+        await StoppedHostResetTestSupport.UseWriteAheadLoggingAsync(_fixture);
+
         ErasureObservation observation = new(_credentials);
 
         CliTestResult result = await RunAsync(
@@ -402,6 +412,8 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
             GrimoireFixture.SqlCipherUnavailableReason);
 
         await InstallPriorGrimoireAsync(covenantFeature);
+
+        await StoppedHostResetTestSupport.UseWriteAheadLoggingAsync(_fixture);
 
         Dictionary<string, string> before = CaptureStableFiles();
 
@@ -450,7 +462,9 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
             result.Output,
             StringComparison.Ordinal);
 
-        Assert.Equal(before, CaptureStableFiles());
+        AssertUnchanged(before);
+
+        AssertNoSidecars();
 
         AssertNoActiveResetOrJournal();
     }
@@ -508,6 +522,22 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
         Assert.NotEqual(Guid.Empty, memoryId);
     }
 
+    /// <summary>
+    /// A stopped-host read lane leaves nothing beside a write-ahead-logged Grimoire: a read-only
+    /// connection creates its log and shared-memory sidecars and cannot clean them up, so the lease
+    /// that opened it removes what it made.
+    /// </summary>
+    private static void AssertNoSidecars()
+    {
+        Assert.False(
+            File.Exists(ArcanumPaths.GrimoireDatabaseFile + "-wal"),
+            "The write-ahead log was left beside the Grimoire.");
+
+        Assert.False(
+            File.Exists(ArcanumPaths.GrimoireDatabaseFile + "-shm"),
+            "The shared-memory index was left beside the Grimoire.");
+    }
+
     private void AssertNoActiveResetOrJournal()
     {
         if (Directory.Exists(ArcanumPaths.GrimoireDirectory))
@@ -518,6 +548,10 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
                 SearchOption.TopDirectoryOnly));
         }
     }
+
+    private static string[] GlobalArguments(bool apply) => apply
+        ? ["--json", "--yes", "data", "factory-reset", "--global", "--apply", "--force"]
+        : ["--json", "data", "factory-reset", "--global", "--dry-run"];
 
     private static string[] AllScopeArguments(bool apply) => apply
         ? ["--json", "--yes", "data", "factory-reset", "--all", "--apply", "--force"]
@@ -573,12 +607,14 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         Assert.DoesNotContain("planId", result.Output, StringComparison.Ordinal);
 
-        Assert.Equal(before, CaptureStableFiles());
+        AssertUnchanged(before);
+
+        AssertNoSidecars();
 
         AssertNoActiveResetOrJournal();
     }
 
-    private async Task InstallPriorGrimoireAsync(bool covenantFeature)
+    private async Task InstallPriorGrimoireAsync(bool covenantFeature, bool saveMasterKey = true)
     {
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
 
@@ -597,9 +633,12 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
             .GetRequiredService<DataProtectionSecretStore>()
             .SaveGrimoireEncryptionSecretAsync(GrimoireFixture.TestGrimoireSecret);
 
-        await seeding
-            .GetRequiredService<ISecretStore>()
-            .SaveApiKeyAsync(MasterApiKey);
+        if (saveMasterKey)
+        {
+            await seeding
+                .GetRequiredService<ISecretStore>()
+                .SaveApiKeyAsync(MasterApiKey);
+        }
     }
 
     private Task<CliTestResult> RunAsync(bool covenantFeature, params string[] args) =>
@@ -636,8 +675,9 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
 
         services.RemoveAll<IInstallationResetPreDataMutation>();
 
-        services.AddSingleton<IInstallationResetPreDataMutation>(
-            NoopInstallationResetPreDataMutation.Instance);
+        services.AddSingleton<IInstallationResetPreDataMutation>(_mutations);
+
+        StoppedHostResetTestSupport.UseTheProductionActiveResetRead(services, _credentials);
 
         return services;
     }
@@ -670,6 +710,33 @@ public sealed class InstallationResetStoppedHostCovenantTests : IDisposable
                 static path => path,
                 static path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))),
                 StringComparer.Ordinal);
+
+    /// <summary>
+    /// Requires every file under the profile to be exactly as it was, and names the ones that are not.
+    /// </summary>
+    private void AssertUnchanged(Dictionary<string, string> before)
+    {
+        Dictionary<string, string> after = CaptureStableFiles();
+
+        string[] added = [.. after.Keys.Except(before.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+
+        string[] removed = [.. before.Keys.Except(after.Keys, StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+
+        string[] changed =
+        [
+            .. before.Keys
+                .Intersect(after.Keys, StringComparer.Ordinal)
+                .Where(path => before[path] != after[path])
+                .Order(StringComparer.Ordinal),
+        ];
+
+        string Describe(string[] paths) =>
+            string.Join(", ", paths.Select(path => Path.GetRelativePath(_home.Root, path)));
+
+        Assert.True(
+            added.Length == 0 && removed.Length == 0 && changed.Length == 0,
+            $"The installation changed. Added: [{Describe(added)}]. Removed: [{Describe(removed)}]. Changed: [{Describe(changed)}].");
+    }
 
     private async Task<int> CountRowsAsync(string table)
     {

@@ -544,7 +544,16 @@ internal sealed class StoppedHostFactoryErasure(
             adopted = adoption.Value;
         }
 
-        if (adopted is null || adopted.ExpectedOperation.OperationId != nestedOperationId)
+        // The record names the identity the erasure was requested under, which the ledger keeps
+        // distinct from the identity of the row it created, so the adopted owner is compared with the
+        // row that identity resolves to and never with the identity itself.
+        LongRunningOperationRequestIdentityMatch? claimed = await operations
+            .FindByRequestedOperationIdAsync(nestedOperationId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (adopted is null
+            || claimed is null
+            || adopted.ExpectedOperation.OperationId != claimed.Operation.Id)
         {
             return Result.Failure(new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
@@ -621,8 +630,8 @@ internal sealed class StoppedHostFactoryErasure(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(
-                exception,
-                "The stopped-host erasure could not close its context connection.");
+                "The stopped-host erasure could not close its context connection ({FailureType}).",
+                exception.GetType());
         }
 
         try
@@ -632,8 +641,8 @@ internal sealed class StoppedHostFactoryErasure(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(
-                exception,
-                "The stopped-host erasure could not drain its ordinary handles.");
+                "The stopped-host erasure could not drain its ordinary handles ({FailureType}).",
+                exception.GetType());
         }
     }
 

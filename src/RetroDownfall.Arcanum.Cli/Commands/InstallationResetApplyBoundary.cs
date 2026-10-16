@@ -267,6 +267,20 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         InstallationResetHostHandoff? hostHandoff,
         bool onlineCompletionDurable,
         CancellationToken cancellationToken)
+        => await ApplyAsync(
+                request,
+                hostHandoff,
+                onlineCompletionDurable,
+                resumedOperationId: Guid.Empty,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<Result<InstallationResetResult>> ApplyAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetHostHandoff? hostHandoff,
+        bool onlineCompletionDurable,
+        Guid resumedOperationId,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -284,6 +298,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                         request,
                         handoff: null,
                         confirmedPlan: null,
+                        resumedOperationId,
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -308,6 +323,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                     request,
                     handoff,
                     confirmedPlan: null,
+                    resumedOperationId,
                     cancellationToken).ConfigureAwait(false);
         }
 
@@ -315,6 +331,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 request,
                 handoff: null,
                 confirmedPlan: null,
+                resumedOperationId,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -347,6 +364,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
                 applyRequest,
                 handoff: null,
                 confirmedPlan: confirmedPlan,
+                resumedOperationId: Guid.Empty,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -391,6 +409,7 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
         InstallationResetApplyRequest request,
         InstallationResetHostHandoff? handoff,
         StoppedHostInstallationResetPlan? confirmedPlan,
+        Guid resumedOperationId,
         CancellationToken cancellationToken)
     {
         Result<bool> shutdown = await _quitServer(cancellationToken)
@@ -450,7 +469,8 @@ internal sealed class InstallationResetApplyBoundary : IInstallationResetApplyBo
             await _acquireClientCoordination(
                     request.Request.Scope,
                     request.ExpectedPlanId,
-                    handoff?.RequestedOperationId,
+                    handoff?.RequestedOperationId
+                        ?? (resumedOperationId == Guid.Empty ? null : resumedOperationId),
                     cancellationToken)
                 .ConfigureAwait(false);
 

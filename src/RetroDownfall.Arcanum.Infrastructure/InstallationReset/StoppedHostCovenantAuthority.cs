@@ -67,9 +67,9 @@ internal sealed class StoppedHostCovenantAuthority(
         + "follow the \"Local Grimoire reinstall\" procedure in docs/Arcanum.Engineering.md.";
 
     internal const string MasterKeyRemedy =
-        "The master API key could not be found in the operating-system credential store, so the Covenant "
-        + "inventory cannot be measured. Restore the key (`arcanum key`) or start the host once to recover "
-        + "it, and retry.";
+        "The master API key is not usable, so the Covenant inventory cannot be measured. The Covenant "
+        + "authority is bound to the original key: check `arcanum key list`, restore that key with "
+        + "`arcanum key set`, and retry.";
 
     internal const string StateRemedy =
         "The Grimoire holds no Covenant state row, so the Covenant inventory cannot be measured. Start the "
@@ -207,11 +207,13 @@ internal sealed class StoppedHostCovenantAuthority(
                 "The Grimoire holds no Covenant state row. " + StateRemedy));
         }
 
-        string? masterApiKey;
+        // The peek, never the ordinary read: the ordinary read of a credential may migrate or repair
+        // what it finds, and a dry-run has to leave the installation exactly as it was.
+        SecretStoreReadResult keyRead;
 
         try
         {
-            masterApiKey = await secrets.GetApiKeyAsync().ConfigureAwait(false);
+            keyRead = await secrets.PeekApiKeyReadResultAsync().ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -221,12 +223,23 @@ internal sealed class StoppedHostCovenantAuthority(
                 + OutageRemedy));
         }
 
-        if (string.IsNullOrWhiteSpace(masterApiKey))
+        if (keyRead.Status is SecretStoreReadStatus.Unreadable)
+        {
+            return Result.Failure(new Error(
+                ErrorCodes.Covenant.Unavailable,
+                "The master API key could not be read from the operating-system credential store. "
+                + OutageRemedy));
+        }
+
+        if (keyRead.Status is not SecretStoreReadStatus.Ok
+            || string.IsNullOrWhiteSpace(keyRead.Value))
         {
             return Result.Failure(new Error(
                 ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                 MasterKeyRemedy));
         }
+
+        string masterApiKey = keyRead.Value;
 
         if (!await CovenantAuthorityStartupReconciler.ReconcileAsync(
                 connection,

@@ -46,6 +46,12 @@ internal interface IInstallationResetDeferredServices
     /// null. A stopped-host reset lends the lock to it through an issuer-minted loan.
     /// </summary>
     InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() => null;
+
+    /// <summary>
+    /// The store of the transition-journal slot, or null. The resume reads the slot itself to tell a
+    /// claim that has no journal from a journal the pair read has to finish.
+    /// </summary>
+    GrimoireOfflineTransitionLifecycleStore? ResolveTransitionJournal() => null;
 }
 
 internal sealed class InstallationResetDeferredServices(IServiceProvider services)
@@ -65,6 +71,9 @@ internal sealed class InstallationResetDeferredServices(IServiceProvider service
 
     public InstallationResetMaintenanceLockAccessor? ResolveLockAccessor() =>
         services.GetService<InstallationResetMaintenanceLockAccessor>();
+
+    public GrimoireOfflineTransitionLifecycleStore? ResolveTransitionJournal() =>
+        services.GetService<GrimoireOfflineTransitionLifecycleStore>();
 }
 
 internal interface IInstallationResetLockedService
@@ -541,19 +550,19 @@ internal sealed class InstallationResetService(
             BindingId = bindingId,
         };
 
-        // What a stopped host cannot drain becomes a blocker, here, before any effect. Today these
-        // surface only in the nested erasure, after the daemon is uninstalled and the claim is durable,
-        // where every refusal keeps the record and the host then refuses to start. A running host
-        // settles each of them on the way up (it reconciles stale durable operations and releases
-        // budget reservations, inference runs, idempotency leases and batches it finds left over), so
-        // the remedy is to give it that chance.
+        // What a stopped host cannot drain becomes a blocker, here, before any effect. Without this
+        // they would surface only in the nested erasure, after the daemon is uninstalled and the claim
+        // is durable, where every refusal keeps the record and the host then refuses to start. Each
+        // carries the remedy that is true for its kind: a host start recovers durable operations and
+        // stranded batches, settles what an interrupted batch or subagent left, and nothing else, and
+        // an idempotency lease is time-bounded.
         InstallationResetIssueSummary[] undrainable = stoppedHostGlobal && canonical is not null
             ?
             [
                 .. canonical.Conflicts.Select(static conflict =>
                     new InstallationResetIssueSummary(
                         conflict.Code,
-                        conflict.Message + " " + StartHostOnceRemedy,
+                        conflict.Message + " " + RemedyFor(conflict.Code),
                         conflict.ResourceId)),
                 .. await ReadStandaloneTransitionBlockersAsync(issuer!, cancellationToken)
                     .ConfigureAwait(false),
@@ -651,6 +660,23 @@ internal sealed class InstallationResetService(
 
     internal const string StartHostOnceRemedy =
         "Start the host once with `arcanum serve`, stop it with `arcanum serve quit`, and retry.";
+
+    internal const string InterruptedWorkRemedy =
+        "Start the host once with `arcanum serve`, stop it with `arcanum serve quit`, and retry; that settles "
+        + "what an interrupted batch or subagent left behind. A record left by an interrupted chat turn is "
+        + "not settled by a host start, and then only the \"Local Grimoire reinstall\" procedure in "
+        + "docs/Arcanum.Engineering.md remains.";
+
+    internal const string LeaseExpiryRemedy =
+        "The lease is time-bounded and starting the host does not shorten it. Retry once it has expired.";
+
+    /// <summary>The remedy that is true for a conflict kind a stopped host cannot drain.</summary>
+    internal static string RemedyFor(string conflictCode) => conflictCode switch
+    {
+        "Data.IdempotencyLeaseActive" => LeaseExpiryRemedy,
+        "Data.InferenceRunActive" or "Data.BudgetReservationOutstanding" => InterruptedWorkRemedy,
+        _ => StartHostOnceRemedy,
+    };
 
     internal const string ClaimRetiredNote =
         "Nothing was erased and the reset record was retired, but this attempt had already removed the "
@@ -1743,6 +1769,16 @@ internal sealed class InstallationResetService(
             return Result.Success();
         }
 
+        // A claim whose journal slot is empty is the one shape the pair read refuses for good, because
+        // it cannot tell a transition that began from one that never did. This process can: the
+        // operation ledger names the claimed identity exactly, and the facade that runs the data step
+        // reads it before it does anything. So there is no journal to finish first, and the claim goes
+        // to the facade as it is.
+        if (await ClaimHasNoJournalAsync(heldInstallationLock, cancellationToken).ConfigureAwait(false))
+        {
+            return Result.Success();
+        }
+
         Result<InstallationResetStartupRecoveryState> pair = await pairRecovery
             .RecoverBeforeBootstrapAsync(heldInstallationLock, cancellationToken)
             .ConfigureAwait(false);
@@ -1793,6 +1829,43 @@ internal sealed class InstallationResetService(
         return resumed.IsSuccess
             ? Result.Success()
             : Result.Failure(resumed.Error);
+    }
+
+    /// <summary>
+    /// Whether the authenticated record holds a nested claim that has not reported and the journal
+    /// slot is empty.
+    /// </summary>
+    /// <remarks>
+    /// Either read that cannot be made answers no, and the pair read that follows refuses in its own
+    /// words. Only an authenticated record counts: anything else is not this process's to interpret.
+    /// </remarks>
+    private async Task<bool> ClaimHasNoJournalAsync(
+        ArcanumMaintenanceLock heldInstallationLock,
+        CancellationToken cancellationToken)
+    {
+        if (deferredServices?.ResolveTransitionJournal() is not { } journal)
+        {
+            return false;
+        }
+
+        Result<InstallationResetActiveRecoveryState> record = await activeStore
+            .RecoverAsync(heldInstallationLock, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (record.IsFailure
+            || record.Value.Outcome is not InstallationResetActiveRecoveryOutcome.AuthenticatedV2
+            || record.Value.Publication?.Payload.NestedTransitionReceipt
+                is not { Phase: InstallationResetNestedTransitionPhase.Claimed })
+        {
+            return false;
+        }
+
+        Result<GrimoireOfflineTransitionTypedRecoveryState> slot = await journal
+            .RecoverAsync(heldInstallationLock, activeStore.GuardedRoot, cancellationToken)
+            .ConfigureAwait(false);
+
+        return slot.IsSuccess
+            && slot.Value.Outcome is not GrimoireOfflineTransitionTypedRecoveryOutcome.Authenticated;
     }
 
     /// <summary>

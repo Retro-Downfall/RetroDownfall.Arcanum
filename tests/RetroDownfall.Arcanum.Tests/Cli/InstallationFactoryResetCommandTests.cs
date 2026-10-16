@@ -940,10 +940,67 @@ public sealed class InstallationFactoryResetCommandTests
 
         Assert.Empty(boundary.Requests);
 
+        Assert.Contains(
+            ErrorCodes.Data.InventoryUnavailable + ": The local Covenant inventory is unavailable.",
+            result.Error,
+            StringComparison.Ordinal);
+
         Assert.DoesNotContain(
             CovenantExternalRetentionDisclosure.DestructiveOperationText,
             result.Error,
             StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Whatever the planner refused with is what the operator is told, by its own code and its own
+    /// words. A refusal for one cause must never be reported as another: the missing-inventory sentence
+    /// is the backstop's alone.
+    /// </summary>
+    [Theory]
+    [InlineData(false, "Covenant.OperatorAuthorityUnavailable", "The master API key is not usable.")]
+    [InlineData(false, "Covenant.IntegrityFailure", "The Covenant catalog could not be proved intact.")]
+    [InlineData(false, "Covenant.Unavailable", "The master API key could not be read.")]
+    [InlineData(false, "Covenant.HostToolsTransitionRequired", "The host-process-tools state is not a settled clean pair.")]
+    [InlineData(false, "Data.InventoryUnavailable", "The Grimoire holds no Covenant state row.")]
+    [InlineData(true, "Covenant.OperatorAuthorityUnavailable", "The master API key is not usable.")]
+    [InlineData(true, "Covenant.IntegrityFailure", "The Covenant catalog could not be proved intact.")]
+    [InlineData(true, "Covenant.Unavailable", "The master API key could not be read.")]
+    [InlineData(true, "Covenant.HostToolsTransitionRequired", "The host-process-tools state is not a settled clean pair.")]
+    [InlineData(true, "Data.InventoryUnavailable", "The Grimoire holds no Covenant state row.")]
+    public void A_planner_refusal_is_reported_by_its_own_code_and_words_and_never_as_a_missing_inventory(
+        bool apply,
+        string code,
+        string message)
+    {
+        InstallationResetPlan plan = CreatePlan(InstallationResetScope.Global);
+
+        FakeInstallationResetService service = CreateSuccessfulService(plan);
+
+        RecordingApplyBoundary boundary = new(service);
+
+        CliTestResult result = RunCommand(
+            service,
+            apply
+                ? ["--json", "--yes", "data", "factory-reset", "--global", "--apply", "--force"]
+                : ["--json", "data", "factory-reset", "--global", "--dry-run"],
+            applyBoundary: boundary,
+            stoppedHostPlanner: new RecordingStoppedHostPlanner(
+                Result<StoppedHostInstallationResetPlan>.Failure(new Error(code, message))));
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        using JsonDocument error = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(code + ": " + message, error.RootElement.GetProperty("error").GetString());
+
+        Assert.DoesNotContain(
+            "The local Covenant inventory is unavailable.",
+            result.Output + result.Error,
+            StringComparison.Ordinal);
+
+        Assert.Empty(boundary.FreshCalls);
+
+        Assert.Empty(boundary.Requests);
     }
 
     [Fact]
@@ -975,10 +1032,9 @@ public sealed class InstallationFactoryResetCommandTests
 
         using JsonDocument error = JsonDocument.Parse(result.Output);
 
-        Assert.Contains(
-            ErrorCodes.Data.InventoryUnavailable,
-            error.RootElement.GetProperty("error").GetString(),
-            StringComparison.Ordinal);
+        Assert.Equal(
+            ErrorCodes.Data.InventoryUnavailable + ": The local Covenant inventory is unavailable.",
+            error.RootElement.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -1643,6 +1699,22 @@ public sealed class InstallationFactoryResetCommandTests
             CancellationToken cancellationToken)
         {
             Requests.Add(request);
+
+            return service.ApplyAsync(request, cancellationToken);
+        }
+
+        public List<Guid> ResumedOperationIds { get; } = [];
+
+        public Task<Result<InstallationResetResult>> ApplyAsync(
+            InstallationResetApplyRequest request,
+            InstallationResetHostHandoff? hostHandoff,
+            bool onlineCompletionDurable,
+            Guid resumedOperationId,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+
+            ResumedOperationIds.Add(resumedOperationId);
 
             return service.ApplyAsync(request, cancellationToken);
         }

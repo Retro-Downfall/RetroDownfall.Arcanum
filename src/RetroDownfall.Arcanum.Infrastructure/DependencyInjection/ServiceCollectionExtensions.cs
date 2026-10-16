@@ -584,7 +584,8 @@ public static class ServiceCollectionExtensions
                     ?? LoggerFactory.Create(static _ => { }),
                 provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>()));
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>(),
+                provider.GetRequiredService<ICovenantOperationGate>()));
 
         services.TryAddScoped<IInstallationResetDataService>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
