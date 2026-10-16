@@ -22,12 +22,12 @@ public sealed class LongRestPackedGroupParityTests
 
         for (int round = 0; round < 25; round++)
         {
-            LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, LongRestPackingData.Content(random, random.Next(1, budget / 2)));
+            LongRestSourceLeaf anchor = LongRestPackingData.Leaf(0, LongRestPackingData.Content(random, random.Next(1, budget / 2)), 0);
 
             ImmutableArray<LongRestSourceLeaf> neighbors = [.. Enumerable.Range(1, random.Next(1, 33))
-                .Select(index => LongRestPackingData.Leaf(index, LongRestPackingData.Content(random, random.Next(1, Math.Max(2, budget / (round % 5 + 1))))))];
+                .Select(index => LongRestPackingData.Leaf(index, LongRestPackingData.Content(random, random.Next(1, Math.Max(2, budget / (round % 5 + 1)))), 0))];
 
-            foreach (ImmutableArray<LongRestSourceLeaf> pack in LongRestGroupPacker.Pack(anchor, neighbors, budget).Value.Packs)
+            foreach (ImmutableArray<LongRestSourceLeaf> pack in LongRestGroupPacker.Pack(anchor, neighbors, budget, 920).Value.Packs)
             {
                 Result<LongRestProviderPayload> payload = LongRestPackingData.AdjudicationPayload(pack, budget);
 

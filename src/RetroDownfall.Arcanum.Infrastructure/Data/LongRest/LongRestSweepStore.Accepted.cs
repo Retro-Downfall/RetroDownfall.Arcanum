@@ -165,6 +165,15 @@ internal sealed partial class LongRestSweepStore
 
         if (decision.Decision.Kind != LongRestAdjudicationKind.NoChange)
         {
+            // The Fold Check: whatever the discovery, the packing and the model said, nothing is applied unless every pair of the unit is
+            // byte-identical or clears the floor the unit was queued under, and an equivalence does not join different numbers. It is proved here,
+            // at the one seam that suppresses memories, from the leaves just read; a failure can only be a defect or tampering, so it fails
+            // closed with no receipt and no suppression.
+            if (!LongRestPairing.FoldCheck(current.Inputs, decision.Decision.Kind, current.Identity.PairingFloorPermille))
+            {
+                throw new InvalidDataException();
+            }
+
             LongRestRequest request = new(decision.Decision.Kind == LongRestAdjudicationKind.EquivalentObservations
                 ? LongRestTransformationKind.EquivalentObservations : LongRestTransformationKind.Supersession,
                 current.Inputs.Select(leaf => leaf.Target).ToArray(), decision.Decision.SurvivorVersionId);

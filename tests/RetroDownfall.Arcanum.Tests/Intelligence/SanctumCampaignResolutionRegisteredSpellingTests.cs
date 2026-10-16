@@ -17,8 +17,8 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// root identity, and the real Campaign table. The Command Center and <c>arcanum run</c> send the physical working directory the operating
 /// system reports, and the operator registered the root under whatever spelling they typed.
 /// </summary>
-[Collection("Grimoire")]
-public sealed class SanctumCampaignResolutionRegisteredSpellingTests : IAsyncLifetime
+[Collection("WorkspacePathPolicy")]
+public sealed class SanctumCampaignResolutionRegisteredSpellingTests : IClassFixture<GrimoireFixture>, IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 

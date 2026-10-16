@@ -350,8 +350,8 @@ public sealed partial class LongRestMaintenanceTests
 
             f.Handler.InsideSend = () =>
             {
-                f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                    ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Summary " + ++summaries + "\"}";
+                f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                    ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Summary " + ++summaries + "\"}";
 
                 return Task.CompletedTask;
             };

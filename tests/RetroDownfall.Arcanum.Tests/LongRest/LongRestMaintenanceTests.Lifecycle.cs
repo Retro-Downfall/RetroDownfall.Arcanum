@@ -265,7 +265,7 @@ public sealed partial class LongRestMaintenanceTests
                 LongRestProviderPayload payload = f.Payloads[^1];
 
                 f.Handler.ChatText = payload.Kind == LongRestProviderPayloadKind.Adjudication
-                    ? "{\"kind\":\"EquivalentObservations\",\"survivorVersionId\":null}"
+                    ? LongRestScriptedVerdicts.AllPairs(payload.Inputs.Length)
                     : "{\"summary\":\"Accepted summary\"}";
 
                 return Task.CompletedTask;

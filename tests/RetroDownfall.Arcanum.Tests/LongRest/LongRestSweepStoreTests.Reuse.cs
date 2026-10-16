@@ -10,6 +10,24 @@ public sealed partial class LongRestSweepStoreTests
 {
     private const string ReusedMetric = "arcanum.long_rest.sweep.reused_decisions";
 
+    // Reads on until the next unit that needs a decision: a pass that only moves the scan past decided sets, or closes a unit whose members an
+    // earlier decision consolidated, returns no work, and the sweep's revision has moved by then.
+    private static async Task<(LongRestSweepWork? Work, LongRestSweep Sweep)> NextUnitAsync(Fixture fixture, LongRestSweep sweep, LongRestMaintenanceCapability? capability)
+    {
+        for (int step = 0; step < 16; step++)
+        {
+            LongRestSweepWork? work = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, capability, CancellationToken.None));
+
+            if (work is not null) return (work, sweep);
+
+            sweep = await fixture.BeginAsync();
+
+            if (sweep.Phase == LongRestSweepPhase.Completed) return (null, sweep);
+        }
+
+        return (null, sweep);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -21,46 +39,43 @@ public sealed partial class LongRestSweepStoreTests
 
         LongRestSweep sweep = await fixture.BeginAsync();
 
-        LongRestSweepWork first = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
+        (LongRestSweepWork? start, sweep) = await NextUnitAsync(fixture, sweep, fixture.Capability);
 
+        LongRestSweepWork first = start!;
+
+        // The anchor's clique is the set of all three, and is asked once.
         Assert.Equal(3, first.Inputs.Length);
-
-        LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, first, LongRestAdjudicationKind.NoChange);
-
-        LongRestSweep committed = LongRestSweepHarness.Require(await fixture.Store.CommitDecisionAsync(sweep, accepted, fixture.Capability, CancellationToken.None));
 
         Assert.Equal(0L, metrics.Sum(ReusedMetric));
 
-        // The second memory finds the same three: the set is decided, so no work item is made and the scan simply moves past it.
-        Assert.Null(LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(committed, fixture.Capability, CancellationToken.None)));
+        LongRestSweepWork current = first;
 
-        Assert.Equal("10000000-0000-0000-0000-000000000002", await fixture.H.ScalarAsync("SELECT DiscoveryCursor FROM long_rest_sweeps;"));
+        for (int step = 0; step < 8; step++)
+        {
+            LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, current, LongRestAdjudicationKind.NoChange);
 
-        Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
+            sweep = LongRestSweepHarness.Require(await fixture.Store.CommitDecisionAsync(sweep, accepted, fixture.Capability, CancellationToken.None));
 
-        Assert.Equal(1L, metrics.Sum(ReusedMetric));
+            (LongRestSweepWork? following, LongRestSweep moved) = await NextUnitAsync(fixture, sweep, fixture.Capability);
 
-        LongRestSweep scanning = await fixture.BeginAsync();
+            sweep = moved;
 
-        Assert.Null(LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(scanning, fixture.Capability, CancellationToken.None)));
+            if (following is null) break;
 
-        Assert.Equal("10000000-0000-0000-0000-000000000003", await fixture.H.ScalarAsync("SELECT DiscoveryCursor FROM long_rest_sweeps;"));
+            current = following;
+        }
 
-        scanning = await fixture.BeginAsync();
+        Assert.Equal(LongRestSweepPhase.Completed, (await fixture.BeginAsync()).Phase);
 
-        Assert.Null(LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(scanning, fixture.Capability, CancellationToken.None)));
+        // The set of three, then the anchor's pair with each of the other two, then the one pair the second memory has that the first did not.
+        // Every other set the second and third memories find is one this generation has already decided NoChange: no work item, no request.
+        Assert.Equal(4L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
 
-        LongRestSweep completed = await fixture.BeginAsync();
+        Assert.Equal(4L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_adjudications;"));
 
-        Assert.Equal(LongRestSweepPhase.Completed, completed.Phase);
+        Assert.Equal(4, fixture.AdjudicationSends);
 
-        Assert.Equal(2L, metrics.Sum(ReusedMetric));
-
-        Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
-
-        Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_adjudications;"));
-
-        Assert.Equal(1, fixture.AdjudicationSends);
+        Assert.Equal(5L, metrics.Sum(ReusedMetric));
 
         // A successor generation of the same scope and partition holds the same three memories, and asks again: a decision is never reused
         // beyond the generation, and never across a partition, that made it.
@@ -80,15 +95,17 @@ public sealed partial class LongRestSweepStoreTests
 
         Assert.Equal(first.Identity.SourceDigest, again.Identity.SourceDigest);
 
-        Assert.Equal(2L, metrics.Sum(ReusedMetric));
+        Assert.Equal(5L, metrics.Sum(ReusedMetric));
     }
 
-    // A, B and C name one another by their vectors; D names only C, by a rare word. So A's set and B's set are {A, B, C} and C's is {A, B, C, D}.
+    // A, B and C name one another by their vectors; D is 20 degrees from C and so names C, but 27 and 30 degrees from B and A and so names neither.
+    // A's set and B's set are {A, B, C}; C's are {A, B, C} and {C, D}.
     [Fact]
     public async Task A_decided_set_that_differs_by_one_member_is_a_new_question()
     {
-        await using Fixture fixture = await Fixture.CreateAsync(false, sourceCount: 4, policyFault: "separate-fourth",
-            text: index => index switch { 1 => "grape one", 2 => "grape two", 3 => "grape three zebra", _ => "zebra four" });
+        await using Fixture fixture = await Fixture.CreateAsync(false, sourceCount: 4,
+            text: index => index switch { 1 => "grape alpha", 2 => "grape beta", 3 => "grape gamma zebra", _ => "zebra delta" },
+            vector: index => LongRestPackingData.Angle(index switch { 1 => 0, 2 => 3, 3 => 10, _ => 30 }).ToArray());
 
         LongRestSweep sweep = await fixture.BeginAsync();
 
@@ -97,24 +114,40 @@ public sealed partial class LongRestSweepStoreTests
         Assert.Equal(["10000000-0000-0000-0000-000000000001", "10000000-0000-0000-0000-000000000002", "10000000-0000-0000-0000-000000000003"],
             first.Inputs.Select(static input => input.Target.MemoryId));
 
-        LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, first, LongRestAdjudicationKind.NoChange);
+        List<string[]> asked = [first.Inputs.Select(static input => input.Target.MemoryId).ToArray()];
 
-        LongRestSweep committed = LongRestSweepHarness.Require(await fixture.Store.CommitDecisionAsync(sweep, accepted, null, CancellationToken.None));
+        LongRestSweepWork current = first;
 
-        // B names the same three, so there is nothing to ask.
-        Assert.Null(LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(committed, null, CancellationToken.None)));
+        for (int step = 0; step < 12; step++)
+        {
+            LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, current, LongRestAdjudicationKind.NoChange);
 
-        Assert.Equal(1L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
+            sweep = LongRestSweepHarness.Require(await fixture.Store.CommitDecisionAsync(sweep, accepted, null, CancellationToken.None));
 
-        // C names four, one more than the decided set, so deciding the three settles nothing about the four.
-        LongRestSweepWork second = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(await fixture.BeginAsync(), null, CancellationToken.None))!;
+            (LongRestSweepWork? following, LongRestSweep moved) = await NextUnitAsync(fixture, sweep, null);
 
-        Assert.Equal(4, second.Inputs.Length);
+            sweep = moved;
 
-        Assert.Equal("10000000-0000-0000-0000-000000000003", second.Inputs[0].Target.MemoryId);
+            if (following is null) break;
 
-        Assert.NotEqual(first.Identity.SourceDigest, second.Identity.SourceDigest);
+            asked.Add(following.Inputs.Select(static input => input.Target.MemoryId).ToArray());
 
-        Assert.Equal(2L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
+            current = following;
+        }
+
+        // A asks the three, then its pair with each of B and C. B finds the same three (decided: nothing to ask), the pair with A (decided), and
+        // the pair with C (new). C finds the same three (decided), its pairs with B and A (decided) and, because D is paired with C alone and so is not
+        // in that pack, a pack of its own: {C, D} differs from {A, B, C} by a member and is a new question.
+        string[] four = ["10000000-0000-0000-0000-000000000003", "10000000-0000-0000-0000-000000000004"];
+
+        Assert.Equal(5, asked.Count);
+
+        Assert.Contains(asked, ids => ids.SequenceEqual(four));
+
+        Assert.Equal(1, asked.Count(static ids => ids.Length == 3));
+
+        Assert.Equal(5L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
+
+        Assert.Equal(5, fixture.AdjudicationSends);
     }
 }

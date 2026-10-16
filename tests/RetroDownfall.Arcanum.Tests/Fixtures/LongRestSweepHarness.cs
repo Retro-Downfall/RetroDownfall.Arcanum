@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Tests.LongRest;
 
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -54,8 +55,35 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     /// <summary>Every memory a fold's children expand to, in child order.</summary>
     internal static string[] MemoriesOf(LongRestHierarchyWork work) => [.. work.Fold.Children.SelectMany(static child => child.ExpandedTargets).Select(static target => target.MemoryId)];
 
+    private int _seeded;
+
+    /// <summary>
+    /// Seeds every memory with the one vector the shared Saga harness hands out, so all of them are the same point. That is a collapsed space and
+    /// pairs nothing but byte-identical content; it is for a test that pins the shape the hierarchy builds from degenerate layers, which depends on
+    /// the vectors being identical, and for nothing that wants memories paired.
+    /// </summary>
+    internal bool IdenticalVectors { get; set; }
+
+    /// <summary>
+    /// Seeds a memory whose vector is near every other seeded memory's and its own: all of them lean 0.98 on one shared axis and each takes an axis
+    /// of its own, so two are 0.96 alike. A generation of fewer than sixteen other leaves pairs them at the fallback floor, as a model would pair
+    /// paraphrases, and the space is not collapsed (a collapsed space, in which every memory has the same vector, pairs nothing but byte-identical
+    /// content). A test that wants memories to differ more, or to be unrelated, gives them vectors itself.
+    /// </summary>
     internal Task SeedAsync(string id, string text, Guid? session = null) => Saga.Store.InsertAsync(id, text,
-        new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", Saga.Embedding(), CancellationToken.None);
+        new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", IdenticalVectors ? Saga.Embedding() : Related(Interlocked.Increment(ref _seeded)), CancellationToken.None);
+
+    /// <summary>The vector of the <paramref name="number"/>th memory seeded with <see cref="SeedAsync"/>: 0.98 on the shared axis and the rest on an axis of its own.</summary>
+    internal float[] Related(int number)
+    {
+        float[] vector = new float[Saga.Embedding().Length];
+
+        vector[0] = 0.98f;
+
+        vector[1 + number % (vector.Length - 1)] = (float)Math.Sqrt(1 - 0.98 * 0.98);
+
+        return vector;
+    }
 
     /// <summary>
     /// A memory no other memory resembles: its text shares no word with another's and its vector is its own, so a corpus of them has
@@ -78,29 +106,7 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     /// A vector of its own: SplitMix64 from the number, so two numbers that differ by one are as unrelated as any two, which the framework's
     /// seeded generator does not promise. In sixty-four dimensions the cosine of two such vectors sits near zero, far below the recall floor.
     /// </summary>
-    internal float[] DistinctVector(int number)
-    {
-        ulong state = checked((ulong)number) * 0x9E3779B97F4A7C15UL + 0xD1B54A32D192ED03UL;
-
-        float[] vector = new float[64];
-
-        for (int index = 0; index < vector.Length; index++)
-        {
-            state += 0x9E3779B97F4A7C15UL;
-
-            ulong mixed = state;
-
-            mixed = (mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9UL;
-
-            mixed = (mixed ^ (mixed >> 27)) * 0x94D049BB133111EBUL;
-
-            mixed ^= mixed >> 31;
-
-            vector[index] = (float)((mixed >> 11) * (1.0 / (1UL << 53)) * 2.0 - 1.0);
-        }
-
-        return vector;
-    }
+    internal float[] DistinctVector(int number) => LongRestClusters.Background(number);
 
     internal async Task<LongRestDiscoveryGeneration> StartAsync(Guid? campaign = null, CovenantDigest? partition = null, CovenantTurnLease? authority = null,
         Guid? operationId = null)

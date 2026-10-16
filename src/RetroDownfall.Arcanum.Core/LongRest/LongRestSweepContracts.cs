@@ -178,6 +178,11 @@ public sealed record LongRestSweepCheckpoint(
     CovenantDigest? CommittedWorkDigest,
     CovenantDigest? ProtectedPartitionDigest = null);
 
+/// <param name="PairingFloorPermille">
+/// For an anchor unit, the anchor's Background Floor in thousandths (500 to 1000) at the time the unit was queued: the cosine every pair of the
+/// unit's memories was required to clear, and the one the Fold Check proves again at the mutation point. Zero for every other kind. It is part of
+/// the work digest, so a unit cannot be resumed under another floor.
+/// </param>
 public sealed record LongRestWorkIdentity(
     Guid GenerationId,
     Guid OperationId,
@@ -186,7 +191,8 @@ public sealed record LongRestWorkIdentity(
     LongRestSweepScope Scope,
     LongRestSweepFence Fence,
     CovenantDigest SourceDigest,
-    CovenantDigest RecipeDigest);
+    CovenantDigest RecipeDigest,
+    int PairingFloorPermille = 0);
 
 public sealed record LongRestDispatchAttempt(
     Guid AttemptId,

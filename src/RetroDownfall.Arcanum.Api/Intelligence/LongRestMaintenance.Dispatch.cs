@@ -189,7 +189,10 @@ internal sealed partial class LongRestMaintenance
 
                     if (output.Disposition != LongRestProviderResultDisposition.Valid)
                     {
-                        throw new Refused(new Error(ErrorCodes.LongRest.InvalidRequest, "The paid Long Rest response could not be applied."));
+                        // The provider answered and billed, and the answer is not an instance of the closed shape: that is LongRest.InvalidOutput,
+                        // the code the fault policy and the documentation name for it, and not an invalid request, which would say the caller's own
+                        // request was malformed.
+                        throw new Refused(new Error(output.InvalidReason ?? ErrorCodes.LongRest.InvalidOutput, "The paid Long Rest response could not be applied."));
                     }
 
                     // The owning store completes Sent and retains the artifact in one transaction.

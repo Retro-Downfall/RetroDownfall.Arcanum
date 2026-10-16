@@ -141,6 +141,9 @@ public sealed partial class LongRestHierarchyTests
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
+        // Identical vectors make every layer degenerate, which is the shape (seventeen full folds, then the rest) the counts below pin.
+        h.IdenticalVectors = true;
+
         for (int index = 0; index < 272; index++)
         {
             await h.SeedAsync($"m-{index:D3}", $"unique observation {index:D3}");

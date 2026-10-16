@@ -191,9 +191,9 @@ public sealed partial class LongRestHierarchyTests
 
         Assert.Equal(8, forwardCandidates.Count(candidate => candidate.Lane == LongRestDiscoveryLane.Vector));
 
-        var forwardGroups = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.GroupCandidates(anchor, forwardCandidates));
+        var forwardGroups = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.GroupCandidates(anchor, forwardCandidates, 920));
 
-        var reverseGroups = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.GroupCandidates(anchor, reverseCandidates));
+        var reverseGroups = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.GroupCandidates(anchor, reverseCandidates, 920));
 
         Assert.Equal(2, forwardGroups.Length);
 

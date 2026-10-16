@@ -232,7 +232,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
                 // The read-only first pass proved every row. The same immediate transaction excludes
                 // concurrent storage mutation; this pass performs exact CAS without retaining an unbounded plan.
                 LongRestWorkIdentity work = new(generation.GenerationId, generation.OperationId, adoption.Item,
-                    (LongRestWorkKind)adoption.Kind, generation.Scope, current, adoption.Source, adoption.Recipe);
+                    (LongRestWorkKind)adoption.Kind, generation.Scope, current, adoption.Source, adoption.Recipe, adoption.Floor);
 
                 await using SqliteCommand bind = Command(connection, transaction, """
                     UPDATE long_rest_work_items SET WorkDigest = $next, Revision = Revision + 1
@@ -256,7 +256,7 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
         List<CleanWorkRow> units = [];
 
         await using SqliteCommand command = Command(connection, transaction, """
-            SELECT WorkItemId, WorkDigest, KindCode, ItemId, SourceDigest, RecipeDigest, Revision, DispositionCode FROM long_rest_work_items
+            SELECT WorkItemId, WorkDigest, KindCode, ItemId, SourceDigest, RecipeDigest, Revision, DispositionCode, PairingFloorPermille FROM long_rest_work_items
             WHERE OperationId = $operation AND GenerationId = $generation AND (KindCode = 2 OR (KindCode = 3 AND DispositionCode = 1))
               AND ($cursor IS NULL OR WorkItemId > $cursor) ORDER BY WorkItemId LIMIT 128;
             """, ("$operation", generation.OperationId.ToString("N")), ("$generation", Format(generation.GenerationId)), ("$cursor", cursor));
@@ -266,12 +266,12 @@ internal sealed partial class LongRestDiscoveryStore : ILongRestCleanReadmission
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             units.Add(new(reader.GetString(0), new((byte[])reader[1]), reader.GetInt32(2), reader.GetString(3), new((byte[])reader[4]),
-                new((byte[])reader[5]), reader.GetInt64(6), reader.GetInt32(7)));
+                new((byte[])reader[5]), reader.GetInt64(6), reader.GetInt32(7), reader.GetInt32(8)));
         }
 
         return units;
     }
 
     private sealed record CleanWorkRow(string Unit, CovenantDigest Digest, int Kind, string Item, CovenantDigest Source,
-        CovenantDigest Recipe, long Revision, int Disposition);
+        CovenantDigest Recipe, long Revision, int Disposition, int Floor);
 }

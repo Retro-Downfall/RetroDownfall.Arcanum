@@ -322,7 +322,7 @@ public sealed class LongRestProviderDispatchTests
     {
         await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync(LongRestProviderPayloadKind.Adjudication);
 
-        f.Handler.ChatText = "{\"kind\":\"NoChange\",\"survivorVersionId\":null}";
+        f.Handler.ChatText = LongRestScriptedVerdicts.NoMatches(2);
 
         Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
             f.Callback(await f.PrepareAsync()), f.Admission(), CancellationToken.None);
@@ -476,13 +476,19 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
     internal string SourceId = Guid.NewGuid().ToString("D");
 
-    internal static async Task<LongRestProviderFixture> CreateAsync(LongRestProviderPayloadKind kind = LongRestProviderPayloadKind.Summary, string? content = null)
+    internal static async Task<LongRestProviderFixture> CreateAsync(LongRestProviderPayloadKind kind = LongRestProviderPayloadKind.Summary, string? content = null,
+        bool reasoningModel = false)
     {
         LongRestProviderFixture f = new();
 
         f.H = await LongRestSweepHarness.CreateAsync();
 
-        f.Options = new(LongRestConfigurationEpochTests.Settings());
+        ArcanumSettings settings = LongRestConfigurationEpochTests.Settings();
+
+        // A chat model that declares reasoning answers an adjudication with reasoning off.
+        if (reasoningModel) settings.Providers[0].Models = [new ModelEntry("model", Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard }), "embedding"];
+
+        f.Options = new(settings);
 
         f.Epoch = new(f.Options, Guid.NewGuid());
 

@@ -414,8 +414,8 @@ public sealed partial class LongRestSweepSchedulingTests
 
         internal void SetProviderAnswer()
         {
-            F.Handler.ChatText = F.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+            F.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(F.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(F.Handler.LastBody!) : "{\"summary\":\"Accepted summary.\"}";
         }
 
         internal void RecreateWorker()

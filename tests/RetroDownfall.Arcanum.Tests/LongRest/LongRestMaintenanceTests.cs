@@ -197,7 +197,7 @@ public sealed partial class LongRestMaintenanceTests
 
         internal static async Task<MaintenanceFixture> CreateAsync(bool ownWorker = true, TimeProvider? clock = null, bool campaign = false,
             bool protectedSources = true, bool exact = false, int sourceCount = 2, Action<ArcanumSettings>? configure = null, Func<int, string>? sourceText = null,
-            Func<int, Guid>? sourceId = null, bool sessionless = false)
+            Func<int, Guid>? sourceId = null, bool sessionless = false, Func<int, float[]>? vector = null)
         {
             MaintenanceFixture f = new();
 
@@ -250,6 +250,17 @@ public sealed partial class LongRestMaintenanceTests
             }
 
             Assert.Equal((long)sourceCount, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_sources;"));
+
+            // A generation of more than fifteen other leaves has a distribution of its own, and only what stands out of it is paired with an anchor, so a
+            // corpus that wants a group among many memories gives them vectors: a tight cluster among memories that each have a vector of their own.
+            if (vector is not null)
+            {
+                await f.H.SetEmbeddingAsync(f.Source, vector(0));
+
+                await f.H.SetEmbeddingAsync(second.ToString("D"), vector(1));
+
+                for (int index = 0; index < additional.Count; index++) await f.H.SetEmbeddingAsync(additional[index].ToString("D"), vector(index + 2));
+            }
 
             GenerationProvenance provenance = GenerationProvenance.CreateExact([Guid.NewGuid()]);
 

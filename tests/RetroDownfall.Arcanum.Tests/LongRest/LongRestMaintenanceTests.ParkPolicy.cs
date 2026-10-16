@@ -56,7 +56,11 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.NotNull(retired.CompletedAt);
 
-        Assert.Equal(1, metrics.Measurements.Count(static m => m.Instrument == ParkedMetric));
+        // Two parks happened and each is counted once: the crash park the Pure Park Handler wrote (counted where the worker readmitted it, as a
+        // resumable park) and the retirement the restart-generation fault ended the readmitted sweep with.
+        Assert.Equal(2, metrics.Measurements.Count(static m => m.Instrument == ParkedMetric));
+
+        Assert.Equal(1, metrics.Sum(ParkedMetric, "class", "resume_later"));
 
         Assert.Equal(1, metrics.Sum(ParkedMetric, "class", "restart_generation"));
 
@@ -133,10 +137,11 @@ public sealed partial class LongRestMaintenanceTests
             clock.Advance(LongRestFaultPolicy.Cooldown(Math.Min(readmission, LongRestFaultPolicy.MaxReadmissions - 1)));
         }
 
-        // Four failed readmissions: each parked once; the last park spent the budget and became a needs-operator park.
-        Assert.Equal(LongRestFaultPolicy.MaxReadmissions, metrics.Measurements.Count(static m => m.Instrument == ParkedMetric));
+        // The crash park recovery wrote is counted once, when the worker first readmits it; then four failed readmissions, each parked once, the last
+        // of which spent the budget and became a needs-operator park.
+        Assert.Equal(LongRestFaultPolicy.MaxReadmissions + 1, metrics.Measurements.Count(static m => m.Instrument == ParkedMetric));
 
-        Assert.Equal(LongRestFaultPolicy.MaxReadmissions - 1, metrics.Sum(ParkedMetric, "class", "resume_later"));
+        Assert.Equal(LongRestFaultPolicy.MaxReadmissions, metrics.Sum(ParkedMetric, "class", "resume_later"));
 
         Assert.Equal(1, metrics.Sum(ParkedMetric, "class", "needs_operator"));
 

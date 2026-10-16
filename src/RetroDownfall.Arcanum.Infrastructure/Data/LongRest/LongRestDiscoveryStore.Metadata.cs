@@ -164,7 +164,8 @@ internal sealed partial class LongRestDiscoveryStore
                 LEFT JOIN annal_claims claim ON claim.SubjectStoreCode = 1 AND claim.SubjectId = memory.Id
                 LEFT JOIN annal_heads head ON head.ClaimId = claim.ClaimId
                 LEFT JOIN annal_versions version ON version.VersionId = head.CurrentVersionId
-                WHERE memory.ScopeKindCode = $scope AND memory.CampaignId IS $campaign AND ({SourceOwnerEligible})
+                WHERE memory.ScopeKindCode = $scope AND memory.CampaignId IS $campaign
+                  AND ({(partition is null ? SourceOwnerEligible : CleanAwareSourceOwnerEligible)})
                   {(partition is null ? "" : $"AND ({PartitionEligibility})")}
                   AND ({SourceLifecycleEligible})
                   AND NOT EXISTS (SELECT 1 FROM long_rest_discovery_leaves leaf WHERE leaf.GenerationId = $generation

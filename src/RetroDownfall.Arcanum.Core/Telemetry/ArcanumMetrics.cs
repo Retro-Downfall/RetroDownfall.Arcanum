@@ -251,14 +251,28 @@ public static class ArcanumMetrics
         "Parked Long Rest sweeps readmitted");
 
     /// <summary>
-    /// Discovered neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
-    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>pack_limit</c>:
-    /// the anchor already has its three packs). Never carries an identity or any content.
+    /// Nominated neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
+    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>unpaired</c>: the Pairing Gate
+    /// did not pair it with the anchor, because it is below the anchor's Background Floor or has no vector to judge; <c>incohesive</c>: it is paired
+    /// with the anchor but not with a member of every pack that had room; <c>pack_limit</c>: the anchor already has its three clique packs).
+    /// Never carries an identity or any content.
     /// </summary>
     public static readonly Counter<long> LongRestPackSkippedCandidatesTotal = Meter.CreateCounter<long>(
         "arcanum.long_rest.sweep.skipped_candidates",
         "{candidates}",
         "Long Rest neighbours the group packer skipped, by reason");
+
+    /// <summary>
+    /// Anchors with at least one nominated neighbour, by the fixed bucket their Background Floor falls in: the cosine, in thousandths, a nominee
+    /// needed to be paired with the anchor. Label: closed <c>floor_le_permille</c> (the bucket's upper edge: <c>600</c>, <c>700</c>, <c>800</c>,
+    /// <c>900</c>, <c>920</c>, <c>950</c>, <c>980</c> or <c>1000</c>; see <c>LongRestPairing.FloorBucket</c>). A distribution that sits at the top says
+    /// the embedding model does not separate topics in this installation's memories. A counter and not a histogram, because the hosted-producer
+    /// analysis reviews histogram observations only for the hierarchy instruments. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestPairingFloorAnchorsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.discovery.pairing_floor",
+        "{anchors}",
+        "Long Rest anchors with nominated neighbours, by the bucket of their Background Floor");
 
     /// <summary>
     /// Hierarchy children too large for any summary request of the recipe's input budget, carried unsummarized instead of folded. Counted

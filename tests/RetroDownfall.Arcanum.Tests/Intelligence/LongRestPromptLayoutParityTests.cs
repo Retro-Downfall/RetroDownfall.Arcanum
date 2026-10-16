@@ -109,7 +109,7 @@ public sealed class LongRestPromptLayoutParityTests
     [Fact]
     public void A_payload_renders_against_the_budget_it_was_built_with()
     {
-        ImmutableArray<LongRestSourceLeaf> pack = [LongRestPackingData.Leaf(0, new string('x', 3000)), LongRestPackingData.Leaf(1, new string('y', 3000))];
+        ImmutableArray<LongRestSourceLeaf> pack = [LongRestPackingData.Leaf(0, new string('x', 2500)), LongRestPackingData.Leaf(1, new string('y', 2500))];
 
         Result<LongRestProviderPayload> wide = LongRestPackingData.AdjudicationPayload(pack, 8192);
 

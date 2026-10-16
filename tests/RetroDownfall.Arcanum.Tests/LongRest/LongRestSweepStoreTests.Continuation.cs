@@ -13,7 +13,7 @@ public sealed partial class LongRestSweepStoreTests
     [InlineData(true)]
     public async Task Own_canonical_commit_allows_disjoint_discovery_with_live_projection_flags(bool protect)
     {
-        await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: 24);
+        await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: 24, related: 8);
 
         LongRestSweep sweep = await fixture.BeginAsync();
 
@@ -65,6 +65,8 @@ public sealed partial class LongRestSweepStoreTests
         Assert.Equal(changes, await fixture.H.ScalarAsync("SELECT total_changes();"));
     }
 
+    // The anchor has two packs that cannot be one: three memories 15 degrees on one side of it and three 16 degrees on the other, which are
+    // 31 degrees apart and so not paired with each other at the 0.92 floor. Its first pack is decided before its second is read.
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -72,15 +74,24 @@ public sealed partial class LongRestSweepStoreTests
     [InlineData(true, true)]
     public async Task Own_projection_refreshes_only_unaccepted_groups_and_defers_cursor_until_all_anchor_groups_finish(bool protect, bool suppressAnchor)
     {
-        await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: 24);
+        await using Fixture fixture = await Fixture.CreateAsync(protect, sourceCount: 7, vector: index => LongRestPackingData.Angle(index switch
+        {
+            1 => 0,
+            <= 4 => 15 + (index - 2) * 0.2,
+            _ => -16 - (index - 5) * 0.2,
+        }).ToArray());
 
         LongRestSweep sweep = await fixture.BeginAsync();
 
         LongRestSweepWork work = LongRestSweepHarness.Require(await fixture.Store.ReadNextWorkAsync(sweep, fixture.Capability, CancellationToken.None))!;
 
-        Assert.True((long)(await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"))! > 1);
+        Assert.Equal(["10000000-0000-0000-0000-000000000001", "10000000-0000-0000-0000-000000000002", "10000000-0000-0000-0000-000000000003", "10000000-0000-0000-0000-000000000004"],
+            work.Inputs.Select(static input => input.Target.MemoryId));
 
-        string pending = (string)(await fixture.H.ScalarAsync("SELECT ItemId FROM long_rest_work_items WHERE KindCode = 3 ORDER BY ItemId DESC LIMIT 1;"))!;
+        // Two packs, and a pair for each member of each of them.
+        Assert.Equal(8L, await fixture.H.ScalarAsync("SELECT count(*) FROM long_rest_work_items WHERE KindCode = 3;"));
+
+        string pending = (string)(await fixture.H.ScalarAsync("SELECT ItemId FROM long_rest_work_items WHERE KindCode = 3 ORDER BY ItemId LIMIT 1 OFFSET 1;"))!;
 
         LongRestAdjudication accepted = await fixture.AcceptAsync(sweep, work, suppressAnchor ? LongRestAdjudicationKind.Supersession : LongRestAdjudicationKind.EquivalentObservations);
 
@@ -94,6 +105,9 @@ public sealed partial class LongRestSweepStoreTests
 
         if (suppressAnchor)
         {
+            // The anchor was eliminated, so the second pack, which holds it, needs no decision: it is closed with no receipt and no request.
+            Assert.Null(next);
+
             await using SqliteCommand disposition = fixture.H.Connection.CreateCommand();
 
             disposition.CommandText = "SELECT DispositionCode = 2 AND ReceiptId IS NULL FROM long_rest_work_items WHERE ItemId = $item;";
@@ -104,6 +118,8 @@ public sealed partial class LongRestSweepStoreTests
         }
         else
         {
+            // The anchor survived and is now a transformation output; the second pack's other members are not consolidated, so it is still a question,
+            // and it is read afresh with the anchor's new flag.
             Assert.NotNull(next);
 
             Assert.Equal(pending, next.Identity.ItemId);

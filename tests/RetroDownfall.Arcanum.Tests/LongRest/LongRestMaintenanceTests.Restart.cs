@@ -612,7 +612,10 @@ public sealed partial class LongRestMaintenanceTests
     [InlineData(true)]
     public async Task Lagging_partial_group_checkpoint_resumes_the_exact_retained_coordinate_pair_after_boot_change(bool protectedSources)
     {
-        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: protectedSources, sourceCount: 24);
+        // Three memories that name one another among twenty-one that do not: the first anchor has its set and two pairs, three units, and has finished
+        // when the third commits; the second anchor's one new pair is the fourth, and its checkpoint is the one the trigger refuses.
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: protectedSources, sourceCount: 24,
+            vector: index => LongRestClusters.Vector([3], index + 1));
 
         f.Handler.InsideSend = () => { f.Handler.ChatText = DecisionOrSummary(f.Handler.LastBody!); return Task.CompletedTask; };
 
@@ -727,7 +730,8 @@ public sealed partial class LongRestMaintenanceTests
     [InlineData(true)]
     public async Task Multiple_frozen_groups_checkpoint_each_committed_unit_before_advancing_the_anchor(bool protectedSources)
     {
-        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: protectedSources, sourceCount: 24);
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: protectedSources, sourceCount: 24,
+            vector: index => LongRestClusters.Vector([8], index + 1));
 
         f.Handler.InsideSend = () =>
         {
@@ -1001,6 +1005,6 @@ public sealed partial class LongRestMaintenanceTests
 
     private static async Task<LongRestMaintenanceCapability> FreshAsync(MaintenanceFixture f) => LongRestSweepHarness.Require(await IssueAsync(f));
 
-    private static string DecisionOrSummary(string body) => body.Contains("long_rest_adjudication", StringComparison.Ordinal)
-        ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+    private static string DecisionOrSummary(string body) => LongRestScriptedVerdicts.IsAdjudication(body)
+        ? LongRestScriptedVerdicts.NoMatches(body) : "{\"summary\":\"Accepted summary.\"}";
 }

@@ -62,9 +62,13 @@ public static class LongRestProviderCallFreezer
 
             description = LongRestPromptLayout.AdjudicationSchemaDescription;
 
+            int memory = 0;
+
             foreach (LongRestSourceLeaf input in LongRestPromptLayout.CanonicalAdjudicationOrder(payload.Inputs))
             {
-                user.Append(LongRestPromptLayout.AdjudicationMemory(input.Target.MemoryId, input.Snapshot.VersionId, input.Snapshot.ContentHash, input.Content ?? string.Empty));
+                memory++;
+
+                user.Append(LongRestPromptLayout.AdjudicationMemory(memory, input.Content ?? string.Empty));
             }
         }
 
@@ -81,6 +85,18 @@ public static class LongRestProviderCallFreezer
             return Invalid();
         }
     }
+
+    /// <summary>
+    /// Whether the request for <paramref name="payload"/> asks <paramref name="model"/> to answer without reasoning. Only an adjudication does, and
+    /// only for a model whose entry declares reasoning: the answer is a few short member verdicts under a closed schema, a reasoning model given the
+    /// fixed answer reservation can spend it on thought and be cut off before the verdicts (an invalid paid answer), and what the verdicts must
+    /// carry is the restated fact of each memory, not a chain of thought. A summary keeps the model's own default. The control is the typed
+    /// Microsoft.Extensions.AI effort <c>None</c> on the request's options, and the digest binds it, so a model that declares reasoning and one
+    /// that does not are different requests.
+    /// </summary>
+    public static bool AdjudicationReasoningOff(LongRestProviderPayloadKind kind, ProviderSettings provider, string model) =>
+        kind == LongRestProviderPayloadKind.Adjudication && provider is not null && model is not null
+        && provider.Models.Any(entry => string.Equals(entry.Name, model, StringComparison.Ordinal) && entry.Reasoning is not null);
 
     public static Result<CovenantDigest> PayloadDigest(LongRestProviderPayload payload, ProviderSettings provider, string model, int dimensions = 0)
     {
@@ -107,9 +123,9 @@ public static class LongRestProviderCallFreezer
 
             using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-            hash.AppendData("Arcanum.LongRest.ChatPayload.v1\0"u8);
+            hash.AppendData("Arcanum.LongRest.ChatPayload.v2\0"u8);
 
-            Integer(1);
+            Integer(2);
 
             Integer((int)payload.Kind);
 
@@ -130,6 +146,8 @@ public static class LongRestProviderCallFreezer
             Integer(request.MaxOutputTokens);
 
             Integer(0); // Closed tool count.
+
+            Integer(AdjudicationReasoningOff(payload.Kind, provider, model) ? 1 : 0); // Reasoning effort: 0 is the model's own, 1 is None.
 
             return new CovenantDigest(hash.GetHashAndReset());
 

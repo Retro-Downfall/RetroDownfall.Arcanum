@@ -348,6 +348,7 @@ R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestProvider.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestService.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestSweepCoordinator.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestSweepStore.cs
+R	src/RetroDownfall.Arcanum.Core/LongRest/ILongRestSweepWake.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestCanonicalHash.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestCapabilityState.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestContracts.cs
@@ -361,6 +362,8 @@ R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestGroupPacker.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestHierarchy.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestLexicalScorer.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestMaintenanceCapability.cs
+R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestMemberVerdict.cs
+R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestPairing.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestPolicy.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestPromptLayout.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestProviderPayload.cs

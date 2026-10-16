@@ -19,8 +19,8 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 /// link, or through a differently cased or differently normalised name) governs the same directory when the operating system reports it
 /// under another, because a Sanctum that does not apply to the directory a tool runs in contains nothing.
 /// </summary>
-[Collection("Grimoire")]
-public sealed class SanctumGuardRegisteredSpellingTests : IAsyncLifetime
+[Collection("WorkspacePathPolicy")]
+public sealed class SanctumGuardRegisteredSpellingTests : IClassFixture<GrimoireFixture>, IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 

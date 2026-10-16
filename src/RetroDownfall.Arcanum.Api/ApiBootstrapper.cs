@@ -54,6 +54,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Tower;
 using Scalar.AspNetCore;
 
@@ -805,6 +806,12 @@ public static class ApiBootstrapper
     /// </summary>
     public static void UseArcanumMetrics(this WebApplication app)
     {
+        // The exporter's MeterListener observes only what is recorded after it starts, and the exporter is a lazy singleton that nothing but the
+        // /metrics endpoint resolves. Left to that, every measurement recorded before the first scrape (the Long Rest sweeps parked and readmitted by
+        // the worker among them) is lost, against the exporter's own contract. Host composition resolves it, before any hosted service starts. A host
+        // composed without the exporter (a probe host) simply has none to start.
+        _ = app.Services.GetService<PrometheusMetricsExporter>();
+
         app.Use(async (HttpContext context, Func<Task> next) =>
         {
             if (context.Request.Path.StartsWithSegments("/metrics"))

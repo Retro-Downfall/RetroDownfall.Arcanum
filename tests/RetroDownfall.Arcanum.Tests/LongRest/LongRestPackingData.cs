@@ -23,7 +23,7 @@ internal static class LongRestPackingData
     /// An exact eligible source leaf whose content is <paramref name="content"/>. The memory and version identities, and by default the
     /// content hash, are derived from the index, so two leaves are exact duplicates only when a test gives them one <paramref name="contentHash"/>.
     /// </summary>
-    internal static LongRestSourceLeaf Leaf(int index, string content, string? contentHash = null)
+    internal static LongRestSourceLeaf Leaf(int index, string content, string? contentHash = null, ImmutableArray<float> vector = default)
     {
         DateTimeOffset instant = new(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
@@ -33,8 +33,18 @@ internal static class LongRestPackingData
             AnnalContentHashFormat.LegacyStoreDigest, contentHash ?? (index + 1).ToString("X64", System.Globalization.CultureInfo.InvariantCulture), AnnalOrigin.OperatorStated, null, SagaMemoryScopeKind.Global, null,
             ContentSensitivity.None, instant, null, instant, null, null, true, false, false, false, false, [], []);
 
-        return new(snapshot, index + 1, 1, null, ContentSensitivity.None, GenerationProvenance.CreateExact([]), []) { Content = content };
+        // A vector is observed Saga bytes, so a leaf that has one carries the binding to those exact bytes.
+        LongRestSourceEmbeddingBinding? binding = vector.IsDefaultOrEmpty ? null
+            : new(LongRestSourceEmbeddingKind.ObservedSaga, vector.Length, new CovenantDigest(System.Security.Cryptography.SHA256.HashData(System.Runtime.InteropServices.MemoryMarshal.AsBytes(vector.AsSpan()))));
+
+        return new(snapshot, index + 1, 1, binding, ContentSensitivity.None, GenerationProvenance.CreateExact([]), []) { Content = content, Vector = vector };
     }
+
+    /// <summary>The unit vector of two dimensions at <paramref name="degrees"/> from the first axis: the cosine of two of them is the cosine of the angle between.</summary>
+    internal static ImmutableArray<float> Angle(double degrees) => [(float)Math.Cos(degrees * Math.PI / 180), (float)Math.Sin(degrees * Math.PI / 180)];
+
+    /// <summary>A leaf whose vector is <see cref="Angle"/> at <paramref name="degrees"/>.</summary>
+    internal static LongRestSourceLeaf Leaf(int index, string content, double degrees, string? contentHash = null) => Leaf(index, content, contentHash, Angle(degrees));
 
     /// <summary>A content of exactly <paramref name="utf8Bytes"/> UTF-8 bytes built from one-, two-, three- and four-byte characters.</summary>
     internal static string Content(Random random, int utf8Bytes)
@@ -81,7 +91,8 @@ internal static class LongRestPackingData
     internal static LongRestWorkIdentity BaseWork(LongRestWorkKind kind, string item, CovenantDigest source) => new(Guid.Parse("66666666-6666-4666-8666-666666666666"),
         Guid.Parse("44444444-4444-4444-8444-444444444444"), item, kind, Scope,
         new(CanonicalCampaignContext.GlobalOnly, 128, Guid.Parse("11111111-1111-4111-8111-111111111111"), 1, 1, 1,
-            new(Guid.Parse("55555555-5555-4555-8555-555555555555"), 7, Digest)), source, new CovenantDigest(Enumerable.Range(2, 32).Select(value => (byte)value).ToArray()));
+            new(Guid.Parse("55555555-5555-4555-8555-555555555555"), 7, Digest)), source, new CovenantDigest(Enumerable.Range(2, 32).Select(value => (byte)value).ToArray()),
+        kind == LongRestWorkKind.Anchor ? 920 : 0);
 
     /// <summary>The adjudication payload the maintenance would build for <paramref name="pack"/> under <paramref name="budget"/>.</summary>
     internal static Result<LongRestProviderPayload> AdjudicationPayload(ImmutableArray<LongRestSourceLeaf> pack, int budget)

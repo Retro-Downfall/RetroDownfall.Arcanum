@@ -67,9 +67,10 @@ public sealed class LongRestDiscoveryStoreTests
 
         await h.SeedAsync("anchor", "opal OR quartz");
 
-        await h.SeedAsync("z-token", "opal opal gem");
+        // Token matches that cover what the anchor says ('or' is a word of the anchor here, never an operator of the query).
+        await h.SeedAsync("z-token", "opal or quartz gem");
 
-        await h.SeedAsync("a-token", "opal opal gem");
+        await h.SeedAsync("a-token", "opal or quartz gem");
 
         await h.SeedAsync("substring", "opalescent quarry");
 
@@ -189,5 +190,52 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.Equal(0L, await h.ScalarAsync("SELECT count(*) FROM long_rest_discovery_leaves;"));
 
         Assert.Equal(0L, await h.ScalarAsync("SELECT Revision FROM long_rest_discovery_generations;"));
+    }
+
+    // Every memory here is given one and the same embedding, so the vector lane has nothing to tell them apart by: the space is collapsed. The
+    // anchor's Background Floor is the highest, which pairs nothing but byte-identical content, and so no memory is nominated by its vector
+    // whatever the cosine of a vector with itself comes out as.
+    [SkippableTheory]
+    [InlineData(6)]
+    [InlineData(20)]
+    public async Task A_collapsed_generation_nominates_no_vector_neighbor_and_records_the_highest_floor(int others)
+    {
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+        List<string> memories = ["anchor", "b-twin"];
+
+        await h.SeedAsync("anchor", "opal quartz");
+
+        await h.SeedAsync("b-twin", "opal quartz");
+
+        for (int index = 0; index < others; index++)
+        {
+            string memory = $"c-other-{index:D2}";
+
+            memories.Add(memory);
+
+            await h.SeedAsync(memory, $"unrelated{index} filler{index}");
+        }
+
+        foreach (string memory in memories)
+        {
+            await h.SetEmbeddingAsync(memory, h.Saga.Embedding());
+        }
+
+        LongRestDiscoveryGeneration generation = await h.CaptureAsync();
+
+        await h.ExecuteAsync("UPDATE long_rest_discovery_generations SET PhaseCode = 4, Published = 1;");
+
+        LongRestCandidateGroup[] groups = LongRestSweepHarness.Require(await h.Store.DiscoverAsync(generation.GenerationId, await h.TargetAsync("anchor"), null, CancellationToken.None));
+
+        Assert.NotEmpty(groups);
+
+        Assert.All(groups, group => Assert.Equal(1000, group.PairingFloorPermille));
+
+        LongRestCandidate[] evidence = [.. groups.SelectMany(static group => group.Evidence)];
+
+        Assert.Equal(["b-twin"], evidence.Select(static candidate => candidate.Target.MemoryId));
+
+        Assert.DoesNotContain(evidence, static candidate => candidate.Lane == LongRestDiscoveryLane.Vector);
     }
 }

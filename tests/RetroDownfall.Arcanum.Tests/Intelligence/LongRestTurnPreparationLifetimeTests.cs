@@ -124,8 +124,8 @@ public sealed class LongRestTurnPreparationLifetimeTests
 
         f.Handler.InsideSend = async () =>
         {
-            f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted clean summary.\"}";
+            f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Accepted clean summary.\"}";
 
             entered.TrySetResult();
 
@@ -313,8 +313,8 @@ public sealed class LongRestTurnPreparationLifetimeTests
 
             f.Handler.InsideSend = () =>
             {
-                f.Handler.ChatText = f.Handler.LastBody!.Contains("survivorVersionId", StringComparison.Ordinal)
-                    ? "{\"kind\":\"NoChange\",\"survivorVersionId\":null}" : "{\"summary\":\"Accepted summary.\"}";
+                f.Handler.ChatText = LongRestScriptedVerdicts.IsAdjudication(f.Handler.LastBody!)
+                    ? LongRestScriptedVerdicts.NoMatches(f.Handler.LastBody!) : "{\"summary\":\"Accepted summary.\"}";
 
                 return Task.CompletedTask;
             };

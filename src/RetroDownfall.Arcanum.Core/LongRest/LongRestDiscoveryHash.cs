@@ -238,12 +238,13 @@ public static class LongRestDiscoveryHash
         if (work is null || work.GenerationId == Guid.Empty || work.OperationId == Guid.Empty
             || !ValidIdentity(work.ItemId) || work.Kind is < LongRestWorkKind.SourcePage or > LongRestWorkKind.Anchor
             || !work.Scope.IsInitialized || !work.SourceDigest.IsValid || !work.RecipeDigest.IsValid
+            || !ValidPairingFloor(work.Kind, work.PairingFloorPermille)
             || !ValidFence(work.Fence, work.Scope))
         {
             return Invalid("A work identity requires exact valid source, recipe, scope and generation fences.");
         }
 
-        using MemoryStream bytes = Start("Arcanum.LongRest.Work.v1\0");
+        using MemoryStream bytes = Start("Arcanum.LongRest.Work.v2\0");
 
         String(bytes, work.GenerationId.ToString("D"));
 
@@ -292,8 +293,15 @@ public static class LongRestDiscoveryHash
 
         Digest(bytes, work.RecipeDigest);
 
+        Int32(bytes, work.PairingFloorPermille);
+
         return Hash(bytes);
     }
+
+    // An anchor unit records the floor its pairs were proved against; no other unit has one.
+    private static bool ValidPairingFloor(LongRestWorkKind kind, int floorPermille) => kind == LongRestWorkKind.Anchor
+        ? floorPermille is >= LongRestDiscoveryLimits.PairingAbsoluteMinimumPermille and <= 1000
+        : floorPermille == 0;
 
     public static Result<CovenantDigest> Recipe(LongRestRecipeIdentity recipe)
     {
@@ -314,16 +322,27 @@ public static class LongRestDiscoveryHash
             || recipe.LexicalTopK != LongRestDiscoveryLimits.LexicalTopK
             || recipe.VectorTopK != LongRestDiscoveryLimits.VectorTopK
             || recipe.SummaryTopK != LongRestDiscoveryLimits.SummaryTopK
-            || recipe.MinimumVectorCosine != LongRestDiscoveryLimits.MinimumVectorCosine
+            || recipe.SummaryMinimumCosinePermille != LongRestDiscoveryLimits.SummaryMinimumCosinePermille
             || recipe.ExpandedLeafLimit != LongRestDiscoveryLimits.ExpandedLeaves
             || recipe.TraversalFrontierLimit != LongRestDiscoveryLimits.TraversalFrontier
             || recipe.MergedNeighborLimit != LongRestDiscoveryLimits.MergedNeighbors
-            || recipe.LexicalMinimumScore != LongRestDiscoveryLimits.LexicalMinimumScore)
+            || recipe.LexicalMinimumCoveragePermille != LongRestDiscoveryLimits.LexicalMinimumCoveragePermille
+            || recipe.PairingRecipeVersion != LongRestDiscoveryLimits.PairingRecipeVersion
+            || recipe.PairingClosenessPermille != LongRestDiscoveryLimits.PairingClosenessPermille
+            || recipe.PairingSpreadTenths != LongRestDiscoveryLimits.PairingSpreadTenths
+            || recipe.PairingSpreadStepTenths != LongRestDiscoveryLimits.PairingSpreadStepTenths
+            || recipe.PairingSpreadMinimumThousandths != LongRestDiscoveryLimits.PairingSpreadMinimumThousandths
+            || recipe.PairingSampleLeaves != LongRestDiscoveryLimits.PairingSampleLeaves
+            || recipe.PairingMinimumLeaves != LongRestDiscoveryLimits.PairingMinimumLeaves
+            || recipe.PairingFallbackPermille != LongRestDiscoveryLimits.PairingFallbackPermille
+            || recipe.PairingAbsoluteMinimumPermille != LongRestDiscoveryLimits.PairingAbsoluteMinimumPermille
+            || recipe.PairingHistogramBins != LongRestDiscoveryLimits.PairingHistogramBins
+            || recipe.PairFallbackLimit != LongRestDiscoveryLimits.PairFallbackLimit)
         {
             return Invalid("A recipe requires exact configured identities and the fixed code-owned work bounds.");
         }
 
-        using MemoryStream bytes = Start("Arcanum.LongRest.Recipe.v1\0");
+        using MemoryStream bytes = Start("Arcanum.LongRest.Recipe.v2\0");
 
         Int32(bytes, recipe.SummaryRecipeVersion);
 
@@ -356,9 +375,19 @@ public static class LongRestDiscoveryHash
             Int32(bytes, bound);
         }
 
-        Int64(bytes, BitConverter.DoubleToInt64Bits(recipe.MinimumVectorCosine));
+        // Everything below is an integer: no floating-point value is bound into the recipe.
+        int[] discovery =
+        [
+            recipe.SummaryMinimumCosinePermille, recipe.LexicalMinimumCoveragePermille, recipe.PairingRecipeVersion,
+            recipe.PairingClosenessPermille, recipe.PairingSpreadTenths, recipe.PairingSpreadStepTenths, recipe.PairingSpreadMinimumThousandths,
+            recipe.PairingSampleLeaves, recipe.PairingMinimumLeaves, recipe.PairingFallbackPermille, recipe.PairingAbsoluteMinimumPermille,
+            recipe.PairingHistogramBins, recipe.PairFallbackLimit,
+        ];
 
-        Int32(bytes, recipe.LexicalMinimumScore);
+        foreach (int value in discovery)
+        {
+            Int32(bytes, value);
+        }
 
         Int32(bytes, recipe.AdjudicationRecipeVersion);
 

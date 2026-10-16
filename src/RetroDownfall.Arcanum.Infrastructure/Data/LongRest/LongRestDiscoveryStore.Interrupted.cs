@@ -22,7 +22,7 @@ internal sealed partial class LongRestDiscoveryStore
                 SELECT unit.WorkItemId, unit.KindCode, unit.ItemId, unit.SourceDigest, unit.RecipeDigest, unit.WorkDigest,
                     effect.WorkDigest, effect.AttemptId, effect.PayloadKindCode, effect.PhysicalOrdinal, effect.Revision,
                     effect.PayloadDigest, effect.DestinationDigest, effect.DisclosureReceiptDigest, effect.CompletionJson, effect.FailureCount, unit.OperationId, unit.DispositionCode,
-                    effect.OriginalWorkJson
+                    effect.OriginalWorkJson, unit.PairingFloorPermille
                 FROM long_rest_provider_effects effect JOIN long_rest_work_items unit ON unit.WorkItemId = effect.WorkItemId
                 WHERE unit.GenerationId = $generation
                     AND effect.StateCode = 3 AND ($cursor IS NULL OR unit.WorkItemId > $cursor)
@@ -34,7 +34,7 @@ internal sealed partial class LongRestDiscoveryStore
                 while (await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
                     LongRestWorkIdentity work = new(original.GenerationId, original.OperationId, reader.GetString(2), (LongRestWorkKind)reader.GetInt32(1),
-                        original.Scope, original.Fence, new((byte[])reader[3]), new((byte[])reader[4]));
+                        original.Scope, original.Fence, new((byte[])reader[3]), new((byte[])reader[4]), reader.GetInt32(19));
 
                     var hash = LongRestDiscoveryHash.Work(work);
 

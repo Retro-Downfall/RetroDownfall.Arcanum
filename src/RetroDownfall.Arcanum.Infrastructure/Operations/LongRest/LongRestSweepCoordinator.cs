@@ -201,6 +201,14 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
                 readmitCount = readmitted.ReadmitCount;
 
                 ArcanumMetrics.LongRestSweepReadmittedTotal.Add(1);
+
+                // Recovery parks a crashed sweep (long_rest.interrupted) and an operator-retried one (long_rest.readmit_requested) through the Pure Park
+                // Handler, which has no dependencies and so cannot count. Nobody else sees those parks, so the worker counts them where it readmits them,
+                // once. A park the worker stamped itself was counted when it was stamped, and is not counted again here.
+                if (code is LongRestParkCodes.Interrupted or LongRestParkCodes.ReadmitRequested)
+                {
+                    RecordParked(code);
+                }
             }
             else
             {

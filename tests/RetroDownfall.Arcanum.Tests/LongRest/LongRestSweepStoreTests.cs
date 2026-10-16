@@ -195,6 +195,10 @@ public sealed partial class LongRestSweepStoreTests
 
         internal CovenantTurnLease Authority { get; } = authority;
 
+        // A word that is not a number: the default memories say the same kind of thing, and a digit in them would be a different number in each,
+        // which Number Agreement refuses to fold.
+        private static string Word(int index) => string.Concat(Enumerable.Range(0, 3).Select(place => (char)('a' + ((index >> (4 * place)) & 15))));
+
         internal LongRestMaintenanceCapability? Capability { get; private set; }
 
         internal LongRestSweepStore Store { get; } = new(h.Saga.Context, TimeProvider.System);
@@ -203,9 +207,19 @@ public sealed partial class LongRestSweepStoreTests
 
         internal static async Task<Fixture> CreateAsync(bool protect, int sourceCount = 2, bool campaign = false, bool duplicates = false, bool omittedOwner = false, string? policyFault = null,
             int inputBudget = LongRestDiscoveryLimits.ProviderInputUtf8Bytes, Func<int, string>? text = null, Func<int, float[]>? vector = null,
-            Func<LongRestHierarchyWork, float[]>? foldVector = null)
+            Func<LongRestHierarchyWork, float[]>? foldVector = null, int? related = null, int[]? clusters = null)
         {
             LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+            // A generation of more than fifteen other leaves has a distribution of its own, and a memory is paired only with what stands out of it. So a
+            // corpus that wants a group among many memories is a tight cluster of the first <related> of them among memories that each have a vector
+            // of their own. Fewer than sixteen other leaves use the fallback floor, and the default identical vectors pair them all.
+            if (related is not null || clusters is not null)
+            {
+                int[] sizes = clusters ?? [related!.Value];
+
+                vector ??= index => LongRestClusters.Vector(sizes, index);
+            }
 
             h.ProviderInputBudget = inputBudget;
 
@@ -226,7 +240,7 @@ public sealed partial class LongRestSweepStoreTests
             {
                 Guid memory = new("10000000-0000-0000-0000-" + index.ToString("D12", System.Globalization.CultureInfo.InvariantCulture));
 
-                await h.SeedAsync(memory.ToString("D"), text?.Invoke(index) ?? (duplicates ? "identical observation" : "related observation " + index), session);
+                await h.SeedAsync(memory.ToString("D"), text?.Invoke(index) ?? (duplicates ? "identical observation" : "related observation " + Word(index)), session);
 
                 if (vector is not null)
                 {

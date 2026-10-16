@@ -14,12 +14,14 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 // order, and streams the vector and exact lanes through bounded buffers with a span-based cosine. The reference below is the plain
 // version of the same specification: it reads every captured leaf, ranks each lane by merging candidates through the public policy one
 // at a time (the previous implementation's vector and exact lanes, kept here verbatim) and scores the lexical lane over every leaf
-// with no index at all. Over seeded random corpora the two must produce identical groups and evidence, scores included. Pinned and
+// with no index at all. It also computes each anchor's Background Floor the plain way (every cosine sorted, the quantile read from the sorted
+// list and then placed in its bin by the bin arithmetic), where the production scan fills fixed histograms while it streams, and keeps only the
+// vector evidence that clears it; the corpus puts neighbours a twentieth of a thousandth either side of each anchor's actual floor. Over seeded random corpora the two must produce identical groups and evidence, scores included. Pinned and
 // retired memories are part of the corpus the sweep runs over but are never captured, so they are in no generation: the generation's
 // document count, every document frequency and every lane are those of the eligible memories alone, and no group ever names one.
 public sealed class LongRestDiscoveryOracleTests
 {
-    private const int Width = 16;
+    private const int Width = 64;
 
     private sealed record Corpus(string[] Ids, string[] Texts, float[][] Vectors, HashSet<int> Pinned, HashSet<int> Retired, int[] Anchors);
 
@@ -92,7 +94,7 @@ public sealed class LongRestDiscoveryOracleTests
         return string.Join(random.Next(2) == 0 ? " " : ", ", parts);
     }
 
-    private static Corpus Generate(int seed, int count)
+    private static Corpus Generate(int seed, int count, double[] floors)
     {
         Random random = new(seed);
 
@@ -136,24 +138,44 @@ public sealed class LongRestDiscoveryOracleTests
 
             anchors.Add(index);
 
-            vectors[index] = AtCosine(random, bases[anchor % bases.Length], 0.9, 1 + random.NextDouble() * 3);
+            // An odd anchor stands apart from every cluster, so nothing organic competes with the neighbours placed around its floor for the lane's
+            // eight places; an even anchor sits in a crowd, where the lane's own cut is what decides.
+            vectors[index] = anchor % 2 == 0
+                ? AtCosine(random, bases[anchor % bases.Length], 0.9, 1 + random.NextDouble() * 3)
+                : Unit(random, Width);
 
             float[] unit = SphericalKMeans.NormalizedDirection(vectors[index]);
 
-            // Near duplicates just above and just below the 0.92 floor (down to 5e-5 either side of it), and exact vector ties, all at distinct magnitudes.
+            // Near duplicates just above and just below the anchor's own floor (down to 5e-5 either side of it), and exact vector ties, all at distinct magnitudes.
             for (int offset = 0; offset < 16; offset++)
             {
                 int neighbour = 30 + anchor * 16 + offset;
 
-                vectors[neighbour] = offset switch
-                {
-                    < 3 => AtCosine(random, unit, 0.9215, 0.5 + offset),
-                    < 6 => AtCosine(random, unit, 0.9185, 0.5 + offset),
-                    < 9 => [.. vectors[index]],
-                    < 12 => AtCosine(random, unit, 0.99, 2),
-                    < 14 => AtCosine(random, unit, 0.92005, 0.5 + offset),
-                    _ => AtCosine(random, unit, 0.91995, 0.5 + offset),
-                };
+                double floor = floors[anchor];
+
+                // Even anchors are crowded: exact vector ties and strong neighbours fill the lane, so the cut that matters is the lane's own. Odd
+                // anchors are sparse: only neighbours around the anchor's floor, down to 5e-5 either side of it, so the cut that matters is the floor.
+                vectors[neighbour] = anchor % 2 == 0
+                    ? offset switch
+                    {
+                        < 3 => AtCosine(random, unit, floor + 0.0015, 0.5 + offset),
+                        < 6 => AtCosine(random, unit, floor - 0.0015, 0.5 + offset),
+                        < 9 => [.. vectors[index]],
+                        < 12 => AtCosine(random, unit, 0.99, 2),
+                        < 14 => AtCosine(random, unit, floor + 0.00005, 0.5 + offset),
+                        _ => AtCosine(random, unit, floor - 0.00005, 0.5 + offset),
+                    }
+                    : offset switch
+                    {
+                        0 => AtCosine(random, unit, floor + 0.0015, 0.5 + offset),
+                        1 => AtCosine(random, unit, floor + 0.00005, 0.5 + offset),
+                        2 => AtCosine(random, unit, floor - 0.00005, 0.5 + offset),
+                        3 => AtCosine(random, unit, floor - 0.0015, 0.5 + offset),
+                        4 => AtCosine(random, unit, floor + 0.0003, 0.5 + offset),
+                        5 => AtCosine(random, unit, floor - 0.0003, 0.5 + offset),
+                        < 9 => [.. vectors[index]],
+                        _ => AtCosine(random, unit, 0.3, 0.5 + offset),
+                    };
 
                 // Lexical neighbours: a growing overlap with the anchor's own text, so the lane has a real order with ties at its cut.
                 string[] own = texts[index].Split([' ', ','], StringSplitOptions.RemoveEmptyEntries);
@@ -198,6 +220,15 @@ public sealed class LongRestDiscoveryOracleTests
     private static bool Eligible(LongRestSourceLeaf leaf) => leaf.Snapshot.IsCurrent
         && !leaf.Snapshot.IsConsolidated && leaf.Snapshot.PinnedAtUtc is null && leaf.Snapshot.RetiredAtUtc is null;
 
+    private static double? Cosine(float[] left, float[] right)
+    {
+        float[] a = SphericalKMeans.NormalizedDirection(left);
+
+        float[] b = SphericalKMeans.NormalizedDirection(right);
+
+        return a.Length == 0 || a.Length != b.Length ? null : SphericalKMeans.DirectionCosine(a, b);
+    }
+
     // The reference discovery: every leaf is read, and nothing is streamed, bounded or lazy.
     private static async Task<LongRestCandidateGroup[]> ReferenceAsync(LongRestSweepHarness h, LongRestDiscoveryGeneration generation, string anchorMemory,
         LongRestMaintenanceCapability? capability)
@@ -235,6 +266,8 @@ public sealed class LongRestDiscoveryOracleTests
 
         float[] direction = SphericalKMeans.NormalizedDirection(source.Vector.ToArray());
 
+        int floor = LongRestPairingReference.Floor([.. memories.Select(memory => leaves[memory].Vector.IsDefaultOrEmpty ? [] : leaves[memory].Vector.ToArray())], memories.IndexOf(anchorMemory));
+
         foreach (string memory in memories)
         {
             LongRestSourceLeaf candidate = leaves[memory];
@@ -252,7 +285,13 @@ public sealed class LongRestDiscoveryOracleTests
 
                 if (other.Length == direction.Length)
                 {
-                    Rank(new(candidate.Target, LongRestDiscoveryLane.Vector, Math.Clamp(SphericalKMeans.DirectionCosine(direction, other), -1, 1)));
+                    double cosine = Math.Clamp(SphericalKMeans.DirectionCosine(direction, other), -1, 1);
+
+                    // Only what clears the anchor's floor is ranked; the scan ranks every cosine and drops those below it afterwards.
+                    if (LongRestPairing.Clears(cosine, floor))
+                    {
+                        Rank(new(candidate.Target, LongRestDiscoveryLane.Vector, cosine));
+                    }
                 }
             }
         }
@@ -276,8 +315,13 @@ public sealed class LongRestDiscoveryOracleTests
 
             ImmutableArray<int> weights = LongRestLexicalScorer.Weights(memories.Count, [.. frequencies]);
 
-            var ranked = memories.Select((memory, index) => (Memory: memory, Score: LongRestLexicalScorer.Score(weights, documents[index])))
-                .Where(item => item.Memory != anchorMemory && item.Score >= LongRestDiscoveryLimits.LexicalMinimumScore)
+            var scored = memories.Select((memory, index) => (Memory: memory, Score: LongRestLexicalScorer.Score(weights, documents[index]))).ToArray();
+
+            // A hit is nominated when it covers a fifth of what the anchor scores against itself under the same weights.
+            long self = scored.Single(item => item.Memory == anchorMemory).Score;
+
+            var ranked = scored
+                .Where(item => item.Memory != anchorMemory && self > 0 && item.Score > 0 && item.Score * 1000 >= self * LongRestDiscoveryLimits.LexicalMinimumCoveragePermille)
                 .OrderByDescending(static item => item.Score).ThenBy(static item => item.Memory, StringComparer.Ordinal).ToArray();
 
             int eligible = 0;
@@ -294,7 +338,7 @@ public sealed class LongRestDiscoveryOracleTests
 
         ImmutableArray<LongRestCandidate> merged = LongRestSweepHarness.Require(LongRestDiscoveryPolicy.MergeCandidates(anchor, lanes.SelectMany(static lane => lane)));
 
-        return LongRestSweepHarness.Require(LongRestDiscoveryPolicy.GroupCandidates(anchor, merged)).ToArray();
+        return LongRestSweepHarness.Require(LongRestDiscoveryPolicy.GroupCandidates(anchor, merged, floor)).ToArray();
 
         void Rank(LongRestCandidate candidate)
         {
@@ -315,7 +359,31 @@ public sealed class LongRestDiscoveryOracleTests
 
         int count = protectedPartition ? 170 : 330;
 
-        Corpus corpus = Generate(seed, count);
+        // The corpus puts its near neighbours either side of each designated anchor's actual floor, which depends on the corpus: it is settled in a few rounds.
+        double[] floors = [.. Enumerable.Repeat(0.92, 8)];
+
+        Corpus corpus = Generate(seed, count, floors);
+
+        bool settled = false;
+
+        for (int round = 0; round < 20 && !settled; round++)
+        {
+            double[] next = [.. corpus.Anchors.Select(anchor => LongRestPairingReference.Floor([.. Enumerable.Range(0, count).Where(index => !corpus.Pinned.Contains(index) && !corpus.Retired.Contains(index)).Select(index => corpus.Vectors[index])],
+                Enumerable.Range(0, count).Where(index => !corpus.Pinned.Contains(index) && !corpus.Retired.Contains(index)).ToList().IndexOf(anchor)) / 1000.0)];
+
+            settled = next.SequenceEqual(floors);
+
+            if (settled) break;
+
+            floors = next;
+
+            corpus = Generate(seed, count, floors);
+        }
+
+        Assert.True(settled, "The corpus's floors did not settle: " + string.Join(",", floors.Select(static floor => floor.ToString("F4"))));
+
+        // A corpus whose floors reached one would pair nothing but identical memories and test no cut at all.
+        Assert.True(floors.All(static floor => floor < 0.99), "floors " + string.Join(",", floors.Select(static floor => floor.ToString("F4"))));
 
         GenerationProvenance provenance = GenerationProvenance.CreateExact([Guid.NewGuid()]);
 
@@ -369,6 +437,10 @@ public sealed class LongRestDiscoveryOracleTests
 
         int exactEvidence = 0;
 
+        int nearAbove = 0;
+
+        int nearBelow = 0;
+
         foreach (int anchorIndex in corpus.Anchors)
         {
             string anchor = Id(anchorIndex, protectedPartition);
@@ -399,6 +471,14 @@ public sealed class LongRestDiscoveryOracleTests
 
             vectorEvidence += evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.Vector);
 
+            double floor = actual[0].PairingFloorPermille / 1000.0;
+
+            nearAbove += evidence.Count(candidate => candidate.Lane == LongRestDiscoveryLane.Vector && candidate.Score - floor is >= 0 and < 0.0002);
+
+            // A leaf the scan did not nominate because it sits just below the floor: counted from the corpus itself, not from the evidence.
+            nearBelow += Enumerable.Range(0, count).Count(index => Id(index, protectedPartition) != anchor && !excluded.Contains(Id(index, protectedPartition)) && corpus.Vectors[index].Length == Width
+                && Cosine(corpus.Vectors[anchorIndex], corpus.Vectors[index]) is { } cosine && floor - cosine is > 0 and < 0.0002);
+
             exactEvidence += evidence.Count(static candidate => candidate.Lane == LongRestDiscoveryLane.ExactHash);
         }
 
@@ -406,6 +486,11 @@ public sealed class LongRestDiscoveryOracleTests
         Assert.True(fullLexical >= 3, $"full lexical lanes: {fullLexical} {report}");
 
         Assert.True(vectorEvidence >= 8, $"vector evidence: {vectorEvidence}");
+
+        // The floor is an inclusive cut: a neighbour a twentieth of a thousandth above it is evidence, one a twentieth below it is not.
+        Assert.True(nearAbove >= 2, $"neighbours just above a floor: {nearAbove}");
+
+        Assert.True(nearBelow >= 2, $"neighbours just below a floor: {nearBelow}");
 
         Assert.True(exactEvidence >= corpus.Anchors.Length * 2, $"exact evidence: {exactEvidence}");
 

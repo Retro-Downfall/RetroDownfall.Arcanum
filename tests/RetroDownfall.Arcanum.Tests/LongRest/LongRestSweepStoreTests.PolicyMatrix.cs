@@ -72,13 +72,13 @@ public sealed partial class LongRestSweepStoreTests
         await using (SqliteTransaction transaction = fixture.H.Connection.BeginTransaction(deferred: false))
         {
             work = new(fixture.Generation.GenerationId, fixture.Generation.OperationId, "canonical-matrix", LongRestWorkKind.Anchor, fixture.Generation.Scope,
-                fixture.Generation.Fence, LongRestDiscoveryHash.SourcePage(fixture.Generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(fixture.Generation.Recipe).Value);
+                fixture.Generation.Fence, LongRestDiscoveryHash.SourcePage(fixture.Generation.Scope, inputs).Value, LongRestDiscoveryHash.Recipe(fixture.Generation.Recipe).Value, 920);
 
             await using SqliteCommand unit = fixture.H.Connection.CreateCommand();
 
             unit.Transaction = transaction;
 
-            unit.CommandText = "INSERT INTO long_rest_work_items (WorkItemId, WorkDigest, GenerationId, OperationId, KindCode, ItemId, SourceDigest, RecipeDigest, Revision, DispositionCode) VALUES ($unit, $work, $generation, $operation, 3, 'canonical-matrix', $source, $recipe, 0, 1);";
+            unit.CommandText = "INSERT INTO long_rest_work_items (WorkItemId, WorkDigest, GenerationId, OperationId, KindCode, ItemId, SourceDigest, RecipeDigest, PairingFloorPermille, Revision, DispositionCode) VALUES ($unit, $work, $generation, $operation, 3, 'canonical-matrix', $source, $recipe, 920, 0, 1);";
 
             string id = Guid.NewGuid().ToString("D").ToUpperInvariant();
 

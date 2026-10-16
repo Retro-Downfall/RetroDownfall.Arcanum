@@ -13,6 +13,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public sealed partial class ModelCallExecutor
 {
+    /// <summary>The reasoning control of an adjudication request to a model that declares reasoning: the typed effort None.</summary>
+    private static readonly ReasoningOptions AdjudicationReasoningOff = new() { Effort = ReasoningEffort.None };
+
     public async Task<Result<LongRestProviderResult>> ExecuteLongRestChatAsync(IChatClient chatClient, LongRestProviderPayload payload,
         ITurnBudget budget, Func<CancellationToken, Task> beforeSend, Func<LongRestProviderUsage, Task> recordPaidUsage,
         LongRestProviderAdmission admission, CancellationToken cancellationToken)
@@ -69,6 +72,12 @@ public sealed partial class ModelCallExecutor
                 Tools = [],
                 ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.RootElement.Clone(), request.SchemaName, request.SchemaDescription),
             };
+
+            // A model that declares reasoning answers an adjudication with none (the digest the attempt was prepared under binds this).
+            if (LongRestProviderCallFreezer.AdjudicationReasoningOff(payload.Kind, chat.Context.Provider, chat.Context.Model))
+            {
+                options.Reasoning = AdjudicationReasoningOff;
+            }
 
             dispatched = true;
 
@@ -267,6 +276,16 @@ public sealed partial class ModelCallExecutor
 
     private static LongRestProviderResult ParseLongRestChat(LongRestProviderPayload payload, string text, LongRestProviderUsage usage)
     {
+        // An adjudication is member verdicts, decided as a whole by the one pure reader; the model never names a survivor or a supersession.
+        if (payload.Kind == LongRestProviderPayloadKind.Adjudication)
+        {
+            LongRestAdjudicationDecision? decision = LongRestMemberVerdict.Decide(text, payload.Inputs);
+
+            return decision is null
+                ? InvalidLongRestOutput(payload.Kind, usage)
+                : new(payload.Kind, LongRestProviderResultDisposition.Valid, null, decision, [], usage, null);
+        }
+
         try
         {
             using JsonDocument document = JsonDocument.Parse(text);
@@ -280,41 +299,15 @@ public sealed partial class ModelCallExecutor
 
             JsonProperty[] properties = [.. root.EnumerateObject()];
 
-            if (payload.Kind == LongRestProviderPayloadKind.Summary)
-            {
-                if (properties.Length != 1 || properties[0].Name != "summary" || properties[0].Value.ValueKind != JsonValueKind.String)
-                {
-                    return InvalidLongRestOutput(payload.Kind, usage);
-                }
-
-                string summary = properties[0].Value.GetString()!;
-
-                return !string.IsNullOrWhiteSpace(summary) && new UTF8Encoding(false, true).GetByteCount(summary) <= LongRestDiscoveryLimits.SummaryUtf8Bytes
-                    ? new(payload.Kind, LongRestProviderResultDisposition.Valid, summary, null, [], usage, null)
-                    : InvalidLongRestOutput(payload.Kind, usage);
-            }
-
-            if (properties.Length != 2 || properties.Select(p => p.Name).Distinct(StringComparer.Ordinal).Count() != 2
-                || !root.TryGetProperty("kind", out JsonElement kind) || kind.ValueKind != JsonValueKind.String
-                || !root.TryGetProperty("survivorVersionId", out JsonElement survivor) || survivor.ValueKind is not (JsonValueKind.Null or JsonValueKind.String))
+            if (properties.Length != 1 || properties[0].Name != "summary" || properties[0].Value.ValueKind != JsonValueKind.String)
             {
                 return InvalidLongRestOutput(payload.Kind, usage);
             }
 
-            LongRestAdjudicationKind? decision = kind.GetString() switch
-            {
-                "EquivalentObservations" => LongRestAdjudicationKind.EquivalentObservations,
-                "Supersession" => LongRestAdjudicationKind.Supersession,
-                "NoChange" => LongRestAdjudicationKind.NoChange,
-                _ => null,
-            };
+            string summary = properties[0].Value.GetString()!;
 
-            string? version = survivor.GetString();
-
-            bool valid = decision is not null && (decision == LongRestAdjudicationKind.Supersession
-                ? version is not null && payload.Inputs.Any(input => input.Snapshot.VersionId == version) : version is null);
-
-            return valid ? new(payload.Kind, LongRestProviderResultDisposition.Valid, null, new(decision!.Value, version), [], usage, null)
+            return !string.IsNullOrWhiteSpace(summary) && new UTF8Encoding(false, true).GetByteCount(summary) <= LongRestDiscoveryLimits.SummaryUtf8Bytes
+                ? new(payload.Kind, LongRestProviderResultDisposition.Valid, summary, null, [], usage, null)
                 : InvalidLongRestOutput(payload.Kind, usage);
         }
         catch (Exception exception) when (exception is JsonException or EncoderFallbackException or InvalidOperationException)

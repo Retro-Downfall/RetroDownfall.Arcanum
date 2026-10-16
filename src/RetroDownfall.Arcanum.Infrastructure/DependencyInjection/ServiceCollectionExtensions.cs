@@ -1431,6 +1431,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILongRestService, SagaLongRestService>();
 
         services.AddSingleton<LongRestSweepQueue>();
+        services.AddSingleton<ILongRestSweepWake>(static sp => sp.GetRequiredService<LongRestSweepQueue>());
 
         services.AddScoped<LongRestLiveFenceReader>();
 

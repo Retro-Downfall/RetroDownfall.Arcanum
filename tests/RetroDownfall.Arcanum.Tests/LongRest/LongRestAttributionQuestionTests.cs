@@ -197,8 +197,8 @@ public sealed class LongRestAttributionQuestionTests
 
     /// <summary>Puts the receipt on a committed work item of the generation, which is what makes it the sweep's own.</summary>
     private static Task OwnAsync(LongRestSweepHarness h, LongRestDiscoveryGeneration generation, string receipt) => h.ExecuteAsync("""
-        INSERT INTO long_rest_work_items (WorkItemId, WorkDigest, GenerationId, OperationId, KindCode, ItemId, SourceDigest, RecipeDigest, Revision, DispositionCode, ReceiptId)
-        VALUES ($unit, randomblob(32), $generation, $operation, 3, $item, zeroblob(32), zeroblob(32), 0, 2, $receipt);
+        INSERT INTO long_rest_work_items (WorkItemId, WorkDigest, GenerationId, OperationId, KindCode, ItemId, SourceDigest, RecipeDigest, PairingFloorPermille, Revision, DispositionCode, ReceiptId)
+        VALUES ($unit, randomblob(32), $generation, $operation, 3, $item, zeroblob(32), zeroblob(32), 920, 0, 2, $receipt);
         """, ("$unit", Guid.NewGuid().ToString("D").ToUpperInvariant()), ("$generation", generation.GenerationId.ToString("D").ToUpperInvariant()),
         ("$operation", generation.OperationId.ToString("N")), ("$item", "anchor:" + receipt), ("$receipt", receipt));
 

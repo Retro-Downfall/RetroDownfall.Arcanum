@@ -34,7 +34,7 @@ public sealed class ArcanumHealthChecker(
     /// A health probe must never fail because diagnostics failed. An unreadable ledger degrades to
     /// "unknown" rather than taking the whole report down.
     /// </summary>
-    private static async Task<DurableOperationDiagnosticsReport> SafeInspectAsync(
+    private static async Task<DurableOperationDiagnosticsReport?> SafeInspectAsync(
         IDurableOperationDiagnostics diagnostics,
         CancellationToken cancellationToken)
     {
@@ -46,7 +46,7 @@ public sealed class ArcanumHealthChecker(
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
-            return DurableOperationDiagnosticsReport.Empty;
+            return null;
         }
     }
 
@@ -207,25 +207,38 @@ public sealed class ArcanumHealthChecker(
         // The reconciliation snapshot only says what the last pass did. Issue #40 also requires the
         // states that pass could not fix — stale leases, operations recovery gave up on, and kinds
         // with no owning handler — to be visible with the guidance for repairing them.
-        DurableOperationDiagnosticsReport operationDiagnostics = operationDiagnosticsSource is null
-            ? DurableOperationDiagnosticsReport.Empty
+        DurableOperationDiagnosticsReport? operationDiagnostics = operationDiagnosticsSource is null
+            ? null
             : await SafeInspectAsync(operationDiagnosticsSource, cancellationToken).ConfigureAwait(false);
 
-        bool operationAttention = operationSnapshot.Deferred
-            || !operationSnapshot.StartupCompleted
-            || operationSnapshot.LastSummary?.RequiresAttention > 0
-            || operationDiagnostics.NeedsAttention;
-        components.Add(new HealthComponentDto(
-            "DurableOperations",
-            operationAttention ? HealthStatus.Degraded : HealthStatus.Healthy,
-            $"{operationSnapshot.PublicDetail ?? "Durable operation reconciliation completed."} "
-            + operationDiagnostics.Describe()));
+        components.Add(BuildDurableOperationsComponent(operationSnapshot, operationDiagnostics));
 
         components.Add(BuildFileEncryptionComponent(fileEncryptionRuntimeStatus));
 
         HealthStatus overall = AggregateOverall(components);
 
         return new HealthReportDto(overall, components.ToArray());
+    }
+
+    /// <summary>
+    /// The DurableOperations row. The last reconciliation pass says what it did, not what is true now: a sweep that pass parked for the Long Rest
+    /// worker is readmitted and finished within a minute, yet that pass stays the last one until the next runs, so its attention count is not
+    /// a standing condition and is read only when the live ledger cannot be (<paramref name="live"/> is null). Otherwise the ledger decides: stale
+    /// leases, operations awaiting repair, and kinds with no handler. An unfinished startup or a deferred pass always degrades the row.
+    /// </summary>
+    internal static HealthComponentDto BuildDurableOperationsComponent(
+        LongRunningOperationReconciliationSnapshot snapshot,
+        DurableOperationDiagnosticsReport? live)
+    {
+        bool operationAttention = snapshot.Deferred
+            || !snapshot.StartupCompleted
+            || (live is { } reading ? reading.NeedsAttention : snapshot.LastSummary?.RequiresAttention > 0);
+
+        return new HealthComponentDto(
+            "DurableOperations",
+            operationAttention ? HealthStatus.Degraded : HealthStatus.Healthy,
+            $"{snapshot.PublicDetail ?? "Durable operation reconciliation completed."} "
+            + (live ?? DurableOperationDiagnosticsReport.Empty).Describe());
     }
 
     /// <summary>
