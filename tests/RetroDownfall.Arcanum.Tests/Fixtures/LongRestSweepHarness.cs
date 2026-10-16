@@ -58,13 +58,20 @@ internal sealed partial class LongRestSweepHarness(SagaStoreHarness saga) : IAsy
     private int _seeded;
 
     /// <summary>
+    /// Seeds every memory with the one vector the shared Saga harness hands out, so all of them are the same point. That is a collapsed space and
+    /// pairs nothing but byte-identical content; it is for a test that pins the shape the hierarchy builds from degenerate layers, which depends on
+    /// the vectors being identical, and for nothing that wants memories paired.
+    /// </summary>
+    internal bool IdenticalVectors { get; set; }
+
+    /// <summary>
     /// Seeds a memory whose vector is near every other seeded memory's and its own: all of them lean 0.98 on one shared axis and each takes an axis
     /// of its own, so two are 0.96 alike. A generation of fewer than sixteen other leaves pairs them at the fallback floor, as a model would pair
     /// paraphrases, and the space is not collapsed (a collapsed space, in which every memory has the same vector, pairs nothing but byte-identical
     /// content). A test that wants memories to differ more, or to be unrelated, gives them vectors itself.
     /// </summary>
     internal Task SeedAsync(string id, string text, Guid? session = null) => Saga.Store.InsertAsync(id, text,
-        new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", Related(Interlocked.Increment(ref _seeded)), CancellationToken.None);
+        new DateTimeOffset(2026, 10, 10, 0, 0, 0, TimeSpan.Zero), session, null, "extraction", IdenticalVectors ? Saga.Embedding() : Related(Interlocked.Increment(ref _seeded)), CancellationToken.None);
 
     /// <summary>The vector of the <paramref name="number"/>th memory seeded with <see cref="SeedAsync"/>: 0.98 on the shared axis and the rest on an axis of its own.</summary>
     internal float[] Related(int number)
