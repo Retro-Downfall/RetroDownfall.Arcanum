@@ -13,9 +13,15 @@ internal sealed record HostProcessToolsRecoveryMarkerSnapshot(
     HostProcessToolsMarkerReadResult Marker);
 
 /// <summary>
-/// Classifies host-process-tools authority for one active-journal recovery without publishing the
-/// process-wide startup decision.
+/// Classifies host-process-tools authority for one recovery pass without publishing the process-wide
+/// startup decision.
 /// </summary>
+/// <remarks>
+/// Two callers use it, and neither is a bootstrap: the pre-bootstrap recovery of an active
+/// offline-transition journal, and the stopped-host installation reset, which classifies once per
+/// process to measure the Covenant family it is about to erase
+/// (<see cref="InstallationReset.StoppedHostCovenantAuthority"/>).
+/// </remarks>
 internal interface IHostProcessToolsRecoveryStartupClassifier
 {
     Result<HostProcessToolsRecoveryMarkerSnapshot> CaptureMarker();

@@ -1353,6 +1353,138 @@ public sealed class DocumentationCodeContradictionTests
     }
 
     /// <summary>
+    /// A global or all reset in the stopped-host process measures the Covenant family and runs the
+    /// protected erasure itself, so no document may still say that such a reset is refused for want of
+    /// an inventory, and each document that describes the planning says what measures it and which
+    /// refusals are typed.
+    /// </summary>
+    [Fact]
+    public void A_stopped_host_global_reset_is_documented_as_measuring_and_erasing_the_Covenant_family()
+    {
+        string[] documents =
+        [
+            "Arcanum.DESIGN.md",
+            "Arcanum.Command.Reference.md",
+            "Arcanum.Engineering.md",
+            "Arcanum.OATH.md",
+            "Arcanum.Design.Human.md",
+            "Arcanum.CHAT-LOOP.md",
+            "Arcanum.API.md",
+        ];
+
+        foreach (string document in documents)
+        {
+            string text = ReadDocument(document);
+
+            foreach (string stale in (string[])[
+                "currently refused at planning",
+                "Today every global or all invocation is refused",
+                "The all scope is refused whole",
+                "`--all` is refused entirely before any effect",
+                "has no Covenant gate to inventory the family",
+                "is an open owner decision and is not what ships",
+                "is the supported way to start over meanwhile",
+            ])
+            {
+                Assert.DoesNotContain(stale, text, StringComparison.Ordinal);
+            }
+        }
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        foreach (string token in (string[])[
+            "`StoppedHostCovenantAuthority`",
+            "`StoppedHostFactoryErasure`",
+            "`PlanAdmissionAsync(Installation)`",
+            "`IssueStoppedHostFactoryErasureLockLoan`",
+            "`Covenant.OperatorAuthorityUnavailable`",
+            "`Covenant.HostToolsTransitionRequired`",
+            "**Resuming a reset the stopped host began.**",
+        ])
+        {
+            Assert.Contains(token, design, StringComparison.Ordinal);
+        }
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        foreach (string token in (string[])[
+            "`Covenant.OperatorAuthorityUnavailable` for a master key that is missing",
+            "\"The local Covenant inventory is unavailable.\" is reserved for a plan that succeeded without any inventory",
+            "leaves a write-ahead-logged Grimoire without new `-wal` or `-shm` files",
+            "`arcanum daemon install` restores it",
+            "which no ordinary spelling can reset",
+        ])
+        {
+            Assert.Contains(token, reference, StringComparison.Ordinal);
+        }
+
+        // The five typed causes the documents name are the five the authority returns.
+        string authority = ReadSource("Infrastructure", "InstallationReset", "StoppedHostCovenantAuthority.cs");
+
+        foreach (string code in (string[])[
+            "ErrorCodes.Covenant.OperatorAuthorityUnavailable",
+            "ErrorCodes.Covenant.IntegrityFailure",
+            "ErrorCodes.Covenant.Unavailable",
+            "ErrorCodes.Covenant.HostToolsTransitionRequired",
+            "ErrorCodes.Data.InventoryUnavailable",
+        ])
+        {
+            Assert.Contains(code, authority, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The damaged installation identity is cleared by a command, not by hand, and every place that
+    /// sends an operator to the credential store says so: the startup refusal names the command, the
+    /// reference lists it, the design and the Engineering guide describe the conditions, and the
+    /// guide no longer carries credential-store commands for a value that must not be removed by hand.
+    /// </summary>
+    [Fact]
+    public void The_damaged_installation_identity_is_documented_as_cleared_by_the_repair_command()
+    {
+        string bootstrapper = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs");
+
+        Assert.Contains("arcanum data repair-installation-identity", bootstrapper, StringComparison.Ordinal);
+
+        string engineering = ReadDocument("Arcanum.Engineering.md");
+
+        Assert.Contains("arcanum data repair-installation-identity --dry-run", engineering, StringComparison.Ordinal);
+
+        foreach (string stale in (string[])[
+            "security delete-generic-password",
+            "security find-generic-password",
+            "delete the generic credential `arcanum/<account>`",
+            "so the one credential-store item is removed by the operator, by hand",
+            "The operator removes the one item instead, by hand",
+        ])
+        {
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, ReadDocument("Arcanum.DESIGN.md"), StringComparison.Ordinal);
+        }
+
+        Assert.Contains("`arcanum data repair-installation-identity`", ReadDocument("Arcanum.DESIGN.md"), StringComparison.Ordinal);
+
+        Assert.Contains(
+            "| `arcanum data repair-installation-identity [--dry-run]` |",
+            ReadDocument("Arcanum.Command.Reference.md"),
+            StringComparison.Ordinal);
+
+        Assert.Contains("data repair-installation-identity", File.ReadAllText(
+            Path.Combine(TestRepositoryPaths.RepositoryRoot(), "AGENTS.md")), StringComparison.Ordinal);
+
+        string removal = ReadSource("Infrastructure", "InstallationReset", "InstallationIdentityRepair.cs");
+
+        // The only credential this code deletes is the identity item, by the account it names.
+        Assert.Equal(1, Regex.Count(removal, @"_credentials\.Delete\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+
+        Assert.Contains(
+            "_credentials.Delete(ArcanumCredentialIdentity.Service, account)",
+            removal,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The design says the current CLI mints no new installation-reset host handoff and only rebuilds
     /// one from an authenticated active record, so no contract or CLI source may keep a factory for a
     /// fresh handoff that nothing calls.
