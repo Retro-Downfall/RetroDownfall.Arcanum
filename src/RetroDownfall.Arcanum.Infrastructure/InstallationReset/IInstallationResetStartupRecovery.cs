@@ -129,10 +129,18 @@ internal sealed class InstallationResetStartupRecovery(
             return Result<InstallationResetStartupRecoveryState>.Failure(inspected.Error);
         }
 
-        return await PairAsync(
-                inspected.Value,
-                () => _transitionJournal.InspectAsync(_guardedRoot, cancellationToken))
+        Result<InstallationResetStartupRecoveryState> projected = Project(inspected.Value);
+
+        if (projected.IsFailure)
+        {
+            return projected;
+        }
+
+        Result<GrimoireOfflineTransitionTypedRecoveryState> journal = await _transitionJournal
+            .InspectAsync(_guardedRoot, cancellationToken)
             .ConfigureAwait(false);
+
+        return Resolve(inspected.Value, projected.Value, journal);
     }
 
     /// <summary>
@@ -144,17 +152,10 @@ internal sealed class InstallationResetStartupRecovery(
     /// deliberately does not share this: an answer it could not have computed honestly is worse than
     /// no answer.
     /// </remarks>
-    private Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
+    private async Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         InstallationResetActiveRecoveryState recovered,
-        CancellationToken cancellationToken) =>
-        PairAsync(
-            recovered,
-            () => _transitionJournal.RecoverAsync(heldInstallationLock, _guardedRoot, cancellationToken));
-
-    private async Task<Result<InstallationResetStartupRecoveryState>> PairAsync(
-        InstallationResetActiveRecoveryState recovered,
-        Func<Task<Result<GrimoireOfflineTransitionTypedRecoveryState>>> readJournal)
+        CancellationToken cancellationToken)
     {
         Result<InstallationResetStartupRecoveryState> projected = Project(recovered);
 
@@ -163,9 +164,21 @@ internal sealed class InstallationResetStartupRecovery(
             return projected;
         }
 
-        Result<GrimoireOfflineTransitionTypedRecoveryState> journal = await readJournal()
+        Result<GrimoireOfflineTransitionTypedRecoveryState> journal = await _transitionJournal
+            .RecoverAsync(heldInstallationLock, _guardedRoot, cancellationToken)
             .ConfigureAwait(false);
 
+        return Resolve(recovered, projected.Value, journal);
+    }
+
+    /// <summary>
+    /// Reduces the two records, however the journal was read, to the pair's one answer.
+    /// </summary>
+    private static Result<InstallationResetStartupRecoveryState> Resolve(
+        InstallationResetActiveRecoveryState recovered,
+        InstallationResetStartupRecoveryState projected,
+        Result<GrimoireOfflineTransitionTypedRecoveryState> journal)
+    {
         if (journal.IsFailure)
         {
             return Result<InstallationResetStartupRecoveryState>.Failure(journal.Error);
@@ -179,10 +192,9 @@ internal sealed class InstallationResetStartupRecovery(
         return outcome is InstallationResetNestedTransitionEvidenceOutcome.RecoveryRequired
             ? EvidenceFailure()
             : Result<InstallationResetStartupRecoveryState>.Success(
-                projected.Value with
+                projected with
                 {
                     NestedTransitionEvidence = outcome,
-
                     TransitionJournal = Evidence(journal.Value),
                 });
     }
