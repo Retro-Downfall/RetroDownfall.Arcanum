@@ -147,7 +147,6 @@ public sealed class HostedProducerAnalysisCollectionTests
     [Fact]
     public void Serve_host_fixture_lane_is_closed_and_holds_no_production_method()
     {
-
         static bool HasCategory(MethodInfo method, string category) =>
             method.GetCustomAttributesData().Any(attribute =>
                 attribute.AttributeType == typeof(TraitAttribute)
@@ -185,7 +184,6 @@ public sealed class HostedProducerAnalysisCollectionTests
             attribute => attribute.AttributeType == typeof(TraitAttribute)
                 && attribute.ConstructorArguments[0].Value as string == "Category"
                 && attribute.ConstructorArguments[1].Value as string == "HostedProducerAnalysis");
-
     }
 
     [Theory]
@@ -196,6 +194,7 @@ public sealed class HostedProducerAnalysisCollectionTests
     [InlineData(typeof(AdmittedEntryCensusTests))]
     [InlineData(typeof(SingleGateCensusTests))]
     [InlineData(typeof(CheckerLimitPinTests))]
+    [InlineData(typeof(MirroredCredentialConstructionTests))]
     public void Production_compilation_consumers_are_isolated_from_parallel_suite(Type consumer)
     {
         CustomAttributeData collection = Assert.Single(
