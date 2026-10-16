@@ -405,8 +405,14 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
         await ReplaceDatabaseAsync(shape);
 
+        int readsBefore = _credentials.TryGetCount(IdentityAccount());
+
         GrimoireDatabaseUnavailableException refused = await Assert.ThrowsAsync<GrimoireDatabaseUnavailableException>(
             () => BootstrapAsync(expectedInstallationId: envelope));
+
+        // An active reset never takes the retained identity: the adopting read belongs to a start that
+        // has no expected identity, on either side of the open.
+        Assert.Equal(readsBefore, _credentials.TryGetCount(IdentityAccount()));
 
         Assert.Contains("no authority row", refused.Message, StringComparison.Ordinal);
 
@@ -471,7 +477,29 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
             Assert.Contains("Recovery: stop every Arcanum host and daemon", rendered, StringComparison.Ordinal);
 
-            Assert.Contains("put the original Grimoire back", rendered, StringComparison.Ordinal);
+            Assert.Contains("put the whole binding set back", rendered, StringComparison.Ordinal);
+
+            // The same set the start-fresh guidance and the reinstall table list, so a Grimoire put back
+            // is never missing its salt, its pending salt, its blobs, the CLI state, or its dedicated secret.
+            foreach (string item in (string[])
+                     [
+                         "arcanum.db",
+                         "-wal",
+                         "-shm",
+                         ".kdf salt",
+                         ".kdf.pending",
+                         "attachments/",
+                         "files/",
+                         "cli-context.json",
+                         "cli-session.txt",
+                         "recent-resources.txt",
+                         "grimoire-key.dat",
+                         "secret-store directory",
+                         "Local Grimoire reinstall",
+                     ])
+            {
+                Assert.Contains(item, rendered, StringComparison.Ordinal);
+            }
 
             Assert.Contains("start the host again so the reset resumes", rendered, StringComparison.Ordinal);
 
