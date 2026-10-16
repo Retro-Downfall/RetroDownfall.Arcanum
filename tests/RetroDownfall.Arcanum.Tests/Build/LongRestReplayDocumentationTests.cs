@@ -132,6 +132,10 @@ public sealed class LongRestReplayDocumentationTests
         "remain unchanged",
         "remains unchanged",
         "the unchanged ",
+        "not yet run",
+        "not yet confirmed",
+        "first failed",
+        "now comes from",
     ];
 
     [Fact]

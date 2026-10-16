@@ -618,7 +618,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
             -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none `
-            --filter "(FullyQualifiedName~RetroDownfall.Arcanum.Tests.LongRest.|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Intelligence.LongRest|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests.Windows_ci_lane_uses_the_expected_native_runtime_identifier)&Category!=Perf&Category!=HostedProducerAnalysis" `
+            --filter "(FullyQualifiedName~RetroDownfall.Arcanum.Tests.LongRest.|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Intelligence.LongRest|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests.Windows_ci_lane_uses_the_expected_native_runtime_identifier)&Category!=Perf&Category!=HostedProducerAnalysis&Category!=LongRestScaleProbe" `
             --logger "trx;LogFileName=long-rest-win-x64.trx" --results-directory .tmp/windows-long-rest-win-x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # An empty selection or skipped test is not native Long Rest qualification.
@@ -859,7 +859,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj `
             -c Release --no-build --no-restore --blame-hang-timeout 15m --blame-hang-dump-type none `
-            --filter "(FullyQualifiedName~RetroDownfall.Arcanum.Tests.LongRest.|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Intelligence.LongRest|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests.Windows_ci_lane_uses_the_expected_native_runtime_identifier)&Category!=Perf&Category!=HostedProducerAnalysis" `
+            --filter "(FullyQualifiedName~RetroDownfall.Arcanum.Tests.LongRest.|FullyQualifiedName~RetroDownfall.Arcanum.Tests.Intelligence.LongRest|FullyQualifiedName=RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests.Windows_ci_lane_uses_the_expected_native_runtime_identifier)&Category!=Perf&Category!=HostedProducerAnalysis&Category!=LongRestScaleProbe" `
             --logger "trx;LogFileName=long-rest-win-arm64.trx" --results-directory .tmp/windows-long-rest-win-arm64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # An empty selection or skipped test is not native Long Rest qualification.

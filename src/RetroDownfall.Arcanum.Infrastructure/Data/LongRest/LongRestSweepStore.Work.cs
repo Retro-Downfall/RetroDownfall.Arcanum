@@ -28,7 +28,7 @@ internal sealed partial class LongRestSweepStore
 
         internal int Reused;
 
-        // The floors the anchors of this read were queued under: one value each, published as a histogram of permille with no identity.
+        // The floors the anchors of this read were queued under: one value each, published as a counter by fixed floor bucket (the floor_le_permille label) with no identity.
         internal readonly List<int> Floors = [];
 
         internal void Reset()

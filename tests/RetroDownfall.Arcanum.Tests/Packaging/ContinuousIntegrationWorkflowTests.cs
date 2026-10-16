@@ -442,6 +442,8 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("Category!=HostedProducerAnalysis", execution, StringComparison.Ordinal);
 
+        Assert.Contains("Category!=LongRestScaleProbe", execution, StringComparison.Ordinal);
+
         (string Operator, string Name)[] entries = TestFilterEntry.Matches(execution)
             .Select(static match => (match.Groups["operator"].Value, match.Groups["name"].Value))
             .ToArray();
@@ -464,6 +466,32 @@ public sealed class ContinuousIntegrationWorkflowTests
             Assert.Contains(methods, method => filterOperator == "="
                 ? string.Equals(method.FullName, name, StringComparison.Ordinal)
                 : method.FullName.Contains(name, StringComparison.Ordinal));
+        }
+
+        // The step fails on any skipped result, so a selected test of an opt-in category (one that skips unless a variable is set) has to be
+        // excluded by name. Every category a selected test carries is either excluded by this filter or one the lane is meant to run, so the next
+        // opt-in category fails here and not in the lane.
+        HashSet<string> excludedCategories = ExcludedCategory.Matches(execution)
+            .Select(static match => match.Groups["category"].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach ((string fullName, string[] categories) in ArcanumTestMethodCategories())
+        {
+            bool selected = entries.Any(entry => entry.Operator == "="
+                ? string.Equals(fullName, entry.Name, StringComparison.Ordinal)
+                : fullName.Contains(entry.Name, StringComparison.Ordinal));
+
+            if (!selected)
+            {
+                continue;
+            }
+
+            foreach (string category in categories)
+            {
+                Assert.True(
+                    excludedCategories.Contains(category) || CategoriesTheWindowsLongRestStepRuns.Contains(category),
+                    $"{fullName} carries the category {category}, which the Test Long Rest step neither excludes nor is meant to run.");
+            }
         }
 
         Assert.Contains("--logger \"trx;LogFileName=long-rest-" + rid + ".trx\"", execution, StringComparison.Ordinal);
@@ -522,6 +550,17 @@ public sealed class ContinuousIntegrationWorkflowTests
         @"FullyQualifiedName(?<operator>[=~])(?<name>[A-Za-z0-9_.]+)",
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(5));
+
+    private static readonly Regex ExcludedCategory = new(
+        @"Category!=(?<category>[A-Za-z0-9_]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// The only category a test in the Windows Long Rest selection carries without being excluded. It runs, and it never skips for want of an
+    /// opt-in variable.
+    /// </summary>
+    private static readonly string[] CategoriesTheWindowsLongRestStepRuns = ["Integration"];
 
     /// <summary>
     /// A <c>dotnet test --filter</c> alternative that matches nothing is not an error, so renaming a
@@ -841,6 +880,27 @@ public sealed class ContinuousIntegrationWorkflowTests
                 .Where(static method => method.IsDefined(typeof(FactAttribute), inherit: true))
                 .Select(method => new TestMethodIdentity($"{type.FullName}.{method.Name}")))
             .ToArray();
+
+    /// <summary>
+    /// Every test method of the Arcanum assembly with the <c>Category</c> traits its class and the method itself carry.
+    /// </summary>
+    private static IReadOnlyList<(string FullName, string[] Categories)> ArcanumTestMethodCategories() =>
+        typeof(ContinuousIntegrationWorkflowTests).Assembly
+            .GetTypes()
+            .Where(static type => type.FullName is not null)
+            .SelectMany(static type => type
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(static method => method.IsDefined(typeof(FactAttribute), inherit: true))
+                .Select(method => (
+                    FullName: $"{type.FullName}.{method.Name}",
+                    Categories: TraitCategories(type).Concat(TraitCategories(method)).Distinct(StringComparer.Ordinal).ToArray())))
+            .ToArray();
+
+    private static IEnumerable<string> TraitCategories(MemberInfo member) =>
+        member.GetCustomAttributesData()
+            .Where(static attribute => attribute.AttributeType == typeof(TraitAttribute)
+                && attribute.ConstructorArguments is [{ Value: "Category" }, { Value: string }])
+            .Select(static attribute => (string)attribute.ConstructorArguments[1].Value!);
 
     /// <summary>
     /// The Compendium suite is a separate assembly this project does not reference, so its test
