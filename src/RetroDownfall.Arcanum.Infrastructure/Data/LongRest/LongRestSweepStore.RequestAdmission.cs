@@ -89,8 +89,6 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
         bool retiredByAuthority = false;
 
-        bool generationMayBeUnreadable = false;
-
         try
         {
             SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
@@ -138,12 +136,9 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                     // was erased). A request that carries live authority retires it exactly as it retires one parked under a fault no
                     // revalidation survives, and admits a new generation.
                     if (replacement is null && proveAuthority is not null && scope.ProtectedPartitionDigest is not null
-                        && await FindResumeDriftAsync(connection, transaction, operation.Id, fence, currentRecipe, ct).ConfigureAwait(false) is { } drift)
+                        && await FindResumeDriftAsync(connection, transaction, operation.Id, fence, currentRecipe, ct).ConfigureAwait(false) is not null)
                     {
                         replacement = new(ErrorCodes.LongRest.StaleInput, true);
-
-                        // A recipe that moved with an upgrade can be one the stored generation no longer parses under.
-                        generationMayBeUnreadable = drift == ResumeDrift.Recipe;
                     }
 
                     if (replacement is null)
@@ -174,7 +169,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
                         LongRunningOperation abandoned = await AbandonParkedWithinAsync(connection, transaction, operation, replacement.TerminalCode, ct).ConfigureAwait(false);
 
-                        await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, abandoned, generationMayBeUnreadable, ct).ConfigureAwait(false);
+                        await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, abandoned, ct).ConfigureAwait(false);
 
                         admitted = await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
                     }
@@ -188,7 +183,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
                     claimed = operation.Id;
 
-                    await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, operation, generationMayBeUnreadable: false, ct).ConfigureAwait(false);
+                    await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, operation, ct).ConfigureAwait(false);
 
                     admitted = await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
                 }
@@ -479,15 +474,16 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         return await LongRunningOperationStore.ReadWithinAsync(connection, transaction, operation.Id, ct).ConfigureAwait(false) ?? throw new InvalidDataException();
     }
 
-    /// <param name="generationMayBeUnreadable">
-    /// The stored generation was captured under a recipe that code in force no longer reads, so it cannot be parsed whole. Retirement
-    /// needs only its identity, scope, phase and revision, which are columns of its row, and every statement below is guarded by them.
-    /// </param>
+    /// <remarks>
+    /// Retirement reads only the columns of the generation's row, never the generation whole: it needs the identity, scope, phase and
+    /// revision, and every statement below is guarded by them. A generation stored before an upgrade that moved a version, a fixed bound
+    /// or the recipe preimage cannot be parsed under the code in force, and must still be retirable by whichever request finds it.
+    /// </remarks>
     private async Task RetireTerminalRequestWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestSweepScope scope, ActiveRequest active, LongRunningOperation operation, bool generationMayBeUnreadable, CancellationToken ct)
+        LongRestSweepScope scope, ActiveRequest active, LongRunningOperation operation, CancellationToken ct)
     {
         // Retirement releases reservations only. Invalidation would delete accepted/Sent evidence.
-        RetiringGeneration? generation = await ReadRetiringGenerationAsync(connection, transaction, scope, operation.Id, generationMayBeUnreadable, ct).ConfigureAwait(false);
+        RetiringGeneration? generation = await ReadRetiringGenerationAsync(connection, transaction, scope, operation.Id, ct).ConfigureAwait(false);
 
         if (active.OperationId != operation.Id || active.GenerationId != generation?.GenerationId
             || generation is not null && (generation.OperationId != operation.Id
@@ -541,20 +537,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
     private sealed record RetiringGeneration(Guid GenerationId, Guid OperationId, LongRestSweepPhase Phase, long Revision);
 
     private static async Task<RetiringGeneration?> ReadRetiringGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestSweepScope scope, Guid operationId, bool mayBeUnreadable, CancellationToken ct)
+        LongRestSweepScope scope, Guid operationId, CancellationToken ct)
     {
-        if (!mayBeUnreadable)
-        {
-            LongRestDiscoveryGeneration? whole = await LongRestDiscoveryStore.ReadSweepGenerationAsync(connection, transaction, operationId, ct).ConfigureAwait(false);
-
-            if (whole is not null && whole.Scope != scope)
-            {
-                throw new InvalidDataException();
-            }
-
-            return whole is null ? null : new(whole.GenerationId, whole.OperationId, whole.Phase, whole.Revision);
-        }
-
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT GenerationId, ScopeKindCode, CampaignId, PartitionDigest, PhaseCode, Revision
             FROM long_rest_discovery_generations WHERE OperationId = $operation;
