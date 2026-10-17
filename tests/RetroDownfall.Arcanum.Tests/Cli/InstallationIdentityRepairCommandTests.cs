@@ -535,8 +535,11 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
         AssertIdentityIs(DamagedValue);
     }
 
+    // Drives the handler's own re-proof under the lock, which is the refusal for a reset recorded after the
+    // CLI's startup check. The harness runs the command tree without Program, so the startup check that
+    // refuses an already-active reset first is pinned in InstallationFactoryResetArgvPreflightTests.
     [Fact]
-    public async Task A_legacy_active_reset_record_is_refused_by_code_and_the_item_stays()
+    public async Task The_handlers_recheck_under_the_lock_refuses_a_legacy_active_reset_record_by_code_and_the_item_stays()
     {
         SetIdentity(DamagedValue);
 

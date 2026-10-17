@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class InstallationFactoryResetArgvPreflightTests
 {
-
     [Theory]
 
     [InlineData("data factory-reset --workspace --dry-run")]
@@ -28,21 +27,18 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     public void Valid_shapes_are_admitted(string commandLine)
     {
-
         InstallationFactoryResetPreflightResult result =
             InstallationFactoryResetArgvPreflight.Parse(Split(commandLine));
 
         Assert.True(result.IsFactoryReset);
 
         Assert.True(result.IsValid);
-
     }
 
     [Fact]
 
     public void External_remediation_attestation_is_admitted_only_for_full_apply()
     {
-
         InstallationFactoryResetPreflightResult result =
             InstallationFactoryResetArgvPreflight.Parse(
                 Split("data factory-reset --all --apply --external-remediation-attestation remediation.json"));
@@ -52,7 +48,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.True(result.IsValid);
 
         Assert.Equal("remediation.json", result.ExternalRemediationAttestationPath);
-
     }
 
     [Theory]
@@ -68,7 +63,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     public void Invalid_external_remediation_attestation_shapes_are_rejected(
         string commandLine)
     {
-
         InstallationFactoryResetPreflightResult result =
             InstallationFactoryResetArgvPreflight.Parse(Split(commandLine));
 
@@ -77,7 +71,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.False(result.IsValid);
 
         Assert.False(string.IsNullOrWhiteSpace(result.Error));
-
     }
 
     [Theory]
@@ -102,7 +95,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     public void Invalid_shapes_are_rejected(string commandLine)
     {
-
         InstallationFactoryResetPreflightResult result =
             InstallationFactoryResetArgvPreflight.Parse(Split(commandLine));
 
@@ -111,7 +103,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.False(result.IsValid);
 
         Assert.False(string.IsNullOrWhiteSpace(result.Error));
-
     }
 
     [Theory]
@@ -124,19 +115,16 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     public void Unrelated_commands_are_not_claimed(string commandLine)
     {
-
         InstallationFactoryResetPreflightResult result =
             InstallationFactoryResetArgvPreflight.Parse(Split(commandLine));
 
         Assert.False(result.IsFactoryReset);
-
     }
 
     [Fact]
 
     public async Task Program_rejects_invalid_shape_before_bootstrap_continuation()
     {
-
         int continuationCalls = 0;
 
         StringWriter error = new();
@@ -147,16 +135,13 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
         try
         {
-
             int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
                 ["data", "factory-reset", "--all", "--dry-run", "--dry-run"],
                 () =>
                 {
-
                     continuationCalls++;
 
                     return Task.FromResult(0);
-
                 });
 
             Assert.Equal((int)CliExitCode.ConfigurationError, exitCode);
@@ -164,22 +149,17 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             Assert.Equal(0, continuationCalls);
 
             Assert.Contains("exactly one reset mode", error.ToString(), StringComparison.Ordinal);
-
         }
         finally
         {
-
             Console.SetError(originalError);
-
         }
-
     }
 
     [Fact]
 
     public async Task Program_continues_after_valid_shape()
     {
-
         int continuationCalls = 0;
 
         FakeStartupProbe probe = new(active: null);
@@ -188,11 +168,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ["data", "factory-reset", "--global", "--dry-run"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(17);
-
             },
             probe);
 
@@ -201,14 +179,12 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(1, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
-
     }
 
     [Fact]
 
     public async Task Program_defers_external_remediation_startup_lookup_until_after_decode()
     {
-
         int continuationCalls = 0;
 
         FakeStartupProbe probe = new(active: null);
@@ -224,11 +200,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(17);
-
             },
             probe);
 
@@ -237,7 +211,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(1, continuationCalls);
 
         Assert.Equal(0, probe.ActiveReadCount);
-
     }
 
     public static TheoryData<string[]> NormalInvocationShapes =>
@@ -262,7 +235,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     public async Task Program_blocks_every_normal_invocation_before_configuration_when_reset_is_active(
         string[] args)
     {
-
         FakeStartupProbe probe = new(
             new ActiveInstallationReset(
                 InstallationResetScope.Global,
@@ -275,11 +247,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             args,
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(0);
-
             },
             probe);
 
@@ -288,7 +258,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(0, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
-
     }
 
     [Theory]
@@ -300,7 +269,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     public async Task Program_delegates_serve_to_the_lock_first_host_for_prepared_handoffs(
         InstallationResetScope scope)
     {
-
         FakeStartupProbe probe = new(CreateHostRecoveryActive(scope));
 
         int continuationCalls = 0;
@@ -309,11 +277,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ["serve"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(31);
-
             },
             probe);
 
@@ -322,13 +288,11 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(1, continuationCalls);
 
         Assert.Equal(0, probe.ActiveReadCount);
-
     }
 
     [Fact]
     public async Task Program_keeps_run_blocked_during_proof_free_host_recovery()
     {
-
         FakeStartupProbe probe = new(
             CreateHostRecoveryActive(InstallationResetScope.Global));
 
@@ -338,24 +302,20 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ["run", "prompt"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(0);
-
             },
             probe);
 
         Assert.Equal((int)CliExitCode.GenericError, exitCode);
 
         Assert.Equal(0, continuationCalls);
-
     }
 
     [Fact]
     public async Task Program_delegates_every_serve_state_to_the_lock_first_host()
     {
-
         ActiveInstallationReset recoverable =
             CreateHostRecoveryActive(InstallationResetScope.Global);
 
@@ -390,7 +350,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
         foreach (ActiveInstallationReset active in blocked)
         {
-
             FakeStartupProbe probe = new(active);
 
             int continuationCalls = 0;
@@ -399,11 +358,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
                 ["serve"],
                 () =>
                 {
-
                     continuationCalls++;
 
                     return Task.FromResult(37);
-
                 },
                 probe);
 
@@ -412,15 +369,12 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             Assert.Equal(1, continuationCalls);
 
             Assert.Equal(0, probe.ActiveReadCount);
-
         }
-
     }
 
     [Fact]
     public async Task Program_serve_reaches_locked_recovery_when_the_public_probe_would_reject_one_ahead()
     {
-
         FakeStartupProbe probe = new(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
@@ -432,11 +386,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ["serve"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(41);
-
             },
             probe);
 
@@ -445,7 +397,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(1, continuationCalls);
 
         Assert.Equal(0, probe.ActiveReadCount);
-
     }
 
     [Theory]
@@ -454,7 +405,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     public async Task Program_keeps_the_exact_public_probe_for_run_and_reset_resume(
         params string[] args)
     {
-
         FakeStartupProbe probe = new(
             new Error(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
@@ -466,11 +416,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             args,
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(0);
-
             },
             probe);
 
@@ -479,13 +427,11 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(0, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
-
     }
 
     [Fact]
     public async Task Program_run_continues_on_a_genuinely_fresh_absent_profile_parent_without_creating_it()
     {
-
         string retainedParent = Path.Combine(
             Path.GetTempPath(),
             "arcanum-tests",
@@ -506,11 +452,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ["run", "prompt"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(43);
-
             },
             probe);
 
@@ -519,7 +463,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(1, continuationCalls);
 
         Assert.False(Directory.Exists(retainedParent));
-
     }
 
     [Theory]
@@ -535,7 +478,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     public async Task Program_keeps_help_and_version_available_during_an_active_reset(
         params string[] args)
     {
-
         FakeStartupProbe probe = new(
             new ActiveInstallationReset(
                 InstallationResetScope.Global,
@@ -550,14 +492,12 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(23, exitCode);
 
         Assert.Equal(0, probe.ActiveReadCount);
-
     }
 
     [Fact]
 
     public async Task Program_blocks_a_private_deep_link_with_trailing_help_during_an_active_reset()
     {
-
         ApplicationDeepLink deepLink = new(
             ApplicationDeepLink.CurrentSchemaVersion,
             DesktopApplication.CommandCenter,
@@ -578,11 +518,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             [ApplicationDeepLinkCodec.ArgumentName, payload, "--help"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(0);
-
             },
             probe);
 
@@ -591,7 +529,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(0, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
-
     }
 
     [Theory]
@@ -600,7 +537,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
     public async Task Program_does_not_treat_a_subcommand_version_option_as_root_version(
         params string[] args)
     {
-
         FakeStartupProbe probe = new(
             new ActiveInstallationReset(
                 InstallationResetScope.Global,
@@ -613,11 +549,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             args,
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(0);
-
             },
             probe);
 
@@ -626,7 +560,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(0, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
-
     }
 
     [Theory]
@@ -639,7 +572,6 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         string scopeOption,
         bool expectedAdmission)
     {
-
         FakeStartupProbe probe = new(
             new ActiveInstallationReset(
                 InstallationResetScope.Global,
@@ -652,11 +584,9 @@ public sealed class InstallationFactoryResetArgvPreflightTests
             ["data", "factory-reset", scopeOption, "--apply"],
             () =>
             {
-
                 continuationCalls++;
 
                 return Task.FromResult(29);
-
             },
             probe);
 
@@ -667,7 +597,106 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         Assert.Equal(expectedAdmission ? 1 : 0, continuationCalls);
 
         Assert.Equal(1, probe.ActiveReadCount);
+    }
 
+    [Fact]
+    public async Task Program_refuses_the_installation_identity_repair_while_a_reset_is_active_and_writes_no_document()
+    {
+        FakeStartupProbe probe = new(
+            new ActiveInstallationReset(
+                InstallationResetScope.Global,
+                WorkspaceRoot: null,
+                PlanId: "active-plan"));
+
+        int continuationCalls = 0;
+
+        (int exitCode, string output, string error) = await RunCapturingAsync(
+            ["--json", "--yes", "data", "repair-installation-identity"],
+            () =>
+            {
+                continuationCalls++;
+
+                return Task.FromResult(0);
+            },
+            probe);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Equal(0, continuationCalls);
+
+        Assert.Equal(1, probe.ActiveReadCount);
+
+        Assert.Equal(string.Empty, output);
+
+        Assert.Contains(
+            "arcanum data factory-reset --global --apply",
+            error,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Program_refuses_the_installation_identity_repair_when_the_active_reset_cannot_be_read_and_writes_no_document()
+    {
+        FakeStartupProbe probe = new(
+            new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "Injected unreadable reset record."));
+
+        int continuationCalls = 0;
+
+        (int exitCode, string output, string error) = await RunCapturingAsync(
+            ["--json", "--yes", "data", "repair-installation-identity"],
+            () =>
+            {
+                continuationCalls++;
+
+                return Task.FromResult(0);
+            },
+            probe);
+
+        Assert.Equal((int)CliExitCode.GenericError, exitCode);
+
+        Assert.Equal(0, continuationCalls);
+
+        Assert.Equal(1, probe.ActiveReadCount);
+
+        Assert.Equal(string.Empty, output);
+
+        Assert.Contains("Injected unreadable reset record.", error, StringComparison.Ordinal);
+    }
+
+    private static async Task<(int ExitCode, string Output, string Error)> RunCapturingAsync(
+        string[] args,
+        Func<Task<int>> continuation,
+        IInstallationStartupProbe probe)
+    {
+        StringWriter output = new();
+
+        StringWriter error = new();
+
+        TextWriter originalOutput = Console.Out;
+
+        TextWriter originalError = Console.Error;
+
+        Console.SetOut(output);
+
+        Console.SetError(error);
+
+        try
+        {
+            int exitCode = await RetroDownfall.Arcanum.Cli.Program.RunBeforeConfigurationAsync(
+                args,
+                continuation,
+                probe);
+
+            return (exitCode, output.ToString(), error.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+
+            Console.SetError(originalError);
+        }
     }
 
     private static string[] Split(string commandLine) =>
@@ -688,21 +717,16 @@ public sealed class InstallationFactoryResetArgvPreflightTests
 
     private sealed class FakeStartupProbe : IInstallationStartupProbe
     {
-
         private readonly Result<ActiveInstallationReset?> _active;
 
         public FakeStartupProbe(ActiveInstallationReset? active)
         {
-
             _active = Result<ActiveInstallationReset?>.Success(active);
-
         }
 
         public FakeStartupProbe(Error error)
         {
-
             _active = Result<ActiveInstallationReset?>.Failure(error);
-
         }
 
         public int ActiveReadCount { get; private set; }
@@ -710,16 +734,12 @@ public sealed class InstallationFactoryResetArgvPreflightTests
         public Task<Result<ActiveInstallationReset?>> ReadActiveResetAsync(
             CancellationToken cancellationToken)
         {
-
             ActiveReadCount++;
 
             return Task.FromResult(_active);
-
         }
 
         public Result<bool> IsFreshInstallation() =>
             Result<bool>.Success(false);
-
     }
-
 }
