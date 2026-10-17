@@ -537,7 +537,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
 
-        // The lease lapses and recovery parks the operation: nobody has the sweep, and it is a protected one.
+        // The lease lapses and recovery parks the operation: nobody has the sweep, so a protected one waits for an authorized request and a clean one for the worker.
         await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
             ("$operation", f.Operation.ToString("N")));
 
