@@ -516,6 +516,14 @@ public sealed partial class LongRestMaintenanceTests
             return await Coordinator.ResumeAdmittedAsync(operationId, lease, ct);
         }
 
+        /// <summary>
+        /// Mints the turn invocation for a turn lease acquired after the fixture was composed: an exclusive operation (an erasure) moves the
+        /// authority epoch the invocation was minted under.
+        /// </summary>
+        internal void InvokeUnder(CovenantTurnLease turn) => Invocation = ArcanumInvocationContext.Create(ArcanumExecutionSurface.SessionBackedOperatorTurn, Scope,
+            InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools,
+            CovenantReadAuthorityEpoch.CreateForTests(Guid.NewGuid(), turn.Snapshot.RuntimeAuthorityGeneration, turn.Snapshot.AuthorityEpoch)).Value;
+
         internal async Task RebootAsync()
         {
             Guid priorBoot = Epoch.Capture().Stamp.BootId;

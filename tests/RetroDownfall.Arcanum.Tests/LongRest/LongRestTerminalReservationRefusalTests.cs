@@ -158,7 +158,7 @@ public sealed class LongRestTerminalReservationRefusalTests
 
         LongRestSweepStore sweeps = new(f.H.Saga.Context, f.Clock);
 
-        return await sweeps.AdmitRequestAsync(f.Partition, fence, facts, ownership, CancellationToken.None);
+        return await sweeps.AdmitRequestAsync(f.Partition, fence, facts, ownership, ((ILongRestConfigurationProvider)f.Epoch).Capture().Recipe.Value, CancellationToken.None);
     }
 
     private static T Require<T>(Result<T> result)

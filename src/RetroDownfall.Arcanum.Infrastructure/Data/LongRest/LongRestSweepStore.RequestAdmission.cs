@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -16,6 +17,10 @@ internal interface ILongRestSweepRequestAdmission
     /// <param name="fence">The independently captured request fence.</param>
     /// <param name="facts">The live fence reader the transaction re-proves the fence with.</param>
     /// <param name="ownership">The in-process ownership claims.</param>
+    /// <param name="currentRecipe">
+    /// The recipe the installation runs now. A protected park whose generation was captured under another recipe (a code-owned version
+    /// moved with an upgrade) can never resume, and is judged by this.
+    /// </param>
     /// <param name="ct">Cancellation.</param>
     /// <param name="proveAuthority">
     /// Present only when the request carries the live turn authority of a Session turn for a protected partition: it re-proves that
@@ -23,10 +28,11 @@ internal interface ILongRestSweepRequestAdmission
     /// </param>
     /// <param name="replayRecipe">
     /// Present when the caller looked for a completed sweep before it reached this transaction: admission looks once more, inside the
-    /// transaction, before it would create a generation, because another request may have completed its replacement in between.
+    /// transaction, before it would create a generation, because another request may have completed its replacement in between, or
+    /// completed its generation and not yet settled its operation.
     /// </param>
     Task<Result<LongRunningOperation>> AdmitRequestAsync(LongRestSweepScope scope, LongRestSweepFence fence,
-        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct,
+        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, LongRestRecipeIdentity currentRecipe, CancellationToken ct,
         Func<CancellationToken, ValueTask<Result>>? proveAuthority = null, LongRestRecipeIdentity? replayRecipe = null);
 }
 
@@ -35,16 +41,16 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
     private const string StaleRequestConfiguration = LongRestParkCodes.StaleConfiguration;
 
     public async Task<Result<LongRunningOperation>> AdmitRequestAsync(LongRestSweepScope scope, LongRestSweepFence fence,
-        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, CancellationToken ct,
+        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, LongRestRecipeIdentity currentRecipe, CancellationToken ct,
         Func<CancellationToken, ValueTask<Result>>? proveAuthority = null, LongRestRecipeIdentity? replayRecipe = null)
     {
         try
         {
-            if (!scope.IsInitialized || fence.Configuration is not { IsValid: true }
+            if (!scope.IsInitialized || fence.Configuration is not { IsValid: true } || currentRecipe is null
                 || scope.CampaignId != fence.CanonicalScope.CampaignId
                 || (scope.Kind == LongRestSweepScopeKind.Campaign) != fence.CanonicalScope.IsCampaignBound) throw new InvalidDataException();
 
-            return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, proveAuthority, replayRecipe, ct), ct).ConfigureAwait(false);
+            return await SqliteBusyRetry.ExecuteAsync(() => AdmitOnceAsync(scope, fence, facts, ownership, currentRecipe, proveAuthority, replayRecipe, ct), ct).ConfigureAwait(false);
         }
         catch (OperationBusyException)
         {
@@ -74,7 +80,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
     }
 
     private async Task<LongRunningOperation> AdmitOnceAsync(LongRestSweepScope scope, LongRestSweepFence fence,
-        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership,
+        LongRestLiveFenceReader facts, LongRunningOperationOwnership ownership, LongRestRecipeIdentity currentRecipe,
         Func<CancellationToken, ValueTask<Result>>? proveAuthority, LongRestRecipeIdentity? replayRecipe, CancellationToken ct)
     {
         Guid claimed = Guid.Empty;
@@ -82,6 +88,8 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         Guid token = Guid.Empty;
 
         bool retiredByAuthority = false;
+
+        bool generationMayBeUnreadable = false;
 
         try
         {
@@ -123,14 +131,19 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
                     ParkedReplacement? replacement = ReplacementOfPark(scope, operation, active, stored, fence, proveAuthority is not null);
 
                     // A protected park that waits for a fresh Session request waits for one that can readmit it. When its generation can no
-                    // longer resume under the live fence (a maintenance window drained inside the boot that parked it, recovered authority, a
-                    // change of Covenant capability, a moved dataset or Campaign root), no turn ever will, and every turn that needs the
-                    // partition would end. A request that carries live authority retires it exactly as it retires one parked under a fault
-                    // no revalidation survives, and admits a new generation.
+                    // longer resume under the live installation, no turn ever will, and every turn that needs the partition would end: the
+                    // recipe it was captured under is not the one in force (a code-owned version moved), the fence moved (a maintenance
+                    // window drained inside the boot that parked it, recovered authority, a change of Covenant capability, a moved dataset
+                    // or Campaign root), or a source it froze can no longer be proved (the suppressed source of an earlier consolidation
+                    // was erased). A request that carries live authority retires it exactly as it retires one parked under a fault no
+                    // revalidation survives, and admits a new generation.
                     if (replacement is null && proveAuthority is not null && scope.ProtectedPartitionDigest is not null
-                        && await CannotResumeAsync(connection, transaction, operation.Id, fence, ct).ConfigureAwait(false))
+                        && await FindResumeDriftAsync(connection, transaction, operation.Id, fence, currentRecipe, ct).ConfigureAwait(false) is { } drift)
                     {
                         replacement = new(ErrorCodes.LongRest.StaleInput, true);
+
+                        // A recipe that moved with an upgrade can be one the stored generation no longer parses under.
+                        generationMayBeUnreadable = drift == ResumeDrift.Recipe;
                     }
 
                     if (replacement is null)
@@ -161,7 +174,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
                         LongRunningOperation abandoned = await AbandonParkedWithinAsync(connection, transaction, operation, replacement.TerminalCode, ct).ConfigureAwait(false);
 
-                        await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, abandoned, ct).ConfigureAwait(false);
+                        await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, abandoned, generationMayBeUnreadable, ct).ConfigureAwait(false);
 
                         admitted = await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
                     }
@@ -175,7 +188,7 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
 
                     claimed = operation.Id;
 
-                    await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, operation, ct).ConfigureAwait(false);
+                    await RetireTerminalRequestWithinAsync(connection, transaction, scope, active, operation, generationMayBeUnreadable: false, ct).ConfigureAwait(false);
 
                     admitted = await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
                 }
@@ -225,12 +238,29 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
             else
             {
                 // Nothing is active, so this transaction would create a generation, which is paid work. The caller's lookup preceded the
-                // transaction, and the replacement of a sweep it found stale may have completed since: a sweep that now describes the
-                // installation is the answer, and no second generation is created beside it.
-                LongRunningOperation? completed = replayRecipe is { } recipe
-                    ? await FindCurrentCompletedWithinAsync(connection, transaction, scope, fence, recipe, ct).ConfigureAwait(false) : null;
+                // transaction, and a sweep may have completed since: the replacement of one it found stale, or one whose generation is
+                // complete while its operation has not yet reached Completed (the run completes the generation, and settles the operation
+                // in a later write). A sweep that now describes the installation is the answer, whichever step its operation is on, and
+                // no second generation is created beside it.
+                LongRunningOperation? joined = null;
 
-                admitted = completed ?? await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
+                if (replayRecipe is { } recipe)
+                {
+                    joined = await FindCurrentCompletedWithinAsync(connection, transaction, scope, fence, recipe, ct).ConfigureAwait(false);
+
+                    // A completed generation that does not describe the installation, parked for the authority class that would readmit
+                    // it, is one nothing can readmit: it is settled here, so it does not hold its scope degraded for ever.
+                    if (joined is null && await FindStrandedCompletedParkAsync(connection, transaction, scope, ct).ConfigureAwait(false) is { } stranded)
+                    {
+                        if (!ownership.TryClaim(stranded.Id, out token)) throw new OperationBusyException();
+
+                        claimed = stranded.Id;
+
+                        _ = await AbandonParkedWithinAsync(connection, transaction, stranded, StaleRequestConfiguration, ct).ConfigureAwait(false);
+                    }
+                }
+
+                admitted = joined ?? await CreateRequestWithinAsync(connection, transaction, scope, stamp, ct).ConfigureAwait(false);
             }
 
             if (!await facts.ValidateRequestFenceWithinAsync(connection, transaction, fence, ct).ConfigureAwait(false)
@@ -295,27 +325,142 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         throw new SweepParkedException(operation.Id, operation.TerminalErrorCode);
     }
 
-    /// <summary>
-    /// Whether the parked sweep's generation has been captured and can never resume under the live fence, as
-    /// <see cref="LongRestFenceCurrency.CanResume"/> judges it: the same question a maintenance capability is created under, so the park
-    /// is retired exactly when the turn that would have readmitted it would have been refused as stale. A sweep with no generation yet
-    /// has no fence to have drifted.
-    /// </summary>
-    private static async Task<bool> CannotResumeAsync(SqliteConnection connection, SqliteTransaction transaction, Guid operationId,
-        LongRestSweepFence live, CancellationToken ct)
+    /// <summary>Why a parked sweep's captured generation can never resume under the live installation.</summary>
+    private enum ResumeDrift
     {
-        LongRestDiscoveryGeneration? generation = await LongRestDiscoveryStore.ReadSweepGenerationAsync(connection, transaction, operationId, ct).ConfigureAwait(false);
+        /// <summary>It was captured under a recipe other than the one in force: a code-owned version moved.</summary>
+        Recipe,
 
-        return generation is not null && !LongRestFenceCurrency.CanResume(generation.Fence, live);
+        /// <summary>The live fence moved where <see cref="LongRestFenceCurrency.CanResume"/> does not allow it to.</summary>
+        Fence,
+
+        /// <summary>A source the generation froze can no longer be proved against its stored facts.</summary>
+        FrozenSources,
     }
 
+    /// <summary>
+    /// What, if anything, keeps the parked sweep's captured generation from ever resuming under the live installation: the questions a
+    /// maintenance capability is created under, asked in the order it asks them, so the park is retired exactly when the turn that would
+    /// have readmitted it would have been refused as stale. All three read metadata and never a protected source's content. A sweep
+    /// with no generation yet has nothing to have drifted.
+    /// </summary>
+    /// <remarks>
+    /// The recipe comes first, from the stored digest alone, because a recipe the current code owns differently may be one the stored
+    /// generation can no longer be parsed under at all (a fixed bound moved), and nothing else about such a generation can be asked.
+    /// A version that still parses (a scorer or an adjudication version) is the same question, and the same answer.
+    /// </remarks>
+    private static async Task<ResumeDrift?> FindResumeDriftAsync(SqliteConnection connection, SqliteTransaction transaction, Guid operationId,
+        LongRestSweepFence live, LongRestRecipeIdentity currentRecipe, CancellationToken ct)
+    {
+        await using (SqliteCommand digest = Command(connection, transaction,
+            "SELECT RecipeDigest FROM long_rest_discovery_generations WHERE OperationId = $operation;", ("$operation", operationId.ToString("N"))))
+        {
+            if (await digest.ExecuteScalarAsync(ct).ConfigureAwait(false) is not byte[] stored)
+            {
+                return null;
+            }
+
+            Result<CovenantDigest> current = LongRestDiscoveryHash.Recipe(currentRecipe);
+
+            if (current.IsFailure)
+            {
+                throw new InvalidDataException();
+            }
+
+            if (!stored.AsSpan().SequenceEqual(current.Value.Bytes))
+            {
+                return ResumeDrift.Recipe;
+            }
+        }
+
+        LongRestDiscoveryGeneration generation = await LongRestDiscoveryStore.ReadSweepGenerationAsync(connection, transaction, operationId, ct).ConfigureAwait(false)
+            ?? throw new InvalidDataException();
+
+        if (!LongRestFenceCurrency.CanResume(generation.Fence, live))
+        {
+            return ResumeDrift.Fence;
+        }
+
+        try
+        {
+            // The seam question a capability over a retained generation is issued under.
+            await LongRestDiscoveryStore.VerifyFrozenMetadataAsync(connection, transaction, generation, LongRestVerificationDepth.Seam, ct).ConfigureAwait(false);
+
+            return null;
+        }
+        catch (InvalidDataException)
+        {
+            return ResumeDrift.FrozenSources;
+        }
+    }
+
+    /// <summary>
+    /// Whether the park is one its own authority class readmits: a protected sweep waits for a fresh Session request, and a clean sweep
+    /// for the worker, unless its fault is one only an operator can clear.
+    /// </summary>
+    private static bool IsReadmittablePark(LongRestSweepScope scope, LongRunningOperation operation) => scope.ProtectedPartitionDigest is not null
+        ? operation.TerminalErrorCode == LongRestParkCodes.AuthorizedRequestRequired
+        : LongRestFaultPolicy.Classify(operation.TerminalErrorCode) == LongRestFaultClass.ResumeLater;
+
+    // A sweep that completed its generation is joined whichever step its operation has reached, except one an operator has already
+    // started to cancel or one that ended: those do not answer a request.
+    private static readonly int JoinableOperationStates = StateMask(LongRunningOperationState.Pending, LongRunningOperationState.Running,
+        LongRunningOperationState.Waiting, LongRunningOperationState.ReconciliationRequired, LongRunningOperationState.Completed);
+
+    private static int StateMask(params LongRunningOperationState[] states)
+    {
+        int mask = 0;
+
+        foreach (LongRunningOperationState state in states)
+        {
+            mask |= 1 << (int)state;
+        }
+
+        return mask;
+    }
+
+    /// <summary>
+    /// The sweep of this exact partition that completed its generation and describes the installation, though its operation may not have
+    /// reached Completed yet (the generation and the operation are settled in separate writes). A parked one is joined only while its
+    /// own authority class would readmit it.
+    /// </summary>
     private static async Task<LongRunningOperation?> FindCurrentCompletedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
         LongRestSweepScope scope, LongRestSweepFence live, LongRestRecipeIdentity recipe, CancellationToken ct)
     {
-        Guid? completed = await FindCompletedWithinAsync(connection, transaction, live.CanonicalScope, scope, recipe, LongRunningOperationState.Completed,
+        Guid? completed = await FindCompletedWithinAsync(connection, transaction, live.CanonicalScope, scope, recipe, JoinableOperationStates,
             generation => generation.Phase == LongRestSweepPhase.Completed && LongRestFenceCurrency.Describes(generation.Fence, live), ct).ConfigureAwait(false);
 
-        return completed is { } found ? await LongRunningOperationStore.ReadWithinAsync(connection, transaction, found, ct).ConfigureAwait(false) : null;
+        LongRunningOperation? operation = completed is { } found
+            ? await LongRunningOperationStore.ReadWithinAsync(connection, transaction, found, ct).ConfigureAwait(false) : null;
+
+        return operation is { State: LongRunningOperationState.ReconciliationRequired } && !IsReadmittablePark(scope, operation) ? null : operation;
+    }
+
+    /// <summary>
+    /// The operation of this exact partition whose generation is complete and which is parked for the authority class that would readmit
+    /// it: when nothing joins it, nothing can readmit it either.
+    /// </summary>
+    private static async Task<LongRunningOperation?> FindStrandedCompletedParkAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestSweepScope scope, CancellationToken ct)
+    {
+        await using SqliteCommand command = Command(connection, transaction, """
+            SELECT sweep.OperationId FROM long_rest_sweeps sweep
+            JOIN LongRunningOperations operation ON operation.Id = sweep.OperationId AND operation.Kind = $kind
+            WHERE sweep.PhaseCode = $completed AND sweep.ScopeKindCode = $scope AND sweep.CampaignId IS $campaign
+                AND sweep.PartitionDigest IS $partition AND operation.State = $attention LIMIT 1;
+            """, ("$kind", LongRunningOperationKinds.LongRestSweep), ("$completed", (int)LongRestSweepPhase.Completed), ("$scope", (int)scope.Kind),
+            ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null), ("$partition", scope.ProtectedPartitionDigest?.Bytes),
+            ("$attention", (int)LongRunningOperationState.ReconciliationRequired));
+
+        if (await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is not string id)
+        {
+            return null;
+        }
+
+        LongRunningOperation operation = await LongRunningOperationStore.ReadWithinAsync(connection, transaction, Guid.Parse(id), ct).ConfigureAwait(false)
+            ?? throw new InvalidDataException();
+
+        return operation.State == LongRunningOperationState.ReconciliationRequired && IsReadmittablePark(scope, operation) ? operation : null;
     }
 
     private async Task<LongRunningOperation> AbandonParkedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
@@ -334,15 +479,18 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
         return await LongRunningOperationStore.ReadWithinAsync(connection, transaction, operation.Id, ct).ConfigureAwait(false) ?? throw new InvalidDataException();
     }
 
+    /// <param name="generationMayBeUnreadable">
+    /// The stored generation was captured under a recipe that code in force no longer reads, so it cannot be parsed whole. Retirement
+    /// needs only its identity, scope, phase and revision, which are columns of its row, and every statement below is guarded by them.
+    /// </param>
     private async Task RetireTerminalRequestWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        LongRestSweepScope scope, ActiveRequest active, LongRunningOperation operation, CancellationToken ct)
+        LongRestSweepScope scope, ActiveRequest active, LongRunningOperation operation, bool generationMayBeUnreadable, CancellationToken ct)
     {
         // Retirement releases reservations only. Invalidation would delete accepted/Sent evidence.
-        LongRestDiscoveryGeneration? generation = await LongRestDiscoveryStore.ReadSweepGenerationAsync(
-            connection, transaction, operation.Id, ct).ConfigureAwait(false);
+        RetiringGeneration? generation = await ReadRetiringGenerationAsync(connection, transaction, scope, operation.Id, generationMayBeUnreadable, ct).ConfigureAwait(false);
 
         if (active.OperationId != operation.Id || active.GenerationId != generation?.GenerationId
-            || generation is not null && (generation.OperationId != operation.Id || generation.Scope != scope
+            || generation is not null && (generation.OperationId != operation.Id
                 || generation.Phase is LongRestSweepPhase.Completed or LongRestSweepPhase.Invalidated or LongRestSweepPhase.Retired))
         {
             throw new InvalidDataException();
@@ -387,6 +535,52 @@ internal sealed partial class LongRestSweepStore : ILongRestSweepRequestAdmissio
             ("$abandoned", (int)LongRunningOperationState.Abandoned));
 
         if (await retireSweep.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1) throw new InvalidDataException();
+    }
+
+    /// <summary>What retiring a request's generation needs of its row: the identity, phase and revision the retirement is guarded by.</summary>
+    private sealed record RetiringGeneration(Guid GenerationId, Guid OperationId, LongRestSweepPhase Phase, long Revision);
+
+    private static async Task<RetiringGeneration?> ReadRetiringGenerationAsync(SqliteConnection connection, SqliteTransaction transaction,
+        LongRestSweepScope scope, Guid operationId, bool mayBeUnreadable, CancellationToken ct)
+    {
+        if (!mayBeUnreadable)
+        {
+            LongRestDiscoveryGeneration? whole = await LongRestDiscoveryStore.ReadSweepGenerationAsync(connection, transaction, operationId, ct).ConfigureAwait(false);
+
+            if (whole is not null && whole.Scope != scope)
+            {
+                throw new InvalidDataException();
+            }
+
+            return whole is null ? null : new(whole.GenerationId, whole.OperationId, whole.Phase, whole.Revision);
+        }
+
+        await using SqliteCommand command = Command(connection, transaction, """
+            SELECT GenerationId, ScopeKindCode, CampaignId, PartitionDigest, PhaseCode, Revision
+            FROM long_rest_discovery_generations WHERE OperationId = $operation;
+            """, ("$operation", operationId.ToString("N")));
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        Guid? campaign = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
+
+        byte[]? partition = reader.IsDBNull(3) ? null : (byte[])reader[3];
+
+        bool samePartition = partition is null
+            ? scope.ProtectedPartitionDigest is null
+            : scope.ProtectedPartitionDigest is { } expected && partition.AsSpan().SequenceEqual(expected.Bytes);
+
+        if ((LongRestSweepScopeKind)reader.GetInt32(1) != scope.Kind || campaign != scope.CampaignId || !samePartition)
+        {
+            throw new InvalidDataException();
+        }
+
+        return new(Guid.Parse(reader.GetString(0)), operationId, (LongRestSweepPhase)reader.GetInt32(4), reader.GetInt64(5));
     }
 
     private async Task<LongRunningOperation> CreateRequestWithinAsync(SqliteConnection connection, SqliteTransaction transaction,

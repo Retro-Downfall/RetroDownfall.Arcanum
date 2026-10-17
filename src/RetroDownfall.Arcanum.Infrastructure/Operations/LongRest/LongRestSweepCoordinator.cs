@@ -83,9 +83,10 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
             Func<CancellationToken, ValueTask<Result>>? prove = authority is not null && partition.ProtectedPartitionDigest is not null
                 ? token => ProveRequestAuthorityAsync(authority, scope, fence, options, token) : null;
 
-            // The recipe lets admission look once more, inside its own transaction, for a sweep that completed while this request was between its
-            // lookup and its admission: it then joins that sweep instead of paying for a second generation.
-            LongRunningOperation admitted = Require(await requests.AdmitRequestAsync(partition, fence, facts, ownership, ct, prove, options.Recipe.Value).ConfigureAwait(false));
+            // The recipe in force is what a protected park's generation must have been captured under to resume. It also lets admission look
+            // once more, inside its own transaction, for a sweep that completed while this request was between its lookup and its admission,
+            // or whose generation completed before its operation did: it then joins that sweep instead of paying for a second generation.
+            LongRunningOperation admitted = Require(await requests.AdmitRequestAsync(partition, fence, facts, ownership, options.Recipe.Value, ct, prove, options.Recipe.Value).ConfigureAwait(false));
 
             if (partition.ProtectedPartitionDigest is null && admitted.State != LongRunningOperationState.Completed) queue.Signal(admitted.Id);
 

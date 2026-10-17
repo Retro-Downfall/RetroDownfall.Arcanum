@@ -38,7 +38,7 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
         JOIN long_rest_discovery_generations generation ON generation.GenerationId = sweep.GenerationId AND generation.OperationId = sweep.OperationId
         JOIN LongRunningOperations operation ON operation.Id = sweep.OperationId AND operation.Kind = 'long-rest-sweep'
         WHERE sweep.PhaseCode = 6 AND generation.PhaseCode = 6 AND generation.Published = 1
-          AND ($operationState IS NULL OR operation.State = $operationState)
+          AND ($operationStates IS NULL OR (($operationStates >> operation.State) & 1) = 1)
           AND sweep.ScopeKindCode = $scope AND sweep.CampaignId IS $campaign
         """;
 
@@ -59,14 +59,20 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
     private Task<Result<Guid?>> FindCompletedReplayCoreAsync(CanonicalCampaignContext scope, LongRestSweepScope? partition,
         LongRestRecipeIdentity recipe, LongRunningOperationState? requiredState, CancellationToken ct) =>
         WithinReadAsync<Guid?>((connection, transaction) =>
-            FindCompletedWithinAsync(connection, transaction, scope, partition, recipe, requiredState, null, ct), ct);
+            FindCompletedWithinAsync(connection, transaction, scope, partition, recipe,
+                requiredState is { } state ? StateMask(state) : null, null, ct), ct);
 
     /// <summary>
     /// The newest completed generation that proves out, read inside the caller's transaction. A candidate <paramref name="accept"/>
     /// declines is passed over exactly as a damaged one is, so the lookup goes on to the next-newest.
     /// </summary>
+    /// <param name="operationStates">
+    /// The operation states the answer may be in, as a mask of <c>1 &lt;&lt; (int)state</c> bits; <see langword="null"/> for any. A
+    /// generation completes before its operation does, so a request that must find the sweep that has just completed asks for more than
+    /// <see cref="LongRunningOperationState.Completed"/>.
+    /// </param>
     private static async Task<Guid?> FindCompletedWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        CanonicalCampaignContext scope, LongRestSweepScope? partition, LongRestRecipeIdentity recipe, LongRunningOperationState? requiredState,
+        CanonicalCampaignContext scope, LongRestSweepScope? partition, LongRestRecipeIdentity recipe, int? operationStates,
         Func<LongRestDiscoveryGeneration, bool>? accept, CancellationToken ct)
     {
         if (partition is { } exact && (!exact.IsInitialized || exact.CampaignId != scope.CampaignId
@@ -93,7 +99,7 @@ internal sealed partial class LongRestSweepStore : ILongRestCompletedRequestRepl
             await using (SqliteCommand command = Command(connection, transaction, partition is null ? CompletedWholeScopeSql : CompletedExactPartitionSql,
                 ("$scope", scope.IsCampaignBound ? 2 : 1), ("$campaign", scope.CampaignId is { } campaign ? Format(campaign) : null),
                 ("$recipe", recipeDigest.Value.Bytes), ("$cursorMark", cursorMark), ("$cursorOperation", cursorOperation),
-                ("$operationState", requiredState is { } state ? (int)state : null)))
+                ("$operationStates", operationStates)))
             {
                 if (partition is { } named)
                 {

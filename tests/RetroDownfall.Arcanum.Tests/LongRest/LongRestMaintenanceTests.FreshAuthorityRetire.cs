@@ -1,4 +1,7 @@
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
@@ -276,6 +279,227 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(changes, (long)(await f.H.ScalarAsync("SELECT total_changes();"))!);
     }
 
+    // A protected park that waits for a fresh Session request, whose generation can no longer resume under the installation of a later boot,
+    // is retired by the next turn that carries authority. Three things other than the fence keep a generation from resuming, and each strands
+    // the partition the same way: a capability for the park is refused on every turn, so the park is handed back unchanged on every authorized
+    // one, and every Session turn that needs the partition ends until an operator finds the operation and cancels it. A park that is still
+    // resumable is the same park, and is handed back.
+
+    /// <summary>Rewrites the stored recipe of the fixture's generation the way another build of the code would have written it.</summary>
+    private static async Task RewriteStoredRecipeAsync(MaintenanceFixture f, Func<LongRestRecipeIdentity, LongRestRecipeIdentity> change)
+    {
+        string json = (string)(await f.H.ScalarAsync($"SELECT RecipeJson FROM long_rest_discovery_generations WHERE OperationId = '{f.Operation:N}';"))!;
+
+        LongRestRecipeIdentity recipe = JsonSerializer.Deserialize(json, LongRestJsonContext.Default.LongRestRecipeIdentity)!;
+
+        LongRestRecipeIdentity changed = change(recipe);
+
+        Assert.NotEqual(recipe, changed);
+
+        string rewritten = JsonSerializer.Serialize(changed, LongRestJsonContext.Default.LongRestRecipeIdentity);
+
+        // A recipe the code in force reads has the digest the code in force gives it. One it no longer reads (a fixed bound moved) has no digest
+        // now, and keeps the one the build that stored it gave it, which the code in force does not give the recipe it owns.
+        Result<CovenantDigest> digest = LongRestDiscoveryHash.Recipe(changed);
+
+        await f.H.ExecuteAsync("UPDATE long_rest_discovery_generations SET RecipeJson = $json, RecipeDigest = $digest WHERE OperationId = $operation;",
+            ("$json", rewritten), ("$digest", digest.IsSuccess ? digest.Value.Bytes : SHA256.HashData(Encoding.UTF8.GetBytes(rewritten))),
+            ("$operation", f.Operation.ToString("N")));
+    }
+
+    /// <summary>The park a turn is handed after a restart: authorized_request_required, with a paid and failed unit behind it.</summary>
+    private static async Task<(long Receipts, EffectRow[] Effects)> ParkProtectedAcrossABootAsync(MaintenanceFixture f)
+    {
+        (long receipts, EffectRow[] effects) = await ParkProtectedWithEvidenceAsync(f, LongRestParkCodes.AuthorizedRequestRequired);
+
+        await f.RebootAsync();
+
+        return (receipts, effects);
+    }
+
+    /// <summary>
+    /// Pins the strand and its release: no capability can be issued for the park, a request without authority is handed it back unchanged with
+    /// no write, and the next request that carries live authority retires it as stale input, keeps its evidence, and starts a generation
+    /// that completes.
+    /// </summary>
+    private static async Task AssertTheNextAuthorizedTurnRetiresTheParkAsync(MaintenanceFixture f, CovenantTurnLease authority, long receipts, EffectRow[] effects,
+        bool scriptTheProvider = true)
+    {
+        Assert.True((await f.Maintenance.CreateCapabilityAsync(f.Operation, f.Invocation, f.Claim, f.Scope, authority, CancellationToken.None)).IsFailure);
+
+        string before = await ParkedSnapshotAsync(f);
+
+        long changes = (long)(await f.H.ScalarAsync("SELECT total_changes();"))!;
+
+        long generations = (long)(await f.H.ScalarAsync("SELECT count(*) FROM long_rest_discovery_generations;"))!;
+
+        Result<LongRunningOperationDto> unauthorized = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(unauthorized.IsSuccess, unauthorized.IsFailure ? unauthorized.Error.Code : null);
+
+        Assert.Equal(f.Operation, unauthorized.Value.Id);
+
+        Assert.Equal(before, await ParkedSnapshotAsync(f));
+
+        Assert.Equal(changes, (long)(await f.H.ScalarAsync("SELECT total_changes();"))!);
+
+        Result<LongRunningOperationDto> replaced = await f.Coordinator.RequestAsync(f.Scope, f.Partition, authority, CancellationToken.None);
+
+        Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Code : null);
+
+        Assert.NotEqual(f.Operation, replaced.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Pending, replaced.Value.State);
+
+        LongRunningOperation retired = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.Abandoned, retired.State);
+
+        Assert.Equal(ErrorCodes.LongRest.StaleInput, retired.TerminalErrorCode);
+
+        Assert.Null(retired.LeaseOwner);
+
+        Assert.NotNull(retired.CompletedAt);
+
+        Assert.Equal((long)LongRestSweepPhase.Retired, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+
+        Assert.Equal((long)LongRestSweepPhase.Retired, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_discovery_generations WHERE OperationId = '{f.Operation:N}';"));
+
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_sweeps WHERE PhaseCode NOT IN (6, 7, 9);"));
+
+        Assert.Equal(receipts, await f.H.ScalarAsync("SELECT count(*) FROM external_disclosure_receipts;"));
+
+        Assert.Equal(effects, await EffectRowsAsync(f));
+
+        Assert.Equal(generations, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_discovery_generations;"));
+
+        Assert.False(f.Ownership.IsClaimed(f.Operation));
+
+        f.Handler.Status = HttpStatusCode.OK;
+
+        // A scenario that scripted the provider for its own corpus keeps its script.
+        if (scriptTheProvider) SummaryOrDecision(f);
+
+        // A corpus of many leaves takes the turn more than one pass: each pass is issued its own capability, as a Session turn is.
+        LongRestSweepProgress completed;
+
+        int passes = 0;
+
+        do
+        {
+            LongRestMaintenanceCapability capability = LongRestSweepHarness.Require(await f.Maintenance.CreateCapabilityAsync(
+                replaced.Value.Id, f.Invocation, f.Claim, f.Scope, authority, CancellationToken.None));
+
+            completed = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(replaced.Value.Id, capability, CancellationToken.None));
+        } while (completed.Phase != LongRestSweepPhase.Completed && ++passes < 200);
+
+        Assert.True(completed.Phase == LongRestSweepPhase.Completed, $"{completed.Phase}: {completed.DeferredReason}");
+
+        Assert.Equal(LongRunningOperationState.Completed, (await f.Operations.GetAsync(replaced.Value.Id))!.State);
+    }
+
+    // A version the build moved, whether the stored recipe still parses under it (the scorer, the adjudication) or not (the pairing
+    // arithmetic, a fixed bound, which the stored generation can then no longer be read under at all).
+    [Theory]
+    [InlineData("adjudication-version")]
+    [InlineData("lexical-scorer-version")]
+    [InlineData("pairing-version")]
+    [InlineData("fixed-bound")]
+    public async Task A_protected_park_captured_under_another_recipe_is_retired_by_the_next_authorized_turn(string change)
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        (long receipts, EffectRow[] effects) = await ParkProtectedAcrossABootAsync(f);
+
+        await RewriteStoredRecipeAsync(f, recipe => change switch
+        {
+            "adjudication-version" => recipe with { AdjudicationRecipeVersion = recipe.AdjudicationRecipeVersion + 1 },
+            "lexical-scorer-version" => recipe with { LexicalScorerVersion = recipe.LexicalScorerVersion + 1 },
+            "pairing-version" => recipe with { PairingRecipeVersion = recipe.PairingRecipeVersion - 1 },
+            "fixed-bound" => recipe with { SourcePageSize = recipe.SourcePageSize + 1 },
+            _ => throw new ArgumentOutOfRangeException(nameof(change)),
+        });
+
+        // The recipe is the one thing about the park that moved: it is in a later boot, and its fence is the one a turn would resume it under.
+        if (change is "adjudication-version" or "lexical-scorer-version")
+        {
+            LongRestSweepFence live = LongRestSweepHarness.Require(await f.Facts.CaptureAsync(f.Scope, f.Epoch.Capture().Stamp, null, CancellationToken.None));
+
+            LongRestDiscoveryGeneration stored = LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!;
+
+            Assert.True(LongRestFenceCurrency.CanResume(stored.Fence, live));
+
+            Assert.NotEqual(((ILongRestConfigurationProvider)f.Epoch).Capture().Recipe.Value, stored.Recipe);
+        }
+
+        await AssertTheNextAuthorizedTurnRetiresTheParkAsync(f, f.Authority, receipts, effects);
+    }
+
+    // The suppressed source of an earlier consolidation is erased. It is no leaf, so no trigger invalidates the generation that froze its
+    // survivor, and the receipt it was erased with is the footing the survivor's frozen flag rested on: the frozen facts can no longer be
+    // proved, whatever the fence says.
+    [Fact]
+    public async Task A_protected_park_whose_frozen_source_can_no_longer_be_proved_is_retired_by_the_next_authorized_turn()
+    {
+        await using LongRestMutationMatrixTests.Scenario s = await LongRestMutationMatrixTests.Scenario.CreateAsync(
+            isProtected: true, LongRestMutationMatrixTests.Leaves, prepare: static scenario => scenario.ConsolidateAsync());
+
+        MaintenanceFixture f = s.F;
+
+        Assert.Equal(LongRestParkCodes.AuthorizedRequestRequired, await s.ParkAsync());
+
+        await f.RebootAsync();
+
+        await LongRestMutationMatrixTests.ErasureKernelAsync(s, await s.ConsolidatedSourceOfAsync(s.Bystander), reopenScope: true);
+
+        // Nothing but the frozen facts moved: the generation is still there, it is the recipe in force, and its fence resumes.
+        LongRestDiscoveryGeneration stored = LongRestSweepHarness.Require(await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None))!;
+
+        Assert.Equal(((ILongRestConfigurationProvider)f.Epoch).Capture().Recipe.Value, stored.Recipe);
+
+        Assert.True(LongRestFenceCurrency.CanResume(stored.Fence,
+            LongRestSweepHarness.Require(await f.Facts.CaptureAsync(f.Scope, f.Epoch.Capture().Stamp, null, CancellationToken.None))));
+
+        await using CovenantTurnLease turn = LongRestSweepHarness.Require(await f.Gate.AcquireTurnAsync(f.Scope, CancellationToken.None));
+
+        f.InvokeUnder(turn);
+
+        long receipts = (long)(await f.H.ScalarAsync("SELECT count(*) FROM external_disclosure_receipts;"))!;
+
+        EffectRow[] effects = await EffectRowsAsync(f);
+
+        await AssertTheNextAuthorizedTurnRetiresTheParkAsync(f, turn, receipts, effects, scriptTheProvider: false);
+    }
+
+    [Fact]
+    public async Task A_protected_park_whose_generation_can_still_resume_in_a_later_boot_is_handed_back_to_the_authorized_turn()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        _ = await ParkProtectedAcrossABootAsync(f);
+
+        string before = await ParkedSnapshotAsync(f);
+
+        long changes = (long)(await f.H.ScalarAsync("SELECT total_changes();"))!;
+
+        // The recipe, the fence and the frozen sources are all as they were, so the turn that carries authority readmits the park it is handed.
+        Assert.Equal(f.Operation, LongRestSweepHarness.Require(await f.Coordinator.RequestAsync(f.Scope, f.Partition, f.Authority, CancellationToken.None)).Id);
+
+        Assert.Equal(before, await ParkedSnapshotAsync(f));
+
+        Assert.Equal(changes, (long)(await f.H.ScalarAsync("SELECT total_changes();"))!);
+
+        f.Handler.Status = HttpStatusCode.OK;
+
+        SummaryOrDecision(f);
+
+        LongRestMaintenanceCapability capability = LongRestSweepHarness.Require(await f.Maintenance.CreateCapabilityAsync(
+            f.Operation, f.Invocation, f.Claim, f.Scope, f.Authority, CancellationToken.None));
+
+        Assert.Equal(LongRestSweepPhase.Completed,
+            LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, capability, CancellationToken.None)).Phase);
+    }
+
     private static async Task<string> GenerationSnapshotAsync(MaintenanceFixture f) =>
         (string)(await f.H.ScalarAsync("SELECT json_group_array(json_array(GenerationId, OperationId, PhaseCode, Revision)) FROM long_rest_discovery_generations;"))!;
 
@@ -288,7 +512,8 @@ public sealed partial class LongRestMaintenanceTests
 
         LongRestSweepFence fence = LongRestSweepHarness.Require(await facts.CaptureAsync(f.Scope, f.Epoch.Capture().Stamp, null, CancellationToken.None));
 
-        return await new LongRestSweepStore(f.H.Saga.Context, f.Clock).AdmitRequestAsync(f.Partition, fence, facts, f.Ownership, CancellationToken.None, proveAuthority);
+        return await new LongRestSweepStore(f.H.Saga.Context, f.Clock).AdmitRequestAsync(f.Partition, fence, facts, f.Ownership,
+            ((ILongRestConfigurationProvider)f.Epoch).Capture().Recipe.Value, CancellationToken.None, proveAuthority);
     }
 
     [Fact]
