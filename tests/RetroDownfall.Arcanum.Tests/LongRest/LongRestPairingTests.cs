@@ -471,9 +471,9 @@ public sealed class LongRestPairingTests
             {
                 if (leaves[anchor].IsDefaultOrEmpty || leaves[anchor].Length != dimensions) continue;
 
-                LongRestBackgroundSampler own = Read(anchor, null);
+                int ownFloor = Read(anchor, null).FloorPermille(out double? read);
 
-                double spread = own.Spread!.Value;
+                double spread = read!.Value;
 
                 // The same bits for every anchor of the width, NaN included (a generation with no pair has no spread).
                 bits ??= BitConverter.DoubleToInt64Bits(spread);
@@ -482,11 +482,11 @@ public sealed class LongRestPairingTests
 
                 LongRestBackgroundSampler handed = Read(anchor, spread);
 
-                Assert.Equal(own.FloorPermille(), handed.FloorPermille());
+                Assert.Equal(ownFloor, handed.FloorPermille(out double? handedBack));
 
-                Assert.Equal(BitConverter.DoubleToInt64Bits(spread), BitConverter.DoubleToInt64Bits(handed.Spread!.Value));
+                Assert.Equal(BitConverter.DoubleToInt64Bits(spread), BitConverter.DoubleToInt64Bits(handedBack!.Value));
 
-                Assert.Equal(own.Others, handed.Others);
+                Assert.Equal(Read(anchor, null).Others, handed.Others);
 
                 shared++;
             }
@@ -498,22 +498,26 @@ public sealed class LongRestPairingTests
     [Fact]
     public void A_sampler_with_no_usable_anchor_reads_no_spread_and_takes_none_it_is_handed()
     {
-        Assert.Null(new LongRestBackgroundSampler(default).Spread);
+        Assert.Equal(1000, new LongRestBackgroundSampler(default).FloorPermille(out double? none));
 
-        Assert.Null(new LongRestBackgroundSampler([0f, 0f], 0.25).Spread);
+        Assert.Null(none);
 
-        Assert.Equal(1000, new LongRestBackgroundSampler([0f, 0f], 0.25).FloorPermille());
+        Assert.Equal(1000, new LongRestBackgroundSampler([0f, 0f], 0.25).FloorPermille(out double? unusable));
 
-        Assert.Equal(0.25, new LongRestBackgroundSampler([1f, 0f], 0.25).Spread);
+        Assert.Null(unusable);
+
+        _ = new LongRestBackgroundSampler([1f, 0f], 0.25).FloorPermille(out double? given);
+
+        Assert.Equal(0.25, given);
 
         // Handed a spread, the sampler builds no sample: what it is handed is what its floor is read from.
         LongRestBackgroundSampler handed = new([1f, 0f], double.NaN);
 
         for (int index = 0; index < 40; index++) _ = handed.Observe(index == 0, [1f, index / 100f]);
 
-        Assert.True(double.IsNaN(handed.Spread!.Value));
+        Assert.Equal(1000, handed.FloorPermille(out double? handedBack));
 
-        Assert.Equal(1000, handed.FloorPermille());
+        Assert.True(double.IsNaN(handedBack!.Value));
     }
 
     [Fact]

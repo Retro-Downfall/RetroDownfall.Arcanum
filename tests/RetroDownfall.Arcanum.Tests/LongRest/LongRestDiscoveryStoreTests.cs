@@ -275,7 +275,7 @@ public sealed class LongRestDiscoveryStoreTests
 
         LongRestSpreadCache cache = new();
 
-        Assert.False(cache.TryGet(generation.GenerationId, LongRestClusters.Width, out _));
+        Assert.Null(cache.Share(generation.GenerationId, LongRestClusters.Width, null));
 
         string[] firstAlone = Shown(await DiscoverWithinAsync(h, generation.GenerationId, first, null));
 
@@ -284,7 +284,7 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.Equal(firstAlone, firstRemembering);
 
         // The first anchor of the width left what it read.
-        Assert.True(cache.TryGet(generation.GenerationId, LongRestClusters.Width, out double spread));
+        double spread = cache.Share(generation.GenerationId, LongRestClusters.Width, null)!.Value;
 
         Assert.True(double.IsFinite(spread) && spread > 0);
 
@@ -296,15 +296,15 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.Contains(secondAlone, static line => line.Contains("m-00/Vector", StringComparison.Ordinal) && line.Contains("m-02/Vector", StringComparison.Ordinal));
 
         // Another generation, or another width, has not been read: nothing is taken from this one.
-        Assert.False(cache.TryGet(Guid.NewGuid(), LongRestClusters.Width, out _));
+        Assert.Null(cache.Share(Guid.NewGuid(), LongRestClusters.Width, null));
 
-        Assert.False(cache.TryGet(generation.GenerationId, LongRestClusters.Width + 1, out _));
+        Assert.Null(cache.Share(generation.GenerationId, LongRestClusters.Width + 1, null));
 
         // What is remembered is what a hit reads the floor from: a spread that is no number gives the highest floor, and the vector lane then
         // nominates nothing, where the spread this generation really has nominates the cluster.
         LongRestSpreadCache unreadable = new();
 
-        unreadable.Remember(generation.GenerationId, LongRestClusters.Width, double.NaN);
+        Assert.True(double.IsNaN(unreadable.Share(generation.GenerationId, LongRestClusters.Width, double.NaN)!.Value));
 
         LongRestCandidateGroup[] refused = await DiscoverWithinAsync(h, generation.GenerationId, second, unreadable);
 
@@ -320,27 +320,23 @@ public sealed class LongRestDiscoveryStoreTests
 
         Guid generation = Guid.NewGuid();
 
-        cache.Remember(generation, 64, 0.125);
+        Assert.Equal(0.125, cache.Share(generation, 64, 0.125));
 
         // The first reading stands: the cache never replaces what an anchor already read.
-        cache.Remember(generation, 64, 0.5);
+        Assert.Equal(0.125, cache.Share(generation, 64, 0.5));
 
-        cache.Remember(generation, 32, 0.25);
+        Assert.Equal(0.25, cache.Share(generation, 32, 0.25));
 
-        Assert.True(cache.TryGet(generation, 64, out double wide));
+        Assert.Equal(0.125, cache.Share(generation, 64, null));
 
-        Assert.Equal(0.125, wide);
+        Assert.Equal(0.25, cache.Share(generation, 32, null));
 
-        Assert.True(cache.TryGet(generation, 32, out double narrow));
+        Assert.Null(cache.Share(Guid.NewGuid(), 64, null));
 
-        Assert.Equal(0.25, narrow);
+        for (int index = 0; index < 8; index++) _ = cache.Share(Guid.NewGuid(), 64, index);
 
-        Assert.False(cache.TryGet(Guid.NewGuid(), 64, out _));
+        Assert.Null(cache.Share(generation, 64, null));
 
-        for (int index = 0; index < 8; index++) cache.Remember(Guid.NewGuid(), 64, index);
-
-        Assert.False(cache.TryGet(generation, 64, out _));
-
-        Assert.False(cache.TryGet(generation, 32, out _));
+        Assert.Null(cache.Share(generation, 32, null));
     }
 }

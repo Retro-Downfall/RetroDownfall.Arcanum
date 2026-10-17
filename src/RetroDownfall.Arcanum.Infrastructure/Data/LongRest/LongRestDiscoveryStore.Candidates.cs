@@ -80,12 +80,7 @@ internal sealed partial class LongRestDiscoveryStore
         // median of the anchor's cosine to every other leaf, eligible or not, and the spread of a fixed sample of the generation's leaves.
         int width = source.Vector.IsDefaultOrEmpty ? 0 : source.Vector.Length;
 
-        double? shared = null;
-
-        if (spreads is not null && width > 0 && spreads.TryGet(generationId, width, out double known))
-        {
-            shared = known;
-        }
+        double? shared = spreads is not null && width > 0 ? spreads.Share(generationId, width, null) : null;
 
         LongRestBackgroundSampler background = new(source.Vector, shared);
 
@@ -182,11 +177,11 @@ internal sealed partial class LongRestDiscoveryStore
         ImmutableArray<LongRestCandidate> hierarchy = await HierarchyCandidatesAsync(connection, transaction, generation, anchor, capability, cancellationToken).ConfigureAwait(false);
 
         // The anchor's Background Floor travels with its groups: the packer judges every nominee, lexical and hierarchical ones included, by it.
-        int floor = background.FloorPermille();
+        int floor = background.FloorPermille(out double? read);
 
-        if (spreads is not null && shared is null && background.Spread is { } read)
+        if (spreads is not null && shared is null && read is { } measured)
         {
-            spreads.Remember(generationId, width, read);
+            _ = spreads.Share(generationId, width, measured);
         }
 
         Result<ImmutableArray<LongRestCandidate>> merged = LongRestDiscoveryPolicy.MergeCandidates(anchor,
@@ -378,22 +373,26 @@ internal sealed class LongRestSpreadCache
 
     private readonly Queue<(Guid Generation, int Width)> _order = new();
 
-    internal bool TryGet(Guid generation, int width, out double spread)
+    /// <summary>
+    /// The spread remembered for the generation and width, or <see langword="null"/> when none is. A spread an anchor has just read is
+    /// remembered by passing it as <paramref name="read"/>; the first one stands, because every reading of the same leaves is the same bits
+    /// and a cache never replaces what an anchor already read.
+    /// </summary>
+    internal double? Share(Guid generation, int width, double? read)
     {
         lock (_gate)
         {
-            return _spreads.TryGetValue((generation, width), out spread);
-        }
-    }
-
-    internal void Remember(Guid generation, int width, double spread)
-    {
-        lock (_gate)
-        {
-            if (!_spreads.TryAdd((generation, width), spread))
+            if (_spreads.TryGetValue((generation, width), out double known))
             {
-                return;
+                return known;
             }
+
+            if (read is not { } measured)
+            {
+                return null;
+            }
+
+            _spreads[(generation, width)] = measured;
 
             _order.Enqueue((generation, width));
 
@@ -401,6 +400,8 @@ internal sealed class LongRestSpreadCache
             {
                 _ = _spreads.Remove(_order.Dequeue());
             }
+
+            return measured;
         }
     }
 }

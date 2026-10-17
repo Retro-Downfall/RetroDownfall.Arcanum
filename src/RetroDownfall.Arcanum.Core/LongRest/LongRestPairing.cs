@@ -539,12 +539,18 @@ public sealed class LongRestBackgroundSampler
         return isAnchor ? double.NaN : cosine;
     }
 
-    /// <summary>
-    /// The spread of the generation's sample that this anchor's floor is read from: the one it was given, or the one it read from the leaves it
-    /// observed; <see langword="null"/> when the anchor has no usable vector, because it then reads no sample.
-    /// </summary>
-    public double? Spread => _anchor.Length == 0 ? null : _knownSpread ?? LongRestPairing.Spread(_spread.FirstQuartile, _spread.ThirdQuartile);
+    /// <summary>The anchor's Background Floor in thousandths (500 to 1000); 1000 when the anchor has no usable vector.</summary>
+    public int FloorPermille() => FloorPermille(out _);
 
     /// <summary>The anchor's Background Floor in thousandths (500 to 1000); 1000 when the anchor has no usable vector.</summary>
-    public int FloorPermille() => Spread is { } spread ? LongRestPairing.BackgroundFloor(_background.Median, spread, _background.Count) : 1000;
+    /// <param name="spread">
+    /// The spread of the generation's sample that the floor was read from: the one the sampler was given, or the one it read from the leaves it
+    /// observed; <see langword="null"/> when the anchor has no usable vector, because it then reads no sample.
+    /// </param>
+    public int FloorPermille(out double? spread)
+    {
+        spread = _anchor.Length == 0 ? null : _knownSpread ?? LongRestPairing.Spread(_spread.FirstQuartile, _spread.ThirdQuartile);
+
+        return spread is { } known ? LongRestPairing.BackgroundFloor(_background.Median, known, _background.Count) : 1000;
+    }
 }
