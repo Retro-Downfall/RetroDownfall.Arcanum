@@ -103,6 +103,30 @@ public sealed class LongRestDocumentationTests
 
         // A transient provider failure is also an unknown-usage attempt, so the guidance says what a second one of the same unit does.
         Assert.Contains("second such failure of the same unit parks as LongRest.TransportUnknown", descriptor.ManualRepairGuidance, StringComparison.Ordinal);
+
+        // A crash park keeps its code when its failure budget is spent, so "wait" is not true of it: the guidance names that case,
+        // the commands that clear it, and what a new request for the scope is answered with, in that order.
+        const string spent = "A clean sweep parked as long_rest.interrupted after its fourth readmission in a row without committed progress is not readmitted again";
+
+        int spentAt = descriptor.ManualRepairGuidance.IndexOf(spent, StringComparison.Ordinal);
+
+        Assert.True(spentAt >= 0, "The guidance does not say what a spent failure budget does to a long_rest.interrupted park.");
+
+        string afterSpent = descriptor.ManualRepairGuidance[spentAt..];
+
+        int retryAt = afterSpent.IndexOf("'arcanum operation retry <id>'", StringComparison.Ordinal);
+
+        int cancelAt = afterSpent.IndexOf("'arcanum operation cancel <id>'", StringComparison.Ordinal);
+
+        int parkedAt = afterSpent.IndexOf("LongRest.SweepParked", StringComparison.Ordinal);
+
+        Assert.True(retryAt > 0 && cancelAt > retryAt && parkedAt > cancelAt, "The spent-budget guidance does not name retry, cancel and LongRest.SweepParked in that order.");
+
+        // And it sits beside the "wait" it qualifies, before any other park code is explained.
+        Assert.True(
+            spentAt > descriptor.ManualRepairGuidance.IndexOf("so wait", StringComparison.Ordinal)
+            && spentAt < descriptor.ManualRepairGuidance.IndexOf("Each LongRest.ProviderUnavailable", StringComparison.Ordinal),
+            "The spent-budget guidance is not next to the wait it qualifies.");
     }
 
     [Fact]
