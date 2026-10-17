@@ -44,7 +44,7 @@ public sealed partial class InstallationIdentityRepairTests
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(result, ErrorCodes.Data.Blocked, "is unfinished");
@@ -79,7 +79,7 @@ public sealed partial class InstallationIdentityRepairTests
 
         int setsBefore = _credentials.SetCount;
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -88,6 +88,11 @@ public sealed partial class InstallationIdentityRepairTests
         Assert.Equal(InstallationIdentityRepairAction.Restore, applied.Value.Action);
 
         Assert.Equal(IdentityAccount(), applied.Value.CredentialAccount);
+
+        // The plan carries the installation to compare, and neither report ever shows it.
+        Assert.Equal(Named, planned.Value.Installation);
+
+        Assert.DoesNotContain(Named.ToString("D"), planned.Value + " " + applied.Value, StringComparison.OrdinalIgnoreCase);
 
         // One write of the item, no delete, and the item now holds the identity the anchor names, in
         // its one canonical spelling.
@@ -98,7 +103,7 @@ public sealed partial class InstallationIdentityRepairTests
         AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
 
         // The anchor is the tombstone it was, and is repeatable: the second run finds a valid identity.
-        Result<InstallationIdentityRepairReport> again = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> again = await repair.ApplyAsync(planned.Value);
 
         Assert.Equal(ErrorCodes.Data.Conflict, again.Error.Code);
     }
@@ -112,7 +117,7 @@ public sealed partial class InstallationIdentityRepairTests
 
         SetAnchor("offline transition", Named, closed: true);
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await ApplyPlannedAsync(Create());
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -137,7 +142,7 @@ public sealed partial class InstallationIdentityRepairTests
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(result, ErrorCodes.Covenant.ManualRecoveryRequired, "different installations");
@@ -155,7 +160,10 @@ public sealed partial class InstallationIdentityRepairTests
 
         SetAnchor("offline transition", Named, closed: false);
 
-        AssertRefused(await Create().ApplyAsync(), ErrorCodes.Data.Blocked, "offline Grimoire transition is unfinished");
+        AssertRefused(
+            await Create().ApplyAsync(Confirmed()),
+            ErrorCodes.Data.Blocked,
+            "offline Grimoire transition is unfinished");
 
         AssertIdentityIs(DamagedValue);
     }
@@ -175,7 +183,7 @@ public sealed partial class InstallationIdentityRepairTests
 
         Assert.Equal(InstallationIdentityRepairAction.Remove, planned.Value.Action);
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -199,7 +207,7 @@ public sealed partial class InstallationIdentityRepairTests
         SetOther(EvidenceAccount(anchor));
 
         AssertRefused(
-            await Create().ApplyAsync(),
+            await Create().ApplyAsync(Confirmed()),
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "could not be proved");
 
@@ -221,7 +229,7 @@ public sealed partial class InstallationIdentityRepairTests
 
         _credentials.ThrowOnUnreadable = throws;
 
-        AssertRefused(await Create().ApplyAsync(), ErrorCodes.Covenant.Unavailable, "could not be proved");
+        AssertRefused(await Create().ApplyAsync(Confirmed()), ErrorCodes.Covenant.Unavailable, "could not be proved");
 
         AssertIdentityIs(DamagedValue);
     }
@@ -233,7 +241,7 @@ public sealed partial class InstallationIdentityRepairTests
 
         SetAnchor("restore", Named, closed: true);
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync(Confirmed());
 
         AssertRefused(applied, ErrorCodes.Data.Conflict, "valid canonical identity");
 
@@ -249,13 +257,15 @@ public sealed partial class InstallationIdentityRepairTests
 
         InstallationIdentityRepair repair = Create();
 
-        Assert.True((await repair.PlanAsync()).IsSuccess);
+        Result<InstallationIdentityRepairReport> planned = await repair.PlanAsync();
+
+        Assert.True(planned.IsSuccess);
 
         _ = _inner.Delete(ArcanumCredentialIdentity.Service, IdentityAccount());
 
         int setsBefore = _credentials.SetCount;
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess);
 
@@ -303,7 +313,7 @@ public sealed partial class InstallationIdentityRepairTests
 
         int setsBefore = _credentials.SetCount;
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -347,7 +357,7 @@ public sealed partial class InstallationIdentityRepairTests
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(
@@ -396,7 +406,7 @@ public sealed partial class InstallationIdentityRepairTests
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(result, ErrorCodes.Data.Blocked, "is unfinished");
@@ -420,14 +430,16 @@ public sealed partial class InstallationIdentityRepairTests
 
         InstallationIdentityRepair repair = Create(data: rows);
 
-        Assert.Equal(InstallationIdentityRepairAction.Reseed, (await repair.PlanAsync()).Value.Action);
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, plan.Action);
 
         SetAnchor("offline transition", OtherNamed, closed: true);
 
         int setsBefore = _credentials.SetCount;
 
         AssertRefused(
-            await repair.ApplyAsync(),
+            await repair.ApplyAsync(plan),
             ErrorCodes.Covenant.ManualRecoveryRequired,
             "a different installation than the Grimoire's authority row carries");
 
@@ -448,7 +460,7 @@ public sealed partial class InstallationIdentityRepairTests
         int setsBefore = _credentials.SetCount;
 
         AssertRefused(
-            await Create(data: rows).ApplyAsync(),
+            await Create(data: rows).ApplyAsync(Confirmed()),
             ErrorCodes.Data.Conflict,
             "valid canonical identity");
 

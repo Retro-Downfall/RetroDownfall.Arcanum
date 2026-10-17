@@ -1,3 +1,5 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -61,11 +63,31 @@ internal enum InstallationIdentityRepairAction : byte
 /// is a secret; the stored value is never read into a report.
 /// </param>
 /// <param name="Action">How a damaged item is, or was, put right.</param>
+/// <param name="Installation">
+/// The installation the repair targets: the Grimoire's authority row's for a reseed, a closed anchor's
+/// for a restore, and empty for a removal. It names the record the item is put right to, never the
+/// stored value, and it is not printed; an apply compares it with the plan the operator confirmed.
+/// </param>
 internal sealed record InstallationIdentityRepairReport(
     InstallationIdentityRepairState State,
     string CredentialService,
     string CredentialAccount,
-    InstallationIdentityRepairAction Action = InstallationIdentityRepairAction.None);
+    InstallationIdentityRepairAction Action = InstallationIdentityRepairAction.None,
+    Guid Installation = default)
+{
+    // The installation is compared, never shown: a report that is logged or printed names the item and
+    // what was done to it, and no installation identity.
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder
+            .Append("State = ").Append(State)
+            .Append(", CredentialService = ").Append(CredentialService)
+            .Append(", CredentialAccount = ").Append(CredentialAccount)
+            .Append(", Action = ").Append(Action);
+
+        return true;
+    }
+}
 
 /// <summary>
 /// The guarded repair of a profile's damaged pre-database installation identity.
@@ -108,8 +130,12 @@ internal sealed record InstallationIdentityRepairReport(
 /// is the identity provider's, so the account names keep the single owners the call-site pins hold
 /// them to.</para>
 ///
-/// <para>Planning and applying are separate calls with the same checks, so the operator confirms
-/// against the state the apply then finds again. An apply that finds the item already gone reports
+/// <para>Planning and applying are separate calls with the same checks, and the apply is handed the
+/// plan the operator confirmed. It proves every condition again under its own lock and refuses, with
+/// <c>Data.PlanChanged</c>, unless it finds the same choice (the same action, on the same
+/// installation) that was confirmed: the lock is not held while the operator is asked, so the profile
+/// can change in between, and a confirmed removal never becomes a write, nor a confirmed write a
+/// removal or a write of another installation. An apply that finds the item already gone reports
 /// that, and changes nothing.</para>
 /// </remarks>
 internal sealed class InstallationIdentityRepair(
@@ -146,17 +172,30 @@ internal sealed class InstallationIdentityRepair(
     /// </summary>
     public Task<Result<InstallationIdentityRepairReport>> PlanAsync(
         CancellationToken cancellationToken = default) =>
-        RunAsync(apply: false, cancellationToken);
+        RunAsync(apply: false, confirmed: null, cancellationToken);
 
     /// <summary>
-    /// Proves every precondition again and puts the damaged item right.
+    /// Proves every precondition again and puts the damaged item right, but only the way the operator
+    /// confirmed.
     /// </summary>
+    /// <param name="confirmed">The plan the operator confirmed.</param>
+    /// <param name="cancellationToken">Cancels the repair before it changes anything.</param>
+    /// <returns>
+    /// The outcome; a failure with <c>Data.PlanChanged</c> when the choice found under the lock is not
+    /// the one in <paramref name="confirmed"/>, in which case nothing was changed.
+    /// </returns>
     public Task<Result<InstallationIdentityRepairReport>> ApplyAsync(
-        CancellationToken cancellationToken = default) =>
-        RunAsync(apply: true, cancellationToken);
+        InstallationIdentityRepairReport confirmed,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(confirmed);
+
+        return RunAsync(apply: true, confirmed, cancellationToken);
+    }
 
     private async Task<Result<InstallationIdentityRepairReport>> RunAsync(
         bool apply,
+        InstallationIdentityRepairReport? confirmed,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -256,7 +295,21 @@ internal sealed class InstallationIdentityRepair(
 
         if (!apply)
         {
-            return Report(InstallationIdentityRepairState.Damaged, account, action);
+            return Report(InstallationIdentityRepairState.Damaged, account, action, chosen.Value.Installation);
+        }
+
+        // The lock is not held while the operator is asked, so the profile may have changed since the
+        // plan. The write below is the choice found now, and it is made only when it is the one that
+        // was confirmed.
+        if (confirmed is null
+            || confirmed.State is not InstallationIdentityRepairState.Damaged
+            || action != confirmed.Action
+            || chosen.Value.Installation != confirmed.Installation)
+        {
+            return Refuse(
+                ErrorCodes.Data.PlanChanged,
+                "What the installation identity repair would do changed after it was confirmed, so "
+                + "nothing was changed. Run the repair again.");
         }
 
         Result<bool> changed = action switch
@@ -289,7 +342,8 @@ internal sealed class InstallationIdentityRepair(
                 }
                 : InstallationIdentityRepairState.Absent,
             account,
-            action);
+            action,
+            chosen.Value.Installation);
     }
 
     /// <summary>
@@ -542,8 +596,14 @@ internal sealed class InstallationIdentityRepair(
     private static Result<InstallationIdentityRepairReport> Report(
         InstallationIdentityRepairState state,
         string account,
-        InstallationIdentityRepairAction action = InstallationIdentityRepairAction.None) =>
-        new InstallationIdentityRepairReport(state, ArcanumCredentialIdentity.Service, account, action);
+        InstallationIdentityRepairAction action = InstallationIdentityRepairAction.None,
+        Guid installation = default) =>
+        new InstallationIdentityRepairReport(
+            state,
+            ArcanumCredentialIdentity.Service,
+            account,
+            action,
+            installation);
 
     private static Result<Guid?> RefuseNaming(string code, string message) =>
         Result<Guid?>.Failure(new Error(code, message));

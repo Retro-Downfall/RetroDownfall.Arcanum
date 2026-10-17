@@ -152,15 +152,19 @@ public sealed partial class InstallationResetIdentityContinuityTests
 
         Assert.Equal(expected, planned.Value.Action);
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
         return applied.Value;
     }
 
-    /// <summary>One plan or one apply of the repair, whatever it answered.</summary>
-    private static async Task<Result<InstallationIdentityRepairReport>> RepairResultAsync(
+    /// <summary>
+    /// One plan or one apply of the repair, whatever it answered. The apply is handed a confirmed plan
+    /// of a damaged item; it is for the cases in which it is refused before it compares what it finds
+    /// with what was confirmed.
+    /// </summary>
+    private async Task<Result<InstallationIdentityRepairReport>> RepairResultAsync(
         ServiceProvider provider,
         bool apply)
     {
@@ -168,7 +172,21 @@ public sealed partial class InstallationResetIdentityContinuityTests
 
         InstallationIdentityRepair repair = scope.ServiceProvider.GetRequiredService<InstallationIdentityRepair>();
 
-        return apply ? await repair.ApplyAsync() : await repair.PlanAsync();
+        if (!apply)
+        {
+            return await repair.PlanAsync();
+        }
+
+        BackupRestoreProfileNamespace profile = BackupRestoreJournalAuthenticator
+            .ResolveProfileNamespace(ArcanumPaths.GrimoireDirectory)
+            .Value;
+
+        return await repair.ApplyAsync(
+            new InstallationIdentityRepairReport(
+                InstallationIdentityRepairState.Damaged,
+                ArcanumCredentialIdentity.Service,
+                ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(profile.AccountSuffix),
+                InstallationIdentityRepairAction.Reseed));
     }
 
     private void DamageTheIdentity()

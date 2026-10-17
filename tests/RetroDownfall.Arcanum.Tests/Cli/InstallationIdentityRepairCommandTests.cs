@@ -277,6 +277,39 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
         AssertIdentityIs(DamagedValue);
     }
 
+    /// <summary>
+    /// The installation lock is not held while the operator is asked, so the profile can change while
+    /// the question is open. The apply makes only the change that was confirmed.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_that_changes_while_the_question_is_open_is_refused_by_code_and_the_item_stays()
+    {
+        SetIdentity(DamagedValue);
+
+        // No Grimoire and no anchor: the question is whether to remove the item. While it is open, a
+        // closed restore anchor appears, so the same apply would write an identity instead.
+        RecordingPrompt prompt = new(answer: true, whileOpen: () => SetRestoreAnchor(Named, BackupRestoreJournalAnchorState.Closed));
+
+        CliTestResult result = await RunAsync(["data", "repair-installation-identity"], prompt);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        string question = Assert.Single(prompt.Questions);
+
+        Assert.StartsWith("Remove this profile's damaged installation identity credential item", question, StringComparison.Ordinal);
+
+        Assert.Contains(
+            ErrorCodes.Data.PlanChanged
+            + ": What the installation identity repair would do changed after it was confirmed, so nothing "
+            + "was changed. Run the repair again.",
+            result.Error,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain(Named.ToString("D"), result.Output + result.Error, StringComparison.OrdinalIgnoreCase);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
     [Fact]
     public async Task A_dry_run_and_an_absent_item_never_ask()
     {
@@ -768,13 +801,15 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
             throw new NotSupportedException();
     }
 
-    private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt
+    private sealed class RecordingPrompt(bool answer, Action? whileOpen = null) : IConfirmationPrompt
     {
         public List<string> Questions { get; } = [];
 
         public Task<bool> PromptForConfirmationAsync(string question, CancellationToken cancellationToken)
         {
             Questions.Add(question);
+
+            whileOpen?.Invoke();
 
             return Task.FromResult(answer);
         }

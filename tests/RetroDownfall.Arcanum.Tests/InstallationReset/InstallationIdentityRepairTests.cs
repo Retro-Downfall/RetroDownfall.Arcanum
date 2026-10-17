@@ -70,7 +70,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         Assert.Equal(InstallationIdentityRepairState.Absent, planned.Value.State);
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -91,7 +91,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(result, ErrorCodes.Data.Conflict, "valid canonical identity");
@@ -146,7 +146,11 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         SetOther(otherProfile);
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        InstallationIdentityRepair repair = Create();
+
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(plan);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -169,7 +173,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
             _inner.TryGet(ArcanumCredentialIdentity.Service, otherProfile).Status);
 
         // And it is repeatable: the second run finds nothing, and removes nothing.
-        Result<InstallationIdentityRepairReport> again = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> again = await repair.ApplyAsync(plan);
 
         Assert.True(again.IsSuccess);
 
@@ -185,7 +189,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         Result<InstallationIdentityRepairReport> planned = await Create().PlanAsync();
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync(planned.Value);
 
         foreach (InstallationIdentityRepairReport report in new[] { planned.Value, applied.Value })
         {
@@ -209,7 +213,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(result, ErrorCodes.Covenant.Unavailable, "could not be read");
@@ -235,7 +239,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
                         OperationId: Guid.NewGuid(),
                         Phase: InstallationResetPhase.Prepared))));
 
-        Result<InstallationIdentityRepairReport> result = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await repair.ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.ResetInProgress, "installation reset is active");
 
@@ -251,7 +255,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         SetOther(EvidenceAccount(orphan));
 
-        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.ControlPathUnavailable, "could not be proved");
 
@@ -271,7 +275,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         Assert.True(written.IsSuccess, written.IsFailure ? written.Error.Message : string.Empty);
 
-        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.ResetInProgress, "installation reset is active");
 
@@ -300,7 +304,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         // refuses on that rather than treating an unprovable record as no record.
         SetIdentity(DamagedValue);
 
-        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await Create().ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.ControlPathUnavailable, "could not be proved");
 
@@ -317,7 +321,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
                 Result<ActiveInstallationReset?>.Failure(
                     new Error(ErrorCodes.Data.ControlPathUnavailable, "The probe found a damaged record."))));
 
-        Result<InstallationIdentityRepairReport> result = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await repair.ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.ControlPathUnavailable, "could not be proved");
 
@@ -339,7 +343,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(result, ErrorCodes.Data.FileLocked, "Stop the host with 'arcanum serve quit'");
@@ -353,7 +357,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
     {
         SetIdentity(DamagedValue);
 
-        _ = await Create().ApplyAsync();
+        _ = await ApplyPlannedAsync(Create());
 
         using ArcanumMaintenanceLock? reacquired = ArcanumMaintenanceLock.TryAcquire(_root);
 
@@ -390,7 +394,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         AssertIdentityIs(DamagedValue);
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -411,7 +415,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         Assert.DoesNotContain(Named.ToString("D"), applied.Value.ToString(), StringComparison.OrdinalIgnoreCase);
 
         // A valid identity is never changed, so the second run is refused.
-        AssertRefused(await repair.ApplyAsync(), ErrorCodes.Data.Conflict, "valid canonical identity");
+        AssertRefused(await repair.ApplyAsync(planned.Value), ErrorCodes.Data.Conflict, "valid canonical identity");
     }
 
     [Fact]
@@ -433,7 +437,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(
@@ -465,7 +469,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
                      await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
+                     await repair.ApplyAsync(Confirmed()),
                  })
         {
             AssertRefused(
@@ -490,13 +494,15 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         InstallationIdentityRepair repair = Create(data: rows);
 
-        Assert.Equal(InstallationIdentityRepairAction.Reseed, (await repair.PlanAsync()).Value.Action);
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, plan.Action);
 
         _ = _inner.Delete(ArcanumCredentialIdentity.Service, IdentityAccount());
 
         int setsBefore = _credentials.SetCount;
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(plan);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -519,7 +525,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         RowProbe rows = new(Result<bool>.Failure(
             new Error(ErrorCodes.Data.InventoryUnavailable, "The existing Grimoire could not be opened.")));
 
-        Result<InstallationIdentityRepairReport> result = await Create(data: rows).ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await Create(data: rows).ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.InventoryUnavailable, "authority row could not be proved");
 
@@ -535,13 +541,14 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         RowProbe rows = new(Result<bool>.Success(false));
 
-        Result<InstallationIdentityRepairReport> applied = await Create(data: rows).ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await ApplyPlannedAsync(Create(data: rows));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
         Assert.Equal(InstallationIdentityRepairState.Removed, applied.Value.State);
 
-        Assert.Equal(1, rows.Reads);
+        // One question for the plan and one for the apply, which proves everything again.
+        Assert.Equal(2, rows.Reads);
     }
 
     [Fact]
@@ -552,7 +559,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         RowProbe rows = new(Result<bool>.Failure(
             new Error(ErrorCodes.Data.InventoryUnavailable, "must not be asked")));
 
-        Result<InstallationIdentityRepairReport> applied = await Create(data: rows).ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await ApplyPlannedAsync(Create(data: rows));
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -566,7 +573,8 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         File.WriteAllText(_database, "database");
 
-        Result<InstallationIdentityRepairReport> result = await Create(data: new DefaultMemberData()).ApplyAsync();
+        Result<InstallationIdentityRepairReport> result =
+            await Create(data: new DefaultMemberData()).ApplyAsync(Confirmed());
 
         AssertRefused(result, ErrorCodes.Data.InventoryUnavailable, "authority row could not be proved");
 
@@ -587,11 +595,163 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         // Between the question and the answer, a restore begins for this profile.
         SetRestoreAnchor(Guid.Parse("c0ffee00-1234-4abc-8def-0123456789ab"), BackupRestoreJournalAnchorState.Active);
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         AssertRefused(applied, ErrorCodes.Data.Blocked, "replacement restore is unfinished");
 
         AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_plan_that_changes_from_remove_to_reseed_after_confirmation_is_refused()
+    {
+        SetIdentity(DamagedValue);
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        // No Grimoire and no anchor: the operator is asked whether to remove the item.
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairAction.Remove, plan.Action);
+
+        // While the question is open, the moved-aside Grimoire is put back.
+        File.WriteAllText(_database, "database");
+
+        int setsBefore = _credentials.SetCount;
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(plan);
+
+        AssertRefused(applied, ErrorCodes.Data.PlanChanged, "changed after it was confirmed");
+
+        Assert.Contains("nothing was changed", applied.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_plan_that_changes_from_reseed_to_remove_after_confirmation_is_refused()
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, plan.Action);
+
+        // While the question is open, the database file is removed: the same apply would now delete.
+        File.Delete(_database);
+
+        int setsBefore = _credentials.SetCount;
+
+        AssertRefused(await repair.ApplyAsync(plan), ErrorCodes.Data.PlanChanged, "changed after it was confirmed");
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_plan_that_changes_from_restore_to_remove_after_confirmation_is_refused()
+    {
+        SetIdentity(DamagedValue);
+
+        SetAnchor("restore", Named, closed: true);
+
+        InstallationIdentityRepair repair = Create();
+
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairAction.Restore, plan.Action);
+
+        // While the question is open, the closed anchor goes away: the same apply would now delete.
+        Assert.Equal(
+            OsCredentialStoreStatus.Ok,
+            _inner.Delete(
+                ArcanumCredentialIdentity.Service,
+                EvidenceAccount("restore journal anchor")).Status);
+
+        int setsBefore = _credentials.SetCount;
+
+        AssertRefused(await repair.ApplyAsync(plan), ErrorCodes.Data.PlanChanged, "changed after it was confirmed");
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_restore_whose_anchor_names_another_installation_after_confirmation_is_refused()
+    {
+        SetIdentity(DamagedValue);
+
+        SetAnchor("restore", Named, closed: true);
+
+        InstallationIdentityRepair repair = Create();
+
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairAction.Restore, plan.Action);
+
+        // While the question is open, the same slot is rewritten to name another installation: the action
+        // is unchanged, and the write would be of an identity the operator was never asked about.
+        SetAnchor("restore", OtherNamed, closed: true);
+
+        int setsBefore = _credentials.SetCount;
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(plan);
+
+        AssertRefused(applied, ErrorCodes.Data.PlanChanged, "changed after it was confirmed");
+
+        // Neither installation is spelled in the refusal.
+        Assert.DoesNotContain(Named.ToString("D"), applied.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(OtherNamed.ToString("D"), applied.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_plan_that_found_nothing_to_repair_never_authorises_a_change_to_an_item_that_became_damaged()
+    {
+        InstallationIdentityRepair repair = Create();
+
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairState.Absent, plan.State);
+
+        SetIdentity(DamagedValue);
+
+        AssertRefused(await repair.ApplyAsync(plan), ErrorCodes.Data.PlanChanged, "changed after it was confirmed");
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_plan_that_names_the_choice_the_apply_finds_is_applied()
+    {
+        SetIdentity(DamagedValue);
+
+        SetAnchor("restore", Named, closed: true);
+
+        Result<InstallationIdentityRepairReport> applied = await Create()
+            .ApplyAsync(Confirmed(InstallationIdentityRepairAction.Restore, Named));
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairState.Restored, applied.Value.State);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
     }
 
     [Fact]
@@ -601,11 +761,13 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         InstallationIdentityRepair repair = Create();
 
-        Assert.Equal(InstallationIdentityRepairState.Damaged, (await repair.PlanAsync()).Value.State);
+        InstallationIdentityRepairReport plan = (await repair.PlanAsync()).Value;
+
+        Assert.Equal(InstallationIdentityRepairState.Damaged, plan.State);
 
         _ = _inner.Delete(ArcanumCredentialIdentity.Service, IdentityAccount());
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(plan);
 
         Assert.True(applied.IsSuccess);
 
@@ -621,7 +783,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         _credentials.DeleteFails = true;
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await ApplyPlannedAsync(Create());
 
         AssertRefused(applied, ErrorCodes.Covenant.Unavailable, "could not be removed");
 
@@ -635,7 +797,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
 
         _credentials.DeleteIsIgnored = true;
 
-        Result<InstallationIdentityRepairReport> applied = await Create().ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await ApplyPlannedAsync(Create());
 
         AssertRefused(applied, ErrorCodes.Covenant.IntegrityFailure, "did not read back as removed");
 
@@ -652,7 +814,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
         cancellation.Cancel();
 
         _ = await Assert.ThrowsAsync<OperationCanceledException>(
-            () => Create().ApplyAsync(cancellation.Token));
+            () => Create().ApplyAsync(Confirmed(), cancellation.Token));
 
         Assert.Equal(0, _credentials.DeleteCount);
 
@@ -673,6 +835,31 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
             data ?? new RowProbe(Result<bool>.Success(false)),
             _root,
             _database);
+
+    /// <summary>Plans the repair as the operator would see it, and applies exactly that plan.</summary>
+    private static async Task<Result<InstallationIdentityRepairReport>> ApplyPlannedAsync(
+        InstallationIdentityRepair repair)
+    {
+        Result<InstallationIdentityRepairReport> planned = await repair.PlanAsync();
+
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
+
+        return await repair.ApplyAsync(planned.Value);
+    }
+
+    /// <summary>
+    /// A confirmed plan of a damaged item, for a case in which the apply is refused before it compares
+    /// what it finds with what was confirmed, and for one that makes the choice it was confirmed with.
+    /// </summary>
+    private InstallationIdentityRepairReport Confirmed(
+        InstallationIdentityRepairAction action = InstallationIdentityRepairAction.Remove,
+        Guid installation = default) =>
+        new(
+            InstallationIdentityRepairState.Damaged,
+            ArcanumCredentialIdentity.Service,
+            IdentityAccount(),
+            action,
+            installation);
 
     private string IdentityAccount() =>
         ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(_profile.AccountSuffix);

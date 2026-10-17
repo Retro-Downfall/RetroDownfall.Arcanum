@@ -14,11 +14,12 @@ namespace RetroDownfall.Arcanum.Cli.Commands;
 /// A local-only verb. It works on the installation's credential store and Grimoire directly through
 /// Infrastructure, takes the installation maintenance lock itself, and needs no running host: a running
 /// host is one of the things it refuses for. Every precondition and the change live in
-/// <see cref="InstallationIdentityRepair"/>; this handler plans, asks, and applies, so the operator
-/// confirms against the state the apply proves again.
+/// <see cref="InstallationIdentityRepair"/>; this handler plans, asks, and applies the plan it asked
+/// about, so the apply refuses unless it finds the same choice the operator confirmed.
 ///
 /// <para>Exit codes: <c>0</c> for a repair, for a dry run, and for a profile with nothing to repair;
-/// <c>1</c> for a refused precondition, with the refusal's code and its own message; <c>2</c> for a
+/// <c>1</c> for a refused precondition, including a profile that changed after the confirmation
+/// (<c>Data.PlanChanged</c>), with the refusal's code and its own message; <c>2</c> for a
 /// confirmation that was declined or could not be asked, with <c>Data.ConfirmationRequired</c> and its
 /// own message; <c>130</c> for cancellation.</para>
 /// </remarks>
@@ -121,7 +122,7 @@ internal sealed class InstallationIdentityRepairCommand(
         }
 
         Result<InstallationIdentityRepairReport> applied = await repair
-            .ApplyAsync(cancellationToken)
+            .ApplyAsync(plan, cancellationToken)
             .ConfigureAwait(false);
 
         if (applied.IsFailure)
