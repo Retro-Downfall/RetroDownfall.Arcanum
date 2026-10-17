@@ -100,7 +100,7 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         AssertIdentityIs(DamagedValue);
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -144,7 +144,7 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         Assert.Equal(before, Digest(ArcanumPaths.GrimoireDatabaseFile));
 
-        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -168,7 +168,7 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         SetIdentity(DamagedValue);
 
-        Result<InstallationIdentityRepairReport> result = await Resolve().ApplyAsync();
+        Result<InstallationIdentityRepairReport> result = await Resolve().ApplyAsync(Confirmed());
 
         Assert.True(result.IsFailure);
 
@@ -199,7 +199,13 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
 
-        Result<InstallationIdentityRepairReport> applied = await Resolve().ApplyAsync();
+        InstallationIdentityRepair repair = Resolve();
+
+        Result<InstallationIdentityRepairReport> planned = await repair.PlanAsync();
+
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync(planned.Value);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
@@ -215,7 +221,11 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
             _credentials.TryGet(ArcanumCredentialIdentity.Service, IdentityAccount()).Status);
 
         // And now that a Grimoire holds its row, the repair has nothing to say about a missing item.
-        Result<InstallationIdentityRepairReport> again = await Resolve().ApplyAsync();
+        InstallationIdentityRepair second = Resolve();
+
+        Result<InstallationIdentityRepairReport> secondPlan = await second.PlanAsync();
+
+        Result<InstallationIdentityRepairReport> again = await second.ApplyAsync(secondPlan.Value);
 
         Assert.True(again.IsSuccess);
 
@@ -253,6 +263,17 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         return identity.Value;
     }
+
+    /// <summary>
+    /// A confirmed plan of a damaged item, for the case in which the apply is refused before it compares
+    /// what it finds with what was confirmed.
+    /// </summary>
+    private InstallationIdentityRepairReport Confirmed() =>
+        new(
+            InstallationIdentityRepairState.Damaged,
+            ArcanumCredentialIdentity.Service,
+            IdentityAccount(),
+            InstallationIdentityRepairAction.Remove);
 
     private InstallationIdentityRepair Resolve()
     {

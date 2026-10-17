@@ -854,6 +854,15 @@ internal sealed partial class DataRetentionService
     {
         List<DataRetentionConflict> conflicts = [];
 
+        // A durable operation a host start settles, and one that waits for an operator and that no start
+        // clears, are different conflicts with different remedies, so they are read apart.
+        (string Name, object Value)[] operationParameters =
+        [
+            ("@excludedOperationId", excludedOperationId.ToString("N")),
+            .. LongRunningOperationStore.WaitsForOperatorParameters()
+                .Select(static parameter => (parameter.Name, (object)parameter.Value)),
+        ];
+
         conflicts.AddRange(
             await ReadFactoryConflictRowsAsync(
                 connection,
@@ -862,12 +871,29 @@ internal sealed partial class DataRetentionService
                 SELECT Id
                 FROM LongRunningOperations
                 WHERE State IN ({string.Join(",", ActiveOperationStates)})
+                  AND NOT {LongRunningOperationStore.WaitsForOperatorPredicate}
                   AND lower(replace(Id, '-', '')) <> @excludedOperationId
                 """,
                 "Data.ActiveOperation",
-                "An active durable operation conflicts with this global reset.",
+                ActiveOperationGlobalMessage,
                 cancellationToken,
-                ("@excludedOperationId", excludedOperationId.ToString("N"))).ConfigureAwait(false));
+                operationParameters).ConfigureAwait(false));
+
+        conflicts.AddRange(
+            await ReadFactoryConflictRowsAsync(
+                connection,
+                transaction,
+                $"""
+                SELECT Id
+                FROM LongRunningOperations
+                WHERE State IN ({string.Join(",", ActiveOperationStates)})
+                  AND {LongRunningOperationStore.WaitsForOperatorPredicate}
+                  AND lower(replace(Id, '-', '')) <> @excludedOperationId
+                """,
+                ErrorCodes.Data.OperationNeedsAttention,
+                OperationNeedsAttentionGlobalMessage,
+                cancellationToken,
+                operationParameters).ConfigureAwait(false));
 
         conflicts.AddRange(
             await ReadFactoryConflictRowsAsync(

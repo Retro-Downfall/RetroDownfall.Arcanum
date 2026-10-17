@@ -1662,6 +1662,99 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             now.AddMinutes(2))).Acquired);
     }
 
+    /// <summary>
+    /// What a host start recovers and what a global reset reports as waiting for an operator are one table
+    /// read two ways, so an attention row is in exactly one of the two sets, whatever its kind and code.
+    /// </summary>
+    /// <remarks>
+    /// A reset that told the operator to start the host for a row the start leaves as it found it would
+    /// send them round in a circle; one that told them to cancel a row the start recovers would erase the
+    /// recovery. The two sets are selected from the same pairs, and this is what notices the day one of
+    /// them stops being so.
+    /// </remarks>
+    [SkippableFact]
+    public async Task AnAttentionRow_IsEitherRecoveredByAHostStartOrWaitsForAnOperator_NeverBothAndNeverNeither()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 10, 16, 12, 0, 0, TimeSpan.Zero);
+
+        string?[] codes =
+        [
+            null,
+            ErrorCodes.Data.ReconciliationFailed,
+            ErrorCodes.Covenant.MaintenanceFailed,
+            LongRunningOperationErrorCodes.CorruptCheckpoint,
+        ];
+
+        Dictionary<Guid, (string Kind, string? Code)> seeded = [];
+
+        foreach (string kind in LongRunningOperationRecoveryRegistry.Descriptors.Keys)
+        {
+            foreach (string? code in codes)
+            {
+                Guid id = Guid.NewGuid();
+
+                await InsertOperationAsync(id, kind, LongRunningOperationState.ReconciliationRequired, attempts: 1, code, now);
+
+                seeded[id] = (kind, code);
+            }
+        }
+
+        Guid queuedLongRest = Guid.NewGuid();
+
+        await InsertOperationAsync(queuedLongRest, LongRunningOperationKinds.LongRestSweep, LongRunningOperationState.Pending, attempts: 0, code: null, now);
+
+        Guid retriedLongRest = Guid.NewGuid();
+
+        await InsertOperationAsync(retriedLongRest, LongRunningOperationKinds.LongRestSweep, LongRunningOperationState.Pending, attempts: 1, code: null, now);
+
+        Guid queuedOther = Guid.NewGuid();
+
+        await InsertOperationAsync(queuedOther, LongRunningOperationKinds.Subagent, LongRunningOperationState.Pending, attempts: 0, code: null, now);
+
+        Guid running = Guid.NewGuid();
+
+        await InsertOperationAsync(running, LongRunningOperationKinds.Subagent, LongRunningOperationState.Running, attempts: 1, code: null, now);
+
+        HashSet<Guid> recovered =
+        [
+            .. (await store.FindExpiredAsync(now.AddMinutes(1), 1_000)).Select(static operation => operation.Id),
+        ];
+
+        HashSet<Guid> waiting = await ReadWaitingForOperatorAsync();
+
+        foreach ((Guid id, (string kind, string? code)) in seeded)
+        {
+            bool expectedRecovered = code is not null
+                && LongRunningOperationStore.StartupRecoveredAttention.Contains((kind, code));
+
+            Assert.True(
+                recovered.Contains(id) == expectedRecovered,
+                $"{kind} / {code ?? "(no code)"}: a host start {(recovered.Contains(id) ? "recovers" : "does not recover")} it.");
+
+            Assert.True(
+                recovered.Contains(id) ^ waiting.Contains(id),
+                $"{kind} / {code ?? "(no code)"}: it must be recovered by a host start or wait for an operator, and not both.");
+        }
+
+        // A queued Long Rest sweep request is no attention row, and no host start drains it.
+        Assert.Contains(queuedLongRest, waiting);
+
+        Assert.DoesNotContain(queuedLongRest, recovered);
+
+        // One that has been started before, and a row a host start settles, wait for nothing.
+        Assert.DoesNotContain(retriedLongRest, waiting);
+
+        Assert.Contains(retriedLongRest, recovered);
+
+        Assert.DoesNotContain(queuedOther, waiting);
+
+        Assert.DoesNotContain(running, waiting);
+    }
+
     [SkippableFact]
     public async Task Classified_recovery_claim_is_one_exact_compare_exchange_returning_the_claimed_row()
     {
@@ -1807,6 +1900,77 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task InsertOperationAsync(
+        Guid id,
+        string kind,
+        LongRunningOperationState state,
+        int attempts,
+        string? code,
+        DateTimeOffset now)
+    {
+        await using var command = _db!.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText =
+            """
+            INSERT INTO "LongRunningOperations"
+                ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary", "AttemptCount", "CheckpointVersion", "Revision", "TerminalErrorCode")
+            VALUES ($id, $kind, $state, 0, $now, 'seeded', $attempts, 0, 0, $code);
+            """;
+
+        foreach ((string name, object? value) in new (string, object?)[]
+                 {
+                     ("$id", id.ToString("N")),
+                     ("$kind", kind),
+                     ("$state", (int)state),
+                     ("$now", UtcInstantText.Format(now)),
+                     ("$attempts", attempts),
+                     ("$code", code),
+                 })
+        {
+            var parameter = command.CreateParameter();
+
+            parameter.ParameterName = name;
+
+            parameter.Value = value ?? DBNull.Value;
+
+            command.Parameters.Add(parameter);
+        }
+
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
+
+    private async Task<HashSet<Guid>> ReadWaitingForOperatorAsync()
+    {
+        await using var command = _db!.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText =
+            $"""
+            SELECT "Id" FROM "LongRunningOperations" WHERE {LongRunningOperationStore.WaitsForOperatorPredicate};
+            """;
+
+        foreach ((string name, string value) in LongRunningOperationStore.WaitsForOperatorParameters())
+        {
+            var parameter = command.CreateParameter();
+
+            parameter.ParameterName = name;
+
+            parameter.Value = value;
+
+            command.Parameters.Add(parameter);
+        }
+
+        HashSet<Guid> ids = [];
+
+        await using var reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            ids.Add(Guid.Parse(reader.GetString(0)));
+        }
+
+        return ids;
     }
 
     private sealed class CompletingRecoveryHandler(string kind) : ILongRunningOperationRecoveryHandler

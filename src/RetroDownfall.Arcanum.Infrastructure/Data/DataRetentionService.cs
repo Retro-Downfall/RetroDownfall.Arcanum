@@ -4964,6 +4964,25 @@ internal sealed partial class DataRetentionService(
             .ThenBy(static conflict => conflict.ResourceId, StringComparer.Ordinal)];
     }
 
+    /// <summary>The message of a global-reset conflict for a durable operation a host start settles.</summary>
+    private const string ActiveOperationGlobalMessage =
+        "An active durable operation conflicts with this global reset.";
+
+    /// <summary>The message of a global-reset conflict for a durable operation that waits for an operator.</summary>
+    private const string OperationNeedsAttentionGlobalMessage =
+        "A durable operation is waiting for an operator and conflicts with this global reset.";
+
+    private static DataRetentionConflict GlobalOperationConflict(string operationId, bool waitsForOperator) =>
+        waitsForOperator
+            ? new DataRetentionConflict(
+                ErrorCodes.Data.OperationNeedsAttention,
+                operationId,
+                OperationNeedsAttentionGlobalMessage)
+            : new DataRetentionConflict(
+                "Data.ActiveOperation",
+                operationId,
+                ActiveOperationGlobalMessage);
+
     private async Task<DataRetentionConflict[]> ReadGlobalConflictsAsync(
         CancellationToken cancellationToken,
         Guid? excludedOperationId = null)
@@ -4983,9 +5002,12 @@ internal sealed partial class DataRetentionService(
                 ? string.Empty
                 : "AND lower(replace(Id, '-', '')) <> @excludedOperationId";
 
+            // The second column says whether a host start could settle the row. One that waits for an
+            // operator is reported under its own code, because starting the host does not clear it.
             command.CommandText =
                 $"""
-                SELECT Id
+                SELECT Id,
+                       CASE WHEN {LongRunningOperationStore.WaitsForOperatorPredicate} THEN 1 ELSE 0 END
                 FROM LongRunningOperations
                 WHERE State IN ({string.Join(",", ActiveOperationStates)})
                   {operationExclusion}
@@ -4999,16 +5021,20 @@ internal sealed partial class DataRetentionService(
                     excludedId.ToString("N"));
             }
 
+            foreach ((string name, string value) in LongRunningOperationStore.WaitsForOperatorParameters())
+            {
+                Add(command, name, value);
+            }
+
             await using DbDataReader reader = await command
                 .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
                 conflicts.Add(
-                    new DataRetentionConflict(
-                        "Data.ActiveOperation",
+                    GlobalOperationConflict(
                         Guid.Parse(reader.GetString(0)).ToString("D"),
-                        "An active durable operation conflicts with this global reset."));
+                        reader.GetInt64(1) != 0));
             }
         }
 

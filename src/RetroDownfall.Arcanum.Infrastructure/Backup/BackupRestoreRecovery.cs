@@ -1067,10 +1067,14 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
     /// The commit is one rename of <c>staged/</c> onto the new profile root, so staging alone tells the
     /// two outcomes apart: <c>staged/</c> still present is a commit that never began, or one whose
     /// reversal put the restored tree back, and <c>staged/</c> gone is a commit that landed (past
-    /// <c>Commit</c>, one whose post-commit work may not have finished). The legacy journal does not
-    /// name that new root, so a committed outcome cannot prove its Long Rest sanitation and stays
-    /// unresolved; the new root and the default installation are never touched. A displaced root is a shape no new-profile restore leaves,
-    /// so that staging is kept for an operator.
+    /// <c>Commit</c>, one whose post-commit work may not have finished, which the new root then shows).
+    /// The staged generation was sanitized for Long Rest before the commit published it, so a commit that
+    /// landed needs only its staging removed. Keeping its journal would add nothing: the default
+    /// installation's start resolves this journal, and a journal it could not resolve would stop that
+    /// start over a root the journal does not name. Either way staging holds nothing anyone had before
+    /// the restore, and only it is removed: the new root and the default installation are never touched.
+    /// A displaced root is a shape no new-profile restore leaves, so that staging is kept for an
+    /// operator.
     /// </remarks>
     private static BackupRestoreRecoveryReport ResolveNewProfileCommit(
         string stagingRoot,
@@ -1088,19 +1092,20 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
                 + "root. Staging was left untouched at " + stagingRoot + " for an operator to resolve.");
         }
 
-        if (!stagedExists)
-        {
-            return UnprovenLongRest(stagingRoot, journal);
-        }
-
         Discard(stagingRoot, journal);
 
-        return new BackupRestoreRecoveryReport(
-            stagingRoot,
-            BackupRestoreRecoveryOutcome.RolledBack,
-            journal.Phase,
-            "The new-profile restored generation never left staging, or its reversal put it back; "
-            + "staging was removed and the current installation was never modified.");
+        return stagedExists
+            ? new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.RolledBack,
+                journal.Phase,
+                "The new-profile restored generation never left staging, or its reversal put it back; "
+                + "staging was removed and the current installation was never modified.")
+            : new BackupRestoreRecoveryReport(
+                stagingRoot,
+                BackupRestoreRecoveryOutcome.CommitCompleted,
+                journal.Phase,
+                "The new-profile commit had completed; only staging cleanup remained.");
     }
 
     /// <summary>

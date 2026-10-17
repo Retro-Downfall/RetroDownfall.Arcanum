@@ -621,14 +621,7 @@ internal sealed partial class LongRunningOperationStore(
                     WHERE (
                         "State" IN (@running, @waiting, @cancelling)
                         OR ("State" = @pending AND "AttemptCount" > 0)
-                        OR (
-                            "State" = @attention
-                            AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
-                            AND "TerminalErrorCode" = @retentionRecoveryError)
-                        OR (
-                            "State" = @attention
-                            AND "Kind" IN (@retentionMutation, @retentionFactory)
-                            AND "TerminalErrorCode" = @covenantMaintenanceError))
+                        OR {StartupRecoveredAttentionPredicate})
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     """
                     + (excludeOwnerBoundRows
@@ -648,12 +641,14 @@ internal sealed partial class LongRunningOperationStore(
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
                 Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
-                Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
-                Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
+
+                foreach ((string name, string value) in StartupRecoveredAttentionParameters())
+                {
+                    Add(cmd, name, value);
+                }
+
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
-                Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
-                Add(cmd, "@covenantMaintenanceError", ErrorCodes.Covenant.MaintenanceFailed);
                 if (excludeOwnerBoundRows)
                 {
                     Add(cmd, "@mutationOwnerVersion", CovenantOfflineTransitionLaunchV4.CurrentVersion);
@@ -664,6 +659,80 @@ internal sealed partial class LongRunningOperationStore(
                 return await ReadAllAsync(cmd, cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
+
+    /// <summary>
+    /// The <see cref="LongRunningOperationState.ReconciliationRequired"/> rows a host start recovers
+    /// again, one (kind, terminal error code) pair each: the three retention kinds that ended with
+    /// <see cref="ErrorCodes.Data.ReconciliationFailed"/>, and the two kinds that own a Covenant
+    /// offline transition when it ended with <see cref="ErrorCodes.Covenant.MaintenanceFailed"/>.
+    /// </summary>
+    /// <remarks>
+    /// Every other row in that state waits for an operator by definition: a host start leaves it as it
+    /// found it, however many times it runs. <see cref="FindExpiredAsync(DateTimeOffset, int, CancellationToken)"/>
+    /// selects the first set and the global reset's conflict reads report the second, both from this
+    /// one table, so the set a start recovers and the set it leaves cannot drift apart.
+    /// </remarks>
+    internal static IReadOnlyList<(string Kind, string TerminalErrorCode)> StartupRecoveredAttention { get; } =
+    [
+        (LongRunningOperationKinds.DataRetentionPrune, ErrorCodes.Data.ReconciliationFailed),
+        (LongRunningOperationKinds.DataRetentionMutation, ErrorCodes.Data.ReconciliationFailed),
+        (LongRunningOperationKinds.DataRetentionFactoryReset, ErrorCodes.Data.ReconciliationFailed),
+        (LongRunningOperationKinds.DataRetentionMutation, ErrorCodes.Covenant.MaintenanceFailed),
+        (LongRunningOperationKinds.DataRetentionFactoryReset, ErrorCodes.Covenant.MaintenanceFailed),
+    ];
+
+    /// <summary>
+    /// The SQL condition, over the ledger's own columns, that is true for a row whose attention a host
+    /// start recovers again. Its parameters are <see cref="StartupRecoveredAttentionParameters"/>.
+    /// </summary>
+    internal static string StartupRecoveredAttentionPredicate { get; } =
+        $"(\"State\" = {(int)LongRunningOperationState.ReconciliationRequired} AND {StartupRecoveredPairs()})";
+
+    /// <summary>
+    /// The SQL condition that is true for a row no host start settles because it waits for an operator:
+    /// a row in <see cref="LongRunningOperationState.ReconciliationRequired"/> that
+    /// <see cref="StartupRecoveredAttentionPredicate"/> does not select, and a queued Long Rest sweep
+    /// request that never started (the hosted worker drains it only while the feature is on and only in
+    /// the boot that queued it, and generic recovery leaves a row at attempt zero to its creator).
+    /// Its parameters are <see cref="WaitsForOperatorParameters"/>.
+    /// </summary>
+    internal static string WaitsForOperatorPredicate { get; } =
+        $"((\"State\" = {(int)LongRunningOperationState.ReconciliationRequired} AND NOT {StartupRecoveredPairs()})"
+        + $" OR (\"Kind\" = @queuedKind AND \"State\" = {(int)LongRunningOperationState.Pending} AND \"AttemptCount\" = 0))";
+
+    /// <summary>The named parameters <see cref="StartupRecoveredAttentionPredicate"/> reads.</summary>
+    internal static IEnumerable<(string Name, string Value)> StartupRecoveredAttentionParameters()
+    {
+        for (int index = 0; index < StartupRecoveredAttention.Count; index++)
+        {
+            yield return ("@recoveredKind" + index.ToString(CultureInfo.InvariantCulture), StartupRecoveredAttention[index].Kind);
+
+            yield return ("@recoveredCode" + index.ToString(CultureInfo.InvariantCulture), StartupRecoveredAttention[index].TerminalErrorCode);
+        }
+    }
+
+    /// <summary>The named parameters <see cref="WaitsForOperatorPredicate"/> reads.</summary>
+    internal static IEnumerable<(string Name, string Value)> WaitsForOperatorParameters()
+    {
+        foreach ((string name, string value) in StartupRecoveredAttentionParameters())
+        {
+            yield return (name, value);
+        }
+
+        yield return ("@queuedKind", LongRunningOperationKinds.LongRestSweep);
+    }
+
+    // The terminal code is compared with IS, which is equality that answers false for a row with no
+    // code, so the negation selects it too: a row that never recorded why it stopped waits for an operator.
+    private static string StartupRecoveredPairs() =>
+        "("
+        + string.Join(
+            " OR ",
+            Enumerable.Range(0, StartupRecoveredAttention.Count)
+                .Select(static index =>
+                    "(\"Kind\" = @recoveredKind" + index.ToString(CultureInfo.InvariantCulture)
+                    + " AND \"TerminalErrorCode\" IS @recoveredCode" + index.ToString(CultureInfo.InvariantCulture) + ")"))
+        + ")";
 
     /// <summary>
     /// Adopts one operation's lease while the caller holds this installation's maintenance lock.

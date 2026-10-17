@@ -26,6 +26,7 @@ public sealed partial class InstallationResetServiceTests
 
     [Theory]
     [InlineData("Data.ActiveOperation", "StartHostOnceRemedy")]
+    [InlineData("Data.OperationNeedsAttention", "OperatorSettlesRemedy")]
     [InlineData("Data.BatchInProgress", "StartHostOnceRemedy")]
     [InlineData("Data.InferenceRunActive", "InterruptedWorkRemedy")]
     [InlineData("Data.BudgetReservationOutstanding", "InterruptedWorkRemedy")]
@@ -38,6 +39,7 @@ public sealed partial class InstallationResetServiceTests
         {
             "StartHostOnceRemedy" => InstallationResetService.StartHostOnceRemedy,
             "InterruptedWorkRemedy" => InstallationResetService.InterruptedWorkRemedy,
+            "OperatorSettlesRemedy" => InstallationResetService.OperatorSettlesRemedy,
             _ => InstallationResetService.LeaseExpiryRemedy,
         };
 
@@ -155,6 +157,10 @@ public sealed partial class InstallationResetServiceTests
     {
         Assert.Equal(InstallationResetService.StartHostOnceRemedy, InstallationResetService.RemedyFor("Data.ActiveOperation"));
 
+        Assert.Equal(
+            InstallationResetService.OperatorSettlesRemedy,
+            InstallationResetService.RemedyFor(ErrorCodes.Data.OperationNeedsAttention));
+
         Assert.Equal(InstallationResetService.StartHostOnceRemedy, InstallationResetService.RemedyFor("Data.BatchInProgress"));
 
         Assert.Equal(InstallationResetService.InterruptedWorkRemedy, InstallationResetService.RemedyFor("Data.InferenceRunActive"));
@@ -174,6 +180,17 @@ public sealed partial class InstallationResetServiceTests
         Assert.Contains("without the protected erasure", InstallationResetService.InterruptedWorkRemedy, StringComparison.Ordinal);
 
         Assert.Contains("does not shorten", InstallationResetService.LeaseExpiryRemedy, StringComparison.Ordinal);
+
+        // An operation that waits for an operator is not cleared by starting the host alone: the remedy
+        // says what does clear it, with the two commands that exist for it, and it is not the remedy of
+        // an operation a host start does settle.
+        Assert.NotEqual(InstallationResetService.StartHostOnceRemedy, InstallationResetService.OperatorSettlesRemedy);
+
+        Assert.Contains("`arcanum operation cancel <id>`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
+
+        Assert.Contains("`arcanum operation retry <id>`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
+
+        Assert.Contains("`arcanum serve quit`", InstallationResetService.OperatorSettlesRemedy, StringComparison.Ordinal);
     }
 
     private sealed class TransitionDeferredServices(

@@ -285,6 +285,86 @@ public sealed class LongRestSweepReadmissionTests
             .FindNextRunnableCleanAsync(f.Epoch.Capture().Stamp, null, CancellationToken.None)).OperationId);
     }
 
+    /// <summary>
+    /// A sweep that dies in the same place every time is readmitted until its budget is spent and then keeps
+    /// the crash park's own code, so the one thing an operator reads for it is "interrupted", and nothing
+    /// automatic or requested will move it again.
+    /// </summary>
+    /// <remarks>
+    /// Only the coordinator's own park path turns a spent budget into <c>long_rest.readmit_exhausted</c>, and a
+    /// crash never runs it: the pure recovery handler parks the row without reading the budget. So the registry's
+    /// guidance for <c>long_rest.interrupted</c> cannot say "wait" without qualifying it, and what it names for this
+    /// state (retry or cancel, and the refusal a new request gets) is exactly what this pins.
+    /// </remarks>
+    [Fact]
+    public async Task A_crash_loop_that_commits_no_progress_ends_parked_as_interrupted_with_a_spent_budget_and_waits_for_an_operator()
+    {
+        ManualWallClockTimeProvider clock = new(Epoch);
+
+        await using LongRestMaintenanceTests.MaintenanceFixture f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(
+            clock: clock, protectedSources: false);
+
+        await ParkAsync(f, LongRestParkCodes.Interrupted, 0, null);
+
+        DateTimeOffset now = Epoch;
+
+        for (int readmission = 1; readmission <= LongRestFaultPolicy.MaxReadmissions; readmission++)
+        {
+            if (readmission > 1)
+            {
+                // The park is not stamped by the recovery handler, so the cooldown runs from the last readmission.
+                now += LongRestFaultPolicy.Cooldown(readmission - 1);
+
+                clock.Advance(LongRestFaultPolicy.Cooldown(readmission - 1));
+            }
+
+            LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
+
+            LongRestReadmission? readmitted = LongRestSweepHarness.Require(await Store(f, clock).TryReadmitParkedAsync(f.Operation, parked.Revision,
+                f.Partition, f.Epoch.Capture().Stamp, "worker-owner", now, now.AddMinutes(5), CancellationToken.None));
+
+            Assert.NotNull(readmitted);
+
+            Assert.Equal(readmission, readmitted.ReadmitCount);
+
+            // The process dies mid-run with no progress committed; its lease lapses and recovery parks the row again,
+            // under the crash park's code and without touching the sweep.
+            await f.H.ExecuteAsync("UPDATE LongRunningOperations SET State = $attention, LeaseOwner = NULL, LeaseExpiresAt = NULL, "
+                + "TerminalErrorCode = $code, Revision = Revision + 1 WHERE Id = $id;", ("$attention", (int)LongRunningOperationState.ReconciliationRequired),
+                ("$code", LongRestParkCodes.Interrupted), ("$id", f.Operation.ToString("N")));
+        }
+
+        LongRunningOperation exhausted = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, exhausted.State);
+
+        Assert.Equal(LongRestParkCodes.Interrupted, exhausted.TerminalErrorCode);
+
+        Assert.Equal((long)LongRestFaultPolicy.MaxReadmissions, await f.H.ScalarAsync("SELECT ReadmitCount FROM long_rest_sweeps;"));
+
+        // However long it waits, the worker is offered nothing and no cooldown is due for it.
+        clock.Advance(TimeSpan.FromDays(1));
+
+        LongRestRunnableSweep found = LongRestSweepHarness.Require(await Store(f, clock)
+            .FindNextRunnableCleanAsync(f.Epoch.Capture().Stamp, null, CancellationToken.None));
+
+        Assert.Null(found.OperationId);
+
+        Assert.Null(found.NextDueAt);
+
+        Assert.Null(LongRestSweepHarness.Require(await Store(f, clock).TryReadmitParkedAsync(f.Operation, exhausted.Revision,
+            f.Partition, f.Epoch.Capture().Stamp, "worker-owner", now.AddDays(1), now.AddDays(1).AddMinutes(5), CancellationToken.None)));
+
+        // And a new request for the scope is refused, naming the operation the operator is to retry or cancel.
+        Result<LongRunningOperationDto> request = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(request.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.SweepParked, request.Error.Code);
+
+        Assert.Contains(f.Operation.ToString("D"), request.Error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Atomic_readmission_never_passes_through_Pending()
     {
