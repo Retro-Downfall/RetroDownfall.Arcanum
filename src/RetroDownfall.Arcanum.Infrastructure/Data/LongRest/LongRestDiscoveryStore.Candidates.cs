@@ -39,8 +39,14 @@ internal sealed partial class LongRestDiscoveryStore
         }
     }
 
+    /// <param name="spreads">
+    /// Present when the caller reads many anchors of one generation (the sweep): the spread of the generation's sample does not depend on the
+    /// anchor, so the first anchor of each vector width reads it from the leaves and the others are handed it. Every anchor still reads and
+    /// verifies every leaf; only the arithmetic over the sample is shared.
+    /// </param>
     internal static async Task<Result<LongRestCandidateGroup[]>> DiscoverWithinAsync(SqliteConnection connection, SqliteTransaction transaction,
-        Guid generationId, LongRestTarget anchor, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken)
+        Guid generationId, LongRestTarget anchor, LongRestMaintenanceCapability? capability, CancellationToken cancellationToken,
+        LongRestSpreadCache? spreads = null)
     {
         LongRestDiscoveryGeneration? generation = await ReadGenerationAsync(connection, transaction, "GenerationId = $id", Format(generationId), cancellationToken).ConfigureAwait(false);
 
@@ -72,7 +78,16 @@ internal sealed partial class LongRestDiscoveryStore
 
         // The pass reads every captured leaf once per anchor, in memory id order, so it also reads the anchor's Background Floor from them: the
         // median of the anchor's cosine to every other leaf, eligible or not, and the spread of a fixed sample of the generation's leaves.
-        LongRestBackgroundSampler background = new(source.Vector);
+        int width = source.Vector.IsDefaultOrEmpty ? 0 : source.Vector.Length;
+
+        double? shared = null;
+
+        if (spreads is not null && width > 0 && spreads.TryGet(generationId, width, out double known))
+        {
+            shared = known;
+        }
+
+        LongRestBackgroundSampler background = new(source.Vector, shared);
 
         // Every captured leaf is read and verified once per anchor, so the pass also counts the generation's documents.
         long documents = 0;
@@ -168,6 +183,11 @@ internal sealed partial class LongRestDiscoveryStore
 
         // The anchor's Background Floor travels with its groups: the packer judges every nominee, lexical and hierarchical ones included, by it.
         int floor = background.FloorPermille();
+
+        if (spreads is not null && shared is null && background.Spread is { } read)
+        {
+            spreads.Remember(generationId, width, read);
+        }
 
         Result<ImmutableArray<LongRestCandidate>> merged = LongRestDiscoveryPolicy.MergeCandidates(anchor,
             exact.Items.Concat(lexical.Items).Concat(vector.Items.Where(item => LongRestPairing.Clears(item.Score, floor))).Concat(hierarchy));
@@ -337,5 +357,50 @@ internal sealed partial class LongRestDiscoveryStore
         }
 
         return new(loaded.Value, expected);
+    }
+}
+
+/// <summary>
+/// The spread of a generation's sample of frozen vectors, for each vector width, as the first anchor of that width read it. Every anchor of
+/// a generation reads the same spread (see <see cref="LongRestBackgroundSampler"/>), and the sweep reads one anchor to a transaction, so it
+/// is kept for the next one instead of being computed again under the writer lock. A generation's frozen leaves change only when the
+/// generation is invalidated or deleted, and every anchor's pass still reads and digest-verifies every leaf and refuses a generation that is
+/// no longer current before it asks for the spread, so a remembered value is never read for leaves that have changed. The key is the exact
+/// generation and the vector width: the two things the spread is a function of. The cache is small and drops its oldest entry first.
+/// </summary>
+internal sealed class LongRestSpreadCache
+{
+    private const int Capacity = 8;
+
+    private readonly Lock _gate = new();
+
+    private readonly Dictionary<(Guid Generation, int Width), double> _spreads = [];
+
+    private readonly Queue<(Guid Generation, int Width)> _order = new();
+
+    internal bool TryGet(Guid generation, int width, out double spread)
+    {
+        lock (_gate)
+        {
+            return _spreads.TryGetValue((generation, width), out spread);
+        }
+    }
+
+    internal void Remember(Guid generation, int width, double spread)
+    {
+        lock (_gate)
+        {
+            if (!_spreads.TryAdd((generation, width), spread))
+            {
+                return;
+            }
+
+            _order.Enqueue((generation, width));
+
+            if (_order.Count > Capacity)
+            {
+                _ = _spreads.Remove(_order.Dequeue());
+            }
+        }
     }
 }

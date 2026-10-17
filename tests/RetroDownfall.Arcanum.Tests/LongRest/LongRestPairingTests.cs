@@ -434,6 +434,88 @@ public sealed class LongRestPairingTests
         Assert.Equal(1000, Observe([0f, 0f], usable).FloorPermille());
     }
 
+    // The spread of the sample is a function of the generation's leaves of one width and nothing else, so every usable anchor of the generation
+    // reads the bits, and a sampler handed them reads the floor the anchor would have read for itself.
+    [Fact]
+    public void Every_anchor_of_a_generation_reads_the_same_spread_and_a_sampler_handed_it_reads_the_same_floor()
+    {
+        Random random = new(15102028);
+
+        int shared = 0;
+
+        for (int round = 0; round < 30; round++)
+        {
+            int dimensions = random.Next(3, 24);
+
+            int count = random.Next(2, 150);
+
+            double[] axis = [.. Enumerable.Range(0, dimensions).Select(_ => random.NextDouble() * 2 - 1)];
+
+            // Leaves in memory id order, a few of another width, without a vector or that cannot be judged, which join no sample.
+            List<ImmutableArray<float>> leaves = [.. Enumerable.Range(0, count).Select(index => index % 11 == 10
+                ? ImmutableArray.Create(1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f, 9f, 10f, 11f, 12f, 13f, 14f, 15f, 16f, 17f, 18f, 19f, 20f, 21f, 22f, 23f, 24f, 25f)
+                : index % 13 == 12 ? default : Draw(random, dimensions, axis.Select(value => value * random.NextDouble() * 2).ToArray()))];
+
+            LongRestBackgroundSampler Read(int anchor, double? known)
+            {
+                LongRestBackgroundSampler sampler = new(leaves[anchor], known);
+
+                for (int index = 0; index < leaves.Count; index++) _ = sampler.Observe(index == anchor, leaves[index]);
+
+                return sampler;
+            }
+
+            long? bits = null;
+
+            for (int anchor = 0; anchor < leaves.Count; anchor++)
+            {
+                if (leaves[anchor].IsDefaultOrEmpty || leaves[anchor].Length != dimensions) continue;
+
+                LongRestBackgroundSampler own = Read(anchor, null);
+
+                double spread = own.Spread!.Value;
+
+                // The same bits for every anchor of the width, NaN included (a generation with no pair has no spread).
+                bits ??= BitConverter.DoubleToInt64Bits(spread);
+
+                Assert.Equal(bits, BitConverter.DoubleToInt64Bits(spread));
+
+                LongRestBackgroundSampler handed = Read(anchor, spread);
+
+                Assert.Equal(own.FloorPermille(), handed.FloorPermille());
+
+                Assert.Equal(BitConverter.DoubleToInt64Bits(spread), BitConverter.DoubleToInt64Bits(handed.Spread!.Value));
+
+                Assert.Equal(own.Others, handed.Others);
+
+                shared++;
+            }
+        }
+
+        Assert.True(shared > 500, $"shared {shared}");
+    }
+
+    [Fact]
+    public void A_sampler_with_no_usable_anchor_reads_no_spread_and_takes_none_it_is_handed()
+    {
+        Assert.Null(new LongRestBackgroundSampler(default).Spread);
+
+        Assert.Null(new LongRestBackgroundSampler([0f, 0f], 0.25).Spread);
+
+        Assert.Equal(1000, new LongRestBackgroundSampler([0f, 0f], 0.25).FloorPermille());
+
+        Assert.Equal(0.25, new LongRestBackgroundSampler([1f, 0f], 0.25).Spread);
+
+        // Handed a spread, the sampler builds no sample: what it is handed is what its floor is read from.
+        LongRestBackgroundSampler handed = new([1f, 0f], double.NaN);
+
+        for (int index = 0; index < 40; index++) _ = handed.Observe(index == 0, [1f, index / 100f]);
+
+        Assert.True(double.IsNaN(handed.Spread!.Value));
+
+        Assert.Equal(1000, handed.FloorPermille());
+    }
+
     [Fact]
     public void Paired_means_identical_content_or_a_cosine_at_or_above_the_floor_and_a_leaf_that_cannot_be_judged_is_not_paired()
     {

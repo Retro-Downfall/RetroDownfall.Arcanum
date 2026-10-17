@@ -14,6 +14,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 internal sealed partial class LongRestSweepStore
 {
+    // The sweep reads one anchor to a transaction, and the spread of a generation's sample is the same for every anchor of one vector width, so
+    // the first anchor of each width reads it and the others of this store's lifetime are handed it.
+    private readonly LongRestSpreadCache _spreads = new();
+
     // What one read counted while it ran. A read can run more than once (a busy retry) and can fail after counting (a rollback), so the
     // numbers are kept here and published only when the transaction that produced them has committed.
     private sealed class PendingWorkCounts
@@ -188,7 +192,7 @@ internal sealed partial class LongRestSweepStore
                     continue;
                 }
 
-                Result<LongRestCandidateGroup[]> found = await LongRestDiscoveryStore.DiscoverWithinAsync(connection, transaction, generation.GenerationId, anchor.Target, capability, ct).ConfigureAwait(false);
+                Result<LongRestCandidateGroup[]> found = await LongRestDiscoveryStore.DiscoverWithinAsync(connection, transaction, generation.GenerationId, anchor.Target, capability, ct, _spreads).ConfigureAwait(false);
 
                 if (found.IsFailure)
                 {

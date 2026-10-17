@@ -457,21 +457,42 @@ public sealed class LongRestPairingVectors
 /// <see cref="LongRestDiscoveryLimits.PairingSampleLeaves"/> such leaves, which is at most 2,016 dot products and 64 held directions whatever the
 /// anchor. Both are read from fixed-bin histograms, so the floor is a function of the generation's own frozen vectors and nothing else.
 /// </summary>
+/// <remarks>
+/// <para>The spread does not depend on the anchor at all: a leaf joins the sample when its vector is usable and has the anchor's width, which is
+/// a fact about the leaf and the width, and the anchor is itself such a leaf. Every anchor of a generation with vectors of one width therefore
+/// reads the same spread, and a caller that has read it once may hand it to the sampler of every later anchor of that generation and width
+/// (the <c>knownSpread</c> of the constructor): the sampler then builds no sample and computes no pairwise cosine, and reads the same floor, bit for bit.</para>
+///
+/// <para>The pairs are cosines of unit directions, taken with <see cref="SphericalKMeans.DirectionCosine"/>; the direction of each held leaf was
+/// normalized once when the leaf joined the sample, and <see cref="SphericalKMeans.CosineToDirection"/> would normalize the incoming vector
+/// again for each held direction to arrive at the same bits.</para>
+/// </remarks>
 public sealed class LongRestBackgroundSampler
 {
     private readonly float[] _anchor;
+
+    private readonly double? _knownSpread;
 
     private readonly LongRestCosineHistogram _background = new();
 
     private readonly LongRestCosineHistogram _spread = new();
 
-    private readonly float[][] _sample = new float[LongRestDiscoveryLimits.PairingSampleLeaves][];
+    private readonly float[][] _sample;
 
     private int _sampled;
 
-    public LongRestBackgroundSampler(ImmutableArray<float> anchorVector)
+    /// <param name="anchorVector">The anchor's vector.</param>
+    /// <param name="knownSpread">
+    /// The spread (see <see cref="LongRestPairing.Spread"/>) that an earlier anchor of the same generation and vector width read from the same
+    /// frozen leaves, or <see langword="null"/> when no anchor has: the sampler then reads it from the leaves it observes.
+    /// </param>
+    public LongRestBackgroundSampler(ImmutableArray<float> anchorVector, double? knownSpread = null)
     {
         _anchor = anchorVector.IsDefaultOrEmpty ? [] : SphericalKMeans.NormalizedDirection(anchorVector.ToArray());
+
+        _knownSpread = knownSpread;
+
+        _sample = knownSpread is null ? new float[LongRestDiscoveryLimits.PairingSampleLeaves][] : [];
     }
 
     /// <summary>The anchor's unit direction, empty when its vector is unusable: nothing can then be paired with it but a byte-identical memory.</summary>
@@ -509,7 +530,7 @@ public sealed class LongRestBackgroundSampler
 
             for (int held = 0; held < _sampled; held++)
             {
-                _spread.Add(SphericalKMeans.CosineToDirection(_sample[held], vector.AsSpan()));
+                _spread.Add(SphericalKMeans.DirectionCosine(_sample[held], direction));
             }
 
             _sample[_sampled++] = direction;
@@ -518,8 +539,12 @@ public sealed class LongRestBackgroundSampler
         return isAnchor ? double.NaN : cosine;
     }
 
+    /// <summary>
+    /// The spread of the generation's sample that this anchor's floor is read from: the one it was given, or the one it read from the leaves it
+    /// observed; <see langword="null"/> when the anchor has no usable vector, because it then reads no sample.
+    /// </summary>
+    public double? Spread => _anchor.Length == 0 ? null : _knownSpread ?? LongRestPairing.Spread(_spread.FirstQuartile, _spread.ThirdQuartile);
+
     /// <summary>The anchor's Background Floor in thousandths (500 to 1000); 1000 when the anchor has no usable vector.</summary>
-    public int FloorPermille() => _anchor.Length == 0
-        ? 1000
-        : LongRestPairing.BackgroundFloor(_background.Median, LongRestPairing.Spread(_spread.FirstQuartile, _spread.ThirdQuartile), _background.Count);
+    public int FloorPermille() => Spread is { } spread ? LongRestPairing.BackgroundFloor(_background.Median, spread, _background.Count) : 1000;
 }
