@@ -758,10 +758,18 @@ public sealed partial class WizardIntelligenceProviderTests
     {
         internal int Capabilities;
 
+        /// <summary>The <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> of the first capability request, or 0 when there was none.</summary>
+        internal long FirstCapability;
+
         public Task<Result<LongRestMaintenanceCapability>> CreateCapabilityAsync(Guid operation, ArcanumInvocationContext invocation,
             SessionTurnClaimLease claim, CanonicalCampaignContext scope, CovenantTurnLease lease, CancellationToken ct)
         {
             Capabilities++;
+
+            if (FirstCapability == 0)
+            {
+                FirstCapability = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
 
             return inner.CreateCapabilityAsync(operation, invocation, claim, scope, lease, ct);
         }
@@ -776,6 +784,12 @@ public sealed partial class WizardIntelligenceProviderTests
         internal List<Guid> ResumeIds { get; } = [];
 
         internal List<LongRestSweepScope> Partitions { get; } = [];
+
+        /// <summary>
+        /// The <see cref="System.Diagnostics.Stopwatch.GetTimestamp"/> at which a request that carried live authority first returned a sweep
+        /// with protected work still to finish, or 0 when none did.
+        /// </summary>
+        internal long ProtectedRequestReturned;
 
         public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, CancellationToken ct)
         {
@@ -793,13 +807,20 @@ public sealed partial class WizardIntelligenceProviderTests
             return inner.RequestAsync(scope, partition, ct);
         }
 
-        public Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
+        public async Task<Result<LongRunningOperationDto>> RequestAsync(CanonicalCampaignContext scope, LongRestSweepScope partition, CovenantTurnLease authority, CancellationToken ct)
         {
             Requests++;
 
             Partitions.Add(partition);
 
-            return inner.RequestAsync(scope, partition, authority, ct);
+            Result<LongRunningOperationDto> result = await inner.RequestAsync(scope, partition, authority, ct);
+
+            if (ProtectedRequestReturned == 0 && result.IsSuccess && result.Value.State is not LongRunningOperationState.Completed)
+            {
+                ProtectedRequestReturned = System.Diagnostics.Stopwatch.GetTimestamp();
+            }
+
+            return result;
         }
 
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operation, LongRestMaintenanceCapability? capability, CancellationToken ct)

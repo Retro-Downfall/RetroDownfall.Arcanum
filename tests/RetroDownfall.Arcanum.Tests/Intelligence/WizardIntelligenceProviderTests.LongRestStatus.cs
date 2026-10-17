@@ -95,8 +95,6 @@ public sealed partial class WizardIntelligenceProviderTests
 
         List<TurnEvent> events = [];
 
-        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
-
         await foreach (TurnEvent evt in new TurnEngine(wizard).RunTurnAsync(
             new TurnExecutionRequest(h.Request, invocation, TurnResponseMode.Buffered), CancellationToken.None))
         {
@@ -110,8 +108,17 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Assert.DoesNotContain(events, static evt => evt is TurnStatusChanged { Message: ProtectedMaintenanceStatus });
 
-        // A held preparer would wait out its five-second acknowledgement bound for a caller that never acknowledges.
-        Assert.True(elapsed.Elapsed < TimeSpan.FromSeconds(4), $"the buffered turn took {elapsed.Elapsed}");
+        // Between the protected request that finds work still to finish and the first capability request for that work the preparer does
+        // nothing but signal the caller, and a preparer held for an acknowledgement waits out its five-second bound there for a caller that
+        // never acknowledges. Only that interval is timed, so the extraction, the sends and the database work of the rest of the turn cannot
+        // fail the test on a slow runner, and a held preparer still does (its interval is at least five seconds).
+        Assert.NotEqual(0L, h.Coordinator.ProtectedRequestReturned);
+
+        Assert.NotEqual(0L, h.Maintenance.FirstCapability);
+
+        TimeSpan held = System.Diagnostics.Stopwatch.GetElapsedTime(h.Coordinator.ProtectedRequestReturned, h.Maintenance.FirstCapability);
+
+        Assert.True(held < TimeSpan.FromSeconds(4), $"the preparer waited {held} between the protected request and its first paid work");
     }
 
     [Fact]
