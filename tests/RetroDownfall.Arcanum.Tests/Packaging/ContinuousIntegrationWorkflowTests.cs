@@ -1323,6 +1323,40 @@ public sealed class ContinuousIntegrationWorkflowTests
     }
 
     /// <summary>
+    /// The runtime suite's warning-scan fixtures (the published-apphost verifier's and the local
+    /// Ollama qualification wrappers' contract tests) run the real ripgrep, and the macOS runner
+    /// image does not ship it. Without the install six of those tests fail on the hosted runner for
+    /// want of a tool, and only after the better part of two hours of suite. The install must also
+    /// come before the step that runs the suite, or it is a step that fixes nothing.
+    /// </summary>
+    [Fact]
+    public void The_macos_build_test_lane_installs_ripgrep_before_it_runs_the_runtime_suite()
+    {
+        const string requirement = "brew install ripgrep";
+        const string suite = "./scripts/coverage.sh";
+
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), static job => job.Id == "build-test");
+
+        int install = lane.Body.IndexOf(requirement, StringComparison.Ordinal);
+
+        int runtimeSuite = lane.Body.IndexOf(suite, StringComparison.Ordinal);
+
+        Assert.True(
+            runtimeSuite >= 0,
+            $"The build-test lane no longer runs `{suite}`, so this pin has nothing to order the ripgrep install against.");
+
+        Assert.True(
+            install >= 0,
+            $"The build-test lane does not run `{requirement}`. The runtime suite's warning-scan fixtures "
+            + "run the real ripgrep, which the macOS runner image does not ship, so they fail for want of it.");
+
+        Assert.True(
+            install < runtimeSuite,
+            $"The build-test lane installs ripgrep only after the step that runs `{suite}`. The warning-scan "
+            + "fixtures in that suite need it already on PATH.");
+    }
+
+    /// <summary>
     /// .NET 10.0.12 emits relocation anchors that fix Apple's large-object linker assertion. LLVM
     /// lld rejects those anchors, so every macOS AOT lane must use the serviced SDK's Apple linker
     /// path instead of silently floating to another SDK or forcing the legacy bridge.
@@ -1485,10 +1519,11 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// The longest a job may be allowed to run. A hung test, a notarization that never answers, or a
     /// stuck runner otherwise holds the job for the platform default (six hours), which is a long
     /// time to hold a signing keychain or a scarce macOS runner. The ceiling sits above the slowest
-    /// legitimate job (the macOS release: a Native AOT diagnostic audit, a Native AOT publish and
-    /// three notarizations).
+    /// legitimate jobs, the macOS build-test lane and the two Windows test lanes, which were measured
+    /// at about two hours on the hosted runners. Their limits are set at about twice that, so a
+    /// runner slower than the one measured still finishes.
     /// </summary>
-    private const int MaximumJobTimeoutMinutes = 150;
+    private const int MaximumJobTimeoutMinutes = 270;
 
     [Fact]
     public void Every_job_declares_a_job_level_timeout()

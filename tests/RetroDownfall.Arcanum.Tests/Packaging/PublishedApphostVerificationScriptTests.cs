@@ -1065,10 +1065,18 @@ public sealed class PublishedApphostVerificationScriptTests
         {
             _emitWarning = true;
 
-            string realRg = (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            string? realRg = (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
                 .Split(Path.PathSeparator)
                 .Select(directory => Path.Combine(directory, "rg"))
-                .First(File.Exists);
+                .FirstOrDefault(File.Exists);
+
+            // The fixture needs the real ripgrep so the warning scan really searches. Say so when it
+            // is absent instead of letting LINQ report an empty sequence; the test still fails.
+            if (realRg is null)
+            {
+                throw new InvalidOperationException(
+                    "The warning-scan fixture runs the real ripgrep and no rg is on PATH; install it (brew install ripgrep).");
+            }
 
             WriteExecutable(Path.Combine(FakeBin, "rg"),
                 "#!/usr/bin/env bash\nexec '" + realRg.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "' \"$@\"");

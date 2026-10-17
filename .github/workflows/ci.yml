@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   # No push trigger, deliberately. This ran on every push to main and the operator asked for it to
-  # stop: the gates take well over an hour on the Windows lanes, and a run nobody is waiting on is
+  # stop: the gates take over two hours on the Windows lanes, and a run nobody is waiting on is
   # a run whose red nobody reads. The cost is real and is accepted rather than hidden -- a direct
   # push to main now runs no gate at all, so coverage, the Windows suite and the AOT IL closure
   # analysis are only as current as the last dispatch or the last pull request.
@@ -65,7 +65,9 @@ jobs:
     # per RID, and Linux is not a shipping RID. A Linux runner has no native asset, so the build
     # fails by design (ARCSQLC002) rather than falling back to an unverified SQLite.
     runs-on: macos-26
-    timeout-minutes: 150
+    # The whole runtime suite under coverage took about 120 minutes on the hosted runner. The limit
+    # is about twice that, so a runner slower than the one measured still finishes.
+    timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -131,6 +133,11 @@ jobs:
       # stubbed `security`/`codesign`; nothing here touches a keychain or signs anything.
       - name: Test the macOS signing helpers
         run: ./scripts/packaging/macos/common_test.sh
+
+      # The runtime suite's warning-scan fixtures run the real ripgrep, which the runner image does
+      # not ship. Install it explicitly rather than letting those tests fail for want of it.
+      - name: Install ripgrep
+        run: command -v rg >/dev/null 2>&1 || brew install ripgrep
 
       - name: Arcanum tests + coverage thresholds
         run: |
@@ -588,7 +595,8 @@ jobs:
     needs: native-sqlcipher-assets
     if: needs.native-sqlcipher-assets.outputs.win-x64 == 'verified'
     runs-on: windows-latest
-    timeout-minutes: 150
+    # About 124 minutes measured on the hosted runner; the limit is about twice that.
+    timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -803,7 +811,8 @@ jobs:
     # Each Windows architecture tests on its own architecture for the reason build-windows.yml
     # publishes on its own: `windows-11-arm` is free for this repository because it is public.
     runs-on: windows-11-arm
-    timeout-minutes: 150
+    # About 131 minutes measured on the hosted runner; the limit is about twice that.
+    timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -1013,7 +1022,8 @@ jobs:
     # Both executable smokes open the Grimoire, so this host RID needs its verified native
     # SQLCipher asset just like build-test.
     runs-on: macos-26
-    timeout-minutes: 90
+    # About 59 minutes measured on the hosted runner; the limit is about twice that.
+    timeout-minutes: 120
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
