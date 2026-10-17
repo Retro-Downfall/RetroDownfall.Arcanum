@@ -517,6 +517,14 @@ public sealed partial class LongRestMaintenanceTests
 
         LongRestMaintenanceCapability capability = await FreshAsync(f);
 
+        await ParkAfterCompletingAsync(f, capability, LongRestParkCodes.AuthorizedRequestRequired);
+
+        return capability;
+    }
+
+    /// <summary>A sweep whose generation completed and whose host died before its operation settled, left parked by recovery under the given code.</summary>
+    private static async Task ParkAfterCompletingAsync(MaintenanceFixture f, LongRestMaintenanceCapability? capability, string parkCode)
+    {
         LongRestSweepCoordinator dying = CompletingCoordinator(f, () => throw new IOException("The host died before the operation settled."));
 
         IOException died = await Assert.ThrowsAsync<IOException>(() => dying.ResumeAsync(f.Operation, capability, CancellationToken.None));
@@ -542,9 +550,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
 
-        Assert.Equal(LongRestParkCodes.AuthorizedRequestRequired, parked.TerminalErrorCode);
-
-        return capability;
+        Assert.Equal(parkCode, parked.TerminalErrorCode);
     }
 
     [Fact]
@@ -641,6 +647,57 @@ public sealed partial class LongRestMaintenanceTests
             LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(replacement.Value.Id, capability, CancellationToken.None)).Phase);
 
         Assert.Equal((long)LongRestSweepPhase.Invalidated, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+    }
+
+    [Fact]
+    public async Task A_clean_sweep_parked_after_its_generation_completed_is_joined_while_it_describes_the_installation_and_settled_when_it_no_longer_does()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        SummaryOrDecision(f);
+
+        await ParkAfterCompletingAsync(f, null, LongRestParkCodes.Interrupted);
+
+        long sweeps = (long)(await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"))!;
+
+        // The worker readmits a clean park, so while it describes the installation a request joins it and pays for no generation of its own.
+        Result<LongRunningOperationDto> joined = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(joined.IsSuccess, joined.IsFailure ? joined.Error.Code : null);
+
+        Assert.Equal(f.Operation, joined.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, joined.Value.State);
+
+        Assert.Equal(sweeps, await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"));
+
+        // Once it describes an installation that is gone, nothing can readmit it, so the first request that finds it settles it and is answered
+        // by a generation of its own.
+        ArcanumSettings edited = LongRestConfigurationEpochTests.Settings();
+
+        edited.Cost.Pricing.DefaultPricing = new() { InputPer1M = 9m, OutputPer1M = 3m };
+
+        f.Options.Set(edited);
+
+        Result<LongRunningOperationDto> replacement = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(replacement.IsSuccess, replacement.IsFailure ? replacement.Error.Code : null);
+
+        Assert.NotEqual(f.Operation, replacement.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Pending, replacement.Value.State);
+
+        LongRunningOperation settled = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.Abandoned, settled.State);
+
+        Assert.Equal(LongRestParkCodes.StaleConfiguration, settled.TerminalErrorCode);
+
+        Assert.Null(settled.LeaseOwner);
+
+        Assert.NotNull(settled.CompletedAt);
+
+        Assert.False(f.Ownership.IsClaimed(f.Operation));
     }
 
     [Fact]
