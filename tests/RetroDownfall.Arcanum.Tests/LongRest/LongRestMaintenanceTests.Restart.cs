@@ -674,7 +674,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(2L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_discovery_leaves;"));
 
-        using CancellationTokenSource bounded = new(TimeSpan.FromSeconds(1));
+        using CancellationTokenSource bounded = new(HangGuard);
 
         LongRunningOperationDto? next = null;
 

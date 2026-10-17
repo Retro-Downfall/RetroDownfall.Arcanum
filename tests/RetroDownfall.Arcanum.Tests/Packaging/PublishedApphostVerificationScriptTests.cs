@@ -762,6 +762,10 @@ public sealed class PublishedApphostVerificationScriptTests
                   printf '%s\n' 'warning: simulated build warning'
                 fi
 
+                if [[ "${1:-}" == test && -n "${FAKE_WARN_FOR_EMBEDDING_MODEL:-}" && "${ARCANUM_OLLAMA_LONG_REST_EMBEDDING_MODEL:-}" == "${FAKE_WARN_FOR_EMBEDDING_MODEL}" ]]; then
+                  printf '%s\n' 'warning: simulated test warning'
+                fi
+
                 case "${1:-}" in
                   msbuild)
                     property=''
@@ -1068,6 +1072,54 @@ public sealed class PublishedApphostVerificationScriptTests
 
             WriteExecutable(Path.Combine(FakeBin, "rg"),
                 "#!/usr/bin/env bash\nexec '" + realRg.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "' \"$@\"");
+        }
+
+        /// <summary>
+        /// Makes the fake test run print a warning line, and the warning scan really search, when the run is for the named embedding
+        /// model of the Long Rest qualification wrapper.
+        /// </summary>
+        public void EmitTestWarningOutputForEmbeddingModel(string embeddingModel)
+        {
+            EmitWarningOutput();
+            _emitWarning = false;
+            EnvironmentOverrides["FAKE_WARN_FOR_EMBEDDING_MODEL"] = embeddingModel;
+        }
+
+        /// <summary>
+        /// Answers the two Ollama routes the Long Rest qualification wrapper asks for (the installed models, and one model's
+        /// capabilities and shape) as though each named model were an installed embedding model of a 2,048-token window and 768 dimensions.
+        /// </summary>
+        public void ServeOllamaEmbeddingModels(params string[] names)
+        {
+            EnvironmentOverrides["FAKE_OLLAMA_TAGS"] =
+                "{\"models\":[" + string.Join(",", names.Select(static name => "{\"name\":\"" + name + "\"}")) + "]}";
+
+            WriteExecutable(
+                Path.Combine(FakeBin, "curl"),
+                """
+                #!/usr/bin/env bash
+                url=''
+
+                for argument in "$@"; do
+                  case "$argument" in
+                    http://*)
+                      url="$argument"
+                      ;;
+                  esac
+                done
+
+                case "$url" in
+                  */api/tags)
+                    printf '%s\n' "${FAKE_OLLAMA_TAGS:?}"
+                    ;;
+                  */api/show)
+                    printf '%s\n' '{"capabilities":["embedding"],"model_info":{"bert.context_length":2048,"bert.embedding_length":768}}'
+                    ;;
+                  *)
+                    exit 22
+                    ;;
+                esac
+                """);
         }
 
         public void FailSearches()

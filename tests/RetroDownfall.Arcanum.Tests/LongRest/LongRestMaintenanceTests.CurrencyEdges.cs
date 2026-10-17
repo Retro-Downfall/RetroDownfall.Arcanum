@@ -163,28 +163,29 @@ public sealed partial class LongRestMaintenanceTests
     }
 
     [Fact]
-    public async Task A_request_is_admitted_and_its_sweep_completes_after_the_newest_tracked_memory_is_deleted()
+    public async Task A_generation_admitted_after_the_newest_tracked_memory_is_deleted_freezes_the_highest_sequence_ever_issued()
     {
         await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
 
+        // Finish the fixture's sweep first. Its generation froze its boundary before the memory elsewhere existed, and a request would otherwise only join it.
+        _ = await CompleteCleanSweepAsync(f);
+
         Guid elsewhere = await SeedElsewhereAsync(f);
+
+        long issued = (long)(await f.H.ScalarAsync("SELECT seq FROM sqlite_sequence WHERE name = 'long_rest_sources';"))!;
 
         Assert.True(await f.H.Saga.Store.DeleteAsync(elsewhere.ToString("D"), CancellationToken.None));
 
-        LongRunningOperationDto requested = LongRestSweepHarness.Require(await f.Coordinator.RequestAsync(f.Scope, CancellationToken.None));
+        // The highest row fell with the deletion; the highest sequence ever issued did not.
+        Assert.True(issued > (long)(await f.H.ScalarAsync("SELECT max(InsertionSequence) FROM long_rest_sources;"))!);
 
-        SummaryOrDecision(f);
+        // The replacement is admitted, gets its generation and completes after the deletion.
+        LongRunningOperationDto replacement = await ReplaceCleanSweepWithPricingAsync(f, 9m);
 
-        LongRestSweepProgress done = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(requested.Id, null, CancellationToken.None));
-
-        Assert.Equal(LongRestSweepPhase.Completed, done.Phase);
-
-        // The boundary is the highest sequence ever issued, so a memory seeded after the deletion lies above it and is debt for the next generation.
-        long frozen = (long)(await f.H.ScalarAsync("SELECT InsertionHighWatermark FROM long_rest_discovery_generations;"))!;
-
-        await f.H.SeedAsync(Guid.NewGuid().ToString("D"), "Delta observation.", f.SourceSession);
-
-        Assert.True((long)(await f.H.ScalarAsync("SELECT max(InsertionSequence) FROM long_rest_sources;"))! > frozen);
+        // The boundary is the highest sequence ever issued, not the highest row that is left, so a memory seeded from now on lies above it and is debt for the next generation.
+        Assert.Equal(
+            issued,
+            await f.H.ScalarAsync($"SELECT InsertionHighWatermark FROM long_rest_discovery_generations WHERE OperationId = '{replacement.Id:N}';"));
     }
 
     [Fact]

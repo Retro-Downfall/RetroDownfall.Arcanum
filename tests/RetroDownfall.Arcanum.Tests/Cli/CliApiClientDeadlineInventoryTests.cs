@@ -55,7 +55,8 @@ public sealed class CliApiClientDeadlineInventoryTests
         "UploadSessionAttachmentAsync",
 
         // A model turn, a tool execution, a model summary, a remote agent settling, a durable
-        // operation sweep and the durable data applies answer when their work is done.
+        // operation sweep, an operation retry (which runs the same recovery pass for a Long Rest
+        // sweep before it answers) and the durable data applies answer when their work is done.
         "ApplyDataPruneAsync",
         "AskAsync",
         "CompactSessionAsync",
@@ -66,6 +67,7 @@ public sealed class CliApiClientDeadlineInventoryTests
         "InvokeToolAsync",
         "ReconcileOperationsAsync",
         "ResetDataMemoryAsync",
+        "RetryOperationAsync",
 
         // The memory-erasure routes all reach the key store or the write-ahead log. An operating-system
         // keychain approval waits for a person and a checkpoint waits for readers, so none of them has
@@ -191,7 +193,6 @@ public sealed class CliApiClientDeadlineInventoryTests
         RestAsync
         RetireLexiconAsync
         RetireSagaMemoryAsync
-        RetryOperationAsync
         ReweaveApprenticeAsync
         SagaDivineAsync
         SagaListAsync

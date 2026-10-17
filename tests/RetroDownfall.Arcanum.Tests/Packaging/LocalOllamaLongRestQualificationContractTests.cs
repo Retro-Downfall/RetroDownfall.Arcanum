@@ -67,6 +67,21 @@ public sealed class LocalOllamaLongRestQualificationContractTests
                 < wrapper.IndexOf("dotnet test", StringComparison.Ordinal),
             "The wrapper must reject GitHub Actions before invoking the test runner.");
         Assert.Contains("reject_warnings", wrapper, StringComparison.Ordinal);
+
+        // A warning in a run is that run's failure and not the wrapper's end: the scan returns, and the build (before any run starts) is the one place that exits on it.
+        int rejectStart = wrapper.IndexOf("reject_warnings() {", StringComparison.Ordinal);
+
+        Assert.True(rejectStart >= 0, "The wrapper must define reject_warnings.");
+
+        string rejectBody = wrapper[rejectStart..wrapper.IndexOf("\n}\n", rejectStart, StringComparison.Ordinal)];
+
+        Assert.DoesNotContain(
+            rejectBody.Split('\n'),
+            static line => line.TrimStart().StartsWith("exit ", StringComparison.Ordinal));
+        Assert.Equal(2, rejectBody.Split("return 1").Length - 1);
+        Assert.Contains("rg --no-config -n -i '(^|[[:space:]:])warning([[:space:]:]|$)' \"$log\"", rejectBody, StringComparison.Ordinal);
+        Assert.Contains("reject_warnings \"$BUILD_LOG\" || exit 1", wrapper, StringComparison.Ordinal);
+        Assert.Contains("reject_warnings \"$TEST_LOG\" || return 1", wrapper, StringComparison.Ordinal);
         Assert.Contains("canonical_existing_file", wrapper, StringComparison.Ordinal);
         Assert.Contains("cygpath -u", wrapper, StringComparison.Ordinal);
         Assert.Contains("cygpath -w", wrapper, StringComparison.Ordinal);
@@ -248,6 +263,88 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains("local qualification warning scan failed", result.StandardError, StringComparison.Ordinal);
     }
+
+    [SkippableFact]
+    public async Task Wrapper_stops_before_any_run_when_the_build_warns()
+    {
+        RequirePosixScriptFixture();
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(receiptKind: "ollama-long-rest");
+
+        fixture.EmitWarningOutput();
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable);
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("found warning output", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("long-rest-opt-in=", File.ReadAllText(fixture.DotnetLog), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Wrapper_fails_a_single_run_whose_test_output_warns()
+    {
+        RequirePosixScriptFixture();
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(receiptKind: "ollama-long-rest");
+
+        fixture.EmitTestWarningOutputForEmbeddingModel("embeddinggemma");
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("found warning output", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("long-rest-opt-in=1", File.ReadAllText(fixture.DotnetLog), StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
+    [InlineData("embed-a")]
+    [InlineData("embed-b")]
+    public async Task All_embedding_models_runs_every_model_before_it_fails_for_the_one_whose_test_output_warned(string warningModel)
+    {
+        RequirePosixScriptFixture();
+
+        Skip.IfNot(IsOnPath("jq"), "The embedding-model discovery filters its answers with jq.");
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(receiptKind: "ollama-long-rest");
+
+        fixture.ServeOllamaEmbeddingModels("embed-a", "embed-b");
+
+        fixture.EmitTestWarningOutputForEmbeddingModel(warningModel);
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable,
+            "--all-embedding-models");
+
+        Assert.Equal(1, result.ExitCode);
+
+        string dotnetLog = File.ReadAllText(fixture.DotnetLog);
+
+        Assert.Contains("long-rest-embedding-model=embed-a", dotnetLog, StringComparison.Ordinal);
+        Assert.Contains("long-rest-embedding-model=embed-b", dotnetLog, StringComparison.Ordinal);
+
+        string summary = result.StandardError
+            .Split('\n')
+            .Single(static line => line.Contains("the qualification failed for embedding model(s):", StringComparison.Ordinal))
+            .TrimEnd('\r');
+
+        Assert.EndsWith(": " + warningModel, summary, StringComparison.Ordinal);
+
+        // Each run prints its calibration report, the run that warned included.
+        Assert.Equal(2, result.StandardOutput.Split("CALIBRATION-REPORT-FIXTURE").Length - 1);
+    }
+
+    private static bool IsOnPath(string command) =>
+        (global::System.Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Any(directory => File.Exists(Path.Combine(directory, command)));
 
     [SkippableTheory]
     [InlineData("--endpoint", "http://example.test:11434/v1/", "literal loopback")]

@@ -30,6 +30,9 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 [Collection("Grimoire")]
 public sealed partial class LongRestMaintenanceTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task Production_issuance_accepts_only_the_exact_gate_wrapper_and_durable_pending_claim()
     {

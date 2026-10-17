@@ -502,6 +502,13 @@ public sealed partial class ArcanumApiClient(
             ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
             cancellationToken);
 
+    /// <summary>
+    /// Resets the operation for another attempt and answers when the host has finished. Retrying a Long Rest sweep also runs the
+    /// reconciler's ordinary recovery pass inline, over every operation then eligible for recovery whatever its kind, so how long the
+    /// call takes grows with the recovery backlog and has no Arcanum-owned expected duration: it uses the unbounded streaming client
+    /// rather than the headers deadline, which would report a retry the host durably recorded as <c>Connection.Timeout</c> and cancel
+    /// the pass with it.
+    /// </summary>
     public Task<Result<LongRunningOperationDto>> RetryOperationAsync(
         Guid id,
         CancellationToken cancellationToken = default) =>
@@ -511,7 +518,8 @@ public sealed partial class ArcanumApiClient(
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto,
-            cancellationToken);
+            cancellationToken,
+            StreamingHttpClientName);
 
     /// <summary>
     /// Runs the reconciliation sweep inline on the host, over up to 500 durable operations, and answers

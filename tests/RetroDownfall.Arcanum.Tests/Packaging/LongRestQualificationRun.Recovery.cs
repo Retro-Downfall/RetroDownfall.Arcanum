@@ -244,15 +244,18 @@ internal sealed partial class LongRestQualificationRun
 
         IReadOnlyDictionary<string, double> metrics = await Api.ReadMetricsAsync(cancellationToken);
 
-        // The park of a stale lease is written by the durable recovery handler, which the park counter does not cover (it counts the owning
-        // worker's and a fresh Session request's parks), so only the readmission is a counter this scenario is owed.
-        double parkedCount = SumMetric(metrics, "long_rest_sweep_parked");
+        // The Pure Park Handler writes the park of a stale lease and has no dependency to count it with, so the worker counts a crash park
+        // (long_rest.interrupted) and an operator-retry park (long_rest.readmit_requested) where it readmits the sweep, in class resume_later.
+        // This scenario crashed the host, so it is owed both the park and the readmission.
+        double parkedCount = SumMetric(metrics, "long_rest_sweep_parked", "resume_later");
 
         double readmittedCount = SumMetric(metrics, "long_rest_sweep_readmitted");
 
         Check(readmittedCount >= 1, "Scenario B: the restarted host counted no readmitted Long Rest sweep (arcanum.long_rest.sweep.readmitted) although its worker readmitted one.");
 
-        Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario B counters on the restarted host: parked {parkedCount}, readmitted {readmittedCount}. Metrics endpoint: {DescribeMetrics(metrics)}"));
+        Check(parkedCount >= 1, "Scenario B: the restarted host counted no resumable park (arcanum.long_rest.sweep.parked, class resume_later) although its worker readmitted the crashed sweep.");
+
+        Observe(string.Create(CultureInfo.InvariantCulture, $"Scenario B counters on the restarted host: parked (resume_later) {parkedCount}, readmitted {readmittedCount}. Metrics endpoint: {DescribeMetrics(metrics)}"));
 
         await ObserveRowsAsync(
             "Scenario B budget reservations (status, reserved, reconciled, expires)",

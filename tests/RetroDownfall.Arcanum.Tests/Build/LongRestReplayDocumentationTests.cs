@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -42,6 +44,7 @@ public sealed class LongRestReplayDocumentationTests
         "The earlier alternatives",
         "policyVersion` (currently `1`)",
         "capability generations the request fence",
+        "which the park counter does not cover",
     ];
 
     /// <summary>
@@ -102,6 +105,12 @@ public sealed class LongRestReplayDocumentationTests
         "the checker the one that rendered the old manifest",
         "measured on the delivered tree",
         "Measured on the delivered tree",
+        "where they stand now",
+        "has since been measured",
+        "stood two or three states higher",
+        "since the start began to refuse",
+        "The round after that",
+        "stand as they were",
     ];
 
     /// <summary>
@@ -208,6 +217,33 @@ public sealed class LongRestReplayDocumentationTests
                 if (text.Contains(word, StringComparison.OrdinalIgnoreCase))
                 {
                     offenders.Add($"Arcanum.DESIGN.md, {name}, still says \"{word.Trim()}\"");
+                }
+            }
+        }
+
+        Assert.Empty(offenders);
+    }
+
+    /// <summary>
+    /// A revision id names an object of one clone's history. A governed document is published with the repository, and a history that is
+    /// rewritten before it is published (a message corrected, revisions squashed) leaves every id it cites naming an object nobody can
+    /// retrieve, so a measurement is dated and described by its tree, never cited by a revision. The ban is textual and does not resolve
+    /// an id against a repository, because a CI clone can be shallow.
+    /// </summary>
+    [Fact]
+    public void No_governed_document_cites_a_revision_by_its_id()
+    {
+        List<string> offenders = [];
+
+        foreach (string file in GovernedDocuments)
+        {
+            foreach (Match token in Regex.Matches(ReadDocument(file), "`(?<id>[0-9a-f]{7,40})`", RegexOptions.ExplicitCapture, TimeSpan.FromSeconds(10)))
+            {
+                string id = token.Groups["id"].Value;
+
+                if (id.Any(char.IsAsciiDigit) && id.Any(static character => character is >= 'a' and <= 'f'))
+                {
+                    offenders.Add($"{file} cites the revision `{id}`");
                 }
             }
         }

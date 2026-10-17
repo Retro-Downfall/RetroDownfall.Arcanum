@@ -1720,6 +1720,7 @@ public sealed class DocumentationCodeContradictionTests
             "`Data.Blocked` for unfinished work or a Grimoire that holds its authority row",
             "The value is read at two points before a Grimoire exists",
             "will not create a Grimoire that would replace it",
+            "which writes back the identity a closed anchor names and otherwise removes the value",
         ])
         {
             Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
