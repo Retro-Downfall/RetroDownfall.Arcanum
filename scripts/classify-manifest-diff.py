@@ -60,7 +60,9 @@ The rules (see RULES; each names the DESIGN paragraph that states its lane)
   stream-disposal-by-origin                 the Dispose of a stream that the member's own source declares as an in-memory or a
                                             database stream and no file-backed one, no longer the abstract Stream.Dispose
 
-Invariants of a regeneration, checked whatever the labels are: no ProviderCall row is added without a Work and an Effect capsule,
+Invariants of a regeneration, checked whatever the labels are: no ProviderCall row is added without a Work and an Effect capsule
+(a root NEW_ROOTS names is exempt from that only while the committed manifest does not hold it: the regeneration that commits it has
+no rows to compare with, and every later regeneration holds it to the committed manifest like any other root),
 the ProviderCall rows that have neither are the reviewed set (each under a root whose authority needs no Work, see
 UNFRAMED_PROVIDER_CALL_ROOTS), and the Long Rest roots hold none; no ProviderCall row is removed unless its own file was edited,
 a rule explains it or a ProviderCall row with both frames replaces it at the same site; a root the committed manifest did not have
@@ -1236,11 +1238,19 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
     # A lifecycle, maintenance or request root is judged without a Work frontier by design, so the committed manifest already holds
     # unframed ProviderCall rows. They sit under the reviewed roots, the regeneration must not add one, and the Long Rest roots,
     # which are ordinary hosted work, must hold none.
-    # A reviewed new root has no rows in the committed manifest, so every row it holds is added; its unframed ProviderCall rows are
-    # held to the reviewed list below instead of to the committed manifest.
+    # A reviewed new root the committed manifest does not hold yet has no rows to compare with, so every row it holds is added; its
+    # unframed ProviderCall rows are held to the reviewed list below instead of to the committed manifest. The exemption ends with the
+    # regeneration that commits the root: once the committed manifest holds it, an unframed row it gains is held to the committed
+    # manifest like the row of any other root.
     new_root_keys = {(entry.root_type, entry.operation) for entry in NEW_ROOTS}
 
-    added_unframed = sorted(row for row in unframed(regenerated) - unframed(committed) if selection_root(row) not in new_root_keys)
+    old_roots = {row.root for row in committed.rows}
+
+    added_unframed = sorted(
+        row
+        for row in unframed(regenerated) - unframed(committed)
+        if not (selection_root(row) in new_root_keys and row.root not in old_roots)
+    )
 
     long_rest_unframed = [row for row in unframed(regenerated) if is_long_rest_root(row.root)]
 
@@ -1261,7 +1271,6 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
         if item.side == "-" and item.row.kind == "ProviderCall" and item.label not in ("a", "c") and item.row.site not in replaced_sites
     ]
 
-    old_roots = {row.root for row in committed.rows}
     new_roots = {row.root for row in regenerated.rows}
 
     foreign_new_roots = sorted(

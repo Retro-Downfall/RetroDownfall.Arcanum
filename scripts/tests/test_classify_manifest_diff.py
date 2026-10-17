@@ -1172,6 +1172,44 @@ class ClassifyManifestDiffTests(unittest.TestCase):
         else:
             self.assertEqual(1, len(violations["provider-call-frames"]))
 
+    def test_an_unframed_provider_call_added_under_a_reviewed_new_root_the_committed_manifest_already_holds_is_reported(self) -> None:
+        for entry in CLASSIFIER.NEW_ROOTS:
+            with self.subTest(root=entry.operation):
+                held = site(
+                    "src/Daemon.cs",
+                    callee="System.Diagnostics.Process.Start",
+                    kind="ProviderCall",
+                    root=entry.root_type,
+                    operation=entry.operation,
+                )
+
+                added = site(
+                    "src/Edited.cs",
+                    callee="System.Diagnostics.Process.Start",
+                    kind="ProviderCall",
+                    member="Spawn",
+                    root=entry.root_type,
+                    operation=entry.operation,
+                )
+
+                violations = {
+                    invariant.name: invariant.violations
+                    for invariant in CLASSIFIER.check_invariants(manifest(held), manifest(held, added))
+                }
+
+                spelled = f"{entry.root_type}|{entry.operation}|System.Diagnostics.Process.Start|"
+
+                # The root is reviewed, but the committed manifest holds it: the row it gained is judged like any other root's, so it is
+                # reported by its own member, and the row the committed manifest already held is not an addition.
+                self.assertIn(spelled + "Spawn", violations["provider-call-frames"])
+
+                self.assertNotIn(spelled + "Run", violations["provider-call-frames"])
+
+                reviewed = {(item.root_type, item.operation) for item in CLASSIFIER.UNFRAMED_PROVIDER_CALL_ROOTS}
+
+                if (entry.root_type, entry.operation) in reviewed:
+                    self.assertEqual([spelled + "Spawn"], violations["provider-call-frames"])
+
     def test_a_new_root_that_is_not_a_long_rest_root_violates_the_invariants(self) -> None:
         old = site("src/A.cs")
 
