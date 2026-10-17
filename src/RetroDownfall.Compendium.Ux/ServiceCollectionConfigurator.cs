@@ -13,10 +13,8 @@ namespace RetroDownfall.Compendium.Ux;
 
 internal static class ServiceCollectionConfigurator
 {
-
     public static ServiceProvider Build()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging(builder => builder.AddDebug());
@@ -48,7 +46,8 @@ internal static class ServiceCollectionConfigurator
         // is — direct, atomic, transactional writes through ArcanumConfigurationStore.
         // Named so the socket handler this creates is pooled and reused across probes instead of a
         // fresh SocketsHttpHandler (and TCP+TLS handshake) per click.
-        services.AddHttpClient(nameof(FamiliarProbeClient));
+        services.AddHttpClient(nameof(FamiliarProbeClient))
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false });
 
         services.AddSingleton<IFamiliarProbeClient, FamiliarProbeClient>();
 
@@ -57,7 +56,5 @@ internal static class ServiceCollectionConfigurator
         services.AddTransient<MainWindow>();
 
         return services.BuildServiceProvider();
-
     }
-
 }

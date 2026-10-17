@@ -139,7 +139,7 @@ internal static class CoreSchemaVersionSixteenFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionSeventeenFixture.Objects
             .Where(static definition => !definition.Name.StartsWith("long_rest_", StringComparison.Ordinal))
             .Select(static definition => definition.Name == "grimoire_utc_instant_columns"
                 ? definition with { Sql = UtcInventoryViewSql.ReplaceLineEndings("\n") + "\n" }

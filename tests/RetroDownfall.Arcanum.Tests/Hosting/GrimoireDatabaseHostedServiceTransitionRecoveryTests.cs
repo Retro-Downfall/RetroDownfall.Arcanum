@@ -205,6 +205,10 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
                         ExpectedInstallationId: null,
                         IsLegacyV1: false,
                         InstallationResetNestedTransitionEvidenceOutcome.StandaloneTransition)));
+
+        public Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+            CancellationToken cancellationToken = default) =>
+            RecoverBeforeBootstrapAsync(heldInstallationLock: null!, cancellationToken);
     }
 
     /// <summary>A pair whose transition-journal read meets an outage.</summary>
@@ -218,6 +222,10 @@ public sealed class GrimoireDatabaseHostedServiceTransitionRecoveryTests : IAsyn
                     new Error(
                         ErrorCodes.Covenant.Unavailable,
                         "The transition journal filesystem capability is unavailable.")));
+
+        public Task<Result<InstallationResetStartupRecoveryState>> InspectPairAsync(
+            CancellationToken cancellationToken = default) =>
+            RecoverBeforeBootstrapAsync(heldInstallationLock: null!, cancellationToken);
     }
 
     private sealed class RecordingTransitionRecovery(

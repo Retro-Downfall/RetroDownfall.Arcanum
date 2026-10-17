@@ -2,7 +2,7 @@
 -- Applied and no-change decisions use the same receipt grammar; neither stores memory plaintext.
 CREATE TABLE IF NOT EXISTS long_rest_receipts (
     ReceiptId TEXT NOT NULL PRIMARY KEY,
-    PolicyVersion INTEGER NOT NULL CHECK (PolicyVersion = 1),
+    PolicyVersion INTEGER NOT NULL CHECK (PolicyVersion IN (1, 2)),
     KindCode INTEGER NOT NULL CHECK (KindCode BETWEEN 1 AND 3),
     OutcomeCode INTEGER NOT NULL CHECK (OutcomeCode IN (1, 2)),
     ReasonCode INTEGER NOT NULL CHECK (ReasonCode BETWEEN 0 AND 10),

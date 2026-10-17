@@ -1,6 +1,7 @@
 using System.Diagnostics;
 
 using RetroDownfall.Arcanum.Cli.CommandCenter;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
@@ -11,13 +12,19 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// and never exits blocked the calling thread forever — the deadline and the
 /// <see cref="Process.Kill(bool)"/> recovery were unreachable dead code.
 /// </summary>
-public sealed class CommandCenterAppTests
+public sealed class CommandCenterAppTests : IAsyncLifetime
 {
+    /// <summary>
+    /// Runs PowerShell once, outside every test's deadline and stopwatch, so no test measures its cold start. A
+    /// no-op wherever the children are POSIX tools.
+    /// </summary>
+    public Task InitializeAsync() => WindowsPowerShellWarmUp.EnsureAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public void TryReadWithDeadline_returns_false_within_the_deadline_when_the_child_never_exits()
     {
-
         ProcessStartInfo startInfo = CreateNeverWritesNeverExitsProcessStartInfo();
 
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -34,22 +41,22 @@ public sealed class CommandCenterAppTests
         Assert.Equal(string.Empty, output);
 
         Assert.True(
-            stopwatch.ElapsedMilliseconds < 3000,
-            $"Expected the 1000ms deadline to govern the read; took {stopwatch.ElapsedMilliseconds}ms.");
-
+            stopwatch.ElapsedMilliseconds < 20_000,
+            $"Expected the 1000ms deadline to govern the read, not the child's 120s lifetime; took {stopwatch.ElapsedMilliseconds}ms.");
     }
 
     [Fact]
     public void TryReadWithDeadline_returns_the_captured_output_when_the_child_exits_in_time()
     {
-
         ProcessStartInfo startInfo = CreateEchoProcessStartInfo("24 80");
 
-        // Not 1000ms: this test exercises the captured-output path, not the deadline, and a cold
-        // powershell.exe start on Windows CI routinely takes 1-3s on its own.
+        // Not 1000ms: this test exercises the captured-output path, not the deadline, and the deadline runs from the
+        // process start, which on Windows includes powershell.exe starting. That has taken more than ten seconds on a
+        // loaded CI runner even before this class warmed it up, so the deadline here is only a guard against a hang
+        // and a passing run never comes near it.
         bool result = CommandCenterApp.TryReadWithDeadline(
             startInfo,
-            timeoutMilliseconds: 30_000,
+            timeoutMilliseconds: 60_000,
             out string output);
 
         Assert.True(result);
@@ -57,19 +64,23 @@ public sealed class CommandCenterAppTests
         Assert.Contains("24", output, StringComparison.Ordinal);
 
         Assert.Contains("80", output, StringComparison.Ordinal);
-
     }
 
     /// <summary>
-    /// A child that writes nothing to stdout/stderr and outlives the 1s deadline several times
+    /// A child that writes nothing to stdout/stderr and outlives the 1s deadline many times
     /// over — the shape the finding names ("a child that writes nothing and never exits").
     /// </summary>
+    /// <remarks>
+    /// The child lives far longer than the bound the test puts on the call, so that the call can only
+    /// have ended because the deadline did, and so that spawning it, killing its tree and disposing it
+    /// on a loaded coverage runner can take many seconds beyond the deadline without failing the test.
+    /// If a read ever blocked on the child again, the call would take the full 120 seconds and still
+    /// fail the bound.
+    /// </remarks>
     private static ProcessStartInfo CreateNeverWritesNeverExitsProcessStartInfo()
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
                 FileName = "powershell.exe",
@@ -77,9 +88,8 @@ public sealed class CommandCenterAppTests
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 5" },
+                ArgumentList = { "-NoProfile", "-Command", "Start-Sleep -Seconds 120" },
             };
-
         }
 
         return new ProcessStartInfo
@@ -89,17 +99,14 @@ public sealed class CommandCenterAppTests
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
-            ArgumentList = { "5" },
+            ArgumentList = { "120" },
         };
-
     }
 
     private static ProcessStartInfo CreateEchoProcessStartInfo(string text)
     {
-
         if (OperatingSystem.IsWindows())
         {
-
             return new ProcessStartInfo
             {
                 FileName = "powershell.exe",
@@ -109,7 +116,6 @@ public sealed class CommandCenterAppTests
                 CreateNoWindow = true,
                 ArgumentList = { "-NoProfile", "-Command", $"Write-Output '{text}'" },
             };
-
         }
 
         return new ProcessStartInfo
@@ -121,7 +127,5 @@ public sealed class CommandCenterAppTests
             CreateNoWindow = true,
             ArgumentList = { text },
         };
-
     }
-
 }

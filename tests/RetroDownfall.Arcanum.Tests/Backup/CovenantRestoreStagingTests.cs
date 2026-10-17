@@ -1356,6 +1356,8 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
         internal int Releases { get; private set; }
 
+        internal CovenantExclusiveLease? LastLease { get; private set; }
+
         internal CovenantExclusiveRecoveryOwner? LastOwner { get; private set; }
 
         internal List<CovenantExclusiveLeaseDisposition> Dispositions { get; } = [];
@@ -1368,9 +1370,9 @@ public sealed class CovenantRestoreStagingTests : IDisposable
 
             LastOwner = owner;
 
-            return ValueTask.FromResult(
-                Result<CovenantExclusiveLease>.Success(
-                    new CovenantExclusiveLease(new Registration(this, owner))));
+            LastLease = new CovenantExclusiveLease(new Registration(this, owner));
+
+            return ValueTask.FromResult(Result<CovenantExclusiveLease>.Success(LastLease));
         }
 
         public ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(

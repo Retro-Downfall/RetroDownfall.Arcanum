@@ -174,11 +174,8 @@ internal static class AttachableFile
         {
             FileInfo named = new(path);
             FileSystemInfo entry = named.ResolveLinkTarget(returnFinalTarget: true) ?? named;
-            FileAttributes attributes = entry.Attributes;
 
-            return (attributes & FileAttributes.ReparsePoint) != 0
-                && (attributes & FileAttributes.Directory) == 0
-                && entry.LinkTarget is null;
+            return IsReparsePointWithoutTarget(entry.Attributes, () => entry.LinkTarget);
         }
         catch (Exception ex) when (
             ex is IOException
@@ -189,5 +186,27 @@ internal static class AttachableFile
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// The decision <see cref="IsReparsePointWithoutTarget(string)"/> makes once it has looked at the
+    /// entry: it carries the reparse-point attribute, is not a directory, and names no link target. The
+    /// reparse tag is never read here. What separates a link from every other reparse point is whether
+    /// the framework can report a target for the entry, and it can for the two name-surrogate kinds it
+    /// understands (a symbolic link and a mount point), not for the rest (a cloud placeholder,
+    /// deduplicated or compressed data).
+    /// </summary>
+    /// <param name="attributes">The attributes the framework reports for the followed entry.</param>
+    /// <param name="readLinkTarget">
+    /// Asked only when the attributes leave the answer open, as the framework's own read is a second
+    /// file-system call: the link target of the same entry, or <see langword="null"/> when it is not a link.
+    /// </param>
+    internal static bool IsReparsePointWithoutTarget(FileAttributes attributes, Func<string?> readLinkTarget)
+    {
+        ArgumentNullException.ThrowIfNull(readLinkTarget);
+
+        return (attributes & FileAttributes.ReparsePoint) != 0
+            && (attributes & FileAttributes.Directory) == 0
+            && readLinkTarget() is null;
     }
 }

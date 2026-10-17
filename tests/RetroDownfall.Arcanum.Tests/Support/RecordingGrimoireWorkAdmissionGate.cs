@@ -16,7 +16,17 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     private readonly List<IGrimoireWorkLease> _innerWorkLeases = [];
 
+    private readonly List<IGrimoireWorkLease> _issuedWorkLeases = [];
+
+    private readonly List<IGrimoireWorkLease> _effectGroupLeases = [];
+
     private readonly List<long> _observedGenerationWaits = [];
+
+    private readonly List<DrainedAttestation> _drainedAttestations = [];
+
+    private readonly List<IGrimoireWorkLease> _presentedLeases = [];
+
+    private int _drainedAttestationOrdinal;
 
     private int _effectGroupAttempts;
 
@@ -46,6 +56,57 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         }
     }
 
+    /// <summary>The wrapper leases this gate handed to its callers, in issue order: the instances callers actually hold.</summary>
+    internal IReadOnlyList<IGrimoireWorkLease> IssuedWorkLeases
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _issuedWorkLeases.ToArray();
+            }
+        }
+    }
+
+    /// <summary>The issued lease instance each external-effect group attempt was made on, in attempt order.</summary>
+    internal IReadOnlyList<IGrimoireWorkLease> EffectGroupLeases
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _effectGroupLeases.ToArray();
+            }
+        }
+    }
+
+    /// <summary>Every drained-maintenance attestation this gate was asked for, in order, with its verdict.</summary>
+    internal IReadOnlyList<DrainedAttestation> DrainedAttestations
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _drainedAttestations.ToArray();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The lease instance each drained-maintenance attestation was asked about, in order, including an ask the
+    /// refuse-only hook interrupted before it was given a verdict (such an ask has no entry in <see cref="DrainedAttestations"/>).
+    /// </summary>
+    internal IReadOnlyList<IGrimoireWorkLease> PresentedLeases
+    {
+        get
+        {
+            lock (_observationsGate)
+            {
+                return _presentedLeases.ToArray();
+            }
+        }
+    }
+
     internal int EffectGroupAttempts => Volatile.Read(ref _effectGroupAttempts);
 
     internal int GenerationWaits => Volatile.Read(ref _generationWaits);
@@ -65,6 +126,14 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
 
     internal Action BeforeEffectGroupAdmission { get; set; } = static () => { };
 
+    /// <summary>
+    /// Runs before each drained attestation with that attestation's 1-based position in this gate's sequence.
+    /// It may drive a real edge on the inner gate (for example <c>BeginOrResumeExclusive</c>) and may only refuse:
+    /// returning <see langword="false"/> ANDs the verdict down without consulting the inner gate, and returning
+    /// <see langword="true"/> leaves the verdict to the inner gate. It can never grant.
+    /// </summary>
+    internal Func<int, bool> BeforeDrainedAttestation { get; set; } = static _ => true;
+
     internal Action<long> AfterOpenGenerationObserved { get; set; } = static _ => { };
 
     internal Func<ValueTask> BeforeWorkLeaseDisposalAsync { get; set; } =
@@ -74,6 +143,34 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
         static () => ValueTask.CompletedTask;
 
     public long CurrentGeneration => inner.CurrentGeneration;
+
+    /// <summary>
+    /// Forwards only a lease this gate itself wrapped, unwrapped to the inner gate's own lease.
+    /// A wrapper minted by any other gate, or a lease this gate never saw, is refused.
+    /// </summary>
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
+    {
+        int ordinal = Interlocked.Increment(ref _drainedAttestationOrdinal);
+
+        lock (_observationsGate)
+        {
+            _presentedLeases.Add(lease);
+        }
+
+        // The hook runs first and only ever narrows: a refusal never reaches the inner gate, and a pass leaves the
+        // verdict to the inner gate, so no hook can manufacture an attestation the real gate would not give.
+        bool attested = BeforeDrainedAttestation(ordinal)
+            && lease is RecordingWorkLease recording
+            && ReferenceEquals(recording.Owner, this)
+            && inner.AttestDrainedMaintenance(recording.Inner, previousGeneration, currentGeneration);
+
+        lock (_observationsGate)
+        {
+            _drainedAttestations.Add(new(lease?.Kind, previousGeneration, currentGeneration, attested));
+        }
+
+        return attested;
+    }
 
     public bool TryAcquireRequestLease(
         GrimoireRequestKind kind,
@@ -96,12 +193,16 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             return false;
         }
 
+        RecordingWorkLease issued = new(this, admitted!);
+
         lock (_observationsGate)
         {
             _innerWorkLeases.Add(admitted!);
+
+            _issuedWorkLeases.Add(issued);
         }
 
-        lease = new RecordingWorkLease(this, admitted!);
+        lease = issued;
 
         return true;
     }
@@ -172,20 +273,33 @@ internal sealed class RecordingGrimoireWorkAdmissionGate(
             revalidateDurableOwnerAsync,
             cancellationToken);
 
+    internal readonly record struct DrainedAttestation(GrimoireWorkKind? Kind, long Previous, long Current, bool Attested);
+
     private sealed class RecordingWorkLease(
         RecordingGrimoireWorkAdmissionGate gate,
         IGrimoireWorkLease inner) : IGrimoireWorkLease
     {
+        internal RecordingGrimoireWorkAdmissionGate Owner => gate;
+
+        internal IGrimoireWorkLease Inner => inner;
+
         public GrimoireWorkKind Kind => inner.Kind;
 
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
 
+        public bool MaintenanceRevocationPending => inner.MaintenanceRevocationPending;
+
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)
         {
             Interlocked.Increment(ref gate._effectGroupAttempts);
+
+            lock (gate._observationsGate)
+            {
+                gate._effectGroupLeases.Add(this);
+            }
 
             gate.BeforeEffectGroupAdmission();
 

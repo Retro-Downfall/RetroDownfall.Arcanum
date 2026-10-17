@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// </remarks>
 internal static class InvocationContexts
 {
-
     private static readonly Guid Installation = Guid.Parse("2C4A5E3B-9F17-4D0C-8A6E-1B3D5F70921A");
 
     private static readonly Guid Campaign = Guid.Parse("7E1D9C42-05B8-4F63-9A0E-3C8B27D641F5");
@@ -24,6 +23,19 @@ internal static class InvocationContexts
         Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
             CampaignContext(campaignId ?? Campaign),
+            InvocationAttendance.Attended,
+            CovenantContextPolicy.Default,
+            ToolPolicy.AllTools,
+            Epoch());
+
+    /// <summary>
+    /// An attended, session-backed turn carrying exactly the canonical context a resolver produced, for a test that resolves the Campaign
+    /// from real directories and then runs the turn under that answer.
+    /// </summary>
+    internal static ArcanumInvocationContext AttendedSession(CanonicalCampaignContext canonical) =>
+        Create(
+            ArcanumExecutionSurface.SessionBackedOperatorTurn,
+            canonical,
             InvocationAttendance.Attended,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
@@ -93,7 +105,6 @@ internal static class InvocationContexts
         ToolPolicy toolPolicy,
         CovenantReadAuthorityEpoch epoch)
     {
-
         Result<ArcanumInvocationContext> created = ArcanumInvocationContext.Create(
             surface,
             campaign,
@@ -105,7 +116,5 @@ internal static class InvocationContexts
         return created.IsSuccess
             ? created.Value
             : throw new InvalidOperationException(created.Error.Message);
-
     }
-
 }

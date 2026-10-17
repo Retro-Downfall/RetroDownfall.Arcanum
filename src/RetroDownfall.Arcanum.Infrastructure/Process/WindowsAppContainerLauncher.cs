@@ -18,11 +18,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// TerminateProcess, which does not run the finally, and the host replays the journal instead.
 /// </summary>
 [SupportedOSPlatform("windows")]
-// Windows kernel/ACL integration. Its only end-to-end coverage is the Windows-lane
-// WindowsAppContainerBrokerTests (whose smoke needs a published apphost) and
-// WindowsAppContainerAclTests, selected by both Windows CI lanes; the pure parts it relies on
-// (WindowsAppContainerBrokerExit, WindowsAppContainerRootLockBudget, the journal and the resolver)
-// are covered on every host.
+// Windows kernel/ACL integration. Its only end-to-end coverage is on the two Windows lanes:
+// the WindowsAppContainerBrokerTests broker smoke (which re-executes the published apphost) and the
+// WindowsAppContainerAclTests real-DACL round trip. The pure parts it relies on
+// (WindowsAppContainerBrokerExit, WindowsAppContainerRootLockBudget, WindowsProcThreadAttribute,
+// the journal and the resolver) are covered on every host.
 [ExcludeFromCodeCoverage]
 internal static partial class WindowsAppContainerLauncher
 {
@@ -32,12 +32,11 @@ internal static partial class WindowsAppContainerLauncher
 
     private const uint ExtendedStartupInfoPresent = 0x00080000;
 
-    private const uint ProcThreadAttributeSecurityCapabilities = 0x00020009;
-
-    private const uint ProcThreadAttributeHandleList = 0x00020002;
-
     private const int StartupInfoStdHandles = 0x00000100;
     private const int Infinite = -1;
+
+    /// <summary>The only failure the sizing call of <c>InitializeProcThreadAttributeList</c> may report.</summary>
+    private const int ErrorInsufficientBuffer = 122;
 
     internal static int Run(SandboxExecHelperPayload payload) => Run(payload, Console.Error);
 
@@ -315,8 +314,28 @@ internal static partial class WindowsAppContainerLauncher
     private static unsafe int LaunchSuspended(SandboxExecHelperPayload payload, nint sid, TextWriter error)
     {
         nuint size = 0;
-        _ = InitializeProcThreadAttributeList(0, 2, 0, ref size);
+
+        // The sizing call fails by design with ERROR_INSUFFICIENT_BUFFER and reports the size it needs. Any
+        // other failure, or a size of zero, means the list cannot be built, so it is not allocated.
+        if (!InitializeProcThreadAttributeList(0, 2, 0, ref size))
+        {
+            int sizingError = Marshal.GetLastPInvokeError();
+
+            if (sizingError != ErrorInsufficientBuffer)
+            {
+                throw new Win32Exception(sizingError);
+            }
+        }
+
+        if (size == 0)
+        {
+            throw new Win32Exception(ErrorInsufficientBuffer);
+        }
+
         nint attributes = Marshal.AllocHGlobal((nint)size);
+
+        bool initialized = false;
+
         nint capabilitiesPtr = 0;
         nint handlesPtr = 0;
         try
@@ -325,6 +344,9 @@ internal static partial class WindowsAppContainerLauncher
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
             }
+
+            // Only a list that was successfully initialised may be deleted.
+            initialized = true;
 
             SecurityCapabilities capabilities = new()
             {
@@ -336,7 +358,7 @@ internal static partial class WindowsAppContainerLauncher
             capabilitiesPtr = Marshal.AllocHGlobal(Marshal.SizeOf<SecurityCapabilities>());
             Marshal.StructureToPtr(capabilities, capabilitiesPtr, false);
             if (!UpdateProcThreadAttribute(
-                    attributes, 0, ProcThreadAttributeSecurityCapabilities,
+                    attributes, 0, WindowsProcThreadAttribute.SecurityCapabilities,
                     capabilitiesPtr, (nuint)Marshal.SizeOf<SecurityCapabilities>(), 0, 0))
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
@@ -351,7 +373,7 @@ internal static partial class WindowsAppContainerLauncher
             handlesPtr = Marshal.AllocHGlobal(nint.Size * inheritedHandles.Length);
             Marshal.Copy(inheritedHandles, 0, handlesPtr, inheritedHandles.Length);
             if (!UpdateProcThreadAttribute(
-                    attributes, 0, ProcThreadAttributeHandleList,
+                    attributes, 0, WindowsProcThreadAttribute.HandleList,
                     handlesPtr, (nuint)(nint.Size * inheritedHandles.Length), 0, 0))
             {
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
@@ -400,11 +422,12 @@ internal static partial class WindowsAppContainerLauncher
         }
         finally
         {
-            if (attributes != 0)
+            if (initialized)
             {
                 DeleteProcThreadAttributeList(attributes);
-                Marshal.FreeHGlobal(attributes);
             }
+
+            Marshal.FreeHGlobal(attributes);
 
             if (capabilitiesPtr != 0)
             {

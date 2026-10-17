@@ -56,7 +56,7 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         "artifact_sensitivity",
         "session_sensitivity_state",
         "assistant_entry_erasure_receipts",
-        "artifact_sensitivity_guard_delete",
+        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
         "artifact_sensitivity_guard_update",
 
         // The Session tree an AssistantEntry erasure drops in the same transaction as the Entry. These

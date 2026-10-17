@@ -457,16 +457,11 @@ public sealed class EmbeddingsResetService(
                     }
                 }
 
-                foreach (string table in targets)
-                {
-                    int rows = await DeleteFromTableAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false);
-
-                    deleted[table] = rows;
-                }
-
                 if (clearsSagaMemories)
                 {
-                    // In this transaction rather than beside it, and ungated for the reason the store's
+                    // Close generations while captured leaves still select them, before embedding
+                    // or source mutations invalidate those selectors. In this transaction rather
+                    // than beside it, and ungated for the reason the store's
                     // own delete gives: a claim written while the Annals was enabled has to stay
                     // removable after it is disabled, or turning the feature off strands records no
                     // surface can reach. The order and the predicates come from AnnalsErasurePlan, which
@@ -481,6 +476,13 @@ public sealed class EmbeddingsResetService(
                         transaction,
                         AnnalSubjectStore.Saga,
                         cancellationToken).ConfigureAwait(false);
+                }
+
+                foreach (string table in targets)
+                {
+                    int rows = await DeleteFromTableAsync(connection, transaction, table, cancellationToken).ConfigureAwait(false);
+
+                    deleted[table] = rows;
                 }
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

@@ -1348,7 +1348,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 Result reopened = published.IsFailure
                     ? published
                     : await _covenant
-                        .CompleteCommittedAsync(covenant, maintenance!, liveRoot, cancellationToken)
+                        .CompleteCommittedAsync(covenant, maintenance!, liveRoot, staged.GrimoireSecret, cancellationToken)
                         .ConfigureAwait(false);
 
                 if (reopened.IsFailure)
@@ -1971,6 +1971,17 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                         + "staging before replacement; the destination's own taint and disclosure "
                         + "evidence were preserved."
                     : string.Empty));
+        }
+
+        if (request.ConflictMode is BackupRestoreConflictMode.ReplaceInstallation or BackupRestoreConflictMode.NewProfileRoot)
+        {
+            Result sanitized = await BackupRestoreLongRestSanitation.SanitizeStagedAsync(connection, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (sanitized.IsFailure)
+            {
+                return StageResult.Failed(Issue(sanitized.Error));
+            }
         }
 
         _options.BeforePhaseForTests?.Invoke(BackupRestorePhase.RemapPaths);

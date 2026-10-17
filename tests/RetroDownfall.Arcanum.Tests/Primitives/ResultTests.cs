@@ -1,4 +1,6 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -100,5 +102,67 @@ public sealed class ResultTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(error, result.Error);
+    }
+
+    [Fact]
+    public void ErrorIsNone_IsTheSameAnswerAsRecordEqualityWithNone()
+    {
+        Error[] errors =
+        [
+            Error.None,
+            new(string.Empty, string.Empty),
+            default,
+            new("Test.Failed", string.Empty),
+            new(string.Empty, "Message only."),
+            new("Test.Failed", "Nope."),
+            new(string.Empty, string.Empty, Array.Empty<ConfigurationValidationError>()),
+            new(string.Empty, string.Empty, [new ConfigurationValidationError("/pointer", "detail")]),
+        ];
+
+        foreach (Error error in errors)
+        {
+            Assert.Equal(error == Error.None, error.IsNone);
+        }
+
+        Assert.True(Error.None.IsNone);
+
+        Assert.False(default(Error).IsNone);
+    }
+
+    // Error ships through the source-generated ArcanumJsonContext under Native AOT, not through the
+    // reflection resolver, so the wire shape that matters is the one that context writes.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ErrorIsNone_IsNotPartOfTheArcanumSourceGeneratedWireShape(bool withDetails)
+    {
+        Error error = withDetails
+            ? new("Test.Failed", "Nope.", [new ConfigurationValidationError("/pointer", "detail")])
+            : new("Test.Failed", "Nope.");
+
+        string json = JsonSerializer.Serialize(error, ArcanumJsonContext.Default.Error);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        Assert.DoesNotContain(document.RootElement.EnumerateObject(),
+            static property => property.Name.Equals("isNone", StringComparison.OrdinalIgnoreCase));
+
+        Assert.Equal("Test.Failed", document.RootElement.GetProperty("code").GetString());
+
+        Assert.Equal("Nope.", document.RootElement.GetProperty("message").GetString());
+
+        Error? roundTripped = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.Error);
+
+        Assert.NotNull(roundTripped);
+
+        Assert.Equal(error.Code, roundTripped.Value.Code);
+
+        Assert.Equal(error.Message, roundTripped.Value.Message);
+
+        Assert.Equal(error.Details ?? [], roundTripped.Value.Details ?? []);
+
+        Assert.False(roundTripped.Value.IsNone);
+
+        Assert.Equal(json, JsonSerializer.Serialize(roundTripped.Value, ArcanumJsonContext.Default.Error));
     }
 }

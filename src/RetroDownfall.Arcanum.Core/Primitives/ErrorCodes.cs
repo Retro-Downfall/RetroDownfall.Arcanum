@@ -591,6 +591,17 @@ public static class ErrorCodes
 
         public const string ConfirmationRequired = "Data.ConfirmationRequired";
 
+        /// <summary>
+        /// A durable operation is waiting for an operator, and that conflicts with a global reset.
+        /// </summary>
+        /// <remarks>
+        /// Reported as a global-reset conflict, never as the failure of a request. An operation that
+        /// waits for an operator stays exactly as it is across any number of host starts, so starting
+        /// the host does not clear it; cancelling it or retrying it against a started host does. The
+        /// conflict whose operation a host start does settle is <c>Data.ActiveOperation</c>.
+        /// </remarks>
+        public const string OperationNeedsAttention = "Data.OperationNeedsAttention";
+
         /// <summary>The operation failed and its durable history requires operator review.</summary>
         /// <remarks>
         /// Deliberately no longer the single answer for every unhappy retention ending. It kept
@@ -1207,6 +1218,75 @@ public static class ErrorCodes
         public const string Unavailable = "LongRest.Unavailable";
 
         public const string IntegrityFailure = "LongRest.IntegrityFailure";
-    }
 
+        public const string CurrentnessLost = "LongRest.CurrentnessLost";
+
+        public const string InvalidAdmission = "LongRest.InvalidAdmission";
+
+        public const string AccountingCompletionRefused = "LongRest.AccountingCompletionRefused";
+
+        public const string StaleFence = "LongRest.StaleFence";
+
+        public const string AccountingRefused = "LongRest.AccountingRefused";
+
+        public const string ConfigurationChanged = "LongRest.ConfigurationChanged";
+
+        public const string InvalidOutput = "LongRest.InvalidOutput";
+
+        public const string CancelledAfterPayment = "LongRest.CancelledAfterPayment";
+
+        /// <summary>
+        /// A request found the active sweep for its scope parked in a way only an operator can clear: its failure budget is
+        /// spent or its fault needs an operator, or it is a protected sweep parked with a restart-generation code and the
+        /// request carries no live turn authority to retire it. The message names the parked operation, which the operator
+        /// retries or, for <c>LongRest.TransportUnknown</c>, cancels.
+        /// </summary>
+        public const string SweepParked = "LongRest.SweepParked";
+
+        /// <summary>
+        /// Another executor in this process owns the operation right now. It is a typed, transient refusal: nothing was written,
+        /// and the owner is already advancing the work. A clean scope skips it; a protected partition still fails the turn.
+        /// </summary>
+        public const string OperationBusy = "LongRest.OperationBusy";
+
+        /// <summary>
+        /// The provider answered a Long Rest call with a transient failure (5xx, 429, 408, a dropped connection or a timeout), or
+        /// the call otherwise ended without a result. The sweep may be readmitted later; the response body is never carried.
+        /// </summary>
+        public const string ProviderUnavailable = "LongRest.ProviderUnavailable";
+
+        /// <summary>
+        /// The provider could not be reached before any request byte left the process (name resolution, connection or TLS
+        /// failure). The attempt is settled as not sent; the sweep may be readmitted later.
+        /// </summary>
+        public const string ProviderUnreachable = "LongRest.ProviderUnreachable";
+
+        /// <summary>
+        /// The provider rejected a Long Rest call with a non-transient client error (a 4xx other than 408 and 429). Retrying the same
+        /// call cannot help, so an operator decides; the response body is never carried.
+        /// </summary>
+        public const string ProviderRejected = "LongRest.ProviderRejected";
+
+        /// <summary>
+        /// A physical send ended without a result and without cancellation, so its billing is unknown. It is also the failure code
+        /// written to the settled attempt, and the code a work unit parks under once it has spent its allowance of unknown attempts.
+        /// </summary>
+        public const string TransportUnknown = "LongRest.TransportUnknown";
+
+        /// <summary>
+        /// The failure code written to a physical attempt that a reboot found still <c>Sent</c> and settled as failed: the process
+        /// that sent it is gone, so its billing is unknown and, like <see cref="TransportUnknown"/>, it counts toward the Unknown-Usage
+        /// Cap. It is an internal attempt reason and never an HTTP error, so it has no status and no catalog row.
+        /// </summary>
+        public const string InterruptedTransport = "LongRest.InterruptedTransport";
+
+        /// <summary>
+        /// The configured model cannot take a Long Rest unit: the chat provider's context window leaves no room for the smallest
+        /// recipe or for a request the recipe admitted, or the embedding provider's window cannot hold a summary. It is raised
+        /// before any provider-effect row or accounting run exists, and only an operator can clear it: raise the provider's
+        /// <c>contextWindowLimit</c> or choose a model with a larger window. An oversized memory never raises it, because it is
+        /// carried unsummarized.
+        /// </summary>
+        public const string ModelContextTooSmall = "LongRest.ModelContextTooSmall";
+    }
 }

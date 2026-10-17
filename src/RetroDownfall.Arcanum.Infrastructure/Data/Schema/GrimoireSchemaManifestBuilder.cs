@@ -17,7 +17,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// </remarks>
 internal static class GrimoireSchemaManifestBuilder
 {
-
     public static GrimoireSchemaManifest Build(
         GrimoireSchemaFamily family,
         GrimoireSchemaTransactionTier transactionTier,
@@ -25,7 +24,6 @@ internal static class GrimoireSchemaManifestBuilder
         string sourceDefinitionFingerprint,
         IReadOnlyList<GrimoireSchemaObject> definitions)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceDefinitionFingerprint);
 
         ArgumentNullException.ThrowIfNull(definitions);
@@ -39,36 +37,39 @@ internal static class GrimoireSchemaManifestBuilder
 
         foreach (GrimoireSchemaObject definition in definitions)
         {
-
             if (definition.TransactionTier != transactionTier)
             {
-
                 throw new InvalidOperationException(
                     $"Schema object '{definition.ResourcePath}.sql' does not belong to the manifest's transaction tier.");
-
             }
 
             ParseResource(definition, entries, indexesByTable, indexNames);
-
         }
 
         List<GrimoireSchemaManifestEntry> resolved = [];
 
         foreach (GrimoireSchemaManifestEntry entry in entries)
         {
-
             resolved.Add(
                 indexesByTable.TryGetValue(entry.Name, out List<GrimoireExpectedIndex>? owned)
                     ? entry with { Indexes = owned }
                     : entry);
-
         }
 
         if (transactionTier == GrimoireSchemaTransactionTier.CovenantAccelerator)
         {
-
             resolved.AddRange(CovenantAcceleratorSyntheticManifest.Entries);
+        }
 
+        if (transactionTier == GrimoireSchemaTransactionTier.Core)
+        {
+            foreach (string owner in new[] { "long_rest_clean_fts", "long_rest_protected_fts" })
+            {
+                if (definitions.Any(definition => definition.Name == owner))
+                {
+                    resolved.AddRange(LongRestFtsSyntheticManifest.For(owner));
+                }
+            }
         }
 
         return new GrimoireSchemaManifest(
@@ -77,7 +78,6 @@ internal static class GrimoireSchemaManifestBuilder
             version,
             sourceDefinitionFingerprint,
             resolved);
-
     }
 
     private static void ParseResource(
@@ -86,46 +86,36 @@ internal static class GrimoireSchemaManifestBuilder
         Dictionary<string, List<GrimoireExpectedIndex>> indexesByTable,
         HashSet<string> indexNames)
     {
-
         foreach (string statement in SplitStatements(definition.Sql))
         {
-
             string normalized = GrimoireSqlNormalizer.Normalize(statement);
 
             if (normalized.Length == 0)
             {
-
                 continue;
-
             }
 
             if (StartsWithKeywords(normalized, "CREATE", "INDEX")
                 || StartsWithKeywords(normalized, "CREATE", "UNIQUE", "INDEX"))
             {
-
                 GrimoireExpectedIndex index = ParseIndex(normalized, definition, out string ownerTable);
 
                 if (!indexNames.Add(index.Name))
                 {
-
                     throw new InvalidOperationException(
                         $"Schema object '{definition.ResourcePath}.sql' declares duplicate index '{index.Name}'.");
-
                 }
 
                 if (!indexesByTable.TryGetValue(ownerTable, out List<GrimoireExpectedIndex>? owned))
                 {
-
                     owned = [];
 
                     indexesByTable[ownerTable] = owned;
-
                 }
 
                 owned.Add(index);
 
                 continue;
-
             }
 
             GrimoireSchemaObjectType type = ClassifyObject(normalized, definition);
@@ -138,47 +128,35 @@ internal static class GrimoireSchemaManifestBuilder
                     normalized,
                     IsSynthetic: false,
                     Indexes: []));
-
         }
-
     }
 
     private static GrimoireSchemaObjectType ClassifyObject(
         string normalized,
         GrimoireSchemaObject definition)
     {
-
         if (StartsWithKeywords(normalized, "CREATE", "VIRTUAL", "TABLE"))
         {
-
             return GrimoireSchemaObjectType.VirtualTable;
-
         }
 
         if (StartsWithKeywords(normalized, "CREATE", "TABLE"))
         {
-
             return GrimoireSchemaObjectType.Table;
-
         }
 
         if (StartsWithKeywords(normalized, "CREATE", "TRIGGER"))
         {
-
             return GrimoireSchemaObjectType.Trigger;
-
         }
 
         if (StartsWithKeywords(normalized, "CREATE", "VIEW"))
         {
-
             return GrimoireSchemaObjectType.View;
-
         }
 
         throw new InvalidOperationException(
             $"Schema object '{definition.ResourcePath}.sql' declares an unsupported statement kind.");
-
     }
 
     private static GrimoireExpectedIndex ParseIndex(
@@ -186,7 +164,6 @@ internal static class GrimoireSchemaManifestBuilder
         GrimoireSchemaObject definition,
         out string ownerTable)
     {
-
         bool isUnique = StartsWithKeywords(normalized, "CREATE", "UNIQUE", "INDEX");
 
         int cursor = isUnique
@@ -214,16 +191,13 @@ internal static class GrimoireSchemaManifestBuilder
 
         foreach (string part in SplitTopLevel(columnList))
         {
-
             string column = part.Trim();
 
             bool descending = EndsWithKeyword(column, "DESC");
 
             if (descending || EndsWithKeyword(column, "ASC"))
             {
-
                 column = column[..column.LastIndexOf(' ')].Trim();
-
             }
 
             string collation = "BINARY";
@@ -232,19 +206,15 @@ internal static class GrimoireSchemaManifestBuilder
 
             if (collateAt >= 0)
             {
-
                 collation = column[(collateAt + " COLLATE ".Length)..].Trim();
 
                 column = column[..collateAt].Trim();
 
                 if (collation.Length == 0 || collation.Contains(' ', StringComparison.Ordinal))
                 {
-
                     throw new InvalidOperationException(
                         $"Schema object '{definition.ResourcePath}.sql' declares an unparseable index collation.");
-
                 }
-
             }
 
             // An expression position is ordinary SQLite, so it is expected rather than refused:
@@ -263,19 +233,15 @@ internal static class GrimoireSchemaManifestBuilder
                     IsKey: true));
 
             sequence++;
-
         }
 
         if (columns.Count == 0)
         {
-
             throw new InvalidOperationException(
                 $"Schema object '{definition.ResourcePath}.sql' declares an index with no columns.");
-
         }
 
         return new GrimoireExpectedIndex(name, isUnique, "c", isPartial, normalized, columns);
-
     }
 
     /// <summary>
@@ -291,14 +257,11 @@ internal static class GrimoireSchemaManifestBuilder
     /// </remarks>
     private static IReadOnlyList<string> SplitStatements(string sql)
     {
-
         string stripped = GrimoireSqlNormalizer.Normalize(sql);
 
         if (StartsWithKeywords(stripped, "CREATE", "TRIGGER"))
         {
-
             return [sql];
-
         }
 
         List<string> statements = [];
@@ -309,39 +272,31 @@ internal static class GrimoireSchemaManifestBuilder
 
         while (index < sql.Length)
         {
-
             char value = sql[index];
 
             if (value == '-' && index + 1 < sql.Length && sql[index + 1] == '-')
             {
-
                 index = CopyLineComment(sql, index, current);
 
                 continue;
-
             }
 
             if (value == '/' && index + 1 < sql.Length && sql[index + 1] == '*')
             {
-
                 index = CopyBlockComment(sql, index, current);
 
                 continue;
-
             }
 
             if (value is '\'' or '"' or '`')
             {
-
                 index = CopyQuoted(sql, index, current);
 
                 continue;
-
             }
 
             if (value == ';')
             {
-
                 statements.Add(current.ToString());
 
                 _ = current.Clear();
@@ -349,71 +304,56 @@ internal static class GrimoireSchemaManifestBuilder
                 index++;
 
                 continue;
-
             }
 
             _ = current.Append(value);
 
             index++;
-
         }
 
         if (current.ToString().Trim().Length > 0)
         {
-
             statements.Add(current.ToString());
-
         }
 
         return statements;
-
     }
 
     private static int CopyLineComment(string sql, int index, StringBuilder current)
     {
-
         while (index < sql.Length && sql[index] != '\n')
         {
-
             _ = current.Append(sql[index]);
 
             index++;
-
         }
 
         return index;
-
     }
 
     private static int CopyBlockComment(string sql, int index, StringBuilder current)
     {
-
         _ = current.Append(sql[index]).Append(sql[index + 1]);
 
         index += 2;
 
         while (index + 1 < sql.Length && !(sql[index] == '*' && sql[index + 1] == '/'))
         {
-
             _ = current.Append(sql[index]);
 
             index++;
-
         }
 
         if (index + 1 >= sql.Length)
         {
-
             _ = current.Append(sql.AsSpan(index));
 
             return sql.Length;
-
         }
 
         _ = current.Append(sql[index]).Append(sql[index + 1]);
 
         return index + 2;
-
     }
 
     /// <summary>
@@ -422,7 +362,6 @@ internal static class GrimoireSchemaManifestBuilder
     /// </summary>
     private static int CopyQuoted(string sql, int index, StringBuilder current)
     {
-
         char quote = sql[index];
 
         _ = current.Append(quote);
@@ -431,7 +370,6 @@ internal static class GrimoireSchemaManifestBuilder
 
         while (index < sql.Length)
         {
-
             char value = sql[index];
 
             _ = current.Append(value);
@@ -440,33 +378,26 @@ internal static class GrimoireSchemaManifestBuilder
 
             if (value != quote)
             {
-
                 continue;
-
             }
 
             if (index < sql.Length && sql[index] == quote)
             {
-
                 _ = current.Append(quote);
 
                 index++;
 
                 continue;
-
             }
 
             break;
-
         }
 
         return index;
-
     }
 
     private static IReadOnlyList<string> SplitTopLevel(string value)
     {
-
         List<string> parts = [];
 
         int depth = 0;
@@ -475,118 +406,87 @@ internal static class GrimoireSchemaManifestBuilder
 
         foreach (char item in value)
         {
-
             if (item == '(')
             {
-
                 depth++;
-
             }
             else if (item == ')')
             {
-
                 depth--;
-
             }
 
             if (item == ',' && depth == 0)
             {
-
                 parts.Add(current.ToString());
 
                 current.Clear();
 
                 continue;
-
             }
 
             _ = current.Append(item);
-
         }
 
         if (current.Length > 0)
         {
-
             parts.Add(current.ToString());
-
         }
 
         return parts;
-
     }
 
     private static int FindMatchingParenthesis(string value, int open, GrimoireSchemaObject definition)
     {
-
         if (open < 0)
         {
-
             throw new InvalidOperationException(
                 $"Schema object '{definition.ResourcePath}.sql' declares an index with no column list.");
-
         }
 
         int depth = 0;
 
         for (int index = open; index < value.Length; index++)
         {
-
             if (value[index] == '(')
             {
-
                 depth++;
-
             }
             else if (value[index] == ')')
             {
-
                 depth--;
 
                 if (depth == 0)
                 {
-
                     return index;
-
                 }
-
             }
-
         }
 
         throw new InvalidOperationException(
             $"Schema object '{definition.ResourcePath}.sql' has an unbalanced index column list.");
-
     }
 
     private static string ReadIdentifier(string value, ref int cursor, GrimoireSchemaObject definition)
     {
-
         while (cursor < value.Length && value[cursor] == ' ')
         {
-
             cursor++;
-
         }
 
         if (cursor >= value.Length)
         {
-
             throw new InvalidOperationException(
                 $"Schema object '{definition.ResourcePath}.sql' ends before an expected identifier.");
-
         }
 
         if (value[cursor] == '"')
         {
-
             int end = value.IndexOf('"', cursor + 1);
 
             if (end < 0)
             {
-
                 throw new InvalidOperationException(
                     $"Schema object '{definition.ResourcePath}.sql' has an unterminated quoted identifier.");
-
             }
 
             string quoted = value[(cursor + 1)..end];
@@ -594,7 +494,6 @@ internal static class GrimoireSchemaManifestBuilder
             cursor = end + 1;
 
             return quoted;
-
         }
 
         int start = cursor;
@@ -602,21 +501,16 @@ internal static class GrimoireSchemaManifestBuilder
         while (cursor < value.Length
             && (char.IsLetterOrDigit(value[cursor]) || value[cursor] == '_'))
         {
-
             cursor++;
-
         }
 
         if (cursor == start)
         {
-
             throw new InvalidOperationException(
                 $"Schema object '{definition.ResourcePath}.sql' has an unparseable identifier.");
-
         }
 
         return value[start..cursor];
-
     }
 
     private static string Unquote(string value) =>
@@ -626,59 +520,44 @@ internal static class GrimoireSchemaManifestBuilder
 
     private static bool StartsWithKeywords(string value, params string[] keywords)
     {
-
         int cursor = 0;
 
         foreach (string keyword in keywords)
         {
-
             while (cursor < value.Length && value[cursor] == ' ')
             {
-
                 cursor++;
-
             }
 
             if (cursor + keyword.Length > value.Length
                 || !value.AsSpan(cursor, keyword.Length).Equals(keyword, StringComparison.OrdinalIgnoreCase))
             {
-
                 return false;
-
             }
 
             cursor += keyword.Length;
-
         }
 
         return true;
-
     }
 
     private static int SkipKeywords(string value, int cursor, params string[] keywords)
     {
-
         foreach (string keyword in keywords)
         {
-
             while (cursor < value.Length && value[cursor] == ' ')
             {
-
                 cursor++;
-
             }
 
             cursor += keyword.Length;
-
         }
 
         return cursor;
-
     }
 
     private static bool EndsWithKeyword(string value, string keyword) =>
         value.Length > keyword.Length
         && value[^(keyword.Length + 1)] == ' '
         && value.AsSpan(value.Length - keyword.Length).Equals(keyword, StringComparison.OrdinalIgnoreCase);
-
 }

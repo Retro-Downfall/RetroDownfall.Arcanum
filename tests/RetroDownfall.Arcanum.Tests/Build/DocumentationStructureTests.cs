@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 public sealed class DocumentationStructureTests
 {
     [Theory]
-    [InlineData("docs/Arcanum.DESIGN.md", "**Complete hosted-producer inventory (23 services).**")]
+    [InlineData("docs/Arcanum.DESIGN.md", "**Authored hosted-producer inventory (24 services).**")]
     [InlineData("docs/Arcanum.DESIGN.md", "one effect group per existing 64-line accounting page")]
     [InlineData("docs/Arcanum.DESIGN.md", "the actual shared global-initialization task")]
     [InlineData("docs/Arcanum.Engineering.md", "The hosted Grimoire producer inventory is a bidirectional source contract")]
@@ -32,6 +32,52 @@ public sealed class DocumentationStructureTests
         string document = File.ReadAllText(Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
 
         Assert.Contains(anchor, document, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The release-qualification checklist in the Engineering guide is the set of artifacts the CI workflow uploads, in both directions: an
+    /// artifact that stops being produced fails here instead of vanishing from a release's evidence, and one the workflow starts uploading has
+    /// to be written down before it counts.
+    /// </summary>
+    [Fact]
+    public void The_release_evidence_list_is_exactly_the_set_of_artifacts_ci_uploads()
+    {
+        string root = NativeSqlCipherTestPaths.RepositoryRoot();
+
+        string workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string[] uploaded =
+        [
+            .. UploadedArtifact
+                .Matches(workflow)
+                .Select(static match => match.Groups["name"].Value.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        string engineering = string.Join('\n', ReadDocumentLines("Arcanum.Engineering.md"));
+
+        string section = DocumentSection(
+            engineering,
+            "### Release-qualification evidence",
+            "\n---\n");
+
+        int open = section.IndexOf("```text\n", StringComparison.Ordinal);
+
+        int close = section.IndexOf("\n```", open + 1, StringComparison.Ordinal);
+
+        Assert.True(open >= 0 && close > open, "The release-qualification evidence has no fenced artifact list.");
+
+        string[] documented =
+        [
+            .. section[(open + "```text\n".Length)..close]
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.True(uploaded.Length >= 9, "The CI workflow's upload steps were not read.");
+
+        Assert.Equal(uploaded, documented);
     }
 
     [Fact]
@@ -589,6 +635,10 @@ public sealed class DocumentationStructureTests
                 .Replace(RouteCatchAll.Replace(pattern, "{${name}}"), "{${name}}")
                 .TrimEnd('/');
     }
+
+    private static readonly Regex UploadedArtifact = new(
+        @"uses: actions/upload-artifact@[^\n]*\n\s+with:\n\s+name: (?<name>[^\n]+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static readonly Regex DocumentedRouteRow = new(
         @"^\|\s*(?<method>GET|POST|PUT|DELETE|PATCH|HEAD)\s*\|\s*`(?<path>/[^`]*)`\s*\|",

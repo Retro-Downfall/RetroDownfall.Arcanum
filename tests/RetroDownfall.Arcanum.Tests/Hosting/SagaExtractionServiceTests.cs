@@ -5957,6 +5957,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         public long CurrentGeneration => inner.CurrentGeneration;
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public bool TryAcquireRequestLease(
             GrimoireRequestKind kind,
             out IGrimoireRequestLease? lease) =>
@@ -6056,6 +6058,8 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
         public long Generation => inner.Generation;
 
         public CancellationToken MaintenanceRevocation => inner.MaintenanceRevocation;
+
+        public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup)

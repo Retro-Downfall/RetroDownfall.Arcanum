@@ -60,7 +60,6 @@ public sealed class McpConnectionManagerRegistrationTests : IAsyncLifetime
             pacer,
             new FakeEventBus(),
             new UntrustedWorkspaceStore(),
-            new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLoggerFactory.Instance);
 

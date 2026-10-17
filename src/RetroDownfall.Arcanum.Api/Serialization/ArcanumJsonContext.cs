@@ -427,6 +427,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(LongRestTarget))]
 [JsonSerializable(typeof(LongRestTarget[]))]
 [JsonSerializable(typeof(LongRestRequest))]
+[JsonSerializable(typeof(LongRestSweepRequest))]
+[JsonSerializable(typeof(LongRestSweepScopeKind))]
 [JsonSerializable(typeof(LongRestReceiptTarget))]
 [JsonSerializable(typeof(LongRestReceiptTarget[]))]
 [JsonSerializable(typeof(LongRestReceipt))]

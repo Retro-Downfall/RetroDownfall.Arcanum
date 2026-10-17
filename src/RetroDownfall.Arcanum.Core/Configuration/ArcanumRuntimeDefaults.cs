@@ -289,7 +289,10 @@ public static class ArcanumRuntimeSettings
             || features.AttachmentRetrieval
             || sagaEnabled
             || features.Tapestry
-            || features.SemanticSpellRouting;
+            || features.SemanticSpellRouting
+            || (features.LongRest
+                && !string.IsNullOrWhiteSpace(integration.Provider)
+                && !string.IsNullOrWhiteSpace(integration.Model));
 
         return defaults with
         {

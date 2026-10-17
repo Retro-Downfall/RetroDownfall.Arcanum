@@ -321,6 +321,48 @@ public sealed class CovenantArchitectureBoundaryTests
         Assert.True(
             missingEffectSites.Count == 0,
             "Required recovery effect sites were not discovered:\n" + string.Join("\n", missingEffectSites));
+
+        // The Pure Park Handler is a recovery root like the others, and its root has no site of any kind: recovery parks a Long Rest
+        // sweep and reaches no provider, store, file or database. Its absence from the contracts is therefore a fact about the
+        // discovery, not an omission.
+        const string parkHandler = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler";
+
+        Assert.Contains(parkHandler, recoveryRootNames);
+
+        Assert.DoesNotContain(discovery.Items, static site => site.RootType == parkHandler);
+
+        // Zero sites is what a refused or cut-short traversal yields too, so the root must also have traversed cleanly: it is analysed
+        // (it has states), and nothing the traversal reported names it, whatever the code (a state limit, an unresolved root, a refusal).
+        HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(discovery.AnalysisMetrics);
+
+        Assert.Contains(metrics.RootTraversals, metric => metric.RootType == parkHandler && metric.AnalyzedStates > 0);
+
+        Assert.DoesNotContain(discovery.Diagnostics, diagnostic =>
+            diagnostic.Identity.Contains(parkHandler, StringComparison.Ordinal) || diagnostic.Detail.Contains(parkHandler, StringComparison.Ordinal));
+    }
+
+    // Recovery never runs a Long Rest sweep. The Pure Park Handler only parks, so it has no required source effect and no row here;
+    // a Long Rest row would promise a provider call from a handler that cannot reach one.
+    [Fact]
+    public void The_long_rest_recovery_handler_has_no_recovery_effect_contract()
+    {
+        const string handler = "RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepRecoveryHandler";
+
+        RecoveryEffectContract[] contracts = RecoveryEffectContracts();
+
+        Assert.DoesNotContain(contracts, static contract => contract.Kind == LongRunningOperationKinds.LongRestSweep);
+
+        Assert.DoesNotContain(contracts, static contract => contract.HandlerType.Contains("LongRest", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(contracts, static contract => contract.RequiredCallees.Any(static callee => callee.Contains("LongRest", StringComparison.Ordinal)));
+
+        // The handler is a real recovery handler that nothing excuses by omission: it is registered, so the exact-classification
+        // test below is what states that both of its checkpoint versions are DB-only.
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(
+            Assert.Single(HostedGrimoireProducerInventory.ProductionCompilations, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure")
+                .GetTypeByMetadataName(handler));
+
+        Assert.Contains(type.AllInterfaces, static contract => MetadataName(contract) == "RetroDownfall.Arcanum.Core.Operations.ILongRunningOperationRecoveryHandler");
     }
 
     [Fact]
@@ -351,6 +393,16 @@ public sealed class CovenantArchitectureBoundaryTests
                     LongRunningRecoveryAdmissionKind.OwnerBoundAwaitingExactOwner,
                     decision.Kind);
             }
+        }
+
+        // The Long Rest handler only parks, so recovery never reaches a provider and both checkpoint versions are DB-only.
+        foreach (int checkpointVersion in new[] { 0, 1 })
+        {
+            Assert.Equal(
+                LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
+                LongRunningOperationRecoveryAdmission.Classify(
+                    RecoveryOperation(LongRunningOperationKinds.LongRestSweep, checkpointVersion),
+                    ownerEvidence: null).Kind);
         }
 
         Assert.Equal(
@@ -951,17 +1003,20 @@ public sealed class CovenantArchitectureBoundaryTests
 
         services.AddArcanumCliClientStack();
 
-        Assert.DoesNotContain(
-            services,
-            static descriptor => descriptor.ServiceType == typeof(CovenantResetCheckpointInitiator));
+        // The reset-only protected erasure a stopped-host global reset runs in its own process needs the
+        // checkpoint initiator and the effect digests, so the command line composes them, once each. What
+        // it still never composes is the general retention service or a registration of one.
+        AssertSingleRegistration<CovenantResetCheckpointInitiator>(services, ServiceLifetime.Scoped);
 
-        Assert.DoesNotContain(
-            services,
-            static descriptor => descriptor.ServiceType == typeof(ICovenantErasureEffectDigestCalculator));
+        AssertSingleRegistration<ICovenantErasureEffectDigestCalculator>(services, ServiceLifetime.Singleton);
 
         Assert.DoesNotContain(
             services,
             static descriptor => descriptor.ServiceType == typeof(DataRetentionService));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(IDataRetentionService));
 
         await AssertCompleteCovenantGraphAsync(services, isHost: false);
     }
@@ -1068,6 +1123,24 @@ public sealed class CovenantArchitectureBoundaryTests
         builder.Services.AddSingleton<IModelTokenEstimator>(static _ => null!);
 
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
+
+        // Inference is outside this fixture; fail explicitly if Long Rest provider work is reached.
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>();
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
+
+        // This Infrastructure-only container supplies the API-owned configuration boundary,
+        // just as it supplies the inference ports above. Use the actual process epoch.
+        builder.Services.AddSingleton(sp => new RetroDownfall.Arcanum.Api.Intelligence.LongRestConfigurationEpoch(
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>>(),
+            sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
+
+        builder.Services.AddSingleton<RetroDownfall.Arcanum.Core.LongRest.ILongRestConfigurationProvider>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestConfigurationEpoch>());
 
         AssertSingleRegistration<CovenantResetCheckpointInitiator>(
             builder.Services,
@@ -1389,9 +1462,14 @@ public sealed class CovenantArchitectureBoundaryTests
         }
         else
         {
-            Assert.Null(firstScope.ServiceProvider.GetService<CovenantResetCheckpointInitiator>());
+            // The reset-only protected erasure of a stopped-host global reset runs in this process, so the
+            // command line resolves the checkpoint initiator and the effect digests it is built from. It
+            // resolves neither a general retention service nor the generic recovery discovery (above).
+            Assert.NotNull(firstScope.ServiceProvider.GetService<CovenantResetCheckpointInitiator>());
 
-            Assert.Null(provider.GetService<ICovenantErasureEffectDigestCalculator>());
+            Assert.NotNull(provider.GetService<ICovenantErasureEffectDigestCalculator>());
+
+            Assert.Null(firstScope.ServiceProvider.GetService<IDataRetentionService>());
         }
     }
 

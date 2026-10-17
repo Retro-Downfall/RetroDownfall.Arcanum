@@ -10,7 +10,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 internal sealed partial class SagaLongRestService
 {
     private async Task WriteReceiptAsync(DbConnection connection, DbTransaction transaction,
-        LongRestRequest request, LongRestReceipt receipt, LongRestSnapshot[] snapshots, CancellationToken cancellationToken)
+        LongRestRequest request, LongRestReceipt receipt, LongRestSnapshot[] snapshots, CancellationToken cancellationToken, LongRestProtectedApplicationContext? context = null)
     {
         await ExecuteAsync(connection, transaction,
             """
@@ -41,6 +41,11 @@ internal sealed partial class SagaLongRestService
                 ("@receipt", receipt.ReceiptId), ("@ordinal", ordinal + 1), ("@memory", target.MemoryId),
                 ("@version", target.VersionId), ("@format", (int)target.ContentHashFormat),
                 ("@hash", Convert.FromHexString(target.ContentHash)), ("@snapshot", receipt.InputHash), ("@json", json)).ConfigureAwait(false);
+        }
+
+        if (context is not null)
+        {
+            await WriteProtectedEvidenceAsync(connection, transaction, receipt, context, cancellationToken).ConfigureAwait(false);
         }
 
         foreach (string source in receipt.SupersededVersionIds)
@@ -85,7 +90,7 @@ internal sealed partial class SagaLongRestService
         command.CommandText = $"""
             SELECT r.ReceiptId
             FROM long_rest_receipts r
-            WHERE r.OutcomeCode = 1 AND r.KindCode = @kind
+            WHERE r.PolicyVersion = 1 AND r.OutcomeCode = 1 AND r.KindCode = @kind
               AND r.RequestedSurvivorVersionId IS @survivor
               AND (SELECT COUNT(*) FROM long_rest_receipt_inputs i WHERE i.ReceiptId = r.ReceiptId) = @count
               AND (SELECT COUNT(*) FROM long_rest_receipt_inputs i WHERE i.ReceiptId = r.ReceiptId
@@ -262,9 +267,16 @@ internal sealed partial class SagaLongRestService
             }
         }
 
-        Result<LongRestReceipt> replayed = LongRestPolicy.Evaluate(new LongRestRequest(kind, targets.ToArray(), requestedSurvivor), snapshots);
+        LongRestRequest request = new(kind, targets.ToArray(), requestedSurvivor);
 
-        if (replayed.IsFailure || policy != LongRestPolicy.PolicyVersion || replayed.Value.ReceiptId != receiptId
+        Result<LongRestReceipt> replayed = policy switch
+        {
+            LongRestPolicy.PolicyVersion => LongRestPolicy.Evaluate(request, snapshots),
+            ProtectedLongRestPolicy.PolicyVersion => await ReplayProtectedAsync(connection, transaction, receiptId, inputHash, request, snapshots, cancellationToken).ConfigureAwait(false),
+            _ => InvalidReceipt(),
+        };
+
+        if (replayed.IsFailure || replayed.Value.PolicyVersion != policy || replayed.Value.ReceiptId != receiptId
             || replayed.Value.InputHash != inputHash || replayed.Value.OutputHash != outputHash
             || replayed.Value.Outcome != outcome || replayed.Value.Reason != reason
             || replayed.Value.SurvivorMemoryId != survivorMemory || replayed.Value.SurvivorVersionId != survivorVersion)

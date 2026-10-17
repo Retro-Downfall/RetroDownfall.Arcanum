@@ -114,6 +114,9 @@ public sealed record FeatureSettings
     /// </summary>
     public bool CampaignRollups { get; set; }
 
+    /// <summary>Permits bounded, billed Saga consolidation maintenance. Defaults off.</summary>
+    public bool LongRest { get; set; }
+
     /// <summary>
     /// Whether durable memory records what it claimed, when that was true, and when Arcanum came to hold
     /// it. Default <c>true</c>: omitted configuration records ordinary Saga extraction and Lexicon

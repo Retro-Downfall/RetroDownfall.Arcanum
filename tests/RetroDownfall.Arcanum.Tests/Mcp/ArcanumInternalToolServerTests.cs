@@ -42,10 +42,22 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 {
     private const string SentinelToken = "ARCANUM_TEST_SENTINEL";
 
+    /// <summary>
+    /// How long a test waits for the server's response to a call that has to start a child process, and for the
+    /// teardown of one it cancelled. On Windows the child is PowerShell, whose start-up has taken more than ten
+    /// seconds on a loaded runner, so this is only a guard against a hang: a passing run returns as soon as the
+    /// response arrives and never comes near it.
+    /// </summary>
+    private static readonly TimeSpan ChildCallResponseLimit = TimeSpan.FromSeconds(60);
+
     private TempWorkspace _workspace = null!;
 
     public async Task InitializeAsync()
     {
+        // Runs Windows PowerShell once, outside every test's deadline, for the tests whose child is a PowerShell
+        // command (see the Resolve*Command helpers). A no-op on every other host.
+        await WindowsPowerShellWarmUp.EnsureAsync();
+
         _workspace = new TempWorkspace();
 
         await _workspace.InitializeAsync();
@@ -2196,7 +2208,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
 
         await session.SendCancelNotificationAsync(requestId);
 
-        JsonRpcResponse response = await responseTask.WaitAsync(TimeSpan.FromSeconds(10));
+        JsonRpcResponse response = await responseTask.WaitAsync(ChildCallResponseLimit);
 
         Assert.Null(response.Error);
 
@@ -2322,8 +2334,9 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         // Reuses the exact same request id for a brand new, unrelated call.
         await session.WriteRequestWithFixedIdAsync(reusedId, "tools/call", secondCallParams);
 
+        // The reused id's call runs a command to completion, and on Windows that command is a PowerShell start.
         JsonRpcResponse secondResponse = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(ChildCallResponseLimit);
 
         Assert.Null(secondResponse.Error);
 
@@ -2379,7 +2392,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.SendCancelNotificationAsync(sharedId);
 
         JsonRpcResponse first = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(ChildCallResponseLimit);
 
         Assert.Null(first.Error);
 
@@ -2491,7 +2504,7 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         await session.SendCancelNotificationAsync(sharedId);
 
         _ = await session.ReadNextResponseAsync()
-            .WaitAsync(TimeSpan.FromSeconds(10));
+            .WaitAsync(ChildCallResponseLimit);
     }
 
     [Fact]

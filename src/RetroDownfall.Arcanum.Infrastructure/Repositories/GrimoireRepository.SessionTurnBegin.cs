@@ -273,9 +273,7 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
             bool exists = await SessionExistsCoreAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
             return exists
-                ? new Error(
-                    ErrorCodes.Covenant.IntegrityFailure,
-                    "This Session has no immutable Campaign binding.")
+                ? SessionCampaignBindingErrors.NoBinding
                 : new Error(ErrorCodes.Session.NotFound, "Session not found.");
         }
 

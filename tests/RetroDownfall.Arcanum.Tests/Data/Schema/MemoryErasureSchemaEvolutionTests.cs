@@ -165,21 +165,68 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
 
+        await ExecuteAsync(connection, "INSERT INTO lexicon_fts(lexicon_fts, rank) VALUES('automerge', 0);");
+
+        await using (ArcanumDbContext db = SagaMemoryMidUpgradeWriteTests.CreateContext(file))
+        {
+            LexiconService service = LexiconMidUpgradeCompatibilityTests.CreateService(db);
+
+            for (int segment = 0; segment < 3; segment++)
+            {
+                var upserted = await service.UpsertAsync($"Install segment {segment}", "Concept",
+                    [$"distinct searchable installation fact {segment}"], LexiconScope.Global);
+
+                Assert.True(upserted.IsSuccess, upserted.Error.Message);
+            }
+        }
+
+        Assert.True((long)(await ScalarAsync(connection, "SELECT count(DISTINCT segid) FROM lexicon_fts_idx;"))! > 1);
+
         await ExecuteAsync(connection, "INSERT INTO lexicon_fts(lexicon_fts, rank) VALUES('secure-delete', 0);");
 
         Assert.Equal(0L, await ScalarAsync(connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
+
+        string[] beforeInstall = await LexiconShadowRowsAsync(connection);
 
         await InstallAsync(connection, GrimoireSchemaVersionChains.Default, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(1L, await ScalarAsync(connection, "SELECT v FROM lexicon_fts_config WHERE k = 'secure-delete';"));
 
-        // The one-time merge belongs to the version-13 step alone; converging it on every install would
-        // rewrite the whole index each time the Grimoire opens.
-        string initializer = await File.ReadAllTextAsync(Path.Combine(
-            TestRepositoryPaths.RepositoryRoot(),
-            "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/CoreGrimoireSchemaDataInitializer.cs"));
+        string[] afterInstall = await LexiconShadowRowsAsync(connection);
 
-        Assert.DoesNotContain("optimize", initializer, StringComparison.Ordinal);
+        Assert.Equal(beforeInstall, afterInstall);
+
+        // Prove that these segments would expose an unwanted merge on ordinary installation.
+        await ExecuteAsync(connection, "INSERT INTO lexicon_fts(lexicon_fts) VALUES('optimize');");
+
+        string[] afterOptimize = await LexiconShadowRowsAsync(connection);
+
+        Assert.False(beforeInstall.SequenceEqual(afterOptimize, StringComparer.Ordinal));
+    }
+
+    private static async Task<string[]> LexiconShadowRowsAsync(SqliteConnection connection)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        // FTS5 setting convergence advances the four-byte structure cookie. Compare every
+        // structural field after it, all segment blocks and the exact segment directory.
+        command.CommandText = """
+            SELECT 'data:' || id || ':' || hex(CASE WHEN id = 10 THEN substr(block, 5) ELSE block END) AS row FROM lexicon_fts_data
+            UNION ALL
+            SELECT 'idx:' || segid || ':' || hex(term) || ':' || pgno AS row FROM lexicon_fts_idx
+            ORDER BY row;
+            """;
+
+        List<string> rows = [];
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            rows.Add(reader.GetString(0));
+        }
+
+        return rows.ToArray();
     }
 
     private static async Task InstallAsync(SqliteConnection connection, GrimoireSchemaVersionChainSet chains, int version)
@@ -191,7 +238,10 @@ public sealed class MemoryErasureSchemaEvolutionTests
         GrimoireSchemaInstallResult result = await installer.InstallAsync(
             connection, 1536, context, CancellationToken.None);
 
-        if (result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete)
+        GrimoireSchemaVersionChain core = chains.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        for (int step = 0; result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete
+            && step < core.Steps.Count; step++)
         {
             GrimoireSchemaTransitionJournalRow journal = Assert.IsType<GrimoireSchemaTransitionJournalRow>(
                 await GrimoireSchemaTransitionJournal.ReadAsync(
@@ -201,7 +251,7 @@ public sealed class MemoryErasureSchemaEvolutionTests
 
             _ = await runner.AdvanceAsync(
                 connection,
-                chains.ForTier(GrimoireSchemaTransactionTier.Core),
+                core,
                 journal,
                 context,
                 maxBatches: 128,

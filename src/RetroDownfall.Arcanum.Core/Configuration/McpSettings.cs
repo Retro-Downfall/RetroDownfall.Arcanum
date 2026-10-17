@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record McpSettings
 {
-
     public int InitializationTimeoutSeconds { get; set; } = 60;
 
     public bool BootstrapBlocksStartup { get; set; } = true;
@@ -16,7 +15,9 @@ public sealed record McpSettings
     public int MaxJsonRpcLineBytes { get; set; } = 2_228_224;
 
     /// <summary>
-    /// Connection timeout (seconds) for the named <c>HttpClient("McpHttp")</c>. Established MCP
+    /// Connection timeout (seconds) for the Streamable HTTP client the MCP connection manager owns. It is a
+    /// code-owned default, not an <c>arcanum.json</c> key, and is clamped to 1-300 seconds. The manager reads
+    /// it once when it is constructed, so a different value takes effect on host restart. Established MCP
     /// requests have no Arcanum-owned total invocation deadline.
     /// </summary>
     public int HttpConnectTimeoutSeconds { get; set; } = 30;
@@ -28,5 +29,4 @@ public sealed record McpSettings
     /// <c>OutboundUrlGuard</c>) still applies regardless of this list.
     /// </summary>
     public string[] AllowedHttpHosts { get; set; } = [];
-
 }

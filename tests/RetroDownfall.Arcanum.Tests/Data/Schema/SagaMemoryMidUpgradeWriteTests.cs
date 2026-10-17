@@ -60,7 +60,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 [Trait("Category", "Integration")]
 public sealed class SagaMemoryMidUpgradeWriteTests
 {
-
     /// <summary>The floor <c>ArcanumSettingClamps.EmbeddingsDimensions</c> raises anything smaller to.</summary>
     private const int TestDimensions = 64;
 
@@ -217,7 +216,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     [Fact]
     public async Task A_memory_written_before_the_sweep_drains_succeeds_and_records_the_canonical_campaign()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -288,7 +286,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 "saga_memories",
                 "CampaignId",
                 CancellationToken.None));
-
     }
 
     /// <summary>
@@ -379,7 +376,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     [Fact]
     public async Task A_reinstate_before_the_sweep_drains_releases_the_suppression_its_twin_recorded()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -437,7 +433,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
         foreach (string retiring in new[] { onTheCanonicalHalf, onTheUnsweptHalf })
         {
-
             SagaCurationOutcome retired = await store.RetireAsync(
                 retiring,
                 contentDigest,
@@ -445,7 +440,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 CancellationToken.None);
 
             Assert.Equal(SagaCurationOutcomeKind.Applied, retired.Kind);
-
         }
 
         Assert.Equal(2, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
@@ -483,7 +477,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             CancellationToken.None);
 
         Assert.Equal(SagaMemoryWriteOutcome.Written, rewritten);
-
     }
 
     /// <summary>
@@ -511,7 +504,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     [Fact]
     public async Task A_retirement_taken_before_the_sweep_drains_is_found_by_the_campaign_reset()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -588,6 +580,12 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         {
         }
 
+        Assert.Equal(
+            GrimoireSchemaVersionChains.CoreSchemaVersion,
+            await GrimoireCoreSchemaVersion.ReadAsync(connection, CancellationToken.None));
+
+        Assert.Empty(await GrimoireSchemaTransitionJournal.ReadAllAsync(connection, CancellationToken.None));
+
         Assert.Equal(1, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
 
         string root = Path.Combine(
@@ -596,8 +594,28 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
         try
         {
-
             _ = Directory.CreateDirectory(root);
+
+            // This context omits the production connection interceptor. Initialize the exact
+            // reset connection after the historical retirement/backfill window, with no authority grant.
+            SqliteConnection resetConnection = (SqliteConnection)db.Database.GetDbConnection();
+
+            if (resetConnection.State != System.Data.ConnectionState.Open)
+            {
+                await db.Database.OpenConnectionAsync(CancellationToken.None);
+            }
+
+            await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
+                resetConnection, CovenantSqliteConnectionMode.ReadWrite, CancellationToken.None);
+
+            await using (SqliteCommand guard = resetConnection.CreateCommand())
+            {
+                guard.CommandText = "SELECT arcanum_artifact_replacement_authorized();";
+
+                Assert.Equal(0L, await guard.ExecuteScalarAsync(CancellationToken.None));
+            }
+
+            TestCapturingLogger<DataRetentionService> retentionLog = new();
 
             DataRetentionService retention = new(
                 db,
@@ -606,7 +624,7 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                     db,
                     TestOrdinaryConnectionFactory.For(db)),
                 TimeProvider.System,
-                NullLogger<DataRetentionService>.Instance,
+                retentionLog,
                 FixtureLabeledArtifactGuard.For(db),
                 root,
                 root,
@@ -623,25 +641,27 @@ public sealed class SagaMemoryMidUpgradeWriteTests
                 new DataRetentionApplyRequest(request, plan.PlanId),
                 CancellationToken.None);
 
-            Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+            Assert.True(
+                applied.IsSuccess,
+                applied.IsFailure
+                    ? applied.Error.Code + ": " + string.Join("; ", retentionLog.Entries.Select(static entry =>
+                        entry.Exception is SqliteException sql
+                            ? "SQLite " + sql.SqliteErrorCode + "/" + sql.SqliteExtendedErrorCode + ": " + sql.Message
+                            : entry.Exception?.GetType().Name ?? entry.Message))
+                    : string.Empty);
 
             Assert.True(applied.Value.Reconciled);
-
         }
         finally
         {
-
             Directory.Delete(root, recursive: true);
-
         }
 
         Assert.Equal(0, await CountAsync(connection, "SELECT COUNT(*) FROM saga_retirement_suppressions;"));
-
     }
 
     internal static async Task<string> WriteAsync(SagaMemoryStore store, Guid sessionId, string content)
     {
-
         string id = Guid.NewGuid().ToString();
 
         SagaMemoryWriteOutcome outcome = await store.InsertAsync(
@@ -657,7 +677,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
 
         return id;
-
     }
 
     internal static SagaMemoryStore CreateStore(ArcanumDbContext db, IMemoryErasureKeyProvider? erasureKeys = null) =>
@@ -676,7 +695,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
 
     private static async Task<int> CountAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -684,7 +702,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>
@@ -694,7 +711,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     /// </summary>
     private static async Task SeedBoundSessionAsync(SqliteConnection connection)
     {
-
         await ExecuteAsync(
             connection,
             """
@@ -751,7 +767,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             ("$session", Canonical(CanonicalSessionIdentity)),
             ("$campaign", Canonical(CampaignIdentity)),
             ("$now", Timestamp));
-
     }
 
     /// <summary>
@@ -760,7 +775,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     /// </summary>
     internal static ArcanumDbContext CreateContext(EvolutionScratchDatabase file)
     {
-
         DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
             .UseSqlite(file.ConnectionString)
             .UseModel(RetroDownfall.Arcanum.Infrastructure.Generated.ArcanumDbContextModel.Instance)
@@ -770,12 +784,10 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             options,
             new MidUpgradeSecretStore(),
             new MidUpgradePassphraseSource());
-
     }
 
     private static async Task<string?> ScalarStringAsync(SqliteConnection connection, string sql)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
@@ -783,7 +795,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return value is DBNull or null ? null : (string)value;
-
     }
 
     private static async Task ExecuteAsync(
@@ -791,20 +802,16 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         string sql,
         params (string Name, object? Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object? value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value ?? DBNull.Value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     /// <summary>
@@ -825,7 +832,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     [Fact]
     public async Task The_sweep_settles_a_suppression_recorded_before_the_campaign_spelling_did()
     {
-
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
@@ -898,19 +904,16 @@ public sealed class SagaMemoryMidUpgradeWriteTests
             await CountAsync(
                 connection,
                 "SELECT COUNT(*) FROM saga_retirement_suppressions WHERE SuppressionDigest = zeroblob(32);"));
-
     }
 
     /// <summary>Hands the coordinator the one open scratch connection this case drives everything on.</summary>
     private sealed class MidUpgradeConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
             ValueTask.FromResult(connection);
-
     }
 
     private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
@@ -921,7 +924,6 @@ public sealed class SagaMemoryMidUpgradeWriteTests
     /// </summary>
     private sealed class MidUpgradePassphraseSource : IGrimoireDbPassphraseSource
     {
-
         public string Passphrase =>
             throw new InvalidOperationException(
                 "The evolution scratch database is unencrypted; nothing should ask it for a passphrase.");
@@ -929,12 +931,10 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         public void SetPassphrase(string passphrase) =>
             throw new InvalidOperationException(
                 "The evolution scratch database is unencrypted; nothing should key it.");
-
     }
 
     private sealed class MidUpgradeSecretStore : ISecretStore
     {
-
         public Task<string?> GetApiKeyAsync() => Task.FromResult<string?>(null);
 
         public Task<SecretStoreReadResult> GetApiKeyReadResultAsync() =>
@@ -945,7 +945,5 @@ public sealed class SagaMemoryMidUpgradeWriteTests
         public Task<string?> GetGrimoireEncryptionSecretAsync() => Task.FromResult<string?>(null);
 
         public Task SaveGrimoireEncryptionSecretAsync(string encryptionSecret) => Task.CompletedTask;
-
     }
-
 }

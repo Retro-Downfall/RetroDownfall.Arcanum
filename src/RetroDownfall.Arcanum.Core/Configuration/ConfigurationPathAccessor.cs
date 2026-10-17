@@ -16,14 +16,15 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public static class ConfigurationPathAccessor
 {
-
     private const string RedactionMask = "***";
 
     /// <summary>
-    /// Generic collection shapes an ordered settings property may declare. <see cref="IReadOnlyList{T}"/>
-    /// belongs here because <see cref="ProviderSettings.Models"/> declares it: omitting it makes every
-    /// <c>providers.N.models.M.*</c> descriptor path unresolvable through <c>arcanum config get/set</c>
-    /// and through an <c>ARCANUM_Arcanum__…</c> override.
+    /// Generic collection shapes an ordered settings property may declare, besides an array.
+    /// <see cref="IReadOnlyList{T}"/> belongs here because <see cref="WardSettings.ForbiddenArts"/>
+    /// declares it: omitting it makes that property's indexed descriptor paths unresolvable through
+    /// <c>arcanum config get/set</c> and through an <c>ARCANUM_Arcanum__…</c> override.
+    /// <see cref="ProviderSettings.Models"/> is an array, so its <c>providers.N.models.M.*</c> paths
+    /// resolve through the array branch of <c>TryGetElementType</c>.
     /// </summary>
     private static readonly Type[] IndexedCollectionDefinitions =
     [
@@ -41,27 +42,22 @@ public static class ConfigurationPathAccessor
     private static readonly Dictionary<Type, (string Name, Type Type)[]> ConverterBackedProperties =
         new()
         {
-
             [typeof(ModelEntry)] =
             [
                 ("name", typeof(string)),
                 ("supportsVision", typeof(bool)),
                 ("reasoning", typeof(ModelReasoningSettings)),
             ],
-
         };
 
     private static readonly JsonSerializerOptions CanonicalJsonOptions =
         new(ConfigurationJsonContext.Default.Options)
         {
-
             WriteIndented = false,
-
         };
 
     public static ArcanumSettings Clone(ArcanumSettings settings)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         JsonNode root = JsonSerializer.SerializeToNode(
@@ -71,7 +67,6 @@ public static class ConfigurationPathAccessor
 
         return root.Deserialize(ConfigurationJsonContext.Default.ArcanumSettings)
             ?? throw new InvalidOperationException("The cloned configuration snapshot was empty.");
-
     }
 
     public static ConfigurationPathUpdate Set(
@@ -79,7 +74,6 @@ public static class ConfigurationPathAccessor
         string key,
         string rawValue)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         JsonNode root = JsonSerializer.SerializeToNode(
@@ -91,9 +85,7 @@ public static class ConfigurationPathAccessor
 
         if (!resolution.IsSuccess)
         {
-
             return ConfigurationPathUpdate.Failure(settings, resolution.Error!);
-
         }
 
         if (!TryParseValue(
@@ -102,38 +94,30 @@ public static class ConfigurationPathAccessor
                 out JsonNode? parsed,
                 out string? parseError))
         {
-
             return ConfigurationPathUpdate.Failure(settings, parseError!);
-
         }
 
         resolution.Assign(parsed);
 
         try
         {
-
             ArcanumSettings? updated = root.Deserialize(
                 ConfigurationJsonContext.Default.ArcanumSettings);
 
             return updated is null
                 ? ConfigurationPathUpdate.Failure(settings, "The updated configuration snapshot was empty.")
                 : ConfigurationPathUpdate.Success(updated);
-
         }
         catch (JsonException exception)
         {
-
             return ConfigurationPathUpdate.Failure(
                 settings,
                 $"Value for '{key}' is not valid for the generated configuration descriptor: {exception.Message}");
-
         }
-
     }
 
     public static string GetDisplayValue(ArcanumSettings settings, string key)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         JsonNode root = JsonSerializer.SerializeToNode(
@@ -145,55 +129,41 @@ public static class ConfigurationPathAccessor
 
         if (!resolution.IsSuccess)
         {
-
             throw new ArgumentException(resolution.Error, nameof(key));
-
         }
 
         JsonNode? value = resolution.Read();
 
         if (IsSensitive(key))
         {
-
             string? sensitive = value?.GetValue<string>();
 
             return string.IsNullOrEmpty(sensitive) ? string.Empty : RedactionMask;
-
         }
 
         if (value is null)
         {
-
             return "null";
-
         }
 
         if (value is JsonValue scalar)
         {
-
             if (scalar.TryGetValue(out string? text))
             {
-
                 return text ?? "null";
-
             }
 
             if (scalar.TryGetValue(out bool boolean))
             {
-
                 return boolean ? "true" : "false";
-
             }
-
         }
 
         return value.ToJsonString(ConfigurationJsonContext.Default.Options);
-
     }
 
     public static string GetCanonicalValue(ArcanumSettings settings, string key)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         JsonNode root = JsonSerializer.SerializeToNode(
@@ -205,15 +175,12 @@ public static class ConfigurationPathAccessor
 
         if (!resolution.IsSuccess)
         {
-
             throw new ArgumentException(resolution.Error, nameof(key));
-
         }
 
         JsonNode? value = resolution.Read();
 
         return value?.ToJsonString(CanonicalJsonOptions) ?? "null";
-
     }
 
     public static ConfigurationPathUpdate SetCanonicalValue(
@@ -221,7 +188,6 @@ public static class ConfigurationPathAccessor
         string key,
         string canonicalJson)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         ArgumentNullException.ThrowIfNull(canonicalJson);
@@ -235,33 +201,26 @@ public static class ConfigurationPathAccessor
 
         if (!resolution.IsSuccess)
         {
-
             return ConfigurationPathUpdate.Failure(settings, resolution.Error!);
-
         }
 
         JsonNode? parsed;
 
         try
         {
-
             parsed = JsonNode.Parse(canonicalJson);
-
         }
         catch (JsonException exception)
         {
-
             return ConfigurationPathUpdate.Failure(
                 settings,
                 $"Value for '{key}' is not canonical JSON: {exception.Message}");
-
         }
 
         resolution.Assign(parsed);
 
         try
         {
-
             ArcanumSettings? updated = root.Deserialize(
                 ConfigurationJsonContext.Default.ArcanumSettings);
 
@@ -270,17 +229,13 @@ public static class ConfigurationPathAccessor
                     settings,
                     "The updated configuration snapshot was empty.")
                 : ConfigurationPathUpdate.Success(updated);
-
         }
         catch (JsonException exception)
         {
-
             return ConfigurationPathUpdate.Failure(
                 settings,
                 $"Canonical value for '{key}' is not valid for the generated configuration descriptor: {exception.Message}");
-
         }
-
     }
 
     /// <summary>
@@ -293,7 +248,6 @@ public static class ConfigurationPathAccessor
         ArcanumSettings before,
         ArcanumSettings after)
     {
-
         ArgumentNullException.ThrowIfNull(before);
 
         ArgumentNullException.ThrowIfNull(after);
@@ -307,7 +261,6 @@ public static class ConfigurationPathAccessor
             differences);
 
         return differences;
-
     }
 
     private static void CollectDifferences(
@@ -316,73 +269,56 @@ public static class ConfigurationPathAccessor
         string path,
         List<ConfigurationPathDifference> differences)
     {
-
         // A newly added (or removed) object/array must still be reported leaf by leaf: reporting the
         // whole node would print a sensitive leaf such as a provider endpoint verbatim, because
         // sensitivity is decided by the leaf's own path.
         if (before is null && after is JsonObject)
         {
-
             before = new JsonObject();
-
         }
         else if (after is null && before is JsonObject)
         {
-
             after = new JsonObject();
-
         }
         else if (before is null && after is JsonArray)
         {
-
             before = new JsonArray();
-
         }
         else if (after is null && before is JsonArray)
         {
-
             after = new JsonArray();
-
         }
 
         if (before is JsonObject beforeObject && after is JsonObject afterObject)
         {
-
             foreach (string name in beforeObject
                 .Select(static property => property.Key)
                 .Concat(afterObject.Select(static property => property.Key))
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(static name => name, StringComparer.Ordinal))
             {
-
                 CollectDifferences(
                     beforeObject[name],
                     afterObject[name],
                     Combine(path, name),
                     differences);
-
             }
 
             return;
-
         }
 
         if (before is JsonArray beforeArray && after is JsonArray afterArray)
         {
-
             for (int index = 0; index < Math.Max(beforeArray.Count, afterArray.Count); index++)
             {
-
                 CollectDifferences(
                     index < beforeArray.Count ? beforeArray[index] : null,
                     index < afterArray.Count ? afterArray[index] : null,
                     Combine(path, index.ToString(CultureInfo.InvariantCulture)),
                     differences);
-
             }
 
             return;
-
         }
 
         string beforeJson = before?.ToJsonString(CanonicalJsonOptions) ?? "null";
@@ -391,9 +327,7 @@ public static class ConfigurationPathAccessor
 
         if (string.Equals(beforeJson, afterJson, StringComparison.Ordinal))
         {
-
             return;
-
         }
 
         bool sensitive = IsSensitive(path);
@@ -404,7 +338,6 @@ public static class ConfigurationPathAccessor
                 sensitive ? Mask(beforeJson) : beforeJson,
                 sensitive ? Mask(afterJson) : afterJson,
                 sensitive));
-
     }
 
     private static string Mask(string canonicalJson) =>
@@ -417,14 +350,12 @@ public static class ConfigurationPathAccessor
 
     public static bool IsSensitive(string key)
     {
-
         string[] segments = Split(key);
 
         return segments.Length == 3
             && string.Equals(segments[0], "providers", StringComparison.OrdinalIgnoreCase)
             && int.TryParse(segments[1], NumberStyles.None, CultureInfo.InvariantCulture, out _)
             && string.Equals(segments[2], "endpoint", StringComparison.OrdinalIgnoreCase);
-
     }
 
     /// <summary>
@@ -433,7 +364,6 @@ public static class ConfigurationPathAccessor
     /// </summary>
     public static string? GetPathResolutionError(ArcanumSettings settings, string key)
     {
-
         ArgumentNullException.ThrowIfNull(settings);
 
         JsonNode root = JsonSerializer.SerializeToNode(
@@ -442,37 +372,29 @@ public static class ConfigurationPathAccessor
             ?? new JsonObject();
 
         return Resolve(root, key).Error;
-
     }
 
     public static bool Exists(ArcanumSettings settings, string key)
     {
-
         return GetPathResolutionError(settings, key) is null;
-
     }
 
     private static PathResolution Resolve(JsonNode root, string key)
     {
-
         string[] segments = Split(key);
 
         if (segments.Length == 0)
         {
-
             return PathResolution.Failure("Configuration key must not be empty.");
-
         }
 
         string normalizedKey = string.Join('.', segments);
 
         if (IsRemovedWardApprovalPath(normalizedKey))
         {
-
             return PathResolution.Failure(
                 $"Configuration key '{key}' was removed. "
                 + ConfigurationValidator.ObsoleteWardApprovalConfigurationMessage);
-
         }
 
         JsonNode? node = root;
@@ -487,21 +409,17 @@ public static class ConfigurationPathAccessor
 
         for (int index = 0; index < segments.Length; index++)
         {
-
             string segment = segments[index];
 
             if (TryGetElementType(nodeType, out Type? elementType))
             {
-
                 if (node is not JsonArray array
                     || !int.TryParse(segment, NumberStyles.None, CultureInfo.InvariantCulture, out int parsedIndex)
                     || parsedIndex < 0
                     || parsedIndex >= array.Count)
                 {
-
                     return PathResolution.Failure(
                         $"Unknown configuration key '{key}': '{segment}' is not an existing collection index.");
-
                 }
 
                 parent = array;
@@ -515,7 +433,6 @@ public static class ConfigurationPathAccessor
                 nodeType = elementType!;
 
                 continue;
-
             }
 
             if (!TryGetPropertyMetadata(
@@ -525,10 +442,8 @@ public static class ConfigurationPathAccessor
                     out Type? resolvedType)
                 || node is not JsonObject jsonObject)
             {
-
                 return PathResolution.Failure(
                     $"Unknown configuration key '{key}' at segment '{segment}'.");
-
             }
 
             parent = jsonObject;
@@ -543,19 +458,15 @@ public static class ConfigurationPathAccessor
 
             if (index < segments.Length - 1 && node is null)
             {
-
                 node = TryGetElementType(nodeType, out _) ? new JsonArray() : new JsonObject();
 
                 jsonObject[resolvedName!] = node;
-
             }
-
         }
 
         return parent is null
             ? PathResolution.Failure($"Unknown configuration key '{key}'.")
             : PathResolution.Success(parent, propertyName, arrayIndex, nodeType);
-
     }
 
     /// <summary>
@@ -570,7 +481,6 @@ public static class ConfigurationPathAccessor
         out string? propertyName,
         out Type? propertyType)
     {
-
         JsonTypeInfo? typeInfo = ConfigurationJsonContext.Default.GetTypeInfo(nodeType);
 
         JsonPropertyInfo? property = typeInfo?.Properties.FirstOrDefault(
@@ -581,34 +491,26 @@ public static class ConfigurationPathAccessor
 
         if (property is not null)
         {
-
             propertyName = property.Name;
 
             propertyType = property.PropertyType;
 
             return true;
-
         }
 
         if (ConverterBackedProperties.TryGetValue(nodeType, out (string Name, Type Type)[]? declared))
         {
-
             foreach ((string name, Type type) in declared)
             {
-
                 if (string.Equals(name, segment, StringComparison.OrdinalIgnoreCase))
                 {
-
                     propertyName = name;
 
                     propertyType = type;
 
                     return true;
-
                 }
-
             }
-
         }
 
         propertyName = null;
@@ -616,54 +518,41 @@ public static class ConfigurationPathAccessor
         propertyType = null;
 
         return false;
-
     }
 
     private static JsonNode? FindPropertyValue(JsonObject jsonObject, string propertyName)
     {
-
         foreach ((string name, JsonNode? value) in jsonObject)
         {
-
             if (string.Equals(name, propertyName, StringComparison.OrdinalIgnoreCase))
             {
-
                 return value;
-
             }
-
         }
 
         return null;
-
     }
 
     private static bool TryGetElementType(Type type, out Type? elementType)
     {
-
         if (type.IsArray)
         {
-
             elementType = type.GetElementType();
 
             return elementType is not null;
-
         }
 
         if (type.IsGenericType
             && IndexedCollectionDefinitions.Contains(type.GetGenericTypeDefinition()))
         {
-
             elementType = type.GenericTypeArguments[0];
 
             return true;
-
         }
 
         elementType = null;
 
         return false;
-
     }
 
     private static bool TryParseValue(
@@ -672,35 +561,29 @@ public static class ConfigurationPathAccessor
         out JsonNode? value,
         out string? error)
     {
-
         Type targetType = Nullable.GetUnderlyingType(declaredType) ?? declaredType;
 
         string trimmed = rawValue.Trim();
 
         if (targetType == typeof(string))
         {
-
             value = JsonValue.Create(rawValue);
 
             error = null;
 
             return true;
-
         }
 
         if (targetType == typeof(bool))
         {
-
             if (bool.TryParse(trimmed, out bool parsed)
                 || TryParseBinaryBoolean(trimmed, out parsed))
             {
-
                 value = JsonValue.Create(parsed);
 
                 error = null;
 
                 return true;
-
             }
 
             value = null;
@@ -708,21 +591,17 @@ public static class ConfigurationPathAccessor
             error = "Expected a Boolean value ('true' or 'false').";
 
             return false;
-
         }
 
         if (targetType == typeof(int))
         {
-
             if (int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed))
             {
-
                 value = JsonValue.Create(parsed);
 
                 error = null;
 
                 return true;
-
             }
 
             value = null;
@@ -730,21 +609,17 @@ public static class ConfigurationPathAccessor
             error = "Expected an integer value.";
 
             return false;
-
         }
 
         if (targetType == typeof(long))
         {
-
             if (long.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed))
             {
-
                 value = JsonValue.Create(parsed);
 
                 error = null;
 
                 return true;
-
             }
 
             value = null;
@@ -752,21 +627,17 @@ public static class ConfigurationPathAccessor
             error = "Expected an integer value.";
 
             return false;
-
         }
 
         if (targetType == typeof(float))
         {
-
             if (float.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsed))
             {
-
                 value = JsonValue.Create(parsed);
 
                 error = null;
 
                 return true;
-
             }
 
             value = null;
@@ -774,21 +645,17 @@ public static class ConfigurationPathAccessor
             error = "Expected a numeric value.";
 
             return false;
-
         }
 
         if (targetType == typeof(double))
         {
-
             if (double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed))
             {
-
                 value = JsonValue.Create(parsed);
 
                 error = null;
 
                 return true;
-
             }
 
             value = null;
@@ -796,43 +663,33 @@ public static class ConfigurationPathAccessor
             error = "Expected a numeric value.";
 
             return false;
-
         }
 
         if (TryGetElementType(targetType, out Type? elementType)
             && (elementType == typeof(string) || elementType == typeof(Guid)))
         {
-
             if (!TryParseListItems(rawValue, out string[] items, out error))
             {
-
                 value = null;
 
                 return false;
-
             }
 
             if (elementType == typeof(Guid))
             {
-
                 for (int index = 0; index < items.Length; index++)
                 {
-
                     if (!Guid.TryParse(items[index], out Guid parsedIdentifier))
                     {
-
                         value = null;
 
                         error = $"Expected a comma-separated list or valid JSON array of GUIDs: '{items[index]}' is not a GUID.";
 
                         return false;
-
                     }
 
                     items[index] = parsedIdentifier.ToString();
-
                 }
-
             }
 
             value = JsonSerializer.SerializeToNode(
@@ -842,21 +699,17 @@ public static class ConfigurationPathAccessor
             error = null;
 
             return true;
-
         }
 
         if (targetType.IsEnum)
         {
-
             if (!Enum.TryParse(targetType, trimmed, ignoreCase: true, out object? parsed))
             {
-
                 value = null;
 
                 error = $"Expected a named value for configuration enum '{targetType.Name}'.";
 
                 return false;
-
             }
 
             JsonTypeInfo? enumTypeInfo = ConfigurationJsonContext.Default.GetTypeInfo(targetType);
@@ -870,22 +723,18 @@ public static class ConfigurationPathAccessor
             error = null;
 
             return true;
-
         }
 
         try
         {
-
             value = JsonNode.Parse(trimmed);
 
             error = null;
 
             return true;
-
         }
         catch (JsonException exception)
         {
-
             value = null;
 
             error = TryGetElementType(targetType, out _)
@@ -893,9 +742,7 @@ public static class ConfigurationPathAccessor
                 : $"Expected valid JSON for configuration type '{targetType.Name}': {exception.Message}";
 
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -907,12 +754,10 @@ public static class ConfigurationPathAccessor
         out string[] items,
         out string? error)
     {
-
         string trimmed = rawValue.Trim();
 
         try
         {
-
             items = trimmed.StartsWith("[", StringComparison.Ordinal)
                 ? JsonSerializer.Deserialize(trimmed, ConfigurationJsonContext.Default.StringArray) ?? []
                 : rawValue.Split(
@@ -922,46 +767,36 @@ public static class ConfigurationPathAccessor
             error = null;
 
             return true;
-
         }
         catch (JsonException exception)
         {
-
             items = [];
 
             error = $"Expected a comma-separated list or valid JSON array: {exception.Message}";
 
             return false;
-
         }
-
     }
 
     private static bool TryParseBinaryBoolean(string value, out bool parsed)
     {
-
         if (string.Equals(value, "1", StringComparison.Ordinal))
         {
-
             parsed = true;
 
             return true;
-
         }
 
         if (string.Equals(value, "0", StringComparison.Ordinal))
         {
-
             parsed = false;
 
             return true;
-
         }
 
         parsed = false;
 
         return false;
-
     }
 
     private static string[] Split(string key) =>
@@ -992,7 +827,6 @@ public static class ConfigurationPathAccessor
         Type? ValueType,
         string? Error)
     {
-
         public static PathResolution Success(
             JsonNode parent,
             string? propertyName,
@@ -1013,10 +847,8 @@ public static class ConfigurationPathAccessor
 
         public void Assign(JsonNode? value)
         {
-
             switch (Parent)
             {
-
                 case JsonObject jsonObject when PropertyName is not null:
 
                     jsonObject[PropertyName] = value;
@@ -1032,13 +864,9 @@ public static class ConfigurationPathAccessor
                 default:
 
                     throw new InvalidOperationException("The resolved configuration path has no assignable target.");
-
             }
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -1057,11 +885,9 @@ public sealed record ConfigurationPathUpdate(
     ArcanumSettings? Settings,
     string? Error)
 {
-
     public static ConfigurationPathUpdate Success(ArcanumSettings settings) =>
         new(true, settings, null);
 
     public static ConfigurationPathUpdate Failure(ArcanumSettings settings, string error) =>
         new(false, settings, error);
-
 }

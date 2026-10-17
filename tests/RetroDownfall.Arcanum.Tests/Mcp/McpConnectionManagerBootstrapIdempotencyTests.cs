@@ -113,7 +113,6 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             pacer,
             _events,
             new AlwaysTrustedWorkspaceStore(),
-            new FakeHttpClientFactory(),
             _settings,
             NullLoggerFactory.Instance);
 
@@ -2503,16 +2502,22 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             scopeFactory,
             NullLogger<UnseenServantPacer>.Instance);
 
-        return new McpConnectionManager(
+        McpConnectionManager manager = new(
             NullLogger<McpConnectionManager>.Instance,
             new HumanPromptRegistry(),
             scopeFactory,
             pacer,
             eventBus ?? new FakeEventBus(),
             new AlwaysTrustedWorkspaceStore(),
-            new FakeHttpClientFactory(httpHandler),
             settings,
             NullLoggerFactory.Instance);
+
+        if (httpHandler is not null)
+        {
+            manager.UseHttpPrimaryHandlerForTests(new NonOwningHttpHandler(httpHandler));
+        }
+
+        return manager;
     }
 
     private static async Task WaitUntilAsync(
@@ -3014,6 +3019,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         public long CurrentGeneration => inner.CurrentGeneration;
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public int RefusalWaits => Volatile.Read(ref _refusalWaits);
 
         public bool TryAcquireRequestLease(
@@ -3122,6 +3129,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
             public long Generation => innerWork.Generation;
 
             public CancellationToken MaintenanceRevocation => maintenanceRevocation;
+
+            public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
             public bool TryBeginExternalEffectGroup(
                 out IGrimoireExternalEffectGroup? effectGroup)

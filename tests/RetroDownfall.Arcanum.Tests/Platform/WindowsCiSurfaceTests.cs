@@ -1,4 +1,7 @@
 using System.Reflection;
+using System.Runtime.InteropServices;
+
+using Xunit.Abstractions;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Platform;
@@ -18,9 +21,8 @@ namespace RetroDownfall.Arcanum.Tests.Platform;
 /// <c>ARCANUM_REQUIRE_MACOS_WORKSPACE_CHECK</c> guard.
 /// </para>
 /// </remarks>
-public sealed class WindowsCiSurfaceTests
+public sealed class WindowsCiSurfaceTests(ITestOutputHelper output)
 {
-
     private const string RequireVariable = "ARCANUM_REQUIRE_WINDOWS_SUITE";
 
     private const string CredentialStoreVariable = "ARCANUM_TEST_OS_CREDENTIAL_STORE";
@@ -38,7 +40,6 @@ public sealed class WindowsCiSurfaceTests
     [Fact]
     public void Windows_ci_lane_runs_on_windows()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -50,7 +51,6 @@ public sealed class WindowsCiSurfaceTests
             OperatingSystem.IsWindows(),
             $"{RequireVariable}=true but the suite is running on {platform}. "
             + "The Windows lane must run on a Windows runner or its platform-gated tests assert nothing.");
-
     }
 
     /// <summary>
@@ -67,7 +67,6 @@ public sealed class WindowsCiSurfaceTests
     [Fact]
     public void Windows_ci_lane_reaches_a_real_credential_backend()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -86,7 +85,6 @@ public sealed class WindowsCiSurfaceTests
             read.Status == OsCredentialStoreStatus.NotFound,
             "Credential Manager must answer a read of an unwritten account with NotFound. "
             + $"It answered {read.Status}: {read.Message}");
-
     }
 
     /// <summary>
@@ -100,7 +98,6 @@ public sealed class WindowsCiSurfaceTests
     [Fact]
     public void Windows_ci_lane_opts_in_to_the_real_credential_store_round_trip()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -113,7 +110,6 @@ public sealed class WindowsCiSurfaceTests
             $"{RequireVariable}=true but {CredentialStoreVariable} is '{optIn ?? "<unset>"}'. "
             + "OsCredentialStoreRoundTripTests skips on that variable before it checks the platform, so "
             + "without it the lane performs no round trip against a real OS secret store.");
-
     }
 
     /// <summary>
@@ -131,7 +127,6 @@ public sealed class WindowsCiSurfaceTests
     [Fact]
     public void Windows_gated_tests_still_exist_to_be_run()
     {
-
         if (!WindowsLaneRequired())
         {
             return;
@@ -160,7 +155,31 @@ public sealed class WindowsCiSurfaceTests
             "Every remaining Windows-named test class runs identically on macOS and Linux, so nothing in "
             + "this assembly is actually gated on the platform any more and this lane exercises no "
             + "Windows-only code path. Restore the skip-gated class or retire this lane deliberately.");
+    }
 
+    [Fact]
+    public void Windows_ci_lane_uses_the_expected_native_runtime_identifier()
+    {
+        if (!WindowsLaneRequired())
+        {
+            return;
+        }
+
+        string expectedRid = global::System.Environment.GetEnvironmentVariable("ARCANUM_EXPECTED_WINDOWS_RID") ?? string.Empty;
+
+        Assert.Contains(expectedRid, new[] { "win-x64", "win-arm64" });
+
+        Architecture expectedArchitecture = expectedRid == "win-arm64" ? Architecture.Arm64 : Architecture.X64;
+
+        output.WriteLine($"Expected RID: {expectedRid}; runtime RID: {RuntimeInformation.RuntimeIdentifier}; process architecture: {RuntimeInformation.ProcessArchitecture}; OS architecture: {RuntimeInformation.OSArchitecture}");
+
+        Assert.True(OperatingSystem.IsWindows());
+
+        Assert.Equal(expectedRid, RuntimeInformation.RuntimeIdentifier);
+
+        Assert.Equal(expectedArchitecture, RuntimeInformation.ProcessArchitecture);
+
+        Assert.Equal(expectedArchitecture, RuntimeInformation.OSArchitecture);
     }
 
     private static MethodInfo[] TestMethods(Type type) =>
@@ -181,5 +200,4 @@ public sealed class WindowsCiSurfaceTests
         method.GetCustomAttributes()
             .Any(static attribute => attribute.GetType().Name
                 is "SkippableFactAttribute" or "SkippableTheoryAttribute");
-
 }

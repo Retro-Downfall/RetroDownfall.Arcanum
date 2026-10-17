@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -17,7 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// Raw-SQL operation ledger stored inside the encrypted Grimoire. All ownership and lifecycle
 /// mutations are compare-and-swap updates; no process-local lock is required for correctness.
 /// </summary>
-internal sealed class LongRunningOperationStore(
+internal sealed partial class LongRunningOperationStore(
     ArcanumDbContext db,
     IGrimoireOrdinaryConnectionFactory connections,
     ICovenantConnectionDrain? covenantDrain = null)
@@ -78,74 +79,12 @@ internal sealed class LongRunningOperationStore(
                 nameof(request));
         }
 
-        Guid id = Guid.NewGuid();
-        string kind = Bound(request.Kind, MaxKindLength);
-        string summary = Bound(request.PublicSummary, MaxSummaryLength);
+        return SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
-        return SqliteBusyRetry.ExecuteAsync(
-            async () =>
-            {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                await using DbCommand cmd = connection.CreateCommand();
-                cmd.CommandText =
-                    """
-                    INSERT INTO "LongRunningOperations"
-                        ("Id", "Kind", "State", "RecoveryPolicy", "RootOperationId", "ParentOperationId",
-                         "SessionId", "RunId", "InferenceRunId", "BudgetReservationId", "IdempotencyClaimId",
-                         "CreatedAt", "StartedAt", "HeartbeatAt", "CompletedAt", "LeaseOwner", "LeaseExpiresAt",
-                         "AttemptCount", "CheckpointVersion", "CheckpointPayload", "CheckpointReference",
-                         "PublicSummary", "TerminalErrorCode", "Revision")
-                    VALUES
-                        (@id, @kind, @state, @policy, @root, @parent,
-                         @session, @run, @inference, @reservation, @claim,
-                         @created, NULL, NULL, NULL, NULL, NULL,
-                         0, 0, NULL, NULL, @summary, NULL, 0)
-                    """;
-
-                Add(cmd, "@id", Format(id));
-                Add(cmd, "@kind", kind);
-                Add(cmd, "@state", (int)LongRunningOperationState.Pending);
-                Add(cmd, "@policy", (int)request.RecoveryPolicy);
-                Add(cmd, "@root", FormatNullable(request.RootOperationId));
-                Add(cmd, "@parent", FormatNullable(request.ParentOperationId));
-                Add(cmd, "@session", FormatReferenceNullable(request.SessionId));
-                Add(cmd, "@run", FormatReferenceNullable(request.RunId));
-                Add(cmd, "@inference", FormatReferenceNullable(request.InferenceRunId));
-                Add(cmd, "@reservation", FormatNullable(request.BudgetReservationId));
-                Add(cmd, "@claim", FormatNullable(request.IdempotencyClaimId));
-                _ = UtcInstantSql.AddParameter(cmd, "@created", request.CreatedAt);
-                Add(cmd, "@summary", summary);
-
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                return new LongRunningOperation(
-                    id,
-                    kind,
-                    LongRunningOperationState.Pending,
-                    request.RecoveryPolicy,
-                    request.RootOperationId,
-                    request.ParentOperationId,
-                    request.SessionId,
-                    request.RunId,
-                    request.InferenceRunId,
-                    request.BudgetReservationId,
-                    request.IdempotencyClaimId,
-                    request.CreatedAt,
-                    StartedAt: null,
-                    HeartbeatAt: null,
-                    CompletedAt: null,
-                    LeaseOwner: null,
-                    LeaseExpiresAt: null,
-                    AttemptCount: 0,
-                    CheckpointVersion: 0,
-                    CheckpointPayload: null,
-                    CheckpointReference: null,
-                    summary,
-                    TerminalErrorCode: null,
-                    Revision: 0);
-            },
-            cancellationToken);
+            return await CreateWithinAsync(connection, null, request, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
     }
 
     public Task<LongRunningOperationRequestIdentityResult> ResolveOrCreateAsync(
@@ -647,8 +586,9 @@ internal sealed class LongRunningOperationStore(
     /// </item>
     /// <item>
     /// <c>Pending</c> with a prior attempt — what <c>arcanum operation retry</c> produces. A row at
-    /// attempt zero is excluded deliberately: its creator is about to lease it in the very next
-    /// statement, and reconciling it would race the caller that just made it.
+    /// attempt zero is excluded deliberately: it is a first start, not abandoned work. Most kinds
+    /// lease it in the very next statement; a queued long-rest sweep waits for the hosted worker,
+    /// which finds it with its own scan, so reconciling it would race its owner.
     /// </item>
     /// </list>
     /// </summary>
@@ -681,14 +621,7 @@ internal sealed class LongRunningOperationStore(
                     WHERE (
                         "State" IN (@running, @waiting, @cancelling)
                         OR ("State" = @pending AND "AttemptCount" > 0)
-                        OR (
-                            "State" = @attention
-                            AND "Kind" IN (@retentionPrune, @retentionMutation, @retentionFactory)
-                            AND "TerminalErrorCode" = @retentionRecoveryError)
-                        OR (
-                            "State" = @attention
-                            AND "Kind" IN (@retentionMutation, @retentionFactory)
-                            AND "TerminalErrorCode" = @covenantMaintenanceError))
+                        OR {StartupRecoveredAttentionPredicate})
                       AND ("LeaseExpiresAt" IS NULL OR "LeaseExpiresAt" <= @now)
                     """
                     + (excludeOwnerBoundRows
@@ -708,12 +641,14 @@ internal sealed class LongRunningOperationStore(
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
                 Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
-                Add(cmd, "@attention", (int)LongRunningOperationState.ReconciliationRequired);
-                Add(cmd, "@retentionPrune", LongRunningOperationKinds.DataRetentionPrune);
+
+                foreach ((string name, string value) in StartupRecoveredAttentionParameters())
+                {
+                    Add(cmd, name, value);
+                }
+
                 Add(cmd, "@retentionMutation", LongRunningOperationKinds.DataRetentionMutation);
                 Add(cmd, "@retentionFactory", LongRunningOperationKinds.DataRetentionFactoryReset);
-                Add(cmd, "@retentionRecoveryError", ErrorCodes.Data.ReconciliationFailed);
-                Add(cmd, "@covenantMaintenanceError", ErrorCodes.Covenant.MaintenanceFailed);
                 if (excludeOwnerBoundRows)
                 {
                     Add(cmd, "@mutationOwnerVersion", CovenantOfflineTransitionLaunchV4.CurrentVersion);
@@ -724,6 +659,80 @@ internal sealed class LongRunningOperationStore(
                 return await ReadAllAsync(cmd, cancellationToken).ConfigureAwait(false);
             },
             cancellationToken);
+
+    /// <summary>
+    /// The <see cref="LongRunningOperationState.ReconciliationRequired"/> rows a host start recovers
+    /// again, one (kind, terminal error code) pair each: the three retention kinds that ended with
+    /// <see cref="ErrorCodes.Data.ReconciliationFailed"/>, and the two kinds that own a Covenant
+    /// offline transition when it ended with <see cref="ErrorCodes.Covenant.MaintenanceFailed"/>.
+    /// </summary>
+    /// <remarks>
+    /// Every other row in that state waits for an operator by definition: a host start leaves it as it
+    /// found it, however many times it runs. <see cref="FindExpiredAsync(DateTimeOffset, int, CancellationToken)"/>
+    /// selects the first set and the global reset's conflict reads report the second, both from this
+    /// one table, so the set a start recovers and the set it leaves cannot drift apart.
+    /// </remarks>
+    internal static IReadOnlyList<(string Kind, string TerminalErrorCode)> StartupRecoveredAttention { get; } =
+    [
+        (LongRunningOperationKinds.DataRetentionPrune, ErrorCodes.Data.ReconciliationFailed),
+        (LongRunningOperationKinds.DataRetentionMutation, ErrorCodes.Data.ReconciliationFailed),
+        (LongRunningOperationKinds.DataRetentionFactoryReset, ErrorCodes.Data.ReconciliationFailed),
+        (LongRunningOperationKinds.DataRetentionMutation, ErrorCodes.Covenant.MaintenanceFailed),
+        (LongRunningOperationKinds.DataRetentionFactoryReset, ErrorCodes.Covenant.MaintenanceFailed),
+    ];
+
+    /// <summary>
+    /// The SQL condition, over the ledger's own columns, that is true for a row whose attention a host
+    /// start recovers again. Its parameters are <see cref="StartupRecoveredAttentionParameters"/>.
+    /// </summary>
+    internal static string StartupRecoveredAttentionPredicate { get; } =
+        $"(\"State\" = {(int)LongRunningOperationState.ReconciliationRequired} AND {StartupRecoveredPairs()})";
+
+    /// <summary>
+    /// The SQL condition that is true for a row no host start settles because it waits for an operator:
+    /// a row in <see cref="LongRunningOperationState.ReconciliationRequired"/> that
+    /// <see cref="StartupRecoveredAttentionPredicate"/> does not select, and a queued Long Rest sweep
+    /// request that never started (the hosted worker drains it only while the feature is on and only in
+    /// the boot that queued it, and generic recovery leaves a row at attempt zero to its creator).
+    /// Its parameters are <see cref="WaitsForOperatorParameters"/>.
+    /// </summary>
+    internal static string WaitsForOperatorPredicate { get; } =
+        $"((\"State\" = {(int)LongRunningOperationState.ReconciliationRequired} AND NOT {StartupRecoveredPairs()})"
+        + $" OR (\"Kind\" = @queuedKind AND \"State\" = {(int)LongRunningOperationState.Pending} AND \"AttemptCount\" = 0))";
+
+    /// <summary>The named parameters <see cref="StartupRecoveredAttentionPredicate"/> reads.</summary>
+    internal static IEnumerable<(string Name, string Value)> StartupRecoveredAttentionParameters()
+    {
+        for (int index = 0; index < StartupRecoveredAttention.Count; index++)
+        {
+            yield return ("@recoveredKind" + index.ToString(CultureInfo.InvariantCulture), StartupRecoveredAttention[index].Kind);
+
+            yield return ("@recoveredCode" + index.ToString(CultureInfo.InvariantCulture), StartupRecoveredAttention[index].TerminalErrorCode);
+        }
+    }
+
+    /// <summary>The named parameters <see cref="WaitsForOperatorPredicate"/> reads.</summary>
+    internal static IEnumerable<(string Name, string Value)> WaitsForOperatorParameters()
+    {
+        foreach ((string name, string value) in StartupRecoveredAttentionParameters())
+        {
+            yield return (name, value);
+        }
+
+        yield return ("@queuedKind", LongRunningOperationKinds.LongRestSweep);
+    }
+
+    // The terminal code is compared with IS, which is equality that answers false for a row with no
+    // code, so the negation selects it too: a row that never recorded why it stopped waits for an operator.
+    private static string StartupRecoveredPairs() =>
+        "("
+        + string.Join(
+            " OR ",
+            Enumerable.Range(0, StartupRecoveredAttention.Count)
+                .Select(static index =>
+                    "(\"Kind\" = @recoveredKind" + index.ToString(CultureInfo.InvariantCulture)
+                    + " AND \"TerminalErrorCode\" IS @recoveredCode" + index.ToString(CultureInfo.InvariantCulture) + ")"))
+        + ")";
 
     /// <summary>
     /// Adopts one operation's lease while the caller holds this installation's maintenance lock.
@@ -870,13 +879,13 @@ internal sealed class LongRunningOperationStore(
                 cmd.CommandText =
                     """
                     UPDATE "LongRunningOperations"
-                    SET "State" = @running,
+                    SET "State" = CASE WHEN "Kind" = @longRest AND "State" = @cancelling THEN @cancelling ELSE @running END,
                         "StartedAt" = COALESCE("StartedAt", @now),
                         "HeartbeatAt" = @now,
                         "LeaseOwner" = @owner,
                         "LeaseExpiresAt" = @lease,
                         "AttemptCount" = "AttemptCount" + 1,
-                        "TerminalErrorCode" = NULL,
+                        "TerminalErrorCode" = CASE WHEN "Kind" = @longRest AND "State" = @pending AND "AttemptCount" > 0 THEN @readmitRequested ELSE NULL END,
                         "Revision" = "Revision" + 1
                     WHERE "Id" = @id
                       AND (
@@ -924,6 +933,8 @@ internal sealed class LongRunningOperationStore(
 
                         RETURNING {SelectColumns}
                       """;
+                Add(cmd, "@longRest", LongRunningOperationKinds.LongRestSweep);
+                Add(cmd, "@readmitRequested", LongRestParkCodes.ReadmitRequested);
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@pending", (int)LongRunningOperationState.Pending);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);

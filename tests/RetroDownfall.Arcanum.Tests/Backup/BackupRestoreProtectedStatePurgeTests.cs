@@ -32,7 +32,7 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         "campaign_path_identities",
         "Campaigns",
         "artifact_sensitivity",
-        "artifact_sensitivity_guard_delete",
+        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
         "artifact_sensitivity_guard_update",
         "managed_file_write_intents",
         "local_erasure_work_items",
@@ -560,8 +560,8 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         // The purge fails the whole restore on a label whose kind it cannot classify, because removing
         // the label alone would leave Covenant-derived content with nothing admitting it is protected.
         // That branch is unreachable today rather than untested: the column CHECK admits exactly codes
-        // one through thirteen and the policy table covers all thirteen, so this is the assertion that
-        // keeps it unreachable when a fourteenth kind is added.
+        // one through sixteen and the policy table covers all sixteen, so this assertion keeps the
+        // branch unreachable when another persisted kind is added.
         Assert.All(
             Enum.GetValues<SensitiveArtifactKind>(),
             static kind => Assert.True(

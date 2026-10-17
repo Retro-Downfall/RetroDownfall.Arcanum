@@ -31,8 +31,18 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantArtifactPlanRunnerTests
 {
+    private static IReadOnlyList<MemoryErasureTableCount> EmptyLongRestGenerationTargets(long sourceRows) =>
+    [
+        new("long_rest_discovery_generations", 0), new("long_rest_clean_fts", 0), new("long_rest_protected_fts", 0),
+        new("long_rest_discovery_embeddings", 0), new("long_rest_discovery_edges", 0),
+        new("long_rest_accepted_summaries", 0), new("long_rest_adjudications", 0),
+        new("long_rest_provider_effects", 0), new("long_rest_work_inputs", 0), new("long_rest_work_items", 0),
+        new("long_rest_discovery_nodes", 0), new("long_rest_discovery_leaves", 0), new("long_rest_sweeps", 0),
+        new("long_rest_sources", sourceRows),
+    ];
+
     private const string GatedTablesPresent =
-        "SELECT count(*) FROM sqlite_master WHERE name IN ('annal_review_events', 'annal_review_decision_receipts');";
+        "SELECT count(*) FROM sqlite_master WHERE name IN ('annal_review_events', 'annal_review_decision_receipts', 'long_rest_discovery_generations', 'long_rest_provider_effects', 'long_rest_clean_fts', 'long_rest_protected_fts', 'long_rest_sources', 'long_rest_protected_receipt_inputs', 'long_rest_protected_receipt_evidence');";
 
     private static readonly DateTimeOffset CreatedAt = new(2026, 9, 28, 12, 0, 0, TimeSpan.Zero);
 
@@ -63,6 +73,8 @@ public sealed class CovenantArtifactPlanRunnerTests
         // One review event per claim, because every head insert fires annal_review_events_head_insert.
         IReadOnlyList<MemoryErasureTableCount> expected =
         [
+            .. EmptyLongRestGenerationTargets(sourceRows: 1),
+            new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
             new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
@@ -117,6 +129,7 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         foreach (string table in new[]
                  {
+                     "long_rest_protected_receipt_inputs", "long_rest_protected_receipt_evidence",
                      "long_rest_receipts", "long_rest_suppressions", "long_rest_receipt_inputs",
                      "lexicon_annal_fact_provenance", "annal_review_decision_receipts", "annal_review_events",
                      "annal_dependencies", "annal_heads", "annal_versions", "annal_claims",
@@ -174,6 +187,8 @@ public sealed class CovenantArtifactPlanRunnerTests
         // The whole ordered tally, so a skipped mirror that was duplicated or moved would show.
         IReadOnlyList<MemoryErasureTableCount> expected =
         [
+            .. EmptyLongRestGenerationTargets(sourceRows: 1),
+            new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
             new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
@@ -241,6 +256,8 @@ public sealed class CovenantArtifactPlanRunnerTests
 
         IReadOnlyList<MemoryErasureTableCount> expected =
         [
+            .. EmptyLongRestGenerationTargets(sourceRows: 0),
+            new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
             new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),

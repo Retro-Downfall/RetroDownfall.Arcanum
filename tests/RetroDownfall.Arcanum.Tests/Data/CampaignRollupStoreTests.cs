@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class CampaignRollupStoreTests
 {
-
     internal static readonly Guid Campaign = Guid.Parse("BC037C35-E97D-456B-AE21-42E06BEDD321");
 
     internal static readonly Guid SessionA = Guid.Parse("CEE41654-6492-4AC7-9CF5-D28983198540");
@@ -19,7 +18,6 @@ public sealed class CampaignRollupStoreTests
     [Fact]
     public async Task A_short_session_contributes_and_another_session_reads_its_Campaign_decisions()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         CampaignContributionInput input = await fixture.PrepareAsync();
@@ -47,13 +45,11 @@ public sealed class CampaignRollupStoreTests
         Assert.Equal(1, warm?.SourceCount);
 
         Assert.Null((await fixture.Store.PrepareRollupAsync(Campaign, null, CancellationToken.None)).Value);
-
     }
 
     [Fact]
     public async Task Mutating_a_source_before_publication_rejects_output_and_does_not_advance_a_frontier()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         CampaignContributionInput input = await fixture.PrepareAsync();
@@ -67,13 +63,11 @@ public sealed class CampaignRollupStoreTests
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
 
         Assert.Equal(0, await fixture.CountAsync("SELECT SummarizedThroughSequence FROM campaign_contribution_state;"));
-
     }
 
     [Fact]
     public async Task Oversized_output_cannot_advance_contribution_progress()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         CampaignContributionInput input = await fixture.PrepareAsync();
@@ -85,13 +79,11 @@ public sealed class CampaignRollupStoreTests
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
 
         Assert.NotNull((await fixture.Store.PrepareContributionAsync(SessionA, null, null, CancellationToken.None)).Value);
-
     }
 
     [Fact]
     public async Task Pure_fork_contributes_nothing_and_only_its_novel_tail_can_promote()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         await fixture.ExecuteAsync($"INSERT INTO campaign_fork_frontiers(SessionId,SourceSessionId,InheritedThroughSequence,ProofKindCode,CreatedAtUtc) VALUES('{SessionA.ToString().ToUpperInvariant()}','C845CA91-8750-4D49-AED8-7A3EB6455C9E',2,2,'2026-10-01T00:00:00.0000000+00:00');");
@@ -109,13 +101,11 @@ public sealed class CampaignRollupStoreTests
         Assert.Equal(2, tail.InheritedThroughSequence);
 
         Assert.Null(tail.Previous);
-
     }
 
     [Fact]
     public async Task Changed_consumed_entries_invalidate_the_Campaign_and_refold_from_current_sources()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         CampaignContributionInput input = await fixture.PrepareAsync();
@@ -143,13 +133,11 @@ public sealed class CampaignRollupStoreTests
         Assert.Null(refold.Previous);
 
         Assert.Equal("new decision", Assert.Single(refold.Contributions).Content);
-
     }
 
     [Fact]
     public async Task Unrelated_updated_time_creates_no_debt_and_new_publication_preserves_a_bound_revision()
     {
-
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
         CampaignContributionInput input = await fixture.PrepareAsync();
@@ -167,7 +155,6 @@ public sealed class CampaignRollupStoreTests
         Assert.True((await fixture.Store.ValidateAsync(first, null, CancellationToken.None)).IsSuccess);
 
         Assert.Empty(await fixture.Store.FindPendingContributionsAsync(DateTimeOffset.UtcNow, 128, CancellationToken.None));
-
     }
 
     [Fact]
@@ -429,7 +416,6 @@ public sealed class CampaignRollupStoreTests
 
     internal sealed class StoreFixture(CovenantSchemaScratchDatabase database) : IAsyncDisposable
     {
-
         internal SqliteConnection Connection => database.Connection;
 
         internal Guid CampaignId => Campaign;
@@ -440,26 +426,21 @@ public sealed class CampaignRollupStoreTests
 
         internal static async Task<StoreFixture> CreateAsync()
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(CancellationToken.None);
 
             await database.InstallCoreObjectsAsync([
                 "Campaigns", "Sessions", "Entries", "session_campaign_bindings", "artifact_sensitivity", "session_sensitivity_state", "assistant_entry_finalizations", "session_turn_claims",
-                "artifact_sensitivity_guard_delete", "artifact_sensitivity_guard_update",
+                .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects, "artifact_sensitivity_guard_update",
             ], CancellationToken.None);
 
             foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
             {
-
                 await database.InstallCoreObjectsAsync([item.Name], CancellationToken.None);
-
             }
 
             foreach (GrimoireSchemaObject item in GrimoireSchemaCatalog.CoreObjects.Where(item => item.Name.Contains("campaign_contribution", StringComparison.Ordinal) && !item.Name.StartsWith("campaign_", StringComparison.Ordinal)))
             {
-
                 await database.InstallCoreObjectsAsync([item.Name], CancellationToken.None);
-
             }
 
             await database.ExecuteAsync($"""
@@ -471,12 +452,10 @@ public sealed class CampaignRollupStoreTests
                 """, CancellationToken.None);
 
             return new StoreFixture(database);
-
         }
 
         internal async Task<CampaignContributionInput> PrepareAsync()
         {
-
             Result<CampaignContributionInput?> prepared = await Store.PrepareContributionAsync(SessionA, null, null, CancellationToken.None);
 
             Assert.True(prepared.IsSuccess, prepared.Error.Message);
@@ -484,7 +463,6 @@ public sealed class CampaignRollupStoreTests
             Assert.NotNull(prepared.Value);
 
             return prepared.Value;
-
         }
 
         internal Task ExecuteAsync(string sql) => database.ExecuteAsync(sql, CancellationToken.None);
@@ -530,7 +508,6 @@ public sealed class CampaignRollupStoreTests
         }
 
         public ValueTask DisposeAsync() => database.DisposeAsync();
-
     }
 
     private sealed class TestReadLease(Guid campaignId) : ICovenantSnapshotReadLease
@@ -552,5 +529,4 @@ public sealed class CampaignRollupStoreTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
-
 }

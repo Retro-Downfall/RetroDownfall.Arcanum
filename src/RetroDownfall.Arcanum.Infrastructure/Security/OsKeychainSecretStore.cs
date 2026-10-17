@@ -66,7 +66,19 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
 
         // The mirror write never invalidates the canonical digest: a save invalidates once below,
         // and a read that only re-synchronizes the copy must leave the live digest in place.
-        _masterApiKey = new MirroredOsCredential(
+        _masterApiKey = CreateMasterApiKeyCredential(osStore, dataProtectionStore, logger, osReadTimeout);
+
+        _fileEncryptionKey = CreateFileEncryptionKeyCredential(osStore, dataProtectionStore, logger, osReadTimeout);
+    }
+
+    // Each mirror is built by a member of its own: the callables a mirror keeps from its construction are then the
+    // callables of exactly this construction, which the hosted-producer verifier follows to their bodies.
+    private static MirroredOsCredential CreateMasterApiKeyCredential(
+        IOsCredentialStore osStore,
+        DataProtectionSecretStore dataProtectionStore,
+        ILogger<OsKeychainSecretStore>? logger,
+        TimeSpan? osReadTimeout) =>
+        new MirroredOsCredential(
             osStore,
             ArcanumCredentialIdentity.MasterApiKeyAccount,
             new DataProtectionStoreCredentialMirror(
@@ -80,7 +92,12 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
             logger,
             osReadTimeout);
 
-        _fileEncryptionKey = new MirroredOsCredential(
+    private static MirroredOsCredential CreateFileEncryptionKeyCredential(
+        IOsCredentialStore osStore,
+        DataProtectionSecretStore dataProtectionStore,
+        ILogger<OsKeychainSecretStore>? logger,
+        TimeSpan? osReadTimeout) =>
+        new MirroredOsCredential(
             osStore,
             ArcanumCredentialIdentity.FileEncryptionKeyAccount,
             new DataProtectionStoreCredentialMirror(
@@ -95,7 +112,6 @@ public sealed class OsKeychainSecretStore : ISecretStore, IDisposable
                 RequireOsWrite: true),
             logger,
             osReadTimeout);
-    }
 
     public void Dispose()
     {

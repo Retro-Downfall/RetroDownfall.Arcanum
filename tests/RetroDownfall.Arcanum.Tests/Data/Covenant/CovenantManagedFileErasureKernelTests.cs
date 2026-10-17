@@ -28,7 +28,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantManagedFileErasureKernelTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
@@ -40,7 +39,6 @@ public sealed class CovenantManagedFileErasureKernelTests
     [Fact]
     public void Managed_file_outcome_codes_are_literal_and_exhaustive()
     {
-
         Assert.Equal(1, (byte)ManagedFileVerification.Match);
 
         Assert.Equal(2, (byte)ManagedFileVerification.Mismatch);
@@ -60,13 +58,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.Equal(3, (byte)ManagedFileOpenKind.Mismatch);
 
         Assert.Equal(3, Enum.GetValues<ManagedFileOpenKind>().Length);
-
     }
 
     [Fact]
     public void Local_erasure_recovery_outcome_codes_are_literal_and_exhaustive()
     {
-
         Assert.Equal(1, (byte)CovenantLocalErasureStartupRecoveryOutcome.NoActiveWork);
 
         Assert.Equal(2, (byte)CovenantLocalErasureStartupRecoveryOutcome.ReconciledReady);
@@ -76,13 +72,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.Equal(4, (byte)CovenantLocalErasureStartupRecoveryOutcome.Blocked);
 
         Assert.Equal(4, Enum.GetValues<CovenantLocalErasureStartupRecoveryOutcome>().Length);
-
     }
 
     [Fact]
     public void The_evidence_codec_round_trips_both_locations_and_refuses_a_write_location_as_a_target()
     {
-
         ManagedFileDurableLocationEvidence target = new(
             CovenantOperationGateFixture.Digest(3),
             pathRevision: 4,
@@ -109,13 +103,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.True(ManagedFileEvidenceCodec
             .DecodeWriteLocation(ManagedFileEvidenceCodec.EncodeLocation(target))
             .IsFailure);
-
     }
 
     [Fact]
     public void A_managed_write_location_cannot_stage_through_its_own_target_leaf()
     {
-
         ManagedFileDurableLocationEvidence target = new(
             CovenantOperationGateFixture.Digest(3),
             pathRevision: 1,
@@ -125,7 +117,6 @@ public sealed class CovenantManagedFileErasureKernelTests
 
         _ = Assert.Throws<ArgumentException>(() =>
             new ManagedFileWriteDurableLocationEvidence(target, "answer.md"));
-
     }
 
     [Theory]
@@ -146,7 +137,6 @@ public sealed class CovenantManagedFileErasureKernelTests
     [Fact]
     public async Task A_verified_file_is_deleted_its_producer_is_erased_and_its_label_removed_in_order()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         SeededManagedFile file = await fixture.SeedAdoptedFileAsync("answer.md", "covenant derived bytes");
@@ -180,13 +170,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
 
         Assert.Equal(3, await fixture.CountAsync("SELECT StateCode FROM local_erasure_work_items;"));
-
     }
 
     [Fact]
     public async Task An_already_absent_file_is_idempotent_and_still_completes_its_producer()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         SeededManagedFile file = await fixture.SeedAdoptedFileAsync("gone.md", "bytes that were removed");
@@ -210,13 +198,11 @@ public sealed class CovenantManagedFileErasureKernelTests
 
         Assert.Equal(1, await fixture.CountAsync(
             "SELECT DeletionEvidenceCode FROM local_erasure_work_items;"));
-
     }
 
     [Fact]
     public async Task A_content_mismatch_leaves_the_file_the_producer_row_and_the_label_untouched()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         SeededManagedFile file = await fixture.SeedAdoptedFileAsync("swapped.md", "the bytes Arcanum wrote");
@@ -248,13 +234,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
 
         Assert.Equal(4, await fixture.CountAsync("SELECT StateCode FROM local_erasure_work_items;"));
-
     }
 
     [Fact]
     public async Task A_stale_source_revision_never_reaches_a_work_item_or_the_filesystem()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         SeededManagedFile file = await fixture.SeedAdoptedFileAsync("guarded.md", "protected bytes");
@@ -285,13 +269,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.True(File.Exists(file.FullPath));
 
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM local_erasure_work_items;"));
-
     }
 
     [Fact]
     public async Task Startup_recovery_finishes_a_crash_between_the_unlink_and_the_label_removal()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         SeededManagedFile file = await fixture.SeedAdoptedFileAsync("interrupted.md", "half-erased bytes");
@@ -319,13 +301,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.Equal(3, await fixture.CountAsync("SELECT StateCode FROM local_erasure_work_items;"));
 
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
-
     }
 
     [Fact]
     public async Task Startup_recovery_reports_no_active_work_when_nothing_is_outstanding()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         using ArcanumMaintenanceLockHandle heldLock = fixture.AcquireInstallationLock();
@@ -340,13 +320,11 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.True(recovered.IsSuccess);
 
         Assert.Equal(CovenantLocalErasureStartupRecoveryOutcome.NoActiveWork, recovered.Value);
-
     }
 
     [Fact]
     public async Task Startup_recovery_refuses_a_lock_that_guards_a_different_installation()
     {
-
         await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
 
         using ArcanumMaintenanceLockHandle heldLock = fixture.AcquireInstallationLock();
@@ -357,7 +335,6 @@ public sealed class CovenantManagedFileErasureKernelTests
                 Path.Combine(Path.GetTempPath(), $"not-this-{Guid.NewGuid():N}"),
                 fixture.Connection,
                 Token));
-
     }
 
     private sealed record SeededManagedFile(
@@ -369,35 +346,29 @@ public sealed class CovenantManagedFileErasureKernelTests
         ManagedFileDurableLocationEvidence Location,
         ManagedFileOwnershipEvidence Ownership)
     {
-
         internal CovenantManagedFileErasureRequest Request(Guid workItemId, Guid operationId) =>
             new(workItemId, operationId, WriteOperationId, ArtifactId, LabelId, (ulong)Revision);
-
     }
 
     private sealed class ArcanumMaintenanceLockHandle(
         RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock heldLock,
         string directory) : IDisposable
     {
-
         internal RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock Lock { get; } = heldLock;
 
         internal string Directory { get; } = directory;
 
         public void Dispose() => Lock.Dispose();
-
     }
 
     private sealed class ManagedFileFixture : IAsyncDisposable
     {
-
         private readonly CovenantSchemaScratchDatabase _database;
 
         private readonly string _workspaceRoot;
 
         private ManagedFileFixture(CovenantSchemaScratchDatabase database, string workspaceRoot)
         {
-
             _database = database;
 
             _workspaceRoot = workspaceRoot;
@@ -413,7 +384,6 @@ public sealed class CovenantManagedFileErasureKernelTests
                 CovenantSqliteConnectionInitializer.Instance,
                 StateMachine,
                 TimeProvider.System);
-
         }
 
         internal ManagedFileErasureStateMachine StateMachine { get; }
@@ -424,14 +394,12 @@ public sealed class CovenantManagedFileErasureKernelTests
 
         internal static async Task<ManagedFileFixture> CreateAsync()
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(Token);
 
             string workspaceRoot = Path.Combine(Path.GetTempPath(), $"covenant-managed-{Guid.NewGuid():N}");
 
             try
             {
-
                 _ = Directory.CreateDirectory(workspaceRoot);
 
                 await database.InstallCoreObjectsAsync(
@@ -447,7 +415,7 @@ public sealed class CovenantManagedFileErasureKernelTests
                         // The guards are the contract: they own the closed edge list, the
                         // authorization selection, and the label-before-producer-before-work-item
                         // ordering. Installing the tables without them would exercise C# alone.
-                        "artifact_sensitivity_guard_delete",
+                        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
                         "artifact_sensitivity_guard_update",
                         "managed_file_write_intents_guard_insert",
                         "managed_file_write_intents_guard_update",
@@ -459,22 +427,17 @@ public sealed class CovenantManagedFileErasureKernelTests
                     Token);
 
                 return new ManagedFileFixture(database, workspaceRoot);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal ArcanumMaintenanceLockHandle AcquireInstallationLock()
         {
-
             string directory = Path.Combine(_workspaceRoot, "installation");
 
             _ = Directory.CreateDirectory(directory);
@@ -482,7 +445,6 @@ public sealed class CovenantManagedFileErasureKernelTests
             return new ArcanumMaintenanceLockHandle(
                 RetroDownfall.Arcanum.Infrastructure.Backup.ArcanumMaintenanceLock.TryAcquire(directory)!,
                 directory);
-
         }
 
         /// <summary>
@@ -491,7 +453,6 @@ public sealed class CovenantManagedFileErasureKernelTests
         /// </summary>
         internal async Task<SeededManagedFile> SeedAdoptedFileAsync(string leaf, string content)
         {
-
             Guid campaignId = CovenantOperationGateFixture.CampaignOne;
 
             string campaignRoot = Path.Combine(_workspaceRoot, "campaign");
@@ -545,19 +506,16 @@ public sealed class CovenantManagedFileErasureKernelTests
                 fullPath,
                 location,
                 ownership);
-
         }
 
         internal async Task SeedPreparedWorkItemAsync(SeededManagedFile file)
         {
-
             await using SqliteTransaction transaction = Connection.BeginTransaction(deferred: false);
 
             using (CovenantSqliteConnectionInitializer.Instance.Authorize(
                 Connection,
                 CovenantSqliteAuthorizationKind.SensitivityRetentionPurge))
             {
-
                 await LocalErasureWorkItemStore.InsertPreparedAsync(
                     Connection,
                     transaction,
@@ -571,11 +529,9 @@ public sealed class CovenantManagedFileErasureKernelTests
                     file.Ownership,
                     DateTimeOffset.UnixEpoch,
                     Token);
-
             }
 
             await transaction.CommitAsync(Token);
-
         }
 
         internal async Task<long> CountAsync(string sql) =>
@@ -583,22 +539,17 @@ public sealed class CovenantManagedFileErasureKernelTests
 
         public async ValueTask DisposeAsync()
         {
-
             await _database.DisposeAsync();
 
             try
             {
-
                 Directory.Delete(_workspaceRoot, recursive: true);
-
             }
             catch (IOException)
             {
-
                 // A scratch workspace under the OS temp root; a failure to remove it is not a test
                 // outcome.
             }
-
         }
 
         private static CovenantDigest PathIdentity(string path) =>
@@ -608,7 +559,6 @@ public sealed class CovenantManagedFileErasureKernelTests
 
         private async Task InsertCampaignAsync(Guid campaignId, string root, CovenantDigest identity)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = """
@@ -627,12 +577,10 @@ public sealed class CovenantManagedFileErasureKernelTests
             _ = command.Parameters.AddWithValue("$identity", identity.Bytes.ToArray());
 
             _ = await command.ExecuteNonQueryAsync(Token);
-
         }
 
         private async Task InsertLabelAsync(Guid labelId, Guid artifactId, Guid campaignId)
         {
-
             ArtifactSensitivityLabel label = CovenantErasureAuthorityFixture.Label(
                 artifactId,
                 labelId,
@@ -668,7 +616,6 @@ public sealed class CovenantManagedFileErasureKernelTests
             _ = command.Parameters.AddWithValue("$labelDigest", label.LabelDigest.Bytes.ToArray());
 
             _ = await command.ExecuteNonQueryAsync(Token);
-
         }
 
         /// <summary>
@@ -682,14 +629,12 @@ public sealed class CovenantManagedFileErasureKernelTests
             ManagedFileWriteDurableLocationEvidence location,
             ManagedFileOwnershipEvidence ownership)
         {
-
             using CovenantSqliteAuthorizationScope writer = CovenantSqliteConnectionInitializer.Instance.Authorize(
                 Connection,
                 CovenantSqliteAuthorizationKind.ManagedFileIntentMutation);
 
             await using (SqliteCommand insert = Connection.CreateCommand())
             {
-
                 insert.CommandText = """
                     INSERT INTO managed_file_write_intents (
                         WriteOperationId, StableEffectIdentityDigest, ArtifactId, SensitivityLabelId,
@@ -726,7 +671,6 @@ public sealed class CovenantManagedFileErasureKernelTests
                 _ = insert.Parameters.AddWithValue("$contentLength", ownership.ContentLength);
 
                 _ = await insert.ExecuteNonQueryAsync(Token);
-
             }
 
             await AdvanceProducerAsync(
@@ -740,9 +684,7 @@ public sealed class CovenantManagedFileErasureKernelTests
 
             for (int phase = 2; phase <= 5; phase++)
             {
-
                 await AdvanceProducerAsync(writeOperationId, phase, phase + 1, null, null);
-
             }
 
             await AdvanceProducerAsync(
@@ -755,7 +697,6 @@ public sealed class CovenantManagedFileErasureKernelTests
                     ManagedFileEvidenceCodec.EncodeOwnership(ownership)));
 
             return 6;
-
         }
 
         private async Task AdvanceProducerAsync(
@@ -765,7 +706,6 @@ public sealed class CovenantManagedFileErasureKernelTests
             string? additionalSet,
             Func<SqliteCommand, object>? bind)
         {
-
             await using SqliteCommand command = Connection.CreateCommand();
 
             command.CommandText = $"""
@@ -785,11 +725,8 @@ public sealed class CovenantManagedFileErasureKernelTests
             _ = bind?.Invoke(command);
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(Token));
-
         }
 
         private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
-
     }
-
 }

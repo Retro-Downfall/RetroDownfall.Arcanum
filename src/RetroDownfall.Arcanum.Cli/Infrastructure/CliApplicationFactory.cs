@@ -323,6 +323,8 @@ internal static class CliApplicationFactory
 
         services.AddTransient<InstallationFactoryResetCommand>();
 
+        services.AddTransient<InstallationIdentityRepairCommand>();
+
         services.AddSingleton<IInstallationResetConfirmationPrompt, InstallationResetConfirmationPrompt>();
 
         services.AddSingleton<
@@ -993,7 +995,7 @@ internal static class CliApplicationFactory
 
         InteractionSupport interaction = stdoutRedirected ? InteractionSupport.No : InteractionSupport.Detect;
 
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        AnsiConsole.Console = CliConsoleFactory.Create(new AnsiConsoleSettings
         {
             Ansi = ansi,
             ColorSystem = colorSystem,
@@ -1007,17 +1009,42 @@ internal static class CliApplicationFactory
     private static void ConfigureAnsiConsoleForInvocation(
         CliInvocationOptions options)
     {
-        if (!options.Plain && !options.Json)
+        AnsiConsoleSettings? settings = CreateInvocationConsoleSettings(options, Console.Out);
+
+        if (settings is null)
         {
             return;
         }
 
-        AnsiConsole.Console = AnsiConsole.Create(new AnsiConsoleSettings
+        AnsiConsole.Console = CliConsoleFactory.Create(settings);
+    }
+
+    /// <summary>
+    /// The settings of the stdout console an invocation replaces the process-wide one with, or
+    /// <see langword="null"/> when no per-invocation opt-out applies and Spectre's own detection stays
+    /// in charge.
+    /// </summary>
+    /// <remarks>
+    /// <c>--plain</c>, <c>--json</c> and <c>-p/--print</c> each decline ANSI, colour and interaction
+    /// for the whole invocation. <c>--print</c> is the headless marker, so a real terminal behaves like
+    /// a redirected stream for rendering as well as for prompts: no escape sequences reach stdout, and
+    /// a prompt (such as the listen-any confirmation of <c>serve</c>) refuses instead of blocking.
+    /// </remarks>
+    internal static AnsiConsoleSettings? CreateInvocationConsoleSettings(
+        CliInvocationOptions options,
+        TextWriter output)
+    {
+        if (!options.Plain && !options.Json && !options.Print)
+        {
+            return null;
+        }
+
+        return new AnsiConsoleSettings
         {
             Ansi = AnsiSupport.No,
             ColorSystem = ColorSystemSupport.NoColors,
             Interactive = InteractionSupport.No,
-            Out = new AnsiConsoleOutput(Console.Out),
-        });
+            Out = new AnsiConsoleOutput(output),
+        };
     }
 }

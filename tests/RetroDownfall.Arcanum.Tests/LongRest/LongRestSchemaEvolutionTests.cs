@@ -10,13 +10,98 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
 
-public sealed class LongRestSchemaEvolutionTests
+public sealed partial class LongRestSchemaEvolutionTests
 {
     private const string At = "2026-10-09T00:00:00.0000000Z";
 
     private static readonly string InputHash = new('A', 64);
 
     private static readonly string OutputHash = new('B', 64);
+
+    [Fact]
+    public void The_version_seventeen_fixture_preserves_the_published_fingerprint()
+    {
+        Assert.Equal(CoreSchemaVersionSeventeenFixture.PublishedFingerprint, CoreSchemaVersionSeventeenFixture.Fingerprint);
+
+        Assert.Equal(CoreSchemaVersionSixteenFixture.PublishedFingerprint, CoreSchemaVersionSixteenFixture.Fingerprint);
+    }
+
+    [Fact]
+    public async Task Version_seventeen_evolves_to_the_same_discovery_catalog_as_fresh()
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
+
+        GrimoireSchemaInstallResult old = await GrimoireSchemaTestInstaller.InstallAsync(
+            connection, CoreSchemaVersionSeventeenFixture.ChainSet(), 64, CancellationToken.None);
+
+        Assert.Equal(17, old.Core.SchemaVersion);
+
+        Assert.Equal(1L, await ScalarAsync(connection, "PRAGMA foreign_keys;"));
+
+        await SeedTransformationAsync(connection);
+
+        string[] before = await InheritedEvidenceAsync(connection);
+
+        GrimoireSchemaInstallResult evolved = await InstallHeadAsync(connection);
+
+        Assert.Equal(18, evolved.Core.SchemaVersion);
+
+        Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.Core.Health);
+
+        Assert.Equal(before, await InheritedEvidenceAsync(connection));
+
+        Assert.Empty(await RowsAsync(connection, "PRAGMA foreign_key_check;"));
+
+        await using Scratch fresh = await Scratch.StartAsync();
+
+        string[] freshCatalog = await CompleteCatalogAsync(fresh.Connection);
+
+        string[] evolvedCatalog = await CompleteCatalogAsync(connection);
+
+        Assert.Equal(freshCatalog, evolvedCatalog);
+
+        Assert.Equal(2L, await ScalarAsync(connection, "SELECT count(*) FROM long_rest_sources;"));
+    }
+
+    internal static async Task<GrimoireSchemaInstallResult> InstallHeadAsync(SqliteConnection connection)
+    {
+        GrimoireSchemaInstaller installer = GrimoireSchemaTestInstaller.Create();
+
+        GrimoireSchemaInitializationContext context = GrimoireSchemaTestInstaller.CreateContext();
+
+        GrimoireSchemaInstallResult installed = await installer.InstallAsync(connection, 64, context, CancellationToken.None);
+
+        GrimoireSchemaBackfillRunner runner = new(installer, TimeProvider.System);
+
+        for (int pass = 0; installed.Core.Health == GrimoireSchemaTierHealth.TransitionIncomplete && pass < 16; pass++)
+        {
+            GrimoireSchemaTransitionJournalRow? journal = await GrimoireSchemaTransitionJournal.ReadAsync(
+                connection, null, GrimoireSchemaTransactionTier.Core, CancellationToken.None);
+
+            Assert.NotNull(journal);
+
+            _ = await runner.AdvanceAsync(connection, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core),
+                journal, context, 4, CancellationToken.None);
+
+            installed = await installer.InstallAsync(connection, 64, context, CancellationToken.None);
+        }
+
+        GrimoireSchemaInspectionResult inspection = await new GrimoireSchemaManifestInspector(GrimoireSchemaTierOwnershipRegistry.CreateDefault())
+            .InspectAsync(connection, null, GrimoireSchemaManifests.Core, CancellationToken.None);
+
+        Assert.True(inspection.IsValid, inspection.ToString());
+
+        return installed;
+    }
+
+    private static Task<string[]> InheritedEvidenceAsync(SqliteConnection connection) => RowsAsync(connection,
+        "SELECT 'r|' || quote(ReceiptId) || '|' || PolicyVersion || '|' || InputHash || '|' || OutputHash || '|' || SurvivorVersionId || '|' || CreatedAtUtc FROM long_rest_receipts UNION ALL SELECT 'i|' || ReceiptId || '|' || Ordinal || '|' || MemoryId || '|' || VersionId || '|' || hex(ContentHash) || '|' || SnapshotHash || '|' || SnapshotJson FROM long_rest_receipt_inputs UNION ALL SELECT 's|' || SourceVersionId || '|' || SurvivorVersionId || '|' || ReceiptId FROM long_rest_suppressions UNION ALL SELECT 'v|' || VersionId || '|' || ClaimId || '|' || hex(ContentHash) FROM annal_versions ORDER BY 1;");
+
+    private static async Task<string[]> CompleteCatalogAsync(SqliteConnection connection) =>
+        (await RowsAsync(connection, "SELECT type || ':' || name || ':' || sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name;"))
+            .Select(GrimoireSqlNormalizer.Normalize).ToArray();
 
     [Fact]
     public async Task A_fresh_installation_accepts_content_free_long_rest_receipts()
@@ -103,12 +188,11 @@ public sealed class LongRestSchemaEvolutionTests
         string[] before = await RowsAsync(connection,
             "SELECT m.Content || '|' || v.VersionId || '|' || v.OriginCode || '|' || hex(v.ContentHash) FROM saga_memories m JOIN annal_claims c ON c.SubjectId = m.Id JOIN annal_versions v ON v.ClaimId = c.ClaimId;");
 
-        GrimoireSchemaInstallResult upgraded = await GrimoireSchemaTestInstaller.InstallAsync(
-            connection, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None);
+        GrimoireSchemaInstallResult upgraded = await InstallHeadAsync(connection);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, upgraded.Core.Health);
 
-        Assert.Equal(17, upgraded.Core.SchemaVersion);
+        Assert.Equal(18, upgraded.Core.SchemaVersion);
 
         Assert.Equal(before, await RowsAsync(connection,
             "SELECT m.Content || '|' || v.VersionId || '|' || v.OriginCode || '|' || hex(v.ContentHash) FROM saga_memories m JOIN annal_claims c ON c.SubjectId = m.Id JOIN annal_versions v ON v.ClaimId = c.ClaimId;"));

@@ -52,12 +52,10 @@ public sealed partial class DataRetentionServiceTests
         }
     }
 
-
     [SkippableFact]
 
     public async Task GetStatusAsync_IncludesOwnedDerivedRecordsAndActualFileBytes()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -178,14 +176,12 @@ public sealed partial class DataRetentionServiceTests
                     or RetentionDataClass.BatchErrorFiles))
                 .Sum(static item => item.Rows),
             status.Rows);
-
     }
 
     [SkippableFact]
 
     public async Task PlanAndApplyAsync_Prune_DerivedCountsMatchEveryDeletedCompanionRow()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -216,7 +212,9 @@ public sealed partial class DataRetentionServiceTests
             request,
             CancellationToken.None);
 
-        Assert.Equal(9, plan.DerivedRecords);
+        Assert.Equal(1, await CountAllAsync("long_rest_sources"));
+
+        Assert.Equal(10, plan.DerivedRecords);
 
         Result<DataRetentionApplyResult> result = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -238,6 +236,8 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountAllAsync("saga_memories"));
 
+        Assert.Equal(0, await CountAllAsync("long_rest_sources"));
+
         Assert.Equal(0, await CountAllAsync("saga_memory_embeddings"));
 
         Assert.Equal(0, await CountAllAsync("saga_memory_embeddings_vec"));
@@ -249,7 +249,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountAllAsync("lexicon_fts"));
 
         Assert.Equal(0, await CountAllAsync("lexicon_fact_attachment_provenance"));
-
     }
 
     /// <summary>
@@ -262,7 +261,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task PlanAndApplyAsync_Prune_WhenSessionIsAlsoACandidate_CountsItsEntryEmbeddingsOnce()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -296,14 +294,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(plan.DerivedRecords, result.Value.DerivedRecordsDeleted);
 
         Assert.Equal(0, await CountAllAsync("entry_embeddings"));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAndApplyAsync_PruneBatch_DoesNotClaimReferencedFilesAsDeletedRecords()
     {
-
         RequireSqlCipher();
 
         Guid inputFileId = Guid.NewGuid();
@@ -364,14 +360,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(plan.DerivedRecords, result.Value.DerivedRecordsDeleted);
 
         Assert.Equal(3, await CountAllAsync("UploadedFiles"));
-
     }
 
     [SkippableFact]
 
     public async Task PlanAsync_PruneUploadedFiles_UsesActualExistingFileCountsAndBytes()
     {
-
         RequireSqlCipher();
 
         Guid existingFileId = Guid.NewGuid();
@@ -407,14 +401,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, uploaded.Files);
 
         Assert.Equal(actualBytes.LongLength, uploaded.EstimatedBytes);
-
     }
 
     [SkippableFact]
 
     public async Task ApplyAsync_Prune_WhenCandidateBecomesProtected_ContinuesWithoutAdvancingPastSkippedCandidate()
     {
-
         RequireSqlCipher();
 
         Guid fileId = Guid.Parse("10000000-0000-0000-0000-000000000001");
@@ -515,7 +507,6 @@ public sealed partial class DataRetentionServiceTests
             "Batches",
             "Id",
             laterBatchId.ToString()));
-
     }
 
     private async Task SeedInventoryDerivedRowsAsync(
@@ -524,7 +515,6 @@ public sealed partial class DataRetentionServiceTests
         Guid attachmentId,
         string attachmentChunkId)
     {
-
         await SeedEntryEmbeddingAsync(entryId);
 
         await InsertVectorAsync(
@@ -569,14 +559,12 @@ public sealed partial class DataRetentionServiceTests
             ("@sessionId", sessionId.ToString()),
             ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
-
     }
 
     private async Task SeedPrunableDerivedRowsAsync(
         Guid sessionId,
         Guid entryId)
     {
-
         await SeedEntryEmbeddingAsync(entryId);
 
         await InsertVectorAsync(
@@ -595,12 +583,10 @@ public sealed partial class DataRetentionServiceTests
             "prunable-lexicon",
             sessionId,
             Guid.NewGuid());
-
     }
 
     private async Task SeedWorkspaceRowsAsync(string chunkId)
     {
-
         await ExecuteAsync(
             """
             INSERT INTO workspace_file_chunks
@@ -624,7 +610,6 @@ public sealed partial class DataRetentionServiceTests
             "workspace_file_embeddings_vec",
             "ChunkId",
             chunkId);
-
     }
 
     private async Task SeedSagaRowsAsync(
@@ -632,7 +617,6 @@ public sealed partial class DataRetentionServiceTests
         Guid sessionId,
         Guid attachmentId)
     {
-
         await ExecuteAsync(
             """
             INSERT INTO saga_memories (Id, Content, CreatedAt, SessionId, Tags, Source)
@@ -667,7 +651,6 @@ public sealed partial class DataRetentionServiceTests
             ("@sessionId", sessionId.ToString()),
             ("@attachmentId", Canonical(attachmentId)),
             ("@at", OldTimestamp));
-
     }
 
     private Task SeedLexiconRowsAsync(
@@ -697,7 +680,6 @@ public sealed partial class DataRetentionServiceTests
         string table,
         string keyColumn)
     {
-
         await ExecuteAsync($"DROP TABLE IF EXISTS \"{table}\"");
 
         await ExecuteAsync(
@@ -707,7 +689,6 @@ public sealed partial class DataRetentionServiceTests
                 "Embedding" BLOB NOT NULL
             )
             """);
-
     }
 
     private Task InsertVectorAsync(
@@ -724,18 +705,14 @@ public sealed partial class DataRetentionServiceTests
 
     private async Task<long> SumTableCountsAsync(params string[] tables)
     {
-
         long rows = 0;
 
         foreach (string table in tables)
         {
-
             rows += await CountAllAsync(table);
-
         }
 
         return rows;
-
     }
 
     private static void AssertStatusRows(
@@ -744,7 +721,6 @@ public sealed partial class DataRetentionServiceTests
         long expectedRows,
         string expectedStore)
     {
-
         DataRetentionStatusItem item = Assert.Single(
             status.Items,
             candidate => candidate.DataClass == dataClass);
@@ -752,7 +728,5 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(expectedRows, item.Rows);
 
         Assert.Contains(expectedStore, item.Store, StringComparison.Ordinal);
-
     }
-
 }

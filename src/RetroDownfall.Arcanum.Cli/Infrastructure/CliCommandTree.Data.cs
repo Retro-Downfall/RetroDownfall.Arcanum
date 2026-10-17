@@ -306,6 +306,28 @@ internal static partial class CliCommandTree
                     .ConfigureAwait(false));
 
         data.Add(factoryReset);
+
+        Command repairIdentity = new(
+            "repair-installation-identity",
+            "Put a damaged installation identity credential item right when no unfinished work is bound to it.");
+
+        Option<bool> repairDryRun = new("--dry-run")
+        {
+            Description = "Preview the repair without changing anything.",
+        };
+
+        repairIdentity.Add(repairDryRun);
+
+        repairIdentity.SetAction(
+            async (ParseResult result, CancellationToken cancellationToken) =>
+                await serviceProvider
+                    .GetRequiredService<InstallationIdentityRepairCommand>()
+                    .Execute(
+                        result.GetValue(repairDryRun),
+                        cancellationToken)
+                    .ConfigureAwait(false));
+
+        data.Add(repairIdentity);
     }
 
     private static Command BuildWorkerCommand(

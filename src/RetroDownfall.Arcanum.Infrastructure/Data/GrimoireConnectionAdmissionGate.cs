@@ -60,6 +60,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
     private long _generation = 1;
 
+    private long _drainedAbortFloor = 1;
+
     private Closure? _closure;
 
     private object? _maintenanceAdoptionInterlockOwner;
@@ -301,6 +303,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             GrimoireWorkKind.LongRunningOperationRecovery => true,
             GrimoireWorkKind.ProviderHealthProbe => true,
             GrimoireWorkKind.McpServerBootstrap => true,
+            GrimoireWorkKind.LongRestSweep => true,
             _ => false,
         };
 
@@ -635,6 +638,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             {
                 _generation = checked(_generation + 1);
 
+                _drainedAbortFloor = _generation;
+
                 _state = GateState.Closed;
             }
 
@@ -777,6 +782,11 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
             openGeneration = checked(_generation + 1);
+
+            if (!token.Closure.StageOneDrained || _requestLeases.Count != 0 || _workLeases.Count != 0)
+            {
+                _drainedAbortFloor = openGeneration;
+            }
 
             token.Closure.ActiveClosingOwner = null;
 
@@ -1975,6 +1985,23 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         internal void SignalTerminalWhileLocked() => _terminal.TrySetResult();
     }
 
+    /// <summary>
+    /// Authenticates the presented lease against this gate at the moment of the call. Authority is the live lease
+    /// object itself: stored coordinates, a wrapper or another gate's lease can never satisfy it.
+    /// </summary>
+    public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration)
+    {
+        lock (_sync)
+        {
+            return lease is WorkLease work && ReferenceEquals(work.Gate, this)
+                && _state == GateState.Ordinary && _workLeases.Contains(work)
+                && !work.IsReleased && !work.ScopeDisposed && !work.RevocationPending
+                && !work.MaintenanceRevocation.IsCancellationRequested
+                && currentGeneration == _generation && work.Generation == currentGeneration
+                && previousGeneration >= _drainedAbortFloor && previousGeneration < currentGeneration;
+        }
+    }
+
     private sealed class WorkLease : IGrimoireWorkLease
     {
         private readonly TaskCompletionSource _terminal =
@@ -2018,6 +2045,17 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
         public long Generation { get; }
 
         public CancellationToken MaintenanceRevocation => Revocation.Token;
+
+        public bool MaintenanceRevocationPending
+        {
+            get
+            {
+                lock (Gate._sync)
+                {
+                    return RevocationPending;
+                }
+            }
+        }
 
         public bool TryBeginExternalEffectGroup(
             out IGrimoireExternalEffectGroup? effectGroup) =>

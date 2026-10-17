@@ -64,11 +64,7 @@ internal static class SqliteBusyRetry
         Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
         TimeSpan? deadline = null)
     {
-        int attempt = 1;
-
-        long startedAt = Stopwatch.GetTimestamp();
-
-        TimeSpan bound = deadline ?? DefaultDeadline;
+        SqliteBusyRetryCursor retry = Begin(deadline);
 
         while (true)
         {
@@ -79,39 +75,25 @@ internal static class SqliteBusyRetry
             catch (Exception ex) when (
                 IsBusyOrLocked(ex))
             {
-                // Computed once and reused for both the comparison and the throw below - not
-                // re-measured at the throw site, which would report a slightly later timestamp than
-                // the one this check actually acted on.
-                TimeSpan elapsed = Stopwatch.GetElapsedTime(startedAt);
-
-                if (elapsed >= bound)
-                {
-                    throw new GrimoireBusyTimeoutException(attempt, bound, elapsed, ex);
-                }
-
-                TimeSpan delay = ComputeDelay(attempt);
-
-                if (retrying is not null)
-                {
-                    await retrying(attempt, ex, cancellationToken).ConfigureAwait(false);
-                }
-
-                if (delayAsync is null)
-                {
-                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await delayAsync(delay, cancellationToken).ConfigureAwait(false);
-                }
-
-                if (attempt < int.MaxValue)
-                {
-                    attempt++;
-                }
+                await retry.WaitAsync(ex, cancellationToken, retrying, delayAsync).ConfigureAwait(false);
             }
         }
     }
+
+    /// <summary>
+    /// Starts one retry sequence for a caller that writes the attempt loop itself instead of handing the attempt to
+    /// <see cref="ExecuteAsync{T}"/> as a delegate. The policy is the same one, because <see cref="ExecuteAsync{T}"/> is written on
+    /// the cursor this returns: the bound runs from this call, a busy failure waits and counts an attempt, and the wait that finds the
+    /// bound spent throws <see cref="GrimoireBusyTimeoutException"/>.
+    /// </summary>
+    /// <remarks>
+    /// A caller whose attempt uses an admission lease it was handed needs this form: a delegate would capture the lease, and the
+    /// lease is passed by value from where it is acquired to every use, never kept by a closure or any other object. The loop is
+    /// <c>while (true) { try { ...one attempt...; return; } catch (Exception ex) when (IsBusyOrLocked(ex)) { await retry.WaitAsync(ex, ct); } }</c>,
+    /// with the cursor in a local of the calling method.
+    /// </remarks>
+    internal static SqliteBusyRetryCursor Begin(TimeSpan? deadline = null) =>
+        new(deadline ?? DefaultDeadline, Stopwatch.GetTimestamp());
 
     /// <summary>
     /// Whether a failure is SQLite's busy or locked answer, which a retry can clear. A cancellation is never
@@ -140,13 +122,97 @@ internal static class SqliteBusyRetry
         return false;
     }
 
-    private static TimeSpan ComputeDelay(int attempt)
+    internal static TimeSpan ComputeDelay(int attempt)
     {
         int cappedAttempt = Math.Min(attempt, 10);
 
         int delayMs = BaseDelayMilliseconds * (1 << (cappedAttempt - 1));
 
         return TimeSpan.FromMilliseconds(Math.Min(delayMs, 2_000));
+    }
+}
+
+/// <summary>
+/// One busy-retry sequence, advanced by the caller's own loop (<see cref="SqliteBusyRetry.Begin"/>): the clock the bound runs on and
+/// the number of the attempt that just failed. It holds nothing of the attempt, and no delegate: the hooks that observe and perform
+/// the wait are arguments of <see cref="WaitAsync"/>.
+/// </summary>
+/// <remarks>
+/// A value type kept in a local of the method that runs the attempts. <see cref="WaitAsync"/> advances the attempt number before it
+/// first awaits, in a method that is not async, so the number survives on the local across the awaits of an async caller; an async
+/// method of a struct would advance a copy.
+/// </remarks>
+internal struct SqliteBusyRetryCursor
+{
+    private readonly long _startedAt;
+
+    private readonly TimeSpan _bound;
+
+    private int _attempt;
+
+    internal SqliteBusyRetryCursor(TimeSpan bound, long startedAt, int attempt = 1)
+    {
+        _bound = bound;
+
+        _startedAt = startedAt;
+
+        _attempt = attempt;
+    }
+
+    /// <summary>
+    /// Waits out one busy or locked failure of the attempt just made, or gives up on it. Throws
+    /// <see cref="GrimoireBusyTimeoutException"/> when the bound has elapsed (before it waits), otherwise reports the failure to
+    /// <paramref name="retrying"/>, waits the doubling backoff (50 ms, capped at 2 seconds from the seventh attempt) with
+    /// <paramref name="delayAsync"/> or <see cref="Task.Delay(TimeSpan, CancellationToken)"/>, and counts the attempt.
+    /// </summary>
+    internal Task WaitAsync(
+        Exception busy,
+        CancellationToken cancellationToken,
+        Func<int, Exception, CancellationToken, ValueTask>? retrying = null,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+    {
+        // Computed once and reused for both the comparison and the throw below - not
+        // re-measured at the throw site, which would report a slightly later timestamp than
+        // the one this check actually acted on.
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(_startedAt);
+
+        if (elapsed >= _bound)
+        {
+            throw new GrimoireBusyTimeoutException(_attempt, _bound, elapsed, busy);
+        }
+
+        int attempt = _attempt;
+
+        if (_attempt < int.MaxValue)
+        {
+            _attempt++;
+        }
+
+        return PauseAsync(attempt, busy, cancellationToken, retrying, delayAsync);
+    }
+
+    private static async Task PauseAsync(
+        int attempt,
+        Exception busy,
+        CancellationToken cancellationToken,
+        Func<int, Exception, CancellationToken, ValueTask>? retrying,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync)
+    {
+        TimeSpan delay = SqliteBusyRetry.ComputeDelay(attempt);
+
+        if (retrying is not null)
+        {
+            await retrying(attempt, busy, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (delayAsync is null)
+        {
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await delayAsync(delay, cancellationToken).ConfigureAwait(false);
+        }
     }
 }
 

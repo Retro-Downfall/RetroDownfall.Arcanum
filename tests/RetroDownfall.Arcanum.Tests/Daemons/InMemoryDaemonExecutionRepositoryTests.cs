@@ -9,11 +9,14 @@ namespace RetroDownfall.Arcanum.Tests.Daemons;
 
 public sealed class InMemoryDaemonExecutionRepositoryTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
     [Fact]
     public async Task Start_complete_and_history_track_execution_lifecycle()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync("daemon-a", "Daemon A", CancellationToken.None);
@@ -31,13 +34,11 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Single(history);
 
         Assert.Equal(executionId, history[0].Id);
-
     }
 
     [Fact]
     public async Task CancelAsync_cancels_running_execution()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync("daemon-b", "Daemon B", CancellationToken.None);
@@ -51,13 +52,11 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Equal(DaemonJobStatus.Cancelled, cancelled.Status);
 
         Assert.True(linked!.IsCancellationRequested);
-
     }
 
     [Fact]
     public async Task GetAsync_includes_correlated_log_entries()
     {
-
         InMemoryLogRingBuffer logBuffer = CreateLogBuffer();
 
         InMemoryDaemonExecutionRepository repository = new(logBuffer);
@@ -82,7 +81,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Single(detail!.Logs);
 
         Assert.Equal("ran step", detail.Logs[0].Message);
-
     }
 
     // W3.3 Fix 4 (id-matched removal): overlapping StartAsync for the same daemon is no
@@ -92,7 +90,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task StartAsync_DistinctDaemons_RunConcurrently()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         Task<string> firstStart = repository.StartAsync(
@@ -126,14 +123,12 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         await repository.CompleteAsync(secondId, CancellationToken.None);
 
         Assert.False(repository.HasRunningExecution("daemon-b"));
-
     }
 
     [Fact]
 
     public async Task StartAsync_WaitsForExclusiveMutationLease_ThenStarts()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         IDaemonExecutionMutationGate gate = repository;
@@ -151,7 +146,7 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         await lease.DisposeAsync();
 
-        string executionId = await start.WaitAsync(TimeSpan.FromSeconds(2));
+        string executionId = await start.WaitAsync(HangGuard);
 
         Assert.True(repository.HasRunningExecution("daemon-gated"));
 
@@ -162,14 +157,12 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.NotNull(detail);
 
         Assert.Equal(DaemonJobStatus.Running, detail!.Status);
-
     }
 
     [Fact]
 
     public async Task TryStartAsync_WaitsForExclusiveMutationLease_ThenStarts()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         IDaemonExecutionMutationGate gate = repository;
@@ -187,16 +180,14 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         await lease.DisposeAsync();
 
-        Assert.True(await start.WaitAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(await start.WaitAsync(HangGuard));
 
         Assert.True(repository.HasRunningExecution("daemon-gated-try"));
-
     }
 
     [Fact]
     public async Task StartAsync_SameDaemonWhileRunning_Throws()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         _ = await repository.StartAsync("daemon-overlap", "Daemon Overlap", CancellationToken.None);
@@ -205,7 +196,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
             repository.StartAsync("daemon-overlap", "Daemon Overlap", CancellationToken.None));
 
         Assert.True(repository.HasRunningExecution("daemon-overlap"));
-
     }
 
     [Fact]
@@ -231,7 +221,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Equal(DaemonJobStatus.Running, detail!.Status);
 
         Assert.True(repository.HasRunningExecution("daemon-trim"));
-
     }
 
     // W3.3 Fix 4 (atomic TryStart): the on-demand path must reserve the in-flight
@@ -240,7 +229,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task TryStartAsync_ConcurrentCalls_ForSameDaemon_AdmitExactlyOne()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         using Barrier barrier = new(2);
@@ -248,11 +236,9 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Task<bool>[] attempts = Enumerable.Range(0, 2)
             .Select(i => Task.Run(() =>
             {
-
                 barrier.SignalAndWait();
 
                 return repository.TryStartAsync("daemon-race", "Daemon Race", $"exec-{i}", CancellationToken.None);
-
             }))
             .ToArray();
 
@@ -263,7 +249,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Single(results, static r => !r);
 
         Assert.True(repository.HasRunningExecution("daemon-race"));
-
     }
 
     [Fact]
@@ -293,7 +278,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task Duplicate_cancel_does_not_release_the_reservation_the_running_body_still_holds()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync(
@@ -318,7 +302,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         await repository.ReportDrainedAsync(executionId, CancellationToken.None);
 
         Assert.False(repository.HasRunningExecution("daemon-double-cancel"));
-
     }
 
     /// <summary>
@@ -327,7 +310,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task Reporting_a_drain_twice_is_harmless_and_keeps_the_terminal_status()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync(
@@ -349,7 +331,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
 
         // An execution that never existed is not an error: the runner reports a drain from a catch arm.
         await repository.ReportDrainedAsync("no-such-execution", CancellationToken.None);
-
     }
 
     [Fact]
@@ -422,7 +403,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task CancelAsync_HoldsTheSingleFlightSlotUntilTheDrainIsReported()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync("daemon-drain", "Daemon Drain", CancellationToken.None);
@@ -455,7 +435,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
             "Daemon Drain",
             Guid.NewGuid().ToString("N"),
             CancellationToken.None));
-
     }
 
     /// <summary>
@@ -466,7 +445,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task Cancel_Then_Complete_ReleasesTheSingleFlightSlot()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync("daemon-drain-complete", "Daemon Drain Complete", CancellationToken.None);
@@ -480,7 +458,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Equal(DaemonJobStatus.Cancelled, afterComplete.Status);
 
         Assert.False(repository.HasRunningExecution("daemon-drain-complete"));
-
     }
 
     /// <summary>
@@ -490,7 +467,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task Cancel_Then_Fail_ReleasesTheSingleFlightSlot()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync("daemon-drain-fail", "Daemon Drain Fail", CancellationToken.None);
@@ -504,7 +480,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.Equal(DaemonJobStatus.Cancelled, afterFail.Status);
 
         Assert.False(repository.HasRunningExecution("daemon-drain-fail"));
-
     }
 
     /// <summary>
@@ -514,7 +489,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     [Fact]
     public async Task CancelAsync_DoesNotDisposeTheTokenSourceTheJobIsStillUsing()
     {
-
         InMemoryDaemonExecutionRepository repository = CreateRepository();
 
         string executionId = await repository.StartAsync("daemon-drain-cts", "Daemon Drain CTS", CancellationToken.None);
@@ -531,7 +505,6 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
         Assert.True(cts.Token.WaitHandle.WaitOne(0));
 
         _ = await repository.CompleteAsync(executionId, CancellationToken.None);
-
     }
 
     private static InMemoryDaemonExecutionRepository CreateRepository()
@@ -540,5 +513,4 @@ public sealed class InMemoryDaemonExecutionRepositoryTests
     }
 
     private static InMemoryLogRingBuffer CreateLogBuffer() => new();
-
 }

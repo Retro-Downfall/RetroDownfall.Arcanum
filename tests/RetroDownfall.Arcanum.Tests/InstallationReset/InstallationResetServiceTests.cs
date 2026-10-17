@@ -5321,10 +5321,29 @@ public sealed partial class InstallationResetServiceTests
             InstallationResetActiveRecord record) =>
             new(
                 Location: null!,
-                Envelope: null!,
+                Envelope: Envelope(record),
                 RevisionDigest(),
                 InstallationResetActivePayloadV3.FromRecord(record),
                 Anchor: null!);
+
+        /// <summary>
+        /// An envelope that names the installation this double answers for, which is what a real
+        /// record's envelope does: a resume compares it with the identity of the database in front of it.
+        /// </summary>
+        private InstallationResetActiveEnvelopeV2 Envelope(InstallationResetActiveRecord record) =>
+            new(
+                Version: 2,
+                ProfileNamespaceDigest: new CovenantDigest(new byte[32]),
+                InstallationId: IdentityReadResult.IsSuccess ? IdentityReadResult.Value : Guid.Empty,
+                OperationId: record.OperationId,
+                Revision: (ulong)_revision,
+                PreviousEnvelopeDigest: new CovenantDigest(new byte[32]),
+                ActiveLocationDigest: new CovenantDigest(new byte[32]),
+                Scope: record.Scope,
+                PlanId: record.PlanId,
+                NonceBase64Url: string.Empty,
+                CiphertextBase64Url: string.Empty,
+                AuthenticationTagBase64Url: string.Empty);
 
         private CovenantDigest RevisionDigest()
         {

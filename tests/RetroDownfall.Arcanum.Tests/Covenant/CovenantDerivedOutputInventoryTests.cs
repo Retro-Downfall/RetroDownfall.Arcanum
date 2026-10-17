@@ -1,5 +1,7 @@
 using System.Reflection;
 using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -20,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantDerivedOutputInventoryTests
 {
-
     /// <summary>
     /// The contracts whose implementations must appear in the inventory.
     /// </summary>
@@ -30,6 +31,14 @@ public sealed class CovenantDerivedOutputInventoryTests
     /// </remarks>
     private static readonly Type[] GovernedContracts =
     [
+        typeof(ILongRestDiscoveryStore),
+
+        typeof(ILongRestSweepStore),
+
+        typeof(ILongRestMaintenance),
+
+        typeof(ILongRestProvider),
+
         typeof(IArtifactSensitivityLedger),
 
         typeof(ISessionSummaryArtifactStore),
@@ -43,13 +52,14 @@ public sealed class CovenantDerivedOutputInventoryTests
     [
         typeof(CovenantDerivedOutputInventory).Assembly,
 
+        typeof(LongRestMaintenance).Assembly,
+
         typeof(ArtifactSensitivityLedger).Assembly,
     ];
 
     [Fact]
     public void Every_implementation_of_a_governed_contract_has_a_declared_policy()
     {
-
         List<string> undeclared = [];
 
         foreach (Type implementation in ShippingAssemblies
@@ -57,27 +67,20 @@ public sealed class CovenantDerivedOutputInventoryTests
             .Where(static type => type is { IsClass: true, IsAbstract: false })
             .Where(static type => GovernedContracts.Any(contract => contract.IsAssignableFrom(type))))
         {
-
             if (CovenantDerivedOutputInventory.ForOwningType(implementation.FullName!).Count == 0)
             {
-
                 undeclared.Add(implementation.FullName!);
-
             }
-
         }
 
         Assert.Empty(undeclared);
-
     }
 
     [Fact]
     public void Every_declared_entry_names_a_type_that_still_exists()
     {
-
         foreach (CovenantDerivedOutputConsumer consumer in CovenantDerivedOutputInventory.Consumers)
         {
-
             Type? owning = ShippingAssemblies
                 .Select(assembly => assembly.GetType(consumer.OwningTypeName, throwOnError: false))
                 .FirstOrDefault(static type => type is not null);
@@ -85,15 +88,12 @@ public sealed class CovenantDerivedOutputInventoryTests
             Assert.True(
                 owning is not null,
                 $"The inventory declares '{consumer.Name}' against a type that no longer exists: {consumer.OwningTypeName}.");
-
         }
-
     }
 
     [Fact]
     public void Declared_names_are_unique_and_every_entry_states_why()
     {
-
         IReadOnlyList<CovenantDerivedOutputConsumer> consumers = CovenantDerivedOutputInventory.Consumers;
 
         Assert.Equal(
@@ -102,7 +102,6 @@ public sealed class CovenantDerivedOutputInventoryTests
 
         foreach (CovenantDerivedOutputConsumer consumer in consumers)
         {
-
             Assert.False(string.IsNullOrWhiteSpace(consumer.Name));
 
             // A policy without a stated reason is a policy the next change will quietly weaken.
@@ -111,15 +110,12 @@ public sealed class CovenantDerivedOutputInventoryTests
                 $"The inventory entry '{consumer.Name}' does not say why its policy is what it is.");
 
             Assert.True(Enum.IsDefined(consumer.Policy));
-
         }
-
     }
 
     [Fact]
     public void Every_artifact_kind_that_a_producer_writes_declares_a_propagating_producer()
     {
-
         SensitiveArtifactKind[] producedHere =
         [
             SensitiveArtifactKind.AssistantEntry,
@@ -131,14 +127,11 @@ public sealed class CovenantDerivedOutputInventoryTests
 
         foreach (SensitiveArtifactKind kind in producedHere)
         {
-
             Assert.Contains(
                 CovenantDerivedOutputInventory.Consumers,
                 consumer => consumer.ArtifactKind == kind
                     && consumer.Policy is DerivedOutputPolicy.PropagateLabel);
-
         }
-
     }
 
     /// <summary>
@@ -168,10 +161,8 @@ public sealed class CovenantDerivedOutputInventoryTests
     [Fact]
     public void Every_annals_store_plan_takes_its_claim_in_annals_order_before_the_subject_row()
     {
-
         foreach (AnnalSubjectStore store in Enum.GetValues<AnnalSubjectStore>())
         {
-
             SensitiveArtifactKind kind = Enum.Parse<SensitiveArtifactKind>(store.ToString());
 
             string subjectTable = store switch
@@ -206,27 +197,21 @@ public sealed class CovenantDerivedOutputInventoryTests
                 claimed.Select(t => t.CountBy("$artifactKey")));
 
             Assert.Equal(subjectTable, plan.Artifact!.Table);
-
         }
-
     }
 
     [Fact]
     public void The_content_free_log_scope_carries_no_digest_or_content_bearing_member()
     {
-
         string[] forbidden = ["Digest", "Content", "Text", "Key", "Fragment", "Bytes"];
 
         foreach (PropertyInfo property in typeof(CovenantProtectedLogScope)
             .GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
-
             Assert.DoesNotContain(
                 forbidden,
                 name => property.Name.Contains(name, StringComparison.Ordinal));
-
         }
-
     }
 
     /// <summary>
@@ -242,15 +227,12 @@ public sealed class CovenantDerivedOutputInventoryTests
     [Fact]
     public void The_scope_census_carries_no_key_content_or_digest_bearing_member()
     {
-
         string[] forbidden = ["Digest", "Content", "Text", "Key", "Fragment"];
 
         foreach (Type shape in (Type[])[typeof(CovenantScopeCensus), typeof(CovenantScopeCensusRow)])
         {
-
             foreach (PropertyInfo property in shape.GetProperties(BindingFlags.Public | BindingFlags.Instance))
             {
-
                 Assert.DoesNotContain(
                     forbidden,
                     name => property.Name.Contains(name, StringComparison.Ordinal));
@@ -267,17 +249,13 @@ public sealed class CovenantDerivedOutputInventoryTests
                         && property.PropertyType != typeof(Guid)
                         && property.PropertyType != typeof(Guid?),
                     $"{shape.Name}.{property.Name} could carry an identity or free text.");
-
             }
-
         }
-
     }
 
     [Fact]
     public void The_log_scope_renders_a_fixed_vocabulary_with_no_free_text()
     {
-
         CovenantProtectedLogScope tainted = CovenantProtectedLogScope.FromSensitivity(
             ContentSensitivity.CovenantDerived,
             GenerationProvenance.CreateExact([Guid.NewGuid(), Guid.NewGuid()]));
@@ -287,13 +265,11 @@ public sealed class CovenantDerivedOutputInventoryTests
             tainted.ToString());
 
         Assert.Equal("sensitivity=none", CovenantProtectedLogScope.None.ToString());
-
     }
 
     [Fact]
     public void Reducing_a_label_to_a_log_scope_drops_every_digest_it_carried()
     {
-
         ArtifactSensitivityLabel label = new(
             Guid.NewGuid(),
             SensitiveArtifactKind.AssistantEntry,
@@ -322,23 +298,17 @@ public sealed class CovenantDerivedOutputInventoryTests
         Assert.DoesNotContain(label.ArtifactContentDigest.ToString(), scope.ToString(), StringComparison.Ordinal);
 
         Assert.DoesNotContain(label.LabelDigest.ToString(), scope.ToString(), StringComparison.Ordinal);
-
     }
 
     private static CovenantDigest Digest(byte seed)
     {
-
         byte[] bytes = new byte[32];
 
         for (int index = 0; index < bytes.Length; index++)
         {
-
             bytes[index] = (byte)(seed + index);
-
         }
 
         return new CovenantDigest(bytes);
-
     }
-
 }

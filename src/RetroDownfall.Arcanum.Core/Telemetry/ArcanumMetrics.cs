@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Core.Telemetry;
 /// </summary>
 public static class ArcanumMetrics
 {
-
     public static readonly Meter Meter = new("Arcanum", "0.1.0");
 
     /// <summary>Total HTTP requests processed. Labels: <c>endpoint</c> (route pattern, not raw URL), <c>method</c>, <c>status_code</c>.</summary>
@@ -235,4 +234,96 @@ public static class ArcanumMetrics
         "s",
         "Wall-clock duration of outbound A2A Sendings measured from dispatch to settle");
 
+    /// <summary>
+    /// Long Rest sweeps parked by the owning worker or a fresh Session request. Label: <c>class</c>, the fault class of the code
+    /// the park was stamped with (<c>resume_later</c>, <c>restart_generation</c> or <c>needs_operator</c>). A restart-generation
+    /// park of a clean sweep is recorded as it is retired. Never carries a code, an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestSweepParkedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.parked",
+        "{sweeps}",
+        "Long Rest sweeps parked, by fault class");
+
+    /// <summary>Parked Long Rest sweeps readmitted to Running by their own authority class (the worker for clean, a fresh capability for protected).</summary>
+    public static readonly Counter<long> LongRestSweepReadmittedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.readmitted",
+        "{sweeps}",
+        "Parked Long Rest sweeps readmitted");
+
+    /// <summary>
+    /// Nominated neighbours the group packer left out of an anchor's adjudication packs. Label: closed <c>reason</c>
+    /// (<c>oversize</c>: the neighbour cannot fit a request with its anchor within the recipe's input budget; <c>unpaired</c>: the Pairing Gate
+    /// did not pair it with the anchor, because it is below the anchor's Background Floor or has no vector to judge; <c>incohesive</c>: it is paired
+    /// with the anchor but not with a member of every pack that had room; <c>pack_limit</c>: the anchor already has its three clique packs).
+    /// Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestPackSkippedCandidatesTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.skipped_candidates",
+        "{candidates}",
+        "Long Rest neighbours the group packer skipped, by reason");
+
+    /// <summary>
+    /// Anchors with at least one nominated neighbour, by the fixed bucket their Background Floor falls in: the cosine, in thousandths, a nominee
+    /// needed to be paired with the anchor. Label: closed <c>floor_le_permille</c> (the bucket's upper edge: <c>600</c>, <c>700</c>, <c>800</c>,
+    /// <c>900</c>, <c>920</c>, <c>950</c>, <c>980</c> or <c>1000</c>; see <c>LongRestPairing.FloorBucket</c>). A distribution that sits at the top says
+    /// the embedding model does not separate topics in this installation's memories. A counter and not a histogram, because the hosted-producer
+    /// analysis reviews histogram observations only for the hierarchy instruments. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestPairingFloorAnchorsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.discovery.pairing_floor",
+        "{anchors}",
+        "Long Rest anchors with nominated neighbours, by the bucket of their Background Floor");
+
+    /// <summary>
+    /// Hierarchy children too large for any summary request of the recipe's input budget, carried unsummarized instead of folded. Counted
+    /// once, when the child first reaches a layer's plan, and only after the plan's cursor is durable. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestHierarchyOversizeChildrenTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.hierarchy.oversize_children",
+        "{children}",
+        "Long Rest hierarchy children carried unsummarized because no request can hold them");
+
+    /// <summary>
+    /// Adjudication groups the sweep did not queue because the identical set of memories was already decided NoChange in the same generation,
+    /// so no request is made for it. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestReusedDecisionsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.reused_decisions",
+        "{decisions}",
+        "Long Rest adjudications reused from an identical decided set in the same generation");
+
+    /// <summary>
+    /// Leaves the lexical discovery lane fully verified (source row, snapshot, history head, vector and digest) because a lexical hit
+    /// named them, counted once per anchor scan. Lazy verification in score order keeps this at the eight eligible neighbours plus
+    /// the ineligible hits that outranked them, whatever the corpus size. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestLexicalVerificationsTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.discovery.lexical_verifications",
+        "{leaves}",
+        "Leaves the Long Rest lexical lane verified in full");
+
+    /// <summary>Resumable Long Rest faults that spent the last of the Sweep Failure Budget and became needs-operator parks.</summary>
+    public static readonly Counter<long> LongRestSweepBudgetExhaustedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.sweep.budget_exhausted",
+        "{sweeps}",
+        "Long Rest sweeps whose failure budget was spent");
+
+    /// <summary>
+    /// Paid Long Rest summaries the embedding provider's context window refused at their embedding (the last guard of Embedding-Bounded Summary).
+    /// The summary request states the recipe's summary bound (its output cap stays the fixed answer reservation), so a refusal here means the model ignored the bound.
+    /// Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestEmbeddingWindowRefusedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.summary.embedding_window_refused",
+        "{summaries}",
+        "Paid Long Rest summaries refused at their embedding because they exceed the embedding window");
+
+    /// <summary>
+    /// Session turns whose clean Long Rest scheduling was refused with a Long Rest error and which proceeded anyway. Label:
+    /// <c>code</c>, the closed <c>LongRest.*</c> error code. Never carries an identity or any content.
+    /// </summary>
+    public static readonly Counter<long> LongRestCleanScheduleRefusedTotal = Meter.CreateCounter<long>(
+        "arcanum.long_rest.clean_schedule_refused",
+        "{turns}",
+        "Session turns that proceeded after clean Long Rest scheduling was refused");
 }

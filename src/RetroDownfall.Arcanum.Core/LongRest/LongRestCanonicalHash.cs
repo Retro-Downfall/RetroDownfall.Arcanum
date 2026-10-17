@@ -137,7 +137,7 @@ internal static class LongRestCanonicalHash
         return bytes;
     }
 
-    private static void Target(Stream bytes, LongRestSnapshot snapshot)
+    private static void Target(MemoryStream bytes, LongRestSnapshot snapshot)
     {
         String(bytes, snapshot.MemoryId);
 
@@ -152,14 +152,14 @@ internal static class LongRestCanonicalHash
         Digest(bytes, snapshot.ContentHash);
     }
 
-    private static void Digest(Stream bytes, string value)
+    private static void Digest(MemoryStream bytes, string value)
     {
         Int32(bytes, 32);
 
         bytes.Write(Convert.FromHexString(value));
     }
 
-    private static void String(Stream bytes, string value)
+    private static void String(MemoryStream bytes, string value)
     {
         byte[] encoded = StrictUtf8.GetBytes(value);
 
@@ -172,7 +172,7 @@ internal static class LongRestCanonicalHash
         bytes.Write(encoded);
     }
 
-    private static void NullableString(Stream bytes, string? value)
+    private static void NullableString(MemoryStream bytes, string? value)
     {
         Boolean(bytes, value is not null);
 
@@ -182,7 +182,7 @@ internal static class LongRestCanonicalHash
         }
     }
 
-    private static void Int32(Stream bytes, int value)
+    private static void Int32(MemoryStream bytes, int value)
     {
         Span<byte> encoded = stackalloc byte[sizeof(int)];
 
@@ -191,7 +191,7 @@ internal static class LongRestCanonicalHash
         bytes.Write(encoded);
     }
 
-    private static void Time(Stream bytes, DateTimeOffset value)
+    private static void Time(MemoryStream bytes, DateTimeOffset value)
     {
         Span<byte> encoded = stackalloc byte[sizeof(long)];
 
@@ -200,7 +200,7 @@ internal static class LongRestCanonicalHash
         bytes.Write(encoded);
     }
 
-    private static void NullableTime(Stream bytes, DateTimeOffset? value)
+    private static void NullableTime(MemoryStream bytes, DateTimeOffset? value)
     {
         Boolean(bytes, value is not null);
 
@@ -210,7 +210,7 @@ internal static class LongRestCanonicalHash
         }
     }
 
-    private static void Boolean(Stream bytes, bool value) => bytes.WriteByte(value ? (byte)1 : (byte)0);
+    private static void Boolean(MemoryStream bytes, bool value) => bytes.WriteByte(value ? (byte)1 : (byte)0);
 
     private static string Hash(MemoryStream bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes.GetBuffer().AsSpan(0, checked((int)bytes.Length))));

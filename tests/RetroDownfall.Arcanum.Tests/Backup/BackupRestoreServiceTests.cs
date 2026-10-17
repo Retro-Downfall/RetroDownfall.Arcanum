@@ -43,7 +43,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// service, because the properties under test — atomic commit, complete rollback, migration through
 /// the authoritative installer — only exist across the whole pipeline.
 /// </summary>
-public sealed class BackupRestoreServiceTests : IDisposable
+public sealed partial class BackupRestoreServiceTests : IDisposable
 {
     internal const string Passphrase = "restore integration passphrase";
 
@@ -1021,7 +1021,7 @@ public sealed class BackupRestoreServiceTests : IDisposable
     /// installation past a start that has resolved it.
     /// </remarks>
     [Fact]
-    public async Task A_non_io_fault_after_the_reconcile_advance_is_finished_as_committed_at_the_next_start()
+    public async Task A_non_io_fault_after_the_reconcile_advance_retains_the_committed_database_until_bootstrap()
     {
         Fixture fixture = await CreateFixtureAsync();
 
@@ -1031,9 +1031,11 @@ public sealed class BackupRestoreServiceTests : IDisposable
             Path.Combine(_installation, "CODEX.md"),
             "# the original codex");
 
+        RecordingSecretStore secrets = new();
+
         _ = await Assert.ThrowsAsync<ArgumentException>(
             () => Restore(
-                    new RecordingSecretStore(),
+                    secrets,
                     new BackupRestoreServiceOptions
                     {
                         BeforePhaseForTests = phase =>
@@ -1059,11 +1061,12 @@ public sealed class BackupRestoreServiceTests : IDisposable
             BackupRestorePhase.Reconcile,
             Assert.IsType<BackupRestoreJournalRecord>(BackupRestoreJournal.TryRead(staging)).Phase);
 
-        BackupRestoreRecoveryReport report = Assert.Single(BackupRestoreRecovery.Resolve(_installation));
+        BackupRestoreRecoveryReport report = Assert.Single(
+            await BackupRestoreRecovery.ResolveAsync(_installation, secrets, CancellationToken.None));
 
-        Assert.Equal(BackupRestoreRecoveryOutcome.CommitCompleted, report.Outcome);
+        Assert.Equal(BackupRestoreRecoveryOutcome.CommittedDatabaseVerificationRequired, report.Outcome);
 
-        Assert.False(Directory.Exists(staging));
+        Assert.True(Directory.Exists(staging));
 
         Assert.Equal(
             "# the archived codex",

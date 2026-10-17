@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Cli.UX;
 /// </summary>
 public interface ICliEnvironment
 {
-
     /// <summary>
     /// <c>true</c> when neither stdout nor stdin is redirected and the runtime detects a TTY.
     /// </summary>
@@ -26,12 +25,10 @@ public interface ICliEnvironment
     /// AND running interactively (otherwise the bar pollutes piped output and scripts).
     /// </summary>
     bool ShouldShowManaBar { get; }
-
 }
 
 public sealed class CliEnvironment : ICliEnvironment
 {
-
     private readonly bool _isInteractive;
 
     private readonly bool _colorEnabled;
@@ -43,14 +40,12 @@ public sealed class CliEnvironment : ICliEnvironment
     public CliEnvironment(bool showManaBarConfigured)
         : this(showManaBarConfigured, invocationContext: null)
     {
-
     }
 
     internal CliEnvironment(
         bool showManaBarConfigured,
         ICliInvocationContext? invocationContext)
     {
-
         bool stdoutRedirected = Console.IsOutputRedirected;
 
         bool stdinRedirected = Console.IsInputRedirected;
@@ -62,14 +57,15 @@ public sealed class CliEnvironment : ICliEnvironment
         _showManaBarConfigured = showManaBarConfigured;
 
         _invocationContext = invocationContext;
-
     }
 
     /// <summary>
     /// The standard <c>NO_COLOR</c> (see <c>https://no-color.org</c>) or the Arcanum-specific
-    /// <c>ARCANUM_NO_COLOR</c>, set to any non-empty value. Exposed so the writers that build a
-    /// console per write — <see cref="Commands.CliErrorOutput"/> — answer the no-colour question
-    /// from the same place this type does instead of restating the variable names a third time.
+    /// <c>ARCANUM_NO_COLOR</c>, set to any non-empty value. Exposed so the stderr consoles that
+    /// <see cref="CliConsoleFactory.CreateDiagnosticSettings"/> builds for each write (reached by
+    /// <c>CliErrorOutput</c>, <c>ExecuteResultRendering</c> and the <c>ask_human</c> coordinator), and
+    /// the credential prompt's console, answer the no-colour question from the same place this type
+    /// does instead of restating the variable names a third time.
     /// </summary>
     internal static bool NoColorRequested =>
         !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))
@@ -95,5 +91,4 @@ public sealed class CliEnvironment : ICliEnvironment
         _showManaBarConfigured
         && IsInteractive
         && ColorEnabled;
-
 }

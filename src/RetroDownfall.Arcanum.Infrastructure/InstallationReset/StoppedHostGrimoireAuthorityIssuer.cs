@@ -8,7 +8,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
 internal enum StoppedHostGrimoireOperation : byte
 {
-
     InstallationResetPlanRead = 1,
 
     InstallationResetWorkspaceResolution = 2,
@@ -21,12 +20,22 @@ internal enum StoppedHostGrimoireOperation : byte
 
     MarkerPairReset = 6,
 
+    /// <summary>
+    /// The nested protected erasure of a global installation reset, which runs over the process's own
+    /// ordinary composition and so opens no stopped-host connection at all.
+    /// </summary>
+    /// <remarks>
+    /// The one operation here that is not a connection. What it authorizes is the loan of the held
+    /// installation lock to the transition-journal accessor for the length of one erasure
+    /// (<see cref="StoppedHostGrimoireAuthorityIssuer.LendHeldLock"/>), and no connection factory method
+    /// accepts it.
+    /// </remarks>
+    InstallationResetFactoryErasure = 7,
 }
 
 internal sealed class StoppedHostGrimoireAuthorityIssuer
     : IStoppedHostGrimoireAuthorityIssuer
 {
-
     private readonly string _canonicalDatabasePath;
 
     private readonly string _guardedGrimoireDirectory;
@@ -38,7 +47,6 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
         string guardedGrimoireDirectory,
         string canonicalDatabasePath)
     {
-
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedGrimoireDirectory);
@@ -54,10 +62,8 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
                 canonicalGuardedDirectory,
                 canonicalPath))
         {
-
             throw new InvalidOperationException(
                 "The stopped-host Grimoire path must belong to the guarded directory.");
-
         }
 
         heldInstallationLock.AssertHeldFor(canonicalGuardedDirectory);
@@ -67,7 +73,6 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
         _guardedGrimoireDirectory = canonicalGuardedDirectory;
 
         _canonicalDatabasePath = canonicalPath;
-
     }
 
     public Result<IStoppedHostGrimoireConnectionAuthority>
@@ -106,14 +111,84 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
             StoppedHostGrimoireOperation.MarkerPairReset,
             CovenantSqliteConnectionMode.ReadWrite);
 
+    public Result<IStoppedHostGrimoireConnectionAuthority>
+        IssueStoppedHostFactoryErasureLockLoan() =>
+        Issue(
+            StoppedHostGrimoireOperation.InstallationResetFactoryErasure,
+            CovenantSqliteConnectionMode.ReadWrite);
+
+    /// <summary>
+    /// Spends a factory-erasure loan authority: lends the held installation lock to the accessor the
+    /// offline-transition phase authority borrows it from, until the returned handle is disposed.
+    /// </summary>
+    /// <remarks>
+    /// The phase authority only ever borrows the lock (it opens a journal "under the host's lock"), and
+    /// in a stopped-host process nothing attaches one. Looking the lock up ambiently would make the
+    /// existence of a held lock enough to start an erasure, so the lock is instead lent by the one
+    /// object that holds it and can prove it live: the issuer that minted this authority, from the lock
+    /// it was created over. The loan is one-shot (the authority is consumed), is bound to the exact
+    /// operation and database path, and ends with the handle, in a <c>finally</c> of the caller's.
+    ///
+    /// <para>It refuses to nest. If any lock is already attached to the accessor, a loan inside another
+    /// loan or beside a serving host's own attachment would detach what it did not attach, so it answers
+    /// <see cref="ErrorCodes.Data.ControlPathUnavailable"/> and changes nothing. A lock that is no longer
+    /// held is refused the way every stopped-host authority refuses one.</para>
+    /// </remarks>
+    internal static Result<StoppedHostLockLoan> LendHeldLock(
+        IStoppedHostGrimoireConnectionAuthority authority,
+        InstallationResetMaintenanceLockAccessor accessor,
+        string expectedCanonicalDatabasePath)
+    {
+        ArgumentNullException.ThrowIfNull(accessor);
+
+        if (authority is not StoppedHostGrimoireConnectionAuthority stoppedHost)
+        {
+            return Result<StoppedHostLockLoan>.Failure(RefusalError());
+        }
+
+        Result consumed = stoppedHost.Consume(
+            StoppedHostGrimoireOperation.InstallationResetFactoryErasure,
+            CovenantSqliteConnectionMode.ReadWrite,
+            expectedCanonicalDatabasePath);
+
+        if (consumed.IsFailure)
+        {
+            return Result<StoppedHostLockLoan>.Failure(consumed.Error);
+        }
+
+        if (accessor.BorrowHeldLock(stoppedHost.GuardedGrimoireDirectory).IsSuccess)
+        {
+            return Result<StoppedHostLockLoan>.Failure(new Error(
+                ErrorCodes.Data.ControlPathUnavailable,
+                "An installation maintenance lock is already attached, so the factory-erasure loan was refused."));
+        }
+
+        try
+        {
+            accessor.AttachHostLock(
+                stoppedHost.HeldInstallationLock,
+                stoppedHost.GuardedGrimoireDirectory);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ObjectDisposedException
+            or IOException
+            or UnauthorizedAccessException)
+        {
+            // Either the lock stopped being held between the consumption above and this line, or another
+            // lock was attached in that instant. Both leave nothing attached by this call.
+            return Result<StoppedHostLockLoan>.Failure(RefusalError());
+        }
+
+        return Result<StoppedHostLockLoan>.Success(
+            new StoppedHostLockLoan(accessor, stoppedHost.HeldInstallationLock));
+    }
+
     private Result<IStoppedHostGrimoireConnectionAuthority> Issue(
         StoppedHostGrimoireOperation operation,
         CovenantSqliteConnectionMode mode)
     {
-
         try
         {
-
             _heldInstallationLock.AssertHeldFor(_guardedGrimoireDirectory);
 
             return Result<IStoppedHostGrimoireConnectionAuthority>.Success(
@@ -123,18 +198,14 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
                     _canonicalDatabasePath,
                     operation,
                     mode));
-
         }
         catch (Exception exception) when (exception is InvalidOperationException
             or ObjectDisposedException
             or IOException
             or UnauthorizedAccessException)
         {
-
             return Refused();
-
         }
-
     }
 
     private static Result<IStoppedHostGrimoireConnectionAuthority> Refused() =>
@@ -169,13 +240,11 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
         string guardedGrimoireDirectory,
         string canonicalDatabasePath)
     {
-
         string? databaseDirectory = Path.GetDirectoryName(
             Path.GetFullPath(canonicalDatabasePath));
 
         return databaseDirectory is not null
             && PathsEqual(guardedGrimoireDirectory, databaseDirectory);
-
     }
 
     private static bool PathsEqual(string left, string right) =>
@@ -189,7 +258,6 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
     private sealed class StoppedHostGrimoireConnectionAuthority
         : IStoppedHostGrimoireConnectionAuthority
     {
-
         private readonly string _canonicalDatabasePath;
 
         private readonly string _guardedGrimoireDirectory;
@@ -209,7 +277,6 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
             StoppedHostGrimoireOperation operation,
             CovenantSqliteConnectionMode mode)
         {
-
             _heldInstallationLock = heldInstallationLock;
 
             _guardedGrimoireDirectory = guardedGrimoireDirectory;
@@ -219,8 +286,11 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
             _operation = operation;
 
             _mode = mode;
-
         }
+
+        internal string GuardedGrimoireDirectory => _guardedGrimoireDirectory;
+
+        internal ArcanumMaintenanceLock HeldInstallationLock => _heldInstallationLock;
 
         internal static IStoppedHostGrimoireConnectionAuthority Create(
             ArcanumMaintenanceLock heldInstallationLock,
@@ -240,7 +310,6 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
             CovenantSqliteConnectionMode expectedMode,
             string expectedCanonicalDatabasePath)
         {
-
             if (Interlocked.CompareExchange(ref _consumedOrDisposed, 1, 0) != 0
                 || !HasCanonicalRootBinding(
                     _guardedGrimoireDirectory,
@@ -251,18 +320,14 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
                     _canonicalDatabasePath,
                     expectedCanonicalDatabasePath))
             {
-
                 return Refusal();
-
             }
 
             return Revalidate(expectedCanonicalDatabasePath);
-
         }
 
         internal Result Revalidate(string expectedCanonicalDatabasePath)
         {
-
             if (!HasCanonicalRootBinding(
                     _guardedGrimoireDirectory,
                     _canonicalDatabasePath)
@@ -270,18 +335,14 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
                     _canonicalDatabasePath,
                     expectedCanonicalDatabasePath))
             {
-
                 return Refusal();
-
             }
 
             try
             {
-
                 _heldInstallationLock.AssertHeldFor(_guardedGrimoireDirectory);
 
                 return Result.Success();
-
             }
             catch (Exception exception) when (
                 exception is InvalidOperationException
@@ -289,24 +350,56 @@ internal sealed class StoppedHostGrimoireAuthorityIssuer
                     or IOException
                     or UnauthorizedAccessException)
             {
-
                 return Refusal();
-
             }
-
         }
 
         public ValueTask DisposeAsync()
         {
-
             _ = Interlocked.CompareExchange(ref _consumedOrDisposed, 1, 0);
 
             return ValueTask.CompletedTask;
-
         }
 
         private static Result Refusal() => Result.Failure(RefusalError());
+    }
+}
 
+/// <summary>
+/// The held installation lock, lent to the offline-transition phase authority until this handle is
+/// disposed, and handed to the borrower that spent the loan authority as an explicit value.
+/// </summary>
+/// <remarks>
+/// The holder reads the exact lock from <see cref="HeldLock"/> and never looks one up through the
+/// accessor: a lookup of a held lock must not be enough to start an erasure or a recovery, and the
+/// loan is how a stopped-host caller that spent the one-shot authority names the lock it was lent.
+/// Disposing detaches the lock once, whichever way the call ended.
+/// </remarks>
+internal sealed class StoppedHostLockLoan : IAsyncDisposable
+{
+    private readonly InstallationResetMaintenanceLockAccessor _accessor;
+
+    private int _detached;
+
+    internal StoppedHostLockLoan(
+        InstallationResetMaintenanceLockAccessor accessor,
+        ArcanumMaintenanceLock heldInstallationLock)
+    {
+        _accessor = accessor ?? throw new ArgumentNullException(nameof(accessor));
+
+        HeldLock = heldInstallationLock ?? throw new ArgumentNullException(nameof(heldInstallationLock));
     }
 
+    /// <summary>The exact installation lock the issuer that minted the loan authority was created over.</summary>
+    internal ArcanumMaintenanceLock HeldLock { get; }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _detached, 1) == 0)
+        {
+            _accessor.DetachHostLock(HeldLock);
+        }
+
+        return ValueTask.CompletedTask;
+    }
 }

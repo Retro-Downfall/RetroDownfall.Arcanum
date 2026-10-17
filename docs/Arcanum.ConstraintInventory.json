@@ -4878,7 +4878,7 @@
       "subsystem": "MCP",
       "sourceLocations": [
         "src/RetroDownfall.Arcanum.Core/Configuration/ArcanumSettingClamps.cs#McpHttpConnectTimeoutSeconds",
-        "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs"
+        "src/RetroDownfall.Arcanum.Infrastructure/Mcp/ConnectionManager/McpConnectionManager.TransportFactory.cs#GetClampedMcpHttpConnectTimeout"
       ],
       "coveredSymbols": [
         "ArcanumSettingClamps.McpHttpConnectTimeoutSeconds"

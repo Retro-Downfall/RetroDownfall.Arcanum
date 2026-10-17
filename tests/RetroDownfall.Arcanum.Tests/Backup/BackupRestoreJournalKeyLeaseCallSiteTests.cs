@@ -93,6 +93,15 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         // restore-journal account, which is what keeps the two slots from authorizing each other's
         // removal, and without a proof it deletes nothing at all.
         FullResetTransitionCredentialRemover,
+
+        // The one path that removes the installation-identity account outside the attested full reset,
+        // and the only entry here besides the full-reset remover allowed to name a restore-journal
+        // account, which it names for that one account alone. It removes the identity only when the
+        // stored value is present and is not one canonical identity, so a valid identity survives it,
+        // and only for the installation-identity repair, which has proved under the held installation
+        // lock that no restore, offline-transition or reset evidence exists and that the Grimoire has
+        // no authority row. The journal key and the journal anchor survive it: it cannot name them.
+        InstallationIdentityRemover,
     ];
 
     private const string MirroredCredentialHelper =
@@ -104,6 +113,14 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
     private const string FullResetRestoreCredentialRemover =
         "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/"
         + "InstallationResetRestoreCredentialCleanup.cs";
+
+    /// <summary>
+    /// The installation-identity provider, whose removal of a value that is not a canonical identity is
+    /// the second path that may remove one of the three restore-journal accounts, and only that one.
+    /// </summary>
+    private const string InstallationIdentityRemover =
+        "src/RetroDownfall.Arcanum.Infrastructure/Backup/"
+        + "BackupRestoreJournalInstallationIdentityProvider.cs";
 
     /// <summary>
     /// The offline-transition slot's own remover, which is a different slot with a different proof.
@@ -206,6 +223,9 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
                 .Where(source =>
                     CredentialDeletionDeciderOwners.Any(source.IsExactOwner)
                     && !source.IsExactOwner(FullResetRestoreCredentialRemover)
+                    && !(source.IsExactOwner(InstallationIdentityRemover)
+                        && !source.Names("ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount")
+                        && !source.Names("ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount"))
                     && source.Names("ArcanumCredentialIdentity.BackupRestoreJournal"))
                 .Select(static source => source.RelativePath),
         ];
@@ -240,6 +260,22 @@ public sealed class BackupRestoreJournalKeyLeaseCallSiteTests
         Assert.True(transitionRemover.Names("before.Value != projectedValueDigest"));
 
         Assert.False(transitionRemover.Names("ArcanumCredentialIdentity.BackupRestoreJournal"));
+
+        // The identity remover is safe for the reasons the exemption above states, each pinned: it
+        // deletes once, it deletes only after the stored value has been classified as not canonical, it
+        // refuses a valid identity, and it can name neither the journal key nor the journal anchor.
+        ProductionSource identityRemover = ProductionSourceInventory.Sources()
+            .Single(source => source.IsExactOwner(InstallationIdentityRemover));
+
+        Assert.Equal(1, identityRemover.Occurrences("_credentials.Delete("));
+
+        Assert.True(identityRemover.Names("probe.Error.Code != ErrorCodes.Covenant.IntegrityFailure"));
+
+        Assert.True(identityRemover.Names("A valid identity "));
+
+        Assert.False(identityRemover.Names("ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount"));
+
+        Assert.False(identityRemover.Names("ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount"));
     }
 
     /// <summary>

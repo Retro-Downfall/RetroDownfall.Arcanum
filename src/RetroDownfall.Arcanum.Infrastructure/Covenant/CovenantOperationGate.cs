@@ -580,6 +580,25 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         };
     }
 
+    public ValueTask<Result> ValidateTurnLeaseAsync(CovenantTurnLease lease, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_sync)
+        {
+            if (lease is null || !_registrations.TryGetValue(lease.Snapshot.RegistrationId, out ScopedRegistration? registration)
+                || !ReferenceEquals(registration.Wrapper, lease) || registration.Snapshot.Kind != CovenantLeaseKind.Turn)
+            {
+                return ValueTask.FromResult(Result.Failure(new Error(ErrorCodes.Covenant.ForbiddenAuthority,
+                    "The borrowed turn was not issued by this gate or is no longer held.")));
+            }
+
+            // This is the exact retained wrapper, so its disposal bit and the gate-owned
+            // registration's release/revocation/generation checks all belong to this authority.
+            return lease.RevalidateAsync(cancellationToken);
+        }
+    }
+
     private Result<TLease> AcquireOrdinary<TLease>(
         CovenantLeaseKind kind,
         CovenantOperationScope? scope,
@@ -641,10 +660,14 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                     RecoveryOwner: null,
                     CleanupOnlyHistoricalCampaign: false));
 
-            _registrations.Add(registration.Snapshot.RegistrationId, registration);
-        }
+            TLease lease = create(registration);
 
-        return create(registration);
+            registration.Wrapper = lease;
+
+            _registrations.Add(registration.Snapshot.RegistrationId, registration);
+
+            return lease;
+        }
     }
 
     private async ValueTask<Result<TLease>> AcquireExclusiveCoreAsync<TLease>(
@@ -1139,33 +1162,33 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
             || authority.RuntimeAuthorityGeneration != snapshot.RuntimeAuthorityGeneration
             || authority.AuthorityEpoch != snapshot.AuthorityEpoch)
         {
-            return new Error(
+            return Result.Failure(new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
-                "Installation authority changed after this Covenant lease was taken.");
+                "Installation authority changed after this Covenant lease was taken."));
         }
 
         CovenantAvailabilitySnapshot availability = state.Availability;
 
         if (snapshot.DatasetGeneration is { } captured && availability.DatasetGeneration != captured)
         {
-            return new Error(
+            return Result.Failure(new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
-                "The Covenant dataset generation changed after this lease was taken.");
+                "The Covenant dataset generation changed after this lease was taken."));
         }
 
         if (snapshot.AcceleratorEpoch is { } acceleratorEpoch
             && availability.AcceleratorEpoch != acceleratorEpoch)
         {
-            return new Error(
+            return Result.Failure(new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
-                "The Covenant accelerator epoch changed after this lease was taken.");
+                "The Covenant accelerator epoch changed after this lease was taken."));
         }
 
         if (!exclusive && availability.Canonical != CovenantCapabilityState.Healthy)
         {
-            return new Error(
+            return Result.Failure(new Error(
                 ErrorCodes.Covenant.Unavailable,
-                "The Covenant canonical tier stopped being healthy while this lease was held.");
+                "The Covenant canonical tier stopped being healthy while this lease was held."));
         }
 
         return Result.Success();
@@ -1253,9 +1276,9 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
                 || registration.IsReleased
                 || registration.IsDispositionClaimed)
             {
-                return new Error(
+                return Result.Failure(new Error(
                     ErrorCodes.Covenant.StaleSnapshot,
-                    "This exclusive Covenant lease no longer owns its exact closed scope.");
+                    "This exclusive Covenant lease no longer owns its exact closed scope."));
             }
         }
 
@@ -1341,6 +1364,8 @@ internal sealed class CovenantOperationGate : ICovenantOperationGate
         public CovenantOperationLeaseSnapshot Snapshot { get; }
 
         public CancellationToken Revocation => _revocation.Token;
+
+        internal CovenantOperationLease? Wrapper { get; set; }
 
         internal Task Released => _released.Task;
 

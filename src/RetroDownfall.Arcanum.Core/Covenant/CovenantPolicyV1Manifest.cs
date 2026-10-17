@@ -256,7 +256,7 @@ public static class CovenantPolicyV1Manifest
     {
         if (typeof(TEnum) == typeof(SensitiveArtifactKind))
         {
-            return 15;
+            return 16;
         }
 
         if (typeof(TEnum) == typeof(CovenantPromptAttribution))
@@ -279,8 +279,12 @@ public static class CovenantPolicyV1Manifest
             return 7;
         }
 
+        if (typeof(TEnum) == typeof(CovenantMaintenanceStep))
+        {
+            return 7;
+        }
+
         if (typeof(TEnum) == typeof(SessionTurnClaimState)
-            || typeof(TEnum) == typeof(CovenantMaintenanceStep)
             || typeof(TEnum) == typeof(CovenantReasoningEffort))
         {
             return 6;

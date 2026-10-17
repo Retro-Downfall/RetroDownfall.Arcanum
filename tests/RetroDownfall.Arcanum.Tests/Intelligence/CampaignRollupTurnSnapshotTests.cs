@@ -24,7 +24,7 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         CampaignRollupTurnPreparer preparer = new(
             store, new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
-            new Resolver(), null!, authoritySnapshot: new UnavailableAuthority(), lookup: lookup);
+            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher, authoritySnapshot: new UnavailableAuthority(), lookup: lookup);
 
         TurnIdempotencyAmbient.PublishIdentity(new string('B', 64), new string('C', 64));
 
@@ -77,7 +77,6 @@ public sealed class CampaignRollupTurnSnapshotTests
         public ValueTask<Result<SessionTurnClaim?>> FindAsync(Guid installationId, Guid clientTurnId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Disabled inference must not request a Covenant origin or a claim payload.");
     }
-
 
     internal static readonly Guid CampaignId = Guid.NewGuid();
 
@@ -166,7 +165,7 @@ public sealed class CampaignRollupTurnSnapshotTests
             InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools, null).Value;
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(Enabled()),
-            new Resolver(), null!, new RefusingMaintenance(), new InputStore(), null, claims, new Authority());
+            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher, new RefusingMaintenance(), new InputStore(), null, claims, new Authority());
 
         Result<CampaignRollupTurnSnapshot?> prepared = await preparer.PrepareLiveAsync(
             Request(), invocation, false, CancellationToken.None);
@@ -201,7 +200,7 @@ public sealed class CampaignRollupTurnSnapshotTests
             InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools, null).Value;
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(Enabled()),
-            new Resolver(), null!, new RecordingMaintenance(store.Actions), new InputStore(), null, claims, new Authority());
+            new Resolver(), null!, UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher, new RecordingMaintenance(store.Actions), new InputStore(), null, claims, new Authority());
 
         Result<CampaignRollupTurnSnapshot?> prepared = await preparer.PrepareLiveAsync(request, invocation, true, CancellationToken.None);
 
@@ -221,7 +220,6 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         Assert.Null(snapshot.Replay);
 
-
         await snapshot.DisposeAsync();
 
         Assert.Equal(1, claims.Completions);
@@ -230,7 +228,6 @@ public sealed class CampaignRollupTurnSnapshotTests
     internal sealed class AcceptingClaims : ISessionTurnClaimCoordinator
     {
         public int Completions { get; private set; }
-
 
         public ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(SessionTurnRequestIdentity request, CancellationToken cancellationToken)
         {
@@ -315,7 +312,8 @@ public sealed class CampaignRollupTurnSnapshotTests
     }
 
     private static CampaignRollupTurnPreparer Preparer(ProbeStore store, ArcanumSettings settings) =>
-        new(store, new TestOptionsMonitor<ArcanumSettings>(settings), new Resolver(), null!);
+        new(store, new TestOptionsMonitor<ArcanumSettings>(settings), new Resolver(), null!,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher);
 
     private static ArcanumSettings Enabled()
     {
@@ -393,5 +391,4 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
-
 }

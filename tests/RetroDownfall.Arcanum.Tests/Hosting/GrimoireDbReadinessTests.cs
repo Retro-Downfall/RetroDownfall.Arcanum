@@ -4,11 +4,14 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 
 public sealed class GrimoireDbReadinessTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
     [Fact]
     public void MarkReady_sets_IsReady_true()
     {
-
         GrimoireDbReadiness readiness = new();
 
         Assert.False(readiness.IsReady);
@@ -16,7 +19,6 @@ public sealed class GrimoireDbReadinessTests
         readiness.MarkReady();
 
         Assert.True(readiness.IsReady);
-
     }
 
     [Fact]
@@ -65,7 +67,6 @@ public sealed class GrimoireDbReadinessTests
         GrimoireDbReadiness readiness = new();
         readiness.MarkReady();
 
-        await readiness.WaitUntilReadyAsync().WaitAsync(TimeSpan.FromSeconds(1));
+        await readiness.WaitUntilReadyAsync().WaitAsync(HangGuard);
     }
-
 }

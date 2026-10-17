@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import NamedTuple, Optional, Sequence, TextIO, Tuple
+from typing import Mapping, NamedTuple, Optional, Sequence, TextIO, Tuple
 import xml.etree.ElementTree as ElementTree
 
 
@@ -28,6 +28,34 @@ FIXTURE_FILTER = (
 )
 
 ADDITIONAL_FILTER = "Category=HostedProducerAdditionalAnalysis"
+
+SERVE_HOST_FILTER = "Category=HostedProducerServeHostAnalysis"
+
+BUILD_FIXTURE_FILTER = "Category=HostedProducerBuildAnalysis"
+
+# The closed list of partitions, each run by one CI job and each reconciled by the aggregate. "primary" is the production
+# methods that are not additional, "additional" the production methods marked HostedProducerAdditionalAnalysis, "serve-host" the
+# fixtures marked HostedProducerServeHostAnalysis (each case analyses the production compilations with trees replaced, so each
+# case is a whole discovery), "fixtures-build" the fixtures marked HostedProducerBuildAnalysis (the Build scan classes and the Serve
+# worker theories, each of which reads the production source as a whole), and "fixtures" every other fixture. "full" runs everything
+# and is not a CI job.
+PARTITIONS = ("primary", "additional", "fixtures", "fixtures-build", "serve-host")
+
+# A fixture partition holds a process that keeps the bound production compilations in memory, and the CI runner has about 7 GB, so
+# a fixture partition is always planned as exactly one process whatever the number of worker slots.
+FIXTURE_PARTITIONS = ("fixtures", "fixtures-build", "serve-host")
+
+PARTITION_JOBS = {
+    "primary": "Hosted producer primary analysis",
+    "additional": "Hosted producer additional analysis",
+    "fixtures": "Hosted producer fixture analysis",
+    "fixtures-build": "Hosted producer fixture build analysis",
+    "serve-host": "Hosted producer serve host analysis",
+}
+
+RECEIPT_SCHEMA_VERSION = 3
+
+SUMMARY_SCHEMA_VERSION = 3
 
 RECEIPT_FILE = "hosted-producer-analysis-receipt.json"
 
@@ -176,11 +204,13 @@ def select_partition(
     production: Sequence[DiscoveredMethod],
     additional: Sequence[DiscoveredMethod],
     fixtures: Sequence[DiscoveredMethod],
+    serve_host: Sequence[DiscoveredMethod],
+    build_fixtures: Sequence[DiscoveredMethod],
     partition: str,
 ) -> Tuple[list[DiscoveredMethod], list[DiscoveredMethod]]:
     """Select one complete partition after validating the shared universe."""
 
-    if partition not in {"full", "primary", "additional"}:
+    if partition not in {"full", *PARTITIONS}:
         raise ValueError(f"unknown hosted-producer analysis partition: {partition}")
 
     production_by_name = _method_map(production, "production")
@@ -188,6 +218,10 @@ def select_partition(
     additional_by_name = _method_map(additional, "additional")
 
     fixture_by_name = _method_map(fixtures, "fixture")
+
+    serve_host_by_name = _method_map(serve_host, "serve host")
+
+    build_by_name = _method_map(build_fixtures, "build fixture")
 
     overlap = set(production_by_name).intersection(fixture_by_name)
 
@@ -219,25 +253,91 @@ def select_partition(
             "a nonempty proper subset of the production universe"
         )
 
+    outside = set(serve_host_by_name).difference(fixture_by_name)
+
+    if outside:
+        raise ValueError(
+            "serve host methods outside the fixture universe: "
+            + ", ".join(sorted(outside))
+        )
+
+    for name, method in serve_host_by_name.items():
+        if fixture_by_name[name].case_count != method.case_count:
+            raise ValueError(
+                "serve host method case count does not match the fixtures: "
+                f"{name} ({method.case_count} != "
+                f"{fixture_by_name[name].case_count})"
+            )
+
+    if not serve_host_by_name or len(serve_host_by_name) >= len(fixture_by_name):
+        raise ValueError(
+            "serve host partition is empty or its fixture methods are not "
+            "a nonempty proper subset of the fixture universe"
+        )
+
+    outside = set(build_by_name).difference(fixture_by_name)
+
+    if outside:
+        raise ValueError(
+            "build fixture methods outside the fixture universe: "
+            + ", ".join(sorted(outside))
+        )
+
+    for name, method in build_by_name.items():
+        if fixture_by_name[name].case_count != method.case_count:
+            raise ValueError(
+                "build fixture method case count does not match the fixtures: "
+                f"{name} ({method.case_count} != "
+                f"{fixture_by_name[name].case_count})"
+            )
+
+    if not build_by_name or len(build_by_name) >= len(fixture_by_name):
+        raise ValueError(
+            "build fixture partition is empty or its fixture methods are not "
+            "a nonempty proper subset of the fixture universe"
+        )
+
+    overlap = set(serve_host_by_name).intersection(build_by_name)
+
+    if overlap:
+        raise ValueError(
+            "methods selected by both serve host and build fixture partitions: "
+            + ", ".join(sorted(overlap))
+        )
+
     primary = [
         method
         for method in production
         if method.name not in additional_by_name
     ]
 
-    secondary = [*additional, *fixtures]
+    other_fixtures = [
+        method
+        for method in fixtures
+        if method.name not in serve_host_by_name
+        and method.name not in build_by_name
+    ]
 
     if not primary:
         raise ValueError("primary partition is empty")
 
-    if not secondary:
-        raise ValueError("additional partition is empty")
+    if not other_fixtures:
+        raise ValueError("fixtures partition is empty")
 
     if partition == "primary":
         return primary, []
 
     if partition == "additional":
-        return list(additional), list(fixtures)
+        return list(additional), []
+
+    if partition == "fixtures":
+        return [], other_fixtures
+
+    if partition == "fixtures-build":
+        return [], list(build_fixtures)
+
+    if partition == "serve-host":
+        return [], list(serve_host)
 
     return list(production), list(fixtures)
 
@@ -246,8 +346,13 @@ def plan_shards(
     production: Sequence[DiscoveredMethod],
     fixtures: Sequence[DiscoveredMethod],
     worker_count: int,
+    max_fixture_workers: Optional[int] = None,
 ) -> list[AnalysisShard]:
-    """Reserve production traversal capacity while balancing fixture processes."""
+    """Reserve production traversal capacity while balancing fixture processes.
+
+    max_fixture_workers bounds the fixture processes whatever the capacity: a partition
+    whose runner cannot hold two fixture processes in memory asks for one.
+    """
 
     if worker_count < 1:
         raise ValueError("worker count must be positive")
@@ -295,6 +400,9 @@ def plan_shards(
 
     if fixtures:
         fixture_workers = max(1, worker_count - (min(3, worker_count) if production else 0))
+
+        if max_fixture_workers is not None:
+            fixture_workers = max(1, min(fixture_workers, max_fixture_workers))
 
         for fixture_shard in balance_methods(fixtures, fixture_workers):
             shards.append(
@@ -435,6 +543,8 @@ def write_partition_receipt(
     production: Sequence[DiscoveredMethod],
     additional: Sequence[DiscoveredMethod],
     fixtures: Sequence[DiscoveredMethod],
+    serve_host: Sequence[DiscoveredMethod],
+    build_fixtures: Sequence[DiscoveredMethod],
     selected_production: Sequence[DiscoveredMethod],
     selected_fixtures: Sequence[DiscoveredMethod],
     shards: Sequence[AnalysisShard],
@@ -447,7 +557,7 @@ def write_partition_receipt(
     ]
 
     receipt = {
-        "schemaVersion": 1,
+        "schemaVersion": RECEIPT_SCHEMA_VERSION,
         "sourceSha": source_sha,
         "partition": partition,
         "fullUniverse": [
@@ -455,6 +565,8 @@ def write_partition_receipt(
             *(_entry(method, "fixture") for method in fixtures),
         ],
         "additionalProduction": [_entry(method) for method in additional],
+        "serveHostFixtures": [_entry(method) for method in serve_host],
+        "buildFixtures": [_entry(method) for method in build_fixtures],
         "selected": selected,
         "shards": [
             {
@@ -492,7 +604,7 @@ def _load_receipt(path: Path, expected_partition: str, source_sha: str) -> dict:
             f"malformed {expected_partition} analysis receipt: {receipt_path}"
         ) from error
 
-    if not isinstance(receipt, dict) or receipt.get("schemaVersion") != 1:
+    if not isinstance(receipt, dict) or receipt.get("schemaVersion") != RECEIPT_SCHEMA_VERSION:
         raise RuntimeError(
             f"unsupported {expected_partition} analysis receipt schema"
         )
@@ -563,6 +675,9 @@ def _validate_receipt(
 ) -> Tuple[Counter[Tuple[str, int, str]], int, int]:
     partition = str(receipt["partition"])
 
+    if partition not in PARTITIONS:
+        raise RuntimeError(f"unknown analysis receipt partition: {partition}")
+
     universe = _parse_receipt_entries(
         receipt.get("fullUniverse"),
         f"{partition} full universe",
@@ -572,6 +687,18 @@ def _validate_receipt(
     additional = _parse_receipt_entries(
         receipt.get("additionalProduction"),
         f"{partition} additional production",
+        require_kind=False,
+    )
+
+    serve_host = _parse_receipt_entries(
+        receipt.get("serveHostFixtures"),
+        f"{partition} serve host fixtures",
+        require_kind=False,
+    )
+
+    build_fixtures = _parse_receipt_entries(
+        receipt.get("buildFixtures"),
+        f"{partition} build fixtures",
         require_kind=False,
     )
 
@@ -615,18 +742,75 @@ def _validate_receipt(
             f"{partition} additional production is not a nonempty proper subset"
         )
 
+    serve_host_map = {name: count for name, count, _ in serve_host}
+
+    outside = set(serve_host_map).difference(fixtures)
+
+    if outside:
+        raise RuntimeError(
+            f"{partition} serve host fixtures are outside the full universe"
+        )
+
+    if any(fixtures[name] != count for name, count in serve_host_map.items()):
+        raise RuntimeError(
+            f"{partition} serve host fixture case counts do not match"
+        )
+
+    if not serve_host_map or len(serve_host_map) >= len(fixtures):
+        raise RuntimeError(
+            f"{partition} serve host fixtures are not a nonempty proper subset"
+        )
+
+    build_map = {name: count for name, count, _ in build_fixtures}
+
+    outside = set(build_map).difference(fixtures)
+
+    if outside:
+        raise RuntimeError(
+            f"{partition} build fixtures are outside the full universe"
+        )
+
+    if any(fixtures[name] != count for name, count in build_map.items()):
+        raise RuntimeError(
+            f"{partition} build fixture case counts do not match"
+        )
+
+    if not build_map or len(build_map) >= len(fixtures):
+        raise RuntimeError(
+            f"{partition} build fixtures are not a nonempty proper subset"
+        )
+
+    if set(serve_host_map).intersection(build_map):
+        raise RuntimeError(
+            f"{partition} serve host fixtures and build fixtures overlap"
+        )
+
     if partition == "primary":
         expected = Counter(
             (name, count, "production")
             for name, count in production.items()
             if name not in additional_map
         )
+    elif partition == "additional":
+        expected = Counter(
+            (name, count, "production")
+            for name, count in additional_map.items()
+        )
+    elif partition == "fixtures":
+        expected = Counter(
+            (name, count, "fixture")
+            for name, count in fixtures.items()
+            if name not in serve_host_map and name not in build_map
+        )
+    elif partition == "fixtures-build":
+        expected = Counter(
+            (name, count, "fixture")
+            for name, count in build_map.items()
+        )
     else:
         expected = Counter(
-            [
-                *((name, count, "production") for name, count in additional_map.items()),
-                *((name, count, "fixture") for name, count in fixtures.items()),
-            ]
+            (name, count, "fixture")
+            for name, count in serve_host_map.items()
         )
 
     selected_counter = Counter(
@@ -731,86 +915,106 @@ def _validate_receipt(
 
 
 def aggregate_partition_evidence(
-    primary_directory: Path,
-    additional_directory: Path,
+    directories: Mapping[str, Path],
     source_sha: str,
     summary_path: Path,
 ) -> dict:
+    """Reconcile the receipt and TRX evidence of every partition into one authority summary.
+
+    Every partition of PARTITIONS must be present, no other may be, and each selected method and
+    case must appear in exactly one of them.
+    """
+
     if not source_sha:
         raise RuntimeError("aggregate source SHA is required")
 
-    primary_receipt = _load_receipt(primary_directory, "primary", source_sha)
-
-    additional_receipt = _load_receipt(
-        additional_directory,
-        "additional",
-        source_sha,
-    )
-
-    primary_universe = Counter(
-        _parse_receipt_entries(
-            primary_receipt.get("fullUniverse"),
-            "primary full universe",
-            require_kind=True,
+    if set(directories) != set(PARTITIONS):
+        raise RuntimeError(
+            "aggregate evidence must name exactly the partitions "
+            + ", ".join(PARTITIONS)
         )
-    )
 
-    additional_universe = Counter(
-        _parse_receipt_entries(
-            additional_receipt.get("fullUniverse"),
-            "additional full universe",
-            require_kind=True,
+    receipts = {
+        partition: _load_receipt(directories[partition], partition, source_sha)
+        for partition in PARTITIONS
+    }
+
+    def universe_of(partition: str) -> Counter[Tuple[str, int, Optional[str]]]:
+        return Counter(
+            _parse_receipt_entries(
+                receipts[partition].get("fullUniverse"),
+                f"{partition} full universe",
+                require_kind=True,
+            )
         )
-    )
 
-    if primary_universe != additional_universe:
-        raise RuntimeError("partition full discovery manifests do not agree")
-
-    if Counter(
-        _parse_receipt_entries(
-            primary_receipt.get("additionalProduction"),
-            "primary additional production",
-            require_kind=False,
+    def subset_of(partition: str, field: str, label: str) -> Counter[Tuple[str, int, Optional[str]]]:
+        return Counter(
+            _parse_receipt_entries(
+                receipts[partition].get(field),
+                f"{partition} {label}",
+                require_kind=False,
+            )
         )
-    ) != Counter(
-        _parse_receipt_entries(
-            additional_receipt.get("additionalProduction"),
-            "additional additional production",
-            require_kind=False,
+
+    universe = universe_of(PARTITIONS[0])
+
+    for partition in PARTITIONS[1:]:
+        if universe_of(partition) != universe:
+            raise RuntimeError("partition full discovery manifests do not agree")
+
+    for partition in PARTITIONS[1:]:
+        if subset_of(partition, "additionalProduction", "additional production") != subset_of(
+            PARTITIONS[0], "additionalProduction", "additional production"
+        ):
+            raise RuntimeError("partition additional discovery manifests do not agree")
+
+    for partition in PARTITIONS[1:]:
+        if subset_of(partition, "serveHostFixtures", "serve host fixtures") != subset_of(
+            PARTITIONS[0], "serveHostFixtures", "serve host fixtures"
+        ):
+            raise RuntimeError("partition serve host discovery manifests do not agree")
+
+    for partition in PARTITIONS[1:]:
+        if subset_of(partition, "buildFixtures", "build fixtures") != subset_of(
+            PARTITIONS[0], "buildFixtures", "build fixtures"
+        ):
+            raise RuntimeError("partition build fixture discovery manifests do not agree")
+
+    selected: dict[str, Counter[Tuple[str, int, str]]] = {}
+
+    completed: dict[str, int] = {}
+
+    passed: dict[str, int] = {}
+
+    for partition in PARTITIONS:
+        selected[partition], completed[partition], passed[partition] = _validate_receipt(
+            directories[partition],
+            receipts[partition],
         )
-    ):
-        raise RuntimeError("partition additional discovery manifests do not agree")
 
-    primary_selected, primary_completed, primary_passed = _validate_receipt(
-        primary_directory,
-        primary_receipt,
-    )
+    selected_union: Counter[Tuple[str, int, str]] = Counter()
 
-    additional_selected, additional_completed, additional_passed = _validate_receipt(
-        additional_directory,
-        additional_receipt,
-    )
+    for index, partition in enumerate(PARTITIONS):
+        for other in PARTITIONS[index + 1:]:
+            if selected[partition] & selected[other]:
+                raise RuntimeError("partition selected method/case multisets overlap")
 
-    overlap = primary_selected & additional_selected
+        selected_union += selected[partition]
 
-    if overlap:
-        raise RuntimeError("partition selected method/case multisets overlap")
-
-    selected_union = primary_selected + additional_selected
-
-    if selected_union != primary_universe:
+    if selected_union != universe:
         raise RuntimeError("partition selected method/case union is incomplete or extra")
 
     total_cases = sum(
         case_count * multiplicity
-        for (_, case_count, _), multiplicity in primary_universe.items()
+        for (_, case_count, _), multiplicity in universe.items()
     )
 
-    completed = primary_completed + additional_completed
+    total_completed = sum(completed.values())
 
-    passed = primary_passed + additional_passed
+    total_passed = sum(passed.values())
 
-    if completed != total_cases or passed != total_cases:
+    if total_completed != total_cases or total_passed != total_cases:
         raise RuntimeError(
             "aggregate TRX evidence does not contain one passing result for every case"
         )
@@ -836,16 +1040,25 @@ def aggregate_partition_evidence(
             hashlib.sha256("".join(cases).encode("utf-8")).hexdigest(),
         )
 
-    full_method_hash, full_case_hash = manifest_hashes(primary_universe)
+    full_method_hash, full_case_hash = manifest_hashes(universe)
 
-    primary_method_hash, primary_case_hash = manifest_hashes(primary_selected)
+    partitions = []
 
-    additional_method_hash, additional_case_hash = manifest_hashes(
-        additional_selected
-    )
+    for partition in PARTITIONS:
+        method_hash, case_hash = manifest_hashes(selected[partition])
+
+        partitions.append(
+            {
+                "name": partition,
+                "job": PARTITION_JOBS[partition],
+                "selectedCases": completed[partition],
+                "methodsSha256": method_hash,
+                "casesSha256": case_hash,
+            }
+        )
 
     summary = {
-        "schemaVersion": 2,
+        "schemaVersion": SUMMARY_SCHEMA_VERSION,
         "aggregateJob": "Hosted producer source analysis",
         "partitionAccounting": {
             "status": "PASS",
@@ -854,28 +1067,13 @@ def aggregate_partition_evidence(
             "unionComplete": True,
             "fullUniverse": {
                 "discoveredCases": total_cases,
-                "passedCases": passed,
+                "passedCases": total_passed,
                 "failedCases": 0,
                 "skippedCases": 0,
                 "methodsSha256": full_method_hash,
                 "casesSha256": full_case_hash,
             },
-            "partitions": [
-                {
-                    "name": "primary",
-                    "job": "Hosted producer primary analysis",
-                    "selectedCases": primary_completed,
-                    "methodsSha256": primary_method_hash,
-                    "casesSha256": primary_case_hash,
-                },
-                {
-                    "name": "additional",
-                    "job": "Hosted producer additional analysis and fixtures",
-                    "selectedCases": additional_completed,
-                    "methodsSha256": additional_method_hash,
-                    "casesSha256": additional_case_hash,
-                },
-            ],
+            "partitions": partitions,
         },
     }
 
@@ -1753,7 +1951,7 @@ def _parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--partition",
-        choices=("full", "primary", "additional"),
+        choices=("full", *PARTITIONS),
         default="full",
     )
 
@@ -1763,6 +1961,12 @@ def _parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--aggregate-additional-results", type=Path)
 
+    parser.add_argument("--aggregate-fixtures-results", type=Path)
+
+    parser.add_argument("--aggregate-fixtures-build-results", type=Path)
+
+    parser.add_argument("--aggregate-serve-host-results", type=Path)
+
     parser.add_argument("--aggregate-summary", type=Path)
 
     return parser
@@ -1771,11 +1975,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = _parser().parse_args(argv)
 
-    aggregate_arguments = (
-        arguments.aggregate_primary_results,
-        arguments.aggregate_additional_results,
-        arguments.aggregate_summary,
-    )
+    aggregate_directories = {
+        "primary": arguments.aggregate_primary_results,
+        "additional": arguments.aggregate_additional_results,
+        "fixtures": arguments.aggregate_fixtures_results,
+        "fixtures-build": arguments.aggregate_fixtures_build_results,
+        "serve-host": arguments.aggregate_serve_host_results,
+    }
+
+    aggregate_arguments = (*aggregate_directories.values(), arguments.aggregate_summary)
 
     if any(argument is not None for argument in aggregate_arguments):
         if not all(argument is not None for argument in aggregate_arguments):
@@ -1793,8 +2001,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         try:
             summary = aggregate_partition_evidence(
-                arguments.aggregate_primary_results,
-                arguments.aggregate_additional_results,
+                aggregate_directories,
                 arguments.source_sha,
                 arguments.aggregate_summary,
             )
@@ -1924,10 +2131,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             discovery_timeout(),
         )
 
+        serve_host = _discover(
+            arguments.dotnet,
+            arguments.project,
+            SERVE_HOST_FILTER,
+            arguments.configuration,
+            discovery_timeout(),
+        )
+
+        build_fixtures = _discover(
+            arguments.dotnet,
+            arguments.project,
+            BUILD_FIXTURE_FILTER,
+            arguments.configuration,
+            discovery_timeout(),
+        )
+
         selected_production, selected_fixtures = select_partition(
             production,
             additional,
             fixtures,
+            serve_host,
+            build_fixtures,
             arguments.partition,
         )
 
@@ -1935,6 +2160,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             selected_production,
             selected_fixtures,
             configured_jobs,
+            max_fixture_workers=1 if arguments.partition in FIXTURE_PARTITIONS else None,
         )
 
         expected_count = sum(
@@ -1950,6 +2176,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 production,
                 additional,
                 fixtures,
+                serve_host,
+                build_fixtures,
                 selected_production,
                 selected_fixtures,
                 shards,
@@ -1960,8 +2188,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"{arguments.partition} partition; "
             f"{expected_count} tests across {len(shards)} shards "
             f"within {configured_jobs} worker slots; "
-            f"{sum(method.case_count for method in selected_production)} production tests "
-            f"share one process with {min(3, configured_jobs)} traversal workers.",
+            + (
+                f"{sum(method.case_count for method in selected_production)} production tests "
+                f"share one process with {min(3, configured_jobs)} traversal workers; "
+                if selected_production
+                else "no production tests; "
+            )
+            + f"{sum(method.case_count for method in selected_fixtures)} fixture tests "
+            f"in {len(shards) - (1 if selected_production else 0)} fixture processes.",
             flush=True,
         )
 

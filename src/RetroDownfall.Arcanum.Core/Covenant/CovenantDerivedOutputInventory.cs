@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public enum DerivedOutputPolicy : byte
 {
-
     /// <summary>Writes its output and that output's label in the same transaction, or writes neither.</summary>
     PropagateLabel = 1,
 
@@ -26,7 +25,6 @@ public enum DerivedOutputPolicy : byte
 
     /// <summary>Returns protected content only while a clean Covenant read lease is held.</summary>
     ProtectedReadRequired = 4,
-
 }
 
 /// <summary>One declared producer or consumer of Covenant-derived output.</summary>
@@ -59,7 +57,6 @@ public sealed record CovenantDerivedOutputConsumer(
 /// </remarks>
 public static class CovenantDerivedOutputInventory
 {
-
     private static readonly ImmutableArray<CovenantDerivedOutputConsumer> Declared =
     [
         new(
@@ -120,6 +117,34 @@ public static class CovenantDerivedOutputInventory
             + "never a key, a fragment, a digest, or a Campaign identity."),
 
         new(
+            "long-rest-discovery",
+            "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestDiscoveryStore",
+            null,
+            DerivedOutputPolicy.PropagateLabel,
+            "Hierarchy summaries and embeddings retain exact source labels and provenance in their committed generation under current request authority."),
+
+        new(
+            "long-rest-sweep",
+            "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.LongRestSweepStore",
+            null,
+            DerivedOutputPolicy.PropagateLabel,
+            "Canonical sweep projections commit their exact protected source label and provenance with the accepted source association."),
+
+        new(
+            "long-rest-maintenance",
+            "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance",
+            null,
+            DerivedOutputPolicy.ProtectedReadRequired,
+            "Each protected source read and physical dispatch requires the exact borrowed request lease, live claim and current full source proof."),
+
+        new(
+            "long-rest-provider",
+            "RetroDownfall.Arcanum.Api.Intelligence.LongRestProvider",
+            null,
+            DerivedOutputPolicy.ProtectedReadRequired,
+            "A closed provider payload crosses the SDK boundary only after its exact current maintenance callback authorizes this physical send."),
+
+        new(
             "host-process-tools-transition",
             "RetroDownfall.Arcanum.Infrastructure.Security.HostProcessToolsTransitionService",
             null,
@@ -139,5 +164,4 @@ public static class CovenantDerivedOutputInventory
     public static IReadOnlyList<CovenantDerivedOutputConsumer> ForOwningType(string owningTypeName) =>
         [.. Declared.Where(consumer =>
             string.Equals(consumer.OwningTypeName, owningTypeName, StringComparison.Ordinal))];
-
 }

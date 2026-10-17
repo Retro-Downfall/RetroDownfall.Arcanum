@@ -916,7 +916,7 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
                         // The delete guard is the reason the kernel borrows an authorization at all:
                         // without it these tests would prove nothing about the scope a purge runs under.
-                        "artifact_sensitivity_guard_delete",
+                        .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
                         "artifact_sensitivity_guard_update",
                     ],
                     Token);

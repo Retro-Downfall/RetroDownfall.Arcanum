@@ -914,6 +914,13 @@ public sealed class CovenantPlaintextExportTests
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        // Only an identifier lookup is expected here, so a lookup by path of any kind is refused.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
+
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 

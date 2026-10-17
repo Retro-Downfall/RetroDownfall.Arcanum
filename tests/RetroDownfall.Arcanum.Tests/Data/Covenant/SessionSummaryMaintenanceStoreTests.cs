@@ -129,7 +129,7 @@ public sealed class SessionSummaryMaintenanceStoreTests
             {
                 await database.InstallCoreObjectsAsync(
                 [
-                    "Campaigns", "Sessions", "Entries", "artifact_sensitivity", "artifact_sensitivity_guard_delete",
+                    "Campaigns", "Sessions", "Entries", "artifact_sensitivity", .. CovenantSchemaScratchDatabase.ArtifactSensitivityDeleteGuardObjects,
                     "artifact_sensitivity_guard_update", "session_sensitivity_state", "session_summary_artifacts",
                     "session_summary_artifacts_guard_delete", "session_summary_artifacts_guard_update", "session_summary_state",
                 ], CancellationToken.None);

@@ -462,7 +462,9 @@ public sealed partial class WizardIntelligenceProviderTests
             : settings;
 
         CampaignRollupTurnPreparer preparer = new(store, new TestOptionsMonitor<ArcanumSettings>(monitorSettings),
-            new CampaignRollupTurnSnapshotTests.Resolver(), null!, maintenance, claims, grimoire, claims,
+            new CampaignRollupTurnSnapshotTests.Resolver(), null!,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
+            maintenance, claims, grimoire, claims,
             new CampaignRollupTurnSnapshotTests.Authority(), lookup, replayStore: claims);
 
         ScriptingChatClient chat = new();
@@ -716,6 +718,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         return new(store, new TestOptionsMonitor<Core.Configuration.ArcanumSettings>(settings),
             new CampaignRollupTurnSnapshotTests.Resolver(), null!,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery, UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
             new CampaignRollupTurnSnapshotTests.RefusingMaintenance(), new CampaignRollupTurnSnapshotTests.InputStore(),
             null, claims, new CampaignRollupTurnSnapshotTests.Authority());
     }
@@ -750,5 +753,4 @@ public sealed partial class WizardIntelligenceProviderTests
 
         public ValueTask<Result<SessionTurnClaim>> CompleteAsync(SessionTurnClaimLease lease, SessionTurnClaimOutcome outcome, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
-
 }

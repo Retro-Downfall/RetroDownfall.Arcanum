@@ -16,7 +16,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 internal interface IDesignTimeGrimoireConnectionFactory
     : IStoppedHostGrimoireConnectionFactory
 {
-
     string DatabasePath { get; }
 
     Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken);
@@ -99,12 +98,10 @@ internal interface IDesignTimeGrimoireConnectionFactory
         bool writable,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection? connection = null;
 
         try
         {
-
             connection = writable
                 ? await OpenAsync(cancellationToken).ConfigureAwait(false)
                 : await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
@@ -118,43 +115,33 @@ internal interface IDesignTimeGrimoireConnectionFactory
 
             return Result<IStoppedHostGrimoireConnectionLease>.Success(
                 new DesignTimeStoppedHostGrimoireConnectionLease(connection));
-
         }
         catch (Exception exception)
         {
-
             if (connection is not null)
             {
-
                 await connection.DisposeAsync().ConfigureAwait(false);
-
             }
 
             return Result<IStoppedHostGrimoireConnectionLease>.Failure(new Error(
                 ErrorCodes.Covenant.MaintenanceFailed,
                 exception.Message));
-
         }
-
     }
-
 }
 
 internal sealed class DesignTimeStoppedHostGrimoireConnectionLease(
     SqliteConnection connection) : IStoppedHostGrimoireConnectionLease
 {
-
     public SqliteConnection Connection { get; } = connection;
 
     public ValueTask DisposeAsync() => Connection.DisposeAsync();
-
 }
 
 internal sealed class DesignTimeGrimoireConnectionFactory(
     IGrimoireDbPassphraseSource passphrase,
     string? databasePath = null) : IDesignTimeGrimoireConnectionFactory
 {
-
     private readonly string _databasePath = Path.GetFullPath(
         databasePath ?? ArcanumPaths.GrimoireDatabaseFile);
 
@@ -209,7 +196,6 @@ internal sealed class DesignTimeGrimoireConnectionFactory(
         string path,
         CancellationToken cancellationToken)
     {
-
         ArgumentException.ThrowIfNullOrEmpty(path);
 
         return OpenCoreAsync(
@@ -222,7 +208,6 @@ internal sealed class DesignTimeGrimoireConnectionFactory(
                 Pooling = false,
             },
             cancellationToken);
-
     }
 
     public async Task AttachSideFileAsync(
@@ -231,7 +216,6 @@ internal sealed class DesignTimeGrimoireConnectionFactory(
         string path,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentException.ThrowIfNullOrEmpty(alias);
@@ -248,35 +232,27 @@ internal sealed class DesignTimeGrimoireConnectionFactory(
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private static async Task<SqliteConnection> OpenCoreAsync(
         SqliteConnectionStringBuilder builder,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = new(builder.ToString());
 
         try
         {
-
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync().ConfigureAwait(false);
 
             throw;
-
         }
-
     }
-
 }
 
 /// <summary>
@@ -295,7 +271,6 @@ internal sealed class DesignTimeGrimoireConnectionFactory(
 /// </remarks>
 public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 {
-
     /// <summary>
     /// Fixed passphrase: these databases are scratch files under the OS temp root that live for one
     /// test, so a per-instance secret would buy nothing and only make a failure harder to reproduce.
@@ -317,6 +292,22 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     private const string OwnerDeletionEventsObjectName = "owner_deletion_events";
 
     /// <summary>
+    /// Explicit read dependencies of the current label-delete guard. SQLite resolves every trigger
+    /// reference when preparing a delete, even when an existing authorization satisfies its guard.
+    /// Focused fixtures opt into this exact closure instead of installing the entire Core catalog.
+    /// </summary>
+    internal static IReadOnlyList<string> ArtifactSensitivityDeleteGuardObjects { get; } =
+    [
+        "long_rest_discovery_nodes",
+        "long_rest_discovery_embeddings",
+        "long_rest_discovery_edges",
+        "long_rest_clean_fts",
+        "long_rest_protected_fts",
+        "long_rest_accepted_summaries",
+        "artifact_sensitivity_guard_delete",
+    ];
+
+    /// <summary>
     /// The provider has to be installed before the first connection is constructed. Doing it here
     /// rather than in each suite keeps a filtered run from depending on some earlier test in the run
     /// having initialized it.
@@ -329,11 +320,9 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
     private CovenantSchemaScratchDatabase(string path, SqliteConnection connection)
     {
-
         _path = path;
 
         Connection = connection;
-
     }
 
     /// <summary>
@@ -349,7 +338,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
     public static async Task<CovenantSchemaScratchDatabase> CreateAsync(CancellationToken cancellationToken)
     {
-
         // One directory per instance, holding nothing but this database and whatever it leaves beside
         // it. A suite that proves an erasure left no residual artifact has to be able to enumerate
         // the database's own directory, and a shared temp root would hand it every other test's
@@ -374,28 +362,23 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         try
         {
-
             await connection.OpenAsync(cancellationToken);
 
             await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
                 connection,
                 CovenantSqliteConnectionMode.ReadWrite,
                 cancellationToken);
-
         }
         catch
         {
-
             await connection.DisposeAsync();
 
             DeleteDirectory(directory);
 
             throw;
-
         }
 
         return new CovenantSchemaScratchDatabase(path, connection);
-
     }
 
     /// <summary>
@@ -410,20 +393,16 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </remarks>
     public async Task InstallCanonicalAsync(CancellationToken cancellationToken)
     {
-
         await ExecuteAsync(ReadCoreObjectSql(OwnerDeletionEventsObjectName), cancellationToken);
 
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.CovenantCanonicalObjects)
         {
-
             await ExecuteAsync(
                 GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions: null),
                 cancellationToken);
-
         }
 
         await RunInitializerAsync(new CovenantCanonicalSchemaDataInitializer(), cancellationToken);
-
     }
 
     /// <summary>
@@ -438,16 +417,12 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         IReadOnlyList<string> names,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(names);
 
         foreach (string name in names)
         {
-
             await ExecuteAsync(ReadCoreObjectSql(name), cancellationToken);
-
         }
-
     }
 
     /// <summary>
@@ -455,18 +430,14 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </summary>
     public async Task InstallAcceleratorAsync(CancellationToken cancellationToken)
     {
-
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.CovenantAcceleratorObjects)
         {
-
             await ExecuteAsync(
                 GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions: null),
                 cancellationToken);
-
         }
 
         await RunInitializerAsync(new CovenantAcceleratorSchemaDataInitializer(), cancellationToken);
-
     }
 
     /// <summary>
@@ -476,7 +447,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         bool withAccelerator,
         CancellationToken cancellationToken)
     {
-
         await InstallCoreObjectsAsync(["grimoire_feature_schemas"], cancellationToken);
 
         await InstallCanonicalAsync(cancellationToken);
@@ -485,13 +455,10 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         if (withAccelerator)
         {
-
             await InstallAcceleratorAsync(cancellationToken);
 
             await RecordHealthyTierAsync(GrimoireSchemaManifests.CovenantAccelerator, cancellationToken);
-
         }
-
     }
 
     /// <summary>
@@ -504,7 +471,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </remarks>
     internal async Task RecordCoreSchemaVersionAsync(int version, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -523,7 +489,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$installedAt", "2026-08-20T00:00:00.0000000Z");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     /// <summary>
@@ -536,7 +501,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </remarks>
     public async Task<SqliteConnection> OpenAdditionalConnectionAsync(CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
             {
@@ -549,7 +513,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         try
         {
-
             await connection.OpenAsync(cancellationToken);
 
             await CovenantSqliteConnectionInitializer.Instance.InitializeAsync(
@@ -558,17 +521,13 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
                 cancellationToken);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync();
 
             throw;
-
         }
-
     }
 
     /// <summary>
@@ -581,7 +540,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </remarks>
     public async Task<SqliteConnection> OpenUninitializedConnectionAsync(CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = new(
             new SqliteConnectionStringBuilder
             {
@@ -594,21 +552,16 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         try
         {
-
             await connection.OpenAsync(cancellationToken);
 
             return connection;
-
         }
         catch
         {
-
             await connection.DisposeAsync();
 
             throw;
-
         }
-
     }
 
     /// <summary>
@@ -633,12 +586,9 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </remarks>
     public async Task ReopenAsync(CancellationToken cancellationToken)
     {
-
         if (Connection.State != System.Data.ConnectionState.Closed)
         {
-
             return;
-
         }
 
         await Connection.OpenAsync(cancellationToken);
@@ -647,12 +597,10 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
             Connection,
             CovenantSqliteConnectionMode.ReadWrite,
             cancellationToken);
-
     }
 
     public async Task<bool> ObjectExistsAsync(string name, string type, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -669,23 +617,19 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         object? result = await command.ExecuteScalarAsync(cancellationToken);
 
         return result is not null and not DBNull;
-
     }
 
     public async Task ExecuteAsync(string sql, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     public async Task<long> ScalarLongAsync(string sql, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -695,12 +639,10 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         return result is null or DBNull
             ? 0L
             : Convert.ToInt64(result, CultureInfo.InvariantCulture);
-
     }
 
     public async Task<string?> ScalarStringAsync(string sql, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = sql;
@@ -710,17 +652,13 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         return result is null or DBNull
             ? null
             : Convert.ToString(result, CultureInfo.InvariantCulture);
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -732,7 +670,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         SqliteConnection.ClearAllPools();
 
         DeleteDirectory(Path.GetDirectoryName(_path)!);
-
     }
 
     /// <summary>
@@ -755,68 +692,48 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     /// </summary>
     private static byte[] CreateFingerprint()
     {
-
         byte[] fingerprint = new byte[32];
 
         for (int index = 0; index < fingerprint.Length; index++)
         {
-
             fingerprint[index] = (byte)(index + 1);
-
         }
 
         return fingerprint;
-
     }
 
     private static string ReadCoreObjectSql(string name)
     {
-
         foreach (GrimoireSchemaObject definition in GrimoireSchemaCatalog.CoreObjects)
         {
-
             if (string.Equals(definition.Name, name, StringComparison.Ordinal))
             {
-
                 return GrimoireSchemaCatalog.Resolve(definition, embeddingDimensions: null);
-
             }
-
         }
 
         throw new InvalidOperationException(
             $"The core Grimoire schema catalog declares no object named '{name}'.");
-
     }
 
     private static void DeleteDirectory(string directory)
     {
-
         try
         {
-
             if (Directory.Exists(directory))
             {
-
                 Directory.Delete(directory, recursive: true);
-
             }
-
         }
         catch (IOException)
         {
-
             // Scratch under the OS temp root; a scanner still holding a handle must not fail a test
             // that has already made its assertions.
-
         }
         catch (UnauthorizedAccessException)
         {
-
             // Same.
-
         }
-
     }
 
     /// <summary>
@@ -825,7 +742,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
     private sealed class ScratchMaintenance(CovenantSchemaScratchDatabase database)
         : IDesignTimeGrimoireConnectionFactory
     {
-
         public string DatabasePath => database.DatabasePath;
 
         public Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken) =>
@@ -833,7 +749,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         public async Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
         {
-
             SqliteConnection connection = new(
                 new SqliteConnectionStringBuilder
                 {
@@ -850,26 +765,20 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
             try
             {
-
                 await connection.OpenAsync(cancellationToken);
 
                 return connection;
-
             }
             catch
             {
-
                 await connection.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         public async Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken)
         {
-
             SqliteConnection connection = new(
                 new SqliteConnectionStringBuilder
                 {
@@ -886,26 +795,20 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
             try
             {
-
                 await connection.OpenAsync(cancellationToken);
 
                 return connection;
-
             }
             catch
             {
-
                 await connection.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         public async Task<SqliteConnection> OpenSideFileAsync(string path, CancellationToken cancellationToken)
         {
-
             SqliteConnection connection = new(
                 new SqliteConnectionStringBuilder
                 {
@@ -918,21 +821,16 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
             try
             {
-
                 await connection.OpenAsync(cancellationToken);
 
                 return connection;
-
             }
             catch
             {
-
                 await connection.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         public async Task AttachSideFileAsync(
@@ -941,7 +839,6 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
             string path,
             CancellationToken cancellationToken)
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.CommandText = $"ATTACH DATABASE $path AS {alias} KEY $key;";
@@ -952,16 +849,13 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken)
                 .ConfigureAwait(false);
-
         }
-
     }
 
     private async Task RecordHealthyTierAsync(
         GrimoireSchemaManifest manifest,
         CancellationToken cancellationToken)
     {
-
         GrimoireSchemaManifestInspector inspector =
             new(GrimoireSchemaTierOwnershipRegistry.CreateDefault());
 
@@ -971,10 +865,8 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
 
         if (!inspected.IsValid || inspected.InstalledCatalogFingerprint is null)
         {
-
             throw new InvalidOperationException(
                 "The scratch Covenant catalog was not healthy before metadata recording.");
-
         }
 
         await using SqliteCommand command = Connection.CreateCommand();
@@ -999,14 +891,12 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$installedAt", "2026-08-20T00:00:00.0000000Z");
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     private async Task RunInitializerAsync(
         IGrimoireSchemaDataInitializer initializer,
         CancellationToken cancellationToken)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await Connection.BeginTransactionAsync(cancellationToken);
 
@@ -1017,7 +907,5 @@ public sealed class CovenantSchemaScratchDatabase : IAsyncDisposable
             cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
-
     }
-
 }

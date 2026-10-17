@@ -25,12 +25,10 @@ internal sealed class CanonicalCampaignContextResolver(
     ICampaignPathIdentityReader paths,
     ICampaignAvailabilityReader availability) : ICanonicalCampaignContextResolver
 {
-
     public async ValueTask<Result<CanonicalCampaignContext>> ResolveAsync(
         CanonicalCampaignResolutionRequest request,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result<SessionCampaignBindingRecord?> session = await bindings
@@ -59,7 +57,6 @@ internal sealed class CanonicalCampaignContextResolver(
 
         if (candidate is { } campaignId)
         {
-
             Result<long?> read = await availability
                 .FindAvailabilityGenerationAsync(campaignId, cancellationToken)
                 .ConfigureAwait(false);
@@ -70,7 +67,6 @@ internal sealed class CanonicalCampaignContextResolver(
             }
 
             generation = read.Value;
-
         }
 
         return CanonicalCampaignResolutionPolicy.Resolve(
@@ -79,7 +75,6 @@ internal sealed class CanonicalCampaignContextResolver(
             workspace.Value,
             workingDirectorySupplied,
             generation);
-
     }
 
     /// <summary>
@@ -94,14 +89,11 @@ internal sealed class CanonicalCampaignContextResolver(
         Guid? explicitCampaignId,
         RegisteredCampaignIdentity? workspace)
     {
-
         if (session is { Kind: SessionCampaignBindingKind.GlobalOnly or SessionCampaignBindingKind.LegacyUnresolved })
         {
             return null;
         }
 
         return session?.CampaignId ?? explicitCampaignId ?? workspace?.CampaignId;
-
     }
-
 }

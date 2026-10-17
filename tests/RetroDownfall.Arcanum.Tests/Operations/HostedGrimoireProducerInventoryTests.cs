@@ -1,5 +1,7 @@
 using Microsoft.CodeAnalysis;
 
+using Microsoft.CodeAnalysis.Operations;
+
 using Microsoft.CodeAnalysis.CSharp;
 
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -419,15 +421,6371 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData(true, 3)]
     public void ParallelRootsKeepLifecycleAndDeclaredContextsInOneStateBudget(bool reverse, int workers)
     {
-        CSharpCompilation compilation = Compile(R2Source("One();", "").Replace("public Task StopAsync", "private static void One() { Two(); } private static void Two() { System.IO.File.Exists(\"budget\"); } public Task StopAsync", StringComparison.Ordinal));
+        CSharpCompilation compilation = Compile(R2Source("One(A); One(B);", "").Replace("public Task StopAsync", "private static void One(System.Action action) { action(); } private static void A() { System.IO.File.Exists(\"a\"); } private static void B() { System.IO.File.Exists(\"b\"); } public Task StopAsync", StringComparison.Ordinal));
 
-        HostedProducerDiscovery<HostedProducerSite> Discover(int workers) => HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], maximumAnalyzedStatesPerRoot: 4, rootWorkers: workers, reverseRootFamilies: reverse);
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int count)
+        {
+            System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+            HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], maximumAnalyzedStatesPerRoot: 4, rootWorkers: count, reverseRootFamilies: reverse, admittedStateObserver: observations.Enqueue);
+
+            HostedProducerAdmittedStateObservation[] family = observations.Where(static state => state.RootOperation == "Worker.StartAsync").OrderBy(static state => state.CumulativeCount).ToArray();
+
+            Assert.Equal([1, 2, 3, 4], family.Select(static state => state.CumulativeCount));
+
+            Assert.All(family, static state => Assert.True(state.Lifecycle));
+
+            Assert.Equal(2, family.Where(static state => state.Method == "M:Worker.One(System.Action)").Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+            Assert.Contains(family, static state => state.Method == "M:Worker.A");
+
+            HostedProducerRootTraversalMetric metric = Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync");
+
+            Assert.Equal(2, metric.TraversalCalls);
+
+            Assert.Equal(4, metric.AnalyzedStates);
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+            return result;
+        }
 
         HostedProducerDiscovery<HostedProducerSite> serial = Discover(1);
 
         Assert.Contains(serial.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
 
         AssertDiscoveryParity(serial, Discover(workers));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompletedLifecycleWholeRootIsReusedByItsExactDeclaredOccurrence(bool emitsSite)
+    {
+        string operation = emitsSite ? "System.IO.File.Exists(\"whole-root\");" : "";
+
+        CSharpCompilation compilation = Compile(R2Source("One();").Replace("public Task StopAsync", "private static void One() { Two(); } private static void Two() { " + operation + " } public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], maximumAnalyzedStatesPerRoot: 4, admittedStateObserver: observations.Enqueue);
+
+        HostedProducerRootTraversalMetric metric = Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync");
+
+        Assert.Equal(2, metric.TraversalCalls);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.Two" && state.Lifecycle);
+
+        if (emitsSite)
+        {
+            HostedProducerSite site = Assert.Single(result.Items, static site => site.SourcePath == "src/Fixture.cs" && site.EnclosingType == "Worker" && site.Member == "Two" && site.Callee == "System.IO.File.Exists");
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal));
+        }
+        else Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Equal(3, metric.AnalyzedStates);
+
+        Assert.All(observations.Where(static state => state.RootOperation == "Worker.StartAsync"), static state => Assert.True(state.Lifecycle));
+    }
+
+    [Theory]
+    [InlineData("nongeneric")]
+    [InlineData("multiple-own-types")]
+    [InlineData("containing-type-parameter")]
+    [InlineData("generic-containing-caller")]
+    [InlineData("nested-enum")]
+    [InlineData("object-cast")]
+    [InlineData("struct-cast")]
+    [InlineData("local-alias")]
+    [InlineData("captured-callback")]
+    public void UnsupportedOwnedEnumCopyChainsRetainSourceContexts(string shape)
+    {
+        string enumSource = shape == "nested-enum" ? "private static class Box<U> { public enum Mode : byte { A, B } }" : "private enum Mode : byte { A, B }";
+
+        string enumType = shape == "nested-enum" ? "Box<int>.Mode" : "Mode";
+
+        string wrapper = "private static byte Wrap<T>(T value) where T : struct, Enum { System.IO.File.Delete(\"wrap-marker\"); return Copy(value); }";
+
+        string calls = "Wrap(First()); Wrap(Second());";
+
+        switch (shape)
+        {
+            case "nongeneric":
+                wrapper = "private static byte Wrap(Mode value) { System.IO.File.Delete(\"wrap-marker\"); return Copy(value); }";
+                break;
+            case "multiple-own-types":
+                wrapper = "private static byte Wrap<T, U>(T value) where T : struct, Enum where U : struct { System.IO.File.Delete(\"wrap-marker\"); return Copy(value); }";
+                calls = "Wrap<Mode, int>(First()); Wrap<Mode, int>(Second());";
+                break;
+            case "containing-type-parameter":
+                wrapper = "private static class Box<T> where T : struct, Enum { public static byte Wrap(T value) { System.IO.File.Delete(\"wrap-marker\"); return Copy(value); } }";
+                calls = "Box<Mode>.Wrap(First()); Box<Mode>.Wrap(Second());";
+                break;
+            case "generic-containing-caller":
+                wrapper = "private static class Box<U> { public static byte Wrap<T>(T value) where T : struct, Enum { System.IO.File.Delete(\"wrap-marker\"); return Copy(value); } }";
+                calls = "Box<int>.Wrap(First()); Box<int>.Wrap(Second());";
+                break;
+            case "object-cast":
+                wrapper = "private static byte Wrap(object value) { System.IO.File.Delete(\"wrap-marker\"); return Copy<Mode>((Mode)value); }";
+                break;
+            case "struct-cast":
+                wrapper = "private static byte Wrap<T>(T value) where T : struct { System.IO.File.Delete(\"wrap-marker\"); return Copy<Mode>((Mode)(object)value); }";
+                break;
+            case "local-alias":
+                wrapper = "private static byte Wrap<T>(T value) where T : struct, Enum { System.IO.File.Delete(\"wrap-marker\"); T alias = value; return Copy(alias); }";
+                break;
+            case "captured-callback":
+                wrapper = "private static byte Wrap<T>(T value) where T : struct, Enum { System.IO.File.Delete(\"wrap-marker\"); return Invoke(() => { System.IO.File.Delete(\"callback-marker\"); return Copy(value); }); } private static byte Invoke(Func<byte> callback) { System.IO.File.Delete(\"invoke-marker\"); return callback(); }";
+                break;
+        }
+
+        string members = enumSource
+            + $"private static {enumType} First() {{ System.IO.File.Delete(\"first-marker\"); return {enumType}.A; }} private static {enumType} Second() {{ System.IO.File.Delete(\"second-marker\"); return {enumType}.B; }}"
+            + wrapper
+            + "private static byte Copy<T>(T value) where T : struct, Enum { System.IO.File.Delete(\"copy-marker\"); return System.Runtime.CompilerServices.Unsafe.As<T, byte>(ref value); }";
+
+        AssertOwnedEnumCopyExcludedSourceContexts(shape, R2Source(calls + " await Task.CompletedTask;")
+            .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal), false);
+    }
+
+    [Theory]
+    [InlineData("binary-result")]
+    [InlineData("ref-local-result")]
+    [InlineData("parameter-mutation")]
+    [InlineData("extra-ref-escape")]
+    [InlineData("ushort-result")]
+    [InlineData("authored-lookalike")]
+    public void OwnedEnumCopyExcludedLeafUsesRetainExactSources(string shape)
+    {
+        string returnType = shape == "ushort-result" ? "ushort" : "byte";
+
+        string asExpression = shape == "authored-lookalike" ? "Lookalike.As<T, byte>(ref value)" : $"System.Runtime.CompilerServices.Unsafe.As<T, {returnType}>(ref value)";
+
+        string copyBody = shape switch
+        {
+            "binary-result" => "return (byte)(" + asExpression + " + 0);",
+            "ref-local-result" => "ref byte alias = ref " + asExpression + "; return alias;",
+            "parameter-mutation" => "value = default; return " + asExpression + ";",
+            "extra-ref-escape" => "Touch(ref value); return " + asExpression + ";",
+            _ => "return " + asExpression + ";",
+        };
+
+        string extra = shape == "extra-ref-escape"
+            ? "private static void Touch<T>(ref T value) { System.IO.File.Delete(\"touch-marker\"); }"
+            : shape == "authored-lookalike"
+                ? "private static class Lookalike { public static ref TTo As<TFrom, TTo>(ref TFrom value) { System.IO.File.Delete(\"lookalike-marker\"); return ref System.Runtime.CompilerServices.Unsafe.As<TFrom, TTo>(ref value); } }"
+                : "";
+
+        string members = "private enum Mode : byte { A, B } private static Mode First() { System.IO.File.Delete(\"first-marker\"); return Mode.A; } private static Mode Second() { System.IO.File.Delete(\"second-marker\"); return Mode.B; }"
+            + $"private static {returnType} Wrap<T>(T value) where T : struct, Enum {{ System.IO.File.Delete(\"wrap-marker\"); return Copy(value); }} private static {returnType} Copy<T>(T value) where T : struct, Enum {{ System.IO.File.Delete(\"copy-marker\"); {copyBody} }}"
+            + extra;
+
+        AssertOwnedEnumCopyExcludedSourceContexts(shape, R2Source("Wrap(First()); Wrap(Second()); await Task.CompletedTask;")
+            .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal), true);
+    }
+
+    private void AssertOwnedEnumCopyExcludedSourceContexts(string shape, string source, bool leafRefusal)
+    {
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax Method(string name) => Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        MethodDeclarationSyntax wrap = Method("Wrap");
+
+        MethodDeclarationSyntax copy = Method("Copy");
+
+        IMethodSymbol wrapper = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(wrap));
+
+        IMethodSymbol target = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(copy));
+
+        IParameterSymbol sourceParameter = Assert.Single(wrapper.Parameters);
+
+        IParameterSymbol targetParameter = Assert.Single(target.Parameters);
+
+        Assert.Equal(RefKind.None, sourceParameter.RefKind);
+
+        Assert.Equal(RefKind.None, targetParameter.RefKind);
+
+        Assert.True(target.IsStatic && wrapper.IsStatic);
+
+        Assert.False(target.ReturnsByRef || wrapper.ReturnsByRef);
+
+        ITypeParameterSymbol ownType = Assert.Single(target.TypeParameters);
+
+        Assert.True(ownType.HasValueTypeConstraint);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(ownType.ConstraintTypes), compilation.GetSpecialType(SpecialType.System_Enum)));
+
+        ITypeSymbol firstType = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method("First"))).ReturnType;
+
+        ITypeSymbol secondType = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method("Second"))).ReturnType;
+
+        Assert.Equal(TypeKind.Enum, firstType.TypeKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(firstType, secondType));
+
+        InvocationExpressionSyntax[] callers = Method("StartAsync").DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Wrap" }).ToArray();
+
+        Assert.Equal(2, callers.Length);
+
+        foreach (InvocationExpressionSyntax caller in callers)
+        {
+            var selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(caller));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(selected.TargetMethod.OriginalDefinition, wrapper));
+
+            Assert.Equal(RefKind.None, Assert.Single(selected.Arguments).Parameter!.RefKind);
+
+            if (wrapper.Arity > 0) Assert.True(SymbolEqualityComparer.Default.Equals(selected.TargetMethod.TypeArguments[0], firstType));
+        }
+
+        InvocationExpressionSyntax forwarded = Assert.Single(wrap.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Copy" });
+
+        var forwardOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(forwardOperation.TargetMethod.OriginalDefinition, target));
+
+        Assert.Equal(RefKind.None, Assert.Single(forwardOperation.Arguments).Parameter!.RefKind);
+
+        InvocationExpressionSyntax cast = Assert.Single(copy.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "As" });
+
+        var castOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(cast));
+
+        IMethodSymbol selectedAs = castOperation.TargetMethod;
+
+        Assert.Equal(MethodKind.Ordinary, selectedAs.MethodKind);
+
+        Assert.True(selectedAs.IsStatic && selectedAs.ReturnsByRef && !selectedAs.ReturnsByRefReadonly && !selectedAs.IsVararg);
+
+        Assert.Null(selectedAs.ReducedFrom);
+
+        Assert.Equal(2, selectedAs.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selectedAs.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.TypeArguments[0], ownType));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.Parameters[0].Type, ownType));
+
+        Assert.Equal(shape == "ushort-result" ? SpecialType.System_UInt16 : SpecialType.System_Byte, selectedAs.TypeArguments[1].SpecialType);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.ReturnType, selectedAs.TypeArguments[1]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.OriginalDefinition.Parameters[0].Type, selectedAs.OriginalDefinition.TypeParameters[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.OriginalDefinition.ReturnType, selectedAs.OriginalDefinition.TypeParameters[1]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(Assert.Single(cast.ArgumentList.Arguments).Expression).Symbol, targetParameter));
+
+        if (shape == "authored-lookalike")
+        {
+            Assert.Equal("Worker.Lookalike", selectedAs.ContainingType.ToDisplayString());
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.ContainingAssembly, compilation.Assembly));
+
+            Assert.False(SymbolEqualityComparer.Default.Equals(selectedAs.ContainingAssembly, compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly));
+
+            Assert.Single(selectedAs.DeclaringSyntaxReferences);
+        }
+        else
+        {
+            Assert.Equal("System.Runtime.CompilerServices.Unsafe", selectedAs.ContainingType.ToDisplayString());
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.ContainingAssembly, compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly));
+
+            Assert.Equal("System.Private.CoreLib", selectedAs.ContainingAssembly.Name);
+
+            Assert.Equal(new Version(10, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
+
+            Assert.Equal("7CEC85D7BEA7798E", Convert.ToHexString(selectedAs.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
+
+            Assert.Empty(selectedAs.DeclaringSyntaxReferences);
+        }
+
+        if (!leafRefusal)
+        {
+            Assert.Empty(wrap.DescendantNodes().OfType<AssignmentExpressionSyntax>());
+
+            Assert.DoesNotContain(wrap.DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+            Assert.Equal(cast, Assert.Single(copy.DescendantNodes().OfType<ReturnStatementSyntax>()).Expression);
+
+            if (shape == "nongeneric") Assert.Equal(0, wrapper.Arity);
+            else if (shape == "multiple-own-types") Assert.Equal(2, wrapper.Arity);
+            else if (shape == "containing-type-parameter")
+            {
+                Assert.Equal(0, wrapper.Arity);
+                Assert.Equal(1, wrapper.ContainingType.Arity);
+                Assert.Equal(TypeParameterKind.Type, Assert.IsAssignableFrom<ITypeParameterSymbol>(sourceParameter.Type).TypeParameterKind);
+            }
+            else if (shape == "generic-containing-caller")
+            {
+                Assert.Equal(1, wrapper.Arity);
+                Assert.Equal(1, wrapper.ContainingType.Arity);
+            }
+            else if (shape == "nested-enum") Assert.Equal(1, Assert.IsAssignableFrom<INamedTypeSymbol>(firstType).ContainingType.Arity);
+            else if (shape is "object-cast" or "struct-cast")
+            {
+                Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(Assert.Single(forwardOperation.Arguments).Value);
+                Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(forwardOperation.TargetMethod.TypeArguments), firstType));
+                if (shape == "object-cast") Assert.Equal(SpecialType.System_Object, sourceParameter.Type.SpecialType);
+                else Assert.Empty(Assert.Single(wrapper.TypeParameters).ConstraintTypes);
+            }
+            else if (shape == "local-alias")
+            {
+                VariableDeclaratorSyntax alias = Assert.Single(wrap.DescendantNodes().OfType<VariableDeclaratorSyntax>());
+                Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(alias.Initializer!.Value).Symbol, sourceParameter));
+                Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(Assert.Single(forwarded.ArgumentList.Arguments).Expression).Symbol, model.GetDeclaredSymbol(alias)));
+            }
+        }
+        else
+        {
+            if (shape == "binary-result") Assert.Single(copy.DescendantNodes().OfType<BinaryExpressionSyntax>());
+            else if (shape == "ref-local-result") Assert.IsType<RefExpressionSyntax>(cast.Parent);
+            else if (shape == "parameter-mutation") Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(Assert.Single(copy.DescendantNodes().OfType<AssignmentExpressionSyntax>()).Left).Symbol, targetParameter));
+            else if (shape == "extra-ref-escape")
+            {
+                InvocationExpressionSyntax touch = Assert.Single(copy.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Touch" });
+                Assert.Equal(RefKind.Ref, Assert.Single(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(touch)).TargetMethod.Parameters).RefKind);
+            }
+        }
+
+        IMethodSymbol? anonymousTarget = null;
+
+        LambdaExpressionSyntax? lambda = null;
+
+        if (shape == "captured-callback")
+        {
+            lambda = Assert.Single(wrap.DescendantNodes().OfType<LambdaExpressionSyntax>());
+
+            anonymousTarget = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IAnonymousFunctionOperation>(model.GetOperation(lambda)).Symbol;
+
+            Assert.Equal(MethodKind.AnonymousFunction, anonymousTarget.MethodKind);
+
+            Assert.Equal(SpecialType.System_Byte, anonymousTarget.ReturnType.SpecialType);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(Assert.Single(forwarded.ArgumentList.Arguments).Expression).Symbol, sourceParameter));
+
+            MethodDeclarationSyntax consumer = Method("Invoke");
+
+            InvocationExpressionSyntax selectedConsumer = Assert.Single(wrap.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Invoke" });
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(selectedConsumer).Symbol, model.GetDeclaredSymbol(consumer)));
+
+            InvocationExpressionSyntax eager = Assert.Single(consumer.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "callback");
+
+            Assert.Equal(MethodKind.DelegateInvoke, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(eager)).TargetMethod.MethodKind);
+
+            Assert.Same(eager, Assert.Single(consumer.DescendantNodes().OfType<ReturnStatementSyntax>()).Expression);
+        }
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(static call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+        }
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        void RetainedContexts(IMethodSymbol symbol, SyntaxNode syntax)
+        {
+            string key = symbol.OriginalDefinition.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            HostedProducerAdmittedStateObservation[] states = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == key && state.SpanStart == syntax.SpanStart && state.SpanLength == syntax.Span.Length).ToArray();
+
+            Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+                Assert.Null(state.WorkFrontier);
+                Assert.Null(state.EffectFrontier);
+                Assert.Null(state.RecoveryEffectFrontier);
+            });
+
+            Assert.Single(states.Select(static state => (state.AssemblyName, state.Compilation, state.Tree, state.Method, state.SelectionStart, state.SelectionLength, state.WorkFrontier, state.EffectFrontier, state.RecoveryEffectFrontier, state.FieldPublications, state.CompletionOwned)).Distinct());
+
+            foreach (HostedProducerAdmittedStateObservation state in states)
+                output.WriteLine($"R89_CONTEXT={shape}|{state.Method}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|completion={state.CompletionOwned}");
+
+            foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in states.GroupBy(static state => state.Lifecycle))
+                Assert.True(lane.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, shape + " must retain both original source contexts for " + key);
+        }
+
+        output.WriteLine($"R89_SOURCE={shape}|enum={firstType.ToDisplayString()}|wrap={wrapper}|copy={target}|as={selectedAs}|assembly={selectedAs.ContainingAssembly.Identity}");
+
+        if (anonymousTarget is not null)
+        {
+            Assert.NotNull(lambda);
+            RetainedContexts(anonymousTarget, lambda.Body);
+            Assert.Contains(observed, state => state.Method == Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method("Invoke"))).GetDocumentationCommentId());
+        }
+
+        RetainedContexts(wrapper, wrap);
+
+        RetainedContexts(target, copy);
+    }
+
+    [Theory]
+    [InlineData("parameter", "Level", "production")]
+    [InlineData("local", "Level", "production")]
+    [InlineData("parameter", "ProvenanceMode", "production")]
+    [InlineData("local", "ProvenanceMode", "production")]
+    [InlineData("parameter", "Level", "unsealed")]
+    [InlineData("parameter", "Level", "readonly-struct")]
+    public void GeneratedRecordIntoExtractedManifestRequiresCompleteTailProof(string receiver, string propertyName, string shape)
+    {
+        AssertExtractedManifestTailIngress(receiver, propertyName, shape, "exact");
+    }
+
+    [Theory]
+    [InlineData("effect")]
+    [InlineData("byte-reassigned")]
+    [InlineData("byte-unknown")]
+    [InlineData("byte-captured")]
+    [InlineData("concrete-type")]
+    [InlineData("ref-alias")]
+    public void ExtractedManifestTailRejectsUnmatchedUses(string mutation)
+    {
+        AssertExtractedManifestTailIngress("parameter", "Level", "box", mutation);
+    }
+
+    // R111 temporary dual-property candidate; positive interpretation requires Root-approved P1-P4 proof.
+    [Theory]
+    [InlineData("Level")]
+    [InlineData("ProvenanceMode")]
+    [InlineData("both")]
+    [InlineData("runtime-comparison")]
+    public void ProductionRecordAndExactCodeWrapperCompositionBoundary(string slice)
+    {
+        Assert.Contains(slice, new[] { "Level", "ProvenanceMode", "both", "runtime-comparison" });
+
+        if (slice is "both" or "runtime-comparison")
+        {
+            AssertProductionRecordCodeComposition("Level");
+
+            AssertProductionRecordCodeComposition("ProvenanceMode");
+        }
+
+        AssertProductionRecordCodeComposition(slice);
+    }
+
+    [Theory]
+    [InlineData("heterogeneous-target")]
+    [InlineData("peer-getter")]
+    [InlineData("peer-target")]
+    [InlineData("receiver-capture")]
+    [InlineData("receiver-reassigned")]
+    public void CopiedRecordEnumIngressRetainsIndependentPeerSources(string variant)
+    {
+        AssertProductionRecordCodeComposition(variant is "receiver-capture" or "receiver-reassigned" ? "both" : "Level", variant);
+    }
+
+    private void AssertProductionRecordCodeComposition(string slice, string variant = "baseline")
+    {
+        Assert.Contains(variant, new[] { "baseline", "heterogeneous-target", "peer-getter", "peer-target", "receiver-capture", "receiver-reassigned" });
+
+        void Report(string message)
+        {
+            if (variant == "baseline") output.WriteLine(message);
+        }
+
+        string repository = TestRepositoryPaths.RepositoryRoot();
+
+        const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
+
+        const string modelsPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigestModels.cs";
+
+        const string recordDeclaration = "public sealed record SensitivityDigestInput(ContentSensitivity Level, GenerationProvenanceMode ProvenanceMode, ImmutableArray<Guid> ExactGenerationIds, ImmutableArray<byte> GenerationBloom);";
+
+        const string wrapperPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigests.cs";
+
+        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
+        [
+            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
+        ];
+
+        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
+
+        foreach (var input in inputs)
+        {
+            string original = File.ReadAllText(Path.Combine(repository, input.Path));
+
+            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
+
+            string[] lines = original.Split('\n');
+
+            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
+
+            extracted.Add(input.Path, source);
+
+            Report($"R108_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
+        }
+
+        string originalWrapper = File.ReadAllText(Path.Combine(repository, wrapperPath));
+
+        Assert.Equal("F7811FDE8403D307FC5A2827A57E033A4CD4AE0163023B18A55FFFF81A8E263B", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
+
+        string[] wrapperLines = originalWrapper.Split('\n');
+
+        string originalCode = string.Join("\n", wrapperLines.Skip(1330).Take(12)) + "\n";
+
+        string originalHeader = string.Join("\n", wrapperLines.Take(9)) + "\n";
+
+        Assert.Equal("}", wrapperLines[^2]);
+
+        string originalModels = File.ReadAllText(Path.Combine(repository, modelsPath));
+
+        Assert.Equal("E895753C080BE29ECA7BB992DF04913909BE0DB797250762CFBE37E84642E27E", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalModels))));
+
+        string[] modelLines = originalModels.Split('\n');
+
+        Assert.Equal(recordDeclaration, modelLines[60]);
+
+        string selectedRecordDeclaration = variant == "peer-getter"
+            ? recordDeclaration[..^1] + " { public GenerationProvenanceMode Uncertified { get; } }"
+            : recordDeclaration;
+
+        extracted.Add(modelsPath, string.Join("\n", modelLines.Take(5)) + "\n" + selectedRecordDeclaration + "\n");
+
+        Report($"R108_RECORD_EXTRACTION={modelsPath}|inputSha256=E895753C080BE29ECA7BB992DF04913909BE0DB797250762CFBE37E84642E27E|ranges=1-5,61-61|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[modelsPath])))}");
+
+        string[] properties = slice == "Level" ? ["Level"] : slice == "ProvenanceMode" ? ["ProvenanceMode"] : ["Level", "ProvenanceMode"];
+
+        string calls = string.Join(" ", properties.Select(property => $"Code(input.{property}, \"{property}\");"));
+
+        if (slice == "runtime-comparison") calls += " if (input.ProvenanceMode == GenerationProvenanceMode.Exact) System.IO.File.Delete(\"comparison-marker\");";
+
+        calls += variant switch
+        {
+            "heterogeneous-target" => " CovenantPolicyV1Manifest.GetCode(input.ProvenanceMode);",
+            "peer-getter" => " CovenantPolicyV1Manifest.GetCode(input.Uncertified);",
+            "peer-target" => " PeerCode(input.ProvenanceMode, \"ProvenanceMode\");",
+            "receiver-capture" => " _ = (Func<GenerationProvenanceMode>)(() => input.ProvenanceMode);",
+            "receiver-reassigned" => " input = Second();",
+            _ => "",
+        };
+
+        string peerCode = "";
+
+        if (variant == "peer-target")
+        {
+            const string originalName = "Code<TEnum>(";
+
+            const string peerName = "PeerCode<TEnum>(";
+
+            const string childReturn = "            return CovenantPolicyV1Manifest.GetCode(value);";
+
+            const string mutation = "            value = default(TEnum);\n";
+
+            Assert.Equal(1, originalCode.Split(originalName, StringSplitOptions.None).Length - 1);
+
+            Assert.Equal(1, originalCode.Split(childReturn, StringSplitOptions.None).Length - 1);
+
+            peerCode = originalCode.Replace(originalName, peerName, StringComparison.Ordinal).Replace(childReturn, mutation + childReturn, StringComparison.Ordinal);
+
+            Assert.Equal(originalCode, peerCode.Replace(peerName, originalName, StringComparison.Ordinal).Replace(mutation, "", StringComparison.Ordinal));
+        }
+
+        string scaffold = """
+            private static SensitivityDigestInput First() { System.IO.File.Delete("first-marker"); return new SensitivityDigestInput(ContentSensitivity.None, GenerationProvenanceMode.Exact, System.Collections.Immutable.ImmutableArray<Guid>.Empty, System.Collections.Immutable.ImmutableArray<byte>.Empty); }
+            private static SensitivityDigestInput Second() { System.IO.File.Delete("second-marker"); return new SensitivityDigestInput(ContentSensitivity.CovenantDerived, GenerationProvenanceMode.BloomOverflow, System.Collections.Immutable.ImmutableArray<Guid>.Empty, System.Collections.Immutable.ImmutableArray<byte>.Empty); }
+            public static void Entry() { Observe(First()); Observe(Second()); }
+            """ + "\nprivate static void Observe(SensitivityDigestInput input) { " + calls + " }\n";
+
+        extracted.Add(wrapperPath, originalHeader + originalCode + peerCode + scaffold + "}\n");
+
+        Report($"R108_WRAPPER_EXTRACTION={slice}|ranges=1-9,1331-1342,last-closing-brace|omitted=all-unrelated-members-including-Sensitivity|wrapperUnchanged=true|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("using System;\n", "", StringComparison.Ordinal)
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { System.IO.File.Delete(\"root-marker\"); dynamic unknown = null!; unknown.Invoke(); CovenantDigests.Entry(); await Task.CompletedTask; }", StringComparison.Ordinal));
+
+        MetadataReference[] coreReferences = compilation.References.ToArray();
+
+        foreach ((string assemblyName, string typeName) in new[]
+        {
+            ("Microsoft.Extensions.Hosting.Abstractions", "Microsoft.Extensions.Hosting.IHostedService"),
+            ("Microsoft.Extensions.DependencyInjection.Abstractions", "Microsoft.Extensions.DependencyInjection.IServiceCollection"),
+        })
+        {
+            if (compilation.GetTypeByMetadataName(typeName) is not null) continue;
+
+            var candidates = HostedGrimoireProducerInventory.ProductionCompilations
+                .SelectMany(owner => owner.References.OfType<PortableExecutableReference>()
+                    .Select(reference => (Reference: reference, Assembly: owner.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol)))
+                .Where(candidate => candidate.Assembly?.Identity.Name == assemblyName)
+                .GroupBy(candidate => candidate.Reference.FilePath, StringComparer.Ordinal)
+                .Select(static group => group.First()).ToArray();
+
+            var candidate = Assert.Single(candidates);
+
+            IAssemblySymbol assembly = Assert.IsAssignableFrom<IAssemblySymbol>(candidate.Assembly);
+
+            Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
+
+            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+
+            Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
+
+            Assert.DoesNotContain(compilation.References.OfType<PortableExecutableReference>(), reference => reference.FilePath == candidate.Reference.FilePath);
+
+            compilation = compilation.AddReferences(candidate.Reference);
+
+            Report($"R108_ADDED_REFERENCE={candidate.Reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate.Reference.FilePath!)))}|assembly={assembly.Identity}");
+        }
+
+        Assert.All(coreReferences, reference => Assert.Contains(reference, compilation.References));
+
+        Assert.DoesNotContain(compilation.References, reference => compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" });
+
+        compilation = compilation.AddSyntaxTrees(extracted.Select(pair => CSharpSyntaxTree.ParseText(pair.Value, path: pair.Key)));
+
+        Diagnostic[] compilerDiagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning).ToArray();
+
+        foreach (Diagnostic diagnostic in compilerDiagnostics) output.WriteLine($"R108_COMPILER={diagnostic}");
+
+        Assert.Empty(compilerDiagnostics);
+
+        Assert.Equal("InventoryReferencePackFixture", compilation.AssemblyName);
+
+        foreach (var pair in extracted) Assert.Equal(pair.Value, Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == pair.Key).ToString());
+
+        SyntaxTree workerTree = Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == "src/Fixture.cs");
+
+        SyntaxTree wrapperTree = Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == wrapperPath);
+
+        SyntaxTree tailTree = Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == manifestPath);
+
+        SemanticModel workerModel = compilation.GetSemanticModel(workerTree);
+
+        SemanticModel model = compilation.GetSemanticModel(wrapperTree);
+
+        SemanticModel tailModel = compilation.GetSemanticModel(tailTree);
+
+        MethodDeclarationSyntax Method(string methodName) => Assert.Single(wrapperTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == methodName);
+
+        IMethodSymbol Symbol(string methodName) => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method(methodName)));
+
+        MethodDeclarationSyntax Tail(string methodName) => Assert.Single(tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == methodName);
+
+        IMethodSymbol TailSymbol(string methodName) => Assert.IsAssignableFrom<IMethodSymbol>(tailModel.GetDeclaredSymbol(Tail(methodName)));
+
+        bool Same(ISymbol? left, ISymbol? right) => SymbolEqualityComparer.Default.Equals(left, right);
+
+        IAssemblySymbol core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+
+        INamedTypeSymbol Framework(string metadataName)
+        {
+            INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName(metadataName));
+
+            Assert.True(Same(core, type.ContainingAssembly));
+
+            Assert.Empty(type.DeclaringSyntaxReferences);
+
+            return type;
+        }
+
+        var exceptionType = Framework("System.Exception");
+
+        var argumentType = Framework("System.ArgumentException");
+
+        var outOfRangeType = Framework("System.ArgumentOutOfRangeException");
+
+        Assert.True(Same(argumentType.BaseType, Framework("System.SystemException")));
+
+        Assert.True(Same(outOfRangeType.BaseType, argumentType));
+
+        IMethodSymbol wrapper = Symbol("Code");
+
+        MethodDeclarationSyntax codeSyntax = Method("Code");
+
+        Assert.Equal(Accessibility.Private, wrapper.DeclaredAccessibility);
+
+        Assert.Empty(wrapper.GetAttributes());
+
+        Assert.Empty(wrapper.ContainingType.GetAttributes());
+
+        Assert.Empty(wrapper.ContainingType.AllInterfaces);
+
+        Assert.True(wrapperTree.FilePath.StartsWith("src/", StringComparison.Ordinal) && !wrapperTree.FilePath.Contains("/obj/", StringComparison.Ordinal));
+
+        SyntaxReference wrapperDeclaration = Assert.Single(wrapper.DeclaringSyntaxReferences);
+
+        Assert.Same(wrapperTree, wrapperDeclaration.SyntaxTree);
+
+        Assert.Equal(codeSyntax.Span, wrapperDeclaration.Span);
+
+        Assert.IsType<MethodDeclarationSyntax>(wrapperDeclaration.GetSyntax());
+
+        MethodDeclarationSyntax[] wrapperBodies = compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()).Where(method => compilation.GetSemanticModel(method.SyntaxTree).GetDeclaredSymbol(method) is IMethodSymbol selected && Same(wrapper, selected.OriginalDefinition)).ToArray();
+
+        Assert.Same(codeSyntax, Assert.Single(wrapperBodies));
+
+        Assert.True(wrapper.IsStatic && wrapper.MethodKind == MethodKind.Ordinary && !wrapper.IsExtern && !wrapper.IsVirtual && !wrapper.IsAbstract && !wrapper.IsOverride && !wrapper.IsVararg && !wrapper.ReturnsByRef && !wrapper.ReturnsByRefReadonly && wrapper.ReducedFrom is null);
+
+        Assert.True(wrapper.ContainingType.IsStatic && wrapper.ContainingType.Arity == 0 && wrapper.ContainingType.ContainingType is null && Same(compilation.Assembly, wrapper.ContainingAssembly));
+
+        Assert.Equal("RetroDownfall.Arcanum.Core.Covenant.CovenantDigests", wrapper.ContainingType.ToDisplayString());
+
+        Assert.Equal(SpecialType.System_UInt32, wrapper.ReturnType.SpecialType);
+
+        ITypeParameterSymbol own = Assert.Single(wrapper.TypeParameters);
+
+        Assert.True(own.HasValueTypeConstraint && own.TypeParameterKind == TypeParameterKind.Method && Same(Framework("System.Enum"), Assert.Single(own.ConstraintTypes)));
+
+        Assert.Equal(2, wrapper.Parameters.Length);
+
+        Assert.All(wrapper.Parameters, parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+        Assert.True(Same(own, wrapper.Parameters[0].Type));
+
+        Assert.Equal(SpecialType.System_String, wrapper.Parameters[1].Type.SpecialType);
+
+        Assert.Single(codeSyntax.Body!.Statements);
+
+        TryStatementSyntax trySyntax = Assert.IsType<TryStatementSyntax>(codeSyntax.Body.Statements[0]);
+
+        var tryOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ITryOperation>(model.GetOperation(trySyntax));
+
+        var caught = Assert.Single(tryOperation.Catches);
+
+        ILocalSymbol catchLocal = Assert.Single(caught.Locals);
+
+        Assert.True(Same(exceptionType, caught.ExceptionType));
+
+        Assert.True(Same(caught.ExceptionType, catchLocal.Type));
+
+        Assert.Equal("exception", catchLocal.Name);
+
+        Assert.Null(tryOperation.Finally);
+
+        Assert.Single(trySyntax.Block.Statements);
+
+        ReturnStatementSyntax returned = Assert.IsType<ReturnStatementSyntax>(trySyntax.Block.Statements.Last());
+
+        var returnedOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IReturnOperation>(model.GetOperation(returned));
+
+        var forward = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(returnedOperation.ReturnedValue);
+
+        IMethodSymbol getCode = TailSymbol("GetCode");
+
+        Assert.True(Same(getCode, forward.TargetMethod.OriginalDefinition) && Same(own, Assert.Single(forward.TargetMethod.TypeArguments)));
+
+        var forwarded = Assert.Single(forward.Arguments);
+
+        Assert.Equal(0, forwarded.Parameter!.Ordinal);
+
+        Assert.True(forwarded.InConversion.IsIdentity && forwarded.OutConversion.IsIdentity && forwarded.Parameter.RefKind == RefKind.None);
+
+        Assert.True(Same(wrapper.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(forwarded.Value).Parameter));
+
+        Assert.DoesNotContain(codeSyntax.DescendantNodes(), node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or UsingStatementSyntax or ElementAccessExpressionSyntax or AwaitExpressionSyntax);
+
+        var enumUses = codeSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Where(use => Same(model.GetSymbolInfo(use).Symbol, wrapper.Parameters[0])).ToArray();
+
+        Assert.Single(enumUses);
+
+        Assert.Equal(1, codeSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Count(use => Same(model.GetSymbolInfo(use).Symbol, wrapper.Parameters[1])));
+
+        Assert.Empty(codeSyntax.DescendantNodes().OfType<AssignmentExpressionSyntax>());
+
+        CatchClauseSyntax catchSyntax = Assert.Single(trySyntax.Catches);
+
+        ExpressionSyntax filterSyntax = catchSyntax.Filter!.FilterExpression;
+
+        var pattern = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IIsPatternOperation>(model.GetOperation(filterSyntax));
+
+        Assert.True(Same(catchLocal, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(pattern.Value).Local));
+
+        var or = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IBinaryPatternOperation>(pattern.Pattern);
+
+        Assert.Equal(Microsoft.CodeAnalysis.Operations.BinaryOperatorKind.Or, or.OperatorKind);
+
+        Assert.True(Same(argumentType, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ITypePatternOperation>(or.LeftPattern).MatchedType));
+
+        Assert.True(Same(outOfRangeType, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ITypePatternOperation>(or.RightPattern).MatchedType));
+
+        ObjectCreationExpressionSyntax createdSyntax = Assert.Single(catchSyntax.DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+        var created = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(createdSyntax));
+
+        IMethodSymbol constructor = Assert.IsAssignableFrom<IMethodSymbol>(created.Constructor);
+
+        Assert.True(Same(outOfRangeType, constructor.ContainingType) && Same(core, constructor.ContainingAssembly));
+
+        Assert.Equal(MethodKind.Constructor, constructor.MethodKind);
+
+        Assert.Empty(constructor.DeclaringSyntaxReferences);
+
+        Assert.Equal(2, constructor.Parameters.Length);
+
+        Assert.Equal(new[] { "message", "innerException" }, constructor.Parameters.Select(parameter => parameter.Name));
+
+        Assert.Equal(SpecialType.System_String, constructor.Parameters[0].Type.SpecialType);
+
+        Assert.True(Same(exceptionType, constructor.Parameters[1].Type));
+
+        Assert.All(constructor.Parameters, parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+        Assert.Equal(2, created.Arguments.Length);
+
+        for (int index = 0; index < 2; index++)
+        {
+            var argument = created.Arguments[index];
+
+            Assert.Equal(index, argument.Parameter!.Ordinal);
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+        }
+
+        Assert.True(Same(wrapper.Parameters[1], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(created.Arguments[0].Value).Parameter));
+
+        IOperation exceptionArgument = created.Arguments[1].Value;
+
+        ILocalSymbol constructorLocal = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(exceptionArgument).Local;
+
+        Assert.True(Same(catchLocal, constructorLocal));
+
+        Assert.Single(catchSyntax.Block.Statements);
+
+        Assert.Equal(2, codeSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Count(use => Same(model.GetSymbolInfo(use).Symbol, catchLocal)));
+
+        var thrown = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IThrowOperation>(model.GetOperation(Assert.Single(catchSyntax.DescendantNodes().OfType<ThrowStatementSyntax>())));
+
+        var throwConversion = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(thrown.Exception);
+
+        Assert.True(throwConversion.IsImplicit && throwConversion.Conversion.IsReference && !throwConversion.Conversion.IsUserDefined && throwConversion.OperatorMethod is null && Same(exceptionType, throwConversion.Type));
+
+        var thrownCreation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(throwConversion.Operand);
+
+        Assert.True(Same(constructor, thrownCreation.Constructor) && thrownCreation.Syntax == createdSyntax);
+
+        Report($"R108_CONSTRUCTOR={slice}|selected={constructor}|assembly={constructor.ContainingAssembly.Identity}|slot0=message:string|slot1=innerException:System.Exception|catchType={caught.ExceptionType}|throwUpcast=reference|nameInOut=identity|exceptionInOut=identity");
+
+        // Exact bytes bind the already accepted full tail; authenticate selected edges in this compilation too.
+        string[] helpers = ["GetCode", "GetSupportedByte", "IsSupported", "AllowsZeroThroughOne", "AllowsZeroThroughTwo", "AllowsZeroThroughThree", "IsPositivePolicyEnum", "RequirePositiveCode", "GetMaximum", "RequireRange"];
+
+        Assert.Equal(helpers.Order(), tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Select(method => method.Identifier.ValueText).Order());
+
+        Assert.Equal(50, compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>()).Count());
+
+        foreach (EnumDeclarationSyntax declaration in compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>()))
+        {
+            var enumSymbol = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetSemanticModel(declaration.SyntaxTree).GetDeclaredSymbol(declaration));
+
+            Assert.True(Same(compilation.Assembly, enumSymbol.ContainingAssembly) && enumSymbol.TypeKind == TypeKind.Enum && enumSymbol.EnumUnderlyingType!.SpecialType == SpecialType.System_Byte);
+
+            AttributeData attribute = Assert.Single(enumSymbol.GetAttributes());
+
+            Assert.True(Same(compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonConverterAttribute"), attribute.AttributeClass));
+
+            var converter = Assert.IsAssignableFrom<INamedTypeSymbol>(Assert.Single(attribute.ConstructorArguments).Value);
+
+            Assert.True(Same(compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1"), converter.OriginalDefinition) && Same(enumSymbol, Assert.Single(converter.TypeArguments)));
+        }
+
+        foreach (string helper in helpers)
+        {
+            IMethodSymbol selected = TailSymbol(helper);
+
+            Assert.True(selected.IsStatic && !selected.IsVirtual && !selected.IsExtern && selected.ContainingType.Arity == 0 && Same(compilation.Assembly, selected.ContainingAssembly));
+
+            Assert.Equal(helper == "RequireRange" ? 0 : 1, selected.Arity);
+
+            Assert.All(selected.Parameters, parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+            if (selected.Arity == 1)
+            {
+                ITypeParameterSymbol tailOwn = Assert.Single(selected.TypeParameters);
+
+                Assert.True(tailOwn.HasValueTypeConstraint && Same(Framework("System.Enum"), Assert.Single(tailOwn.ConstraintTypes)));
+            }
+
+            Assert.DoesNotContain(Tail(helper).DescendantNodes(), node => node is AssignmentExpressionSyntax or AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or UsingStatementSyntax or ElementAccessExpressionSyntax or AwaitExpressionSyntax);
+
+            foreach (InvocationExpressionSyntax call in Tail(helper).DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                IOperation operation = tailModel.GetOperation(call)!;
+
+                if (operation is Microsoft.CodeAnalysis.Operations.INameOfOperation) continue;
+
+                var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(operation);
+
+                if (Same(getCode.ContainingType, invocation.TargetMethod.ContainingType))
+                {
+                    Assert.True(Same(TailSymbol(invocation.TargetMethod.Name), invocation.TargetMethod.OriginalDefinition));
+
+                    if (invocation.TargetMethod.Arity == 1) Assert.True(Same(selected.TypeParameters[0], Assert.Single(invocation.TargetMethod.TypeArguments)));
+                }
+                else
+                {
+                    Assert.True(Same(Framework("System.Runtime.CompilerServices.Unsafe"), invocation.TargetMethod.ContainingType));
+
+                    Assert.Contains(invocation.TargetMethod.Name, new[] { "As", "SizeOf" });
+
+                    Assert.True(Same(selected.TypeParameters[0], invocation.TargetMethod.TypeArguments[0]));
+
+                    if (invocation.TargetMethod.Name == "As")
+                    {
+                        Assert.Equal(SpecialType.System_Byte, invocation.TargetMethod.TypeArguments[1].SpecialType);
+
+                        var source = Assert.Single(invocation.Arguments);
+
+                        Assert.Equal(RefKind.Ref, source.Parameter!.RefKind);
+
+                        Assert.True(Same(selected.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(source.Value).Parameter));
+                    }
+                }
+            }
+
+            foreach (var conversion in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(tailModel.GetOperation(Tail(helper))!).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>()) Assert.Null(conversion.OperatorMethod);
+
+            foreach (var binary in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(tailModel.GetOperation(Tail(helper))!).OfType<Microsoft.CodeAnalysis.Operations.IBinaryOperation>())
+            {
+                if (binary.OperatorMethod is { } selectedOperator) Assert.True(selectedOperator.Name == "op_Equality" && Same(Framework("System.Type"), selectedOperator.ContainingType));
+
+                else Assert.Contains(binary.LeftOperand.Type!.SpecialType, new[] { SpecialType.System_Int32, SpecialType.System_Boolean });
+            }
+        }
+
+        foreach (ObjectCreationExpressionSyntax syntax in tailTree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(tailModel.GetOperation(syntax));
+
+            Assert.True(Same(core, creation.Constructor!.ContainingAssembly));
+
+            Assert.Contains(creation.Type!.ToDisplayString(), new[] { "System.ArgumentException", "System.ArgumentOutOfRangeException" });
+
+            Assert.All(creation.Constructor.Parameters, parameter => Assert.Equal(SpecialType.System_String, parameter.Type.SpecialType));
+        }
+
+        INamedTypeSymbol sensitivity = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity")!;
+
+        INamedTypeSymbol provenance = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.GenerationProvenanceMode")!;
+
+        Assert.False(Same(sensitivity, provenance));
+
+        INamedTypeSymbol record = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.SensitivityDigestInput")!;
+
+        Assert.True(record.IsRecord && record.IsSealed && record.TypeKind == TypeKind.Class && record.Arity == 0 && record.ContainingType is null && !record.IsReadOnly && Same(compilation.Assembly, record.ContainingAssembly));
+
+        RecordDeclarationSyntax recordSyntax = Assert.IsType<RecordDeclarationSyntax>(Assert.Single(record.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.Equal(modelsPath, recordSyntax.SyntaxTree.FilePath);
+
+        Assert.Equal(selectedRecordDeclaration, recordSyntax.ToString());
+
+        SemanticModel recordModel = compilation.GetSemanticModel(recordSyntax.SyntaxTree);
+
+        INamedTypeSymbol immutable = compilation.GetTypeByMetadataName("System.Collections.Immutable.ImmutableArray`1")!;
+
+        ITypeSymbol[] expectedTypes = [sensitivity, provenance, immutable.Construct(compilation.GetTypeByMetadataName("System.Guid")!), immutable.Construct(compilation.GetSpecialType(SpecialType.System_Byte))];
+
+        IParameterSymbol primaryParameter = Assert.IsAssignableFrom<IParameterSymbol>(recordModel.GetDeclaredSymbol(recordSyntax.ParameterList!.Parameters[0]));
+
+        IMethodSymbol primaryConstructor = Assert.IsAssignableFrom<IMethodSymbol>(primaryParameter.ContainingSymbol);
+
+        Assert.True(primaryConstructor.MethodKind == MethodKind.Constructor && Same(record, primaryConstructor.ContainingType));
+
+        Assert.Equal(4, primaryConstructor.Parameters.Length);
+
+        for (int index = 0; index < 4; index++)
+        {
+            Assert.True(Same(expectedTypes[index], primaryConstructor.Parameters[index].Type));
+
+            Assert.Equal(RefKind.None, primaryConstructor.Parameters[index].RefKind);
+
+            Assert.Equal(index, primaryConstructor.Parameters[index].Ordinal);
+        }
+
+        List<(IPropertySymbol Property, IMethodSymbol Getter, ParameterSyntax Syntax)> generatedGetters = [];
+
+        string[] provedProperties = variant is "heterogeneous-target" or "peer-target" ? ["Level", "ProvenanceMode"] : properties;
+
+        foreach (string propertyName in provedProperties)
+        {
+            int ordinal = propertyName == "Level" ? 0 : 1;
+
+            IPropertySymbol property = Assert.Single(record.GetMembers(propertyName).OfType<IPropertySymbol>());
+
+            IMethodSymbol getter = Assert.IsAssignableFrom<IMethodSymbol>(property.GetMethod);
+
+            Assert.False(property.IsStatic || property.IsIndexer || property.IsVirtual || property.IsOverride || property.IsAbstract || property.ReturnsByRef || property.ReturnsByRefReadonly);
+
+            Assert.True(Same(expectedTypes[ordinal], property.Type) && getter.MethodKind == MethodKind.PropertyGet && Same(property, getter.AssociatedSymbol) && Same(property.Type, getter.ReturnType));
+
+            Assert.True(getter.IsImplicitlyDeclared && !getter.IsExtern);
+
+            ParameterSyntax positional = Assert.IsType<ParameterSyntax>(Assert.Single(property.DeclaringSyntaxReferences).GetSyntax());
+
+            Assert.Same(recordSyntax.SyntaxTree, positional.SyntaxTree);
+
+            Assert.Equal(recordSyntax.ParameterList.Parameters[ordinal].Span, positional.Span);
+
+            IParameterSymbol parameter = Assert.IsAssignableFrom<IParameterSymbol>(recordModel.GetDeclaredSymbol(positional));
+
+            Assert.True(Same(primaryConstructor, parameter.ContainingSymbol) && Same(primaryConstructor.Parameters[ordinal], parameter) && Same(property.Type, parameter.Type));
+
+            Assert.Equal(property.Name, parameter.Name);
+
+            SyntaxReference getterReference = Assert.Single(getter.DeclaringSyntaxReferences);
+
+            Assert.Same(positional.SyntaxTree, getterReference.SyntaxTree);
+
+            Assert.Equal(positional.Span, getterReference.Span);
+
+            Assert.IsType<ParameterSyntax>(getterReference.GetSyntax());
+
+            generatedGetters.Add((property, getter, positional));
+
+            Report($"R108_PROPERTY={slice}|property={property}|closedEnum={property.Type}|constructor={primaryConstructor}|parameterOrdinal={ordinal}|getterImplicit={getter.IsImplicitlyDeclared}|getterSyntax={modelsPath}:{positional.Span}|authoredGetterBody=false");
+        }
+
+        IPropertySymbol? uncertifiedProperty = null;
+
+        if (variant == "peer-getter")
+        {
+            uncertifiedProperty = Assert.Single(record.GetMembers("Uncertified").OfType<IPropertySymbol>());
+
+            IMethodSymbol getter = Assert.IsAssignableFrom<IMethodSymbol>(uncertifiedProperty.GetMethod);
+
+            Assert.True(Same(record, uncertifiedProperty.ContainingType) && Same(provenance, uncertifiedProperty.Type));
+
+            Assert.False(uncertifiedProperty.IsStatic || uncertifiedProperty.IsVirtual || uncertifiedProperty.IsIndexer || uncertifiedProperty.ReturnsByRef || uncertifiedProperty.ReturnsByRefReadonly);
+
+            Assert.True(getter.MethodKind == MethodKind.PropertyGet && Same(uncertifiedProperty, getter.AssociatedSymbol));
+
+            Assert.False(getter.IsImplicitlyDeclared);
+
+            PropertyDeclarationSyntax propertySyntax = Assert.IsType<PropertyDeclarationSyntax>(Assert.Single(uncertifiedProperty.DeclaringSyntaxReferences).GetSyntax());
+
+            AccessorDeclarationSyntax getterSyntax = Assert.IsType<AccessorDeclarationSyntax>(Assert.Single(getter.DeclaringSyntaxReferences).GetSyntax());
+
+            Assert.Equal(SyntaxKind.GetAccessorDeclaration, getterSyntax.Kind());
+
+            Assert.Null(getterSyntax.Body);
+
+            Assert.Null(getterSyntax.ExpressionBody);
+
+            Assert.Null(propertySyntax.ExpressionBody);
+
+            Assert.Null(propertySyntax.Initializer);
+
+            Assert.Same(propertySyntax, getterSyntax.Parent!.Parent);
+
+            Assert.DoesNotContain(recordSyntax.ParameterList!.Parameters, parameter => parameter.Identifier.ValueText == uncertifiedProperty.Name);
+        }
+
+        foreach (string factory in new[] { "First", "Second" })
+        {
+            Assert.True(Same(record, Symbol(factory).ReturnType));
+
+            ObjectCreationExpressionSyntax creation = Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+            var construction = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(creation));
+
+            Assert.True(Same(primaryConstructor, construction.Constructor));
+
+            Assert.Equal(4, construction.Arguments.Length);
+
+            for (int index = 0; index < expectedTypes.Length; index++)
+            {
+                var argument = construction.Arguments[index];
+
+                Assert.Equal(index, argument.Parameter!.Ordinal);
+
+                Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+
+                Assert.True(Same(expectedTypes[index], argument.Value.Type));
+
+                if (index < 2)
+                {
+                    string name = index == 0 ? factory == "First" ? "None" : "CovenantDerived" : factory == "First" ? "Exact" : "BloomOverflow";
+
+                    IFieldSymbol field = Assert.IsAssignableFrom<IFieldSymbol>(model.GetSymbolInfo(creation.ArgumentList!.Arguments[index].Expression).Symbol);
+
+                    Assert.Equal(name, field.Name);
+
+                    Assert.True(Same(expectedTypes[index], field.ContainingType));
+
+                    Assert.Equal(index == 0 ? factory == "First" ? (byte)0 : (byte)1 : factory == "First" ? (byte)1 : (byte)2, Assert.IsType<byte>(argument.Value.ConstantValue.Value));
+                }
+                else
+                {
+                    var empty = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(argument.Value);
+
+                    Assert.Equal("Empty", empty.Field.Name);
+
+                    Assert.True(empty.Field.IsStatic && empty.Field.IsReadOnly);
+
+                    Assert.True(Same(immutable, empty.Field.ContainingType.OriginalDefinition));
+                }
+            }
+        }
+
+        IMethodSymbol callerSymbol = Symbol("Observe");
+
+        Assert.True(callerSymbol.IsStatic && callerSymbol.Arity == 0 && callerSymbol.Parameters.Length == 1 && callerSymbol.Parameters[0].RefKind == RefKind.None && Same(record, callerSymbol.Parameters[0].Type));
+
+        InvocationExpressionSyntax[] ingress = Method("Observe").DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol target && Same(wrapper, target.OriginalDefinition)).ToArray();
+
+        Assert.Equal(properties.Length, ingress.Length);
+
+        InvocationExpressionSyntax[] allWrapperCalls = compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()).Where(call => compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol selected && Same(wrapper, selected.OriginalDefinition)).ToArray();
+
+        Assert.Equal(ingress.Length, allWrapperCalls.Length);
+
+        Assert.All(allWrapperCalls, call =>
+        {
+            Assert.Same(wrapperTree, call.SyntaxTree);
+
+            Assert.Same(Method("Observe"), call.Ancestors().OfType<MethodDeclarationSyntax>().First());
+
+            Assert.Contains(call, ingress);
+        });
+
+        SimpleNameSyntax[] allWrapperReferences = compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>()).Where(reference => compilation.GetSemanticModel(reference.SyntaxTree).GetSymbolInfo(reference).Symbol is IMethodSymbol selected && Same(wrapper, selected.OriginalDefinition)).ToArray();
+
+        Assert.Equal(ingress.Length, allWrapperReferences.Length);
+
+        Assert.All(allWrapperReferences, reference => Assert.Contains(ingress, call => ReferenceEquals(call.Expression, reference)));
+
+        if (slice == "both" && variant == "baseline")
+        {
+            MethodDeclarationSyntax observerSyntax = Method("Observe");
+
+            Assert.Null(observerSyntax.ExpressionBody);
+
+            Assert.Equal(2, observerSyntax.Body!.Statements.Count);
+
+            Assert.Equal(2, observerSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Count());
+
+            for (int index = 0; index < 2; index++)
+            {
+                ExpressionStatementSyntax statement = Assert.IsType<ExpressionStatementSyntax>(observerSyntax.Body.Statements[index]);
+
+                Assert.Same(ingress[index], Assert.IsType<InvocationExpressionSyntax>(statement.Expression));
+
+                Assert.Equal($"Code(input.{properties[index]}, \"{properties[index]}\");", statement.ToString());
+
+                var expression = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IExpressionStatementOperation>(model.GetOperation(statement));
+
+                Assert.Same(ingress[index], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(expression.Operation).Syntax);
+            }
+
+            Assert.Empty(callerSymbol.GetAttributes());
+
+            Assert.Equal(Accessibility.Private, callerSymbol.DeclaredAccessibility);
+
+            Assert.Equal(SpecialType.System_Void, callerSymbol.ReturnType.SpecialType);
+
+            Assert.Same(wrapperTree, Assert.Single(callerSymbol.DeclaringSyntaxReferences).SyntaxTree);
+
+            Assert.Equal(observerSyntax.Span, Assert.Single(callerSymbol.DeclaringSyntaxReferences).Span);
+
+            Report("R111_STRAIGHT_LINE=both|statements=2|selectedCodeCalls=2|alternateCodeCalls=0|callableBranchOrCapture=false|fullOriginalCallerBody=true");
+        }
+
+        for (int lane = 0; lane < ingress.Length; lane++)
+        {
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(ingress[lane]));
+
+            IPropertySymbol property = generatedGetters[lane].Property;
+
+            Assert.True(Same(wrapper, invocation.TargetMethod.OriginalDefinition) && Same(property.Type, Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+            Assert.Equal(2, invocation.Arguments.Length);
+
+            for (int index = 0; index < 2; index++)
+            {
+                var argument = invocation.Arguments[index];
+
+                Assert.Equal(index, argument.Parameter!.Ordinal);
+
+                Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+                Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && argument.Parameter.RefKind == RefKind.None);
+
+                Assert.True(Same(invocation.TargetMethod.Parameters[index], argument.Parameter));
+
+                Assert.True(Same(wrapper.Parameters[index], argument.Parameter.OriginalDefinition));
+            }
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(invocation.Arguments[0].Value);
+
+            Assert.True(Same(property, read.Property) && Same(property.Type, invocation.Arguments[0].Parameter!.Type));
+
+            Assert.True(Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+
+            MemberAccessExpressionSyntax access = Assert.IsType<MemberAccessExpressionSyntax>(read.Syntax);
+
+            Assert.True(Same(callerSymbol.Parameters[0], model.GetSymbolInfo(Assert.IsType<IdentifierNameSyntax>(access.Expression)).Symbol));
+
+            Assert.Equal(properties[lane], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILiteralOperation>(invocation.Arguments[1].Value).ConstantValue.Value);
+
+            Report($"R108_SELECTED_INGRESS={slice}|lane={lane}|closedEnum={property.Type}|selected={invocation.TargetMethod}|original={wrapper}|enumFormalOrdinal=0|nameFormalOrdinal=1|getter={property.GetMethod}|syntax={wrapperPath}:{ingress[lane].Span}");
+        }
+
+        if (variant != "baseline")
+        {
+            MethodDeclarationSyntax observerSyntax = Method("Observe");
+
+            Assert.Null(observerSyntax.ExpressionBody);
+
+            Assert.Equal(properties.Length + 1, observerSyntax.Body!.Statements.Count);
+
+            Assert.Empty(callerSymbol.GetAttributes());
+
+            Assert.Equal(Accessibility.Private, callerSymbol.DeclaredAccessibility);
+
+            Assert.Equal(SpecialType.System_Void, callerSymbol.ReturnType.SpecialType);
+
+            Assert.Same(wrapperTree, Assert.Single(callerSymbol.DeclaringSyntaxReferences).SyntaxTree);
+
+            Assert.Equal(observerSyntax.Span, Assert.Single(callerSymbol.DeclaringSyntaxReferences).Span);
+
+            for (int index = 0; index < properties.Length; index++)
+            {
+                var statement = Assert.IsType<ExpressionStatementSyntax>(observerSyntax.Body.Statements[index]);
+
+                Assert.Same(ingress[index], Assert.IsType<InvocationExpressionSyntax>(statement.Expression));
+
+                Assert.Equal($"Code(input.{properties[index]}, \"{properties[index]}\");", statement.ToString());
+            }
+
+            var extra = Assert.IsType<ExpressionStatementSyntax>(observerSyntax.Body.Statements.Last());
+
+            if (variant is "heterogeneous-target" or "peer-getter" or "peer-target")
+            {
+                var syntax = Assert.IsType<InvocationExpressionSyntax>(extra.Expression);
+
+                var selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(syntax));
+
+                IMethodSymbol peerTarget = variant == "peer-target" ? Symbol("PeerCode") : getCode;
+
+                IPropertySymbol peerProperty = variant == "peer-getter" ? uncertifiedProperty! : generatedGetters[1].Property;
+
+                Assert.True(Same(peerTarget, selected.TargetMethod.OriginalDefinition) && Same(provenance, Assert.Single(selected.TargetMethod.TypeArguments)));
+
+                Assert.True(peerTarget.IsStatic && peerTarget.MethodKind == MethodKind.Ordinary && Same(compilation.Assembly, peerTarget.ContainingAssembly));
+
+                Assert.False(selected.IsVirtual);
+
+                Assert.Null(selected.Instance);
+
+                Assert.Null(selected.TargetMethod.ReducedFrom);
+
+                Assert.Equal(variant == "peer-target" ? 2 : 1, selected.Arguments.Length);
+
+                for (int index = 0; index < selected.Arguments.Length; index++)
+                {
+                    var argument = selected.Arguments[index];
+
+                    Assert.Equal(index, argument.Parameter!.Ordinal);
+
+                    Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+                    Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && argument.Parameter.RefKind == RefKind.None);
+
+                    Assert.True(Same(selected.TargetMethod.Parameters[index], argument.Parameter) && Same(peerTarget.Parameters[index], argument.Parameter.OriginalDefinition));
+                }
+
+                Assert.True(Same(peerTarget.TypeParameters[0], peerTarget.Parameters[0].Type) && Same(provenance, selected.Arguments[0].Parameter!.Type));
+
+                var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(selected.Arguments[0].Value);
+
+                Assert.True(Same(peerProperty, read.Property) && Same(provenance, read.Type));
+
+                Assert.True(Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+
+                Assert.Equal(2, observerSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Count());
+
+                if (variant == "peer-target")
+                {
+                    Assert.Equal("ProvenanceMode", Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILiteralOperation>(selected.Arguments[1].Value).ConstantValue.Value);
+
+                    MethodDeclarationSyntax peerSyntax = Method("PeerCode");
+
+                    TryStatementSyntax peerTry = Assert.IsType<TryStatementSyntax>(Assert.Single(peerSyntax.Body!.Statements));
+
+                    Assert.Equal(2, peerTry.Block.Statements.Count);
+
+                    var mutationStatement = Assert.IsType<ExpressionStatementSyntax>(peerTry.Block.Statements[0]);
+
+                    var mutation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation>(model.GetOperation(mutationStatement.Expression));
+
+                    Assert.True(Same(peerTarget.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(mutation.Target).Parameter));
+
+                    Assert.True(Same(peerTarget.TypeParameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDefaultValueOperation>(mutation.Value).Type));
+
+                    var returnedPeer = Assert.IsType<ReturnStatementSyntax>(peerTry.Block.Statements[1]);
+
+                    var forwardedPeer = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(returnedPeer.Expression!));
+
+                    Assert.True(Same(getCode, forwardedPeer.TargetMethod.OriginalDefinition) && Same(peerTarget.TypeParameters[0], Assert.Single(forwardedPeer.TargetMethod.TypeArguments)));
+
+                    Assert.True(Same(peerTarget.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(Assert.Single(forwardedPeer.Arguments).Value).Parameter));
+
+                    Assert.Equal(2, peerSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Count(use => Same(model.GetSymbolInfo(use).Symbol, peerTarget.Parameters[0])));
+                }
+            }
+            else if (variant == "receiver-capture")
+            {
+                Assert.Equal("_ = (Func<GenerationProvenanceMode>)(() => input.ProvenanceMode);", extra.ToString());
+
+                var capture = Assert.Single(observerSyntax.DescendantNodes().OfType<ParenthesizedLambdaExpressionSyntax>());
+
+                var captureOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IAnonymousFunctionOperation>(model.GetOperation(capture));
+
+                Assert.True(Same(provenance, captureOperation.Symbol.ReturnType));
+
+                var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(model.GetOperation(Assert.IsType<MemberAccessExpressionSyntax>(capture.Body)));
+
+                Assert.True(Same(generatedGetters[1].Property, read.Property) && Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+
+                Assert.Equal(2, observerSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Count());
+
+                Assert.Empty(observerSyntax.DescendantNodes().OfType<LocalFunctionStatementSyntax>());
+            }
+            else
+            {
+                Assert.Equal("receiver-reassigned", variant);
+
+                Assert.Equal("input = Second();", extra.ToString());
+
+                var assignment = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation>(model.GetOperation(extra.Expression));
+
+                Assert.True(Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(assignment.Target).Parameter));
+
+                var replacement = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(assignment.Value);
+
+                Assert.True(Same(Symbol("Second"), replacement.TargetMethod));
+
+                Assert.Empty(replacement.Arguments);
+
+                Assert.Equal(3, observerSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Count());
+
+                Assert.True(extra.SpanStart > ingress.Last().Span.End);
+
+                Assert.DoesNotContain(observerSyntax.DescendantNodes(), node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+            }
+        }
+
+        if (variant is not ("receiver-capture" or "receiver-reassigned"))
+        {
+            Assert.DoesNotContain(Method("Observe").DescendantNodes(), node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or AssignmentExpressionSyntax);
+        }
+
+        var receiverUses = Method("Observe").DescendantNodes().OfType<IdentifierNameSyntax>().Where(use => Same(model.GetSymbolInfo(use).Symbol, callerSymbol.Parameters[0])).ToArray();
+
+        Assert.Equal(properties.Length + (slice == "runtime-comparison" ? 1 : 0) + (variant == "baseline" ? 0 : 1), receiverUses.Length);
+
+        foreach (IdentifierNameSyntax use in receiverUses)
+        {
+            if (variant == "receiver-reassigned" && use.Parent is AssignmentExpressionSyntax assignment && assignment.Left == use)
+            {
+                Assert.Same(Method("Observe").Body!.Statements.Last(), assignment.Parent);
+
+                continue;
+            }
+
+            MemberAccessExpressionSyntax access = Assert.IsType<MemberAccessExpressionSyntax>(use.Parent);
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(model.GetOperation(access));
+
+            Assert.True(Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+
+            if (variant == "peer-getter" && Same(uncertifiedProperty, read.Property))
+            {
+                Assert.Same(Method("Observe").Body!.Statements.Last(), use.Ancestors().OfType<ExpressionStatementSyntax>().First());
+            }
+            else
+            {
+                Assert.Contains(generatedGetters, association => Same(association.Property, read.Property));
+            }
+        }
+
+        if (slice == "runtime-comparison")
+        {
+            BinaryExpressionSyntax comparisonSyntax = Assert.Single(Method("Observe").DescendantNodes().OfType<BinaryExpressionSyntax>());
+
+            var comparison = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IBinaryOperation>(model.GetOperation(comparisonSyntax));
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.BinaryOperatorKind.Equals, comparison.OperatorKind);
+
+            Assert.Null(comparison.OperatorMethod);
+
+            Assert.Equal(SpecialType.System_Boolean, comparison.Type!.SpecialType);
+
+            var comparisonRead = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(model.GetOperation(comparisonSyntax.Left));
+
+            Assert.True(Same(generatedGetters[1].Property, comparisonRead.Property) && Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(comparisonRead.Instance).Parameter));
+
+            var comparisonField = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(model.GetOperation(comparisonSyntax.Right));
+
+            Assert.True(Same(provenance, comparisonField.Field.ContainingType));
+
+            Assert.Equal("Exact", comparisonField.Field.Name);
+
+            foreach (var conversion in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(comparison).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>()) Assert.Null(conversion.OperatorMethod);
+        }
+
+        Assert.All(Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(model.GetOperation(codeSyntax)!).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>(), conversion => Assert.Null(conversion.OperatorMethod));
+
+        Report($"R108_SOURCE_AUDIT={slice}|enums=50|helpers=10|originalWrapper=true|originalTail=true|generatedRecord=true|ownTForward=true|selectedConcreteFormalGetter=true|runtimeComparison={slice == "runtime-comparison"}|independentDemandInventory=preserved|noPrivateQuery=true");
+
+        IMethodSymbol entrySymbol = Symbol("Entry");
+
+        Assert.True(entrySymbol.IsStatic && entrySymbol.Arity == 0 && entrySymbol.Parameters.IsEmpty && entrySymbol.ReturnType.SpecialType == SpecialType.System_Void);
+
+        MethodDeclarationSyntax entrySyntax = Method("Entry");
+
+        Assert.Equal(2, entrySyntax.Body!.Statements.Count);
+
+        for (int index = 0; index < 2; index++)
+        {
+            var entryStatement = Assert.IsType<ExpressionStatementSyntax>(entrySyntax.Body.Statements[index]);
+
+            var call = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(entryStatement.Expression));
+
+            Assert.True(Same(callerSymbol, call.TargetMethod));
+
+            var argument = Assert.Single(call.Arguments);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && Same(callerSymbol.Parameters[0], argument.Parameter));
+
+            var factoryCall = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(argument.Value);
+
+            Assert.True(Same(Symbol(index == 0 ? "First" : "Second"), factoryCall.TargetMethod));
+
+            Assert.Empty(factoryCall.Arguments);
+        }
+
+        InvocationExpressionSyntax[] entryCalls = compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()).Where(call => compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol selected && Same(entrySymbol, selected.OriginalDefinition)).ToArray();
+
+        InvocationExpressionSyntax workerEntryCall = Assert.Single(entryCalls);
+
+        Assert.Same(workerTree, workerEntryCall.SyntaxTree);
+
+        Assert.Equal("StartAsync", workerEntryCall.Ancestors().OfType<MethodDeclarationSyntax>().First().Identifier.ValueText);
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(workerModel.GetOperation(workerEntryCall)).Arguments);
+
+        InvocationExpressionSyntax[] observerCalls = compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()).Where(call => compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol selected && Same(callerSymbol, selected.OriginalDefinition)).ToArray();
+
+        Assert.Equal(2, observerCalls.Length);
+
+        Assert.All(observerCalls, call => Assert.Same(entrySyntax, call.Ancestors().OfType<MethodDeclarationSyntax>().First()));
+
+        HostedProducerOperationEntry ordinary = OrdinaryRoot();
+
+        Assert.Equal("Worker.StartAsync", ordinary.OperationId);
+
+        Assert.Equal("src/Fixture.cs", ordinary.SourcePath);
+
+        Assert.Equal("Worker", ordinary.EnclosingType);
+
+        Assert.Equal("StartAsync", ordinary.Member);
+
+        Assert.Equal(HostedProducerAuthorityKind.OrdinaryHostedWork, ordinary.Authority);
+
+        Assert.Null(ordinary.Proof);
+
+        Assert.Empty(ordinary.Sites);
+
+        // Fresh graph, complete observation from entry, one compilation/worker, ordinary root and no probes.
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [ordinary])], [], rootWorkers: 1, admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in new[] { workerTree, wrapperTree }.SelectMany(source => source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()).Where(call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            var selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(compilation.GetSemanticModel(marker.SyntaxTree).GetOperation(marker));
+
+            Assert.True(Same(Framework("System.IO.File"), selected.TargetMethod.ContainingType));
+
+            Assert.Equal("Delete", selected.TargetMethod.Name);
+
+            Assert.Equal("path", Assert.Single(selected.TargetMethod.Parameters).Name);
+
+            string coordinate = "/site@" + marker.SyntaxTree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.AuthorityOperationId == "Worker.StartAsync" && site.SourcePath == marker.SyntaxTree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Report($"R108_MARKER={slice}|label={selected.Arguments[0].Value.ConstantValue.Value}|{coordinate}|work-refused=true|effect-refused=true");
+        }
+
+        InvocationExpressionSyntax rootMarker = Assert.Single(workerTree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == "unknown.Invoke");
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(workerModel.GetOperation(rootMarker)).Arguments);
+
+        string[] unknownCoordinates = [workerTree.FilePath + ":" + rootMarker.SpanStart];
+
+        foreach (string coordinate in unknownCoordinates) Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == coordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        Assert.All(result.Diagnostics, diagnostic => Assert.True(diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING" || diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && unknownCoordinates.Contains(diagnostic.Identity) && diagnostic.Detail == "Dynamic invocation has no exact call target.", diagnostic.ToString()));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] States(IMethodSymbol symbol, SyntaxNode syntax, bool required)
+        {
+            string key = symbol.OriginalDefinition.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            var assembly = symbol.ContainingAssembly.Identity;
+
+            Assert.True(Same(compilation.Assembly, symbol.ContainingAssembly));
+
+            SyntaxTree[] eligibleTrees = compilation.SyntaxTrees.Where(source => source.FilePath.StartsWith("src/", StringComparison.Ordinal) && !source.FilePath.Contains("/obj/", StringComparison.Ordinal)).ToArray();
+
+            int treeOrdinal = Array.IndexOf(eligibleTrees, syntax.SyntaxTree);
+
+            Assert.True(treeOrdinal >= 0);
+
+            // Count all observations of this exact original member, without occurrence/time or token filters.
+            var states = observed.Where(state => state.Method == key).ToArray();
+
+            if (required) Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.Equal("Worker", state.RootType);
+
+                Assert.Equal("Worker.StartAsync", state.RootOperation);
+
+                Assert.Equal(assembly.Name, state.AssemblyName);
+
+                Assert.Equal(assembly.Version.ToString(), state.AssemblyVersion);
+
+                Assert.Equal(assembly.CultureName, state.AssemblyCulture);
+
+                Assert.Equal(Convert.ToHexString((assembly.HasPublicKey ? assembly.PublicKey : assembly.PublicKeyToken).AsSpan()), state.AssemblyKeyOrToken);
+
+                Assert.Equal(assembly.HasPublicKey, state.AssemblyHasPublicKey);
+
+                Assert.Equal(assembly.IsRetargetable, state.AssemblyRetargetable);
+
+                Assert.Equal((int)assembly.ContentType, state.AssemblyContentType);
+
+                Assert.Equal(0, state.Compilation);
+
+                Assert.Equal(treeOrdinal, state.Tree);
+
+                Assert.Equal(key, state.Method);
+
+                Assert.Equal(syntax.SpanStart, state.SpanStart);
+
+                Assert.Equal(syntax.Span.Length, state.SpanLength);
+
+                Assert.Equal(string.Empty, state.FallbackAdmissionBindings);
+
+                Assert.Equal(string.Empty, state.FallbackEvaluationEnvironment);
+
+                Assert.Equal(string.Empty, state.FallbackValueBindings);
+
+                Assert.Equal(string.Empty, state.FallbackConcreteBindings);
+
+                Assert.Equal(string.Empty, state.FallbackRecoveryBindings);
+
+                Assert.Equal(string.Empty, state.FieldPublications);
+
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+
+                Assert.Null(state.WorkFrontier);
+
+                Assert.Null(state.EffectFrontier);
+
+                Assert.Null(state.RecoveryEffectFrontier);
+
+                Assert.False(state.CompletionOwned);
+            });
+
+            foreach (var state in states) Report($"R108_CONTEXT={slice}|source={syntax.SyntaxTree.FilePath}|{key}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+            Report($"R111_PUBLIC_IDENTITY={slice}|method={key}|root=Worker.StartAsync|assembly={assembly}|compilation=0|tree={treeOrdinal}|fullSelection=true|states={states.Length}|exactTokens=true|fallbackFields=all-empty|fieldPublications=empty");
+
+            return states;
+        }
+
+        MethodDeclarationSyntax rootSyntax = Assert.Single(workerTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == "StartAsync");
+
+        var roots = States(Assert.IsAssignableFrom<IMethodSymbol>(workerModel.GetDeclaredSymbol(rootSyntax)), rootSyntax, true);
+
+        Assert.Equal(new[] { false, true }, roots.Select(state => state.Lifecycle).Distinct().Order());
+
+        foreach (string factory in new[] { "First", "Second", "Entry" }) States(Symbol(factory), Method(factory), true);
+
+        // Generated getters have compiler associations but no authored body; observe without inventing a traversal.
+        foreach (var association in generatedGetters) States(association.Getter, association.Syntax, false);
+
+        States(primaryConstructor, recordSyntax, false);
+
+        var parents = States(Symbol("Observe"), Method("Observe"), true).Where(state => state.Lifecycle).ToArray();
+
+        Assert.NotEmpty(parents);
+
+        Assert.True(parents.Select(state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, "Non-own-T caller must retain both factory contexts.");
+
+        var receiving = States(wrapper, codeSyntax, true);
+
+        foreach (string helper in helpers) States(TailSymbol(helper), Tail(helper), false);
+
+        Assert.Contains(receiving, state => state.Lifecycle);
+
+        int automatic = receiving.Count(state => state.Lifecycle);
+
+        int declared = receiving.Count(state => !state.Lifecycle);
+
+        Assert.True(automatic > 0, "The automatic receiving lane must be present.");
+
+        int automaticTokens = receiving.Where(state => state.Lifecycle).Select(state => state.EvaluationEnvironmentToken!.Value).Distinct().Count();
+
+        Assert.Equal(automatic, automaticTokens);
+
+        string callerOperation = callerSymbol.ContainingType.ToDisplayString() + "." + callerSymbol.Name;
+
+        Assert.True(callerSymbol.IsStatic && callerSymbol.Arity == 0 && callerSymbol.ContainingType.Arity == 0 && callerSymbol.ContainingType.ContainingType is null);
+
+        Assert.Equal("RetroDownfall.Arcanum.Core.Covenant.CovenantDigests.Observe", callerOperation);
+
+        Assert.NotEqual(ordinary.OperationId, callerOperation);
+
+        Assert.All(result.Items.Where(site => site.SourcePath == wrapperPath && site.Callee == "System.IO.File.Delete"), site =>
+        {
+            InvocationExpressionSyntax marker = Assert.Single(Method(site.Member).DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == "System.IO.File.Delete");
+
+            Assert.Equal("Worker", site.RootType);
+
+            Assert.Equal(ordinary.OperationId, site.AuthorityOperationId);
+
+            Assert.Equal(ordinary.OperationId + "/site@" + marker.SyntaxTree.FilePath + ":" + marker.SpanStart, site.OperationId);
+        });
+
+        Report($"R113_ROOT_IDENTITY={slice}|callerOperation={callerOperation}|authorityRoot={ordinary.OperationId}|callerDiffersFromRoot=true|publicSites=canonical-root-and-site-coordinate|rawCallStackObserved=false|selectedRootSuppression=independent-RootOperation-source-premise");
+
+        Report($"R111_LOWER_BOUND_PREMISES={slice}|P1=compiler-exact|P2=src-indexed-unique-body|P3=full-automatic-Observe-root-and-compiler-nested-route|P4=all-automatic-Code-states|automatic={automatic}|distinctTokens={automaticTokens}|ownTRetention=frozen-source-premise|bothCallTraversal=Root-adjudicated-premise|tokenTypeNames=none");
+
+        Report($"R108_PROBE={slice}|CodeTrue={automatic}|CodeFalse={declared}|prerequisites=passed");
+
+        if (variant != "baseline")
+        {
+            if (variant == "heterogeneous-target")
+            {
+                var tailReceiving = States(getCode, Tail("GetCode"), true).Where(state => state.Lifecycle).ToArray();
+
+                Assert.True(tailReceiving.Length >= 2, "The unchanged Code child and direct peer retain their distinct closed own-type slots.");
+            }
+
+            if (variant == "peer-getter")
+            {
+                var tailReceiving = States(getCode, Tail("GetCode"), true).Where(state => state.Lifecycle).ToArray();
+
+                Assert.True(tailReceiving.Select(state => state.EvaluationEnvironmentToken).Distinct().Count() >= 3, "The certified Level child and both uncertified getter sources must retain distinct automatic GetCode contexts.");
+            }
+
+            if (variant == "peer-target")
+            {
+                var peerReceiving = States(Symbol("PeerCode"), Method("PeerCode"), true).Where(state => state.Lifecycle).ToArray();
+
+                Assert.True(peerReceiving.Select(state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, "The mutating PeerCode formal must retain both original automatic source contexts.");
+            }
+
+            output.WriteLine($"R124_RECEIVER_GUARDS={variant}|CodeTrue={automatic}|CodeFalse={declared}|compilerAndReceiverGuards=passed|tokens=opaque|frontiers=empty");
+
+            // Each selected Code argument is already a copied enum value. Unrelated
+            // receiver uses retain their own sources without multiplying this certificate.
+            Assert.Equal(properties.Length, automatic);
+
+            return;
+        }
+
+        // The copied enum boundary preserves one context per selected closed type,
+        // including when the caller separately compares the original receiver's property.
+        // Cardinality and distinct tokens never label tokens with enum names.
+        Assert.Equal(properties.Length, automatic);
+    }
+
+    // R103: removing only this additive block restores the entire accepted R101 fixture.
+    [Theory]
+    [InlineData("parameter")]
+    [InlineData("local")]
+    public void ExactOuterCodeWrapperRequiresCompleteEnumIngressProof(string receiver)
+    {
+        AssertOuterCodeWrapper(receiver, "exact");
+    }
+
+    [Theory]
+    [InlineData("enum-reassigned")]
+    [InlineData("enum-unknown")]
+    [InlineData("extra-filter")]
+    [InlineData("finally")]
+    [InlineData("different-catch")]
+    [InlineData("catch-alias")]
+    [InlineData("receiver-nameof")]
+    [InlineData("effectful-name")]
+    public void OuterCodeWrapperPreservesExcludedShapesAndArgumentEffects(string shape)
+    {
+        AssertOuterCodeWrapper("parameter", shape);
+    }
+
+    private void AssertOuterCodeWrapper(string receiver, string shape)
+    {
+        string repository = TestRepositoryPaths.RepositoryRoot();
+
+        const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
+
+        const string wrapperPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigests.cs";
+
+        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
+        [
+            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
+        ];
+
+        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
+
+        foreach (var input in inputs)
+        {
+            string original = File.ReadAllText(Path.Combine(repository, input.Path));
+
+            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
+
+            string[] lines = original.Split('\n');
+
+            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
+
+            extracted.Add(input.Path, source);
+
+            output.WriteLine($"R103_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
+        }
+
+        string originalWrapper = File.ReadAllText(Path.Combine(repository, wrapperPath));
+
+        Assert.Equal("F7811FDE8403D307FC5A2827A57E033A4CD4AE0163023B18A55FFFF81A8E263B", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
+
+        string[] wrapperLines = originalWrapper.Split('\n');
+
+        string originalCode = string.Join("\n", wrapperLines.Skip(1330).Take(12)) + "\n";
+
+        string originalHeader = string.Join("\n", wrapperLines.Take(9)) + "\n";
+
+        Assert.Equal("}", wrapperLines[^2]);
+
+        const string forwarding = "            return CovenantPolicyV1Manifest.GetCode(value);";
+
+        const string originalFilter = "when (exception is ArgumentException or ArgumentOutOfRangeException)";
+
+        const string originalThrow = "            throw new ArgumentOutOfRangeException(parameterName, exception);";
+
+        (string Old, string New) delta = shape switch
+        {
+            "enum-reassigned" => (forwarding, "            value = default;\n" + forwarding),
+            "enum-unknown" => (forwarding, "            dynamic extra = null!; extra.Use(value);\n" + forwarding),
+            "extra-filter" => (originalFilter, "when ((exception is ArgumentException or ArgumentOutOfRangeException) && ExtraFilter(exception))"),
+            "finally" => ("        }\n    }\n", "        }\n        finally { System.IO.File.Delete(\"wrapper-finally-marker\"); }\n    }\n"),
+            "different-catch" => ("catch (Exception exception)", "catch (SystemException exception)"),
+            "catch-alias" => (originalThrow, "            var alias = exception;\n            throw new ArgumentOutOfRangeException(parameterName, alias);"),
+            _ => ("", ""),
+        };
+
+        string code = originalCode;
+
+        if (delta.Old.Length > 0)
+        {
+            Assert.Equal(1, originalCode.Split(delta.Old, StringSplitOptions.None).Length - 1);
+
+            code = originalCode.Replace(delta.Old, delta.New, StringComparison.Ordinal);
+
+            Assert.Equal(originalCode, code.Replace(delta.New, delta.Old, StringComparison.Ordinal));
+        }
+
+        string name = shape == "receiver-nameof" ? "nameof(input.Level)" : "\"Level\"";
+
+        string entry = receiver == "local"
+            ? "Box first = First(); Box second = Second(); Code(first.Level, \"Level\"); Code(second.Level, \"Level\");"
+            : shape == "effectful-name" ? "ObserveFirst(First()); ObserveSecond(Second());" : "Observe(First()); Observe(Second());";
+
+        string callers = receiver == "local" ? "" : shape == "effectful-name"
+            ? "private static uint ObserveFirst(Box input) => Code(input.Level, FirstName()); private static uint ObserveSecond(Box input) => Code(input.Level, SecondName());"
+            : "private static uint Observe(Box input) => Code(input.Level, " + name + ");";
+
+        string scaffold = """
+            private sealed class Box
+            {
+                private readonly ContentSensitivity level;
+                public Box(ContentSensitivity value) { level = value; }
+                public ContentSensitivity Level { get { System.IO.File.Delete("getter-marker"); return level; } }
+            }
+            private static Box First() { System.IO.File.Delete("first-marker"); return new Box(ContentSensitivity.None); }
+            private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(ContentSensitivity.CovenantDerived); }
+            """ + "\npublic static void Entry() { " + entry + " }\n" + callers + "\n";
+
+        if (shape == "extra-filter") scaffold += "private static bool ExtraFilter(Exception input) { System.IO.File.Delete(\"wrapper-filter-marker\"); return true; }\n";
+
+        if (shape == "effectful-name") scaffold += "private static string FirstName() { System.IO.File.Delete(\"first-name-marker\"); return \"Level\"; } private static string SecondName() { System.IO.File.Delete(\"second-name-marker\"); return \"Level\"; }\n";
+
+        extracted.Add(wrapperPath, originalHeader + code + scaffold + "}\n");
+
+        output.WriteLine($"R103_WRAPPER_EXTRACTION={receiver}|{shape}|ranges=1-9,1331-1342,last-closing-brace|omitted=all-unrelated-members|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|deltaOld={delta.Old.Replace("\n", "\\n", StringComparison.Ordinal)}|deltaNew={delta.New.Replace("\n", "\\n", StringComparison.Ordinal)}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("using System;\n", "", StringComparison.Ordinal)
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { System.IO.File.Delete(\"root-marker\"); dynamic unknown = null!; unknown.Invoke(); CovenantDigests.Entry(); await Task.CompletedTask; }", StringComparison.Ordinal));
+
+        MetadataReference[] coreReferences = compilation.References.ToArray();
+
+        foreach ((string assemblyName, string typeName) in new[]
+        {
+            ("Microsoft.Extensions.Hosting.Abstractions", "Microsoft.Extensions.Hosting.IHostedService"),
+            ("Microsoft.Extensions.DependencyInjection.Abstractions", "Microsoft.Extensions.DependencyInjection.IServiceCollection"),
+        })
+        {
+            if (compilation.GetTypeByMetadataName(typeName) is not null) continue;
+
+            var candidates = HostedGrimoireProducerInventory.ProductionCompilations
+                .SelectMany(owner => owner.References.OfType<PortableExecutableReference>()
+                    .Select(reference => (Reference: reference, Assembly: owner.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol)))
+                .Where(candidate => candidate.Assembly?.Identity.Name == assemblyName)
+                .GroupBy(candidate => candidate.Reference.FilePath, StringComparer.Ordinal)
+                .Select(static group => group.First()).ToArray();
+
+            var candidate = Assert.Single(candidates);
+
+            IAssemblySymbol assembly = Assert.IsAssignableFrom<IAssemblySymbol>(candidate.Assembly);
+
+            Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
+
+            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+
+            Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
+
+            Assert.DoesNotContain(compilation.References.OfType<PortableExecutableReference>(), reference => reference.FilePath == candidate.Reference.FilePath);
+
+            compilation = compilation.AddReferences(candidate.Reference);
+
+            output.WriteLine($"R103_ADDED_REFERENCE={candidate.Reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate.Reference.FilePath!)))}|assembly={assembly.Identity}");
+        }
+
+        Assert.All(coreReferences, reference => Assert.Contains(reference, compilation.References));
+
+        Assert.DoesNotContain(compilation.References, reference => compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" });
+
+        compilation = compilation.AddSyntaxTrees(extracted.Select(pair => CSharpSyntaxTree.ParseText(pair.Value, path: pair.Key)));
+
+        Diagnostic[] compilerDiagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning).ToArray();
+
+        foreach (Diagnostic diagnostic in compilerDiagnostics) output.WriteLine($"R103_COMPILER={diagnostic}");
+
+        Assert.Empty(compilerDiagnostics);
+
+        Assert.Equal("InventoryReferencePackFixture", compilation.AssemblyName);
+
+        foreach (var pair in extracted) Assert.Equal(pair.Value, Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == pair.Key).ToString());
+
+        SyntaxTree workerTree = Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == "src/Fixture.cs");
+
+        SyntaxTree wrapperTree = Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == wrapperPath);
+
+        SyntaxTree tailTree = Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == manifestPath);
+
+        SemanticModel workerModel = compilation.GetSemanticModel(workerTree);
+
+        SemanticModel model = compilation.GetSemanticModel(wrapperTree);
+
+        SemanticModel tailModel = compilation.GetSemanticModel(tailTree);
+
+        MethodDeclarationSyntax Method(string methodName) => Assert.Single(wrapperTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == methodName);
+
+        IMethodSymbol Symbol(string methodName) => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method(methodName)));
+
+        MethodDeclarationSyntax Tail(string methodName) => Assert.Single(tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == methodName);
+
+        IMethodSymbol TailSymbol(string methodName) => Assert.IsAssignableFrom<IMethodSymbol>(tailModel.GetDeclaredSymbol(Tail(methodName)));
+
+        bool Same(ISymbol? left, ISymbol? right) => SymbolEqualityComparer.Default.Equals(left, right);
+
+        IAssemblySymbol core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+
+        INamedTypeSymbol Framework(string metadataName)
+        {
+            INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName(metadataName));
+
+            Assert.True(Same(core, type.ContainingAssembly));
+
+            Assert.Empty(type.DeclaringSyntaxReferences);
+
+            return type;
+        }
+
+        var exceptionType = Framework("System.Exception");
+
+        var argumentType = Framework("System.ArgumentException");
+
+        var outOfRangeType = Framework("System.ArgumentOutOfRangeException");
+
+        Assert.True(Same(argumentType.BaseType, Framework("System.SystemException")));
+
+        Assert.True(Same(outOfRangeType.BaseType, argumentType));
+
+        IMethodSymbol wrapper = Symbol("Code");
+
+        MethodDeclarationSyntax codeSyntax = Method("Code");
+
+        Assert.Equal(Accessibility.Private, wrapper.DeclaredAccessibility);
+
+        Assert.True(wrapper.IsStatic && wrapper.MethodKind == MethodKind.Ordinary && !wrapper.IsExtern && !wrapper.IsVirtual && !wrapper.IsAbstract && !wrapper.IsOverride && !wrapper.IsVararg && !wrapper.ReturnsByRef && !wrapper.ReturnsByRefReadonly && wrapper.ReducedFrom is null);
+
+        Assert.True(wrapper.ContainingType.IsStatic && wrapper.ContainingType.Arity == 0 && wrapper.ContainingType.ContainingType is null && Same(compilation.Assembly, wrapper.ContainingAssembly));
+
+        Assert.Equal("RetroDownfall.Arcanum.Core.Covenant.CovenantDigests", wrapper.ContainingType.ToDisplayString());
+
+        Assert.Equal(SpecialType.System_UInt32, wrapper.ReturnType.SpecialType);
+
+        ITypeParameterSymbol own = Assert.Single(wrapper.TypeParameters);
+
+        Assert.True(own.HasValueTypeConstraint && own.TypeParameterKind == TypeParameterKind.Method && Same(Framework("System.Enum"), Assert.Single(own.ConstraintTypes)));
+
+        Assert.Equal(2, wrapper.Parameters.Length);
+
+        Assert.All(wrapper.Parameters, parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+        Assert.True(Same(own, wrapper.Parameters[0].Type));
+
+        Assert.Equal(SpecialType.System_String, wrapper.Parameters[1].Type.SpecialType);
+
+        Assert.Single(codeSyntax.Body!.Statements);
+
+        TryStatementSyntax trySyntax = Assert.IsType<TryStatementSyntax>(codeSyntax.Body.Statements[0]);
+
+        var tryOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ITryOperation>(model.GetOperation(trySyntax));
+
+        var caught = Assert.Single(tryOperation.Catches);
+
+        ILocalSymbol catchLocal = Assert.Single(caught.Locals);
+
+        Assert.True(Same(shape == "different-catch" ? Framework("System.SystemException") : exceptionType, caught.ExceptionType));
+
+        Assert.True(Same(caught.ExceptionType, catchLocal.Type));
+
+        Assert.Equal("exception", catchLocal.Name);
+
+        Assert.Equal(shape == "finally", tryOperation.Finally is not null);
+
+        Assert.Equal(shape is "enum-reassigned" ? 2 : shape is "enum-unknown" ? 3 : 1, trySyntax.Block.Statements.Count);
+
+        ReturnStatementSyntax returned = Assert.IsType<ReturnStatementSyntax>(trySyntax.Block.Statements.Last());
+
+        var returnedOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IReturnOperation>(model.GetOperation(returned));
+
+        var forward = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(returnedOperation.ReturnedValue);
+
+        IMethodSymbol getCode = TailSymbol("GetCode");
+
+        Assert.True(Same(getCode, forward.TargetMethod.OriginalDefinition) && Same(own, Assert.Single(forward.TargetMethod.TypeArguments)));
+
+        var forwarded = Assert.Single(forward.Arguments);
+
+        Assert.Equal(0, forwarded.Parameter!.Ordinal);
+
+        Assert.True(forwarded.InConversion.IsIdentity && forwarded.OutConversion.IsIdentity && forwarded.Parameter.RefKind == RefKind.None);
+
+        Assert.True(Same(wrapper.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(forwarded.Value).Parameter));
+
+        Assert.DoesNotContain(codeSyntax.DescendantNodes(), node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or UsingStatementSyntax or ElementAccessExpressionSyntax or AwaitExpressionSyntax);
+
+        var enumUses = codeSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Where(use => Same(model.GetSymbolInfo(use).Symbol, wrapper.Parameters[0])).ToArray();
+
+        Assert.Equal(shape is "enum-reassigned" or "enum-unknown" ? 2 : 1, enumUses.Length);
+
+        Assert.Equal(1, codeSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Count(use => Same(model.GetSymbolInfo(use).Symbol, wrapper.Parameters[1])));
+
+        if (shape == "enum-reassigned")
+        {
+            var assignment = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ISimpleAssignmentOperation>(model.GetOperation(Assert.Single(codeSyntax.DescendantNodes().OfType<AssignmentExpressionSyntax>())));
+
+            Assert.True(Same(wrapper.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(assignment.Target).Parameter));
+
+            Assert.True(Same(own, assignment.Value.Type));
+
+            Assert.Equal(SyntaxKind.DefaultLiteralExpression, assignment.Value.Syntax.Kind());
+
+            output.WriteLine($"R104_ASSIGNMENT_VALUE=kind={assignment.Value.Kind}|type={assignment.Value.Type}|implicit={assignment.Value.IsImplicit}|syntaxKind={assignment.Value.Syntax.Kind()}|syntax={assignment.Value.Syntax}|target={wrapper.Parameters[0]}");
+
+            if (assignment.Value is Microsoft.CodeAnalysis.Operations.IConversionOperation valueConversion)
+            {
+                output.WriteLine($"R104_ASSIGNMENT_CONVERSION=operandKind={valueConversion.Operand.Kind}|operandType={valueConversion.Operand.Type}|operandImplicit={valueConversion.Operand.IsImplicit}|exists={valueConversion.Conversion.Exists}|identity={valueConversion.Conversion.IsIdentity}|numeric={valueConversion.Conversion.IsNumeric}|reference={valueConversion.Conversion.IsReference}|userDefined={valueConversion.Conversion.IsUserDefined}|method={valueConversion.Conversion.MethodSymbol}|operator={valueConversion.OperatorMethod}|checked={valueConversion.IsChecked}|tryCast={valueConversion.IsTryCast}");
+            }
+
+            output.WriteLine($"R103_TRUE_VETO={wrapperPath}:{assignment.Syntax.SpanStart}|selected-assignment-target=enum-formal|rule=existing-parameter-mutation-demand");
+        }
+        else Assert.Empty(codeSyntax.DescendantNodes().OfType<AssignmentExpressionSyntax>());
+
+        if (shape == "enum-unknown")
+        {
+            var dynamicUse = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(model.GetOperation(Assert.Single(codeSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == "extra.Use")));
+
+            Assert.True(Same(wrapper.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(Assert.Single(dynamicUse.Arguments)).Parameter));
+
+            output.WriteLine($"R103_UNKNOWN_ENUM={wrapperPath}:{dynamicUse.Syntax.SpanStart}|exact-dependent-enum-formal");
+        }
+
+        CatchClauseSyntax catchSyntax = Assert.Single(trySyntax.Catches);
+
+        ExpressionSyntax filterSyntax = catchSyntax.Filter!.FilterExpression;
+
+        if (shape == "extra-filter")
+        {
+            var and = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IBinaryOperation>(model.GetOperation(filterSyntax));
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.BinaryOperatorKind.ConditionalAnd, and.OperatorKind);
+
+            Assert.Null(and.OperatorMethod);
+
+            filterSyntax = Assert.IsType<ParenthesizedExpressionSyntax>(Assert.IsType<BinaryExpressionSyntax>(filterSyntax).Left).Expression;
+
+            var filterCall = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(and.RightOperand);
+
+            Assert.True(Same(Symbol("ExtraFilter"), filterCall.TargetMethod));
+
+            var argument = Assert.Single(filterCall.Arguments);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && Same(catchLocal, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(argument.Value).Local));
+
+            Assert.True(Symbol("ExtraFilter").IsStatic && Symbol("ExtraFilter").ReturnType.SpecialType == SpecialType.System_Boolean);
+
+            var literalReturn = Assert.Single(Method("ExtraFilter").DescendantNodes().OfType<ReturnStatementSyntax>());
+
+            Assert.Equal(true, model.GetConstantValue(literalReturn.Expression!).Value);
+        }
+
+        var pattern = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IIsPatternOperation>(model.GetOperation(filterSyntax));
+
+        Assert.True(Same(catchLocal, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(pattern.Value).Local));
+
+        var or = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IBinaryPatternOperation>(pattern.Pattern);
+
+        Assert.Equal(Microsoft.CodeAnalysis.Operations.BinaryOperatorKind.Or, or.OperatorKind);
+
+        Assert.True(Same(argumentType, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ITypePatternOperation>(or.LeftPattern).MatchedType));
+
+        Assert.True(Same(outOfRangeType, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ITypePatternOperation>(or.RightPattern).MatchedType));
+
+        ObjectCreationExpressionSyntax createdSyntax = Assert.Single(catchSyntax.DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+        var created = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(createdSyntax));
+
+        IMethodSymbol constructor = Assert.IsAssignableFrom<IMethodSymbol>(created.Constructor);
+
+        Assert.True(Same(outOfRangeType, constructor.ContainingType) && Same(core, constructor.ContainingAssembly));
+
+        Assert.Equal(MethodKind.Constructor, constructor.MethodKind);
+
+        Assert.Empty(constructor.DeclaringSyntaxReferences);
+
+        Assert.Equal(2, constructor.Parameters.Length);
+
+        Assert.Equal(new[] { "message", "innerException" }, constructor.Parameters.Select(parameter => parameter.Name));
+
+        Assert.Equal(SpecialType.System_String, constructor.Parameters[0].Type.SpecialType);
+
+        Assert.True(Same(exceptionType, constructor.Parameters[1].Type));
+
+        Assert.All(constructor.Parameters, parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+        Assert.Equal(2, created.Arguments.Length);
+
+        for (int index = 0; index < 2; index++)
+        {
+            var argument = created.Arguments[index];
+
+            Assert.Equal(index, argument.Parameter!.Ordinal);
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+        }
+
+        Assert.True(Same(wrapper.Parameters[1], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(created.Arguments[0].Value).Parameter));
+
+        IOperation exceptionArgument = created.Arguments[1].Value;
+
+        if (shape == "different-catch")
+        {
+            var converted = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(exceptionArgument);
+
+            Assert.True(converted.Conversion.IsReference && !converted.Conversion.IsUserDefined && converted.OperatorMethod is null && Same(exceptionType, converted.Type));
+
+            exceptionArgument = converted.Operand;
+        }
+
+        ILocalSymbol constructorLocal = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(exceptionArgument).Local;
+
+        if (shape == "catch-alias")
+        {
+            VariableDeclaratorSyntax alias = Assert.Single(catchSyntax.DescendantNodes().OfType<VariableDeclaratorSyntax>());
+
+            Assert.True(Same(constructorLocal, model.GetDeclaredSymbol(alias)));
+
+            Assert.True(Same(catchLocal, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(model.GetOperation(alias.Initializer!.Value)).Local));
+
+            Assert.Equal(2, catchSyntax.Block.Statements.Count);
+        }
+        else
+        {
+            Assert.True(Same(catchLocal, constructorLocal));
+
+            Assert.Single(catchSyntax.Block.Statements);
+        }
+
+        Assert.Equal(shape == "extra-filter" ? 3 : 2, codeSyntax.DescendantNodes().OfType<IdentifierNameSyntax>().Count(use => Same(model.GetSymbolInfo(use).Symbol, catchLocal)));
+
+        var thrown = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IThrowOperation>(model.GetOperation(Assert.Single(catchSyntax.DescendantNodes().OfType<ThrowStatementSyntax>())));
+
+        var throwConversion = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(thrown.Exception);
+
+        Assert.True(throwConversion.IsImplicit && throwConversion.Conversion.IsReference && !throwConversion.Conversion.IsUserDefined && throwConversion.OperatorMethod is null && Same(exceptionType, throwConversion.Type));
+
+        var thrownCreation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(throwConversion.Operand);
+
+        Assert.True(Same(constructor, thrownCreation.Constructor) && thrownCreation.Syntax == createdSyntax);
+
+        output.WriteLine($"R103_CONSTRUCTOR={receiver}|{shape}|selected={constructor}|assembly={constructor.ContainingAssembly.Identity}|slot0=message:string|slot1=innerException:System.Exception|catchType={caught.ExceptionType}|throwUpcast=reference|nameInOut=identity|exceptionInOut=identity");
+
+        // Exact bytes bind the already accepted full tail; authenticate selected edges in this compilation too.
+        string[] helpers = ["GetCode", "GetSupportedByte", "IsSupported", "AllowsZeroThroughOne", "AllowsZeroThroughTwo", "AllowsZeroThroughThree", "IsPositivePolicyEnum", "RequirePositiveCode", "GetMaximum", "RequireRange"];
+
+        Assert.Equal(helpers.Order(), tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Select(method => method.Identifier.ValueText).Order());
+
+        Assert.Equal(50, compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>()).Count());
+
+        foreach (EnumDeclarationSyntax declaration in compilation.SyntaxTrees.SelectMany(source => source.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>()))
+        {
+            var enumSymbol = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetSemanticModel(declaration.SyntaxTree).GetDeclaredSymbol(declaration));
+
+            Assert.True(Same(compilation.Assembly, enumSymbol.ContainingAssembly) && enumSymbol.TypeKind == TypeKind.Enum && enumSymbol.EnumUnderlyingType!.SpecialType == SpecialType.System_Byte);
+
+            AttributeData attribute = Assert.Single(enumSymbol.GetAttributes());
+
+            Assert.True(Same(compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonConverterAttribute"), attribute.AttributeClass));
+
+            var converter = Assert.IsAssignableFrom<INamedTypeSymbol>(Assert.Single(attribute.ConstructorArguments).Value);
+
+            Assert.True(Same(compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1"), converter.OriginalDefinition) && Same(enumSymbol, Assert.Single(converter.TypeArguments)));
+        }
+
+        foreach (string helper in helpers)
+        {
+            IMethodSymbol selected = TailSymbol(helper);
+
+            Assert.True(selected.IsStatic && !selected.IsVirtual && !selected.IsExtern && selected.ContainingType.Arity == 0 && Same(compilation.Assembly, selected.ContainingAssembly));
+
+            Assert.Equal(helper == "RequireRange" ? 0 : 1, selected.Arity);
+
+            Assert.All(selected.Parameters, parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+            if (selected.Arity == 1)
+            {
+                ITypeParameterSymbol tailOwn = Assert.Single(selected.TypeParameters);
+
+                Assert.True(tailOwn.HasValueTypeConstraint && Same(Framework("System.Enum"), Assert.Single(tailOwn.ConstraintTypes)));
+            }
+
+            Assert.DoesNotContain(Tail(helper).DescendantNodes(), node => node is AssignmentExpressionSyntax or AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or UsingStatementSyntax or ElementAccessExpressionSyntax or AwaitExpressionSyntax);
+
+            foreach (InvocationExpressionSyntax call in Tail(helper).DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                IOperation operation = tailModel.GetOperation(call)!;
+
+                if (operation is Microsoft.CodeAnalysis.Operations.INameOfOperation) continue;
+
+                var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(operation);
+
+                if (Same(getCode.ContainingType, invocation.TargetMethod.ContainingType))
+                {
+                    Assert.True(Same(TailSymbol(invocation.TargetMethod.Name), invocation.TargetMethod.OriginalDefinition));
+
+                    if (invocation.TargetMethod.Arity == 1) Assert.True(Same(selected.TypeParameters[0], Assert.Single(invocation.TargetMethod.TypeArguments)));
+                }
+                else
+                {
+                    Assert.True(Same(Framework("System.Runtime.CompilerServices.Unsafe"), invocation.TargetMethod.ContainingType));
+
+                    Assert.Contains(invocation.TargetMethod.Name, new[] { "As", "SizeOf" });
+
+                    Assert.True(Same(selected.TypeParameters[0], invocation.TargetMethod.TypeArguments[0]));
+
+                    if (invocation.TargetMethod.Name == "As")
+                    {
+                        Assert.Equal(SpecialType.System_Byte, invocation.TargetMethod.TypeArguments[1].SpecialType);
+
+                        var source = Assert.Single(invocation.Arguments);
+
+                        Assert.Equal(RefKind.Ref, source.Parameter!.RefKind);
+
+                        Assert.True(Same(selected.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(source.Value).Parameter));
+                    }
+                }
+            }
+
+            foreach (var conversion in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(tailModel.GetOperation(Tail(helper))!).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>()) Assert.Null(conversion.OperatorMethod);
+
+            foreach (var binary in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(tailModel.GetOperation(Tail(helper))!).OfType<Microsoft.CodeAnalysis.Operations.IBinaryOperation>())
+            {
+                if (binary.OperatorMethod is { } selectedOperator) Assert.True(selectedOperator.Name == "op_Equality" && Same(Framework("System.Type"), selectedOperator.ContainingType));
+
+                else Assert.Contains(binary.LeftOperand.Type!.SpecialType, new[] { SpecialType.System_Int32, SpecialType.System_Boolean });
+            }
+        }
+
+        foreach (ObjectCreationExpressionSyntax syntax in tailTree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(tailModel.GetOperation(syntax));
+
+            Assert.True(Same(core, creation.Constructor!.ContainingAssembly));
+
+            Assert.Contains(creation.Type!.ToDisplayString(), new[] { "System.ArgumentException", "System.ArgumentOutOfRangeException" });
+
+            Assert.All(creation.Constructor.Parameters, parameter => Assert.Equal(SpecialType.System_String, parameter.Type.SpecialType));
+        }
+
+        INamedTypeSymbol sensitivity = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity")!;
+
+        INamedTypeSymbol box = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.CovenantDigests+Box")!;
+
+        IPropertySymbol property = Assert.IsAssignableFrom<IPropertySymbol>(Assert.Single(box.GetMembers("Level")));
+
+        IMethodSymbol getter = property.GetMethod!;
+
+        AccessorDeclarationSyntax getterSyntax = Assert.IsType<AccessorDeclarationSyntax>(Assert.Single(getter.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.True(box.IsSealed && box.Arity == 0 && Same(compilation.Assembly, box.ContainingAssembly) && Same(sensitivity, property.Type));
+
+        Assert.False(property.IsStatic || property.IsVirtual || property.IsOverride || property.IsAbstract || property.IsIndexer || property.ReturnsByRef || property.ReturnsByRefReadonly || getter.IsImplicitlyDeclared || getter.IsExtern);
+
+        IFieldSymbol field = Assert.IsAssignableFrom<IFieldSymbol>(Assert.Single(box.GetMembers("level")));
+
+        Assert.True(field.IsReadOnly && !field.IsStatic && Same(sensitivity, field.Type));
+
+        Assert.True(Same(field, model.GetSymbolInfo(Assert.Single(getterSyntax.DescendantNodes().OfType<ReturnStatementSyntax>()).Expression!).Symbol));
+
+        foreach (string factory in new[] { "First", "Second" })
+        {
+            Assert.True(Same(box, Symbol(factory).ReturnType) && Symbol(factory).IsStatic && !Symbol(factory).IsVirtual && Symbol(factory).Arity == 0);
+
+            var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>())));
+
+            Assert.True(Same(box, creation.Constructor!.ContainingType));
+
+            var argument = Assert.Single(creation.Arguments);
+
+            IFieldSymbol selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(argument.Value).Field;
+
+            Assert.True(Same(sensitivity, selected.ContainingType));
+
+            Assert.Equal(factory == "First" ? "None" : "CovenantDerived", selected.Name);
+
+            Assert.Equal((byte)(factory == "First" ? 0 : 1), selected.ConstantValue);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+        }
+
+        InvocationExpressionSyntax[] ingress = wrapperTree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Same(wrapper, method.OriginalDefinition)).ToArray();
+
+        Assert.Equal(receiver == "local" || shape == "effectful-name" ? 2 : 1, ingress.Length);
+
+        foreach (InvocationExpressionSyntax call in ingress)
+        {
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call));
+
+            Assert.True(Same(sensitivity, Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+            Assert.Equal(2, invocation.Arguments.Length);
+
+            for (int index = 0; index < 2; index++)
+            {
+                var argument = invocation.Arguments[index];
+
+                Assert.Equal(index, argument.Parameter!.Ordinal);
+
+                Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+                Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && argument.Parameter.RefKind == RefKind.None);
+            }
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(invocation.Arguments[0].Value);
+
+            Assert.True(Same(property, read.Property));
+
+            MemberAccessExpressionSyntax access = Assert.IsType<MemberAccessExpressionSyntax>(read.Syntax);
+
+            IdentifierNameSyntax input = Assert.IsType<IdentifierNameSyntax>(access.Expression);
+
+            ISymbol receiverSymbol = model.GetSymbolInfo(input).Symbol!;
+
+            MethodDeclarationSyntax caller = input.Ancestors().OfType<MethodDeclarationSyntax>().First();
+
+            if (receiver == "parameter")
+            {
+                IMethodSymbol callerSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(caller));
+
+                Assert.Equal(0, callerSymbol.Arity);
+
+                Assert.True(Same(callerSymbol.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+            }
+            else
+            {
+                ILocalSymbol local = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(read.Instance).Local;
+
+                Assert.Equal(RefKind.None, local.RefKind);
+
+                VariableDeclaratorSyntax declaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(local.DeclaringSyntaxReferences).GetSyntax());
+
+                Assert.True(declaration.Span.End < access.SpanStart);
+
+                var initializer = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(declaration.Initializer!.Value));
+
+                Assert.True(Same(Symbol(local.Name == "first" ? "First" : "Second"), initializer.TargetMethod));
+            }
+
+            Assert.Equal(shape == "receiver-nameof" ? 2 : 1, caller.DescendantNodes().OfType<IdentifierNameSyntax>().Count(use => Same(model.GetSymbolInfo(use).Symbol, receiverSymbol)));
+
+            Assert.DoesNotContain(caller.DescendantNodes(), node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or AssignmentExpressionSyntax);
+
+            if (shape == "receiver-nameof")
+            {
+                var nameofOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.INameOfOperation>(invocation.Arguments[1].Value);
+
+                Assert.Equal("Level", nameofOperation.ConstantValue.Value);
+
+                var nameofRead = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(nameofOperation.Argument);
+
+                Assert.True(Same(property, nameofRead.Property) && Same(receiverSymbol, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(nameofRead.Instance).Parameter));
+            }
+            else if (shape == "effectful-name")
+            {
+                var nameFactory = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(invocation.Arguments[1].Value);
+
+                Assert.True(Same(Symbol(caller.Identifier.ValueText == "ObserveFirst" ? "FirstName" : "SecondName"), nameFactory.TargetMethod));
+
+                Assert.Equal(SpecialType.System_String, nameFactory.TargetMethod.ReturnType.SpecialType);
+
+                Assert.Equal("Level", model.GetConstantValue(Assert.Single(Method(nameFactory.TargetMethod.Name).DescendantNodes().OfType<ReturnStatementSyntax>()).Expression!).Value);
+            }
+            else Assert.Equal("Level", Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILiteralOperation>(invocation.Arguments[1].Value).ConstantValue.Value);
+        }
+
+        // Independent demand inventory: the original enum only forwards own-T by value; the string only reaches message.
+        // The exact accepted tail retains its sole owned ref-copy, builtin numeric operations, and acyclic selected edges.
+        // No numeric conversion of the wrapper enum, bool formal, cleanup receiver, capture, assignment or extra use exists in positives.
+        Assert.All(Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(model.GetOperation(codeSyntax)!).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>(), conversion => Assert.Null(conversion.OperatorMethod));
+
+        output.WriteLine($"R103_SOURCE_AUDIT={receiver}|{shape}|enumUses={enumUses.Length}|ownTForward=true|selectedOriginalTail=true|constructorAuthenticated=true|positiveExceptionType={shape != "different-catch"}|independentDemandInventory=complete|mutationTrueVeto={shape == "enum-reassigned"}|noPrivateQuery=true");
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in new[] { workerTree, wrapperTree }.SelectMany(source => source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()).Where(call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            var selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(compilation.GetSemanticModel(marker.SyntaxTree).GetOperation(marker));
+
+            Assert.True(Same(Framework("System.IO.File"), selected.TargetMethod.ContainingType));
+
+            Assert.Equal("Delete", selected.TargetMethod.Name);
+
+            Assert.Equal("path", Assert.Single(selected.TargetMethod.Parameters).Name);
+
+            string coordinate = "/site@" + marker.SyntaxTree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.AuthorityOperationId == "Worker.StartAsync" && site.SourcePath == marker.SyntaxTree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            output.WriteLine($"R103_MARKER={receiver}|{shape}|label={selected.Arguments[0].Value.ConstantValue.Value}|{coordinate}|work-refused=true|effect-refused=true");
+        }
+
+        InvocationExpressionSyntax rootMarker = Assert.Single(workerTree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == "unknown.Invoke");
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(workerModel.GetOperation(rootMarker)).Arguments);
+
+        string[] unknownCoordinates = shape == "enum-unknown"
+            ? [workerTree.FilePath + ":" + rootMarker.SpanStart, wrapperPath + ":" + Assert.Single(codeSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == "extra.Use").SpanStart]
+            : [workerTree.FilePath + ":" + rootMarker.SpanStart];
+
+        foreach (string coordinate in unknownCoordinates) Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == coordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        Assert.All(result.Diagnostics, diagnostic => Assert.True(diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING" || diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && unknownCoordinates.Contains(diagnostic.Identity) && diagnostic.Detail == "Dynamic invocation has no exact call target.", diagnostic.ToString()));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] States(IMethodSymbol symbol, SyntaxNode syntax, bool required)
+        {
+            string key = symbol.OriginalDefinition.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            var states = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == key && state.SpanStart == syntax.SpanStart && state.SpanLength == syntax.Span.Length).ToArray();
+
+            if (required) Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.Equal("Worker", state.RootType);
+
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+
+                Assert.Null(state.WorkFrontier);
+
+                Assert.Null(state.EffectFrontier);
+
+                Assert.Null(state.RecoveryEffectFrontier);
+
+                Assert.False(state.CompletionOwned);
+            });
+
+            foreach (var state in states) output.WriteLine($"R103_CONTEXT={receiver}|{shape}|source={syntax.SyntaxTree.FilePath}|{key}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+            return states;
+        }
+
+        MethodDeclarationSyntax rootSyntax = Assert.Single(workerTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == "StartAsync");
+
+        var roots = States(Assert.IsAssignableFrom<IMethodSymbol>(workerModel.GetDeclaredSymbol(rootSyntax)), rootSyntax, true);
+
+        Assert.Equal(new[] { false, true }, roots.Select(state => state.Lifecycle).Distinct().Order());
+
+        foreach (string factory in new[] { "First", "Second", "Entry" }) States(Symbol(factory), Method(factory), true);
+
+        States(getter, getterSyntax, true);
+
+        if (receiver == "parameter")
+        {
+            if (shape == "effectful-name")
+            {
+                foreach (string caller in new[] { "ObserveFirst", "ObserveSecond", "FirstName", "SecondName" }) States(Symbol(caller), Method(caller), true);
+            }
+            else
+            {
+                var parents = States(Symbol("Observe"), Method("Observe"), true).Where(state => state.Lifecycle).ToArray();
+
+                Assert.True(parents.Select(state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, "Non-own-T caller must retain both factory contexts.");
+            }
+        }
+
+        if (shape == "extra-filter") States(Symbol("ExtraFilter"), Method("ExtraFilter"), true);
+
+        var receiving = States(wrapper, codeSyntax, true);
+
+        foreach (string helper in helpers) States(TailSymbol(helper), Tail(helper), false);
+
+        Assert.Contains(receiving, state => state.Lifecycle);
+
+        int automatic = receiving.Count(state => state.Lifecycle);
+
+        int declared = receiving.Count(state => !state.Lifecycle);
+
+        output.WriteLine($"R103_PROBE={receiver}|{shape}|CodeTrue={automatic}|CodeFalse={declared}|prerequisites=passed");
+
+        if (shape is "exact" or "receiver-nameof") Assert.Equal(1, automatic);
+
+        else if (shape != "effectful-name") Assert.True(automatic > 1, "Excluded wrapper or receiver shape must retain the original sources.");
+    }
+
+    private void AssertExtractedManifestTailIngress(string receiver, string propertyName, string shape, string mutation)
+    {
+        string repository = TestRepositoryPaths.RepositoryRoot();
+
+        const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
+
+        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
+        [
+            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
+        ];
+
+        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
+
+        foreach (var input in inputs)
+        {
+            string original = File.ReadAllText(Path.Combine(repository, input.Path));
+
+            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
+
+            string[] lines = original.Split('\n');
+
+            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
+
+            extracted.Add(input.Path, source);
+
+            output.WriteLine($"R101_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
+        }
+
+        string exactManifest = extracted[manifestPath];
+
+        const string modelsPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigestModels.cs";
+
+        const string recordDeclaration = "public sealed record SensitivityDigestInput(ContentSensitivity Level, GenerationProvenanceMode ProvenanceMode, ImmutableArray<Guid> ExactGenerationIds, ImmutableArray<byte> GenerationBloom);";
+
+        bool generated = shape != "box";
+
+        if (generated)
+        {
+            string original = File.ReadAllText(Path.Combine(repository, modelsPath));
+
+            string[] lines = original.Split('\n');
+
+            string source = string.Join("\n", lines.Take(5)) + "\n" + lines[60] + "\n";
+
+            Assert.Contains(recordDeclaration, source, StringComparison.Ordinal);
+
+            string selected = shape == "unsealed" ? "public record" : shape == "readonly-struct" ? "public readonly record struct" : "public sealed record";
+
+            string variant = source.Replace("public sealed record", selected, StringComparison.Ordinal);
+
+            Assert.Equal(source, variant.Replace(selected, "public sealed record", StringComparison.Ordinal));
+
+            extracted.Add(modelsPath, variant);
+
+            output.WriteLine($"R101_RECORD={shape}|inputSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original)))}|ranges=1-5,61-61|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(variant)))}");
+        }
+
+        const string codeStart = "        byte code = GetSupportedByte(value);";
+
+        (string Old, string New) delta = mutation switch
+        {
+            "effect" => (codeStart, codeStart + "\n\n        System.IO.File.Delete(\"tail-marker\");"),
+            "byte-reassigned" => (codeStart, codeStart + "\n\n        code = 0;"),
+            "byte-unknown" => (codeStart, codeStart + "\n\n        dynamic unknown = null!; unknown.Use(code);"),
+            "byte-captured" => (codeStart, codeStart + "\n\n        Func<byte> captured = () => code; _ = captured;"),
+            "concrete-type" => ("if (AllowsZeroThroughOne<TEnum>())", "if (AllowsZeroThroughOne<ContentSensitivity>())"),
+            "ref-alias" => ("return Unsafe.As<TEnum, byte>(ref value);", "ref byte alias = ref Unsafe.As<TEnum, byte>(ref value); return alias;"),
+            _ => ("", ""),
+        };
+
+        if (mutation != "exact")
+        {
+            Assert.NotEmpty(delta.Old);
+
+            Assert.Equal(1, exactManifest.Split(delta.Old, StringSplitOptions.None).Length - 1);
+
+            extracted[manifestPath] = exactManifest.Replace(delta.Old, delta.New, StringComparison.Ordinal);
+
+            Assert.Equal(exactManifest, extracted[manifestPath].Replace(delta.New, delta.Old, StringComparison.Ordinal));
+
+            output.WriteLine($"R101_MUTATION={mutation}|old={delta.Old.Trim()}|new={delta.New.Trim().Replace("\n", "\\n", StringComparison.Ordinal)}");
+        }
+
+        string receiverType = generated ? "SensitivityDigestInput" : "Box";
+
+        string body = "System.IO.File.Delete(\"root-marker\"); dynamic unknown = null!; unknown.Invoke(); " + (receiver == "local"
+            ? $"{receiverType} first = First(); {receiverType} second = Second(); CovenantPolicyV1Manifest.GetCode(first.{propertyName}); CovenantPolicyV1Manifest.GetCode(second.{propertyName}); await Task.CompletedTask;"
+            : "Observe(First()); Observe(Second()); await Task.CompletedTask;");
+
+        string members = generated ? """
+            private static SensitivityDigestInput First() { System.IO.File.Delete("first-marker"); return new SensitivityDigestInput(ContentSensitivity.None, GenerationProvenanceMode.Exact, System.Collections.Immutable.ImmutableArray<Guid>.Empty, System.Collections.Immutable.ImmutableArray<byte>.Empty); }
+            private static SensitivityDigestInput Second() { System.IO.File.Delete("second-marker"); return new SensitivityDigestInput(ContentSensitivity.CovenantDerived, GenerationProvenanceMode.BloomOverflow, System.Collections.Immutable.ImmutableArray<Guid>.Empty, System.Collections.Immutable.ImmutableArray<byte>.Empty); }
+            """ : """
+            private sealed class Box
+            {
+                private readonly ContentSensitivity level;
+                public Box(ContentSensitivity value) { level = value; }
+                public ContentSensitivity Level { get { System.IO.File.Delete("getter-marker"); return level; } }
+            }
+            private static Box First() { System.IO.File.Delete("first-marker"); return new Box(ContentSensitivity.None); }
+            private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(ContentSensitivity.CovenantDerived); }
+            """;
+
+        members += receiver == "local" ? "" : $"private static uint Observe({receiverType} input) => CovenantPolicyV1Manifest.GetCode(input.{propertyName});";
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("using System;\n", "", StringComparison.Ordinal)
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal)
+                .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        MetadataReference[] coreReferences = compilation.References.ToArray();
+
+        foreach ((string assemblyName, string typeName) in new[]
+        {
+            ("Microsoft.Extensions.Hosting.Abstractions", "Microsoft.Extensions.Hosting.IHostedService"),
+            ("Microsoft.Extensions.DependencyInjection.Abstractions", "Microsoft.Extensions.DependencyInjection.IServiceCollection"),
+        })
+        {
+            if (compilation.GetTypeByMetadataName(typeName) is not null) continue;
+
+            var candidates = HostedGrimoireProducerInventory.ProductionCompilations
+                .SelectMany(owner => owner.References.OfType<PortableExecutableReference>()
+                    .Select(reference => (Reference: reference, Assembly: owner.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol)))
+                .Where(candidate => candidate.Assembly?.Identity.Name == assemblyName)
+                .GroupBy(candidate => candidate.Reference.FilePath, StringComparer.Ordinal)
+                .Select(static group => group.First()).ToArray();
+
+            var candidate = Assert.Single(candidates);
+
+            IAssemblySymbol assembly = Assert.IsAssignableFrom<IAssemblySymbol>(candidate.Assembly);
+
+            Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
+
+            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+
+            Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
+
+            Assert.DoesNotContain(compilation.References.OfType<PortableExecutableReference>(), reference => reference.FilePath == candidate.Reference.FilePath);
+
+            compilation = compilation.AddReferences(candidate.Reference);
+
+            output.WriteLine($"R101_ADDED_REFERENCE={candidate.Reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate.Reference.FilePath!)))}|assembly={assembly.Identity}");
+        }
+
+        Assert.All(coreReferences, reference => Assert.Contains(reference, compilation.References));
+
+        Assert.DoesNotContain(compilation.References, reference => compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" });
+
+        compilation = compilation.AddSyntaxTrees(extracted.Select(pair => CSharpSyntaxTree.ParseText(pair.Value, path: pair.Key)));
+
+        Diagnostic[] compilerDiagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning).ToArray();
+
+        foreach (Diagnostic diagnostic in compilerDiagnostics) output.WriteLine($"R101_COMPILER={diagnostic}");
+
+        Assert.Empty(compilerDiagnostics);
+
+        Assert.Equal("InventoryReferencePackFixture", compilation.AssemblyName);
+
+        foreach (var pair in extracted) Assert.Equal(pair.Value, Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == pair.Key).ToString());
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees, static syntax => syntax.FilePath == "src/Fixture.cs");
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        SyntaxTree tailTree = Assert.Single(compilation.SyntaxTrees, static syntax => syntax.FilePath == manifestPath);
+
+        SemanticModel tailModel = compilation.GetSemanticModel(tailTree);
+
+        MethodDeclarationSyntax Method(string name) => Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        IMethodSymbol Symbol(string name) => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method(name)));
+
+        MethodDeclarationSyntax Tail(string name) => Assert.Single(tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        IMethodSymbol TailSymbol(string name) => Assert.IsAssignableFrom<IMethodSymbol>(tailModel.GetDeclaredSymbol(Tail(name)));
+
+        IAssemblySymbol core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+
+        INamedTypeSymbol manifest = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.CovenantPolicyV1Manifest")!;
+
+        INamedTypeSymbol sensitivity = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity")!;
+
+        INamedTypeSymbol converter = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1")!;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, manifest.ContainingAssembly));
+
+        Assert.True(manifest.IsStatic && manifest.Arity == 0 && manifest.ContainingType is null);
+
+        EnumDeclarationSyntax[] enums = compilation.SyntaxTrees.SelectMany(static source => source.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>()).ToArray();
+
+        Assert.Equal(50, enums.Length);
+
+        HashSet<ISymbol> enumSymbols = new(SymbolEqualityComparer.Default);
+
+        foreach (EnumDeclarationSyntax declaration in enums)
+        {
+            SemanticModel enumModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+
+            INamedTypeSymbol symbol = Assert.IsAssignableFrom<INamedTypeSymbol>(enumModel.GetDeclaredSymbol(declaration));
+
+            Assert.True(enumSymbols.Add(symbol));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, symbol.ContainingAssembly));
+
+            Assert.Equal(TypeKind.Enum, symbol.TypeKind);
+
+            Assert.Equal(SpecialType.System_Byte, symbol.EnumUnderlyingType!.SpecialType);
+
+            Assert.True(symbol.Arity == 0 && symbol.ContainingType is null);
+
+            Assert.Equal(declaration.Span, Assert.Single(symbol.DeclaringSyntaxReferences).Span);
+
+            AttributeData attribute = Assert.Single(symbol.GetAttributes());
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonConverterAttribute"), attribute.AttributeClass));
+
+            INamedTypeSymbol selectedConverter = Assert.IsAssignableFrom<INamedTypeSymbol>(Assert.Single(attribute.ConstructorArguments).Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(converter, selectedConverter.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(symbol, Assert.Single(selectedConverter.TypeArguments)));
+
+            foreach (EnumMemberDeclarationSyntax value in declaration.Members)
+            {
+                IFieldSymbol enumField = Assert.IsAssignableFrom<IFieldSymbol>(enumModel.GetDeclaredSymbol(value));
+
+                Assert.NotNull(value.EqualsValue);
+
+                Assert.True(enumField.HasConstantValue);
+
+                Assert.Equal(enumModel.GetConstantValue(value.EqualsValue.Value).Value, Convert.ToInt32(enumField.ConstantValue, System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+
+        HashSet<ISymbol> selectedEnums = new(SymbolEqualityComparer.Default);
+
+        foreach (TypeOfExpressionSyntax typeOf in tailTree.GetRoot().DescendantNodes().OfType<TypeOfExpressionSyntax>())
+        {
+            ITypeSymbol type = tailModel.GetTypeInfo(typeOf.Type).Type!;
+
+            if (type.TypeKind == TypeKind.Enum)
+            {
+                Assert.Contains(type, enumSymbols);
+
+                selectedEnums.Add(type);
+            }
+            else Assert.IsAssignableFrom<ITypeParameterSymbol>(type);
+        }
+
+        Assert.True(enumSymbols.SetEquals(selectedEnums));
+
+        IMethodSymbol getCode = TailSymbol("GetCode");
+
+        IMethodSymbol leaf = TailSymbol("GetSupportedByte");
+
+        string[] helpers = ["GetCode", "GetSupportedByte", "IsSupported", "AllowsZeroThroughOne", "AllowsZeroThroughTwo", "AllowsZeroThroughThree", "IsPositivePolicyEnum", "RequirePositiveCode", "GetMaximum", "RequireRange"];
+
+        Assert.Equal(helpers.Order(), tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Select(static method => method.Identifier.ValueText).Order());
+
+        foreach (string name in helpers)
+        {
+            IMethodSymbol symbol = TailSymbol(name);
+
+            Assert.True(symbol.IsStatic && !symbol.IsVirtual && !symbol.IsExtern && !symbol.ReturnsByRef && !symbol.ReturnsByRefReadonly && symbol.ContainingType.Arity == 0);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(manifest, symbol.ContainingType));
+
+            Assert.Equal(name == "RequireRange" ? 0 : 1, symbol.Arity);
+
+            if (symbol.Arity == 1)
+            {
+                ITypeParameterSymbol own = Assert.Single(symbol.TypeParameters);
+
+                Assert.True(own.HasValueTypeConstraint && own.TypeParameterKind == TypeParameterKind.Method);
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetSpecialType(SpecialType.System_Enum), Assert.Single(own.ConstraintTypes)));
+            }
+
+            Assert.All(symbol.Parameters, static parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+            Assert.DoesNotContain(Tail(name).DescendantNodes(), static node => node is LocalFunctionStatementSyntax or UsingStatementSyntax or ElementAccessExpressionSyntax or AwaitExpressionSyntax);
+
+            if (mutation != "byte-captured") Assert.DoesNotContain(Tail(name).DescendantNodes(), static node => node is AnonymousFunctionExpressionSyntax);
+
+            foreach (InvocationExpressionSyntax call in Tail(name).DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (tailModel.GetOperation(call) is Microsoft.CodeAnalysis.Operations.INameOfOperation) continue;
+
+                if (tailModel.GetOperation(call) is Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation)
+                {
+                    Assert.Equal("byte-unknown", mutation);
+                    Assert.Equal("GetCode", name);
+                    Assert.Equal("unknown.Use", call.Expression.ToString());
+                    continue;
+                }
+
+                var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(call));
+
+                Assert.True(invocation.TargetMethod.IsStatic && !invocation.IsVirtual && invocation.TargetMethod.ReducedFrom is null);
+
+                if (SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.ContainingType, manifest))
+                {
+                    Assert.Contains(invocation.TargetMethod.Name, helpers);
+
+                    Assert.True(SymbolEqualityComparer.Default.Equals(TailSymbol(invocation.TargetMethod.Name), invocation.TargetMethod.OriginalDefinition));
+
+                    if (invocation.TargetMethod.Arity == 1)
+                    {
+                        ITypeSymbol expected = mutation == "concrete-type" && name == "GetCode" && invocation.TargetMethod.Name == "AllowsZeroThroughOne" ? sensitivity : symbol.TypeParameters[0];
+
+                        Assert.True(SymbolEqualityComparer.Default.Equals(expected, Assert.Single(invocation.TargetMethod.TypeArguments)));
+                    }
+
+                    Assert.All(invocation.Arguments, static argument => Assert.Equal(RefKind.None, argument.Parameter!.RefKind));
+                }
+                else if (mutation == "effect" && invocation.TargetMethod.ContainingType.ToDisplayString() == "System.IO.File")
+                {
+                    Assert.Equal("GetCode", name);
+
+                    Assert.Equal("Delete", invocation.TargetMethod.Name);
+                }
+                else
+                {
+                    Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.Unsafe"), invocation.TargetMethod.ContainingType));
+
+                    Assert.Contains(invocation.TargetMethod.Name, new[] { "As", "SizeOf" });
+                }
+            }
+        }
+
+        Assert.Equal(SpecialType.System_UInt32, getCode.ReturnType.SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, leaf.ReturnType.SpecialType);
+
+        foreach (IMethodSymbol method in new[] { getCode, leaf })
+        {
+            Assert.True(SymbolEqualityComparer.Default.Equals(method.TypeParameters[0], Assert.Single(method.Parameters).Type));
+
+            var uses = Tail(method.Name).DescendantNodes().OfType<IdentifierNameSyntax>().Where(use => SymbolEqualityComparer.Default.Equals(tailModel.GetSymbolInfo(use).Symbol, method.Parameters[0])).ToArray();
+
+            var runtime = uses.Where(use => !(use.Parent is ArgumentSyntax argument && argument.Parent?.Parent is InvocationExpressionSyntax call && tailModel.GetOperation(call) is Microsoft.CodeAnalysis.Operations.INameOfOperation)).ToArray();
+
+            Assert.Single(runtime);
+
+            output.WriteLine($"R101_FORMAL={receiver}|{mutation}|{method}|runtimeUses={runtime.Length}|nameofUses={uses.Length - runtime.Length}");
+        }
+
+        InvocationExpressionSyntax copyCall = Assert.Single(Tail("GetCode").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => tailModel.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "GetSupportedByte" });
+
+        var copyInvocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(copyCall));
+
+        var copyArgument = Assert.Single(copyInvocation.Arguments);
+
+        Assert.True(copyArgument.InConversion.IsIdentity && copyArgument.OutConversion.IsIdentity);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(getCode.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(copyArgument.Value).Parameter));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf, copyInvocation.TargetMethod.OriginalDefinition));
+
+        VariableDeclaratorSyntax codeDeclaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.IsType<EqualsValueClauseSyntax>(copyCall.Parent).Parent);
+
+        Assert.Equal(SpecialType.System_Byte, Assert.IsAssignableFrom<ILocalSymbol>(tailModel.GetDeclaredSymbol(codeDeclaration)).Type.SpecialType);
+
+        InvocationExpressionSyntax asCall = Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => tailModel.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "As" });
+
+        var asInvocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(asCall));
+
+        IMethodSymbol selectedAs = asInvocation.TargetMethod;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(core, selectedAs.ContainingAssembly));
+
+        Assert.Equal("System.Runtime", core.Identity.Name);
+
+        Assert.Equal(new Version(10, 0, 0, 0), core.Identity.Version);
+
+        Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(core.Identity.PublicKeyToken.AsSpan()));
+
+        Assert.True(selectedAs.IsStatic && selectedAs.ReturnsByRef && !selectedAs.ReturnsByRefReadonly && !selectedAs.IsVararg && selectedAs.ReducedFrom is null);
+
+        Assert.Equal(MethodKind.Ordinary, selectedAs.MethodKind);
+
+        Assert.Empty(selectedAs.DeclaringSyntaxReferences);
+
+        Assert.Empty(selectedAs.ContainingType.DeclaringSyntaxReferences);
+
+        Assert.Equal(2, selectedAs.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selectedAs.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf.TypeParameters[0], selectedAs.TypeArguments[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.Parameters[0].Type, selectedAs.TypeArguments[0]));
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.TypeArguments[1].SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.ReturnType.SpecialType);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.OriginalDefinition.Parameters[0].Type, selectedAs.OriginalDefinition.TypeParameters[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.OriginalDefinition.ReturnType, selectedAs.OriginalDefinition.TypeParameters[1]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(Assert.Single(asInvocation.Arguments).Value).Parameter));
+
+        if (mutation == "ref-alias")
+        {
+            RefExpressionSyntax aliasInitializer = Assert.IsType<RefExpressionSyntax>(asCall.Parent);
+
+            VariableDeclaratorSyntax aliasSyntax = Assert.IsType<VariableDeclaratorSyntax>(aliasInitializer.Parent!.Parent);
+
+            ILocalSymbol alias = Assert.IsAssignableFrom<ILocalSymbol>(tailModel.GetDeclaredSymbol(aliasSyntax));
+
+            Assert.Equal(RefKind.Ref, alias.RefKind);
+
+            Assert.Equal(SpecialType.System_Byte, alias.Type.SpecialType);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(alias, tailModel.GetSymbolInfo(Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<ReturnStatementSyntax>()).Expression!).Symbol));
+        }
+        else
+        {
+            Assert.Same(asCall, Assert.IsType<ReturnStatementSyntax>(asCall.Parent).Expression);
+
+            Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IReturnOperation>(asInvocation.Parent);
+        }
+
+        InvocationExpressionSyntax sizeCall = Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => tailModel.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "SizeOf" });
+
+        IMethodSymbol size = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(sizeCall)).TargetMethod;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(core, size.ContainingAssembly) && SymbolEqualityComparer.Default.Equals(selectedAs.ContainingType, size.ContainingType));
+
+        Assert.True(size.IsStatic && !size.ReturnsByRef && !size.ReturnsByRefReadonly && size.Arity == 1 && size.Parameters.Length == 0);
+
+        Assert.Equal(SpecialType.System_Int32, size.ReturnType.SpecialType);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf.TypeParameters[0], Assert.Single(size.TypeArguments)));
+
+        ArgumentSyntax storage = Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<ArgumentSyntax>(), static argument => argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword));
+
+        Assert.Same(asCall, storage.Parent!.Parent);
+
+        Assert.DoesNotContain(Tail("GetCode").DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+        AssignmentExpressionSyntax[] assignments = tailTree.GetRoot().DescendantNodes().OfType<AssignmentExpressionSyntax>().ToArray();
+
+        ILocalSymbol copiedByte = Assert.IsAssignableFrom<ILocalSymbol>(tailModel.GetDeclaredSymbol(codeDeclaration));
+
+        if (mutation == "byte-reassigned")
+        {
+            AssignmentExpressionSyntax assignment = Assert.Single(assignments);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(copiedByte, tailModel.GetSymbolInfo(assignment.Left).Symbol));
+
+            Assert.Equal(0, tailModel.GetConstantValue(assignment.Right).Value);
+        }
+        else if (mutation == "byte-captured")
+        {
+            var capture = Assert.Single(Tail("GetCode").DescendantNodes().OfType<AnonymousFunctionExpressionSyntax>());
+
+            IdentifierNameSyntax capturedUse = Assert.Single(capture.DescendantNodes().OfType<IdentifierNameSyntax>());
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(copiedByte, tailModel.GetSymbolInfo(capturedUse).Symbol));
+
+            Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDiscardOperation>(tailModel.GetOperation(Assert.Single(assignments).Left));
+        }
+        else Assert.Empty(assignments);
+
+        if (mutation == "byte-unknown")
+        {
+            var unknown = Assert.Single(Tail("GetCode").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => call.Expression.ToString() == "unknown.Use");
+
+            var dynamicUse = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(tailModel.GetOperation(unknown));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(copiedByte, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(Assert.Single(dynamicUse.Arguments)).Local));
+        }
+
+        foreach (MethodDeclarationSyntax method in tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            IOperation operation = tailModel.GetOperation(method)!;
+
+            foreach (var conversion in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(operation).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>())
+                Assert.Null(conversion.OperatorMethod);
+
+            foreach (var binary in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(operation).OfType<Microsoft.CodeAnalysis.Operations.IBinaryOperation>())
+            {
+                if (binary.OperatorMethod is { } selectedOperator)
+                {
+                    Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Type"), selectedOperator.ContainingType));
+                    Assert.Equal("op_Equality", selectedOperator.Name);
+                    Assert.True(SymbolEqualityComparer.Default.Equals(core, selectedOperator.ContainingAssembly));
+                }
+                else Assert.Contains(binary.LeftOperand.Type!.SpecialType, new[] { SpecialType.System_Int32, SpecialType.System_Boolean });
+            }
+        }
+
+        foreach (ObjectCreationExpressionSyntax syntax in tailTree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(tailModel.GetOperation(syntax));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(core, creation.Constructor!.ContainingAssembly));
+
+            Assert.Contains(creation.Type!.ToDisplayString(), new[] { "System.ArgumentException", "System.ArgumentOutOfRangeException" });
+
+            Assert.All(creation.Constructor.Parameters, static parameter => Assert.Equal(SpecialType.System_String, parameter.Type.SpecialType));
+        }
+
+        INamedTypeSymbol provenance = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.GenerationProvenanceMode")!;
+
+        INamedTypeSymbol mode = propertyName == "Level" ? sensitivity : provenance;
+
+        IPropertySymbol property;
+
+        IMethodSymbol getter;
+
+        SyntaxNode getterSyntax;
+
+        if (generated)
+        {
+            INamedTypeSymbol record = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.SensitivityDigestInput")!;
+
+            Assert.True(record.IsRecord);
+
+            Assert.Equal(0, record.Arity);
+
+            Assert.Null(record.ContainingType);
+
+            Assert.Equal(shape == "readonly-struct" ? TypeKind.Struct : TypeKind.Class, record.TypeKind);
+
+            Assert.Equal(shape != "unsealed", record.IsSealed);
+
+            Assert.Equal(shape == "readonly-struct", record.IsReadOnly);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, record.ContainingAssembly));
+
+            RecordDeclarationSyntax recordSyntax = Assert.IsType<RecordDeclarationSyntax>(Assert.Single(record.DeclaringSyntaxReferences).GetSyntax());
+
+            Assert.Equal(modelsPath, recordSyntax.SyntaxTree.FilePath);
+
+            Assert.Equal(recordDeclaration.Replace("public sealed record", shape == "production" ? "public sealed record" : shape == "unsealed" ? "public record" : "public readonly record struct", StringComparison.Ordinal), recordSyntax.ToString());
+
+            property = Assert.Single(record.GetMembers(propertyName).OfType<IPropertySymbol>());
+
+            Assert.False(property.IsStatic || property.IsIndexer || property.ReturnsByRef || property.ReturnsByRefReadonly);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, property.Type));
+
+            getter = Assert.IsAssignableFrom<IMethodSymbol>(property.GetMethod);
+
+            Assert.Equal(MethodKind.PropertyGet, getter.MethodKind);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(property, getter.AssociatedSymbol));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, getter.ReturnType));
+
+            ParameterSyntax positional = Assert.IsType<ParameterSyntax>(Assert.Single(property.DeclaringSyntaxReferences).GetSyntax());
+
+            Assert.Same(recordSyntax.SyntaxTree, positional.SyntaxTree);
+
+            int ordinal = propertyName == "Level" ? 0 : 1;
+
+            Assert.Equal(recordSyntax.ParameterList!.Parameters[ordinal].Span, positional.Span);
+
+            SemanticModel recordModel = compilation.GetSemanticModel(recordSyntax.SyntaxTree);
+
+            IParameterSymbol parameter = Assert.IsAssignableFrom<IParameterSymbol>(recordModel.GetDeclaredSymbol(positional));
+
+            IMethodSymbol constructor = Assert.IsAssignableFrom<IMethodSymbol>(parameter.ContainingSymbol);
+
+            Assert.Equal(MethodKind.Constructor, constructor.MethodKind);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(record, constructor.ContainingType));
+
+            Assert.Equal(ordinal, parameter.Ordinal);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(property.Type, parameter.Type));
+
+            INamedTypeSymbol immutable = compilation.GetTypeByMetadataName("System.Collections.Immutable.ImmutableArray`1")!;
+
+            ITypeSymbol[] expectedTypes = [sensitivity, provenance, immutable.Construct(compilation.GetTypeByMetadataName("System.Guid")!), immutable.Construct(compilation.GetSpecialType(SpecialType.System_Byte))];
+
+            Assert.Equal(4, constructor.Parameters.Length);
+
+            for (int index = 0; index < expectedTypes.Length; index++) Assert.True(SymbolEqualityComparer.Default.Equals(expectedTypes[index], constructor.Parameters[index].Type));
+
+            output.WriteLine($"R101_PROPERTY={receiver}|{propertyName}|{shape}|property={property}|constructor={constructor}|parameterOrdinal={parameter.Ordinal}|getterImplicit={getter.IsImplicitlyDeclared}|getterSyntax={string.Join(";", getter.DeclaringSyntaxReferences.Select(reference => $"{reference.SyntaxTree.FilePath}:{reference.Span}:{reference.GetSyntax().Kind()}"))}|getterLocations={string.Join(";", getter.Locations.Select(location => $"{location.SourceTree?.FilePath}:{location.SourceSpan}"))}");
+
+            foreach (string factory in new[] { "First", "Second" })
+            {
+                Assert.True(SymbolEqualityComparer.Default.Equals(record, Symbol(factory).ReturnType));
+
+                ObjectCreationExpressionSyntax creation = Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+                var construction = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(creation));
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(constructor, construction.Constructor));
+
+                Assert.Equal(4, construction.Arguments.Length);
+
+                for (int index = 0; index < expectedTypes.Length; index++)
+                {
+                    var argument = construction.Arguments[index];
+
+                    Assert.Equal(index, argument.Parameter!.Ordinal);
+
+                    Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+
+                    Assert.True(SymbolEqualityComparer.Default.Equals(expectedTypes[index], argument.Value.Type));
+
+                    if (index < 2)
+                    {
+                        string name = index == 0 ? factory == "First" ? "None" : "CovenantDerived" : factory == "First" ? "Exact" : "BloomOverflow";
+
+                        IFieldSymbol field = Assert.IsAssignableFrom<IFieldSymbol>(model.GetSymbolInfo(creation.ArgumentList!.Arguments[index].Expression).Symbol);
+
+                        Assert.Equal(name, field.Name);
+
+                        Assert.True(SymbolEqualityComparer.Default.Equals(expectedTypes[index], field.ContainingType));
+
+                        Assert.Equal(index == 0 ? factory == "First" ? (byte)0 : (byte)1 : factory == "First" ? (byte)1 : (byte)2, Assert.IsType<byte>(argument.Value.ConstantValue.Value));
+                    }
+                    else
+                    {
+                        var empty = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(argument.Value);
+
+                        Assert.Equal("Empty", empty.Field.Name);
+
+                        Assert.True(empty.Field.IsStatic && empty.Field.IsReadOnly);
+
+                        Assert.True(SymbolEqualityComparer.Default.Equals(immutable, empty.Field.ContainingType.OriginalDefinition));
+                    }
+                }
+            }
+
+            Assert.True(getter.IsImplicitlyDeclared);
+
+            SyntaxReference getterReference = Assert.Single(getter.DeclaringSyntaxReferences);
+
+            Assert.Same(positional.SyntaxTree, getterReference.SyntaxTree);
+
+            Assert.Equal(positional.Span, getterReference.Span);
+
+            Assert.IsType<ParameterSyntax>(getterReference.GetSyntax());
+
+            Assert.Equal(parameter.Name, property.Name);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(parameter, constructor.Parameters[ordinal]));
+
+            getterSyntax = positional;
+        }
+        else
+        {
+            INamedTypeSymbol box = compilation.GetTypeByMetadataName("Worker+Box")!;
+
+            Assert.True(box.IsSealed && !box.IsRecord && box.Arity == 0 && box.ContainingType.Arity == 0);
+
+            IFieldSymbol field = Assert.Single(box.GetMembers().OfType<IFieldSymbol>());
+
+            Assert.True(field.IsReadOnly && !field.IsStatic && SymbolEqualityComparer.Default.Equals(sensitivity, field.Type));
+
+            property = Assert.Single(box.GetMembers().OfType<IPropertySymbol>());
+
+            getter = property.GetMethod!;
+
+            var authoredGetterSyntax = Assert.IsType<AccessorDeclarationSyntax>(Assert.Single(getter.DeclaringSyntaxReferences).GetSyntax());
+
+            Assert.NotNull(authoredGetterSyntax.Body);
+
+            Assert.False(getter.IsImplicitlyDeclared || getter.IsVirtual || getter.IsExtern || property.IsIndexer || property.IsStatic || property.IsOverride || property.IsAbstract || property.ReturnsByRef || property.ReturnsByRefReadonly);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(sensitivity, property.Type));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(field, model.GetSymbolInfo(Assert.Single(authoredGetterSyntax.DescendantNodes().OfType<ReturnStatementSyntax>()).Expression!).Symbol));
+
+            foreach (string factory in new[] { "First", "Second" })
+            {
+                Assert.True(SymbolEqualityComparer.Default.Equals(box, Symbol(factory).ReturnType));
+
+                var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>())));
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(box, creation.Constructor!.ContainingType));
+
+                var argument = Assert.Single(creation.Arguments);
+
+                IFieldSymbol selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(argument.Value).Field;
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(sensitivity, selected.ContainingType));
+
+                Assert.Equal(factory == "First" ? "None" : "CovenantDerived", selected.Name);
+
+                Assert.Equal((byte)(factory == "First" ? 0 : 1), selected.ConstantValue);
+            }
+
+            getterSyntax = authoredGetterSyntax;
+        }
+
+        InvocationExpressionSyntax[] ingress = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "GetCode" }).ToArray();
+
+        Assert.Equal(receiver == "local" ? 2 : 1, ingress.Length);
+
+        foreach (InvocationExpressionSyntax call in ingress)
+        {
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(getCode, invocation.TargetMethod.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+            var argument = Assert.Single(invocation.Arguments);
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && argument.Parameter!.RefKind == RefKind.None);
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(argument.Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(property, read.Property));
+
+            MemberAccessExpressionSyntax access = Assert.IsType<MemberAccessExpressionSyntax>(read.Syntax);
+
+            IdentifierNameSyntax input = Assert.IsType<IdentifierNameSyntax>(access.Expression);
+
+            ISymbol inputSymbol = model.GetSymbolInfo(input).Symbol!;
+
+            MethodDeclarationSyntax owner = input.Ancestors().OfType<MethodDeclarationSyntax>().First();
+
+            if (receiver == "parameter")
+            {
+                Assert.True(SymbolEqualityComparer.Default.Equals(Symbol("Observe").Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+
+                Assert.Equal(0, Symbol("Observe").Arity);
+            }
+            else
+            {
+                ILocalSymbol local = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(read.Instance).Local;
+
+                Assert.Equal(RefKind.None, local.RefKind);
+
+                VariableDeclaratorSyntax declaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(local.DeclaringSyntaxReferences).GetSyntax());
+
+                Assert.True(declaration.Span.End < access.SpanStart);
+
+                var factory = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(declaration.Initializer!.Value));
+
+                Assert.Contains(factory.TargetMethod.Name, new[] { "First", "Second" });
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(Symbol(factory.TargetMethod.Name), factory.TargetMethod));
+            }
+
+            IdentifierNameSyntax use = Assert.Single(owner.DescendantNodes().OfType<IdentifierNameSyntax>(), name => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, inputSymbol));
+
+            Assert.Same(input, use);
+
+            Assert.DoesNotContain(use.Ancestors().TakeWhile(node => node != owner), static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+        }
+
+        InvocationExpressionSyntax dynamicMarker = Assert.Single(Method("StartAsync").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Invoke");
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(model.GetOperation(dynamicMarker)).Arguments);
+
+        PortableExecutableReference reference = Assert.Single(compilation.References.OfType<PortableExecutableReference>(), item => SymbolEqualityComparer.Default.Equals(compilation.GetAssemblyOrModuleSymbol(item), core));
+
+        output.WriteLine($"R101_REFERENCE={reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(reference.FilePath!)))}|assembly={core.Identity}|selected={selectedAs}");
+
+        output.WriteLine($"R101_SOURCE_AUDIT={receiver}|{propertyName}|{shape}|{mutation}|enums=50|helpers=10|exactTail={mutation == "exact"}|immediateLeaf={mutation != "ref-alias"}|allFormalUsesInventoried=true|captureAbsent={mutation != "byte-captured"}|ownTAllEdges={mutation != "concrete-type"}|ObserveNonOwnTDependent={receiver == "parameter"}");
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in new[] { tree, tailTree }.SelectMany(source => source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()).Where(static call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            string coordinate = "/site@" + marker.SyntaxTree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.AuthorityOperationId == "Worker.StartAsync" && site.SourcePath == marker.SyntaxTree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            output.WriteLine($"R101_MARKER={receiver}|{mutation}|{coordinate}|work-refused=true|effect-refused=true");
+        }
+
+        string[] unknownCoordinates = mutation == "byte-unknown"
+            ? [tree.FilePath + ":" + dynamicMarker.SpanStart, manifestPath + ":" + Assert.Single(Tail("GetCode").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Use").SpanStart]
+            : [tree.FilePath + ":" + dynamicMarker.SpanStart];
+
+        foreach (string coordinate in unknownCoordinates)
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == coordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        Assert.All(result.Diagnostics, diagnostic => Assert.True(
+            diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            || (diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && unknownCoordinates.Contains(diagnostic.Identity) && diagnostic.Detail == "Dynamic invocation has no exact call target."), diagnostic.ToString()));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] States(IMethodSymbol symbol, SyntaxNode syntax, bool required)
+        {
+            string key = symbol.OriginalDefinition.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            var states = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == key && state.SpanStart == syntax.SpanStart && state.SpanLength == syntax.Span.Length).ToArray();
+
+            if (required) Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.Equal("Worker", state.RootType);
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+                Assert.Null(state.WorkFrontier);
+                Assert.Null(state.EffectFrontier);
+                Assert.Null(state.RecoveryEffectFrontier);
+                Assert.False(state.CompletionOwned);
+            });
+
+            foreach (var state in states)
+                output.WriteLine($"R101_CONTEXT={receiver}|{mutation}|source={syntax.SyntaxTree.FilePath}|{key}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+            return states;
+        }
+
+        var roots = States(Symbol("StartAsync"), Method("StartAsync"), true);
+
+        Assert.Equal(new[] { false, true }, roots.Select(static state => state.Lifecycle).Distinct().Order());
+
+        foreach (string factory in new[] { "First", "Second" }) States(Symbol(factory), Method(factory), true);
+
+        States(getter, getterSyntax, !generated);
+
+        if (receiver == "parameter")
+        {
+            var parents = States(Symbol("Observe"), Method("Observe"), true).Where(static state => state.Lifecycle).ToArray();
+
+            Assert.True(parents.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, "Non-own-T Observe must preserve both original factory sources.");
+        }
+
+        var receiving = States(getCode, Tail("GetCode"), true);
+
+        foreach (string helper in helpers.Where(static name => name != "GetCode")) States(TailSymbol(helper), Tail(helper), false);
+
+        Assert.Contains(receiving, static state => state.Lifecycle);
+
+        int automatic = receiving.Count(static state => state.Lifecycle);
+
+        int declared = receiving.Count(static state => !state.Lifecycle);
+
+        output.WriteLine($"R101_PROBE={receiver}|{propertyName}|{shape}|{mutation}|GetCodeTrue={automatic}|GetCodeFalse={declared}|prerequisites=passed");
+
+        if (generated && shape == "production") Assert.Equal(1, automatic);
+        else Assert.True(automatic > 1, "Unproved generated shape or adverse tail use must preserve the original receiving sources.");
+    }
+
+    [Theory]
+    [InlineData("parameter", "exact")]
+    [InlineData("local", "exact")]
+    [InlineData("parameter", "leaf-mutation")]
+    [InlineData("parameter", "extra-unknown-use")]
+    public void ExplicitOwnedPropertyIntoExtractedManifestRetainsOnlyRequiredSources(string receiver, string mutation)
+    {
+        string repository = TestRepositoryPaths.RepositoryRoot();
+
+        const string manifestPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs";
+
+        (string Path, string Hash, (int Start, int End)[] Ranges)[] inputs =
+        [
+            ("src/RetroDownfall.Arcanum.Core/Tower/SessionCampaignBinding.cs", "76C9BA2788216A3A7697E44BB169008A64DF4ADC33DD40DE63274FAF7E38CADD", [(1, 4), (6, 12)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/CovenantContextPolicy.cs", "9BE8C84DE91FD541534FD557E39C13B9EC52AD8AC6C543D348385147D17F6359", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Intelligence/InvocationAttendance.cs", "F05E67D031FF69306DAF9E11092EF4D3F47DA221DABC0E93395063C4FEAD4322", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs", "494A7BA401ADA5D7ABD8B51E6B1C68D9E69E78B4FF147502DA16574C7723B788", [(1, 8), (10, 15)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantEnums.cs", "E4CF0344277C55625EC95B15A8AEDBE8DA7D6F7ED3A621C2986A7409643CBE16", [(1, 4), (6, 11), (13, 18), (20, 25), (35, 49), (51, 57), (59, 66), (68, 74), (76, 93), (95, 101), (103, 110), (112, 117), (119, 126), (128, 135), (137, 143), (145, 152), (154, 159), (161, 171), (173, 180), (182, 202), (204, 215), (217, 222), (224, 229), (231, 236), (238, 244), (246, 253), (255, 266), (268, 274), (276, 285), (287, 292), (294, 302), (304, 311), (313, 319), (321, 330), (332, 338), (340, 347), (349, 355), (357, 363), (365, 379), (381, 386), (388, 393), (395, 401), (403, 410), (412, 418), (420, 426), (428, 435)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs", "BD73D0448CB681FD9A467F8654F007A7E9E11596A4148AA2ED0B6FDA74A63084", [(1, 4), (6, 11)]),
+            ("src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs", "A637ED2325AB8AF0789AB20F424DEB8CD3F37BE5278F0597CF281901FE712273", [(1, 16)]),
+            ("src/RetroDownfall.Arcanum.Core/Covenant/CovenantPolicyV1Manifest.cs", "63B1222E680CEDCEB8F9A4F93F98AEBBAD6D5674C11B2850BBB0F7DB08D7640C", [(1, 5), (50, 51), (142, 336), (337, 337)]),
+        ];
+
+        Dictionary<string, string> extracted = new(StringComparer.Ordinal);
+
+        foreach (var input in inputs)
+        {
+            string original = File.ReadAllText(Path.Combine(repository, input.Path));
+
+            Assert.Equal(input.Hash, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original))));
+
+            string[] lines = original.Split('\n');
+
+            string source = string.Concat(input.Ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
+
+            extracted.Add(input.Path, source);
+
+            output.WriteLine($"R100_EXTRACTION={input.Path}|inputSha256={input.Hash}|ranges={string.Join(",", input.Ranges.Select(range => $"{range.Start}-{range.End}"))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))}");
+        }
+
+        string exactManifest = extracted[manifestPath];
+
+        string oldText = mutation == "leaf-mutation" ? "        if (Unsafe.SizeOf<TEnum>()" : "        byte code = GetSupportedByte(value);";
+
+        string newText = mutation == "leaf-mutation" ? "        value = default;\n\n" + oldText : "        dynamic unknown = null!; unknown.Use(value);\n\n" + oldText;
+
+        if (mutation != "exact")
+        {
+            Assert.Equal(1, exactManifest.Split(oldText, StringSplitOptions.None).Length - 1);
+
+            extracted[manifestPath] = exactManifest.Replace(oldText, newText, StringComparison.Ordinal);
+
+            Assert.Equal(exactManifest, extracted[manifestPath].Replace(newText, oldText, StringComparison.Ordinal));
+
+            output.WriteLine($"R100_MUTATION={mutation}|old={oldText.Trim()}|new={newText.Trim().Replace("\n", "\\n", StringComparison.Ordinal)}");
+        }
+
+        string body = "System.IO.File.Delete(\"root-marker\"); dynamic unknown = null!; unknown.Invoke(); " + (receiver == "local"
+            ? "Box first = First(); Box second = Second(); CovenantPolicyV1Manifest.GetCode(first.Level); CovenantPolicyV1Manifest.GetCode(second.Level); await Task.CompletedTask;"
+            : "Observe(First()); Observe(Second()); await Task.CompletedTask;");
+
+        string members = """
+            private sealed class Box
+            {
+                private readonly ContentSensitivity level;
+                public Box(ContentSensitivity value) { level = value; }
+                public ContentSensitivity Level { get { System.IO.File.Delete("getter-marker"); return level; } }
+            }
+            private static Box First() { System.IO.File.Delete("first-marker"); return new Box(ContentSensitivity.None); }
+            private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(ContentSensitivity.CovenantDerived); }
+            """ + (receiver == "local" ? "" : "private static uint Observe(Box input) => CovenantPolicyV1Manifest.GetCode(input.Level);");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("using System;\n", "", StringComparison.Ordinal)
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal)
+                .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        MetadataReference[] coreReferences = compilation.References.ToArray();
+
+        foreach ((string assemblyName, string typeName) in new[]
+        {
+            ("Microsoft.Extensions.Hosting.Abstractions", "Microsoft.Extensions.Hosting.IHostedService"),
+            ("Microsoft.Extensions.DependencyInjection.Abstractions", "Microsoft.Extensions.DependencyInjection.IServiceCollection"),
+        })
+        {
+            if (compilation.GetTypeByMetadataName(typeName) is not null) continue;
+
+            var candidates = HostedGrimoireProducerInventory.ProductionCompilations
+                .SelectMany(owner => owner.References.OfType<PortableExecutableReference>()
+                    .Select(reference => (Reference: reference, Assembly: owner.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol)))
+                .Where(candidate => candidate.Assembly?.Identity.Name == assemblyName)
+                .GroupBy(candidate => candidate.Reference.FilePath, StringComparer.Ordinal)
+                .Select(static group => group.First()).ToArray();
+
+            var candidate = Assert.Single(candidates);
+
+            IAssemblySymbol assembly = Assert.IsAssignableFrom<IAssemblySymbol>(candidate.Assembly);
+
+            Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
+
+            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+
+            Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
+
+            Assert.DoesNotContain(compilation.References.OfType<PortableExecutableReference>(), reference => reference.FilePath == candidate.Reference.FilePath);
+
+            compilation = compilation.AddReferences(candidate.Reference);
+
+            output.WriteLine($"R100_ADDED_REFERENCE={candidate.Reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate.Reference.FilePath!)))}|assembly={assembly.Identity}");
+        }
+
+        Assert.All(coreReferences, reference => Assert.Contains(reference, compilation.References));
+
+        Assert.DoesNotContain(compilation.References, reference => compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" });
+
+        compilation = compilation.AddSyntaxTrees(extracted.Select(pair => CSharpSyntaxTree.ParseText(pair.Value, path: pair.Key)));
+
+        Diagnostic[] compilerDiagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning).ToArray();
+
+        foreach (Diagnostic diagnostic in compilerDiagnostics) output.WriteLine($"R100_COMPILER={diagnostic}");
+
+        Assert.Empty(compilerDiagnostics);
+
+        Assert.Equal("InventoryReferencePackFixture", compilation.AssemblyName);
+
+        foreach (var pair in extracted) Assert.Equal(pair.Value, Assert.Single(compilation.SyntaxTrees, tree => tree.FilePath == pair.Key).ToString());
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees, static syntax => syntax.FilePath == "src/Fixture.cs");
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        SyntaxTree tailTree = Assert.Single(compilation.SyntaxTrees, static syntax => syntax.FilePath == manifestPath);
+
+        SemanticModel tailModel = compilation.GetSemanticModel(tailTree);
+
+        MethodDeclarationSyntax Method(string name) => Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        IMethodSymbol Symbol(string name) => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method(name)));
+
+        MethodDeclarationSyntax Tail(string name) => Assert.Single(tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        IMethodSymbol TailSymbol(string name) => Assert.IsAssignableFrom<IMethodSymbol>(tailModel.GetDeclaredSymbol(Tail(name)));
+
+        IAssemblySymbol core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+
+        INamedTypeSymbol manifest = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.CovenantPolicyV1Manifest")!;
+
+        INamedTypeSymbol sensitivity = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity")!;
+
+        INamedTypeSymbol converter = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1")!;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, manifest.ContainingAssembly));
+
+        Assert.True(manifest.IsStatic && manifest.Arity == 0 && manifest.ContainingType is null);
+
+        EnumDeclarationSyntax[] enums = compilation.SyntaxTrees.SelectMany(static source => source.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>()).ToArray();
+
+        Assert.Equal(50, enums.Length);
+
+        HashSet<ISymbol> enumSymbols = new(SymbolEqualityComparer.Default);
+
+        foreach (EnumDeclarationSyntax declaration in enums)
+        {
+            SemanticModel enumModel = compilation.GetSemanticModel(declaration.SyntaxTree);
+
+            INamedTypeSymbol symbol = Assert.IsAssignableFrom<INamedTypeSymbol>(enumModel.GetDeclaredSymbol(declaration));
+
+            Assert.True(enumSymbols.Add(symbol));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, symbol.ContainingAssembly));
+
+            Assert.Equal(TypeKind.Enum, symbol.TypeKind);
+
+            Assert.Equal(SpecialType.System_Byte, symbol.EnumUnderlyingType!.SpecialType);
+
+            Assert.True(symbol.Arity == 0 && symbol.ContainingType is null);
+
+            Assert.Equal(declaration.Span, Assert.Single(symbol.DeclaringSyntaxReferences).Span);
+
+            AttributeData attribute = Assert.Single(symbol.GetAttributes());
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonConverterAttribute"), attribute.AttributeClass));
+
+            INamedTypeSymbol selectedConverter = Assert.IsAssignableFrom<INamedTypeSymbol>(Assert.Single(attribute.ConstructorArguments).Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(converter, selectedConverter.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(symbol, Assert.Single(selectedConverter.TypeArguments)));
+
+            foreach (EnumMemberDeclarationSyntax value in declaration.Members)
+            {
+                IFieldSymbol enumField = Assert.IsAssignableFrom<IFieldSymbol>(enumModel.GetDeclaredSymbol(value));
+
+                Assert.NotNull(value.EqualsValue);
+
+                Assert.True(enumField.HasConstantValue);
+
+                Assert.Equal(enumModel.GetConstantValue(value.EqualsValue.Value).Value, Convert.ToInt32(enumField.ConstantValue, System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+
+        HashSet<ISymbol> selectedEnums = new(SymbolEqualityComparer.Default);
+
+        foreach (TypeOfExpressionSyntax typeOf in tailTree.GetRoot().DescendantNodes().OfType<TypeOfExpressionSyntax>())
+        {
+            ITypeSymbol type = tailModel.GetTypeInfo(typeOf.Type).Type!;
+
+            if (type.TypeKind == TypeKind.Enum)
+            {
+                Assert.Contains(type, enumSymbols);
+
+                selectedEnums.Add(type);
+            }
+            else Assert.IsAssignableFrom<ITypeParameterSymbol>(type);
+        }
+
+        Assert.True(enumSymbols.SetEquals(selectedEnums));
+
+        IMethodSymbol getCode = TailSymbol("GetCode");
+
+        IMethodSymbol leaf = TailSymbol("GetSupportedByte");
+
+        string[] helpers = ["GetCode", "GetSupportedByte", "IsSupported", "AllowsZeroThroughOne", "AllowsZeroThroughTwo", "AllowsZeroThroughThree", "IsPositivePolicyEnum", "RequirePositiveCode", "GetMaximum", "RequireRange"];
+
+        Assert.Equal(helpers.Order(), tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Select(static method => method.Identifier.ValueText).Order());
+
+        foreach (string name in helpers)
+        {
+            IMethodSymbol symbol = TailSymbol(name);
+
+            Assert.True(symbol.IsStatic && !symbol.IsVirtual && !symbol.IsExtern && !symbol.ReturnsByRef && !symbol.ReturnsByRefReadonly && symbol.ContainingType.Arity == 0);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(manifest, symbol.ContainingType));
+
+            Assert.Equal(name == "RequireRange" ? 0 : 1, symbol.Arity);
+
+            if (symbol.Arity == 1)
+            {
+                ITypeParameterSymbol own = Assert.Single(symbol.TypeParameters);
+
+                Assert.True(own.HasValueTypeConstraint && own.TypeParameterKind == TypeParameterKind.Method);
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetSpecialType(SpecialType.System_Enum), Assert.Single(own.ConstraintTypes)));
+            }
+
+            Assert.All(symbol.Parameters, static parameter => Assert.Equal(RefKind.None, parameter.RefKind));
+
+            Assert.DoesNotContain(Tail(name).DescendantNodes(), static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax or UsingStatementSyntax or ElementAccessExpressionSyntax or AwaitExpressionSyntax);
+
+            foreach (InvocationExpressionSyntax call in Tail(name).DescendantNodes().OfType<InvocationExpressionSyntax>())
+            {
+                if (tailModel.GetOperation(call) is Microsoft.CodeAnalysis.Operations.INameOfOperation) continue;
+
+                if (tailModel.GetOperation(call) is Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation)
+                {
+                    Assert.Equal("extra-unknown-use", mutation);
+                    Assert.Equal("GetCode", name);
+                    Assert.Equal("unknown.Use", call.Expression.ToString());
+                    continue;
+                }
+
+                var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(call));
+
+                Assert.True(invocation.TargetMethod.IsStatic && !invocation.IsVirtual && invocation.TargetMethod.ReducedFrom is null);
+
+                if (SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.ContainingType, manifest))
+                {
+                    Assert.Contains(invocation.TargetMethod.Name, helpers);
+
+                    Assert.True(SymbolEqualityComparer.Default.Equals(TailSymbol(invocation.TargetMethod.Name), invocation.TargetMethod.OriginalDefinition));
+
+                    if (invocation.TargetMethod.Arity == 1) Assert.True(SymbolEqualityComparer.Default.Equals(symbol.TypeParameters[0], Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+                    Assert.All(invocation.Arguments, static argument => Assert.Equal(RefKind.None, argument.Parameter!.RefKind));
+                }
+                else
+                {
+                    Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.Unsafe"), invocation.TargetMethod.ContainingType));
+
+                    Assert.Contains(invocation.TargetMethod.Name, new[] { "As", "SizeOf" });
+                }
+            }
+        }
+
+        Assert.Equal(SpecialType.System_UInt32, getCode.ReturnType.SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, leaf.ReturnType.SpecialType);
+
+        foreach (IMethodSymbol method in new[] { getCode, leaf })
+        {
+            Assert.True(SymbolEqualityComparer.Default.Equals(method.TypeParameters[0], Assert.Single(method.Parameters).Type));
+
+            var uses = Tail(method.Name).DescendantNodes().OfType<IdentifierNameSyntax>().Where(use => SymbolEqualityComparer.Default.Equals(tailModel.GetSymbolInfo(use).Symbol, method.Parameters[0])).ToArray();
+
+            var runtime = uses.Where(use => !(use.Parent is ArgumentSyntax argument && argument.Parent?.Parent is InvocationExpressionSyntax call && tailModel.GetOperation(call) is Microsoft.CodeAnalysis.Operations.INameOfOperation)).ToArray();
+
+            Assert.Equal(1 + (method.Name == "GetCode" && mutation == "extra-unknown-use" || method.Name == "GetSupportedByte" && mutation == "leaf-mutation" ? 1 : 0), runtime.Length);
+
+            output.WriteLine($"R100_FORMAL={receiver}|{mutation}|{method}|runtimeUses={runtime.Length}|nameofUses={uses.Length - runtime.Length}");
+        }
+
+        InvocationExpressionSyntax copyCall = Assert.Single(Tail("GetCode").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => tailModel.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "GetSupportedByte" });
+
+        var copyInvocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(copyCall));
+
+        var copyArgument = Assert.Single(copyInvocation.Arguments);
+
+        Assert.True(copyArgument.InConversion.IsIdentity && copyArgument.OutConversion.IsIdentity);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(getCode.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(copyArgument.Value).Parameter));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf, copyInvocation.TargetMethod.OriginalDefinition));
+
+        VariableDeclaratorSyntax codeDeclaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.IsType<EqualsValueClauseSyntax>(copyCall.Parent).Parent);
+
+        Assert.Equal(SpecialType.System_Byte, Assert.IsAssignableFrom<ILocalSymbol>(tailModel.GetDeclaredSymbol(codeDeclaration)).Type.SpecialType);
+
+        InvocationExpressionSyntax asCall = Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => tailModel.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "As" });
+
+        var asInvocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(asCall));
+
+        IMethodSymbol selectedAs = asInvocation.TargetMethod;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(core, selectedAs.ContainingAssembly));
+
+        Assert.Equal("System.Runtime", core.Identity.Name);
+
+        Assert.Equal(new Version(10, 0, 0, 0), core.Identity.Version);
+
+        Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(core.Identity.PublicKeyToken.AsSpan()));
+
+        Assert.True(selectedAs.IsStatic && selectedAs.ReturnsByRef && !selectedAs.ReturnsByRefReadonly && !selectedAs.IsVararg && selectedAs.ReducedFrom is null);
+
+        Assert.Equal(MethodKind.Ordinary, selectedAs.MethodKind);
+
+        Assert.Empty(selectedAs.DeclaringSyntaxReferences);
+
+        Assert.Empty(selectedAs.ContainingType.DeclaringSyntaxReferences);
+
+        Assert.Equal(2, selectedAs.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selectedAs.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf.TypeParameters[0], selectedAs.TypeArguments[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.Parameters[0].Type, selectedAs.TypeArguments[0]));
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.TypeArguments[1].SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.ReturnType.SpecialType);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.OriginalDefinition.Parameters[0].Type, selectedAs.OriginalDefinition.TypeParameters[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.OriginalDefinition.ReturnType, selectedAs.OriginalDefinition.TypeParameters[1]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(Assert.Single(asInvocation.Arguments).Value).Parameter));
+
+        Assert.Same(asCall, Assert.IsType<ReturnStatementSyntax>(asCall.Parent).Expression);
+
+        Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IReturnOperation>(asInvocation.Parent);
+
+        InvocationExpressionSyntax sizeCall = Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => tailModel.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "SizeOf" });
+
+        IMethodSymbol size = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(tailModel.GetOperation(sizeCall)).TargetMethod;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(core, size.ContainingAssembly) && SymbolEqualityComparer.Default.Equals(selectedAs.ContainingType, size.ContainingType));
+
+        Assert.True(size.IsStatic && !size.ReturnsByRef && !size.ReturnsByRefReadonly && size.Arity == 1 && size.Parameters.Length == 0);
+
+        Assert.Equal(SpecialType.System_Int32, size.ReturnType.SpecialType);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(leaf.TypeParameters[0], Assert.Single(size.TypeArguments)));
+
+        ArgumentSyntax storage = Assert.Single(Tail("GetSupportedByte").DescendantNodes().OfType<ArgumentSyntax>(), static argument => argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword));
+
+        Assert.Same(asCall, storage.Parent!.Parent);
+
+        Assert.DoesNotContain(Tail("GetCode").DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+        AssignmentExpressionSyntax[] assignments = tailTree.GetRoot().DescendantNodes().OfType<AssignmentExpressionSyntax>().ToArray();
+
+        if (mutation == "leaf-mutation")
+        {
+            AssignmentExpressionSyntax assignment = Assert.Single(assignments);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(leaf.Parameters[0], tailModel.GetSymbolInfo(assignment.Left).Symbol));
+
+            Assert.True(assignment.Right.IsKind(SyntaxKind.DefaultLiteralExpression));
+        }
+        else Assert.Empty(assignments);
+
+        foreach (MethodDeclarationSyntax method in tailTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
+        {
+            IOperation operation = tailModel.GetOperation(method)!;
+
+            foreach (var conversion in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(operation).OfType<Microsoft.CodeAnalysis.Operations.IConversionOperation>())
+                Assert.Null(conversion.OperatorMethod);
+
+            foreach (var binary in Microsoft.CodeAnalysis.Operations.OperationExtensions.DescendantsAndSelf(operation).OfType<Microsoft.CodeAnalysis.Operations.IBinaryOperation>())
+            {
+                if (binary.OperatorMethod is { } selectedOperator)
+                {
+                    Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Type"), selectedOperator.ContainingType));
+                    Assert.Equal("op_Equality", selectedOperator.Name);
+                    Assert.True(SymbolEqualityComparer.Default.Equals(core, selectedOperator.ContainingAssembly));
+                }
+                else Assert.Contains(binary.LeftOperand.Type!.SpecialType, new[] { SpecialType.System_Int32, SpecialType.System_Boolean });
+            }
+        }
+
+        foreach (ObjectCreationExpressionSyntax syntax in tailTree.GetRoot().DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(tailModel.GetOperation(syntax));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(core, creation.Constructor!.ContainingAssembly));
+
+            Assert.Contains(creation.Type!.ToDisplayString(), new[] { "System.ArgumentException", "System.ArgumentOutOfRangeException" });
+
+            Assert.All(creation.Constructor.Parameters, static parameter => Assert.Equal(SpecialType.System_String, parameter.Type.SpecialType));
+        }
+
+        INamedTypeSymbol box = compilation.GetTypeByMetadataName("Worker+Box")!;
+
+        Assert.True(box.IsSealed && !box.IsRecord && box.Arity == 0 && box.ContainingType.Arity == 0);
+
+        IFieldSymbol field = Assert.Single(box.GetMembers().OfType<IFieldSymbol>());
+
+        Assert.True(field.IsReadOnly && !field.IsStatic && SymbolEqualityComparer.Default.Equals(sensitivity, field.Type));
+
+        IPropertySymbol property = Assert.Single(box.GetMembers().OfType<IPropertySymbol>());
+
+        IMethodSymbol getter = property.GetMethod!;
+
+        AccessorDeclarationSyntax getterSyntax = Assert.IsType<AccessorDeclarationSyntax>(Assert.Single(getter.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.NotNull(getterSyntax.Body);
+
+        Assert.False(getter.IsImplicitlyDeclared || getter.IsVirtual || getter.IsExtern || property.IsIndexer || property.IsStatic || property.IsOverride || property.IsAbstract || property.ReturnsByRef || property.ReturnsByRefReadonly);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(sensitivity, property.Type));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(field, model.GetSymbolInfo(Assert.Single(getterSyntax.DescendantNodes().OfType<ReturnStatementSyntax>()).Expression!).Symbol));
+
+        foreach (string factory in new[] { "First", "Second" })
+        {
+            Assert.True(SymbolEqualityComparer.Default.Equals(box, Symbol(factory).ReturnType));
+
+            var creation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>())));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(box, creation.Constructor!.ContainingType));
+
+            var argument = Assert.Single(creation.Arguments);
+
+            IFieldSymbol selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(argument.Value).Field;
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(sensitivity, selected.ContainingType));
+
+            Assert.Equal(factory == "First" ? "None" : "CovenantDerived", selected.Name);
+
+            Assert.Equal((byte)(factory == "First" ? 0 : 1), selected.ConstantValue);
+        }
+
+        InvocationExpressionSyntax[] ingress = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "GetCode" }).ToArray();
+
+        Assert.Equal(receiver == "local" ? 2 : 1, ingress.Length);
+
+        foreach (InvocationExpressionSyntax call in ingress)
+        {
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(getCode, invocation.TargetMethod.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(sensitivity, Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+            var argument = Assert.Single(invocation.Arguments);
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity && argument.Parameter!.RefKind == RefKind.None);
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(argument.Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(property, read.Property));
+
+            MemberAccessExpressionSyntax access = Assert.IsType<MemberAccessExpressionSyntax>(read.Syntax);
+
+            IdentifierNameSyntax input = Assert.IsType<IdentifierNameSyntax>(access.Expression);
+
+            ISymbol inputSymbol = model.GetSymbolInfo(input).Symbol!;
+
+            MethodDeclarationSyntax owner = input.Ancestors().OfType<MethodDeclarationSyntax>().First();
+
+            if (receiver == "parameter")
+            {
+                Assert.True(SymbolEqualityComparer.Default.Equals(Symbol("Observe").Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance).Parameter));
+
+                Assert.Equal(0, Symbol("Observe").Arity);
+            }
+            else
+            {
+                ILocalSymbol local = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(read.Instance).Local;
+
+                Assert.Equal(RefKind.None, local.RefKind);
+
+                VariableDeclaratorSyntax declaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(local.DeclaringSyntaxReferences).GetSyntax());
+
+                Assert.True(declaration.Span.End < access.SpanStart);
+
+                var factory = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(declaration.Initializer!.Value));
+
+                Assert.Contains(factory.TargetMethod.Name, new[] { "First", "Second" });
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(Symbol(factory.TargetMethod.Name), factory.TargetMethod));
+            }
+
+            IdentifierNameSyntax use = Assert.Single(owner.DescendantNodes().OfType<IdentifierNameSyntax>(), name => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, inputSymbol));
+
+            Assert.Same(input, use);
+
+            Assert.DoesNotContain(use.Ancestors().TakeWhile(node => node != owner), static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+        }
+
+        InvocationExpressionSyntax dynamicMarker = Assert.Single(Method("StartAsync").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Invoke");
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(model.GetOperation(dynamicMarker)).Arguments);
+
+        PortableExecutableReference reference = Assert.Single(compilation.References.OfType<PortableExecutableReference>(), item => SymbolEqualityComparer.Default.Equals(compilation.GetAssemblyOrModuleSymbol(item), core));
+
+        output.WriteLine($"R100_REFERENCE={reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(reference.FilePath!)))}|assembly={core.Identity}|selected={selectedAs}");
+
+        output.WriteLine($"R100_SOURCE_AUDIT={receiver}|{mutation}|enums=50|helpers=10|exactTail={mutation == "exact"}|ownTByValue=true|asReturnShapeImmediateByte=true|allFormalUsesInventoried=true|numericOperatorsBuiltinOrExactTypeEquality=true|cleanupCollectionCaptureAbsent=true|booleanFormalAbsent=true|constantControlMemberAbsent=true|ObserveNonOwnTDependent={receiver == "parameter"}|leafMutationTrueVeto={mutation == "leaf-mutation"}");
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(static call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.AuthorityOperationId == "Worker.StartAsync" && site.SourcePath == tree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            output.WriteLine($"R100_MARKER={receiver}|{mutation}|{coordinate}|work-refused=true|effect-refused=true");
+        }
+
+        string[] unknownCoordinates = mutation == "extra-unknown-use"
+            ? [tree.FilePath + ":" + dynamicMarker.SpanStart, manifestPath + ":" + Assert.Single(Tail("GetCode").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Use").SpanStart]
+            : [tree.FilePath + ":" + dynamicMarker.SpanStart];
+
+        foreach (string coordinate in unknownCoordinates)
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == coordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        Assert.All(result.Diagnostics, diagnostic => Assert.True(
+            diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            || (diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && unknownCoordinates.Contains(diagnostic.Identity) && diagnostic.Detail == "Dynamic invocation has no exact call target."), diagnostic.ToString()));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] States(IMethodSymbol symbol, SyntaxNode syntax, bool required)
+        {
+            string key = symbol.OriginalDefinition.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            var states = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == key && state.SpanStart == syntax.SpanStart && state.SpanLength == syntax.Span.Length).ToArray();
+
+            if (required) Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.Equal("Worker", state.RootType);
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+                Assert.Null(state.WorkFrontier);
+                Assert.Null(state.EffectFrontier);
+                Assert.Null(state.RecoveryEffectFrontier);
+                Assert.False(state.CompletionOwned);
+            });
+
+            foreach (var state in states)
+                output.WriteLine($"R100_CONTEXT={receiver}|{mutation}|source={syntax.SyntaxTree.FilePath}|{key}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+            return states;
+        }
+
+        var roots = States(Symbol("StartAsync"), Method("StartAsync"), true);
+
+        Assert.Equal(new[] { false, true }, roots.Select(static state => state.Lifecycle).Distinct().Order());
+
+        foreach (string factory in new[] { "First", "Second" }) States(Symbol(factory), Method(factory), true);
+
+        States(getter, getterSyntax, true);
+
+        if (receiver == "parameter")
+        {
+            var parents = States(Symbol("Observe"), Method("Observe"), true).Where(static state => state.Lifecycle).ToArray();
+
+            Assert.True(parents.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count() >= 2, "Non-own-T Observe must preserve both original factory sources.");
+        }
+
+        var receiving = States(getCode, Tail("GetCode"), true);
+
+        foreach (string helper in helpers.Where(static name => name != "GetCode")) States(TailSymbol(helper), Tail(helper), false);
+
+        Assert.Contains(receiving, static state => state.Lifecycle);
+
+        int automatic = receiving.Count(static state => state.Lifecycle);
+
+        int declared = receiving.Count(static state => !state.Lifecycle);
+
+        output.WriteLine($"R100_PROBE={receiver}|{mutation}|GetCodeTrue={automatic}|GetCodeFalse={declared}|prerequisites=passed");
+
+        if (mutation == "exact") Assert.Equal(1, automatic);
+        else Assert.True(automatic > 1, "Adverse enum-formal use must preserve the original receiving sources.");
+    }
+
+    [Theory]
+    [InlineData("parameter", "Level", "production")]
+    [InlineData("local", "Level", "production")]
+    [InlineData("parameter", "ProvenanceMode", "production")]
+    [InlineData("local", "ProvenanceMode", "production")]
+    [InlineData("parameter", "Level", "unsealed")]
+    [InlineData("parameter", "Level", "readonly-struct")]
+    public void GeneratedPositionalEnumPropertyIngressKeepsOnlyExactRecordContexts(string receiver, string propertyName, string shape)
+    {
+        string repository = TestRepositoryPaths.RepositoryRoot();
+
+        string Extract(string relative, params (int Start, int End)[] ranges)
+        {
+            string original = File.ReadAllText(Path.Combine(repository, relative));
+
+            string[] lines = original.Split('\n');
+
+            string extracted = string.Concat(ranges.Select(range => string.Join("\n", lines.Skip(range.Start - 1).Take(range.End - range.Start + 1)) + "\n"));
+
+            output.WriteLine($"R98_EXTRACTION={relative}|ranges={string.Join(",", ranges.Select(range => $"{range.Start}-{range.End}"))}|inputSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(original)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted)))}");
+
+            return extracted;
+        }
+
+        const string modelsPath = "src/RetroDownfall.Arcanum.Core/Covenant/CovenantDigestModels.cs";
+
+        string recordSource = Extract(modelsPath, (1, 5), (61, 61));
+
+        const string recordDeclaration = "public sealed record SensitivityDigestInput(ContentSensitivity Level, GenerationProvenanceMode ProvenanceMode, ImmutableArray<Guid> ExactGenerationIds, ImmutableArray<byte> GenerationBloom);";
+
+        Assert.Contains(recordDeclaration, recordSource, StringComparison.Ordinal);
+
+        foreach (string omitted in new[] { "using RetroDownfall.Arcanum.Core.Intelligence;\n", "using RetroDownfall.Arcanum.Core.Tower;\n" })
+        {
+            Assert.Contains(omitted, recordSource, StringComparison.Ordinal);
+
+            recordSource = recordSource.Replace(omitted, "", StringComparison.Ordinal);
+
+            output.WriteLine($"R98_OMITTED_UNUSED_IMPORT={omitted.TrimEnd()}");
+        }
+
+        if (shape == "unsealed") recordSource = recordSource.Replace("public sealed record", "public record", StringComparison.Ordinal);
+
+        if (shape == "readonly-struct") recordSource = recordSource.Replace("public sealed record", "public readonly record struct", StringComparison.Ordinal);
+
+        string selectedEnum = propertyName == "Level" ? "ContentSensitivity" : "GenerationProvenanceMode";
+
+        string body = receiver == "local"
+            ? $"SensitivityDigestInput first = First(); SensitivityDigestInput second = Second(); Forward<{selectedEnum}>(first.{propertyName}); Forward<{selectedEnum}>(second.{propertyName}); await Task.CompletedTask;"
+            : "Observe(First()); Observe(Second()); await Task.CompletedTask;";
+
+        string observe = receiver == "local" ? "" : $"private static byte Observe(SensitivityDigestInput input) => Forward<{selectedEnum}>(input.{propertyName});";
+
+        string members = """
+            private static SensitivityDigestInput First() { System.IO.File.Delete("first-marker"); return new SensitivityDigestInput(ContentSensitivity.None, GenerationProvenanceMode.Exact, System.Collections.Immutable.ImmutableArray<Guid>.Empty, System.Collections.Immutable.ImmutableArray<byte>.Empty); }
+            private static SensitivityDigestInput Second() { System.IO.File.Delete("second-marker"); return new SensitivityDigestInput(ContentSensitivity.CovenantDerived, GenerationProvenanceMode.BloomOverflow, System.Collections.Immutable.ImmutableArray<Guid>.Empty, System.Collections.Immutable.ImmutableArray<byte>.Empty); }
+            private static byte Forward<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("forward-marker");
+                dynamic unknown = null!;
+                unknown.Invoke();
+                return Copy(value);
+            }
+            private static byte Copy<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("copy-marker");
+                if (System.Runtime.CompilerServices.Unsafe.SizeOf<T>() != sizeof(byte))
+                    throw new ArgumentException("unsupported enum");
+                return System.Runtime.CompilerServices.Unsafe.As<T, byte>(ref value);
+            }
+            """ + observe;
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("using System;\n", "", StringComparison.Ordinal)
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal)
+                .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        MetadataReference[] coreReferences = compilation.References.ToArray();
+
+        foreach ((string assemblyName, string typeName) in new[]
+        {
+            ("Microsoft.Extensions.Hosting.Abstractions", "Microsoft.Extensions.Hosting.IHostedService"),
+            ("Microsoft.Extensions.DependencyInjection.Abstractions", "Microsoft.Extensions.DependencyInjection.IServiceCollection"),
+        })
+        {
+            if (compilation.GetTypeByMetadataName(typeName) is not null) continue;
+
+            var candidates = HostedGrimoireProducerInventory.ProductionCompilations
+                .SelectMany(owner => owner.References.OfType<PortableExecutableReference>()
+                    .Select(reference => (Reference: reference, Assembly: owner.GetAssemblyOrModuleSymbol(reference) as IAssemblySymbol)))
+                .Where(candidate => candidate.Assembly?.Identity.Name == assemblyName)
+                .GroupBy(candidate => candidate.Reference.FilePath, StringComparer.Ordinal)
+                .Select(static group => group.First()).ToArray();
+
+            var candidate = Assert.Single(candidates);
+
+            IAssemblySymbol assembly = Assert.IsAssignableFrom<IAssemblySymbol>(candidate.Assembly);
+
+            Assert.Equal(assemblyName + ".dll", Path.GetFileName(candidate.Reference.FilePath));
+
+            Assert.Equal(new Version(10, 0, 0, 0), assembly.Identity.Version);
+
+            Assert.Equal("ADB9793829DDAE60", Convert.ToHexString(assembly.Identity.PublicKeyToken.AsSpan()));
+
+            Assert.DoesNotContain(compilation.References.OfType<PortableExecutableReference>(), reference => reference.FilePath == candidate.Reference.FilePath);
+
+            compilation = compilation.AddReferences(candidate.Reference);
+
+            output.WriteLine($"R98_ADDED_REFERENCE={candidate.Reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(candidate.Reference.FilePath!)))}|assembly={assembly.Identity}");
+        }
+
+        Assert.All(coreReferences, reference => Assert.Contains(reference, compilation.References));
+
+        Assert.DoesNotContain(compilation.References, reference => compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" });
+
+        const string sensitivityPath = "src/RetroDownfall.Arcanum.Core/Covenant/ContentSensitivity.cs";
+
+        const string provenancePath = "src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs";
+
+        const string converterPath = "src/RetroDownfall.Arcanum.Core/Serialization/StringOnlyJsonStringEnumConverter.cs";
+
+        compilation = compilation.AddSyntaxTrees(
+            CSharpSyntaxTree.ParseText(recordSource, path: modelsPath),
+            CSharpSyntaxTree.ParseText(Extract(sensitivityPath, (1, 4), (6, 11)), path: sensitivityPath),
+            CSharpSyntaxTree.ParseText(Extract(provenancePath, (1, 8), (10, 15)), path: provenancePath),
+            CSharpSyntaxTree.ParseText(Extract(converterPath, (1, 16)), path: converterPath));
+
+        Diagnostic[] compilerDiagnostics = compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning).ToArray();
+
+        foreach (Diagnostic diagnostic in compilerDiagnostics) output.WriteLine($"R98_COMPILER={diagnostic}");
+
+        Assert.Empty(compilerDiagnostics);
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees, static syntax => syntax.FilePath == "src/Fixture.cs");
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax Method(string name) => Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        IMethodSymbol Symbol(string name) => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method(name)));
+
+        INamedTypeSymbol record = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.SensitivityDigestInput"));
+
+        INamedTypeSymbol sensitivity = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity")!;
+
+        INamedTypeSymbol provenance = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Covenant.GenerationProvenanceMode")!;
+
+        INamedTypeSymbol converter = compilation.GetTypeByMetadataName("RetroDownfall.Arcanum.Core.Serialization.StringOnlyJsonStringEnumConverter`1")!;
+
+        Assert.True(record.IsRecord);
+
+        Assert.Equal(0, record.Arity);
+
+        Assert.Null(record.ContainingType);
+
+        Assert.Equal(shape == "readonly-struct" ? TypeKind.Struct : TypeKind.Class, record.TypeKind);
+
+        Assert.Equal(shape != "unsealed", record.IsSealed);
+
+        Assert.Equal(shape == "readonly-struct", record.IsReadOnly);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, record.ContainingAssembly));
+
+        RecordDeclarationSyntax recordSyntax = Assert.IsType<RecordDeclarationSyntax>(Assert.Single(record.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.Equal(modelsPath, recordSyntax.SyntaxTree.FilePath);
+
+        Assert.Equal(recordDeclaration.Replace("public sealed record", shape == "production" ? "public sealed record" : shape == "unsealed" ? "public record" : "public readonly record struct", StringComparison.Ordinal), recordSyntax.ToString());
+
+        foreach (INamedTypeSymbol enumType in new[] { sensitivity, provenance })
+        {
+            Assert.Equal(TypeKind.Enum, enumType.TypeKind);
+
+            Assert.Equal(SpecialType.System_Byte, enumType.EnumUnderlyingType!.SpecialType);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, enumType.ContainingAssembly));
+
+            var attribute = Assert.Single(enumType.GetAttributes());
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonConverterAttribute"), attribute.AttributeClass));
+
+            INamedTypeSymbol selectedConverter = Assert.IsAssignableFrom<INamedTypeSymbol>(Assert.Single(attribute.ConstructorArguments).Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(converter, selectedConverter.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(enumType, Assert.Single(selectedConverter.TypeArguments)));
+        }
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetTypeByMetadataName("System.Text.Json.Serialization.JsonStringEnumConverter`1"), converter.BaseType!.OriginalDefinition));
+
+        Assert.Equal(converterPath, Assert.Single(converter.DeclaringSyntaxReferences).SyntaxTree.FilePath);
+
+        INamedTypeSymbol mode = propertyName == "Level" ? sensitivity : provenance;
+
+        IPropertySymbol property = Assert.Single(record.GetMembers(propertyName).OfType<IPropertySymbol>());
+
+        Assert.False(property.IsStatic || property.IsIndexer || property.ReturnsByRef || property.ReturnsByRefReadonly);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(mode, property.Type));
+
+        IMethodSymbol getter = Assert.IsAssignableFrom<IMethodSymbol>(property.GetMethod);
+
+        Assert.Equal(MethodKind.PropertyGet, getter.MethodKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(property, getter.AssociatedSymbol));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(mode, getter.ReturnType));
+
+        ParameterSyntax positional = Assert.IsType<ParameterSyntax>(Assert.Single(property.DeclaringSyntaxReferences).GetSyntax());
+
+        Assert.Same(recordSyntax.SyntaxTree, positional.SyntaxTree);
+
+        int ordinal = propertyName == "Level" ? 0 : 1;
+
+        Assert.Equal(recordSyntax.ParameterList!.Parameters[ordinal].Span, positional.Span);
+
+        SemanticModel recordModel = compilation.GetSemanticModel(recordSyntax.SyntaxTree);
+
+        IParameterSymbol parameter = Assert.IsAssignableFrom<IParameterSymbol>(recordModel.GetDeclaredSymbol(positional));
+
+        IMethodSymbol constructor = Assert.IsAssignableFrom<IMethodSymbol>(parameter.ContainingSymbol);
+
+        Assert.Equal(MethodKind.Constructor, constructor.MethodKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(record, constructor.ContainingType));
+
+        Assert.Equal(ordinal, parameter.Ordinal);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(property.Type, parameter.Type));
+
+        INamedTypeSymbol immutable = compilation.GetTypeByMetadataName("System.Collections.Immutable.ImmutableArray`1")!;
+
+        ITypeSymbol[] expectedTypes = [sensitivity, provenance, immutable.Construct(compilation.GetTypeByMetadataName("System.Guid")!), immutable.Construct(compilation.GetSpecialType(SpecialType.System_Byte))];
+
+        Assert.Equal(4, constructor.Parameters.Length);
+
+        for (int index = 0; index < expectedTypes.Length; index++) Assert.True(SymbolEqualityComparer.Default.Equals(expectedTypes[index], constructor.Parameters[index].Type));
+
+        output.WriteLine($"R98_PROPERTY={receiver}|{propertyName}|{shape}|property={property}|constructor={constructor}|parameterOrdinal={parameter.Ordinal}|getterImplicit={getter.IsImplicitlyDeclared}|getterSyntax={string.Join(";", getter.DeclaringSyntaxReferences.Select(reference => $"{reference.SyntaxTree.FilePath}:{reference.Span}:{reference.GetSyntax().Kind()}"))}|getterLocations={string.Join(";", getter.Locations.Select(location => $"{location.SourceTree?.FilePath}:{location.SourceSpan}"))}");
+
+        IMethodSymbol forward = Symbol("Forward");
+
+        IMethodSymbol copy = Symbol("Copy");
+
+        foreach (string factory in new[] { "First", "Second" })
+        {
+            Assert.True(SymbolEqualityComparer.Default.Equals(record, Symbol(factory).ReturnType));
+
+            ObjectCreationExpressionSyntax creation = Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+            var construction = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(creation));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(constructor, construction.Constructor));
+
+            Assert.Equal(4, construction.Arguments.Length);
+
+            for (int index = 0; index < expectedTypes.Length; index++)
+            {
+                var argument = construction.Arguments[index];
+
+                Assert.Equal(index, argument.Parameter!.Ordinal);
+
+                Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(expectedTypes[index], argument.Value.Type));
+
+                if (index < 2)
+                {
+                    string name = index == 0 ? factory == "First" ? "None" : "CovenantDerived" : factory == "First" ? "Exact" : "BloomOverflow";
+
+                    IFieldSymbol field = Assert.IsAssignableFrom<IFieldSymbol>(model.GetSymbolInfo(creation.ArgumentList!.Arguments[index].Expression).Symbol);
+
+                    Assert.Equal(name, field.Name);
+
+                    Assert.True(SymbolEqualityComparer.Default.Equals(expectedTypes[index], field.ContainingType));
+
+                    Assert.Equal(index == 0 ? factory == "First" ? (byte)0 : (byte)1 : factory == "First" ? (byte)1 : (byte)2, Assert.IsType<byte>(argument.Value.ConstantValue.Value));
+                }
+                else
+                {
+                    var empty = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IFieldReferenceOperation>(argument.Value);
+
+                    Assert.Equal("Empty", empty.Field.Name);
+
+                    Assert.True(empty.Field.IsStatic && empty.Field.IsReadOnly);
+
+                    Assert.True(SymbolEqualityComparer.Default.Equals(immutable, empty.Field.ContainingType.OriginalDefinition));
+                }
+            }
+        }
+
+        InvocationExpressionSyntax[] ingress = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Forward" }).ToArray();
+
+        Assert.Equal(receiver == "local" ? 2 : 1, ingress.Length);
+
+        foreach (InvocationExpressionSyntax call in ingress)
+        {
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(forward, invocation.TargetMethod.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+            var argument = Assert.Single(invocation.Arguments);
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+            Assert.Equal(RefKind.None, argument.Parameter!.RefKind);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(argument.Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(property, read.Property));
+
+            if (receiver == "local")
+            {
+                var local = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(read.Instance);
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(Symbol("StartAsync"), local.Local.ContainingSymbol));
+
+                VariableDeclaratorSyntax declaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(local.Local.DeclaringSyntaxReferences).GetSyntax());
+
+                var origin = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(declaration.Initializer!.Value));
+
+                Assert.Contains(origin.TargetMethod.Name, new[] { "First", "Second" });
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(Symbol(origin.TargetMethod.Name), origin.TargetMethod));
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(record, local.Local.Type));
+
+                Assert.True(declaration.SpanStart < call.SpanStart);
+            }
+            else
+            {
+                var readParameter = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance);
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(Symbol("Observe").Parameters), readParameter.Parameter));
+            }
+        }
+
+        foreach (IMethodSymbol method in new[] { forward, copy })
+        {
+            Assert.True(method.IsStatic && !method.ReturnsByRef && !method.ReturnsByRefReadonly);
+
+            Assert.Equal(SpecialType.System_Byte, method.ReturnType.SpecialType);
+
+            ITypeParameterSymbol own = Assert.Single(method.TypeParameters);
+
+            Assert.True(own.HasValueTypeConstraint);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetSpecialType(SpecialType.System_Enum), Assert.Single(own.ConstraintTypes)));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(own, Assert.Single(method.Parameters).Type));
+
+            Assert.Equal(RefKind.None, method.Parameters[0].RefKind);
+        }
+
+        InvocationExpressionSyntax forwarded = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Copy" });
+
+        var selectedCopy = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copy, selectedCopy.TargetMethod.OriginalDefinition));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(forward.TypeParameters[0], Assert.Single(selectedCopy.TargetMethod.TypeArguments)));
+
+        var forwardedArgument = Assert.Single(selectedCopy.Arguments);
+
+        Assert.True(forwardedArgument.InConversion.IsIdentity && forwardedArgument.OutConversion.IsIdentity);
+
+        Assert.Equal(RefKind.None, forwardedArgument.Parameter!.RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(forward.Parameters[0], Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(forwardedArgument.Value).Parameter));
+
+        Assert.Same(forwarded, Assert.IsType<ReturnStatementSyntax>(forwarded.Parent).Expression);
+
+        InvocationExpressionSyntax cast = Assert.Single(Method("Copy").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString().StartsWith("System.Runtime.CompilerServices.Unsafe.As<", StringComparison.Ordinal));
+
+        var selectedAs = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(cast)).TargetMethod;
+
+        Assert.Equal("System.Runtime.CompilerServices.Unsafe", selectedAs.ContainingType.ToDisplayString());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.ContainingAssembly, compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly));
+
+        Assert.Equal("System.Runtime", selectedAs.ContainingAssembly.Name);
+
+        Assert.Equal(new Version(10, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
+
+        Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selectedAs.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
+
+        Assert.Empty(selectedAs.DeclaringSyntaxReferences);
+
+        Assert.True(selectedAs.IsStatic && selectedAs.ReturnsByRef && !selectedAs.ReturnsByRefReadonly && !selectedAs.IsVararg);
+
+        Assert.Equal(MethodKind.Ordinary, selectedAs.MethodKind);
+
+        Assert.Equal(2, selectedAs.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selectedAs.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copy.TypeParameters[0], selectedAs.TypeArguments[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.Parameters[0].Type, copy.TypeParameters[0]));
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.TypeArguments[1].SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.ReturnType.SpecialType);
+
+        Assert.Same(cast, Assert.IsType<ReturnStatementSyntax>(cast.Parent).Expression);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copy.Parameters[0], model.GetSymbolInfo(Assert.Single(cast.ArgumentList.Arguments).Expression).Symbol));
+
+        InvocationExpressionSyntax dynamicMarker = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Invoke");
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(model.GetOperation(dynamicMarker)).Arguments);
+
+        PortableExecutableReference reference = Assert.Single(compilation.References.OfType<PortableExecutableReference>(), item => SymbolEqualityComparer.Default.Equals(compilation.GetAssemblyOrModuleSymbol(item), selectedAs.ContainingAssembly));
+
+        output.WriteLine($"R98_REFERENCE={reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.IO.File.ReadAllBytes(reference.FilePath!)))}|assembly={selectedAs.ContainingAssembly.Identity}|selected={selectedAs}");
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(static call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.AuthorityOperationId == "Worker.StartAsync" && site.SourcePath == tree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            output.WriteLine($"R98_MARKER={receiver}|{propertyName}|{shape}|{coordinate}|work-refused=true|effect-refused=true");
+        }
+
+        string markerCoordinate = tree.FilePath + ":" + dynamicMarker.SpanStart;
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == markerCoordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        Assert.All(result.Diagnostics, diagnostic => Assert.True(
+            diagnostic.Code is "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            || (diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == markerCoordinate && diagnostic.Detail == "Dynamic invocation has no exact call target."), diagnostic.ToString()));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] States(IMethodSymbol symbol, SyntaxNode syntax)
+        {
+            string key = symbol.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            var states = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == key && state.SpanStart == syntax.SpanStart && state.SpanLength == syntax.Span.Length).ToArray();
+
+            Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.Equal("Worker", state.RootType);
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+                Assert.Null(state.WorkFrontier);
+                Assert.Null(state.EffectFrontier);
+                Assert.Null(state.RecoveryEffectFrontier);
+                Assert.False(state.CompletionOwned);
+            });
+
+            foreach (var state in states)
+                output.WriteLine($"R98_CONTEXT={receiver}|{propertyName}|{shape}|{key}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+            return states;
+        }
+
+        HostedProducerAdmittedStateObservation[] rootStates = States(Symbol("StartAsync"), Method("StartAsync"));
+
+        Assert.Equal(new[] { false, true }, rootStates.Select(static state => state.Lifecycle).Distinct().Order());
+
+        HostedProducerAdmittedStateObservation[] forwards = States(forward, Method("Forward"));
+
+        HostedProducerAdmittedStateObservation[] copies = States(copy, Method("Copy"));
+
+        foreach (string factory in new[] { "First", "Second" }) States(Symbol(factory), Method(factory));
+
+        if (receiver == "parameter") States(Symbol("Observe"), Method("Observe"));
+
+        Assert.Equal(new[] { false, true }, forwards.Select(static state => state.Lifecycle).Distinct().Order());
+
+        int automatic = forwards.Count(static state => state.Lifecycle);
+
+        int declared = forwards.Count(static state => !state.Lifecycle);
+
+        output.WriteLine($"R98_PROBE={receiver}|{propertyName}|{shape}|ForwardTrue={automatic}|ForwardFalse={declared}|CopyTrue={copies.Count(static state => state.Lifecycle)}|CopyFalse={copies.Count(static state => !state.Lifecycle)}|prerequisites=passed");
+
+        if (shape == "production")
+        {
+            Assert.Equal(1, automatic);
+
+            Assert.Equal(1, declared);
+        }
+        else
+        {
+            Assert.True(automatic > 1, "Boundary record must retain distinct automatic Forward contexts.");
+
+            Assert.True(declared > 1, "Boundary record must retain distinct declared Forward contexts.");
+        }
+    }
+
+    [Theory]
+    [InlineData("parameter", true)]
+    [InlineData("local", true)]
+    [InlineData("receiver-observed", true)]
+    [InlineData("captured", false)]
+    [InlineData("ref-mutation", false)]
+    [InlineData("boxing", false)]
+    [InlineData("opaque", false)]
+    public void OwnedEnumPropertyIngressKeepsOnlyProvedReceivingContexts(string shape, bool shared)
+    {
+        string forwarding = shape switch
+        {
+            "captured" => "return Invoke(() => { System.IO.File.Delete(\"captured-marker\"); return Copy(value); });",
+            "ref-mutation" => "Touch(ref value); return Copy(value);",
+            "boxing" => "return Copy((T)(object)value);",
+            "opaque" => "unknown.Use(value); return Copy(value);",
+            _ => "return Copy(value);",
+        };
+
+        string extra = shape switch
+        {
+            "captured" => "private static byte Invoke(Func<byte> callback) { return callback(); }",
+            "ref-mutation" => "private static void Touch<T>(ref T value) { System.IO.File.Delete(\"touch-marker\"); value = default; }",
+            _ => "",
+        };
+
+        string body = shape == "local"
+            ? "Box first = First(); Box second = Second(); Box third = Third(); Forward<Mode>(first.Level); Forward<Mode>(second.Level); Forward<Mode>(third.Level); await Task.CompletedTask;"
+            : "Observe(First()); Observe(Second()); Observe(Third()); await Task.CompletedTask;";
+
+        string observe = shape switch
+        {
+            "local" => "",
+            "receiver-observed" => "private static byte Observe(Box input) { ObserveReceiver(input); return Forward<Mode>(input.Level); } private static void ObserveReceiver(Box input) { System.IO.File.Delete(\"receiver-observed-marker\"); }",
+            _ => "private static byte Observe(Box input) => Forward<Mode>(input.Level);",
+        };
+
+        string members = """
+            private enum Mode : byte { A, B, C }
+            private sealed class Box
+            {
+                private readonly Mode level;
+                public Box(Mode value) { level = value; }
+                public Mode Level { get { System.IO.File.Delete("getter-marker"); return level; } }
+            }
+            private static Box First() { System.IO.File.Delete("first-marker"); return new Box(Mode.A); }
+            private static Box Second() { System.IO.File.Delete("second-marker"); return new Box(Mode.B); }
+            private static Box Third() { System.IO.File.Delete("third-marker"); return new Box(Mode.C); }
+            private static byte Copy<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("copy-marker");
+                if (System.Runtime.CompilerServices.Unsafe.SizeOf<T>() != sizeof(byte))
+                    throw new ArgumentException("unsupported enum");
+                return System.Runtime.CompilerServices.Unsafe.As<T, byte>(ref value);
+            }
+            """ + observe + "private static byte Forward<T>(T value) where T : struct, Enum { System.IO.File.Delete(\"forward-marker\"); dynamic unknown = null!; unknown.Invoke(); " + forwarding + " }" + extra;
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + body + " }", StringComparison.Ordinal)
+                .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal),
+            "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax Method(string name) => Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+        IMethodSymbol Symbol(string name) => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(Method(name)));
+
+        IMethodSymbol forward = Symbol("Forward");
+
+        IMethodSymbol copy = Symbol("Copy");
+
+        if (shape == "receiver-observed")
+        {
+            InvocationExpressionSyntax receiverUse = Assert.Single(Method("Observe").DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "ObserveReceiver" });
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(Symbol("ObserveReceiver"), model.GetSymbolInfo(receiverUse).Symbol));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(Symbol("Observe").Parameters),
+                model.GetSymbolInfo(Assert.Single(receiverUse.ArgumentList.Arguments).Expression).Symbol));
+        }
+
+        INamedTypeSymbol mode = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("Worker+Mode"));
+
+        INamedTypeSymbol box = Assert.IsAssignableFrom<INamedTypeSymbol>(compilation.GetTypeByMetadataName("Worker+Box"));
+
+        Assert.True(box.IsSealed && box.Arity == 0 && box.ContainingType.Arity == 0);
+
+        Assert.Equal(TypeKind.Enum, mode.TypeKind);
+
+        Assert.Equal(SpecialType.System_Byte, mode.EnumUnderlyingType!.SpecialType);
+
+        IPropertySymbol property = Assert.Single(box.GetMembers("Level").OfType<IPropertySymbol>());
+
+        Assert.False(property.IsIndexer || property.IsVirtual || property.IsAbstract || property.ReturnsByRef || property.ReturnsByRefReadonly);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(mode, property.Type));
+
+        IMethodSymbol getter = Assert.IsAssignableFrom<IMethodSymbol>(property.GetMethod);
+
+        Assert.Single(getter.DeclaringSyntaxReferences);
+
+        foreach (string factory in new[] { "First", "Second", "Third" })
+        {
+            Assert.True(SymbolEqualityComparer.Default.Equals(box, Symbol(factory).ReturnType));
+
+            ObjectCreationExpressionSyntax creation = Assert.Single(Method(factory).DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
+
+            var construction = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IObjectCreationOperation>(model.GetOperation(creation));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(box, construction.Constructor!.ContainingType));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, Assert.Single(construction.Arguments).Value.Type));
+        }
+
+        InvocationExpressionSyntax[] ingress = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Forward" }).ToArray();
+
+        Assert.Equal(shape == "local" ? 3 : 1, ingress.Length);
+
+        foreach (InvocationExpressionSyntax call in ingress)
+        {
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(forward, invocation.TargetMethod.OriginalDefinition));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, Assert.Single(invocation.TargetMethod.TypeArguments)));
+
+            var argument = Assert.Single(invocation.Arguments);
+
+            Assert.Equal(Microsoft.CodeAnalysis.Operations.ArgumentKind.Explicit, argument.ArgumentKind);
+
+            Assert.Equal(RefKind.None, argument.Parameter!.RefKind);
+
+            Assert.True(argument.InConversion.IsIdentity && argument.OutConversion.IsIdentity);
+
+            var read = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IPropertyReferenceOperation>(argument.Value);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(property, read.Property));
+
+            if (shape == "local")
+            {
+                var local = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(read.Instance);
+
+                VariableDeclaratorSyntax declaration = Assert.IsType<VariableDeclaratorSyntax>(Assert.Single(local.Local.DeclaringSyntaxReferences).GetSyntax());
+
+                var origin = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(declaration.Initializer!.Value));
+
+                Assert.Contains(origin.TargetMethod.Name, new[] { "First", "Second", "Third" });
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(box, local.Local.Type));
+            }
+            else
+            {
+                var parameter = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(read.Instance);
+
+                Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(Symbol("Observe").Parameters), parameter.Parameter));
+            }
+        }
+
+        foreach (IMethodSymbol method in new[] { forward, copy })
+        {
+            Assert.True(method.IsStatic && !method.ReturnsByRef && !method.ReturnsByRefReadonly);
+
+            Assert.Equal(SpecialType.System_Byte, method.ReturnType.SpecialType);
+
+            ITypeParameterSymbol own = Assert.Single(method.TypeParameters);
+
+            Assert.True(own.HasValueTypeConstraint);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetSpecialType(SpecialType.System_Enum), Assert.Single(own.ConstraintTypes)));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(own, Assert.Single(method.Parameters).Type));
+
+            Assert.Equal(RefKind.None, method.Parameters[0].RefKind);
+        }
+
+        InvocationExpressionSyntax forwarded = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Copy" });
+
+        var selectedCopy = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copy, selectedCopy.TargetMethod.OriginalDefinition));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(forward.TypeParameters[0], Assert.Single(selectedCopy.TargetMethod.TypeArguments)));
+
+        InvocationExpressionSyntax cast = Assert.Single(Method("Copy").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString().StartsWith("System.Runtime.CompilerServices.Unsafe.As<", StringComparison.Ordinal));
+
+        var selectedAs = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(cast)).TargetMethod;
+
+        Assert.Equal("System.Runtime.CompilerServices.Unsafe", selectedAs.ContainingType.ToDisplayString());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.ContainingAssembly, compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly));
+
+        Assert.Equal("System.Runtime", selectedAs.ContainingAssembly.Name);
+
+        Assert.Equal(new Version(10, 0, 0, 0), selectedAs.ContainingAssembly.Identity.Version);
+
+        Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selectedAs.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
+
+        Assert.Empty(selectedAs.DeclaringSyntaxReferences);
+
+        Assert.True(selectedAs.IsStatic && selectedAs.ReturnsByRef && !selectedAs.ReturnsByRefReadonly && !selectedAs.IsVararg);
+
+        Assert.Equal(MethodKind.Ordinary, selectedAs.MethodKind);
+
+        Assert.Equal(2, selectedAs.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selectedAs.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copy.TypeParameters[0], selectedAs.TypeArguments[0]));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selectedAs.Parameters[0].Type, copy.TypeParameters[0]));
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.TypeArguments[1].SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, selectedAs.ReturnType.SpecialType);
+
+        Assert.Same(cast, Assert.IsType<ReturnStatementSyntax>(cast.Parent).Expression);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copy.Parameters[0], model.GetSymbolInfo(Assert.Single(cast.ArgumentList.Arguments).Expression).Symbol));
+
+        LambdaExpressionSyntax? lambda = null;
+
+        IMethodSymbol? callback = null;
+
+        if (shape == "captured")
+        {
+            lambda = Assert.Single(Method("Forward").DescendantNodes().OfType<LambdaExpressionSyntax>());
+
+            callback = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IAnonymousFunctionOperation>(model.GetOperation(lambda)).Symbol;
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(forward.Parameters[0], model.GetSymbolInfo(Assert.Single(forwarded.ArgumentList.Arguments).Expression).Symbol));
+
+            InvocationExpressionSyntax invoke = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Invoke" });
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(Symbol("Invoke"), model.GetSymbolInfo(invoke).Symbol));
+
+            var eager = Assert.Single(Method("Invoke").DescendantNodes().OfType<InvocationExpressionSyntax>());
+
+            Assert.Equal(MethodKind.DelegateInvoke, Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(eager)).TargetMethod.MethodKind);
+        }
+        else if (shape == "ref-mutation")
+        {
+            var touch = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Touch" });
+
+            Assert.Equal(RefKind.Ref, Assert.Single(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(touch)).Arguments).Parameter!.RefKind);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(Symbol("Touch").Parameters[0], model.GetSymbolInfo(Assert.Single(Method("Touch").DescendantNodes().OfType<AssignmentExpressionSyntax>()).Left).Symbol));
+        }
+        else if (shape == "boxing")
+        {
+            var unbox = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(Assert.Single(selectedCopy.Arguments).Value);
+
+            var boxed = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(unbox.Operand);
+
+            Assert.False(boxed.Conversion.IsIdentity || unbox.Conversion.IsIdentity);
+
+            Assert.Equal(SpecialType.System_Object, boxed.Type!.SpecialType);
+        }
+        else if (shape == "opaque")
+        {
+            var opaque = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Use");
+
+            var dynamicUse = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(model.GetOperation(opaque));
+
+            var argument = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation>(Assert.Single(dynamicUse.Arguments));
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(forward.Parameters[0], argument.Parameter));
+        }
+
+        InvocationExpressionSyntax dynamicMarker = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Invoke");
+
+        Assert.Empty(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IDynamicInvocationOperation>(model.GetOperation(dynamicMarker)).Arguments);
+
+        PortableExecutableReference reference = Assert.Single(compilation.References.OfType<PortableExecutableReference>(), item => SymbolEqualityComparer.Default.Equals(compilation.GetAssemblyOrModuleSymbol(item), selectedAs.ContainingAssembly));
+
+        output.WriteLine($"R94_REFERENCE={reference.FilePath}|sha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.IO.File.ReadAllBytes(reference.FilePath!)))}|assembly={selectedAs.ContainingAssembly.Identity}|selected={selectedAs}");
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (InvocationExpressionSyntax marker in tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(static call => call.Expression.ToString() == "System.IO.File.Delete"))
+        {
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.AuthorityOperationId == "Worker.StartAsync" && site.SourcePath == tree.FilePath && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            output.WriteLine($"R94_MARKER={shape}|{coordinate}|work-refused=true|effect-refused=true");
+        }
+
+        string markerCoordinate = tree.FilePath + ":" + dynamicMarker.SpanStart;
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == markerCoordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        string? opaqueCoordinate = null;
+
+        if (shape == "opaque")
+        {
+            var opaque = Assert.Single(Method("Forward").DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "unknown.Use");
+
+            opaqueCoordinate = tree.FilePath + ":" + opaque.SpanStart;
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Identity == opaqueCoordinate && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+        }
+
+        Assert.All(result.Diagnostics.Where(static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED"), diagnostic =>
+            Assert.True(diagnostic.Detail == "Dynamic invocation has no exact call target." && (diagnostic.Identity == markerCoordinate || diagnostic.Identity == opaqueCoordinate)));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] States(IMethodSymbol symbol, SyntaxNode syntax)
+        {
+            string key = symbol.GetDocumentationCommentId() ?? symbol.ToDisplayString();
+
+            var states = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == key && state.SpanStart == syntax.SpanStart && state.SpanLength == syntax.Span.Length).ToArray();
+
+            Assert.NotEmpty(states);
+
+            Assert.All(states, state =>
+            {
+                Assert.Equal("Worker", state.RootType);
+                Assert.NotNull(state.EvaluationEnvironmentToken);
+                Assert.Equal(syntax.SpanStart, state.SelectionStart);
+                Assert.Equal(syntax.Span.Length, state.SelectionLength);
+                Assert.Null(state.WorkFrontier);
+                Assert.Null(state.EffectFrontier);
+                Assert.Null(state.RecoveryEffectFrontier);
+                Assert.Equal(shape == "captured" && (SymbolEqualityComparer.Default.Equals(symbol, copy) || SymbolEqualityComparer.Default.Equals(symbol, callback)), state.CompletionOwned);
+            });
+
+            foreach (var state in states)
+                output.WriteLine($"R94_CONTEXT={shape}|{key}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+            return states;
+        }
+
+        HostedProducerAdmittedStateObservation[] forwards = States(forward, Method("Forward"));
+
+        HostedProducerAdmittedStateObservation[] copies = States(copy, Method("Copy"));
+
+        States(getter, Assert.Single(getter.DeclaringSyntaxReferences).GetSyntax());
+
+        foreach (string factory in new[] { "First", "Second", "Third" }) States(Symbol(factory), Method(factory));
+
+        if (shape != "local") States(Symbol("Observe"), Method("Observe"));
+
+        if (callback is not null) States(callback, lambda!.Body);
+
+        Assert.Equal(new[] { false, true }, forwards.Select(static state => state.Lifecycle).Distinct().Order());
+
+        int automatic = forwards.Count(static state => state.Lifecycle);
+
+        int declared = forwards.Count(static state => !state.Lifecycle);
+
+        output.WriteLine($"R94_PROBE={shape}|shared={shared}|enum={mode}|property={property}|ForwardTrue={automatic}|ForwardFalse={declared}|CopyTrue={copies.Count(static state => state.Lifecycle)}|CopyFalse={copies.Count(static state => !state.Lifecycle)}|prerequisites=passed");
+
+        if (shared)
+        {
+            Assert.Equal(1, automatic);
+
+            Assert.Equal(1, declared);
+        }
+        else
+        {
+            Assert.True(automatic > 1, "Adverse enum use must retain distinct automatic Forward contexts.");
+
+            Assert.True(declared > 1, "Adverse enum use must retain distinct declared Forward contexts.");
+        }
+    }
+
+    [Fact]
+    public void OwnedEnumByteCopySharesSelectedReferencePackContext()
+    {
+        const string members = """
+            private enum Mode : byte { A, B, C }
+            private static Mode First() { System.IO.File.Delete("first-argument"); return Mode.A; }
+            private static Mode Second() { System.IO.File.Delete("second-argument"); return Mode.B; }
+            private static Mode Third() { System.IO.File.Delete("third-argument"); return Mode.C; }
+            private static byte Forward<T>(T value) where T : struct, Enum => Copy(value);
+            private static byte Copy<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("copy-marker");
+                if (System.Runtime.CompilerServices.Unsafe.SizeOf<T>() != sizeof(byte))
+                    throw new ArgumentException(nameof(value));
+                return System.Runtime.CompilerServices.Unsafe.As<T, byte>(ref value);
+            }
+            """;
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(
+            RegistrationSource("services.AddHostedService<Worker>();")
+                .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { Forward(First()); Forward(Second()); Forward(Third()); await Task.CompletedTask; }", StringComparison.Ordinal)
+                .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal),
+            "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax copy = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Copy");
+
+        IMethodSymbol copySymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(copy));
+
+        InvocationExpressionSyntax cast = Assert.Single(copy.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString().StartsWith("System.Runtime.CompilerServices.Unsafe.As<", StringComparison.Ordinal));
+
+        Microsoft.CodeAnalysis.Operations.IInvocationOperation operation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(cast));
+
+        IMethodSymbol selected = operation.TargetMethod;
+
+        Assert.Equal("System.Runtime.CompilerServices.Unsafe", selected.ContainingType.ToDisplayString());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.ContainingAssembly, compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly));
+
+        Assert.Equal("System.Runtime", selected.ContainingAssembly.Name);
+
+        Assert.Equal(new Version(10, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
+
+        Assert.Equal("B03F5F7F11D50A3A", Convert.ToHexString(selected.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
+
+        PortableExecutableReference selectedReference = Assert.Single(compilation.References.OfType<PortableExecutableReference>(), reference => SymbolEqualityComparer.Default.Equals(compilation.GetAssemblyOrModuleSymbol(reference), selected.ContainingAssembly));
+
+        Assert.NotNull(selectedReference.FilePath);
+
+        output.WriteLine("R89_SELECTED_REFERENCE=" + selectedReference.FilePath);
+
+        output.WriteLine("R89_SELECTED_REFERENCE_SHA256=" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.IO.File.ReadAllBytes(selectedReference.FilePath))));
+
+        Assert.Empty(selected.DeclaringSyntaxReferences);
+
+        Assert.True(selected.IsStatic && selected.ReturnsByRef && !selected.ReturnsByRefReadonly && !selected.IsVararg);
+
+        Assert.Equal(MethodKind.Ordinary, selected.MethodKind);
+
+        Assert.Equal(2, selected.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selected.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.TypeArguments[0], Assert.Single(copySymbol.TypeParameters)));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.TypeArguments[0], selected.Parameters[0].Type));
+
+        Assert.Equal(SpecialType.System_Byte, selected.TypeArguments[1].SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, selected.ReturnType.SpecialType);
+
+        Assert.False(copySymbol.ReturnsByRef || copySymbol.ReturnsByRefReadonly);
+
+        Assert.Equal(SpecialType.System_Byte, copySymbol.ReturnType.SpecialType);
+
+        Assert.Equal(RefKind.None, Assert.Single(copySymbol.Parameters).RefKind);
+
+        ReturnStatementSyntax returned = Assert.IsType<ReturnStatementSyntax>(cast.Parent);
+
+        Assert.Same(cast, returned.Expression);
+
+        Assert.Equal("value", Assert.IsType<IdentifierNameSyntax>(Assert.Single(cast.ArgumentList.Arguments).Expression).Identifier.ValueText);
+
+        InvocationExpressionSyntax[] callers = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Where(call => call.Expression.ToString() == "Forward").ToArray();
+
+        Assert.Equal(3, callers.Length);
+
+        Assert.Equal(3, callers.Select(static call => call.SpanStart).Distinct().Count());
+
+        INamedTypeSymbol mode = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(Assert.Single(tree.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>(), static declaration => declaration.Identifier.ValueText == "Mode")));
+
+        Assert.Equal(TypeKind.Enum, mode.TypeKind);
+
+        Assert.Equal(SpecialType.System_Byte, mode.EnumUnderlyingType!.SpecialType);
+
+        foreach (InvocationExpressionSyntax caller in callers)
+        {
+            IMethodSymbol forward = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(caller)).TargetMethod;
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, Assert.Single(forward.TypeArguments)));
+
+            Assert.Equal("Forward", forward.Name);
+
+            Assert.Equal("StartAsync", caller.Ancestors().OfType<MethodDeclarationSyntax>().First().Identifier.ValueText);
+        }
+
+        InvocationExpressionSyntax forwarded = Assert.Single(tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "Copy");
+
+        IMethodSymbol forwardedMethod = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded)).TargetMethod;
+
+        IMethodSymbol wrapper = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(forwarded.Ancestors().OfType<MethodDeclarationSyntax>().First()));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copySymbol, forwardedMethod.OriginalDefinition));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(wrapper.TypeParameters), Assert.Single(forwardedMethod.TypeArguments)));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (string member in new[] { "First", "Second", "Third", "Copy" })
+        {
+            MethodDeclarationSyntax method = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), declaration => declaration.Identifier.ValueText == member);
+
+            InvocationExpressionSyntax marker = Assert.Single(method.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "System.IO.File.Delete");
+
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.EnclosingType == "Worker" && site.Member == member && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+        }
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] copies = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == copySymbol.GetDocumentationCommentId()).ToArray();
+
+        Assert.NotEmpty(copies);
+
+        Assert.Contains(observed, state => state.RootOperation == "Worker.StartAsync" && state.Method == wrapper.GetDocumentationCommentId());
+
+        Assert.All(copies, state =>
+        {
+            Assert.NotNull(state.EvaluationEnvironmentToken);
+            Assert.Equal(copy.SpanStart, state.SpanStart);
+            Assert.Equal(copy.Span.Length, state.SpanLength);
+            Assert.Equal(copy.SpanStart, state.SelectionStart);
+            Assert.Equal(copy.Span.Length, state.SelectionLength);
+            Assert.Null(state.WorkFrontier);
+            Assert.Null(state.EffectFrontier);
+            Assert.Null(state.RecoveryEffectFrontier);
+            Assert.False(state.CompletionOwned);
+        });
+
+        Assert.Single(copies.Select(static state => (state.AssemblyName, state.Compilation, state.Tree, state.Method, state.SelectionStart, state.SelectionLength, state.WorkFrontier, state.EffectFrontier, state.RecoveryEffectFrontier, state.FieldPublications, state.CompletionOwned)).Distinct());
+
+        output.WriteLine("R87_SELECTED_AS=" + selected.ToDisplayString() + "|" + selected.ContainingAssembly.Identity);
+
+        foreach (HostedProducerAdmittedStateObservation state in observed.Where(state => state.Method == copySymbol.GetDocumentationCommentId() || state.Method == wrapper.GetDocumentationCommentId()))
+            output.WriteLine($"R87_COPY_CONTEXT={state.Method}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+        foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in copies.GroupBy(static state => state.Lifecycle))
+            Assert.Single(lane);
+    }
+
+    [Theory]
+    [InlineData("struct-only")]
+    [InlineData("multiple-own-types")]
+    [InlineData("generic-caller")]
+    [InlineData("generic-enum-container")]
+    public void UnsupportedEnumIdentityShapesRetainExactValueSources(string shape)
+    {
+        string constraint = shape == "struct-only" ? "struct" : "struct, Enum";
+
+        string enums = shape == "generic-enum-container"
+            ? "private static class Box<T> { public enum Mode : byte { One } }"
+            : "private enum EnumA : byte { One } private enum EnumB : byte { One }";
+
+        string firstType = shape == "generic-enum-container" ? "Box<int>.Mode" : "EnumA";
+
+        string secondType = shape == "generic-enum-container" ? "Box<long>.Mode" : "EnumB";
+
+        string factories = $"private static {firstType} First() {{ System.IO.File.Delete(\"first-input\"); return {firstType}.One; }} private static {secondType} Second() {{ System.IO.File.Delete(\"second-input\"); return {secondType}.One; }}";
+
+        string consume = $"private static T Consume<T>(T value) where T : {constraint} {{ System.IO.File.Delete(\"consume-marker\"); value = default; return value; }}";
+
+        string forward = $"private static T Forward<T>(T value) where T : {constraint} => Consume(value);";
+
+        string body = "Forward(First()); Forward(Second()); await Task.CompletedTask;";
+
+        if (shape == "multiple-own-types")
+        {
+            consume = "private static T Consume<T, U>(T value) where T : struct, Enum where U : struct, Enum { System.IO.File.Delete(\"consume-marker\"); value = default; return value; }";
+
+            forward = "private static T Forward<T, U>(T value) where T : struct, Enum where U : struct, Enum => Consume<T, U>(value);";
+
+            body = "Forward<EnumA, EnumB>(First()); Forward<EnumB, EnumA>(Second()); await Task.CompletedTask;";
+        }
+        else if (shape == "generic-caller")
+        {
+            forward = "private static class Caller<TOuter> { public static T Forward<T>(T value) where T : struct, Enum => Consume(value); }";
+
+            body = "Caller<int>.Forward(First()); Caller<int>.Forward(Second()); await Task.CompletedTask;";
+        }
+
+        CSharpCompilation compilation = Compile(R2Source(body).Replace("public Task StopAsync", enums + factories + forward + consume + " public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        Assert.DoesNotContain("Unsafe", tree.GetText().ToString(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain(tree.GetRoot().DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+        MethodDeclarationSyntax target = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Consume");
+
+        IMethodSymbol targetSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(target));
+
+        Assert.Equal("value = default", Assert.Single(target.DescendantNodes().OfType<AssignmentExpressionSyntax>()).ToString());
+
+        Assert.Equal(RefKind.None, Assert.Single(targetSymbol.Parameters).RefKind);
+
+        MethodDeclarationSyntax wrapper = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Forward");
+
+        IMethodSymbol wrapperSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(wrapper));
+
+        InvocationExpressionSyntax forwarded = Assert.Single(wrapper.DescendantNodes().OfType<InvocationExpressionSyntax>());
+
+        IMethodSymbol selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded)).TargetMethod;
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.OriginalDefinition, targetSymbol));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.TypeArguments[0], wrapperSymbol.TypeParameters[0]));
+
+        ITypeSymbol[] inputTypes = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Where(static method => method.Identifier.ValueText is "First" or "Second")
+            .Select(method => Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(method)).ReturnType).ToArray();
+
+        Assert.Equal(2, inputTypes.Length);
+
+        Assert.False(SymbolEqualityComparer.Default.Equals(inputTypes[0], inputTypes[1]));
+
+        if (shape == "struct-only") Assert.Empty(Assert.Single(targetSymbol.TypeParameters).ConstraintTypes);
+        else if (shape == "multiple-own-types") Assert.Equal(2, targetSymbol.Arity);
+        else if (shape == "generic-caller") Assert.Equal(1, wrapperSymbol.ContainingType.Arity);
+        else Assert.All(inputTypes, static type => Assert.Equal(1, Assert.IsAssignableFrom<INamedTypeSymbol>(type).ContainingType.Arity));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (string name in new[] { "First", "Second", "Consume" })
+        {
+            MethodDeclarationSyntax method = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), method => method.Identifier.ValueText == name);
+
+            InvocationExpressionSyntax marker = Assert.Single(method.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "System.IO.File.Delete");
+
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.EnclosingType == "Worker" && site.Member == name && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+        }
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        Assert.Contains(observed, state => state.RootOperation == "Worker.StartAsync" && state.Method == wrapperSymbol.GetDocumentationCommentId());
+
+        HostedProducerAdmittedStateObservation[] targets = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == targetSymbol.GetDocumentationCommentId()).ToArray();
+
+        Assert.NotEmpty(targets);
+
+        Assert.All(targets, state =>
+        {
+            Assert.NotNull(state.EvaluationEnvironmentToken);
+            Assert.Equal(target.SpanStart, state.SelectionStart);
+            Assert.Equal(target.Span.Length, state.SelectionLength);
+            Assert.Null(state.WorkFrontier);
+            Assert.Null(state.EffectFrontier);
+            Assert.Null(state.RecoveryEffectFrontier);
+        });
+
+        foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in targets.GroupBy(static state => state.Lifecycle))
+        {
+            Assert.Equal(2, lane.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+            Assert.Equal(2, lane.Count());
+        }
+    }
+
+    [Fact]
+    public void ZeroValueEnumForwardingKeepsDistinctClosedTypes()
+    {
+        const string members = """
+            private enum EnumA : byte { One }
+            private enum EnumB : byte { One }
+            private static void Forward<T>() where T : struct, Enum => Zero<T>();
+            private static void Zero<T>() where T : struct, Enum
+            {
+                System.IO.File.Delete("zero-marker");
+                _ = typeof(T);
+            }
+            """;
+
+        CSharpCompilation compilation = Compile(R2Source("Forward<EnumA>(); Forward<EnumB>(); await Task.CompletedTask;")
+            .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        Assert.DoesNotContain("Unsafe", tree.GetText().ToString(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain(tree.GetRoot().DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+        MethodDeclarationSyntax start = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "StartAsync");
+
+        InvocationExpressionSyntax[] callers = start.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Forward" }).ToArray();
+
+        Assert.Equal(2, callers.Length);
+
+        IMethodSymbol[] selected = callers.Select(call => Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call)).TargetMethod).ToArray();
+
+        ITypeSymbol[] enums = selected.Select(static method => Assert.Single(method.TypeArguments)).ToArray();
+
+        Assert.Equal(["Worker.EnumA", "Worker.EnumB"], enums.Select(static type => type.ToDisplayString()));
+
+        Assert.False(SymbolEqualityComparer.Default.Equals(enums[0], enums[1]));
+
+        Assert.All(enums, static type =>
+        {
+            INamedTypeSymbol enumeration = Assert.IsAssignableFrom<INamedTypeSymbol>(type);
+            Assert.Equal(TypeKind.Enum, enumeration.TypeKind);
+            Assert.Equal(SpecialType.System_Byte, enumeration.EnumUnderlyingType!.SpecialType);
+            Assert.Equal(0, enumeration.Arity);
+            Assert.Equal(0, Assert.IsAssignableFrom<INamedTypeSymbol>(enumeration.ContainingType).Arity);
+        });
+
+        MethodDeclarationSyntax target = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Zero");
+
+        IMethodSymbol targetSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(target));
+
+        MethodDeclarationSyntax forward = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Forward");
+
+        IMethodSymbol forwardSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(forward));
+
+        Assert.All(selected, method => Assert.True(SymbolEqualityComparer.Default.Equals(method.OriginalDefinition, forwardSymbol)));
+
+        Assert.True(targetSymbol.IsStatic && forwardSymbol.IsStatic);
+
+        ITypeParameterSymbol targetType = Assert.Single(targetSymbol.TypeParameters);
+
+        Assert.True(targetType.HasValueTypeConstraint);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(targetType.ConstraintTypes), compilation.GetSpecialType(SpecialType.System_Enum)));
+
+        InvocationExpressionSyntax forwarded = Assert.Single(forward.DescendantNodes().OfType<InvocationExpressionSyntax>());
+
+        Microsoft.CodeAnalysis.Operations.IInvocationOperation forwardedOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(forwardedOperation.TargetMethod.OriginalDefinition, targetSymbol));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(forwardedOperation.TargetMethod.TypeArguments), Assert.Single(forwardSymbol.TypeParameters)));
+
+        Assert.Empty(targetSymbol.Parameters);
+
+        Assert.Empty(forwardSymbol.Parameters);
+
+        Assert.Empty(forwardedOperation.Arguments);
+
+        TypeOfExpressionSyntax typeUse = Assert.Single(target.DescendantNodes().OfType<TypeOfExpressionSyntax>());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(model.GetTypeInfo(typeUse.Type).Type, targetType));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        InvocationExpressionSyntax marker = Assert.Single(target.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "System.IO.File.Delete");
+
+        string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+        Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.EnclosingType == "Worker" && site.Member == "Zero" && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        Assert.Contains(observed, state => state.RootOperation == "Worker.StartAsync" && state.Method == forwardSymbol.GetDocumentationCommentId());
+
+        HostedProducerAdmittedStateObservation[] targets = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == targetSymbol.GetDocumentationCommentId()).ToArray();
+
+        Assert.NotEmpty(targets);
+
+        Assert.All(targets, state =>
+        {
+            Assert.NotNull(state.EvaluationEnvironmentToken);
+            Assert.Equal(target.SpanStart, state.SpanStart);
+            Assert.Equal(target.Span.Length, state.SpanLength);
+            Assert.Equal(target.SpanStart, state.SelectionStart);
+            Assert.Equal(target.Span.Length, state.SelectionLength);
+            Assert.Null(state.WorkFrontier);
+            Assert.Null(state.EffectFrontier);
+            Assert.Null(state.RecoveryEffectFrontier);
+        });
+
+        Assert.Single(targets.Select(static state => (state.AssemblyName, state.Compilation, state.Tree, state.Method, state.SelectionStart, state.SelectionLength, state.WorkFrontier, state.EffectFrontier, state.RecoveryEffectFrontier, state.FieldPublications, state.CompletionOwned)).Distinct());
+
+        // This helper has no value argument from which its closed enum could be recovered.
+
+        output.WriteLine("R88_ZERO_SELECTED_ENUMS=" + string.Join("|", enums.Select(static type => type.ToDisplayString())));
+
+        foreach (HostedProducerAdmittedStateObservation state in observed.Where(state => state.Method == targetSymbol.GetDocumentationCommentId() || state.Method == forwardSymbol.GetDocumentationCommentId()))
+            output.WriteLine($"R88_ZERO_CONTEXT={state.Method}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+        foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in targets.GroupBy(static state => state.Lifecycle))
+        {
+            Assert.Equal(2, lane.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+            Assert.Equal(2, lane.Count());
+        }
+    }
+
+    [Fact]
+    public void InferredEnumValueProjectionKeepsDistinctClosedTypes()
+    {
+        const string members = """
+            private enum EnumA : byte { One }
+            private enum EnumB : byte { One }
+            private static T Forward<T>(T value) where T : struct, Enum => Consume(value);
+            private static T Consume<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("partial-marker");
+                value = default;
+                return value;
+            }
+            """;
+
+        CSharpCompilation compilation = Compile(R2Source("Forward(EnumA.One); Forward(EnumB.One); await Task.CompletedTask;")
+            .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        Assert.DoesNotContain("Unsafe", tree.GetText().ToString(), StringComparison.Ordinal);
+
+        Assert.DoesNotContain(tree.GetRoot().DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+        MethodDeclarationSyntax start = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "StartAsync");
+
+        InvocationExpressionSyntax[] callers = start.DescendantNodes().OfType<InvocationExpressionSyntax>().Where(call => model.GetSymbolInfo(call).Symbol is IMethodSymbol { Name: "Forward" }).ToArray();
+
+        Assert.Equal(2, callers.Length);
+
+        IMethodSymbol[] selected = callers.Select(call => Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call)).TargetMethod).ToArray();
+
+        ITypeSymbol[] enums = selected.Select(static method => Assert.Single(method.TypeArguments)).ToArray();
+
+        Assert.Equal(["Worker.EnumA", "Worker.EnumB"], enums.Select(static type => type.ToDisplayString()));
+
+        Assert.False(SymbolEqualityComparer.Default.Equals(enums[0], enums[1]));
+
+        Assert.All(enums, static type =>
+        {
+            INamedTypeSymbol enumeration = Assert.IsAssignableFrom<INamedTypeSymbol>(type);
+            Assert.Equal(TypeKind.Enum, enumeration.TypeKind);
+            Assert.Equal(SpecialType.System_Byte, enumeration.EnumUnderlyingType!.SpecialType);
+            Assert.Equal(0, enumeration.Arity);
+            Assert.Equal(0, Assert.IsAssignableFrom<INamedTypeSymbol>(enumeration.ContainingType).Arity);
+        });
+
+        MethodDeclarationSyntax target = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Consume");
+
+        IMethodSymbol targetSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(target));
+
+        MethodDeclarationSyntax forward = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Forward");
+
+        IMethodSymbol forwardSymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(forward));
+
+        Assert.All(selected, method => Assert.True(SymbolEqualityComparer.Default.Equals(method.OriginalDefinition, forwardSymbol)));
+
+        Assert.True(targetSymbol.IsStatic && forwardSymbol.IsStatic);
+
+        ITypeParameterSymbol targetType = Assert.Single(targetSymbol.TypeParameters);
+
+        Assert.True(targetType.HasValueTypeConstraint);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(targetType.ConstraintTypes), compilation.GetSpecialType(SpecialType.System_Enum)));
+
+        InvocationExpressionSyntax forwarded = Assert.Single(forward.DescendantNodes().OfType<InvocationExpressionSyntax>());
+
+        Microsoft.CodeAnalysis.Operations.IInvocationOperation forwardedOperation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(forwardedOperation.TargetMethod.OriginalDefinition, targetSymbol));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(forwardedOperation.TargetMethod.TypeArguments), Assert.Single(forwardSymbol.TypeParameters)));
+
+        Assert.Equal("Consume(value)", forwarded.ToString());
+
+        Assert.Empty(forwarded.DescendantNodes().OfType<GenericNameSyntax>());
+
+        IdentifierNameSyntax value = Assert.IsType<IdentifierNameSyntax>(Assert.Single(forwarded.ArgumentList.Arguments).Expression);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(value).Symbol, Assert.Single(forwardSymbol.Parameters)));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(model.GetTypeInfo(value).Type, Assert.Single(forwardSymbol.TypeParameters)));
+
+        Assert.Equal(RefKind.None, Assert.Single(targetSymbol.Parameters).RefKind);
+
+        Assert.Equal("value = default", Assert.Single(target.DescendantNodes().OfType<AssignmentExpressionSyntax>()).ToString());
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        InvocationExpressionSyntax marker = Assert.Single(target.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "System.IO.File.Delete");
+
+        string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+        Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.EnclosingType == "Worker" && site.Member == "Consume" && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        Assert.Contains(observed, state => state.RootOperation == "Worker.StartAsync" && state.Method == forwardSymbol.GetDocumentationCommentId());
+
+        HostedProducerAdmittedStateObservation[] targets = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == targetSymbol.GetDocumentationCommentId()).ToArray();
+
+        Assert.NotEmpty(targets);
+
+        Assert.All(targets, state =>
+        {
+            Assert.NotNull(state.EvaluationEnvironmentToken);
+            Assert.Equal(target.SpanStart, state.SpanStart);
+            Assert.Equal(target.Span.Length, state.SpanLength);
+            Assert.Equal(target.SpanStart, state.SelectionStart);
+            Assert.Equal(target.Span.Length, state.SelectionLength);
+            Assert.Null(state.WorkFrontier);
+            Assert.Null(state.EffectFrontier);
+            Assert.Null(state.RecoveryEffectFrontier);
+            Assert.False(state.CompletionOwned);
+        });
+
+        Assert.Single(targets.Select(static state => (state.AssemblyName, state.Compilation, state.Tree, state.Method, state.SelectionStart, state.SelectionLength, state.WorkFrontier, state.EffectFrontier, state.RecoveryEffectFrontier, state.FieldPublications, state.CompletionOwned)).Distinct());
+
+        // The ordinary by-value assignment creates an existing provenance demand. Its
+        // actual source is normalized and serialized through partial expression projection;
+        // Consume(value) itself names no T and no new private projection seam is used.
+        HostedProducerEvaluationEnvironmentMetric projection = Assert.Single(result.AnalysisMetrics.EvaluationEnvironments,
+            metric => metric.Member == forwardSymbol.GetDocumentationCommentId());
+
+        Assert.True(projection.ValueNormalizationRequests > 0);
+
+        Assert.True(projection.ValueNormalizationBuilds > 0);
+
+        output.WriteLine($"R88_PARTIAL_PROJECTION=caller:{projection.Member}|normalizationRequests:{projection.ValueNormalizationRequests}|normalizationBuilds:{projection.ValueNormalizationBuilds}");
+
+        output.WriteLine("R88_PARTIAL_SELECTED_ENUMS=" + string.Join("|", enums.Select(static type => type.ToDisplayString())));
+
+        foreach (HostedProducerAdmittedStateObservation state in observed.Where(state => state.Method == targetSymbol.GetDocumentationCommentId() || state.Method == forwardSymbol.GetDocumentationCommentId()))
+            output.WriteLine($"R88_PARTIAL_CONTEXT={state.Method}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+        foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in targets.GroupBy(static state => state.Lifecycle))
+        {
+            Assert.Equal(2, lane.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+            Assert.Equal(2, lane.Count());
+        }
+    }
+
+    [Fact]
+    public void OwnedEnumByteCopySharesSameTypeCallerContext()
+    {
+        const string members = """
+            private enum Mode : byte { A, B, C }
+            private static Mode First() { System.IO.File.Delete("first-argument"); return Mode.A; }
+            private static Mode Second() { System.IO.File.Delete("second-argument"); return Mode.B; }
+            private static Mode Third() { System.IO.File.Delete("third-argument"); return Mode.C; }
+            private static byte Forward<T>(T value) where T : struct, Enum => Copy(value);
+            private static byte Copy<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("copy-marker");
+                if (System.Runtime.CompilerServices.Unsafe.SizeOf<T>() != sizeof(byte))
+                    throw new ArgumentException(nameof(value));
+                return System.Runtime.CompilerServices.Unsafe.As<T, byte>(ref value);
+            }
+            """;
+
+        CSharpCompilation compilation = Compile(R2Source("Forward(First()); Forward(Second()); Forward(Third()); await Task.CompletedTask;")
+            .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax copy = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Copy");
+
+        IMethodSymbol copySymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(copy));
+
+        InvocationExpressionSyntax cast = Assert.Single(copy.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString().StartsWith("System.Runtime.CompilerServices.Unsafe.As<", StringComparison.Ordinal));
+
+        Microsoft.CodeAnalysis.Operations.IInvocationOperation operation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(cast));
+
+        IMethodSymbol selected = operation.TargetMethod;
+
+        Assert.Equal("System.Runtime.CompilerServices.Unsafe", selected.ContainingType.ToDisplayString());
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.ContainingAssembly, compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly));
+
+        Assert.Equal("System.Private.CoreLib", selected.ContainingAssembly.Name);
+
+        Assert.Equal(new Version(10, 0, 0, 0), selected.ContainingAssembly.Identity.Version);
+
+        Assert.Equal("7CEC85D7BEA7798E", Convert.ToHexString(selected.ContainingAssembly.Identity.PublicKeyToken.AsSpan()));
+
+        Assert.Empty(selected.DeclaringSyntaxReferences);
+
+        Assert.True(selected.IsStatic && selected.ReturnsByRef && !selected.ReturnsByRefReadonly && !selected.IsVararg);
+
+        Assert.Equal(MethodKind.Ordinary, selected.MethodKind);
+
+        Assert.Equal(2, selected.Arity);
+
+        Assert.Equal(RefKind.Ref, Assert.Single(selected.Parameters).RefKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.TypeArguments[0], Assert.Single(copySymbol.TypeParameters)));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected.TypeArguments[0], selected.Parameters[0].Type));
+
+        Assert.Equal(SpecialType.System_Byte, selected.TypeArguments[1].SpecialType);
+
+        Assert.Equal(SpecialType.System_Byte, selected.ReturnType.SpecialType);
+
+        Assert.False(copySymbol.ReturnsByRef || copySymbol.ReturnsByRefReadonly);
+
+        Assert.Equal(SpecialType.System_Byte, copySymbol.ReturnType.SpecialType);
+
+        Assert.Equal(RefKind.None, Assert.Single(copySymbol.Parameters).RefKind);
+
+        ReturnStatementSyntax returned = Assert.IsType<ReturnStatementSyntax>(cast.Parent);
+
+        Assert.Same(cast, returned.Expression);
+
+        Assert.Equal("value", Assert.IsType<IdentifierNameSyntax>(Assert.Single(cast.ArgumentList.Arguments).Expression).Identifier.ValueText);
+
+        InvocationExpressionSyntax[] callers = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+            .Where(call => call.Expression.ToString() == "Forward").ToArray();
+
+        Assert.Equal(3, callers.Length);
+
+        Assert.Equal(3, callers.Select(static call => call.SpanStart).Distinct().Count());
+
+        INamedTypeSymbol mode = Assert.IsAssignableFrom<INamedTypeSymbol>(model.GetDeclaredSymbol(Assert.Single(tree.GetRoot().DescendantNodes().OfType<EnumDeclarationSyntax>(), static declaration => declaration.Identifier.ValueText == "Mode")));
+
+        Assert.Equal(TypeKind.Enum, mode.TypeKind);
+
+        Assert.Equal(SpecialType.System_Byte, mode.EnumUnderlyingType!.SpecialType);
+
+        foreach (InvocationExpressionSyntax caller in callers)
+        {
+            IMethodSymbol forward = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(caller)).TargetMethod;
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(mode, Assert.Single(forward.TypeArguments)));
+
+            Assert.Equal("Forward", forward.Name);
+
+            Assert.Equal("StartAsync", caller.Ancestors().OfType<MethodDeclarationSyntax>().First().Identifier.ValueText);
+        }
+
+        InvocationExpressionSyntax forwarded = Assert.Single(tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "Copy");
+
+        IMethodSymbol forwardedMethod = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded)).TargetMethod;
+
+        IMethodSymbol wrapper = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(forwarded.Ancestors().OfType<MethodDeclarationSyntax>().First()));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(copySymbol, forwardedMethod.OriginalDefinition));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(wrapper.TypeParameters), Assert.Single(forwardedMethod.TypeArguments)));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        foreach (string member in new[] { "First", "Second", "Third", "Copy" })
+        {
+            MethodDeclarationSyntax method = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), declaration => declaration.Identifier.ValueText == member);
+
+            InvocationExpressionSyntax marker = Assert.Single(method.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "System.IO.File.Delete");
+
+            string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+            Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.EnclosingType == "Worker" && site.Member == member && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+        }
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] copies = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == copySymbol.GetDocumentationCommentId()).ToArray();
+
+        Assert.NotEmpty(copies);
+
+        Assert.Contains(observed, state => state.RootOperation == "Worker.StartAsync" && state.Method == wrapper.GetDocumentationCommentId());
+
+        Assert.All(copies, state =>
+        {
+            Assert.NotNull(state.EvaluationEnvironmentToken);
+            Assert.Equal(copy.SpanStart, state.SpanStart);
+            Assert.Equal(copy.Span.Length, state.SpanLength);
+            Assert.Equal(copy.SpanStart, state.SelectionStart);
+            Assert.Equal(copy.Span.Length, state.SelectionLength);
+            Assert.Null(state.WorkFrontier);
+            Assert.Null(state.EffectFrontier);
+            Assert.Null(state.RecoveryEffectFrontier);
+            Assert.False(state.CompletionOwned);
+        });
+
+        Assert.Single(copies.Select(static state => (state.AssemblyName, state.Compilation, state.Tree, state.Method, state.SelectionStart, state.SelectionLength, state.WorkFrontier, state.EffectFrontier, state.RecoveryEffectFrontier, state.FieldPublications, state.CompletionOwned)).Distinct());
+
+        output.WriteLine("R87_SELECTED_AS=" + selected.ToDisplayString() + "|" + selected.ContainingAssembly.Identity);
+
+        foreach (HostedProducerAdmittedStateObservation state in observed.Where(state => state.Method == copySymbol.GetDocumentationCommentId() || state.Method == wrapper.GetDocumentationCommentId()))
+            output.WriteLine($"R87_COPY_CONTEXT={state.Method}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+        foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in copies.GroupBy(static state => state.Lifecycle))
+            Assert.Single(lane);
+    }
+
+    [Fact]
+    public void OrdinaryEnumValueForwardingKeepsDistinctClosedTypes()
+    {
+        const string members = """
+            private enum EnumA : byte { One }
+            private enum EnumB : byte { One }
+            private static T Forward<T>(T value) where T : struct, Enum => Identity(value);
+            private static T Identity<T>(T value) where T : struct, Enum
+            {
+                System.IO.File.Delete("identity-marker");
+                return value;
+            }
+            """;
+
+        CSharpCompilation compilation = Compile(R2Source("Forward(EnumA.One); Forward(EnumB.One); await Task.CompletedTask;")
+            .Replace("public Task StopAsync", members + " public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        Assert.DoesNotContain(tree.GetRoot().DescendantNodes().OfType<ArgumentSyntax>(), static argument => !argument.RefKindKeyword.IsKind(SyntaxKind.None));
+
+        Assert.DoesNotContain("Unsafe", tree.GetText().ToString(), StringComparison.Ordinal);
+
+        InvocationExpressionSyntax[] callers = tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>().Where(static call => call.Expression.ToString() == "Forward").ToArray();
+
+        Assert.Equal(2, callers.Length);
+
+        ITypeSymbol[] enums = callers.Select(call => Assert.Single(Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(call)).TargetMethod.TypeArguments)).ToArray();
+
+        Assert.Equal(["Worker.EnumA", "Worker.EnumB"], enums.Select(static type => type.ToDisplayString()));
+
+        Assert.False(SymbolEqualityComparer.Default.Equals(enums[0], enums[1]));
+
+        Assert.All(enums, static type => Assert.Equal(TypeKind.Enum, type.TypeKind));
+
+        Assert.All(callers, static call => Assert.Equal("StartAsync", call.Ancestors().OfType<MethodDeclarationSyntax>().First().Identifier.ValueText));
+
+        MethodDeclarationSyntax identity = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Identity");
+
+        IMethodSymbol identitySymbol = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(identity));
+
+        Assert.Equal(RefKind.None, Assert.Single(identitySymbol.Parameters).RefKind);
+
+        Assert.False(identitySymbol.ReturnsByRef || identitySymbol.ReturnsByRefReadonly);
+
+        Assert.Equal("value", Assert.IsType<IdentifierNameSyntax>(Assert.Single(identity.DescendantNodes().OfType<ReturnStatementSyntax>()).Expression).Identifier.ValueText);
+
+        InvocationExpressionSyntax forwarded = Assert.Single(tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "Identity");
+
+        IMethodSymbol selected = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(forwarded)).TargetMethod;
+
+        IMethodSymbol wrapper = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(forwarded.Ancestors().OfType<MethodDeclarationSyntax>().First()));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(identitySymbol, selected.OriginalDefinition));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(Assert.Single(wrapper.TypeParameters), Assert.Single(selected.TypeArguments)));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observed = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observed.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        InvocationExpressionSyntax marker = Assert.Single(identity.DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.Expression.ToString() == "System.IO.File.Delete");
+
+        string coordinate = "/site@" + tree.FilePath + ":" + marker.SpanStart;
+
+        Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == tree.FilePath && site.EnclosingType == "Worker" && site.Member == "Identity" && site.Callee == "System.IO.File.Delete" && site.OperationId.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation[] identities = observed.Where(state => state.RootOperation == "Worker.StartAsync" && state.Method == identitySymbol.GetDocumentationCommentId()).ToArray();
+
+        Assert.NotEmpty(identities);
+
+        Assert.Contains(observed, state => state.RootOperation == "Worker.StartAsync" && state.Method == wrapper.GetDocumentationCommentId());
+
+        Assert.All(identities, state =>
+        {
+            Assert.NotNull(state.EvaluationEnvironmentToken);
+            Assert.Equal(identity.SpanStart, state.SelectionStart);
+            Assert.Equal(identity.Span.Length, state.SelectionLength);
+            Assert.Null(state.WorkFrontier);
+            Assert.Null(state.EffectFrontier);
+            Assert.Null(state.RecoveryEffectFrontier);
+            Assert.False(state.CompletionOwned);
+        });
+
+        Assert.Single(identities.Select(static state => (state.AssemblyName, state.Compilation, state.Tree, state.Method, state.SelectionStart, state.SelectionLength, state.WorkFrontier, state.EffectFrontier, state.RecoveryEffectFrontier, state.FieldPublications, state.CompletionOwned)).Distinct());
+
+        output.WriteLine("R87_SELECTED_ENUMS=" + string.Join("|", enums.Select(static type => type.ToDisplayString())));
+
+        foreach (HostedProducerAdmittedStateObservation state in observed.Where(state => state.Method == identitySymbol.GetDocumentationCommentId() || state.Method == wrapper.GetDocumentationCommentId()))
+            output.WriteLine($"R87_ENUM_CONTEXT={state.Method}|lifecycle={state.Lifecycle}|token={state.EvaluationEnvironmentToken}|selection={state.SelectionStart}:{state.SelectionLength}|work={state.WorkFrontier}|effect={state.EffectFrontier}|recovery={state.RecoveryEffectFrontier}|completion={state.CompletionOwned}");
+
+        foreach (IGrouping<bool, HostedProducerAdmittedStateObservation> lane in identities.GroupBy(static state => state.Lifecycle))
+        {
+            Assert.Equal(2, lane.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+            Assert.Equal(2, lane.Count());
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void CompletedNestedLifecycleBodySurvivesItsIncompleteParent(bool emitsSite, bool unknownFirst)
+    {
+        const string unknown = "dynamic unknown = null!; unknown.Invoke();";
+
+        string body = "System.IO.File.Delete(\"root-marker\"); " + (unknownFirst ? unknown + " Complete();" : "Complete(); " + unknown);
+
+        string helpers = "private static void Complete() { Leaf(); } private static void Leaf() { " + (emitsSite ? "System.IO.File.Delete(\"nested-marker\");" : "") + " } ";
+
+        CSharpCompilation compilation = Compile(R2Source(body).Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], maximumAnalyzedStatesPerRoot: 4, admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.Leaf" && state.Lifecycle);
+
+        HostedProducerSite site = Assert.Single(result.Items, site => site.SourcePath == "src/Fixture.cs" && site.EnclosingType == "Worker" && site.Member == (emitsSite ? "Leaf" : "StartAsync") && site.Callee == "System.IO.File.Delete");
+
+        string coordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        if (!emitsSite) Assert.DoesNotContain(result.Items, static site => site.Member == "Leaf");
+
+        HostedProducerRootTraversalMetric metric = Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync");
+
+        Assert.Equal(2, metric.TraversalCalls);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.StartAsync(System.Threading.CancellationToken)" && !state.Lifecycle);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Equal(4, metric.AnalyzedStates);
+
+        Assert.DoesNotContain(observations, static state => state.Method is "M:Worker.Complete" or "M:Worker.Leaf" && !state.Lifecycle);
+    }
+
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(false, 3)]
+    [InlineData(true, 3)]
+    public void CompletedNestedBodyPreservesParallelFamilyOwnership(bool reverse, int workers)
+    {
+        CSharpCompilation compilation = Compile(R2Source("Complete(); dynamic unknown = null!; unknown.Invoke();")
+            .Replace("public Task StopAsync", "private static void Complete() { Leaf(); } private static void Leaf() { System.IO.File.Delete(\"parallel-leaf\"); } public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> Discover(int count)
+        {
+            System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+            HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], maximumAnalyzedStatesPerRoot: 4, rootWorkers: count, reverseRootFamilies: reverse, admittedStateObserver: observations.Enqueue);
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+            HostedProducerSite site = Assert.Single(result.Items, static site => site.SourcePath == "src/Fixture.cs" && site.EnclosingType == "Worker" && site.Member == "Leaf" && site.Callee == "System.IO.File.Delete");
+
+            string coordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+            HostedProducerAdmittedStateObservation[] family = observations.Where(static state => state.RootOperation == "Worker.StartAsync").OrderBy(static state => state.CumulativeCount).ToArray();
+
+            Assert.Equal([1, 2, 3, 4], family.Select(static state => state.CumulativeCount));
+
+            Assert.Single(family.Select(static state => state.Worker).Distinct());
+
+            Assert.Contains(family, static state => state.Method == "M:Worker.Leaf" && state.Lifecycle);
+
+            Assert.DoesNotContain(family, static state => state.Method is "M:Worker.Complete" or "M:Worker.Leaf" && !state.Lifecycle);
+
+            HostedProducerRootTraversalMetric metric = Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync");
+
+            Assert.Equal(2, metric.TraversalCalls);
+
+            Assert.Equal(4, metric.AnalyzedStates);
+
+            return result;
+        }
+
+        AssertDiscoveryParity(Discover(1), Discover(workers));
+    }
+
+    [Fact]
+    public void CompletedNestedBodyCannotRetainACohortCrossingAPartiallySelectedMember()
+    {
+        string source = R2Source("Complete(); Partial(); dynamic unknown = null!; unknown.Invoke();")
+            .Replace("public Task StopAsync", "private static void Complete() { Leaf(); } private static void Leaf() { System.IO.File.Delete(\"partial-leaf\"); } private static void Partial() { System.IO.File.Exists(\"partial\"); } public Task StopAsync", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerOperationEntry partial = OrdinaryRoot(CallRoot(source, "Worker.Partial", "System.IO.File.Exists")) with { Member = "Partial" };
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot(), partial])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.SourcePath == "src/Fixture.cs" && site.EnclosingType == "Worker" && site.Member == "Leaf" && site.Callee == "System.IO.File.Delete");
+
+        string coordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Items, site => site.AuthorityOperationId == partial.OperationId && site.Member == "Partial" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.Leaf" && state.Lifecycle);
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.Complete" && !state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.Leaf" && !state.Lifecycle);
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public void CompletedNestedBodyKeepsItsEnclosingRootContext(bool different, bool separateSource, bool declaredFirst)
+    {
+        string source = R2Source("Complete(); callback(); dynamic unknown = null!; unknown.Invoke();", "internal static class Caller { internal static void A() { System.IO.File.Exists(\"a\"); } internal static void B() { System.IO.File.Delete(\"b\"); } internal static void First() { new Worker(A).StartAsync(default); } internal static void Second() { new Worker(" + (different ? "B" : "A") + ").StartAsync(default); } }")
+            .Replace("class Worker :", "class Worker(System.Action callback) :", StringComparison.Ordinal)
+            .Replace("new Worker()", "new Worker(Caller.A)", StringComparison.Ordinal)
+            .Replace("public Task StopAsync", "private static void Complete() { System.IO.File.Delete(\"context\"); } public Task StopAsync", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProbeWholeRootInvocationContexts(compilation, OrdinaryRoot(), "First", different || separateSource ? "Second" : "First", declaredFirst, observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "Complete" && site.Callee == "System.IO.File.Delete");
+
+        string coordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        HostedProducerAdmittedStateObservation[] roots = observations.Where(static state => state.Method == "M:Worker.StartAsync(System.Threading.CancellationToken)").ToArray();
+
+        Assert.Equal(2, roots.Length);
+
+        Assert.Equal(different || separateSource ? 2 : 1, roots.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+        HostedProducerAdmittedStateObservation[] complete = observations.Where(static state => state.Method == "M:Worker.Complete").ToArray();
+
+        Assert.Contains(complete, static state => state.Lifecycle);
+
+        // The child has no bound inputs: a changed enclosing root still forbids reuse.
+        Assert.Single(complete.Select(static state => state.EvaluationEnvironmentToken).Distinct());
+
+        Assert.Equal(different || separateSource || declaredFirst, complete.Any(static state => !state.Lifecycle));
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals).TraversalCalls);
+    }
+
+    [Fact]
+    public void CompletedNestedBodyCannotRelabelAnotherRawPathsOrdinaryCacheHit()
+    {
+        const string helpers = "private static void First() { Leaf(); } private static void Second() { Leaf(); dynamic unknown = null!; unknown.Invoke(); } private static void Leaf() { System.IO.File.Delete(\"raw-path\"); } ";
+
+        CSharpCompilation compilation = Compile(R2Source("First(); Second();").Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "Leaf" && site.Callee == "System.IO.File.Delete");
+
+        MethodDeclarationSyntax second = compilation.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Second");
+
+        InvocationExpressionSyntax leaf = second.DescendantNodes().OfType<InvocationExpressionSyntax>().Single(static call => call.ToString() == "Leaf()");
+
+        string coordinate = "/call@src/Fixture.cs:" + leaf.SpanStart + site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && !state.Lifecycle);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.First" && state.Lifecycle);
+
+        Assert.DoesNotContain(observations, static state => state.Method == "M:Worker.First" && !state.Lifecycle);
+    }
+
+    [Fact]
+    public void CompletedNestedParentCannotCertifyAnotherRawPathsCachedDescendant()
+    {
+        const string helpers = "private static void First() { Leaf(); } private static void Second() { Leaf(); } private static void Leaf() { System.IO.File.Delete(\"raw-path\"); } ";
+
+        CSharpCompilation compilation = Compile(R2Source("First(); Second(); dynamic unknown = null!; unknown.Invoke();").Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "Leaf" && site.Callee == "System.IO.File.Delete");
+
+        MethodDeclarationSyntax second = compilation.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "Second");
+
+        InvocationExpressionSyntax leaf = second.DescendantNodes().OfType<InvocationExpressionSyntax>().Single(static call => call.ToString() == "Leaf()");
+
+        string coordinate = "/call@src/Fixture.cs:" + leaf.SpanStart + site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && state.Lifecycle);
+
+        string firstCoordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(firstCoordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(firstCoordinate, StringComparison.Ordinal));
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.First" && state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Second" && state.Lifecycle);
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        // First is genuinely reused, but Second's cached descendant had no fresh raw-path proof.
+        Assert.DoesNotContain(observations, static state => state.Method == "M:Worker.First" && !state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && !state.Lifecycle);
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.First" && state.Lifecycle);
+
+        Assert.DoesNotContain(observations, static state => state.Method == "M:Worker.First" && !state.Lifecycle);
+    }
+
+    [Fact]
+    public void CompletedNestedNoEvidenceParentCannotCertifyACachedDescendant()
+    {
+        const string helpers = "private static void First() { Leaf(); } private static void Second() { Leaf(); } private static void Leaf() { } ";
+
+        CSharpCompilation compilation = Compile(R2Source("System.IO.File.Delete(\"root-marker\"); First(); Second(); dynamic unknown = null!; unknown.Invoke();").Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "StartAsync" && site.Callee == "System.IO.File.Delete");
+
+        string coordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.DoesNotContain(result.Items, static site => site.Member is "First" or "Second" or "Leaf");
+
+        foreach (string member in new[] { "M:Worker.First", "M:Worker.Second", "M:Worker.Leaf" }) Assert.Contains(observations, state => state.Method == member && state.Lifecycle);
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        Assert.DoesNotContain(observations, static state => state.Method == "M:Worker.First" && !state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Second" && !state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && !state.Lifecycle);
+    }
+
+    [Theory]
+    [InlineData("probe-before")]
+    [InlineData("probe-between")]
+    [InlineData("cached-probe-between")]
+    [InlineData("direct-probe-between")]
+    [InlineData("source-exception")]
+    [InlineData("unplanned-first")]
+    [InlineData("unplanned-second")]
+    public void CompletedNestedWitnessesRespectProbeExceptionAndUnplannedBoundaries(string boundary)
+    {
+        const string lazy = "static class LazyRollbackFixture { private static readonly System.Lazy<bool> Cached = new(() => true, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication); public static bool Read() => Cached.Value; }";
+
+        const string helpers = "private static void Complete() { Leaf(); } private static void Leaf() { System.IO.File.Delete(\"boundary\"); } private static void After() { } ";
+
+        CSharpCompilation compilation = Compile(R2Source("Complete(); After(); dynamic unknown = null!; unknown.Invoke();", lazy).Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        List<(int Cohorts, int Witnesses, int Hits, bool Probe)> nested = [];
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProbeNestedRootBoundary(compilation, OrdinaryRoot(), boundary, observations.Enqueue, (_, cohorts, witnesses, hits, probe) => nested.Add((cohorts, witnesses, hits, probe)));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED" && diagnostic.Detail == "Dynamic invocation has no exact call target.");
+
+        HostedProducerSite site = Assert.Single(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "Leaf" && site.Callee == "System.IO.File.Delete");
+
+        string coordinate = site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..];
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(coordinate, StringComparison.Ordinal));
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.After" && state.Lifecycle);
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Complete" && !state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Leaf" && !state.Lifecycle);
+
+        var final = nested.Last();
+
+        Assert.Equal(0, final.Hits);
+
+        Assert.Equal(boundary.Contains("probe", StringComparison.Ordinal), final.Probe);
+
+        Assert.Equal(boundary is "probe-before" or "source-exception" or "unplanned-first" ? 0 : 1, final.Cohorts);
+
+        Assert.Equal(final.Cohorts == 0 ? 0 : 3, final.Witnesses);
+    }
+
+    [Theory]
+    [InlineData("before")]
+    [InlineData("after")]
+    [InlineData("cached")]
+    public void CompletedNestedBodyCannotSurviveAnyBoundedProofInItsSourceGraph(string position)
+    {
+        const string read = "_ = Text.Value;";
+
+        string body = position == "after" ? "Complete(); " + read : read + (position == "cached" ? read : "") + " Complete();";
+
+        const string helpers = "private static readonly System.Lazy<string> Text = new(() => \"safe\"); private static void Complete() { System.IO.File.Delete(\"probe-boundary\"); } ";
+
+        CSharpCompilation compilation = Compile(R2Source(body).Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "Complete" && site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Complete" && state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.Method == "M:Worker.Complete" && !state.Lifecycle);
+    }
+
+    [Theory]
+    [InlineData("cycle")]
+    [InlineData("cached-cycle")]
+    [InlineData("unknown-callback")]
+    [InlineData("unknown-cleanup")]
+    [InlineData("bounded-data")]
+    public void IncompleteLifecycleWholeRootCannotSupplyDeclaredReuse(string shape)
+    {
+        string body = shape == "cached-cycle" ? "One(); One();" : "One();";
+
+        string helpers = shape switch
+        {
+            "cycle" or "cached-cycle" => "private static void One() { System.IO.File.Exists(\"incomplete\"); Cycle(); } private static void Cycle() { Cycle(); }",
+            "unknown-callback" => "private static System.Action Callback { get; set; } = null!; private static void One() { System.IO.File.Exists(\"incomplete\"); Callback(); }",
+            "unknown-cleanup" => "private static System.IDisposable Cleanup { get; set; } = null!; private static void One() { System.IO.File.Exists(\"incomplete\"); using (Cleanup) { } }",
+            _ => "private static readonly System.Lazy<string> Text = new(() => \"safe\"); private static void One() { System.IO.File.Exists(\"incomplete\"); _ = Text.Value; }",
+        };
+
+        CSharpCompilation compilation = Compile(R2Source(body).Replace("public Task StopAsync", helpers + " public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site => site.SourcePath == "src/Fixture.cs" && site.EnclosingType == "Worker" && site.Member == "One" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.One" && state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.One" && !state.Lifecycle);
+    }
+
+    [Theory]
+    [InlineData("depth")]
+    [InlineData("environment")]
+    public void IncompleteLifecycleWholeRootRetainsCutoffAfterEvidence(string shape)
+    {
+        string helpers = "private static void One() { System.IO.File.Exists(\"before-cutoff\"); Two(); } private static void Two() { Three(); } private static void Three() { } ";
+
+        CSharpCompilation compilation = Compile(R2Source("One();").Replace("public Task StopAsync", helpers + "public Task StopAsync", StringComparison.Ordinal));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [], traversalMaximumDepth: shape == "depth" ? 3 : 256, evaluationEnvironmentMaximumMembers: shape == "environment" ? 0 : 512, admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "Worker" && site.Member == "One" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == (shape == "depth" ? "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" : "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED"));
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.One" && state.Lifecycle);
+
+        Assert.Contains(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.One" && !state.Lifecycle);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CompletedLifecycleRootCannotReusePartialOrOverlappingWholeSelection(bool overlap)
+    {
+        string source = R2Source("System.IO.File.Exists(\"partial\"); System.IO.File.Delete(\"whole\");");
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerOperationEntry partial = OrdinaryRoot(CallRoot(source, "System.IO.File.Exists"));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", overlap ? [partial, OrdinaryRoot()] : [partial])], [], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_ROOT_UNRESOLVED");
+
+        Assert.Equal(overlap, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_ROOT_OVERLAP"));
+
+        Assert.Contains(result.Items, site => site.Callee == "System.IO.File.Exists" && site.OperationId.StartsWith(partial.OperationId, StringComparison.Ordinal));
+
+        Assert.Contains(observations, state => !state.Lifecycle && state.RootOperation == partial.OperationId && state.SelectionLength < state.SpanLength);
+
+        if (overlap) Assert.Contains(observations, static state => !state.Lifecycle && state.RootOperation == "Worker.StartAsync" && state.SelectionLength == state.SpanLength);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false, true)]
+    public void CompletedWholeRootKeepsActualBoundConstructorCallableAndDirection(bool different, bool declaredFirst, bool separateSource = false)
+    {
+        string source = R2Source("callback();", "internal static class Caller { internal static void A() { System.IO.File.Exists(\"a\"); } internal static void B() { System.IO.File.Delete(\"b\"); } internal static void First() { new Worker(A).StartAsync(default); } internal static void Second() { new Worker(" + (different ? "B" : "A") + ").StartAsync(default); } }")
+            .Replace("class Worker :", "class Worker(System.Action callback) :", StringComparison.Ordinal)
+            .Replace("new Worker()", "new Worker(Caller.A)", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.ProbeWholeRootInvocationContexts(compilation, OrdinaryRoot(), "First", different || separateSource ? "Second" : "First", declaredFirst, observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "Caller" && site.Member == "A" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(different, result.Items.Any(static site => site.EnclosingType == "Caller" && site.Member == "B" && site.Callee == "System.IO.File.Delete"));
+
+        Assert.All(result.Items.Where(static site => site.Kind == HostedProducerSiteKind.FileSystemEffect), site => Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Identity.EndsWith(site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+
+        HostedProducerAdmittedStateObservation[] states = observations.Where(static state => state.Method == "M:Worker.StartAsync(System.Threading.CancellationToken)").ToArray();
+
+        Assert.Contains(states, static state => state.Lifecycle);
+
+        Assert.Equal(different || declaredFirst || separateSource, states.Any(static state => !state.Lifecycle));
+
+        Assert.Equal(different || separateSource ? 2 : 1, states.Select(static state => state.EvaluationEnvironmentToken).Distinct().Count());
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals).TraversalCalls);
+    }
+
+    [Fact]
+    public void CachedRecoveryTargetResolutionCannotCompleteEvidenceBearingLifecycleRoot()
+    {
+        CSharpCompilation compilation = Compile(RecoveryMatrixFixture());
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> observations = new();
+
+        const string owner = "RetroDownfall.Arcanum.Infrastructure.Operations.OwnerRecoveryRoot";
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], [new(owner + ".Run", "src/Fixture.cs", owner, "Run", HostedProducerAuthorityKind.OwnerBoundRecovery, "exact owner fixture", [])], admittedStateObserver: observations.Enqueue);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_RECOVERY_MATRIX_UNPROVEN" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler" && site.Callee == "System.IO.File.Delete");
+
+        // Fresh and cached target resolution both refuse the parent's completion. The
+        // independently completed exact child may still use the guarded nested lookup.
+        HostedProducerAdmittedStateObservation[] parents = observations.Where(static state => state.RootOperation == "Worker.StartAsync" && state.Method == "M:Worker.StartAsync(System.Threading.CancellationToken)").ToArray();
+
+        Assert.Contains(parents, static state => state.Lifecycle);
+
+        Assert.Contains(parents, static state => !state.Lifecycle);
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static metric => metric.RootOperation == "Worker.StartAsync").TraversalCalls);
+
+        HostedProducerAdmittedStateObservation target = Assert.Single(observations, static state => state.RootOperation == "Worker.StartAsync" && state.Method.StartsWith("M:RetroDownfall.Arcanum.Infrastructure.Operations.ExternalRecoveryHandler.RecoverAsync(", StringComparison.Ordinal));
+
+        Assert.True(target.Lifecycle);
+
+        SyntaxTree source = Assert.Single(compilation.SyntaxTrees);
+
+        InvocationExpressionSyntax work = Assert.Single(source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static invocation => invocation.Expression.ToString() == "gate.TryAcquireWorkLease");
+
+        InvocationExpressionSyntax effect = Assert.Single(source.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static invocation => invocation.Expression.ToString() == "lease.TryBeginExternalEffectGroup");
+
+        Assert.Equal("Worker.StartAsync@work:" + source.FilePath + ":" + work.SpanStart, target.WorkFrontier);
+
+        // The Effect names its group and the origin of the lease the group was begun on, which is the acquisition whose Work this is.
+        string effectFrontier = "Worker.StartAsync@effect:" + source.FilePath + ":" + effect.SpanStart + "@lease:" + source.FilePath + ":" + work.SpanStart;
+
+        Assert.Equal(effectFrontier, target.EffectFrontier);
+
+        Assert.Equal(effectFrontier, target.RecoveryEffectFrontier);
+
+        Assert.True(target.CompletionOwned);
     }
 
     private static void AssertDiscoveryParity(HostedProducerDiscovery<HostedProducerSite> serial, HostedProducerDiscovery<HostedProducerSite> parallel)
@@ -2507,7 +8865,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         bool includeOwnerRoot = true,
         HostedProducerAuthorityKind hostedAuthority = HostedProducerAuthorityKind.OrdinaryHostedWork,
         HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null,
-        int? evaluationEnvironmentMaximumMembers = null)
+        int? evaluationEnvironmentMaximumMembers = null,
+        Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null)
     {
         HostedProducerOperationEntry hosted = OrdinaryRoot() with
         {
@@ -2541,13 +8900,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 [new("Worker", [hosted])],
                 ownerRoots,
                 evaluationEnvironmentMaximumMembers: maximumMembers,
-                recoverySelectionProbe: recoverySelectionProbe)
+                recoverySelectionProbe: recoverySelectionProbe,
+                admittedStateObserver: admittedStateObserver)
             : HostedGrimoireProducerInventory.DiscoverProducerSites(
                 compilations,
                 new(["Worker"], []),
                 [new("Worker", [hosted])],
                 ownerRoots,
-                recoverySelectionProbe: recoverySelectionProbe);
+                recoverySelectionProbe: recoverySelectionProbe,
+                admittedStateObserver: admittedStateObserver);
     }
 
     [Fact]
@@ -2595,6 +8956,41 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.DoesNotContain(result.Diagnostics, static diagnostic =>
             diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
+    }
+
+    // The per-unit external-effect disposition was retired with the lane that accepted it. A classifier arm that names it again is
+    // no known disposition, so the recovery matrix fails closed (HOSTED_RECOVERY_MATRIX_UNPROVEN) instead of reaching a handler
+    // under a grant nothing proves. The unmutated fixture is the twin: its matrix is proven.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AClassifierArmThatNamesTheRetiredPerUnitDispositionFailsTheRecoveryMatrixClosed(bool namesRetiredDisposition)
+    {
+        string source = RecoveryMatrixFixture();
+
+        if (namesRetiredDisposition)
+        {
+            const string enumTail = "UnsupportedCheckpointVersion = 5,";
+
+            const string externalArm = "(LongRunningOperationKinds.External, 0) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,";
+
+            Assert.Equal(1, source.Split(enumTail, StringSplitOptions.None).Length - 1);
+
+            Assert.Equal(1, source.Split(externalArm, StringSplitOptions.None).Length - 1);
+
+            source = source.Replace(enumTail, enumTail + " OrdinaryPerUnitExternalEffect = 6,", StringComparison.Ordinal)
+                .Replace(externalArm, "(LongRunningOperationKinds.External, 0) => LongRunningRecoveryAdmissionKind.OrdinaryPerUnitExternalEffect,", StringComparison.Ordinal);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverRecoveryMatrixFixture(source);
+
+        Assert.Equal(namesRetiredDisposition, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN"
+            && diagnostic.Detail.Contains("resolve to one known disposition", StringComparison.Ordinal)));
+
+        if (!namesRetiredDisposition)
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_RECOVERY_MATRIX_UNPROVEN");
+        }
     }
 
     [Fact]
@@ -7437,6 +13833,520 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
     }
 
+    [Theory]
+    [InlineData("control", true)]
+    [InlineData("direct", true)]
+    [InlineData("linked", true)]
+    [InlineData("linked-local", true)]
+    [InlineData("unsupported-binding-condition", false)]
+    [InlineData("recovery-kind-linked", true)]
+    [InlineData("conditional-releases-lease", false)]
+    [InlineData("registered-lease-callback", false)]
+    [InlineData("cts-subclass", false)]
+    [InlineData("unknown-cts-formal", false)]
+    [InlineData("reassigned-cts", false)]
+    [InlineData("authored-token-property", false)]
+    [InlineData("authored-link-factory", false)]
+    [InlineData("linked-captured-input", false)]
+    [InlineData("boxed", false)]
+    [InlineData("composite", false)]
+    [InlineData("wrapper", false)]
+    [InlineData("returned-alias", false)]
+    [InlineData("ref", false)]
+    [InlineData("out", false)]
+    [InlineData("disposed", false)]
+    [InlineData("detached", false)]
+    [InlineData("missing", false)]
+    [InlineData("denied", false)]
+    [InlineData("counterfeit-namespace", false)]
+    [InlineData("counterfeit-assembly", false)]
+    [InlineData("getter", false)]
+    [InlineData("opaque-callback", false)]
+    public void MaintenanceTokenProjectionRetainsScopedSqlWithoutLaunderingActualHandleAliases(string shape, bool retained)
+    {
+        string admission = R2Admission;
+
+        if (shape == "missing") admission = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease = null!;";
+        else if (shape == "denied") admission = admission.Replace("if (!gate.TryAcquireWorkLease(", "if (gate.TryAcquireWorkLease(", StringComparison.Ordinal);
+
+        string before = shape switch
+        {
+            "boxed" => "GC.KeepAlive((object)lease);",
+            "composite" => "GC.KeepAlive((lease, 1));",
+            "wrapper" => "GC.KeepAlive(new CapturedLease(lease));",
+            "returned-alias" => "var alias = LeaseAliases.Return(lease); GC.KeepAlive(alias);",
+            "ref" => "var alias = lease; LeaseAliases.Mutate(ref alias);",
+            "out" => "var alias = lease; LeaseAliases.Replace(lease, out alias);",
+            "disposed" => "lease.Dispose();",
+            "opaque-callback" => "GC.KeepAlive((Action)(() => lease.Dispose()));",
+            _ => "",
+        };
+
+        string tokenValue = shape switch
+        {
+            "control" => "token",
+            "counterfeit-namespace" or "getter" => "new Counterfeit.LeaseToken(lease).MaintenanceRevocation",
+            _ => "lease.MaintenanceRevocation",
+        };
+
+        string link = shape == "direct" ? "" : "using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, " + tokenValue + ");";
+
+        bool linkedSourceBoundary = shape is "unsupported-binding-condition" or "recovery-kind-linked" or "cts-subclass" or "unknown-cts-formal"
+            or "reassigned-cts" or "authored-token-property" or "authored-link-factory" or "linked-captured-input"
+            or "conditional-releases-lease" or "registered-lease-callback";
+
+        if (linkedSourceBoundary)
+        {
+            string conditionalToken = shape switch
+            {
+                "conditional-releases-lease" => "Counterfeit.TokenFactory.ReleaseLease(lease) ? CancellationToken.None : lease.MaintenanceRevocation",
+                "recovery-kind-linked" => "decision.Kind is ProjectionRecoveryKind.OrdinaryPerUnitExternalEffect ? lease.MaintenanceRevocation : CancellationToken.None",
+                _ => "binding is null ? CancellationToken.None : lease.MaintenanceRevocation",
+            };
+
+            string binding = shape == "recovery-kind-linked"
+                ? "var decision = new ProjectionRecoveryDecision(token.IsCancellationRequested ? ProjectionRecoveryKind.OrdinaryDbOnly : ProjectionRecoveryKind.OrdinaryPerUnitExternalEffect); using IDisposable? binding = decision.Kind is ProjectionRecoveryKind.OrdinaryPerUnitExternalEffect ? lease : null; "
+                : "using IDisposable? binding = lease; ";
+
+            link = binding + (shape switch
+            {
+                "cts-subclass" or "unknown-cts-formal" => "using CancellationTokenSource linked = new Counterfeit.CapturedSource(lease);",
+                "reassigned-cts" => "CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(token, " + conditionalToken + "); linked = new Counterfeit.CapturedSource(lease); using var linkedCleanup = linked;",
+                "authored-token-property" => "",
+                "authored-link-factory" => "using CancellationTokenSource linked = Counterfeit.TokenFactory.CreateLinkedTokenSource(token, " + conditionalToken + ");",
+                "linked-captured-input" => "using var capturedInput = new Counterfeit.CapturedSource(lease); using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(token, capturedInput.Token);",
+                _ => "using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(token, " + conditionalToken + ");",
+            });
+        }
+
+        if (shape == "registered-lease-callback")
+        {
+            link += " using var registration = linked.Token.Register(() => lease.Dispose());";
+        }
+
+        string callToken = shape switch
+        {
+            "direct" => tokenValue,
+            "unknown-cts-formal" => "Counterfeit.TokenFactory.ReadToken(linked)",
+            "authored-token-property" => "new Counterfeit.LeaseToken(lease).Token",
+            _ => "linked.Token",
+        };
+
+        if (shape == "linked-local")
+        {
+            link += " CancellationToken copied = linked.Token;";
+
+            callToken = "copied";
+        }
+
+        string body = admission + before + link + (shape == "detached" ? "_ = " : "await ")
+            + "ProjectionSql.ReadAsync(" + callToken + "); System.IO.File.Exists(\"after-sql-cleanup\");";
+
+        string helpers = """
+            internal static class ProjectionSql
+            {
+                internal static async Task<Microsoft.Data.Sqlite.SqliteConnection> OpenAsync(CancellationToken token)
+                {
+                    Microsoft.Data.Sqlite.SqliteConnection connection = new();
+
+                    await connection.OpenAsync(token).ConfigureAwait(false);
+
+                    return connection;
+                }
+
+                internal static async Task ReadAsync(CancellationToken token)
+                {
+                    await using Microsoft.Data.Sqlite.SqliteConnection connection = await OpenAsync(token).ConfigureAwait(false);
+
+                    await using Microsoft.Data.Sqlite.SqliteCommand command = connection.CreateCommand();
+
+                    await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+
+                    await reader.ReadAsync(token).ConfigureAwait(false);
+                }
+            }
+
+            internal sealed class CapturedLease(IDisposable handle) { internal IDisposable Handle => handle; }
+
+            internal static class LeaseAliases
+            {
+                internal static IDisposable Return(IDisposable handle) => handle;
+
+                internal static extern void Mutate(ref RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease handle);
+
+                internal static extern void Replace(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease source, out RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease handle);
+            }
+            """;
+
+        helpers += "namespace Counterfeit { internal sealed class LeaseToken(IDisposable captured) { internal CancellationToken Token => default; internal CancellationToken MaintenanceRevocation { get { "
+            + (shape == "getter" ? "System.IO.File.Delete(\"getter-effect\"); captured.Dispose();" : "") + " return default; } } } }";
+
+        helpers += """
+            namespace Counterfeit
+            {
+                internal sealed class CapturedSource : CancellationTokenSource
+                {
+                    private readonly IDisposable _handle;
+
+                    internal CapturedSource(IDisposable handle) { _handle = handle; }
+
+                    protected override void Dispose(bool disposing)
+                    {
+                        if (disposing) _handle.Dispose();
+
+                        base.Dispose(disposing);
+                    }
+                }
+
+                internal static class TokenFactory
+                {
+                    internal static CancellationTokenSource CreateLinkedTokenSource(CancellationToken first, CancellationToken second) =>
+                        CancellationTokenSource.CreateLinkedTokenSource(first, second);
+
+                    internal static CancellationToken ReadToken(CancellationTokenSource source) => source.Token;
+
+                    internal static bool ReleaseLease(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease)
+                    {
+                        lease.Dispose();
+
+                        return true;
+                    }
+                }
+            }
+            """;
+
+        if (shape == "recovery-kind-linked")
+        {
+            helpers += """
+                internal enum ProjectionRecoveryKind : byte
+                {
+                    OrdinaryDbOnly = 1,
+                    OrdinaryPerUnitExternalEffect = 2,
+                }
+
+                internal readonly record struct ProjectionRecoveryDecision(ProjectionRecoveryKind Kind);
+                """;
+        }
+
+        string contracts = AdmissionTypes.Replace("bool TryBeginExternalEffectGroup", "System.Threading.CancellationToken MaintenanceRevocation { get; } bool TryBeginExternalEffectGroup", StringComparison.Ordinal);
+
+        string infrastructureName = shape == "counterfeit-assembly" ? "Counterfeit.Infrastructure" : "RetroDownfall.Arcanum.Infrastructure";
+
+        CSharpCompilation infrastructure = Compile(contracts).WithAssemblyName(infrastructureName);
+
+        infrastructure = infrastructure.RemoveAllSyntaxTrees().AddSyntaxTrees(CSharpSyntaxTree.ParseText(contracts,
+            path: "src/RetroDownfall.Arcanum.Infrastructure/Data/GrimoireConnectionAdmissionContracts.cs"));
+
+        CSharpCompilation consumer = Compile(R2Source(body, helpers).Replace(AdmissionTypes, "", StringComparison.Ordinal))
+            .WithAssemblyName("MaintenanceProjection.Consumer")
+            .WithReferences(FixturePlatformReferences.Value.Where(reference => Path.GetFileNameWithoutExtension(reference.Display) != "RetroDownfall.Arcanum.Infrastructure"))
+            .AddReferences(infrastructure.ToMetadataReference());
+
+        Assert.All(new[] { infrastructure, consumer }, static compilation => Assert.Empty(compilation.GetDiagnostics()
+            .Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        InvocationExpressionSyntax? exactSqlConsumer = null;
+
+        if (linkedSourceBoundary)
+        {
+            SemanticModel model = consumer.GetSemanticModel(consumer.SyntaxTrees.Single());
+
+            SyntaxNode syntax = consumer.SyntaxTrees.Single().GetRoot();
+
+            exactSqlConsumer = syntax.DescendantNodes().OfType<InvocationExpressionSyntax>()
+                .Single(static call => call.Expression.ToString() == "command.ExecuteReaderAsync");
+
+            IInvocationOperation sqlCall = Assert.IsAssignableFrom<IInvocationOperation>(model.GetOperation(exactSqlConsumer));
+
+            Assert.Equal("ExecuteReaderAsync", sqlCall.TargetMethod.Name);
+
+            Assert.Equal("Microsoft.Data.Sqlite.SqliteCommand", sqlCall.TargetMethod.ContainingType.ToDisplayString());
+
+            MemberAccessExpressionSyntax tokenUse = syntax.DescendantNodes().OfType<MemberAccessExpressionSyntax>().Single(access =>
+                shape == "unknown-cts-formal" ? access.ToString() == "source.Token"
+                    : shape == "authored-token-property" ? access.Expression is ObjectCreationExpressionSyntax && access.Name.Identifier.ValueText == "Token"
+                    : access.ToString() == "linked.Token"
+                        && access.Parent is not MemberAccessExpressionSyntax { Name.Identifier.ValueText: "Register" });
+
+            IPropertyReferenceOperation tokenRead = Assert.IsAssignableFrom<IPropertyReferenceOperation>(model.GetOperation(tokenUse));
+
+            Assert.Equal("Token", tokenRead.Property.MetadataName);
+
+            Assert.False(tokenRead.Property.ReturnsByRef || tokenRead.Property.ReturnsByRefReadonly);
+
+            Assert.Equal("System.Threading.CancellationToken", tokenRead.Type!.ToDisplayString());
+
+            if (shape == "authored-token-property")
+            {
+                Assert.Equal("Counterfeit.LeaseToken", tokenRead.Property.ContainingType.ToDisplayString());
+
+                Assert.Single(tokenRead.Property.DeclaringSyntaxReferences);
+            }
+            else
+            {
+                Assert.Equal("System.Threading.CancellationTokenSource", tokenRead.Property.ContainingType.ToDisplayString());
+
+                Assert.Equal(typeof(CancellationTokenSource).Assembly.GetName().Name, tokenRead.Property.ContainingAssembly.Name);
+
+                Assert.False(tokenRead.Property.GetMethod!.IsVirtual);
+
+                Assert.DoesNotContain(tokenRead.Property.Locations, static location => location.IsInSource);
+
+                if (shape == "unknown-cts-formal")
+                {
+                    Assert.IsAssignableFrom<IParameterReferenceOperation>(tokenRead.Instance);
+                }
+                else
+                {
+                    VariableDeclaratorSyntax linked = syntax.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                        .Single(static declaration => declaration.Identifier.ValueText == "linked");
+
+                    IOperation initializer = model.GetOperation(linked.Initializer!.Value)!;
+
+                    if (shape == "cts-subclass")
+                    {
+                        IObjectCreationOperation captured = Assert.IsAssignableFrom<IObjectCreationOperation>(initializer);
+
+                        Assert.Equal("Counterfeit.CapturedSource", captured.Type!.ToDisplayString());
+
+                        Assert.Equal("lease", Assert.IsAssignableFrom<IConversionOperation>(captured.Arguments[0].Value).Operand.Syntax.ToString());
+                    }
+                    else
+                    {
+                        IInvocationOperation factory = Assert.IsAssignableFrom<IInvocationOperation>(initializer);
+
+                        Assert.Equal("CreateLinkedTokenSource", factory.TargetMethod.Name);
+
+                        Assert.Equal(2, factory.TargetMethod.Parameters.Length);
+
+                        Assert.All(factory.TargetMethod.Parameters, static parameter =>
+                            Assert.Equal("System.Threading.CancellationToken", parameter.Type.ToDisplayString()));
+
+                        Assert.All(factory.Arguments, static argument => Assert.Equal(RefKind.None, argument.Parameter!.RefKind));
+
+                        if (shape == "authored-link-factory")
+                        {
+                            Assert.Equal("Counterfeit.TokenFactory", factory.TargetMethod.ContainingType.ToDisplayString());
+
+                            Assert.Single(factory.TargetMethod.DeclaringSyntaxReferences);
+                        }
+                        else
+                        {
+                            Assert.Equal("System.Threading.CancellationTokenSource", factory.TargetMethod.ContainingType.ToDisplayString());
+
+                            Assert.Equal(typeof(CancellationTokenSource).Assembly.GetName().Name, factory.TargetMethod.ContainingAssembly.Name);
+
+                            Assert.DoesNotContain(factory.TargetMethod.Locations, static location => location.IsInSource);
+                        }
+
+                        if (shape == "conditional-releases-lease")
+                        {
+                            IConditionalOperation conditional = Assert.IsAssignableFrom<IConditionalOperation>(factory.Arguments[1].Value);
+
+                            IInvocationOperation release = Assert.IsAssignableFrom<IInvocationOperation>(conditional.Condition);
+
+                            Assert.Equal("Counterfeit.TokenFactory", release.TargetMethod.ContainingType.ToDisplayString());
+
+                            Assert.Equal("ReleaseLease", release.TargetMethod.Name);
+
+                            Assert.Single(release.TargetMethod.DeclaringSyntaxReferences);
+
+                            ILocalReferenceOperation admitted = Assert.IsAssignableFrom<ILocalReferenceOperation>(release.Arguments.Single().Value);
+
+                            Assert.Equal("lease", admitted.Local.Name);
+
+                            MethodDeclarationSyntax selectedHelper = Assert.IsType<MethodDeclarationSyntax>(release.TargetMethod.DeclaringSyntaxReferences.Single().GetSyntax());
+
+                            InvocationExpressionSyntax disposal = selectedHelper.DescendantNodes().OfType<InvocationExpressionSyntax>().Single();
+
+                            IInvocationOperation selectedDisposal = Assert.IsAssignableFrom<IInvocationOperation>(model.GetOperation(disposal));
+
+                            Assert.Equal("Dispose", selectedDisposal.TargetMethod.Name);
+
+                            IParameterReferenceOperation exactFormal = Assert.IsAssignableFrom<IParameterReferenceOperation>(selectedDisposal.Instance);
+
+                            Assert.True(SymbolEqualityComparer.Default.Equals(release.TargetMethod.Parameters.Single(), exactFormal.Parameter));
+                        }
+                        else if (shape == "unsupported-binding-condition")
+                        {
+                            IConditionalOperation conditional = Assert.IsAssignableFrom<IConditionalOperation>(factory.Arguments[1].Value);
+
+                            Assert.Contains(conditional.Condition.DescendantsAndSelf(), static operation => operation is ILocalReferenceOperation local && local.Local.Name == "binding");
+                        }
+                        else if (shape == "recovery-kind-linked")
+                        {
+                            IConditionalOperation conditional = Assert.IsAssignableFrom<IConditionalOperation>(factory.Arguments[1].Value);
+
+                            IIsPatternOperation condition = Assert.IsAssignableFrom<IIsPatternOperation>(conditional.Condition);
+
+                            IPropertyReferenceOperation kind = Assert.IsAssignableFrom<IPropertyReferenceOperation>(condition.Value);
+
+                            Assert.Equal("Kind", kind.Property.MetadataName);
+
+                            Assert.True(kind.Property.ContainingType.IsRecord && kind.Property.ContainingType.IsReadOnly);
+
+                            Assert.Equal(TypeKind.Struct, kind.Property.ContainingType.TypeKind);
+
+                            INamedTypeSymbol enumeration = Assert.IsAssignableFrom<INamedTypeSymbol>(kind.Type);
+
+                            Assert.Equal(TypeKind.Enum, enumeration.TypeKind);
+
+                            Assert.Equal("ProjectionRecoveryKind", enumeration.Name);
+
+                            Assert.Equal(SpecialType.System_Byte, enumeration.EnumUnderlyingType!.SpecialType);
+
+                            IConstantPatternOperation selectedPattern = Assert.IsAssignableFrom<IConstantPatternOperation>(condition.Pattern);
+
+                            IFieldReferenceOperation selectedValue = Assert.IsAssignableFrom<IFieldReferenceOperation>(selectedPattern.Value);
+
+                            IFieldSymbol selectedKind = selectedValue.Field;
+
+                            Assert.Equal("OrdinaryPerUnitExternalEffect", selectedKind.Name);
+
+                            Assert.True(selectedKind.HasConstantValue && SymbolEqualityComparer.Default.Equals(selectedKind.Type, enumeration));
+
+                            IPropertyReferenceOperation revocation = Assert.IsAssignableFrom<IPropertyReferenceOperation>(conditional.WhenTrue);
+
+                            Assert.Equal("MaintenanceRevocation", revocation.Property.MetadataName);
+
+                            Assert.Equal("RetroDownfall.Arcanum.Infrastructure", revocation.Property.ContainingAssembly.Name);
+
+                            IPropertyReferenceOperation none = Assert.IsAssignableFrom<IPropertyReferenceOperation>(conditional.WhenFalse);
+
+                            Assert.Equal("None", none.Property.MetadataName);
+
+                            Assert.True(none.Property.IsStatic);
+
+                            Assert.Equal(typeof(CancellationToken).Assembly.GetName().Name, none.Property.ContainingAssembly.Name);
+
+                            ILocalReferenceOperation decision = Assert.IsAssignableFrom<ILocalReferenceOperation>(kind.Instance);
+
+                            VariableDeclaratorSyntax selectedDecision = Assert.IsType<VariableDeclaratorSyntax>(decision.Local.DeclaringSyntaxReferences.Single().GetSyntax());
+
+                            IObjectCreationOperation decisionCreation = Assert.IsAssignableFrom<IObjectCreationOperation>(model.GetOperation(selectedDecision.Initializer!.Value));
+
+                            IConditionalOperation selection = Assert.IsAssignableFrom<IConditionalOperation>(decisionCreation.Arguments.Single().Value);
+
+                            IPropertyReferenceOperation independentCondition = Assert.IsAssignableFrom<IPropertyReferenceOperation>(selection.Condition);
+
+                            Assert.Equal("IsCancellationRequested", independentCondition.Property.MetadataName);
+
+                            Assert.Equal("token", Assert.IsAssignableFrom<IParameterReferenceOperation>(independentCondition.Instance).Parameter.Name);
+                        }
+                        else if (shape == "linked-captured-input")
+                        {
+                            IPropertyReferenceOperation capturedToken = Assert.IsAssignableFrom<IPropertyReferenceOperation>(factory.Arguments[1].Value);
+
+                            Assert.Equal("capturedInput", capturedToken.Instance!.Syntax.ToString());
+                        }
+                        else if (shape == "reassigned-cts")
+                        {
+                            AssignmentExpressionSyntax assignment = syntax.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                                .Single(static value => value.Left.ToString() == "linked");
+
+                            Assert.Equal("Counterfeit.CapturedSource", model.GetTypeInfo(assignment.Right).Type!.ToDisplayString());
+                        }
+                    }
+                }
+            }
+        }
+
+        InvocationExpressionSyntax? exactRegistration = null;
+
+        if (shape == "registered-lease-callback")
+        {
+            SemanticModel model = consumer.GetSemanticModel(consumer.SyntaxTrees.Single());
+
+            exactRegistration = consumer.SyntaxTrees.Single().GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+                .Single(static call => call.Expression.ToString() == "linked.Token.Register");
+
+            IInvocationOperation registration = Assert.IsAssignableFrom<IInvocationOperation>(model.GetOperation(exactRegistration));
+
+            Assert.Equal("Register", registration.TargetMethod.Name);
+
+            Assert.Equal("System.Threading.CancellationToken", registration.TargetMethod.ContainingType.ToDisplayString());
+
+            Assert.Equal(typeof(CancellationToken).Assembly.GetName().Name, registration.TargetMethod.ContainingAssembly.Name);
+
+            IPropertyReferenceOperation tokenRead = Assert.IsAssignableFrom<IPropertyReferenceOperation>(registration.Instance);
+
+            Assert.Equal("linked", tokenRead.Instance!.Syntax.ToString());
+
+            IDelegateCreationOperation callback = Assert.IsAssignableFrom<IDelegateCreationOperation>(registration.Arguments.Single().Value);
+
+            IAnonymousFunctionOperation callbackBody = Assert.IsAssignableFrom<IAnonymousFunctionOperation>(callback.Target);
+
+            IInvocationOperation disposal = callbackBody.Body.DescendantsAndSelf().OfType<IInvocationOperation>().Single();
+
+            Assert.Equal("Dispose", disposal.TargetMethod.Name);
+
+            ILocalReferenceOperation captured = Assert.IsAssignableFrom<ILocalReferenceOperation>(disposal.Instance);
+
+            Assert.Equal("lease", captured.Local.Name);
+
+            Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease", captured.Type!.ToDisplayString());
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([infrastructure, consumer],
+            new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        HostedProducerSite[] sql = result.Items.Where(static site => site.Callee.StartsWith("Microsoft.Data.Sqlite.", StringComparison.Ordinal)
+            || site.Callee.StartsWith("System.Data.Common.", StringComparison.Ordinal)).ToArray();
+
+        Assert.Contains(sql, static site => site.Callee.EndsWith(".OpenAsync", StringComparison.Ordinal));
+
+        Assert.Contains(sql, static site => site.Callee.EndsWith(".ExecuteReaderAsync", StringComparison.Ordinal));
+
+        Assert.Contains(sql, static site => site.Callee.EndsWith(".ReadAsync", StringComparison.Ordinal));
+
+        string diagnostics = string.Join(global::System.Environment.NewLine, result.Diagnostics);
+
+        if (retained)
+        {
+            Assert.All(sql, site => Assert.True(site.WorkFrontierCapsuleId is not null, site.Callee + ": " + diagnostics));
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ADMISSION_HANDLE_ESCAPE"
+                or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists" && site.WorkFrontierCapsuleId is not null);
+        }
+        else
+        {
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code is "HOSTED_ADMISSION_HANDLE_ESCAPE"
+                or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"), diagnostics);
+        }
+
+        if (linkedSourceBoundary && !retained && shape is not "conditional-releases-lease" and not "registered-lease-callback")
+        {
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_ADMISSION_HANDLE_ESCAPE"
+                && diagnostic.Identity.EndsWith("/call@" + exactSqlConsumer!.SyntaxTree.FilePath + ":" + exactSqlConsumer.SpanStart, StringComparison.Ordinal)
+                && diagnostic.Detail.StartsWith("Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync;", StringComparison.Ordinal));
+
+            Assert.Contains(sql, static site => site.Callee == "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"
+                && site.WorkFrontierCapsuleId is null);
+        }
+
+        if (shape is "conditional-releases-lease" or "registered-lease-callback")
+        {
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                && diagnostic.Identity.EndsWith("/site@" + exactSqlConsumer!.SyntaxTree.FilePath + ":" + exactSqlConsumer.SpanStart, StringComparison.Ordinal));
+
+            Assert.Contains(sql, static site => site.Callee == "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync"
+                && site.WorkFrontierCapsuleId is null);
+
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists" && site.WorkFrontierCapsuleId is null);
+        }
+
+        if (shape == "registered-lease-callback")
+        {
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Identity.EndsWith("/callback@" + exactRegistration!.SyntaxTree.FilePath + ":" + exactRegistration.SpanStart, StringComparison.Ordinal)
+                && diagnostic.Detail.StartsWith("System.Threading.CancellationToken.Register;", StringComparison.Ordinal));
+        }
+
+        if (shape == "getter") Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete" && site.EnclosingType == "Counterfeit.LeaseToken");
+    }
+
     [Fact]
     public void ScalarValueReadFromAdmissionHandleDoesNotBecomeTheHandle()
     {
@@ -10118,6 +17028,241 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     private const string AcquireWork = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return Task.CompletedTask; using var lease = work;";
 
     [Theory]
+    [InlineData("immediate-finally", true)]
+    [InlineData("actual-four-locals", true)]
+    [InlineData("constant-default-locals", true)]
+    [InlineData("throwing-call", false)]
+    [InlineData("throwing-initializer", false)]
+    [InlineData("early-disposal", false)]
+    [InlineData("replaced-lease", false)]
+    [InlineData("wrong-cleanup", false)]
+    [InlineData("conditional-cleanup", false)]
+    [InlineData("unawaited-cleanup", false)]
+    [InlineData("nested-finally", true)]
+    [InlineData("pre-lease-throwing-call", false)]
+    [InlineData("cleanup-leading-throwing-call", false)]
+    [InlineData("pre-lease-conversion", false)]
+    [InlineData("pre-try-conversion", false)]
+    [InlineData("pre-cleanup-conversion", false)]
+    [InlineData("lease-downcast", false)]
+    [InlineData("lease-replacement-before-read", false)]
+    [InlineData("lease-replacement-before-cleanup", false)]
+    [InlineData("conditional-expression-cleanup", false)]
+    [InlineData("switch-expression-cleanup", false)]
+    [InlineData("coalescing-expression-cleanup", false)]
+    public void ManualWorkLeaseFinallyMayFollowOnlyNonThrowingPrelude(string shape, bool retained)
+    {
+        string prelude = shape switch
+        {
+            "actual-four-locals" => "IDisposable? group = null; Microsoft.Extensions.DependencyInjection.AsyncServiceScope scope = default; bool scopeCreated = false; long? refusedGeneration = null;",
+            "constant-default-locals" => "object marker; int value = 7; CancellationToken cancellation = default(CancellationToken); ;",
+            "throwing-call" => "MayThrow();",
+            "throwing-initializer" => "object marker = MayThrow();",
+            "pre-try-conversion" => "ThrowingToken marker = 7;",
+            "early-disposal" => "await lease.DisposeAsync().ConfigureAwait(false);",
+            "replaced-lease" => "lease = null!;",
+            _ => string.Empty,
+        };
+
+        string cleanup = shape switch
+        {
+            "wrong-cleanup" => "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease wrong = null!; await wrong.DisposeAsync().ConfigureAwait(false);",
+            "conditional-cleanup" => "if (token.IsCancellationRequested) await lease.DisposeAsync().ConfigureAwait(false);",
+            "unawaited-cleanup" => "_ = lease.DisposeAsync();",
+            "nested-finally" => "try { await Task.CompletedTask; } finally { await lease.DisposeAsync().ConfigureAwait(false); }",
+            "cleanup-leading-throwing-call" => "MayThrow(); await lease.DisposeAsync().ConfigureAwait(false);",
+            "pre-cleanup-conversion" => "ThrowingToken marker = 7; await lease.DisposeAsync().ConfigureAwait(false);",
+            "lease-replacement-before-cleanup" => "lease = null!; await lease.DisposeAsync().ConfigureAwait(false);",
+            "conditional-expression-cleanup" => "await (token.IsCancellationRequested ? lease.DisposeAsync() : ValueTask.CompletedTask);",
+            "switch-expression-cleanup" => "await (token.IsCancellationRequested switch { true => lease.DisposeAsync(), false => ValueTask.CompletedTask });",
+            "coalescing-expression-cleanup" => "await ((ValueTask?)default(ValueTask) ?? lease.DisposeAsync());",
+            _ => "await lease.DisposeAsync().ConfigureAwait(false);",
+        };
+
+        string body = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate = null!; "
+            + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return; "
+            + (shape == "pre-lease-throwing-call" ? "MayThrow(); "
+                : shape == "pre-lease-conversion" ? "ThrowingToken marker = 7; " : string.Empty)
+            + (shape == "lease-downcast" ? "OtherLease lease = (OtherLease)work; "
+                : "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease = work; ")
+            + prelude
+            + " try { "
+            + (shape == "lease-replacement-before-read" ? "lease = null!; " : string.Empty)
+            + "await Task.CompletedTask; _ = System.IO.File.Exists(\"manual-prelude-frontier\"); } finally { "
+            + cleanup
+            + " }";
+
+        string source = "#nullable enable\n" + R2Source(body).Replace(
+            "public async Task StartAsync",
+            "private static object MayThrow() => throw new InvalidOperationException(); "
+                + "private readonly struct ThrowingToken { public static implicit operator ThrowingToken(int value) => throw new InvalidOperationException(); } "
+                + "private sealed class OtherLease : RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease { "
+                + "public bool TryBeginExternalEffectGroup(out IDisposable group) { group = null!; return false; } "
+                + "public void Dispose() { } public ValueTask DisposeAsync() => ValueTask.CompletedTask; } "
+                + "public async Task StartAsync",
+            StringComparison.Ordinal);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        MethodDeclarationSyntax root = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(),
+            static method => method.Identifier.ValueText == "StartAsync");
+
+        InvocationExpressionSyntax acquisition = Assert.Single(root.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            static call => call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "TryAcquireWorkLease" });
+
+        var admitted = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(acquisition));
+
+        Assert.Equal("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate", admitted.TargetMethod.ContainingType.ToDisplayString());
+
+        VariableDeclaratorSyntax lease = Assert.Single(root.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+            static variable => variable.Identifier.ValueText == "lease");
+
+        if (shape == "lease-downcast")
+        {
+            CastExpressionSyntax cast = Assert.IsType<CastExpressionSyntax>(lease.Initializer!.Value);
+
+            var conversion = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(model.GetOperation(cast));
+
+            Assert.False(conversion.IsImplicit);
+
+            Assert.True(conversion.Conversion.IsReference);
+
+            Assert.Equal("work", Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(conversion.Operand).Local.Name);
+        }
+        else Assert.Equal("work", Assert.IsType<IdentifierNameSyntax>(lease.Initializer!.Value).Identifier.ValueText);
+
+        if (shape is "pre-lease-conversion" or "pre-try-conversion" or "pre-cleanup-conversion")
+        {
+            VariableDeclaratorSyntax marker = Assert.Single(root.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+                static variable => variable.Identifier.ValueText == "marker");
+
+            var initializer = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IVariableInitializerOperation>(model.GetOperation(marker.Initializer!));
+
+            var conversion = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IConversionOperation>(initializer.Value);
+
+            Assert.True(conversion.IsImplicit && conversion.Conversion.IsUserDefined);
+
+            Assert.NotNull(conversion.OperatorMethod);
+
+            Assert.Equal(compilation.Assembly.Identity, conversion.OperatorMethod!.ContainingAssembly.Identity);
+
+            Assert.True(model.GetConstantValue(marker.Initializer!.Value).HasValue);
+        }
+
+        TryStatementSyntax protector = Assert.Single(root.DescendantNodes().OfType<TryStatementSyntax>(),
+            candidate => candidate.Parent == root.Body);
+
+        Assert.NotNull(protector.Finally);
+
+        Assert.True(acquisition.Span.End < lease.SpanStart && lease.Span.End < protector.SpanStart);
+
+        InvocationExpressionSyntax physicalRead = Assert.Single(protector.Block.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            static call => call.Expression.ToString() == "System.IO.File.Exists");
+
+        Assert.Equal("System.IO.File", Assert.IsAssignableFrom<IMethodSymbol>(model.GetSymbolInfo(physicalRead).Symbol).ContainingType.ToDisplayString());
+
+        if (shape is "lease-replacement-before-read" or "lease-replacement-before-cleanup")
+        {
+            ILocalSymbol held = Assert.IsAssignableFrom<ILocalSymbol>(model.GetDeclaredSymbol(lease));
+
+            AssignmentExpressionSyntax replacement = Assert.Single(root.DescendantNodes().OfType<AssignmentExpressionSyntax>(),
+                assignment => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(assignment.Left).Symbol, held));
+
+            if (shape == "lease-replacement-before-read")
+            {
+                Assert.True(protector.Block.Span.Contains(replacement.Span));
+
+                Assert.True(replacement.Span.End < physicalRead.SpanStart);
+            }
+            else
+            {
+                Assert.True(protector.Finally!.Block.Span.Contains(replacement.Span));
+
+                InvocationExpressionSyntax cleanupCall = Assert.Single(protector.Finally.Block.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                    call => call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "DisposeAsync" });
+
+                Assert.True(replacement.Span.End < cleanupCall.SpanStart);
+            }
+        }
+
+        if (shape is "conditional-expression-cleanup" or "switch-expression-cleanup" or "coalescing-expression-cleanup")
+        {
+            InvocationExpressionSyntax cleanupCall = Assert.Single(protector.Finally!.Block.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                call => call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "DisposeAsync" });
+
+            var invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(cleanupCall));
+
+            Assert.Equal("System.IAsyncDisposable", invocation.TargetMethod.ContainingType.ToDisplayString());
+
+            Assert.Equal("lease", Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.ILocalReferenceOperation>(invocation.Instance).Local.Name);
+
+            Assert.Empty(invocation.Arguments);
+
+            Assert.Single(protector.Finally.Block.DescendantNodes().OfType<AwaitExpressionSyntax>());
+
+            if (shape == "conditional-expression-cleanup")
+            {
+                ConditionalExpressionSyntax choice = Assert.Single(protector.Finally.Block.DescendantNodes().OfType<ConditionalExpressionSyntax>());
+
+                Assert.Equal(cleanupCall.Span, choice.WhenTrue.Span);
+
+                Assert.Equal("ValueTask.CompletedTask", choice.WhenFalse.ToString());
+            }
+            else if (shape == "switch-expression-cleanup")
+            {
+                SwitchExpressionSyntax choice = Assert.Single(protector.Finally.Block.DescendantNodes().OfType<SwitchExpressionSyntax>());
+
+                Assert.Equal(2, choice.Arms.Count);
+
+                Assert.Equal(cleanupCall.Span, choice.Arms[0].Expression.Span);
+
+                Assert.Equal("ValueTask.CompletedTask", choice.Arms[1].Expression.ToString());
+            }
+            else
+            {
+                BinaryExpressionSyntax choice = Assert.Single(protector.Finally.Block.DescendantNodes().OfType<BinaryExpressionSyntax>(),
+                    expression => expression.IsKind(SyntaxKind.CoalesceExpression));
+
+                Assert.Equal(cleanupCall.Span, choice.Right.Span);
+
+                CastExpressionSyntax occupied = Assert.IsType<CastExpressionSyntax>(choice.Left);
+
+                Assert.Equal("System.Threading.Tasks.ValueTask?", model.GetTypeInfo(occupied).Type!.ToDisplayString());
+
+                Assert.IsType<DefaultExpressionSyntax>(occupied.Expression);
+            }
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        HostedProducerSite acquired = Assert.Single(result.Items,
+            static site => site.RootType == "Worker" && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease");
+
+        HostedProducerSite reached = Assert.Single(result.Items,
+            static site => site.RootType == "Worker" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(GrimoireWorkKind.WorkspaceIndexing, acquired.AdmittedWorkKind);
+
+        output.WriteLine($"R196_MANUAL_PRELUDE_GUARDS={shape}|compilerAcquisitionFinallyAndRead=passed");
+
+        if (retained)
+        {
+            Assert.Equal(acquired.CapsuleId, reached.WorkFrontierCapsuleId);
+        }
+        else
+        {
+            Assert.Null(reached.WorkFrontierCapsuleId);
+        }
+    }
+
+    [Theory]
     [InlineData("{ using var lease = work; System.IO.File.Exists(\"path\"); }", true)]
     [InlineData("try { using var lease = work; System.IO.File.Exists(\"path\"); } finally { }", true)]
     [InlineData("object marker; { using var lease = work; System.IO.File.Exists(\"path\"); }", true)]
@@ -10419,6 +17564,125 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             Assert.All(contexts, static context => Assert.NotEmpty(context.GetMembers("Default")));
 
             Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+        }
+    }
+
+    [Theory]
+    [InlineData("override", true)]
+    [InlineData("override", false)]
+    [InlineData("explicit", true)]
+    [InlineData("inherited", true)]
+    [InlineData("inherited", false)]
+    [InlineData("multiple", true)]
+    [InlineData("mixed-default", true)]
+    [InlineData("concrete", true)]
+    [InlineData("unknown", true)]
+    [InlineData("mixed-unknown", true)]
+    [InlineData("missing", true)]
+    [InlineData("counterfeit-namespace", true)]
+    public void DefaultInterfaceDispatchUsesOnlyCompilerEffectiveClosedTargets(string shape, bool admitted)
+    {
+        const string contract = "public interface IDefaultExecutor { Task RunAsync(Action callback) { callback(); System.IO.Directory.Delete(\"inherited\"); return Task.CompletedTask; } }";
+
+        const string implementations = "public sealed class Override : IDefaultExecutor { public Task RunAsync(Action callback) { callback(); System.IO.File.Delete(\"override\"); return Task.CompletedTask; } } public sealed class Explicit : IDefaultExecutor { Task IDefaultExecutor.RunAsync(Action callback) { callback(); System.IO.File.WriteAllText(\"explicit\", \"value\"); return Task.CompletedTask; } } public sealed class Inherited : IDefaultExecutor { } public sealed class Unregistered : IDefaultExecutor { public Task RunAsync(Action callback) { System.IO.Directory.CreateDirectory(\"unregistered\"); return Task.CompletedTask; } } public static class DefaultBridge { public static Task RunAsync(IDefaultExecutor executor, Action callback) => executor.RunAsync(callback); } public static class UnknownDefaultFactory { public static IDefaultExecutor Create() => throw new NotSupportedException(); } namespace Counterfeit { public interface IDefaultExecutor { Task RunAsync(Action callback) => Task.CompletedTask; } public sealed class Override : IDefaultExecutor { public Task RunAsync(Action callback) { System.IO.Directory.CreateDirectory(\"counterfeit\"); return Task.CompletedTask; } } }";
+
+        string registration = shape switch
+        {
+            "explicit" => "services.AddSingleton<IDefaultExecutor, Explicit>();",
+            "inherited" => "services.AddSingleton<IDefaultExecutor, Inherited>();",
+            "multiple" => "services.AddSingleton<IDefaultExecutor>(sp => DateTime.UtcNow.Ticks > 0 ? new Override() : new Explicit());",
+            "mixed-default" => "services.AddSingleton<IDefaultExecutor>(sp => DateTime.UtcNow.Ticks > 0 ? new Override() : new Inherited());",
+            "concrete" => "services.AddSingleton<IDefaultExecutor, Explicit>();",
+            "unknown" => "services.AddSingleton<IDefaultExecutor>(sp => UnknownDefaultFactory.Create());",
+            "mixed-unknown" => "services.AddSingleton<IDefaultExecutor>(sp => DateTime.UtcNow.Ticks > 0 ? new Override() : UnknownDefaultFactory.Create());",
+            "missing" => "",
+            "counterfeit-namespace" => "services.AddSingleton<Counterfeit.IDefaultExecutor, Counterfeit.Override>();",
+            _ => "services.AddSingleton<IDefaultExecutor, Override>();",
+        };
+
+        string receiver = shape == "concrete" ? "new Override()" : "null!";
+
+        string source = R2Source((admitted ? R2Admission : "")
+            + "await DefaultBridge.RunAsync(" + receiver + ", () => System.IO.File.Exists(\"callback\"));",
+            contract + implementations).Replace("services.AddHostedService<Worker>();", "services.AddHostedService<Worker>(); " + registration, StringComparison.Ordinal);
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        bool unknown = shape is "unknown" or "mixed-unknown" or "missing" or "counterfeit-namespace";
+
+        string[] expected = shape switch
+        {
+            "explicit" => ["System.IO.File.WriteAllText"],
+            "inherited" => ["System.IO.Directory.Delete"],
+            "multiple" => ["System.IO.File.Delete", "System.IO.File.WriteAllText"],
+            "mixed-default" => ["System.IO.Directory.Delete", "System.IO.File.Delete"],
+            "unknown" or "missing" or "counterfeit-namespace" => [],
+            _ => ["System.IO.File.Delete"],
+        };
+
+        Assert.Equal(expected.Order(StringComparer.Ordinal), result.Items.Where(static site => site.Kind == HostedProducerSiteKind.FileSystemEffect)
+            .Select(static site => site.Callee).Distinct().Order(StringComparer.Ordinal));
+
+        Assert.Equal(unknown, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED"
+            && diagnostic.Detail == "IDefaultExecutor.RunAsync"));
+
+        foreach (HostedProducerSite site in result.Items.Where(static site => site.Kind is HostedProducerSiteKind.FileSystemEffect or HostedProducerSiteKind.FileSystemRead))
+        {
+            Assert.Equal(admitted, site.WorkFrontierCapsuleId is not null);
+
+            if (site.Kind == HostedProducerSiteKind.FileSystemEffect) Assert.Equal(admitted, site.EffectFrontierCapsuleId is not null);
+        }
+
+        Assert.Equal(expected.Length != 0, result.Items.Any(static site => site.Callee == "System.IO.File.Exists"));
+
+        if (admitted && !unknown) Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DefaultInterfaceDispatchPreservesCrossProjectPrimaryConstructorPartialAndAssemblyIdentity(bool counterfeit)
+    {
+        const string contract = "using System; using System.Threading.Tasks; public interface IDefaultExecutor { Task RunAsync(Action callback) => throw new NotSupportedException(); }";
+
+        CSharpCompilation core = Compile(contract).WithAssemblyName("DefaultDispatch.Core");
+
+        CSharpCompilation decoy = Compile(contract + " public sealed class Decoy : IDefaultExecutor { public Task RunAsync(Action callback) { System.IO.File.WriteAllText(\"decoy\", \"value\"); return Task.CompletedTask; } }")
+            .WithAssemblyName("DefaultDispatch.Decoy");
+
+        string source = R2Source(R2Admission + "await new Bridge(null!).RunAsync(() => System.IO.File.Exists(\"callback\"));",
+            "public sealed class Bridge(IDefaultExecutor executor) { public Task RunAsync(Action callback) => executor.RunAsync(callback); } public sealed partial class Executor(object dependency) : IDefaultExecutor { }")
+            .Replace("services.AddHostedService<Worker>();", "services.AddHostedService<Worker>(); " + (counterfeit ? "" : "services.AddSingleton<IDefaultExecutor, Executor>();"), StringComparison.Ordinal);
+
+        CSharpCompilation api = Compile(source).WithAssemblyName("DefaultDispatch.Api").AddReferences(core.ToMetadataReference())
+            .AddSyntaxTrees(CSharpSyntaxTree.ParseText("using System; using System.Threading.Tasks; public sealed partial class Executor { public Task RunAsync(Action callback) { callback(); System.IO.File.Delete(\"actual\"); return Task.CompletedTask; } }", path: "src/Executor.Partial.cs"));
+
+        CSharpCompilation composition = Compile("using Microsoft.Extensions.DependencyInjection; public static class OtherComposition { public static void Configure(IServiceCollection services) => services.AddSingleton<IDefaultExecutor, Decoy>(); }")
+            .WithAssemblyName("DefaultDispatch.OtherComposition").AddReferences(decoy.ToMetadataReference());
+
+        CSharpCompilation[] compilations = [core, api, decoy, composition];
+
+        Assert.All(compilations, static compilation => Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(compilations,
+            new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Equal(!counterfeit, result.Items.Any(static site => site.EnclosingType == "Executor" && site.Callee == "System.IO.File.Delete"));
+
+        Assert.DoesNotContain(result.Items, static site => site.EnclosingType == "Decoy");
+
+        Assert.Equal(counterfeit, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_CALL_TARGET_UNRESOLVED"
+            && diagnostic.Detail == "IDefaultExecutor.RunAsync"));
+
+        if (!counterfeit)
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Exists" && site.WorkFrontierCapsuleId is not null);
+
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete" && site.WorkFrontierCapsuleId is not null && site.EffectFrontierCapsuleId is not null);
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                or "HOSTED_SITE_WORK_FRONTIER_MISSING" or "HOSTED_SITE_EFFECT_FRONTIER_MISSING");
         }
     }
 
@@ -11103,6 +18367,297 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail.EndsWith(".Path setter", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void AnUnreviewedOrdinaryAuthoredExternCallIsUnclassified()
+    {
+        const string helper = "internal static class OpaqueBoundary { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall)] internal static extern void Invoke<T>(); }";
+
+        CSharpCompilation compilation = Compile(FixtureSource("OpaqueBoundary.Invoke<object>();", helper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        Assert.Equal("src/Fixture.cs", tree.FilePath);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        Assert.Same(compilation, model.Compilation);
+
+        Assert.Same(tree, model.SyntaxTree);
+
+        InvocationExpressionSyntax invocation = Assert.Single(tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.ToString() == "OpaqueBoundary.Invoke<object>()");
+
+        var operation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(invocation));
+
+        Assert.Same(tree, operation.Syntax.SyntaxTree);
+
+        Assert.Equal(invocation.Span, operation.Syntax.Span);
+
+        Assert.Equal(invocation.ToString(), operation.Syntax.ToString());
+
+        IMethodSymbol selected = operation.TargetMethod;
+
+        SymbolInfo selection = model.GetSymbolInfo(invocation);
+
+        Assert.Empty(selection.CandidateSymbols);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected, selection.Symbol));
+
+        Assert.Equal(MethodKind.Ordinary, selected.MethodKind);
+
+        Assert.True(selected.IsStatic);
+
+        Assert.True(selected.ReturnsVoid);
+
+        Assert.Equal(1, selected.Arity);
+
+        Assert.Empty(selected.Parameters);
+
+        Assert.Null(selected.ReducedFrom);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetSpecialType(SpecialType.System_Object), Assert.Single(selected.TypeArguments)));
+
+        Assert.Equal(TypeKind.Class, selected.ContainingType.TypeKind);
+
+        Assert.Equal("OpaqueBoundary", selected.ContainingType.Name);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, selected.ContainingAssembly));
+
+        MethodDeclarationSyntax declaration = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Invoke");
+
+        IMethodSymbol declared = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(declaration));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(declared, selected.OriginalDefinition));
+
+        SyntaxReference declarationReference = Assert.Single(selected.DeclaringSyntaxReferences);
+
+        Assert.Same(tree, declarationReference.SyntaxTree);
+
+        Assert.Equal(declaration.Span, declarationReference.Span);
+
+        Location location = Assert.Single(declared.Locations);
+
+        Assert.True(location.IsInSource);
+
+        Assert.Same(tree, location.SourceTree);
+
+        Assert.Equal(declaration.Identifier.Span, location.SourceSpan);
+
+        MethodDeclarationSyntax root = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "StartAsync");
+
+        Assert.NotNull(root.Body);
+
+        Assert.Equal(2, root.Body.Statements.Count);
+
+        ExpressionStatementSyntax statement = Assert.IsType<ExpressionStatementSyntax>(root.Body.Statements[0]);
+
+        Assert.Equal(invocation.Span, statement.Expression.Span);
+
+        Assert.IsType<ReturnStatementSyntax>(root.Body.Statements[1]);
+
+        Assert.True(selected.IsExtern);
+
+        Assert.Null(declaration.Body);
+
+        Assert.Null(declaration.ExpressionBody);
+
+        Assert.Contains(declaration.Modifiers, static modifier => modifier.IsKind(SyntaxKind.ExternKeyword));
+
+        AttributeSyntax attribute = Assert.Single(declaration.AttributeLists.SelectMany(static list => list.Attributes));
+
+        IMethodSymbol attributeConstructor = Assert.IsAssignableFrom<IMethodSymbol>(model.GetSymbolInfo(attribute).Symbol);
+
+        INamedTypeSymbol attributeType = compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.MethodImplAttribute")!;
+
+        INamedTypeSymbol optionsType = compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.MethodImplOptions")!;
+
+        Assert.NotNull(attributeType);
+
+        Assert.NotNull(optionsType);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(attributeType, attributeConstructor.ContainingType));
+
+        Assert.Equal(MethodKind.Constructor, attributeConstructor.MethodKind);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(optionsType, Assert.Single(attributeConstructor.Parameters).Type));
+
+        Assert.All(attributeType.Locations, static item => Assert.True(item.IsInMetadata));
+
+        Assert.Equal(typeof(MethodImplAttribute).Assembly.GetName().Name, attributeType.ContainingAssembly.Identity.Name);
+
+        AttributeArgumentSyntax attributeArgument = Assert.Single(attribute.ArgumentList!.Arguments);
+
+        IFieldSymbol option = Assert.IsAssignableFrom<IFieldSymbol>(model.GetSymbolInfo(attributeArgument.Expression).Symbol);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(optionsType, option.ContainingType));
+
+        Assert.Equal("InternalCall", option.Name);
+
+        Optional<object?> constant = model.GetConstantValue(attributeArgument.Expression);
+
+        Assert.True(constant.HasValue);
+
+        Assert.Equal((int)MethodImplOptions.InternalCall, Assert.IsType<int>(constant.Value));
+
+        var registrations = HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]);
+
+        Assert.Empty(registrations.Diagnostics);
+
+        Assert.Equal(["Worker"], registrations.Items);
+
+        output.WriteLine("R96_PREREQUISITES compilerErrors=0 compilerWarnings=0 source={0} callSpan={1} declarationSpan={2} selected={3} original={4} assembly={5} static={6} extern={7} ordinary=true void=true arity=1 parameters=0 typeArgument=System.Object sameCompilation=true sameTree=true exactRootOnlyCall=true registration=Worker registrationDiagnostics=0 {8}", tree.FilePath, invocation.Span, declaration.Span, selected.ToDisplayString(), declared.ToDisplayString(), compilation.Assembly.Identity, selected.IsStatic, selected.IsExtern, "frameworkMethodImpl=exact InternalCall=4096 absentBody=true");
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], registrations, [], []);
+
+        output.WriteLine("R96_OBSERVATION diagnosticCount={0} siteCount={1}", result.Diagnostics.Count, result.Items.Count);
+
+        foreach (var diagnostic in result.Diagnostics)
+        {
+            output.WriteLine("R96_DIAGNOSTIC code={0} identity={1} detail={2}", diagnostic.Code, diagnostic.Identity, diagnostic.Detail);
+        }
+
+        string expectedIdentity = "src/Fixture.cs:" + invocation.SpanStart;
+
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Identity == expectedIdentity && diagnostic.Detail == "OpaqueBoundary.Invoke");
+
+        Assert.All(result.Diagnostics, diagnostic =>
+        {
+            Assert.Equal("HOSTED_SITE_UNCLASSIFIED", diagnostic.Code);
+
+            Assert.Equal(expectedIdentity, diagnostic.Identity);
+
+            Assert.Equal("OpaqueBoundary.Invoke", diagnostic.Detail);
+        });
+
+        Assert.Empty(result.Items);
+    }
+
+    [Fact]
+    public void AnAuthoredEmptyBodyCallRemainsClassified()
+    {
+        const string helper = "internal static class OpaqueBoundary { internal static void Invoke<T>() { } }";
+
+        CSharpCompilation compilation = Compile(FixtureSource("OpaqueBoundary.Invoke<object>();", helper));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        SyntaxTree tree = Assert.Single(compilation.SyntaxTrees);
+
+        Assert.Equal("src/Fixture.cs", tree.FilePath);
+
+        SemanticModel model = compilation.GetSemanticModel(tree);
+
+        Assert.Same(compilation, model.Compilation);
+
+        Assert.Same(tree, model.SyntaxTree);
+
+        InvocationExpressionSyntax invocation = Assert.Single(tree.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>(), static call => call.ToString() == "OpaqueBoundary.Invoke<object>()");
+
+        var operation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(invocation));
+
+        Assert.Same(tree, operation.Syntax.SyntaxTree);
+
+        Assert.Equal(invocation.Span, operation.Syntax.Span);
+
+        Assert.Equal(invocation.ToString(), operation.Syntax.ToString());
+
+        IMethodSymbol selected = operation.TargetMethod;
+
+        SymbolInfo selection = model.GetSymbolInfo(invocation);
+
+        Assert.Empty(selection.CandidateSymbols);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(selected, selection.Symbol));
+
+        Assert.Equal(MethodKind.Ordinary, selected.MethodKind);
+
+        Assert.True(selected.IsStatic);
+
+        Assert.True(selected.ReturnsVoid);
+
+        Assert.Equal(1, selected.Arity);
+
+        Assert.Empty(selected.Parameters);
+
+        Assert.Null(selected.ReducedFrom);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.GetSpecialType(SpecialType.System_Object), Assert.Single(selected.TypeArguments)));
+
+        Assert.Equal(TypeKind.Class, selected.ContainingType.TypeKind);
+
+        Assert.Equal("OpaqueBoundary", selected.ContainingType.Name);
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(compilation.Assembly, selected.ContainingAssembly));
+
+        MethodDeclarationSyntax declaration = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "Invoke");
+
+        IMethodSymbol declared = Assert.IsAssignableFrom<IMethodSymbol>(model.GetDeclaredSymbol(declaration));
+
+        Assert.True(SymbolEqualityComparer.Default.Equals(declared, selected.OriginalDefinition));
+
+        SyntaxReference declarationReference = Assert.Single(selected.DeclaringSyntaxReferences);
+
+        Assert.Same(tree, declarationReference.SyntaxTree);
+
+        Assert.Equal(declaration.Span, declarationReference.Span);
+
+        Location location = Assert.Single(declared.Locations);
+
+        Assert.True(location.IsInSource);
+
+        Assert.Same(tree, location.SourceTree);
+
+        Assert.Equal(declaration.Identifier.Span, location.SourceSpan);
+
+        MethodDeclarationSyntax root = Assert.Single(tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(), static method => method.Identifier.ValueText == "StartAsync");
+
+        Assert.NotNull(root.Body);
+
+        Assert.Equal(2, root.Body.Statements.Count);
+
+        ExpressionStatementSyntax statement = Assert.IsType<ExpressionStatementSyntax>(root.Body.Statements[0]);
+
+        Assert.Equal(invocation.Span, statement.Expression.Span);
+
+        Assert.IsType<ReturnStatementSyntax>(root.Body.Statements[1]);
+
+        Assert.False(selected.IsExtern);
+
+        Assert.NotNull(declaration.Body);
+
+        Assert.Empty(declaration.Body.Statements);
+
+        Assert.Null(declaration.ExpressionBody);
+
+        Assert.DoesNotContain(declaration.Modifiers, static modifier => modifier.IsKind(SyntaxKind.ExternKeyword));
+
+        Assert.Empty(declaration.AttributeLists);
+
+        Assert.Empty(declared.GetAttributes());
+
+        var registrations = HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]);
+
+        Assert.Empty(registrations.Diagnostics);
+
+        Assert.Equal(["Worker"], registrations.Items);
+
+        output.WriteLine("R96_PREREQUISITES compilerErrors=0 compilerWarnings=0 source={0} callSpan={1} declarationSpan={2} selected={3} original={4} assembly={5} static={6} extern={7} ordinary=true void=true arity=1 parameters=0 typeArgument=System.Object sameCompilation=true sameTree=true exactRootOnlyCall=true registration=Worker registrationDiagnostics=0 {8}", tree.FilePath, invocation.Span, declaration.Span, selected.ToDisplayString(), declared.ToDisplayString(), compilation.Assembly.Identity, selected.IsStatic, selected.IsExtern, "realEmptyBody=true attributeAbsent=true");
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], registrations, [], []);
+
+        output.WriteLine("R96_OBSERVATION diagnosticCount={0} siteCount={1}", result.Diagnostics.Count, result.Items.Count);
+
+        foreach (var diagnostic in result.Diagnostics)
+        {
+            output.WriteLine("R96_DIAGNOSTIC code={0} identity={1} detail={2}", diagnostic.Code, diagnostic.Identity, diagnostic.Detail);
+        }
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Empty(result.Items);
+    }
+
     [Theory]
     [InlineData("RtlNtStatusToDosError", false)]
     [InlineData("UnexpectedNativeHelper", true)]
@@ -11541,7 +19096,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("if (!lease.TryBeginExternalEffectGroup(out var group)) return Task.CompletedTask; using var held = group; System.IO.File.Delete(\"path\");", true)]
     public void OrdinaryEffectsMustBeInsideTheRetainedGroup(string body, bool protectedEffect)
     {
-        string source = FixtureSource("RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease = null!; " + body, "namespace RetroDownfall.Arcanum.Infrastructure.Data { public interface IGrimoireWorkLease { bool TryBeginExternalEffectGroup(out System.IDisposable group); } }");
+        // The group is begun on a lease the worker really acquired: a group on a `null!` lease is no Effect at all (Lease Receiver
+        // Proof), and what this theory pins is where the retained group begins and ends.
+        string source = FixtureSource(AcquireWork + " " + body, AdmissionTypes);
 
         CSharpCompilation compilation = Compile(source);
 
@@ -11685,6 +19242,98 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     }
 
     [Fact]
+    public void ProductionGraphGuardChecksTheCompilationInputNotMethodCooccurrence()
+    {
+        const string direct = """
+            class Fixture
+            {
+                void Check() => HostedGrimoireProducerInventory.DiscoverProducerSites(
+                    HostedGrimoireProducerInventory.ProductionCompilations, hosted, roots, nonHosted);
+            }
+            """;
+        const string unchangedAlias = """
+            class Fixture
+            {
+                void Check()
+                {
+                    IReadOnlyList<CSharpCompilation> compilations = HostedGrimoireProducerInventory.ProductionCompilations;
+                    HostedGrimoireProducerInventory.DiscoverProducerSites(compilations, hosted, roots, nonHosted);
+                }
+            }
+            """;
+        const string extractedFixture = """
+            class Fixture
+            {
+                void Check()
+                {
+                    MetadataReference[] references = HostedGrimoireProducerInventory.ProductionCompilations
+                        .SelectMany(static compilation => compilation.References).ToArray();
+                    CSharpCompilation fixture = CompileFixture(references);
+                    HostedGrimoireProducerInventory.DiscoverProducerSites([fixture], hosted, roots, nonHosted);
+                }
+            }
+            """;
+        const string composedOverlay = """
+            class Fixture
+            {
+                void Check()
+                {
+                    var production = HostedGrimoireProducerInventory.ProductionCompilations;
+                    var graph = production.Where(IsUnmodifiedDependency).Append(overlaidApi).Append(overlaidCli).ToArray();
+                    HostedGrimoireProducerInventory.DiscoverProducerSites(graph, hosted, roots, nonHosted);
+                }
+            }
+            """;
+
+        Assert.False(IsRawProductionGraphDiscovery(ParseMethod(extractedFixture)));
+        Assert.True(IsRawProductionGraphDiscovery(ParseMethod(direct)));
+        Assert.True(IsRawProductionGraphDiscovery(ParseMethod(unchangedAlias)));
+        Assert.False(IsRawProductionGraphDiscovery(ParseMethod(composedOverlay)));
+    }
+
+    private static MethodDeclarationSyntax ParseMethod(string source) =>
+        CSharpSyntaxTree.ParseText(source).GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+
+    private static bool IsRawProductionGraphDiscovery(MethodDeclarationSyntax method) =>
+        method.DescendantNodes().OfType<InvocationExpressionSyntax>().Any(invocation =>
+            invocation.Expression is MemberAccessExpressionSyntax discover
+            && discover.Name.Identifier.ValueText == "DiscoverProducerSites"
+            && invocation.ArgumentList.Arguments.FirstOrDefault() is { } firstArgument
+            && IsDirectProductionCompilationOrSingleUnchangedAlias(firstArgument.Expression, method));
+
+    private static bool IsDirectProductionCompilationOrSingleUnchangedAlias(
+        ExpressionSyntax expression,
+        MethodDeclarationSyntax method)
+    {
+        if (expression is MemberAccessExpressionSyntax property
+            && property.Name.Identifier.ValueText == "ProductionCompilations"
+            && property.Expression.ToString().EndsWith("HostedGrimoireProducerInventory", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (expression is not IdentifierNameSyntax identifier) return false;
+
+        VariableDeclaratorSyntax[] declarations = method.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+            .Where(declaration => declaration.Identifier.ValueText == identifier.Identifier.ValueText
+                && declaration.Initializer is not null
+                && ReferenceEquals(declaration.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault(), method))
+            .ToArray();
+
+        if (declarations.Length != 1 || HasAssignmentToIdentifier(method, identifier.Identifier.ValueText)) return false;
+
+        ExpressionSyntax initializer = declarations[0].Initializer!.Value;
+
+        return initializer is MemberAccessExpressionSyntax source
+            && source.Name.Identifier.ValueText == "ProductionCompilations"
+            && source.Expression.ToString().EndsWith("HostedGrimoireProducerInventory", StringComparison.Ordinal);
+    }
+
+    private static bool HasAssignmentToIdentifier(MethodDeclarationSyntax method, string name) =>
+        method.DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment =>
+            assignment.Left is IdentifierNameSyntax identifier && identifier.Identifier.ValueText == name);
+
+    [Fact]
     public void ProductionWholeGraphDiscoveryIsOwnedOnlyByMemoizedSupportFactories()
     {
         string testRoot = Path.Combine(
@@ -11697,25 +19346,17 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             .Where(static path => !path.Contains(
                 $"{Path.DirectorySeparatorChar}Support{Path.DirectorySeparatorChar}",
                 StringComparison.Ordinal))
-            .SelectMany(path => CSharpSyntaxTree
-                .ParseText(File.ReadAllText(path), path: path)
-                .GetRoot()
-                .DescendantNodes()
-                .OfType<MethodDeclarationSyntax>()
-                .Where(static method => method.DescendantNodes()
-                    .OfType<MemberAccessExpressionSyntax>()
-                    .Any(static access => access.Name.Identifier.ValueText
-                        == "ProductionCompilations"))
-                .Where(static method => method.DescendantNodes()
-                    .OfType<InvocationExpressionSyntax>()
-                    .Any(static invocation => invocation.Expression
-                        is MemberAccessExpressionSyntax access
-                        && access.Name.Identifier.ValueText
-                            == "DiscoverProducerSites"))
-                .Select(method =>
-                    $"{Path.GetRelativePath(testRoot, path)}:"
-                    + $"{method.GetLocation().GetLineSpan().StartLinePosition.Line + 1}:"
-                    + method.Identifier.ValueText))
+            .SelectMany(path =>
+            {
+                SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(path), path: path).GetRoot();
+
+                return root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                    .Where(IsRawProductionGraphDiscovery)
+                    .Select(candidate =>
+                        $"{Path.GetRelativePath(testRoot, path)}:"
+                        + $"{candidate.GetLocation().GetLineSpan().StartLinePosition.Line + 1}:"
+                        + candidate.Identifier.ValueText);
+            })
             .Order(StringComparer.Ordinal)
             .ToArray();
 
@@ -13795,6 +21436,111 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.Equal(1, condition.MaximumEvaluationsPerTraversalState);
     }
 
+    [Theory]
+    [InlineData("nameof(value)", false)]
+    [InlineData("nameof(value.Level)", false)]
+    [InlineData("nameof(value.Effectful)", false)]
+    [InlineData("(nameof(value.Level))", false)]
+    [InlineData("nameof(value.Level) + \"-suffix\"", false)]
+    [InlineData("ReadName(nameof(value.Level))", false)]
+    [InlineData("value.Level", true)]
+    [InlineData("value.Effectful", true)]
+    [InlineData("ReadValue(value, nameof(value.Level))", true)]
+    [InlineData("nameof(value.Level) + value.Level", true)]
+    [InlineData("value.Level > 0 ? nameof(value.Level) : \"fixed\"", true)]
+    [InlineData("@nameof(value)", true)]
+    public void CompileTimeNameofDoesNotReadRuntimeArgumentSources(string expression, bool depends)
+    {
+        string escapedMethod = expression == "@nameof(value)"
+            ? "private static int @nameof(Value value) => value.Level;"
+            : string.Empty;
+
+        CSharpCompilation compilation = Compile("""
+            namespace NameofDependencyFixture;
+            internal sealed class Value
+            {
+                internal int Level => 1;
+                internal int Effectful
+                {
+                    get
+                    {
+                        _ = System.IO.File.Exists("nameof-runtime-getter-marker");
+                        return 1;
+                    }
+                }
+            }
+            internal static class Target
+            {
+                private static void Capture(object value) { }
+                private static string ReadName(string value) => value;
+                private static int ReadValue(Value value, string name) => value.Level;
+            """
+            + escapedMethod
+            + "internal static void Run(Value value) { Capture("
+            + expression
+            + "); } }");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic =>
+            diagnostic.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
+
+        INamedTypeSymbol type = Assert.IsAssignableFrom<INamedTypeSymbol>(
+            compilation.GetTypeByMetadataName("NameofDependencyFixture.Target"));
+
+        IMethodSymbol method = Assert.Single(type.GetMembers("Run").OfType<IMethodSymbol>());
+
+        MethodDeclarationSyntax scope = Assert.IsType<MethodDeclarationSyntax>(
+            Assert.Single(method.DeclaringSyntaxReferences).GetSyntax());
+
+        SemanticModel model = compilation.GetSemanticModel(scope.SyntaxTree);
+
+        IParameterSymbol required = Assert.Single(method.Parameters);
+
+        Assert.Equal("value", required.Name);
+
+        InvocationExpressionSyntax capture = Assert.Single(
+            scope.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            call => model.GetSymbolInfo(call).Symbol is IMethodSymbol selected
+                && selected.Name == "Capture"
+                && SymbolEqualityComparer.Default.Equals(selected.ContainingType, type));
+
+        ExpressionSyntax argument = Assert.Single(capture.ArgumentList.Arguments).Expression;
+
+        if (expression == "@nameof(value)")
+        {
+            Microsoft.CodeAnalysis.Operations.IInvocationOperation invocation = Assert.IsAssignableFrom<Microsoft.CodeAnalysis.Operations.IInvocationOperation>(model.GetOperation(argument));
+
+            Assert.Equal("nameof", invocation.TargetMethod.Name);
+
+            Assert.True(SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.ContainingType, type));
+        }
+        else if (expression.Contains("nameof", StringComparison.Ordinal))
+        {
+            Assert.Single(argument.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>(),
+                call => model.GetOperation(call) is Microsoft.CodeAnalysis.Operations.INameOfOperation);
+        }
+
+        HostedProducerDependencyScopeQuery query = new(method, scope, model, argument, required);
+
+        HostedProducerDependencyScopeProbe uncached = Assert.Single(
+            HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, [query], useContext: false));
+
+        HostedProducerDependencyScopeProbe cached = Assert.Single(
+            HostedGrimoireProducerInventory.ProbeDependencyScopes(compilation, [query], useContext: true));
+
+        output.WriteLine("R91_DEPENDENCY expression=" + expression + " expected=" + depends
+            + " uncached=" + uncached.Depends + "/" + uncached.Complete
+            + " cached=" + cached.Depends + "/" + cached.Complete
+            + " compilerErrorsAndWarnings=0");
+
+        Assert.True(uncached.Complete);
+
+        Assert.True(cached.Complete);
+
+        Assert.Equal(depends, uncached.Depends);
+
+        Assert.Equal(depends, cached.Depends);
+    }
+
     [Fact]
     public void ExpressionDependencyQueriesMemoizeCompletedSharedLocalsWithoutChangingOrderingOrCycles()
     {
@@ -14659,6 +22405,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             + "internal static void Run(RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate gate) { "
             + "if (!gate.TryAcquireWorkLease(RetroDownfall.Arcanum.Infrastructure.Data.GrimoireWorkKind.WorkspaceIndexing, out var work)) return; "
             + "using var lease = work; "
+            + "if (!lease.TryBeginExternalEffectGroup(out var group)) return; "
+            + "using var held = group; "
             + effects
             + " } }";
 
@@ -14975,9 +22723,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 .RetainedAdmissions,
             static candidate => candidate.Member == "M:AdmissionDemandTarget.Run");
 
-        Assert.Equal(4, metric.AuthorityQueries);
+        Assert.Equal(2, metric.AuthorityQueries);
 
-        Assert.Equal(4, metric.OriginFreeFastPathReturns);
+        Assert.Equal(2, metric.OriginFreeFastPathReturns);
 
         Assert.Equal(0, metric.SemanticQueries);
     }
@@ -15365,6 +23113,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             && site.Member == "Emit"
             && site.Callee == "System.IO.File.Exists");
 
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static root => root.RootOperation == "Worker.StartAsync").TraversalCalls);
+
         HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
             Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
                 .EvaluationEnvironments,
@@ -15380,11 +23132,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(2, metric.EquivalentKeyNodes);
 
-        Assert.Equal(128, metric.InternerRequests);
+        Assert.Equal(64, metric.InternerRequests);
 
-        Assert.Equal(64, metric.InternerIdentityBuilds);
+        Assert.Equal(32, metric.InternerIdentityBuilds);
 
-        Assert.Equal(127, metric.InternerHits);
+        Assert.Equal(63, metric.InternerHits);
 
         Assert.Equal(1, metric.InternerRegistrations);
     }
@@ -15737,9 +23489,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         string helper = "internal interface IClosedCleanup : System.IDisposable, System.IAsyncDisposable { } "
             + "internal sealed class ClosedCleanup : IClosedCleanup { public void Dispose() => System.IO.File.Exists(\"wrong-public\"); void System.IDisposable.Dispose() => System.IO.File.Delete(\"selected-interface\"); public System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Exists(\"wrong-public\"); return default; } System.Threading.Tasks.ValueTask System.IAsyncDisposable.DisposeAsync() { System.IO.File.Delete(\"selected-interface\"); return default; } } "
             + (multipleImplementations ? "internal sealed class OtherClosedCleanup : IClosedCleanup { public void Dispose() { } public System.Threading.Tasks.ValueTask DisposeAsync() => default; } " : "")
-            + "internal static class ClosedCleanupForwarder { internal static extern IClosedCleanup Unknown(); internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
+            + "internal static class ClosedCleanupForwarder { internal static IClosedCleanup Value { get; set; } = null!; internal static async System.Threading.Tasks.Task Run(IClosedCleanup value) { " + cleanup + " } }";
 
-        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Unknown());", helper);
+        string source = R2Source("await ClosedCleanupForwarder.Run(ClosedCleanupForwarder.Value);", helper);
 
         Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
 
@@ -15914,6 +23666,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             && site.Member == "Delete"
             && site.Callee == "System.IO.File.Delete");
 
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static root => root.RootOperation == "Worker.StartAsync").TraversalCalls);
+
         HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
             Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
                 .EvaluationEnvironments,
@@ -15929,11 +23685,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(4, metric.EquivalentKeyNodes);
 
-        Assert.Equal(128, metric.InternerRequests);
+        Assert.Equal(64, metric.InternerRequests);
 
-        Assert.Equal(64, metric.InternerIdentityBuilds);
+        Assert.Equal(32, metric.InternerIdentityBuilds);
 
-        Assert.Equal(126, metric.InternerHits);
+        Assert.Equal(62, metric.InternerHits);
 
         Assert.Equal(2, metric.InternerRegistrations);
     }
@@ -16188,6 +23944,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             && site.Member == "Route"
             && site.Callee == "System.IO.File.Delete");
 
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static root => root.RootOperation == "Worker.StartAsync").TraversalCalls);
+
         HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
             Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
                 .EvaluationEnvironments,
@@ -16201,13 +23961,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(1, metric.EquivalentKeyBuilds);
 
-        Assert.Equal(2, metric.EquivalentKeyNodes);
+        // The argument is a constant named by its value, so the key no longer descends into the
+        // calling member: one node, the member itself.
+        Assert.Equal(1, metric.EquivalentKeyNodes);
 
-        Assert.Equal(128, metric.InternerRequests);
+        Assert.Equal(64, metric.InternerRequests);
 
-        Assert.Equal(64, metric.InternerIdentityBuilds);
+        Assert.Equal(32, metric.InternerIdentityBuilds);
 
-        Assert.Equal(127, metric.InternerHits);
+        Assert.Equal(63, metric.InternerHits);
 
         Assert.Equal(1, metric.InternerRegistrations);
     }
@@ -16258,6 +24020,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             && site.Member == "Route"
             && site.Callee == "System.IO.File.Delete");
 
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED" or "HOSTED_CALL_TARGET_UNRESOLVED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED" or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED");
+
+        Assert.Equal(2, Assert.Single(result.AnalysisMetrics!.RootTraversals, static root => root.RootOperation == "Worker.StartAsync").TraversalCalls);
+
         HostedProducerEvaluationEnvironmentMetric metric = Assert.Single(
             Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics)
                 .EvaluationEnvironments,
@@ -16271,13 +24037,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(2, metric.EquivalentKeyBuilds);
 
-        Assert.Equal(4, metric.EquivalentKeyNodes);
+        // Each argument is a constant named by its value, so the key no longer descends into the
+        // calling member: one node per environment, and the two values still key apart.
+        Assert.Equal(2, metric.EquivalentKeyNodes);
 
-        Assert.Equal(128, metric.InternerRequests);
+        Assert.Equal(64, metric.InternerRequests);
 
-        Assert.Equal(64, metric.InternerIdentityBuilds);
+        Assert.Equal(32, metric.InternerIdentityBuilds);
 
-        Assert.Equal(126, metric.InternerHits);
+        Assert.Equal(62, metric.InternerHits);
 
         Assert.Equal(2, metric.InternerRegistrations);
     }
@@ -16434,7 +24202,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 "M:ExactCleanupConstructionTarget.Run(",
                 StringComparison.Ordinal));
 
-        Assert.Equal(3, metric.FingerprintRequests);
+        Assert.Equal(2, metric.FingerprintRequests);
 
         Assert.Equal(1, metric.FingerprintBuilds);
     }
@@ -17086,7 +24854,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         Assert.Equal(1, metric.EquivalentKeyBuilds);
 
-        Assert.Equal(4, metric.EquivalentKeyNodes);
+        // The forwarded value is a constant named by its value, so the key no longer descends into
+        // the member that supplied it.
+        Assert.Equal(3, metric.EquivalentKeyNodes);
     }
 
     [Fact]
@@ -17119,11 +24889,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
                 "M:TokenFastPathTarget.Retain(",
                 StringComparison.Ordinal));
 
-        Assert.Equal(128, retain.InternerRequests);
+        Assert.Equal(64, retain.InternerRequests);
 
-        Assert.Equal(64, retain.InternerContextBuilds);
+        Assert.Equal(32, retain.InternerContextBuilds);
 
-        Assert.Equal(64, retain.InternerTraversalIdentityBuilds);
+        Assert.Equal(32, retain.InternerTraversalIdentityBuilds);
 
         Assert.Equal(1, retain.FingerprintBuilds);
 
@@ -17642,6 +25412,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("ApprenticeService")]
     [InlineData("BatchProcessingService")]
     [InlineData("GrimoireDatabaseHostedService")]
+    [InlineData("LongRestSweepHostedService")]
     [InlineData("McpServerBootstrapHostedService")]
     [InlineData("SagaExtractionService")]
     [InlineData("SessionAttachmentIndexingService")]
@@ -17694,6 +25465,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("BackupCommands", "Create")]
     [InlineData("BackupRestoreService", "RestoreAsync")]
     [InlineData("InstallationResetService", "ApplyFullUnderMaintenanceLockAsync")]
+    [InlineData("InstallationResetService", "ApplyFreshUnderMaintenanceLockAsync")]
+    [InlineData("InstallationResetService", "ApplyUnderMaintenanceLockAsync")]
+    [InlineData("StoppedHostFactoryErasure", "ApplyAsync")]
     [InlineData("GrimoireOfflineTransitionStartupRecovery", "RecoverBeforeBootstrapAsync")]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionNonHostedGraphsRetainTheirExactLifetimes(
@@ -18641,7 +26415,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (!unresolved)
         {
-            Assert.Empty(result.Diagnostics);
+            AssertOnlyUnprovenFactoryBorrowedCreateCommand(source, result);
 
             Assert.Contains(result.Items, static site => site.EnclosingType == "FactoryConsumer" && site.Callee == "System.IO.File.Exists");
         }
@@ -18818,10 +26592,29 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         if (!unresolved)
         {
-            Assert.Empty(result.Diagnostics);
+            AssertOnlyUnprovenFactoryBorrowedCreateCommand(source, result);
 
             Assert.Contains(result.Items, static site => site.EnclosingType == "OptionalConsumer" && site.Callee == "System.IO.File.Exists");
         }
+    }
+
+    // The virtual metadata SqliteConnection.CreateCommand() slot needs a closed receiver at each call;
+    // a factory-call receiver is an opaque factory and stays unclassified (DESIGN, SqliteConnection.CreateCommand paragraph).
+    private static void AssertOnlyUnprovenFactoryBorrowedCreateCommand(string source, HostedProducerDiscovery<HostedProducerSite> result)
+    {
+        const string receiverCall = "_factory.Borrow().CreateCommand()";
+
+        int offset = source.IndexOf(receiverCall, StringComparison.Ordinal);
+
+        Assert.True(offset >= 0 && offset == source.LastIndexOf(receiverCall, StringComparison.Ordinal));
+
+        HostedProducerInventoryDiagnostic refusal = Assert.Single(result.Diagnostics);
+
+        Assert.Equal("HOSTED_SITE_UNCLASSIFIED", refusal.Code);
+
+        Assert.Equal("src/Fixture.cs:" + offset, refusal.Identity);
+
+        Assert.Equal("Microsoft.Data.Sqlite.SqliteConnection.CreateCommand", refusal.Detail);
     }
 
     [Fact]
@@ -28170,7 +35963,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
     [Theory]
     [InlineData("_ = SQLitePCL.raw.sqlite3_get_autocommit(null!);", "SQLitePCL.raw.sqlite3_get_autocommit")]
-    [InlineData("System.Data.Common.DbTransaction transaction = null!; _ = transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
+    [InlineData("System.Data.Common.DbTransaction transaction = new Microsoft.Data.Sqlite.SqliteConnection(\"Data Source=:memory:\").BeginTransaction(); _ = transaction.Connection;", "System.Data.Common.DbTransaction.Connection")]
     public void TransactionStateInspectionIsReviewedDatabaseSupport(string body, string member)
     {
         string source = FixtureSource(body);
@@ -28555,6 +36348,3927 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             file.Items,
             static site => site.Callee == "System.IO.StreamReader.ReadToEnd"
                 && site.Kind == HostedProducerSiteKind.FileSystemRead);
+    }
+
+    [Theory]
+    [InlineData("helper-factory-input-local")]
+    [InlineData("helper-factory-input-return")]
+    [InlineData("helper-client-input-local")]
+    [InlineData("helper-client-input-return")]
+    public void LongRestSdkSourceHelperInputsRetainContextualConversionEffects(string shape) =>
+        ActualLongRestSdkSetupRequiresFreshExactHelperOptions("embedding", shape, false, false);
+
+    [Theory]
+    [InlineData("helper-factory-input-constant", false)]
+    [InlineData("helper-client-input-constant", false)]
+    [InlineData("helper-factory-input-effect", true)]
+    [InlineData("helper-client-input-effect", true)]
+    public void LongRestSdkSourceHelperInputsRequireReviewedArguments(string shape, bool effect) =>
+        ActualLongRestSdkSetupRequiresFreshExactHelperOptions("embedding", shape, true, effect);
+
+    [Theory]
+    [InlineData("chat", "actual", true, false)]
+    [InlineData("embedding", "actual", true, false)]
+    [InlineData("chat", "alias", true, false)]
+    [InlineData("embedding", "alias", true, false)]
+    [InlineData("chat", "local-return", true, false)]
+    [InlineData("embedding", "local-return", true, false)]
+    [InlineData("embedding", "unknown", false, false)]
+    [InlineData("embedding", "mixed", false, false)]
+    [InlineData("embedding", "derived", false, false)]
+    [InlineData("embedding", "mutation", false, false)]
+    [InlineData("embedding", "escape", false, false)]
+    [InlineData("embedding", "ref", false, false)]
+    [InlineData("embedding", "reassigned", false, false)]
+    [InlineData("embedding", "retry-nonzero", false, false)]
+    [InlineData("embedding", "retry-unknown", false, false)]
+    [InlineData("chat", "retry-nonzero", false, false)]
+    [InlineData("chat", "retry-unknown", false, false)]
+    [InlineData("embedding", "logging", false, false)]
+    [InlineData("embedding", "transport-subclass", false, false)]
+    [InlineData("embedding", "endpoint-effect", true, true)]
+    [InlineData("embedding", "factory-effect", true, true)]
+    [InlineData("embedding", "argument-effect", true, true)]
+    [InlineData("chat", "factory-direct", true, true)]
+    [InlineData("embedding", "factory-direct", true, true)]
+    [InlineData("embedding", "factory-readonly", true, true)]
+    [InlineData("embedding", "factory-alias", true, true)]
+    [InlineData("embedding", "factory-return", true, true)]
+    [InlineData("embedding", "factory-getter", true, true)]
+    [InlineData("embedding", "factory-getter-this", true, true)]
+    [InlineData("embedding", "factory-getter-expression", true, true)]
+    [InlineData("embedding", "factory-getter-unknown", false, true)]
+    [InlineData("embedding", "factory-getter-mixed", false, true)]
+    [InlineData("embedding", "factory-getter-null", false, true)]
+    [InlineData("embedding", "factory-getter-other-instance", false, true)]
+    [InlineData("embedding", "factory-getter-replaced", false, true)]
+    [InlineData("embedding", "factory-getter-ref", false, true)]
+    [InlineData("embedding", "factory-getter-out", false, true)]
+    [InlineData("embedding", "factory-getter-partial", false, true)]
+    [InlineData("embedding", "factory-unknown", false, false)]
+    [InlineData("embedding", "factory-mixed", false, false)]
+    [InlineData("embedding", "factory-two", false, false)]
+    [InlineData("embedding", "factory-replaced", false, false)]
+    [InlineData("embedding", "factory-ref", false, false)]
+    [InlineData("embedding", "factory-out", false, false)]
+    [InlineData("embedding", "factory-partial", false, false)]
+    [InlineData("embedding", "factory-other-instance", false, false)]
+    [InlineData("embedding", "factory-counterfeit", false, false)]
+    [InlineData("embedding", "client-unknown", false, false)]
+    [InlineData("embedding", "client-mixed", false, false)]
+    [InlineData("embedding", "factory-conversion-direct", false, false)]
+    [InlineData("embedding", "factory-conversion-helper", false, false)]
+    [InlineData("embedding", "factory-conversion-local", false, false)]
+    [InlineData("embedding", "client-conversion-direct", false, false)]
+    [InlineData("embedding", "client-conversion-helper", false, false)]
+    [InlineData("embedding", "client-conversion-local", false, false)]
+    [InlineData("embedding", "factory-roundtrip", false, false)]
+    [InlineData("embedding", "client-roundtrip", false, false)]
+    [InlineData("embedding", "factory-roundtrip-local", false, false)]
+    [InlineData("embedding", "factory-roundtrip-alias", false, false)]
+    [InlineData("embedding", "factory-roundtrip-bound", false, false)]
+    [InlineData("embedding", "factory-roundtrip-constructor", false, false)]
+    [InlineData("embedding", "client-roundtrip-local", false, false)]
+    [InlineData("embedding", "client-roundtrip-alias", false, false)]
+    [InlineData("embedding", "client-roundtrip-bound", false, false)]
+    [InlineData("embedding", "client-roundtrip-constructor", false, false)]
+    [InlineData("embedding", "client-roundtrip-metadata", false, false)]
+    [InlineData("embedding", "factory-input-direct", false, false)]
+    [InlineData("embedding", "factory-input-local", false, false)]
+    [InlineData("embedding", "client-input-direct", false, false)]
+    [InlineData("embedding", "client-input-local", false, false)]
+    [InlineData("embedding", "factory-input-helper", false, true)]
+    [InlineData("embedding", "client-input-helper", false, true)]
+    [InlineData("embedding", "factory-literal", true, true)]
+    [InlineData("embedding", "factory-default", true, true)]
+    public void ActualLongRestSdkSetupRequiresFreshExactHelperOptions(string client, string shape, bool reviewed, bool effect)
+    {
+        // Historical configured-factory lane: product ownership no longer supplies this syntax.
+        string expression = """
+        new()
+        {
+            Endpoint = new Uri(selection.Provider.Endpoint),
+            Transport = new HttpClientPipelineTransport(clients.CreateClient(HttpClientName)),
+            RetryPolicy = new ClientRetryPolicy(0),
+        }
+        """;
+
+        expression = shape switch
+        {
+            "unknown" => "Unknown()",
+            "mixed" => "DateTime.UtcNow.Ticks > 0 ? " + expression + " : Unknown()",
+            "derived" => "new DerivedOptions()",
+            "retry-nonzero" => expression.ReplaceSdkFixtureText("new ClientRetryPolicy(0)", "new ClientRetryPolicy(1)", StringComparison.Ordinal),
+            "retry-unknown" => expression.ReplaceSdkFixtureText("new ClientRetryPolicy(0)", "new ClientRetryPolicy(RetryCount())", StringComparison.Ordinal),
+            "logging" => expression.ReplaceSdkFixtureText("RetryPolicy =", "ClientLoggingOptions = new ClientLoggingOptions(), RetryPolicy =", StringComparison.Ordinal),
+            "transport-subclass" => expression.ReplaceSdkFixtureText("new HttpClientPipelineTransport(clients.CreateClient(HttpClientName))", "new CustomTransport(clients.CreateClient(HttpClientName))", StringComparison.Ordinal),
+            _ => expression,
+        };
+
+        if (shape == "factory-direct") expression = expression.ReplaceSdkFixtureText("clients.CreateClient", "((IHttpClientFactory)new OwnedClients()).CreateClient", StringComparison.Ordinal);
+
+        if (shape.StartsWith("factory-getter", StringComparison.Ordinal)) expression = expression.ReplaceSdkFixtureText("clients.CreateClient", "Factory.CreateClient", StringComparison.Ordinal);
+
+        bool factoryEffect = shape is "factory-effect" or "factory-direct" or "factory-readonly" or "factory-alias" or "factory-return" or "factory-getter" or "factory-getter-this" or "factory-getter-expression";
+
+        string factory = shape switch
+        {
+            "helper-factory-input-local" or "helper-factory-input-return" or "helper-factory-input-constant" or "helper-factory-input-effect" => "ClientInput.FactoryWithUnusedInput()",
+            "factory-unknown" => "ClientInput.Unknown()",
+            "factory-mixed" => "DateTime.UtcNow.Ticks > 0 ? new OwnedClients() : ClientInput.Unknown()",
+            "factory-two" => "DateTime.UtcNow.Ticks > 0 ? (IHttpClientFactory)new OwnedClients() : new OtherClients()",
+            "factory-return" => "ClientInput.Known()",
+            "factory-conversion-direct" => "(OwnedClients)new FactoryConversion()",
+            "factory-conversion-helper" => "ClientInput.Converted()",
+            "factory-conversion-local" => "ClientInput.ConvertedLocal()",
+            "factory-input-direct" => "new OwnedClients(new TimeSpanConversion())",
+            "factory-input-local" => "ClientInput.FactoryWithInput()",
+            "factory-input-helper" => "new OwnedClients(ClientInput.InputValue())",
+            "factory-literal" => "new OwnedClients(default, 7)",
+            "factory-default" => "new OwnedClients(default(TimeSpan))",
+            "factory-roundtrip" or "factory-roundtrip-local" or "factory-roundtrip-alias" or "factory-roundtrip-bound" or "factory-roundtrip-constructor" => "ClientInput.ReturnedFactory()",
+            _ => "new OwnedClients()",
+        };
+
+        string invoke = shape == "factory-alias"
+            ? "IHttpClientFactory clients = new OwnedClients(); IHttpClientFactory alias = clients; new SetupProbe(alias).Run();"
+            : shape == "factory-other-instance"
+                ? "new SetupProbe(new OwnedClients()).Run(new SetupProbe(ClientInput.Unknown()));"
+                : "new SetupProbe(" + factory + ").Run();";
+
+        string factoryMutation = shape switch
+        {
+            "factory-replaced" or "factory-getter-replaced" => "clients = ClientInput.Unknown(); ",
+            "factory-ref" or "factory-getter-ref" => "ClientInput.Replace(ref clients); ",
+            "factory-out" or "factory-getter-out" => "ClientInput.ReplaceOut(out clients); ",
+            _ => "",
+        };
+
+        string helper = shape == "local-return"
+            ? "private OpenAIClientOptions Options(LongRestProviderSelection selection) { OpenAIClientOptions value = " + expression + "; return value; }"
+            : "private OpenAIClientOptions Options(LongRestProviderSelection selection) => " + expression + ";";
+
+        string mutation = shape switch
+        {
+            "mutation" => "options.Endpoint = new Uri(\"https://changed.invalid\");",
+            "escape" => "Capture(options);",
+            "ref" => "Replace(ref options);",
+            "reassigned" => "options = Unknown();",
+            "alias" => "var alias = options;",
+            _ => "",
+        };
+
+        string receiver = shape == "alias" ? "alias" : "options";
+
+        string model = shape == "argument-effect" ? "Model()" : "\"model\"";
+
+        string type = client == "chat" ? "OpenAI.Chat.ChatClient" : "OpenAI.Embeddings.EmbeddingClient";
+
+        string source = "using System.Net.Http; using OpenAI; using System.ClientModel; using System.ClientModel.Primitives; "
+            + R2Source(invoke, "sealed partial class SetupProbe(IHttpClientFactory clients) { private const string HttpClientName = \"LongRestProvider\"; "
+                + helper + " public void Run() { System.IO.File.Exists(\"sdk-local-constructor-marker\"); " + factoryMutation + " var selection = new LongRestProviderSelection(); OpenAIClientOptions options = Options(selection); " + mutation
+                + " _ = new " + type + "(" + model + ", new ApiKeyCredential(\"fixture-key\"), " + receiver + "); } "
+                + "private static extern OpenAIClientOptions Unknown(); private static extern int RetryCount(); private static extern void Capture(OpenAIClientOptions value); private static extern void Replace(ref OpenAIClientOptions value); private static string Model() { System.IO.File.Delete(\"argument\"); return \"model\"; } } "
+                + "sealed class LongRestProviderSelection { public ProviderSettings Provider { get; } = new(); } sealed class ProviderSettings { public string Endpoint { get { "
+                + (shape == "endpoint-effect" ? "System.IO.File.Delete(\"endpoint\");" : "") + " return \"https://provider.invalid/v1\"; } } } "
+                + "sealed class OwnedClients : IHttpClientFactory { public HttpClient CreateClient(string name) { "
+                + (factoryEffect ? "System.IO.File.Delete(\"factory\");" : "") + " return " + (shape == "client-unknown" ? "ClientInput.UnknownClient()" : shape == "client-mixed" ? "DateTime.UtcNow.Ticks > 0 ? new HttpClient() : ClientInput.UnknownClient()" : "new HttpClient()") + "; } } "
+                + "sealed class DerivedOptions : OpenAIClientOptions { public override void Freeze() { System.IO.File.Delete(\"freeze\"); base.Freeze(); } } "
+                + "sealed class CustomTransport(HttpClient client) : HttpClientPipelineTransport(client) { }");
+
+        source += "sealed class OtherClients : IHttpClientFactory { public HttpClient CreateClient(string name) => new(); } static class ClientInput { internal static extern IHttpClientFactory Unknown(); internal static extern HttpClient UnknownClient(); internal static extern void Replace(ref IHttpClientFactory clients); internal static extern void ReplaceOut(out IHttpClientFactory clients); internal static IHttpClientFactory Known() { "
+            + (shape == "factory-return" ? "System.IO.File.Delete(\"factory-helper\"); " : "") + "return new OwnedClients(); } }";
+
+        source += "sealed class FactoryConversion { public static implicit operator OwnedClients(FactoryConversion value) { System.IO.File.Delete(\"factory-conversion\"); return new(); } } sealed class ClientConversion { public static implicit operator HttpClient(ClientConversion value) { System.IO.File.Delete(\"client-conversion\"); return new(); } }";
+
+        source += "sealed class FactoryWrapper { public static implicit operator FactoryWrapper(OwnedClients value) { System.IO.File.Delete(\"factory-outbound-conversion\"); return new(); } public static implicit operator OwnedClients(FactoryWrapper value) { System.IO.File.Delete(\"factory-inbound-conversion\"); return new(); } } sealed class WrappedClient { public static implicit operator WrappedClient(HttpClient value) { System.IO.File.Delete(\"client-outbound-conversion\"); return new(); } public static implicit operator HttpClient(WrappedClient value) { System.IO.File.Delete(\"client-inbound-conversion\"); return new(); } }";
+
+        source = source.ReplaceSdkFixtureText("static class ClientInput {", "static class ClientInput { internal static FactoryWrapper FactoryRoundTrip() => new OwnedClients(); internal static OwnedClients ReturnedFactory() => FactoryRoundTrip(); internal static WrappedClient ClientRoundTrip() => new HttpClient(); internal static HttpClient ReturnedClient() => ClientRoundTrip(); internal static OwnedClients Converted() => (OwnedClients)new FactoryConversion(); internal static OwnedClients ConvertedLocal() { OwnedClients value = new FactoryConversion(); return value; } internal static HttpClient ConvertedClient() => new ClientConversion(); internal static HttpClient ConvertedClientLocal() { HttpClient value = new ClientConversion(); return value; }", StringComparison.Ordinal);
+
+        if (shape.StartsWith("client-conversion-", StringComparison.Ordinal)) source = source.ReplaceSdkFixtureText("public HttpClient CreateClient(string name) {  return new HttpClient();", "public HttpClient CreateClient(string name) { return " + (shape == "client-conversion-direct" ? "new ClientConversion()" : shape == "client-conversion-helper" ? "ClientInput.ConvertedClient()" : "ClientInput.ConvertedClientLocal()") + ";", StringComparison.Ordinal);
+
+        if (shape.StartsWith("client-roundtrip", StringComparison.Ordinal)) source = source.ReplaceSdkFixtureText("public HttpClient CreateClient(string name) {  return new HttpClient();", "public HttpClient CreateClient(string name) { return ClientInput.ReturnedClient();", StringComparison.Ordinal);
+
+        source += "sealed class TimeSpanConversion { public static implicit operator TimeSpan(TimeSpanConversion value) { System.IO.File.Delete(\"input-conversion\"); return TimeSpan.FromSeconds(1); } }";
+
+        source = source.ReplaceSdkFixtureText("sealed class OwnedClients : IHttpClientFactory {", "sealed class OwnedClients : IHttpClientFactory { public OwnedClients(TimeSpan timeout = default, int number = 0) { _ = timeout; _ = number; " + (shape is "factory-literal" or "factory-default" ? "System.IO.File.Delete(\"factory-constructor\");" : "") + " }", StringComparison.Ordinal)
+            .ReplaceSdkFixtureText("static class ClientInput {", "static class ClientInput { internal static TimeSpan InputValue() { System.IO.File.Delete(\"ordinary-input-helper\"); return new TimeSpanConversion(); } internal static OwnedClients FactoryWithInput() { TimeSpan value = new TimeSpanConversion(); return new OwnedClients(value); }", StringComparison.Ordinal);
+
+        if (shape.StartsWith("client-input-", StringComparison.Ordinal)) source = source.ReplaceSdkFixtureText("public HttpClient CreateClient(string name) {  return new HttpClient();", "public HttpClient CreateClient(string name) { " + (shape == "client-input-local" ? "TimeSpan value = new TimeSpanConversion(); " : "") + "return new HttpClient { Timeout = " + (shape == "client-input-local" ? "value" : shape == "client-input-helper" ? "ClientInput.InputValue()" : "new TimeSpanConversion()") + " };", StringComparison.Ordinal);
+
+        if (shape.StartsWith("helper-", StringComparison.Ordinal))
+        {
+            string argument = shape.EndsWith("-constant", StringComparison.Ordinal) ? "7"
+                : shape.EndsWith("-effect", StringComparison.Ordinal) ? "LiteralInput()"
+                : shape.EndsWith("-local", StringComparison.Ordinal) ? "value" : "UnusedInput()";
+
+            string local = shape.EndsWith("-local", StringComparison.Ordinal) ? "int value = new SdkInputConversion(); " : "";
+
+            source += "sealed class SdkInputConversion { public static implicit operator int(SdkInputConversion value) { System.IO.File.Delete(\"unused-input-conversion\"); return 1; } }";
+
+            source = source.ReplaceSdkFixtureText("static class ClientInput {", "static class ClientInput { internal static int LiteralInput() { System.IO.File.Delete(\"ordinary-literal-input\"); return 1; } internal static int UnusedInput() => new SdkInputConversion(); internal static OwnedClients IgnoreFactoryInput(int value) => new OwnedClients(); internal static HttpClient IgnoreClientInput(int value) => new HttpClient(); internal static OwnedClients FactoryWithUnusedInput() { " + local + "return IgnoreFactoryInput(" + argument + "); } internal static HttpClient ClientWithUnusedInput() { " + local + "return IgnoreClientInput(" + argument + "); }", StringComparison.Ordinal)
+                .ReplaceSdkFixtureText("public void Run() { ", "public void Run() { System.IO.File.Exists(\"sdk-unused-input-root\"); ", StringComparison.Ordinal);
+
+            if (shape.StartsWith("helper-client-", StringComparison.Ordinal)) source = source.ReplaceSdkFixtureText("public HttpClient CreateClient(string name) {  return new HttpClient();", "public HttpClient CreateClient(string name) { return ClientInput.ClientWithUnusedInput();", StringComparison.Ordinal);
+        }
+
+        source += "sealed class FactoryCarrier(FactoryWrapper value) { internal OwnedClients Get() => value; } sealed class ClientCarrier(WrappedClient value) { internal HttpClient Get() => value; }";
+
+        source = source.ReplaceSdkFixtureText("static class ClientInput {", "static class ClientInput { internal static OwnedClients ThroughFactory(FactoryWrapper value) => value; internal static HttpClient ThroughClient(WrappedClient value) => value;", StringComparison.Ordinal);
+
+        string? factoryRoundTrip = shape switch
+        {
+            "factory-roundtrip-local" => "{ FactoryWrapper value = new OwnedClients(); OwnedClients result = value; return result; }",
+            "factory-roundtrip-alias" => "{ FactoryWrapper value = new OwnedClients(); FactoryWrapper alias = value; OwnedClients result = alias; return result; }",
+            "factory-roundtrip-bound" => "=> ThroughFactory(new OwnedClients());",
+            "factory-roundtrip-constructor" => "=> new FactoryCarrier(new OwnedClients()).Get();",
+            _ => null,
+        };
+
+        string? clientRoundTrip = shape switch
+        {
+            "client-roundtrip-local" => "{ WrappedClient value = new HttpClient(); HttpClient result = value; return result; }",
+            "client-roundtrip-alias" => "{ WrappedClient value = new HttpClient(); WrappedClient alias = value; HttpClient result = alias; return result; }",
+            "client-roundtrip-bound" => "=> ThroughClient(new HttpClient());",
+            "client-roundtrip-constructor" => "=> new ClientCarrier(new HttpClient()).Get();",
+            "client-roundtrip-metadata" => "=> ExternalRoundTrip();",
+            _ => null,
+        };
+
+        if (factoryRoundTrip is not null) source = source.ReplaceSdkFixtureText("OwnedClients ReturnedFactory() => FactoryRoundTrip();", "OwnedClients ReturnedFactory() " + factoryRoundTrip, StringComparison.Ordinal);
+
+        if (clientRoundTrip is not null) source = source.ReplaceSdkFixtureText("HttpClient ReturnedClient() => ClientRoundTrip();", "HttpClient ReturnedClient() " + clientRoundTrip, StringComparison.Ordinal);
+
+        if (shape == "client-roundtrip-metadata") source = source.ReplaceSdkFixtureText("static class ClientInput {", "static class ClientInput { internal static ExternalSdkClient ExternalRoundTrip() => new HttpClient();", StringComparison.Ordinal);
+
+        if (shape.StartsWith("factory-getter", StringComparison.Ordinal))
+        {
+            string value = shape switch
+            {
+                "factory-getter-unknown" => "ClientInput.Unknown()",
+                "factory-getter-mixed" => "DateTime.UtcNow.Ticks > 0 ? clients : ClientInput.Unknown()",
+                "factory-getter-null" => "null!",
+                _ => "clients",
+            };
+
+            string getter = shape == "factory-getter-expression" ? "private IHttpClientFactory Factory => clients; "
+                : "private IHttpClientFactory Factory { get { System.IO.File.Delete(\"factory-getter\"); return " + value + "; } } ";
+
+            source = source.ReplaceSdkFixtureText("private const string HttpClientName", getter + "private const string HttpClientName", StringComparison.Ordinal);
+
+            if (shape == "factory-getter-this") source = source.ReplaceSdkFixtureText("Factory.CreateClient", "this.Factory.CreateClient", StringComparison.Ordinal);
+
+            if (shape == "factory-getter-other-instance") source = source.ReplaceSdkFixtureText("Factory.CreateClient", "new SetupProbe(ClientInput.Unknown()).Factory.CreateClient", StringComparison.Ordinal);
+        }
+
+        if (shape == "factory-readonly") source = source.ReplaceSdkFixtureText("SetupProbe(IHttpClientFactory clients) {", "SetupProbe(IHttpClientFactory source) { private readonly IHttpClientFactory clients = source;", StringComparison.Ordinal);
+
+        if (shape == "factory-other-instance") source = source.ReplaceSdkFixtureText("public void Run()", "public void Run(SetupProbe other)", StringComparison.Ordinal)
+            .ReplaceSdkFixtureText("options = Options(selection)", "options = other.Options(selection)", StringComparison.Ordinal);
+
+        if (shape == "factory-counterfeit") source = "extern alias counterfeit; " + source.ReplaceSdkFixtureText("IHttpClientFactory", "counterfeit::System.Net.Http.IHttpClientFactory", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        if (shape is "factory-partial" or "factory-getter-partial") compilation = compilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText("sealed partial class SetupProbe { private void Rebind() { clients = ClientInput.Unknown(); } }", path: "src/SetupProbe.Mutation.cs"));
+
+        if (shape == "factory-counterfeit")
+        {
+            CSharpCompilation foreign = CompileWithProductionReferencePack("namespace System.Net.Http { public interface IHttpClientFactory { HttpClient CreateClient(string name); } }", "RetroDownfall.Arcanum.Api")
+                .WithAssemblyName("Untrusted.HttpFactory");
+
+            using MemoryStream image = new();
+
+            Assert.True(foreign.Emit(image).Success);
+
+            compilation = compilation.AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+        }
+
+        if (shape == "client-roundtrip-metadata")
+        {
+            CSharpCompilation foreign = CompileWithProductionReferencePack("public sealed class ExternalSdkClient { public static implicit operator ExternalSdkClient(System.Net.Http.HttpClient value) { System.IO.File.Delete(\"external-forward\"); return new(); } public static implicit operator System.Net.Http.HttpClient(ExternalSdkClient value) { System.IO.File.Delete(\"external-reverse\"); return new(); } }", "RetroDownfall.Arcanum.Api")
+                .WithAssemblyName("Untrusted.SdkConversions");
+
+            using MemoryStream image = new();
+
+            Assert.True(foreign.Emit(image).Success);
+
+            compilation = compilation.AddReferences(MetadataReference.CreateFromImage(image.ToArray()));
+        }
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        string callee = type + "..ctor";
+
+        Assert.Contains(result.Items, static site => site.RootType == "Worker" && site.EnclosingType == "SetupProbe"
+            && site.Member == "Run" && site.SourcePath == "src/Fixture.cs" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Single(compilation.SyntaxTrees.SelectMany(static tree => tree.GetRoot().DescendantNodes()).OfType<ObjectCreationExpressionSyntax>(),
+            creation => compilation.GetSemanticModel(creation.SyntaxTree).GetSymbolInfo(creation).Symbol is IMethodSymbol constructor
+                && constructor.ContainingType.ToDisplayString() == type);
+
+        bool constructorRefused = shape is "unknown" or "mixed" or "derived" or "mutation" or "escape" or "ref" or "reassigned"
+            or "retry-nonzero" or "retry-unknown" or "logging" or "transport-subclass";
+
+        Assert.Equal(constructorRefused, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee));
+
+        InvocationExpressionSyntax? factoryCall = compilation.SyntaxTrees.SelectMany(static tree => tree.GetRoot().DescendantNodes())
+            .OfType<InvocationExpressionSyntax>().SingleOrDefault(call => compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol method
+                && method.Name == "CreateClient" && method.ContainingType.Name == "IHttpClientFactory");
+
+        bool factoryRefused = factoryCall is not null && result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Identity == factoryCall.SyntaxTree.FilePath + ":" + factoryCall.SpanStart
+            && diagnostic.Detail == "System.Net.Http.IHttpClientFactory.CreateClient");
+
+        if (shape is "factory-unknown" or "factory-mixed" or "factory-getter-unknown" or "factory-getter-mixed" or "factory-getter-null"
+            or "factory-getter-other-instance" or "factory-replaced" or "factory-getter-replaced" or "factory-ref" or "factory-getter-ref"
+            or "factory-out" or "factory-getter-out" or "factory-partial" or "factory-getter-partial" or "factory-other-instance" or "factory-counterfeit")
+        {
+            Assert.NotNull(factoryCall);
+
+            Assert.True(factoryRefused, "The actual opaque factory call must independently refuse at its own exact source location.");
+        }
+
+        if (shape is "client-unknown" or "client-mixed")
+        {
+            InvocationExpressionSyntax unknownClient = Assert.Single(compilation.SyntaxTrees.SelectMany(static tree => tree.GetRoot().DescendantNodes())
+                .OfType<InvocationExpressionSyntax>(), static call => call.ToString() == "ClientInput.UnknownClient()");
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Identity == unknownClient.SyntaxTree.FilePath + ":" + unknownClient.SpanStart
+                && diagnostic.Detail == "ClientInput.UnknownClient");
+        }
+
+        foreach (HostedProducerSite site in result.Items.Where(static site => site.Callee == "System.IO.File.Delete"))
+        {
+            Assert.Null(site.WorkFrontierCapsuleId);
+
+            Assert.Null(site.EffectFrontierCapsuleId);
+
+            Assert.All(new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }, code =>
+                Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code && diagnostic.Detail == site.Callee
+                    && diagnostic.Identity.EndsWith(site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+        }
+
+        if (shape.StartsWith("helper-", StringComparison.Ordinal)) Assert.Contains(result.Items, static site =>
+            site.RootType == "Worker" && site.EnclosingType == "SetupProbe" && site.Member == "Run"
+            && site.SourcePath == "src/Fixture.cs" && site.Callee == "System.IO.File.Exists");
+
+        if (shape is "factory-input-helper" or "client-input-helper" or "factory-literal" or "factory-default" or "factory-return")
+        {
+            string expectedType = shape is "factory-literal" or "factory-default" ? "OwnedClients" : "ClientInput";
+
+            string expectedMember = shape is "factory-literal" or "factory-default" ? ".ctor" : shape == "factory-return" ? "Known" : "InputValue";
+
+            HostedProducerSite ordinaryEffect = Assert.Single(result.Items, site => site.EnclosingType == expectedType && site.Member == expectedMember && site.Callee == "System.IO.File.Delete");
+
+            Assert.All(new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }, code =>
+                Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                    && diagnostic.Identity.EndsWith(ordinaryEffect.OperationId[ordinaryEffect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+        }
+
+        if (shape.StartsWith("helper-", StringComparison.Ordinal) && shape.EndsWith("-effect", StringComparison.Ordinal))
+        {
+            HostedProducerSite inputEffect = Assert.Single(result.Items, static site => site.EnclosingType == "ClientInput"
+                && site.Member == "LiteralInput" && site.Callee == "System.IO.File.Delete");
+
+            Assert.All(new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }, code =>
+                Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                    && diagnostic.Identity.EndsWith(inputEffect.OperationId[inputEffect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+        }
+
+        if (!reviewed && shape.Contains("-input-", StringComparison.Ordinal))
+        {
+            string inputType = shape.StartsWith("helper-", StringComparison.Ordinal) ? "SdkInputConversion" : "TimeSpanConversion";
+
+            HostedProducerSite[] inputs = result.Items.Where(site => site.EnclosingType == inputType && site.Callee == "System.IO.File.Delete").ToArray();
+
+            bool inputRetained = inputs.Length == 1 && new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }.All(code =>
+                result.Diagnostics.Any(diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                    && diagnostic.Identity.EndsWith(inputs[0].OperationId[inputs[0].OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+
+            Assert.True(inputRetained, "Every actual source input conversion must retain its body and both own frontier refusals independently of downstream factory classification.");
+
+            return;
+        }
+
+        if (shape.Contains("roundtrip", StringComparison.Ordinal))
+        {
+            string wrapper = shape.StartsWith("factory-roundtrip", StringComparison.Ordinal) ? "FactoryWrapper" : shape == "client-roundtrip-metadata" ? "ExternalSdkClient" : "WrappedClient";
+
+            HostedProducerSite[] effects = result.Items.Where(site => site.EnclosingType == wrapper && site.Callee == "System.IO.File.Delete").ToArray();
+
+            bool bothConversionsRetained = effects.Length == 2 && effects.All(site =>
+                new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }.All(code =>
+                    result.Diagnostics.Any(diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                        && diagnostic.Identity.EndsWith(site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal))));
+
+            if (shape == "client-roundtrip-metadata")
+            {
+                List<IConversionOperation> conversions = [];
+
+                foreach (ExpressionSyntax value in compilation.SyntaxTrees.SelectMany(static tree => tree.GetRoot().DescendantNodes()).OfType<ExpressionSyntax>())
+                {
+                    IOperation? operation = compilation.GetSemanticModel(value.SyntaxTree).GetOperation(value);
+
+                    while (operation?.Parent is IConversionOperation parent) operation = parent;
+
+                    if (operation is not null) conversions.AddRange(operation.DescendantsAndSelf().OfType<IConversionOperation>()
+                        .Where(static conversion => conversion.OperatorMethod?.ContainingType.Name == "ExternalSdkClient"));
+                }
+
+                IConversionOperation[] distinct = conversions.DistinctBy(static conversion => conversion.Syntax.SyntaxTree.FilePath + ":" + conversion.Syntax.SpanStart).ToArray();
+
+                Assert.Equal(2, distinct.Length);
+
+                Assert.All(distinct, conversion => Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                    && diagnostic.Identity == conversion.Syntax.SyntaxTree.FilePath + ":" + conversion.Syntax.SpanStart
+                    && diagnostic.Detail == "ExternalSdkClient.op_Implicit"));
+            }
+            else
+            {
+                Assert.True(bothConversionsRetained, "Both actual source round-trip conversions must remain visible under their own frontier refusals independently of downstream factory classification.");
+            }
+
+            return;
+        }
+
+        if (shape.StartsWith("client-conversion-", StringComparison.Ordinal))
+        {
+            Assert.Single(result.Items, static site => site.EnclosingType == "ClientConversion" && site.Callee == "System.IO.File.Delete");
+        }
+
+        if (shape.StartsWith("factory-conversion-", StringComparison.Ordinal))
+        {
+            Assert.Single(result.Items, static site => site.EnclosingType == "FactoryConversion" && site.Callee == "System.IO.File.Delete");
+        }
+
+        bool sourceConversionEffect = shape.StartsWith("client-conversion-", StringComparison.Ordinal)
+            || shape.StartsWith("factory-conversion-", StringComparison.Ordinal);
+
+        Assert.Equal(effect || sourceConversionEffect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        if (effect)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+        }
+
+        if (factoryEffect) Assert.Contains(result.Items, static site => site.EnclosingType == "OwnedClients" && site.Member == "CreateClient" && site.Callee == "System.IO.File.Delete");
+
+        if (shape.StartsWith("factory-getter", StringComparison.Ordinal) && shape != "factory-getter-expression")
+        {
+            HostedProducerSite getterEffect = Assert.Single(result.Items, static site => site.EnclosingType == "SetupProbe" && site.Member == "get_Factory" && site.Callee == "System.IO.File.Delete");
+
+            Assert.Null(getterEffect.WorkFrontierCapsuleId);
+
+            Assert.Null(getterEffect.EffectFrontierCapsuleId);
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete" && diagnostic.Identity.EndsWith(getterEffect.OperationId[getterEffect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete" && diagnostic.Identity.EndsWith(getterEffect.OperationId[getterEffect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal));
+        }
+
+        // This is bounded authored setup/observation proof, not SDK or listener purity. No fixture
+        // executes these constructors or sends. Ambient telemetry switches, BeforeFieldInit and
+        // shared HttpClient observers, reflection/loader/native and external listeners remain limits.
+    }
+
+    [Theory]
+    [InlineData("direct", true, false)]
+    [InlineData("extension", true, false)]
+    [InlineData("null-dimensions", true, false)]
+    [InlineData("dimensions", true, false)]
+    [InlineData("alias", true, false)]
+    [InlineData("helper", true, false)]
+    [InlineData("known-branches", true, false)]
+    [InlineData("actual-lease", true, false)]
+    [InlineData("derived-input", true, true)]
+    [InlineData("argument-effect", true, true)]
+    [InlineData("unknown", false, false)]
+    [InlineData("mixed", false, false)]
+    [InlineData("reassigned", false, false)]
+    [InlineData("ref", false, false)]
+    [InlineData("custom", true, true)]
+    [InlineData("custom-lease", true, true)]
+    [InlineData("wrong-factory", false, false)]
+    [InlineData("foreign-assembly", false, false)]
+    public void EmbeddingAdapterCleanupRequiresCompleteExactFactoryOrigins(string shape, bool resolved, bool effect)
+    {
+        const string generator = "IEmbeddingGenerator<string, Embedding<float>>";
+
+        string factory = shape switch
+        {
+            "extension" => "((OpenAI.Embeddings.EmbeddingClient)null!).AsIEmbeddingGenerator()",
+            "null-dimensions" => "OpenAIClientExtensions.AsIEmbeddingGenerator(null!, null)",
+            "dimensions" => "OpenAIClientExtensions.AsIEmbeddingGenerator(null!, 8)",
+            "derived-input" => "OpenAIClientExtensions.AsIEmbeddingGenerator(new DerivedClient())",
+            "argument-effect" => "OpenAIClientExtensions.AsIEmbeddingGenerator(AdapterInput.Client())",
+            "foreign-assembly" => "counterfeit::Microsoft.Extensions.AI.OpenAIClientExtensions.AsIEmbeddingGenerator(null!)",
+            "wrong-factory" => "AdapterInput.AsIEmbeddingGenerator(null!, \"wrong\")",
+            "unknown" => "AdapterInput.Unknown()",
+            "mixed" => "DateTime.UtcNow.Ticks > 0 ? OpenAIClientExtensions.AsIEmbeddingGenerator(null!) : AdapterInput.Unknown()",
+            "known-branches" => "DateTime.UtcNow.Ticks > 0 ? OpenAIClientExtensions.AsIEmbeddingGenerator(null!) : OpenAIClientExtensions.AsIEmbeddingGenerator(null!, 8)",
+            "custom" or "custom-lease" => "new AuthoredGenerator()",
+            _ => "OpenAIClientExtensions.AsIEmbeddingGenerator(null!)",
+        };
+
+        string helper = "internal static " + generator + " Make() => " + factory + ";";
+
+        string body = generator + " value = " + (shape == "helper" ? "AdapterInput.Make()" : factory) + "; "
+            + (shape == "reassigned" ? "value = AdapterInput.Unknown(); " : shape == "ref" ? "AdapterInput.Replace(ref value); " : "")
+            + (shape == "alias" ? generator + " alias = value; ((IDisposable)alias).Dispose();" : "((IDisposable)value).Dispose();");
+
+        string lease = "";
+
+        if (shape is "actual-lease" or "custom-lease")
+        {
+            string file = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Api/Intelligence/EmbeddingGeneratorFactory.cs");
+
+            lease = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .Single(static declaration => declaration.Identifier.ValueText == "EmbeddingGeneratorLease").ToString();
+
+            body = "using EmbeddingGeneratorLease lease = new(" + factory + ", ownsGenerator: true);";
+        }
+
+        string source = (shape == "foreign-assembly" ? "extern alias counterfeit; " : "")
+            + "using Microsoft.Extensions.AI; " + R2Source(body + " System.IO.File.Exists(\"cleanup-control\");",
+                lease + " internal static class AdapterInput { " + helper
+                + " internal static extern " + generator + " Unknown(); internal static extern void Replace(ref " + generator + " value);"
+                + " internal static extern " + generator + " AsIEmbeddingGenerator(OpenAI.Embeddings.EmbeddingClient client, string wrong);"
+                + " internal static OpenAI.Embeddings.EmbeddingClient Client() { System.IO.File.Delete(\"adapter-argument\"); return null!; } } "
+                + "internal sealed class DerivedClient : OpenAI.Embeddings.EmbeddingClient { internal DerivedClient() { System.IO.File.Delete(\"derived-sdk-input\"); } } "
+                + "internal sealed class AuthoredGenerator : " + generator + " { public void Dispose() { System.IO.File.Delete(\"authored-generator-dispose\"); } public object? GetService(Type serviceType, object? serviceKey = null) => null; public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(System.Collections.Generic.IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken token = default) => throw new NotSupportedException(); }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        if (shape == "foreign-assembly")
+        {
+            CSharpCompilation foreign = CompileWithProductionReferencePack("namespace Microsoft.Extensions.AI { public static class OpenAIClientExtensions { public static IEmbeddingGenerator<string, Embedding<float>> AsIEmbeddingGenerator(OpenAI.Embeddings.EmbeddingClient client, int? dimensions = null) => throw new System.NotSupportedException(); } }", "RetroDownfall.Arcanum.Api")
+                .WithAssemblyName("Untrusted.Embedding.Adapter");
+
+            using MemoryStream image = new();
+
+            Assert.True(foreign.Emit(image).Success);
+
+            compilation = compilation.AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+        }
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists");
+
+        Assert.Equal(!resolved, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"));
+
+        if (shape is not ("unknown" or "mixed" or "reassigned" or "ref" or "custom" or "custom-lease" or "wrong-factory" or "foreign-assembly"))
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "Microsoft.Extensions.AI.OpenAIClientExtensions.AsIEmbeddingGenerator");
+        }
+
+        Assert.Equal(effect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        if (effect)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+        }
+
+        // Only source and metadata bytes are inspected. The exact sealed adapter's pinned
+        // ret-only Dispose does not prove SDK sends, arbitrary generators or observers pure.
+    }
+
+    [Fact]
+    public void CounterfeitDbDataReaderIndexerCannotBorrowDatabaseClassification()
+    {
+        CSharpCompilation foreign = CompileWithProductionReferencePack("namespace System.Data.Common { public sealed class DbDataReader { public object this[int ordinal] => throw new System.NotSupportedException(); } }", "RetroDownfall.Arcanum.Api")
+            .WithAssemblyName("Untrusted.Reader");
+
+        using MemoryStream image = new();
+
+        Assert.True(foreign.Emit(image).Success);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack("extern alias counterfeit; " + R2Source(R2Admission
+            + "counterfeit::System.Data.Common.DbDataReader reader = new(); _ = reader[0];"), "RetroDownfall.Arcanum.Api")
+            .AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.DoesNotContain(result.Items, static site => site.Kind == HostedProducerSiteKind.DatabaseAccess && site.Callee == "System.Data.Common.DbDataReader.this[]");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Data.Common.DbDataReader.this[]");
+    }
+
+    [Fact]
+    public void ActualSagaBlobReadsRetainAllTenDatabaseSitesThroughConfiguredHelpers()
+    {
+        const string source = """
+            using System;
+            using System.Threading;
+            using System.Threading.Tasks;
+            using System.Data.Common;
+            using Microsoft.Extensions.DependencyInjection;
+            using Microsoft.Extensions.Hosting;
+            using RetroDownfall.Arcanum.Core.LongRest;
+            using RetroDownfall.Arcanum.Infrastructure.Data;
+            namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest
+            {
+                internal sealed partial class SagaLongRestService
+                {
+                    internal async Task FixtureBlobReadAsync(CancellationToken token)
+                    {
+                        DbConnection connection = await OpenAsync(token).ConfigureAwait(false);
+                        await using DbTransaction transaction = await connection.BeginTransactionAsync(token).ConfigureAwait(false);
+                        _ = await ReadSnapshotAsync(connection, transaction, new LongRestTarget("memory", "version", "hash"), token, false).ConfigureAwait(false);
+                        _ = await ReadReceiptAsync(connection, transaction, new string('A', 64), token).ConfigureAwait(false);
+                    }
+                }
+                internal sealed class BlobSourceWorker(ArcanumDbContext db, IGrimoireConnectionAdmissionGate gate) : IHostedService
+                {
+                    public async Task StartAsync(CancellationToken token)
+                    {
+                        if (!gate.TryAcquireWorkLease(GrimoireWorkKind.WorkspaceIndexing, out IGrimoireWorkLease? work)) return;
+                        await using IGrimoireWorkLease lease = work!;
+                        if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? group)) return;
+                        await using IGrimoireExternalEffectGroup held = group!;
+                        SagaLongRestService service = new(db, TimeProvider.System);
+                        await service.FixtureBlobReadAsync(token).ConfigureAwait(false);
+                    }
+                    public Task StopAsync(CancellationToken token) => Task.CompletedTask;
+                }
+                internal static class BlobSourceRegistration
+                {
+                    internal static void Register(IServiceCollection services) => services.AddHostedService<BlobSourceWorker>();
+                }
+            }
+            """;
+
+        IReadOnlyList<CSharpCompilation> originals = HostedGrimoireProducerInventory.ProductionCompilations;
+
+        CSharpCompilation infrastructure = Assert.Single(originals, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        infrastructure = infrastructure.AddSyntaxTrees(CSharpSyntaxTree.ParseText(source,
+            (CSharpParseOptions)infrastructure.SyntaxTrees.First().Options, path: "src/Task6BlobSourceFixture.cs"));
+
+        Assert.Empty(infrastructure.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        const string worker = "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.BlobSourceWorker";
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            originals.Where(static compilation => compilation.AssemblyName is "RetroDownfall.Arcanum.Core" or "RetroDownfall.Arcanum.Secrets").Append(infrastructure).ToArray(),
+            new([worker], []), [new(worker, [OrdinaryRoot(worker + ".StartAsync") with { EnclosingType = worker, SourcePath = "src/Task6BlobSourceFixture.cs" }])], []);
+
+        HostedProducerSite[] blobs = result.Items.Where(static site => site.Kind == HostedProducerSiteKind.DatabaseAccess
+            && site.Callee == "System.Data.Common.DbDataReader.this[]"
+            && site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.SagaLongRestService")
+            .DistinctBy(static site => site.CapsuleId).ToArray();
+
+        foreach (string name in new[] { "ReadSnapshotAsync", "ReadReceiptAsync", "ReplayProtectedAsync" })
+        {
+            Assert.Contains(result.Items, site => site.EnclosingType == "RetroDownfall.Arcanum.Infrastructure.Data.LongRest.SagaLongRestService"
+                && site.Kind == HostedProducerSiteKind.DatabaseAccess && site.Member == name
+                && site.Callee == "System.Data.Common.DbCommand.ExecuteReaderAsync");
+        }
+
+        Assert.Equal(10, blobs.Length);
+
+        // The snapshot row's hash is read by the shared row decoder that the point read and the set-based seam both use.
+        Assert.Single(blobs, static site => site.Member == "SnapshotFrom");
+
+        Assert.Single(blobs, static site => site.Member == "ReadReceiptAsync");
+
+        Assert.Equal(8, blobs.Count(static site => site.Member == "ReplayProtectedAsync"));
+
+        Assert.All(blobs, static site => Assert.NotNull(site.WorkFrontierCapsuleId));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code.Contains("BUDGET", StringComparison.Ordinal));
+
+        // These are actual unchanged Saga bodies, including false snapshot materialization,
+        // widened awaited transaction and protected replay. The added caller never executes SQL.
+    }
+
+    [Theory]
+    [InlineData("default", false)]
+    [InlineData("fresh-default", false)]
+    [InlineData("outside-before", false)]
+    [InlineData("outside-after", false)]
+    [InlineData("outside-opaque", false)]
+    [InlineData("custom-before", false)]
+    [InlineData("custom-after", false)]
+    [InlineData("custom-factory", false)]
+    [InlineData("replace", false)]
+    [InlineData("opaque", false)]
+    [InlineData("different-collection", false)]
+    [InlineData("conditional", false)]
+    [InlineData("wrong-name", false)]
+    [InlineData("unknown-name", false)]
+    [InlineData("client-action", false)]
+    [InlineData("handler-action", false)]
+    [InlineData("filter", false)]
+    [InlineData("counterfeit", false)]
+    [InlineData("caller-unknown", false)]
+    public void LongRestFrameworkFactoryRequiresSelectedRegistrationAndNamedHookClosure(string shape, bool reviewed)
+    {
+        Assert.False(reviewed, "The preserved historical data records unproved factory configurations.");
+
+        const string name = "\"LongRestProvider\"";
+
+        string named = "services.AddHttpClient(" + (shape == "wrong-name" ? "\"Other\"" : shape == "unknown-name" ? "HttpProbe.Name()" : name)
+            + ", static client => " + (shape == "client-action" ? "System.IO.File.Delete(\"client-action\")" : "client.Timeout = Timeout.InfiniteTimeSpan") + ")"
+            + ".ConfigurePrimaryHttpMessageHandler(static () => " + (shape == "handler-action" ? "HttpProbe.Handler()" : "RetroDownfall.Arcanum.Infrastructure.Security.OutboundUrlGuard.CreateProviderEgressHandler()") + "); ";
+
+        const string custom = "services.AddSingleton<System.Net.Http.IHttpClientFactory, OtherFactory>(); ";
+
+        string registration = shape switch
+        {
+            "custom-before" => custom + named,
+            "custom-after" => named + custom,
+            "custom-factory" => named + "services.AddSingleton<System.Net.Http.IHttpClientFactory>(static _ => HttpProbe.Unknown()); ",
+            "replace" => named + "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.Replace(services, ServiceDescriptor.Singleton<System.Net.Http.IHttpClientFactory, OtherFactory>()); ",
+            "opaque" => named + "HttpProbe.Mutate(services); ",
+            "different-collection" => "IServiceCollection other = new ServiceCollection(); " + named.ReplaceSdkFixtureText("services.", "other.", StringComparison.Ordinal),
+            "conditional" => "if (DateTime.UtcNow.Ticks > 0) { " + named + " } ",
+            "filter" => named + "services.AddSingleton<Microsoft.Extensions.Http.IHttpMessageHandlerBuilderFilter, AuthoredFilter>(); ",
+            "counterfeit" => "CounterfeitHttp.AddHttpClient(services, " + name + "); ",
+            _ => named,
+        };
+
+        // Preserve historical unsafe named-factory hooks in this consuming synthetic lane.
+        string options = """
+        new()
+        {
+            Endpoint = new Uri(selection.Provider.Endpoint),
+            Transport = new HttpClientPipelineTransport(clients.CreateClient(HttpClientName)),
+            RetryPolicy = new ClientRetryPolicy(0),
+        }
+        """;
+
+        string source = "using System.Net.Http; using OpenAI; using System.ClientModel; using System.ClientModel.Primitives; "
+            + RegistrationSource(registration + "services.AddScoped<FrameworkSetup>(); services.AddHostedService<Worker>();")
+                .ReplaceSdkFixtureText("public class Worker : IHostedService", "public class Worker(FrameworkSetup setup) : IHostedService", StringComparison.Ordinal)
+                .ReplaceSdkFixtureText("static Worker Factory(IServiceProvider provider) => new Worker();", "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<FrameworkSetup>());", StringComparison.Ordinal)
+                .ReplaceSdkFixtureText("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public Task StartAsync(CancellationToken token) { "
+                    + (shape == "caller-unknown" ? "new FrameworkSetup(HttpProbe.Unknown())" : "setup") + ".Run(); return Task.CompletedTask; }", StringComparison.Ordinal)
+            + "public sealed class FrameworkSetup(IHttpClientFactory clients) { private const string HttpClientName = \"LongRestProvider\"; private OpenAIClientOptions Options(LongRestProviderSelection selection) => " + options
+            + "; public void Run() { System.IO.File.Delete(\"consuming-root-marker\"); var options = Options(new LongRestProviderSelection()); _ = new OpenAI.Embeddings.EmbeddingClient(\"model\", new ApiKeyCredential(\"fixture-key\"), options); } } "
+            + "sealed class LongRestProviderSelection { public ProviderSettings Provider { get; } = new(); } sealed class ProviderSettings { public string Endpoint => \"https://provider.invalid/v1\"; } "
+            + "sealed class OtherFactory : IHttpClientFactory { public HttpClient CreateClient(string name) { System.IO.File.Delete(\"custom-factory\"); return new(); } } "
+            + "static class HttpProbe { internal static extern IHttpClientFactory Unknown(); internal static extern string Name(); internal static extern void Mutate(IServiceCollection services); internal static HttpMessageHandler Handler() { System.IO.File.Delete(\"handler-action\"); return new SocketsHttpHandler(); } } "
+            + "sealed class AuthoredFilter : Microsoft.Extensions.Http.IHttpMessageHandlerBuilderFilter { public Action<Microsoft.Extensions.Http.HttpMessageHandlerBuilder> Configure(Action<Microsoft.Extensions.Http.HttpMessageHandlerBuilder> next) => builder => { System.IO.File.Delete(\"filter\"); next(builder); }; } "
+            + "static class CounterfeitHttp { public static IServiceCollection AddHttpClient(IServiceCollection services, string name) => services; } "
+            + RecoveryServingRoot;
+
+        if (shape == "fresh-default" || shape.StartsWith("outside-", StringComparison.Ordinal))
+        {
+            string boot = "IServiceCollection services = new ServiceCollection(); "
+                + (shape == "outside-before" ? custom : "")
+                + "RetroDownfall.Arcanum.Api.ApiBootstrapper.AddArcanumApiServices(services); "
+                + (shape == "outside-after" ? custom : shape == "outside-opaque" ? "HttpProbe.Mutate(services); " : "")
+                + "using ServiceProvider provider = services.BuildServiceProvider(); provider.GetRequiredService<FrameworkSetup>().Run(); ";
+
+            source = source.ReplaceSdkFixtureText("public Task StartAsync(CancellationToken token) { setup.Run(); return Task.CompletedTask; }",
+                "public Task StartAsync(CancellationToken token) { " + boot + "return Task.CompletedTask; }", StringComparison.Ordinal);
+        }
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Contains(result.Items, static site => site.EnclosingType == "FrameworkSetup" && site.Member == "Run" && site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "OpenAI.Embeddings.EmbeddingClient..ctor");
+
+        InvocationExpressionSyntax factoryCall = Assert.Single(compilation.SyntaxTrees.SelectMany(static tree => tree.GetRoot().DescendantNodes())
+            .OfType<InvocationExpressionSyntax>(), call => compilation.GetSemanticModel(call.SyntaxTree).GetSymbolInfo(call).Symbol is IMethodSymbol method
+                && method.Name == "CreateClient" && method.ContainingType.Name == "IHttpClientFactory");
+
+        bool factoryRefused = result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Identity == factoryCall.SyntaxTree.FilePath + ":" + factoryCall.SpanStart
+            && diagnostic.Detail == "System.Net.Http.IHttpClientFactory.CreateClient");
+
+        if (!factoryRefused)
+        {
+            HostedProducerSite factoryEffect = Assert.Single(result.Items, static site => site.EnclosingType == "OtherFactory"
+                && site.Member == "CreateClient" && site.Callee == "System.IO.File.Delete");
+
+            Assert.Null(factoryEffect.WorkFrontierCapsuleId);
+
+            Assert.Null(factoryEffect.EffectFrontierCapsuleId);
+
+            Assert.All(new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }, code =>
+                Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code && diagnostic.Detail == factoryEffect.Callee
+                    && diagnostic.Identity.EndsWith(factoryEffect.OperationId[factoryEffect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+        }
+
+        foreach (HostedProducerSite site in result.Items.Where(static site => site.Callee == "System.IO.File.Delete"))
+        {
+            Assert.Null(site.WorkFrontierCapsuleId);
+
+            Assert.Null(site.EffectFrontierCapsuleId);
+
+            Assert.All(new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }, code =>
+                Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code && diagnostic.Detail == site.Callee
+                    && diagnostic.Identity.EndsWith(site.OperationId[site.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+        }
+
+        // The consuming synthetic options remain historical named-factory inputs. An opaque
+        // CreateClient refuses at this call; a resolved authored factory retains its own effects.
+        // Constructor acceptance alone confers no host selection, callback or send authority.
+    }
+
+    [Fact]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
+    public void CanonicalServeBuildHasConditionalScopedFactorySourceAssociation() =>
+        AnalyzeActualServeHost("actual", true);
+
+    [Theory]
+    [InlineData("http-before")]
+    [InlineData("http-after")]
+    [InlineData("services-opaque")]
+    [InlineData("builder-escape")]
+    [InlineData("adapter-escape")]
+    [InlineData("different-builder-services")]
+    [InlineData("different-builder-build")]
+    [InlineData("app-replaced")]
+    [InlineData("provider-replaced")]
+    [InlineData("scope-replaced")]
+    [InlineData("conditional-composition")]
+    [InlineData("uncalled-composition")]
+    [InlineData("custom-provider")]
+    [InlineData("custom-container")]
+    [InlineData("competing-host")]
+    [InlineData("captured-builder-callback")]
+    [InlineData("hostbuilding-observer")]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
+    public void ServeBuildMutationHasExplicitConditionalSourceAssociation(string shape) =>
+        AnalyzeActualServeHost(shape, false);
+
+    [Theory]
+    [InlineData("options-support-override")]
+    [InlineData("http-options-factory-override")]
+    [InlineData("http-builder-override")]
+    [InlineData("http-handler-factory-override")]
+    [InlineData("interface-container")]
+    [InlineData("hostbuilding-host")]
+    [InlineData("hostbuilding-provider")]
+    [InlineData("hostbuilding-container")]
+    [InlineData("dead-good-host")]
+    [InlineData("unrelated-good-host")]
+    [InlineData("observer-unknown")]
+    [InlineData("observer-constructed-slot")]
+    [InlineData("observer-initializer")]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
+    public void ServeCompositionMutationHasExplicitConditionalSourceAssociation(string shape) =>
+        AnalyzeActualServeHost(shape, false);
+
+    [Theory]
+    [InlineData("provider-alias", true)]
+    [InlineData("explicit-custom-owner", false)]
+    [InlineData("helper-custom-owner", false)]
+    [InlineData("other-provider-scope", false)]
+    [InlineData("provider-alias-switched", false)]
+    [InlineData("provider-wrapper-switched", false)]
+    [InlineData("same-helper-good", true)]
+    [InlineData("same-helper-good-bad", false)]
+    [InlineData("same-helper-bad-good", false)]
+    [Trait("Category", "HostedProducerServeHostAnalysis")]
+    public void ServeScopedConsumerHasExplicitConditionalSourceOrigin(string shape, bool reviewed) =>
+        AnalyzeActualServeHost(shape, reviewed);
+
+    private void AnalyzeActualServeHost(string shape, bool reviewed)
+    {
+        const string servePath = "src/RetroDownfall.Arcanum.Cli/Commands/ServeCommand.cs";
+
+        const string factoryPath = "src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProviderClientFactory.cs";
+
+        const string serveType = "RetroDownfall.Arcanum.Cli.Commands.ServeCommand";
+
+        const string factoryType = "RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory";
+
+        IReadOnlyList<CSharpCompilation> production = HostedGrimoireProducerInventory.ProductionCompilations;
+
+        CSharpCompilation originalApi = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        CSharpCompilation originalCli = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Cli");
+
+        SyntaxTree factoryTree = Assert.Single(originalApi.SyntaxTrees, static tree => tree.FilePath == factoryPath);
+
+        SyntaxNode factoryRoot = factoryTree.GetRoot();
+
+        MethodDeclarationSyntax resolve = factoryRoot.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "ResolveEmbeddingAsync");
+
+        SyntaxNode markedFactory = factoryRoot.ReplaceNode(resolve, resolve.WithBody(resolve.Body!.WithStatements(
+            resolve.Body.Statements.Insert(0, SyntaxFactory.ParseStatement("System.IO.File.Exists(\"actual-host-consumer-marker\");")))));
+
+        SyntaxTree factoryOverlay = factoryTree.WithRootAndOptions(markedFactory, factoryTree.Options);
+
+        CSharpCompilation api = originalApi.ReplaceSyntaxTree(factoryTree, factoryOverlay);
+
+        CompilationReference apiReference = Assert.Single(originalCli.References.OfType<CompilationReference>(),
+            static reference => reference.Compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        CSharpCompilation cli = originalCli.ReplaceReference(apiReference, api.ToMetadataReference());
+
+        SyntaxTree serveTree = Assert.Single(cli.SyntaxTrees, static tree => tree.FilePath == servePath);
+
+        SyntaxNode serveRoot = serveTree.GetRoot();
+
+        MethodDeclarationSyntax run = serveRoot.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "RunHostAsync");
+
+        LocalDeclarationStatementSyntax build = run.Body!.Statements.OfType<LocalDeclarationStatementSyntax>()
+            .Single(static statement => statement.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "app"));
+
+        Assert.Equal("builder.Build()", build.Declaration.Variables.Single().Initializer!.Value.ToString());
+
+        StatementSyntax[] originalSetup = run.Body.Statements.Take(run.Body.Statements.IndexOf(build) + 1).ToArray();
+
+        InvocationExpressionSyntax[] setupCalls = originalSetup.SelectMany(static statement => statement.DescendantNodesAndSelf())
+            .OfType<InvocationExpressionSyntax>().ToArray();
+
+        Assert.Single(setupCalls, static call => call.ToString() == "WebApplication.CreateSlimBuilder()");
+
+        Assert.Single(setupCalls, static call => call.ToString() == "builder.Services.AddArcanumApiServices(builder.Configuration)");
+
+        Assert.Single(setupCalls, static call => call.ToString() == "builder.Build()");
+
+        BlockSyntax consume = (BlockSyntax)SyntaxFactory.ParseStatement("""
+            {
+                using IServiceScope actualScope = app.Services.CreateScope();
+                RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory actualFactory = actualScope.ServiceProvider
+                    .GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory>();
+                _ = await actualFactory.ResolveEmbeddingAsync(
+                    new RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderSelection(
+                        new() { Type = RetroDownfall.Arcanum.Core.Configuration.AiProviderKind.OpenAICompatible, Endpoint = "https://provider.invalid/v1" },
+                        "source-fixture-model", 3, new()), cancellationToken).ConfigureAwait(false);
+                return 0;
+            }
+            """);
+
+        string setup = string.Join("\n", originalSetup.Select(static statement => statement.ToFullString()));
+
+        const string composition = "builder.Services.AddArcanumApiServices(builder.Configuration);";
+
+        const string competitor = "builder.Services.AddSingleton<System.Net.Http.IHttpClientFactory, SourceHostHttpFactory>();";
+
+        string beforeBuild = shape switch
+        {
+            "options-support-override" => "builder.Services.AddSingleton(typeof(Microsoft.Extensions.Options.IOptionsMonitor<>), typeof(SourceHostOptionsMonitor<>));",
+            "http-options-factory-override" => "builder.Services.AddSingleton<Microsoft.Extensions.Options.IOptionsFactory<Microsoft.Extensions.Http.HttpClientFactoryOptions>>(static _ => UnknownHttpOptionsFactory());",
+            "http-builder-override" => "builder.Services.AddTransient<Microsoft.Extensions.Http.HttpMessageHandlerBuilder>(static _ => UnknownHttpBuilder());",
+            "http-handler-factory-override" => "builder.Services.AddSingleton<System.Net.Http.IHttpMessageHandlerFactory>(static _ => UnknownHandlerFactory());",
+            "interface-container" => "((IHostApplicationBuilder)builder).ConfigureContainer(new SourceHostProviderFactory());",
+            "services-opaque" => "MutateServices(builder.Services);",
+            "builder-escape" => "MutateBuilder(builder);",
+            "adapter-escape" => "MutateAdapter(builder.Host);",
+            "custom-provider" => "builder.Host.UseServiceProviderFactory(new SourceHostProviderFactory());",
+            "custom-container" => "builder.Host.ConfigureContainer<IServiceCollection>((context, services) => MutateServices(services));",
+            "competing-host" => "builder.Services.AddSingleton<IHost>(static _ => UnknownHost());",
+            "captured-builder-callback" => "builder.Host.ConfigureServices((context, services) => MutateBuilder(builder));",
+            _ => "",
+        };
+
+        if (shape is "http-before" or "http-after") setup = setup.ReplaceSdkFixtureText(composition,
+            shape == "http-before" ? competitor + composition : composition + competitor, StringComparison.Ordinal);
+
+        if (shape == "conditional-composition") setup = setup.ReplaceSdkFixtureText(composition, "if (UnknownCondition()) { " + composition + " }", StringComparison.Ordinal);
+
+        if (shape == "uncalled-composition") setup = setup.ReplaceSdkFixtureText(composition, "void UncalledComposition() { " + composition + " }", StringComparison.Ordinal);
+
+        if (shape is "different-builder-services" or "different-builder-build") setup = setup.ReplaceSdkFixtureText(
+            "WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();",
+            "WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(); WebApplicationBuilder otherBuilder = WebApplication.CreateSlimBuilder();", StringComparison.Ordinal);
+
+        if (shape == "different-builder-services") setup = setup.ReplaceSdkFixtureText(composition, "otherBuilder.Services.AddArcanumApiServices(otherBuilder.Configuration);", StringComparison.Ordinal);
+
+        if (shape == "different-builder-build") setup = setup.ReplaceSdkFixtureText("WebApplication app = builder.Build();", "WebApplication app = otherBuilder.Build();", StringComparison.Ordinal);
+
+        if (shape is "dead-good-host" or "unrelated-good-host")
+        {
+            setup = setup.ReplaceSdkFixtureText(composition, "MutateServices(builder.Services);", StringComparison.Ordinal);
+
+            const string otherHost = "WebApplicationBuilder goodBuilder = WebApplication.CreateSlimBuilder(); goodBuilder.Services.AddArcanumApiServices(goodBuilder.Configuration); _ = goodBuilder.Build();";
+
+            beforeBuild += shape == "dead-good-host" ? "void DeadGoodHost() { " + otherHost + " }" : otherHost;
+        }
+
+        setup = setup.ReplaceSdkFixtureText("WebApplication app = ", beforeBuild + " WebApplication app = ", StringComparison.Ordinal);
+
+        if (shape is "hostbuilding-observer" or "hostbuilding-host" or "hostbuilding-provider" or "hostbuilding-container")
+            setup = "using IDisposable hostObserver = System.Diagnostics.DiagnosticListener.AllListeners.Subscribe(new SourceHostObserver()); " + setup;
+
+        if (shape == "observer-unknown") setup = "using IDisposable hostObserver = System.Diagnostics.DiagnosticListener.AllListeners.Subscribe(UnknownObserver()); " + setup;
+
+        if (shape == "observer-constructed-slot") setup = "using IDisposable hostObserver = System.Diagnostics.DiagnosticListener.AllListeners.Subscribe(new SourceHostGenericObserver<System.Diagnostics.DiagnosticListener>()); " + setup;
+
+        string consuming = string.Join("\n", consume.Statements.Select(static statement => statement.ToFullString()));
+
+        if (shape == "app-replaced") consuming = "app = WebApplication.CreateSlimBuilder().Build(); " + consuming;
+
+        if (shape == "provider-replaced") consuming = consuming.ReplaceSdkFixtureText("app.Services.CreateScope()", "UnknownProvider().CreateScope()", StringComparison.Ordinal);
+
+        if (shape == "scope-replaced") consuming = consuming.ReplaceSdkFixtureText("app.Services.CreateScope()", "UnknownScope()", StringComparison.Ordinal);
+
+        if (shape is "provider-alias" or "provider-alias-switched")
+        {
+            consuming = "IServiceProvider providerAlias = app.Services; "
+                + (shape == "provider-alias-switched" ? "providerAlias = UnknownProvider(); " : "")
+                + consuming.ReplaceSdkFixtureText("app.Services.CreateScope()", "providerAlias.CreateScope()", StringComparison.Ordinal);
+        }
+
+        if (shape == "provider-wrapper-switched") consuming = consuming.ReplaceSdkFixtureText(
+            "app.Services.CreateScope()", "ForwardProvider(UnknownProvider()).CreateScope()", StringComparison.Ordinal);
+
+        if (shape == "other-provider-scope") consuming = "WebApplicationBuilder otherBuilder = WebApplication.CreateSlimBuilder(); "
+            + "otherBuilder.Services.AddArcanumApiServices(otherBuilder.Configuration); "
+            + "otherBuilder.Services.AddSingleton<System.Net.Http.IHttpClientFactory, SourceHostHttpFactory>(); "
+            + "WebApplication otherApp = otherBuilder.Build(); "
+            + consuming.ReplaceSdkFixtureText("app.Services.CreateScope()", "otherApp.Services.CreateScope()", StringComparison.Ordinal);
+
+        const string selectedFactory = "actualScope.ServiceProvider\n        .GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory>()";
+
+        const string customFactory = "new RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory("
+            + "actualScope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver>())";
+
+        if (shape is "explicit-custom-owner" or "helper-custom-owner")
+        {
+            Assert.Contains(selectedFactory, consuming, StringComparison.Ordinal);
+
+            consuming = consuming.ReplaceSdkFixtureText("RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory actualFactory =", "using RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory actualFactory =", StringComparison.Ordinal);
+
+            consuming = consuming.ReplaceSdkFixtureText(selectedFactory, shape == "explicit-custom-owner" ? customFactory
+                : "MakeCustomFactory(actualScope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver>())", StringComparison.Ordinal);
+        }
+
+        if (shape is "same-helper-good" or "same-helper-good-bad" or "same-helper-bad-good")
+        {
+            string[] calls = shape == "same-helper-good" ? ["actualFactory"] : shape == "same-helper-good-bad"
+                ? ["actualFactory", "customOwner"] : ["customOwner", "actualFactory"];
+
+            consuming = "using IServiceScope actualScope = app.Services.CreateScope(); "
+                + "RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory actualFactory = " + selectedFactory + "; "
+                + (shape == "same-helper-good" ? "" : "using var customOwner = " + customFactory + "; ")
+                + string.Join(" ", calls.Select(static factory => "await ConsumeFactoryAsync(" + factory + ", cancellationToken);"))
+                + "return 0;";
+        }
+
+        BlockSyntax probeBody = (BlockSyntax)SyntaxFactory.ParseStatement("{ System.IO.File.Exists(\"actual-host-root-marker\"); " + setup + consuming + " }");
+
+        SyntaxNode markedServe = serveRoot.ReplaceNode(run, run.WithBody(probeBody));
+
+        if (shape != "actual")
+        {
+            ClassDeclarationSyntax serveClass = markedServe.DescendantNodes().OfType<ClassDeclarationSyntax>()
+                .Single(static type => type.Identifier.ValueText == "ServeCommand");
+
+            CompilationUnitSyntax helpers = CSharpSyntaxTree.ParseText("""
+                class FixtureMembers
+                {
+                    private static extern void MutateServices(IServiceCollection services);
+                    private static extern void MutateBuilder(WebApplicationBuilder builder);
+                    private static extern void MutateAdapter(IHostBuilder adapter);
+                    private static extern bool UnknownCondition();
+                    private static extern IServiceProvider UnknownProvider();
+                    private static extern IServiceScope UnknownScope();
+                    private static IServiceProvider ForwardProvider(IServiceProvider provider) => provider;
+                    private static RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory MakeCustomFactory(
+                        RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver keys) => new(keys);
+                    private static async Task ConsumeFactoryAsync(RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory factory, CancellationToken cancellationToken)
+                    {
+                        _ = await factory.ResolveEmbeddingAsync(new RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderSelection(
+                            new() { Type = RetroDownfall.Arcanum.Core.Configuration.AiProviderKind.OpenAICompatible, Endpoint = "https://provider.invalid/v1" },
+                            "source-fixture-model", 3, new()), cancellationToken).ConfigureAwait(false);
+                    }
+                    private static extern IHost UnknownHost();
+                    private static extern Microsoft.Extensions.Options.IOptionsFactory<Microsoft.Extensions.Http.HttpClientFactoryOptions> UnknownHttpOptionsFactory();
+                    private static extern Microsoft.Extensions.Http.HttpMessageHandlerBuilder UnknownHttpBuilder();
+                    private static extern System.Net.Http.IHttpMessageHandlerFactory UnknownHandlerFactory();
+                    private static extern IObserver<System.Diagnostics.DiagnosticListener> UnknownObserver();
+                    private static readonly IDisposable HostSubscription = System.Diagnostics.DiagnosticListener.AllListeners.Subscribe(new SourceHostObserver());
+                    private sealed class SourceHostOptionsMonitor<T> : Microsoft.Extensions.Options.IOptionsMonitor<T> where T : class
+                    {
+                        public T CurrentValue => throw new NotSupportedException();
+                        public T Get(string? name) => throw new NotSupportedException();
+                        public IDisposable OnChange(Action<T, string?> listener) => throw new NotSupportedException();
+                    }
+                    private sealed class SourceHostGenericObserver<T> : IObserver<T>
+                    {
+                        public void OnNext(T value)
+                        {
+                            if (value is System.Diagnostics.DiagnosticListener listener) listener.Subscribe(new SourceHostObserver());
+                        }
+                        public void OnCompleted() { }
+                        public void OnError(Exception error) { }
+                    }
+                    private sealed class SourceHostHttpFactory : System.Net.Http.IHttpClientFactory
+                    {
+                        public System.Net.Http.HttpClient CreateClient(string name)
+                        {
+                            System.IO.File.Exists("host-custom-factory");
+                            return new();
+                        }
+                    }
+                    private sealed class SourceHostProviderFactory : IServiceProviderFactory<IServiceCollection>
+                    {
+                        public IServiceCollection CreateBuilder(IServiceCollection services) => services;
+                        public IServiceProvider CreateServiceProvider(IServiceCollection services) => UnknownProvider();
+                    }
+                    private sealed class SourceHostObserver : IObserver<System.Diagnostics.DiagnosticListener>, IObserver<KeyValuePair<string, object?>>
+                    {
+                        public void OnNext(System.Diagnostics.DiagnosticListener listener)
+                        {
+                            if (listener.Name == "Microsoft.Extensions.Hosting") listener.Subscribe(this);
+                        }
+                        public void OnNext(KeyValuePair<string, object?> observed)
+                        {
+                            if (observed.Key == "HostBuilding" && observed.Value is IHostBuilder adapter)
+                            {
+                                System.IO.File.Delete("hostbuilding-observer");
+                                adapter.ConfigureServices((context, services) => services.AddSingleton<System.Net.Http.IHttpClientFactory, SourceHostHttpFactory>());
+                            }
+                        }
+                        public void OnCompleted() { }
+                        public void OnError(Exception error) { }
+                    }
+                }
+                """).GetCompilationUnitRoot();
+
+            string[] needed = shape switch
+            {
+                "http-before" or "http-after" => ["SourceHostHttpFactory"],
+                "services-opaque" or "custom-container" => ["MutateServices"],
+                "builder-escape" or "captured-builder-callback" => ["MutateBuilder"],
+                "adapter-escape" => ["MutateAdapter"],
+                "conditional-composition" => ["UnknownCondition"],
+                "provider-replaced" => ["UnknownProvider"],
+                "scope-replaced" => ["UnknownScope"],
+                "explicit-custom-owner" => [],
+                "helper-custom-owner" => ["MakeCustomFactory"],
+                "other-provider-scope" => ["SourceHostHttpFactory"],
+                "provider-alias-switched" => ["UnknownProvider"],
+                "provider-wrapper-switched" => ["UnknownProvider", "ForwardProvider"],
+                "same-helper-good" => ["ConsumeFactoryAsync"],
+                "same-helper-good-bad" or "same-helper-bad-good" => ["ConsumeFactoryAsync"],
+                "options-support-override" => ["SourceHostOptionsMonitor"],
+                "http-options-factory-override" => ["UnknownHttpOptionsFactory"],
+                "http-builder-override" => ["UnknownHttpBuilder"],
+                "http-handler-factory-override" => ["UnknownHandlerFactory"],
+                "custom-provider" or "interface-container" => ["SourceHostProviderFactory", "UnknownProvider"],
+                "dead-good-host" or "unrelated-good-host" => ["MutateServices"],
+                "observer-unknown" => ["UnknownObserver"],
+                "observer-constructed-slot" => ["SourceHostGenericObserver", "SourceHostObserver", "SourceHostHttpFactory"],
+                "observer-initializer" => ["HostSubscription", "SourceHostObserver", "SourceHostHttpFactory"],
+                "hostbuilding-host" => ["SourceHostObserver", "UnknownHost"],
+                "hostbuilding-provider" => ["SourceHostObserver", "SourceHostProviderFactory", "UnknownProvider"],
+                "hostbuilding-container" => ["SourceHostObserver", "MutateServices"],
+                "competing-host" => ["UnknownHost"],
+                "hostbuilding-observer" => ["SourceHostObserver", "SourceHostHttpFactory"],
+                _ => [],
+            };
+
+            string observerMutation = shape switch
+            {
+                "hostbuilding-host" => "adapter.ConfigureServices((context, services) => services.AddSingleton<IHost>(static _ => UnknownHost()));",
+                "hostbuilding-provider" => "adapter.UseServiceProviderFactory(new SourceHostProviderFactory());",
+                "hostbuilding-container" => "adapter.ConfigureContainer<IServiceCollection>((context, services) => MutateServices(services));",
+                _ => "",
+            };
+
+            if (observerMutation.Length != 0) helpers = CSharpSyntaxTree.ParseText(helpers.ToFullString().ReplaceSdkFixtureText(
+                "adapter.ConfigureServices((context, services) => services.AddSingleton<System.Net.Http.IHttpClientFactory, SourceHostHttpFactory>());",
+                observerMutation, StringComparison.Ordinal)).GetCompilationUnitRoot();
+
+            markedServe = markedServe.ReplaceNode(serveClass, serveClass.AddMembers(
+                helpers.DescendantNodes().OfType<ClassDeclarationSyntax>().First().Members
+                    .Where(member => needed.Contains(member switch
+                    {
+                        MethodDeclarationSyntax method => method.Identifier.ValueText,
+                        ClassDeclarationSyntax type => type.Identifier.ValueText,
+                        FieldDeclarationSyntax field => field.Declaration.Variables.Single().Identifier.ValueText,
+                        _ => "",
+                    }, StringComparer.Ordinal)).ToArray()));
+        }
+
+        SyntaxTree serveOverlay = serveTree.WithRootAndOptions(markedServe, serveTree.Options);
+
+        cli = cli.ReplaceSyntaxTree(serveTree, serveOverlay);
+
+        // Save actual generated source and diagnostics as evidence; these trees are compiled and
+        // analyzed only. No host, configuration bootstrap, SDK, provider or observer is executed.
+        DirectoryInfo evidence = Directory.CreateTempSubdirectory("arcanum-task6-actual-host-" + shape + "-");
+
+        File.WriteAllText(Path.Combine(evidence.FullName, "ServeCommand.overlay.cs"), serveOverlay.GetText().ToString());
+
+        File.WriteAllText(Path.Combine(evidence.FullName, "LongRestProviderClientFactory.overlay.cs"), factoryOverlay.GetText().ToString());
+
+        output.WriteLine("ACTUAL_HOST_EVIDENCE=" + shape + "|" + evidence.FullName);
+
+        Assert.Empty(api.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(cli.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Single(api.SyntaxTrees.SelectMany(static tree => tree.GetRoot().DescendantNodes()).OfType<MethodDeclarationSyntax>(),
+            static method => method.Identifier.ValueText == "AddArcanumApiServices");
+
+        Assert.Same(api, Assert.Single(cli.References.OfType<CompilationReference>(),
+            static reference => reference.Compilation.AssemblyName == "RetroDownfall.Arcanum.Api").Compilation);
+
+        CSharpCompilation[] graph = production.Where(static compilation => compilation.AssemblyName is not "RetroDownfall.Arcanum.Api" and not "RetroDownfall.Arcanum.Cli")
+            .Append(api).Append(cli).ToArray();
+
+        NonHostedProducerChainEntry root = new(serveType + ".RunHostAsync", servePath, serveType, "RunHostAsync",
+            HostedProducerAuthorityKind.FiniteRequest, "source-only actual Serve setup and scoped consumer probe", []);
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(graph, new([], []), [], [root]);
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "sites.txt"), result.Items.Select(static site =>
+            $"{site.RootType}|{site.SourcePath}|{site.EnclosingType}|{site.Member}|{site.Kind}|{site.Callee}|{site.OperationId}"));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "diagnostics.txt"), result.Diagnostics.Select(static diagnostic =>
+            $"{diagnostic.Code}|{diagnostic.Identity}|{diagnostic.Detail}"));
+
+        output.WriteLine($"ACTUAL_HOST_RESULT sites={result.Items.Count} diagnostics={result.Diagnostics.Count}");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED"
+            or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site => site.RootType == serveType && site.SourcePath == servePath
+            && site.EnclosingType == serveType && site.Member == "RunHostAsync" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site => site.RootType == serveType && site.SourcePath == factoryPath
+            && site.EnclosingType == factoryType && site.Member == "ResolveEmbeddingAsync" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site => site.RootType == serveType
+            && site.SourcePath == "src/RetroDownfall.Arcanum.Core/Configuration/ConfigurationBootstrapper.cs"
+            && site.EnclosingType == "RetroDownfall.Arcanum.Core.Configuration.ConfigurationBootstrapper"
+            && site.Member == "ReadPersistedArcanumSettingsFile" && site.Callee == "System.IO.FileStream..ctor");
+
+        foreach (string callback in new[]
+        {
+            "Microsoft.Extensions.Hosting.WindowsServiceLifetimeHostBuilderExtensions.UseWindowsService",
+            "Microsoft.AspNetCore.Hosting.WebHostBuilderKestrelExtensions.ConfigureKestrel",
+        }) Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Identity.StartsWith(root.ChainId + "/callback@" + servePath + ":", StringComparison.Ordinal)
+            && diagnostic.Detail.StartsWith(callback + ";", StringComparison.Ordinal));
+
+        if (shape is "hostbuilding-observer" or "hostbuilding-host" or "hostbuilding-provider" or "hostbuilding-container"
+            or "observer-unknown" or "observer-constructed-slot")
+        {
+            InvocationExpressionSyntax subscription = serveOverlay.GetRoot().DescendantNodes().OfType<InvocationExpressionSyntax>()
+                .Single(static call => call.ToString().StartsWith("System.Diagnostics.DiagnosticListener.AllListeners.Subscribe(", StringComparison.Ordinal));
+
+            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Identity == servePath + ":" + subscription.SpanStart
+                && diagnostic.Detail == "System.IObservable`1.Subscribe");
+        }
+
+        ImplicitObjectCreationExpressionSyntax sdk = factoryOverlay.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "ResolveEmbeddingAsync")
+            .DescendantNodes().OfType<ImplicitObjectCreationExpressionSyntax>().Single();
+
+        // Local typed transport acceptance is independent of this conditional source contract.
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Identity == factoryPath + ":" + sdk.SpanStart
+            && diagnostic.Detail == "OpenAI.Embeddings.EmbeddingClient..ctor");
+
+        Assert.Equal(shape is "actual" or "provider-alias" or "same-helper-good", reviewed);
+
+        bool associated = shape is "actual" or "provider-alias" or "same-helper-good"
+            or "http-before" or "http-after" or "http-options-factory-override"
+            or "http-builder-override" or "http-handler-factory-override";
+
+        Assert.Equal(associated, HasServeSourceAssociation(cli, serveOverlay, hosted: false));
+
+        AssertOwnedLongRestTransportSource(api, Assert.Single(production,
+            static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure"));
+
+        if (shape is "http-before" or "http-after" or "http-options-factory-override"
+            or "http-builder-override" or "http-handler-factory-override" or "hostbuilding-observer"
+            or "explicit-custom-owner" or "helper-custom-owner" or "other-provider-scope"
+            or "same-helper-good-bad" or "same-helper-bad-good")
+            AssertConsumedHistoricalFactory(shape);
+    }
+
+    [Fact]
+    [Trait("Category", "HostedProducerBuildAnalysis")]
+    public void CanonicalServeCallbackHasConditionalBuildStartWorkerSourceAssociation() =>
+        AnalyzeActualHostedLongRestActivation("actual", true);
+
+    [Theory]
+    [InlineData("worker-other-scopefactory")]
+    [InlineData("custom-serve-callback")]
+    [InlineData("other-started-app")]
+    [Trait("Category", "HostedProducerBuildAnalysis")]
+    public void ServeWorkerMutationHasExplicitConditionalSourceAssociation(string shape) =>
+        AnalyzeActualHostedLongRestActivation(shape, false);
+
+    private void AnalyzeActualHostedLongRestActivation(string shape, bool reviewed)
+    {
+        const string workerPath = "src/RetroDownfall.Arcanum.Infrastructure/Hosting/LongRestSweepHostedService.cs";
+
+        const string workerType = "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService";
+
+        const string factoryPath = "src/RetroDownfall.Arcanum.Api/Intelligence/LongRestProviderClientFactory.cs";
+
+        const string factoryType = "RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory";
+
+        IReadOnlyList<CSharpCompilation> production = HostedGrimoireProducerInventory.ProductionCompilations;
+
+        CSharpCompilation infrastructure = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure");
+
+        SyntaxTree workerTree = Assert.Single(infrastructure.SyntaxTrees, static tree => tree.FilePath == workerPath);
+
+        SyntaxNode workerRoot = workerTree.GetRoot();
+
+        MethodDeclarationSyntax runOne = workerRoot.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "RunOneAsync");
+
+        SyntaxTree workerOverlay = workerTree.WithRootAndOptions(workerRoot.ReplaceNode(runOne, runOne.WithBody(runOne.Body!.WithStatements(
+            runOne.Body.Statements.Insert(0, SyntaxFactory.ParseStatement("System.IO.File.Exists(\"actual-hosted-worker-marker\");"))))), workerTree.Options);
+
+        infrastructure = infrastructure.ReplaceSyntaxTree(workerTree, workerOverlay);
+
+        SyntaxTree originalRegistrations = Assert.Single(infrastructure.SyntaxTrees, static tree => tree.FilePath
+            == "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs");
+
+        SyntaxTree? alternateRegistration = null;
+
+        if (shape == "worker-other-scopefactory")
+        {
+            alternateRegistration = CSharpSyntaxTree.ParseText("""
+                using Microsoft.Extensions.DependencyInjection;
+                using Microsoft.Extensions.Logging;
+                using RetroDownfall.Arcanum.Core.LongRest;
+                using RetroDownfall.Arcanum.Infrastructure.Data;
+                using RetroDownfall.Arcanum.Infrastructure.Hosting;
+                using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
+                namespace RetroDownfall.Arcanum.Infrastructure.Fixtures;
+                public static class AlternateWorkerRegistration
+                {
+                    public static void Add(IServiceCollection services) => services.AddSingleton<LongRestSweepHostedService>(sp =>
+                        new LongRestSweepHostedService(
+                            new ServiceCollection().BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+                            sp.GetRequiredService<LongRestSweepQueue>(),
+                            sp.GetRequiredService<ILongRestConfigurationProvider>(),
+                            sp.GetRequiredService<IGrimoireConnectionAdmissionGate>(),
+                            sp.GetRequiredService<TimeProvider>(),
+                            sp.GetRequiredService<ILoggerFactory>()));
+                }
+                """, (CSharpParseOptions)workerTree.Options, "src/AlternateWorkerRegistration.cs");
+
+            infrastructure = infrastructure.AddSyntaxTrees(alternateRegistration);
+        }
+
+        // The real DI tree retains the exact source-generator interceptor callsite identity.
+        Assert.Same(originalRegistrations, Assert.Single(infrastructure.SyntaxTrees, tree => tree.FilePath == originalRegistrations.FilePath));
+
+        CSharpCompilation originalApi = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Api");
+
+        CSharpCompilation api = originalApi.ReplaceReference(Assert.Single(originalApi.References.OfType<CompilationReference>(),
+            static reference => reference.Compilation.AssemblyName == "RetroDownfall.Arcanum.Infrastructure"), infrastructure.ToMetadataReference());
+
+        SyntaxTree factoryTree = Assert.Single(api.SyntaxTrees, static tree => tree.FilePath == factoryPath);
+
+        SyntaxNode factoryRoot = factoryTree.GetRoot();
+
+        MethodDeclarationSyntax resolve = factoryRoot.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "ResolveEmbeddingAsync");
+
+        SyntaxTree factoryOverlay = factoryTree.WithRootAndOptions(factoryRoot.ReplaceNode(resolve, resolve.WithBody(resolve.Body!.WithStatements(
+            resolve.Body.Statements.Insert(0, SyntaxFactory.ParseStatement("System.IO.File.Exists(\"actual-hosted-consumer-marker\");"))))), factoryTree.Options);
+
+        api = api.ReplaceSyntaxTree(factoryTree, factoryOverlay);
+
+        CSharpCompilation cli = Assert.Single(production, static compilation => compilation.AssemblyName == "RetroDownfall.Arcanum.Cli");
+
+        foreach (CSharpCompilation dependency in new[] { infrastructure, api }) cli = cli.ReplaceReference(
+            Assert.Single(cli.References.OfType<CompilationReference>(), reference => reference.Compilation.AssemblyName == dependency.AssemblyName), dependency.ToMetadataReference());
+
+        if (shape is "custom-serve-callback" or "other-started-app" or "worker-other-scopefactory")
+        {
+            SyntaxTree originalServe = Assert.Single(cli.SyntaxTrees, static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Cli/Commands/ServeCommand.cs");
+
+            string text = originalServe.GetText().ToString();
+
+            if (shape == "worker-other-scopefactory")
+            {
+                const string original = "builder.Services.AddArcanumApiServices(builder.Configuration);";
+
+                Assert.Contains(original, text, StringComparison.Ordinal);
+
+                text = text.ReplaceSdkFixtureText(original, "RetroDownfall.Arcanum.Infrastructure.Fixtures.AlternateWorkerRegistration.Add(builder.Services); "
+                    + original, StringComparison.Ordinal);
+            }
+            else if (shape == "custom-serve-callback")
+            {
+                const string original = "Run(cancellationToken, RunHostAsync)";
+
+                Assert.Contains(original, text, StringComparison.Ordinal);
+
+                text = text.ReplaceSdkFixtureText(original, "Run(cancellationToken, static _ => Task.FromResult(0))", StringComparison.Ordinal);
+            }
+            else
+            {
+                const string original = "await app.StartAsync(cancellationToken).ConfigureAwait(false);";
+
+                Assert.Contains(original, text, StringComparison.Ordinal);
+
+                text = text.ReplaceSdkFixtureText(original, "WebApplication otherStartedApp = WebApplication.CreateSlimBuilder().Build(); "
+                    + "await otherStartedApp.StartAsync(cancellationToken).ConfigureAwait(false);", StringComparison.Ordinal);
+            }
+
+            cli = cli.ReplaceSyntaxTree(originalServe, CSharpSyntaxTree.ParseText(text, (CSharpParseOptions)originalServe.Options, originalServe.FilePath));
+        }
+
+        Assert.Empty(infrastructure.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(api.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        Assert.Empty(cli.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        IMethodSymbol entry = Assert.IsAssignableFrom<IMethodSymbol>(cli.GetEntryPoint(default));
+
+        Assert.Equal("Main", entry.Name);
+
+        Assert.Equal("RetroDownfall.Arcanum.Cli.Program", entry.ContainingType.ToDisplayString());
+
+        Assert.Equal("src/RetroDownfall.Arcanum.Cli/Program.cs", Assert.Single(entry.DeclaringSyntaxReferences).SyntaxTree.FilePath);
+
+        SyntaxTree serveTree = Assert.Single(cli.SyntaxTrees, static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Cli/Commands/ServeCommand.cs");
+
+        MethodDeclarationSyntax serve = serveTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "RunHostAsync");
+
+        InvocationExpressionSyntax[] serveCalls = serve.DescendantNodes().OfType<InvocationExpressionSyntax>().ToArray();
+
+        Assert.Equal(shape == "other-started-app" ? 2 : 1, serveCalls.Count(static call => call.ToString() == "WebApplication.CreateSlimBuilder()"));
+
+        Assert.Single(serveCalls, static call => call.ToString() == "builder.Services.AddArcanumApiServices(builder.Configuration)");
+
+        Assert.Single(serveCalls, static call => call.ToString() == "builder.Build()");
+
+        Assert.Single(serveCalls, call => call.ToString() == (shape == "other-started-app"
+            ? "otherStartedApp.StartAsync(cancellationToken)" : "app.StartAsync(cancellationToken)"));
+
+        CSharpCompilation[] graph = production.Where(static compilation => compilation.AssemblyName is not "RetroDownfall.Arcanum.Infrastructure"
+            and not "RetroDownfall.Arcanum.Api" and not "RetroDownfall.Arcanum.Cli").Append(infrastructure).Append(api).Append(cli).ToArray();
+
+        HostedProducerServiceEntry root = Assert.Single(HostedGrimoireProducerInventory.Catalog,
+            static service => service.ServiceType == "LongRestSweepHostedService");
+
+        // The worker's service also declares the admitted maintenance as a Lease-Handoff Root; the worker's own operation is the lifecycle one.
+        HostedProducerOperationEntry workerOperation = Assert.Single(root.Operations, static operation => operation.LeaseFormal is null);
+
+        Assert.Equal(workerType + ".ExecuteAsync", workerOperation.OperationId);
+
+        Assert.Equal(workerPath, workerOperation.SourcePath);
+
+        Assert.Equal("RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", Assert.Single(root.Operations, static operation => operation.LeaseFormal is not null).OperationId);
+
+        System.Collections.Concurrent.ConcurrentQueue<HostedProducerAdmittedStateObservation> admittedStates = new();
+
+        System.Collections.Concurrent.ConcurrentQueue<(int Worker, int Cohorts, int Witnesses, int Hits, bool Probe)> nestedReuse = new();
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            graph, new([root.ServiceType], []), [root], [], admittedStateObserver: admittedStates.Enqueue,
+            nestedReuseObserver: (worker, cohorts, witnesses, hits, probe) => nestedReuse.Enqueue((worker, cohorts, witnesses, hits, probe)));
+
+        DirectoryInfo evidence = Directory.CreateTempSubdirectory("arcanum-task6-actual-hosted-activation-" + shape + "-");
+
+        File.WriteAllText(Path.Combine(evidence.FullName, "LongRestSweepHostedService.overlay.cs"), workerOverlay.GetText().ToString());
+
+        File.WriteAllText(Path.Combine(evidence.FullName, "LongRestProviderClientFactory.overlay.cs"), factoryOverlay.GetText().ToString());
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "sites.txt"), result.Items.Select(static site =>
+            $"{site.RootType}|{site.SourcePath}|{site.EnclosingType}|{site.Member}|{site.Kind}|{site.Callee}|{site.OperationId}"));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "diagnostics.txt"), result.Diagnostics.Select(static diagnostic =>
+            $"{diagnostic.Code}|{diagnostic.Identity}|{diagnostic.Detail}"));
+
+        File.WriteAllText(Path.Combine(evidence.FullName, "ServeCommand.source.cs"), serveTree.GetText().ToString());
+
+        if (alternateRegistration is not null) File.WriteAllText(Path.Combine(evidence.FullName, "AlternateWorkerRegistration.source.cs"), alternateRegistration.GetText().ToString());
+
+        File.WriteAllText(Path.Combine(evidence.FullName, "ServiceCollectionExtensions.source.cs"), Assert.Single(infrastructure.SyntaxTrees,
+            static tree => tree.FilePath == "src/RetroDownfall.Arcanum.Infrastructure/DependencyInjection/ServiceCollectionExtensions.cs").GetText().ToString());
+
+        HostedProducerAnalysisMetrics metrics = Assert.IsType<HostedProducerAnalysisMetrics>(result.AnalysisMetrics);
+
+        Dictionary<string, int> observedStrings = new(StringComparer.Ordinal);
+
+        List<string> stringRows = ["Id\tKind\tUtf16CodeUnitsHex", "0\tnull\t"];
+
+        int StringId(string? value)
+        {
+            if (value is null) return 0;
+
+            if (observedStrings.TryGetValue(value, out int existing)) return existing;
+
+            int id = observedStrings.Count + 1;
+
+            observedStrings.Add(value, id);
+
+            // Encode UTF-16 code units directly: preserve tabs, newlines, empty strings and unpaired surrogates.
+            stringRows.Add(FormattableString.Invariant($"{id}\tstring\t")
+                + string.Concat(value.Select(static character => ((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture))));
+
+            return id;
+        }
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "admitted-states.tsv"),
+            new[] { "Worker\tOccurrence\tSequence\tCumulativeCount\tRootType\tRootOperation\tAssemblyName\tAssemblyVersion\tAssemblyCulture\tAssemblyKeyOrToken\tAssemblyHasPublicKey\tAssemblyRetargetable\tAssemblyContentType\tCompilation\tTree\tMethod\tSpanStart\tSpanLength\tSelectionStart\tSelectionLength\tEvaluationEnvironmentToken\tFallbackAdmissionBindings\tFallbackEvaluationEnvironment\tFallbackValueBindings\tFallbackConcreteBindings\tFallbackRecoveryBindings\tWorkFrontier\tEffectFrontier\tRecoveryEffectFrontier\tFieldPublications\tCompletionOwned\tLifecycle" }.Concat(admittedStates
+                .OrderBy(static state => state.Worker).ThenBy(static state => state.Occurrence).ThenBy(static state => state.CumulativeCount)
+                .Select(state => FormattableString.Invariant($"{state.Worker}\t{state.Occurrence}\t{state.Sequence}\t{state.CumulativeCount}\t{StringId(state.RootType)}\t{StringId(state.RootOperation)}\t{StringId(state.AssemblyName)}\t{StringId(state.AssemblyVersion)}\t{StringId(state.AssemblyCulture)}\t{StringId(state.AssemblyKeyOrToken)}\t{(state.AssemblyHasPublicKey ? 1 : 0)}\t{(state.AssemblyRetargetable ? 1 : 0)}\t{state.AssemblyContentType}\t{state.Compilation}\t{state.Tree}\t{StringId(state.Method)}\t{state.SpanStart}\t{state.SpanLength}\t{state.SelectionStart}\t{state.SelectionLength}\t{(state.EvaluationEnvironmentToken.HasValue ? state.EvaluationEnvironmentToken.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")}\t{StringId(state.FallbackAdmissionBindings)}\t{StringId(state.FallbackEvaluationEnvironment)}\t{StringId(state.FallbackValueBindings)}\t{StringId(state.FallbackConcreteBindings)}\t{StringId(state.FallbackRecoveryBindings)}\t{StringId(state.WorkFrontier)}\t{StringId(state.EffectFrontier)}\t{StringId(state.RecoveryEffectFrontier)}\t{StringId(state.FieldPublications)}\t{(state.CompletionOwned ? 1 : 0)}\t{(state.Lifecycle ? 1 : 0)}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "admitted-state-strings.tsv"), stringRows);
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-NestedCompletionReuse.tsv"),
+            new[] { "Worker\tCohorts\tWitnesses\tHits\tProbe" }.Concat(nestedReuse.Select(static row =>
+                FormattableString.Invariant($"{row.Worker}\t{row.Cohorts}\t{row.Witnesses}\t{row.Hits}\t{(row.Probe ? 1 : 0)}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-summary.tsv"),
+        [
+            "RootWorkers\tRepeatedRegistrationSemanticQueries\tRegistrationCandidateInspections",
+            FormattableString.Invariant($"{metrics.RootWorkers}\t{metrics.RepeatedRegistrationSemanticQueries}\t{metrics.RegistrationCandidateInspections}"),
+        ]);
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-RecoveryConditions.tsv"),
+            new[] { "Member\tMaximumEvaluationsPerTraversalState\tTotalEvaluationsAcrossTraversalStates\tFeasibilityQueries\tPlanBuilds\tStructuralInspections\tUnreachableIntervals\tProbeComparisons\tParityComparisons\tParityMismatches\tRecoveryValueQueries" }.Concat(metrics.RecoveryConditions.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.MaximumEvaluationsPerTraversalState}\t{metric.TotalEvaluationsAcrossTraversalStates}\t{metric.FeasibilityQueries}\t{metric.PlanBuilds}\t{metric.StructuralInspections}\t{metric.UnreachableIntervals}\t{metric.ProbeComparisons}\t{metric.ParityComparisons}\t{metric.ParityMismatches}\t{metric.RecoveryValueQueries}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-RetainedAdmissions.tsv"),
+            new[] { "Member\tAuthorityQueries\tOriginFreeFastPathReturns\tOriginPossibilityRequests\tOriginPossibilityBuilds\tSemanticQueries\tDistinctQueryPositions\tSourceIndexBuilds\tLifetimeNodeInspections" }.Concat(metrics.RetainedAdmissions.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.AuthorityQueries}\t{metric.OriginFreeFastPathReturns}\t{metric.OriginPossibilityRequests}\t{metric.OriginPossibilityBuilds}\t{metric.SemanticQueries}\t{metric.DistinctQueryPositions}\t{metric.SourceIndexBuilds}\t{metric.LifetimeNodeInspections}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-EvaluationEnvironments.tsv"),
+            new[] { "Member\tFingerprintRequests\tFingerprintBuilds\tEquivalentKeyBuilds\tEquivalentKeyNodes\tInternerRequests\tInternerContextBuilds\tInternerIdentityBuilds\tInternerHits\tInternerRegistrations\tInternerTraversalIdentityBuilds\tStableLocalProofRequests\tStableLocalProofBuilds\tStableLocalProofHits\tExactValueProvenanceVisits\tValueNormalizationRequests\tValueNormalizationBuilds\tValueNormalizationHits" }.Concat(metrics.EvaluationEnvironments.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.FingerprintRequests}\t{metric.FingerprintBuilds}\t{metric.EquivalentKeyBuilds}\t{metric.EquivalentKeyNodes}\t{metric.InternerRequests}\t{metric.InternerContextBuilds}\t{metric.InternerIdentityBuilds}\t{metric.InternerHits}\t{metric.InternerRegistrations}\t{metric.InternerTraversalIdentityBuilds}\t{metric.StableLocalProofRequests}\t{metric.StableLocalProofBuilds}\t{metric.StableLocalProofHits}\t{metric.ExactValueProvenanceVisits}\t{metric.ValueNormalizationRequests}\t{metric.ValueNormalizationBuilds}\t{metric.ValueNormalizationHits}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-TraversalRecoveryProjections.tsv"),
+            new[] { "Member\tRequests\tBuilds\tCacheHits\tWholeMemberScans\tExpressionsInspected\tAssignmentScans\tAssignmentInspections\tDependencyNodes\tDependencyCacheHits" }.Concat(metrics.TraversalRecoveryProjections.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.Requests}\t{metric.Builds}\t{metric.CacheHits}\t{metric.WholeMemberScans}\t{metric.ExpressionsInspected}\t{metric.AssignmentScans}\t{metric.AssignmentInspections}\t{metric.DependencyNodes}\t{metric.DependencyCacheHits}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-InvocationExecutions.tsv"),
+            new[] { "Member\tPlanRequests\tPlanBuilds" }.Concat(metrics.InvocationExecutions.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.PlanRequests}\t{metric.PlanBuilds}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-ClosedCallables.tsv"),
+            new[] { "Symbol\tResolutionRequests\tResolutionBuilds" }.Concat(metrics.ClosedCallables.Select(static metric =>
+                FormattableString.Invariant($"{metric.Symbol}\t{metric.ResolutionRequests}\t{metric.ResolutionBuilds}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-RootTraversals.tsv"),
+            new[] { "RootType\tRootOperation\tTraversalCalls\tAnalyzedStates\tElapsed" }.Concat(metrics.RootTraversals.Select(static metric =>
+                FormattableString.Invariant($"{metric.RootType}\t{metric.RootOperation}\t{metric.TraversalCalls}\t{metric.AnalyzedStates}\t{metric.Elapsed.Ticks}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-PublicationRegions.tsv"),
+            new[] { "Member\tIndexRequests\tIndexBuilds\tCandidateInspections" }.Concat(metrics.PublicationRegions.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.IndexRequests}\t{metric.IndexBuilds}\t{metric.CandidateInspections}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-CleanupCaches.tsv"),
+            new[] { "Member\tProvenanceRequests\tProvenanceBuilds\tProvenanceStableHits\tValueFlowRequests\tValueFlowBuilds\tValueFlowStableHits" }.Concat(metrics.CleanupCaches.Select(static metric =>
+                FormattableString.Invariant($"{metric.Member}\t{metric.ProvenanceRequests}\t{metric.ProvenanceBuilds}\t{metric.ProvenanceStableHits}\t{metric.ValueFlowRequests}\t{metric.ValueFlowBuilds}\t{metric.ValueFlowStableHits}"))));
+
+        File.WriteAllLines(Path.Combine(evidence.FullName, "metrics-CleanupSources.tsv"),
+            new[] { "Kind\tCompilation\tSymbol\tRequests\tBuilds" }.Concat(metrics.CleanupSources.Select(static metric =>
+                FormattableString.Invariant($"{metric.Kind}\t{metric.Compilation}\t{metric.Symbol}\t{metric.Requests}\t{metric.Builds}"))));
+
+        output.WriteLine("ACTUAL_HOSTED_EVIDENCE=" + shape + "|" + evidence.FullName);
+
+        output.WriteLine($"ACTUAL_HOSTED_RESULT sites={result.Items.Count} diagnostics={result.Diagnostics.Count}");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_ROOT_UNRESOLVED"
+            or "HOSTED_EVALUATION_ENVIRONMENT_LIMIT_EXCEEDED" or "HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED");
+
+        Assert.Contains(result.Items, static site => site.RootType == "LongRestSweepHostedService" && site.SourcePath == workerPath
+            && site.EnclosingType == workerType && site.Member == "RunOneAsync" && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site => site.RootType == "LongRestSweepHostedService" && site.SourcePath == factoryPath
+            && site.EnclosingType == factoryType && site.Member == "ResolveEmbeddingAsync" && site.Callee == "System.IO.File.Exists");
+
+        ImplicitObjectCreationExpressionSyntax sdk = factoryOverlay.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "ResolveEmbeddingAsync")
+            .DescendantNodes().OfType<ImplicitObjectCreationExpressionSyntax>().Single();
+
+        // The planned root establishes analysis coverage only. This separate finite source
+        // relationship is conditional; shipping/AOT/live gates qualify actual runtime activation.
+        Assert.DoesNotContain(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Identity == factoryPath + ":" + sdk.SpanStart
+            && diagnostic.Detail == "OpenAI.Embeddings.EmbeddingClient..ctor");
+
+        Assert.Equal(shape == "actual", reviewed);
+
+        Assert.Equal(reviewed, HasServeSourceAssociation(cli, serveTree, hosted: true));
+
+        AssertCanonicalWorkerScopedSource(infrastructure);
+
+        AssertOwnedLongRestTransportSource(api, infrastructure);
+    }
+
+    [Fact]
+    public void CallerCreatedContextCannotBorrowUnrelatedSqliteRegistration() =>
+        WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier("custom-context", false, true);
+
+    [Theory]
+    [InlineData("options-unknown")]
+    [InlineData("options-mixed")]
+    [InlineData("options-ref")]
+    [InlineData("context-descriptor-before")]
+    [InlineData("context-descriptor-after")]
+    [InlineData("options-factory-before")]
+    [InlineData("options-factory-after")]
+    [InlineData("registration-opaque")]
+    [InlineData("builder-opaque")]
+    [InlineData("builder-provider-mutation")]
+    [InlineData("onconfiguring-effect")]
+    [InlineData("onconfiguring-provider")]
+    public void SqliteBlobIndexerRequiresActualInstanceOptionsAndProviderClosure(string shape) =>
+        // An OnConfiguring effect is unadmitted wherever EF can first use the context: the use that
+        // really triggers it may be a later consumer of a DbSet or facade read inside the admission,
+        // so no admission current at the read is inherited (WS0F review).
+        WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(shape, false, shape != "onconfiguring-effect");
+
+    [Theory]
+    [InlineData("x-builder-alias", false, true)]
+    [InlineData("x-factory", false, true)]
+    [InlineData("x-typeof-replace", false, true)]
+    [InlineData("x-unrelated-descriptor", true, true)]
+    [InlineData("x-second-unconfigured", true, true)]
+    [InlineData("x-onconfiguring-guard", true, true)]
+    [InlineData("x-onconfiguring-inverted", false, true)]
+    [InlineData("exact", true, true)]
+    [InlineData("helper", true, true)]
+    [InlineData("argument-effect", true, true)]
+    [InlineData("argument-effect-unadmitted", true, false)]
+    [InlineData("missing-admission", true, false)]
+    [InlineData("released-admission", true, false)]
+    [InlineData("unknown", false, true)]
+    [InlineData("mixed", false, true)]
+    [InlineData("reassigned", false, true)]
+    [InlineData("ref", false, true)]
+    [InlineData("unconfigured", false, true)]
+    [InlineData("derived-connection", false, true)]
+    [InlineData("custom-command", false, true)]
+    [InlineData("custom-reader", false, true)]
+    [InlineData("disposed-reader", true, true)]
+    [InlineData("disposed-transaction", true, true)]
+    [InlineData("disposed-reader-missing-admission", true, false)]
+    [InlineData("disposed-reader-released-admission", true, false)]
+    [InlineData("disposed-transaction-missing-admission", true, false)]
+    [InlineData("disposed-transaction-released-admission", true, false)]
+    [InlineData("disposed-reader-argument-effect-missing-admission", true, false)]
+    [InlineData("disposed-transaction-getter-effect-released-admission", true, false)]
+    [InlineData("disposed-reader-helper-effect", true, true)]
+    public void WidenedSqliteBlobIndexerRequiresCompleteConfiguredReceiverAndLiveFrontier(string shape, bool database, bool admitted)
+    {
+        string options = shape == "unconfigured" ? "options.EnableDetailedErrors()"
+            : "Microsoft.EntityFrameworkCore.SqliteDbContextOptionsBuilderExtensions.UseSqlite(options, \"Data Source=:memory:\")";
+
+        string connection = shape == "derived-connection" ? "new BlobDerivedConnection()"
+            : "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.GetDbConnection(db.Database)";
+
+        string reader = shape switch
+        {
+            "unknown" => "BlobInput.Unknown()",
+            "mixed" => "token.CanBeCanceled ? await command.ExecuteReaderAsync(token) : BlobInput.Unknown()",
+            "custom-reader" => "new BlobAuthoredReader()",
+            "helper" => "await ReadAsync(command, token)",
+            "disposed-reader-helper-effect" => "await BlobInput.ReadEffectAsync(command, token)",
+            _ => "await command.ExecuteReaderAsync(token).ConfigureAwait(false)",
+        };
+
+        string body = "System.Data.Common.DbConnection connection = " + connection + "; "
+            + "await using System.Data.Common.DbTransaction transaction = await connection.BeginTransactionAsync(token); "
+            + "await using System.Data.Common.DbCommand command = " + (shape == "custom-command" ? "BlobInput.Command()" : "connection.CreateCommand()") + "; command.Transaction = transaction; "
+            + "System.Data.Common.DbDataReader reader = " + reader + "; "
+            + (shape == "reassigned" ? "reader = BlobInput.Unknown(); " : shape == "ref" ? "BlobInput.Replace(ref reader); " : "")
+            + (shape.StartsWith("disposed-reader", StringComparison.Ordinal) ? "await reader.DisposeAsync(); " : shape.StartsWith("disposed-transaction", StringComparison.Ordinal) ? "await transaction.DisposeAsync(); " : "")
+            + "_ = reader[" + (shape.Contains("getter-effect", StringComparison.Ordinal) ? "BlobInput.IndexValue" : shape.Contains("argument-effect", StringComparison.Ordinal) ? "BlobInput.Index()" : "0") + "]; await reader.DisposeAsync();";
+
+        string helpers = $$"""
+            public sealed class BlobContext(Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { }
+            internal sealed class BlobDerivedConnection : Microsoft.Data.Sqlite.SqliteConnection
+            {
+                protected override System.Data.Common.DbCommand CreateDbCommand() { System.IO.File.Delete("command-override"); return base.CreateDbCommand(); }
+            }
+            internal static class BlobInput
+            {
+                internal static extern System.Data.Common.DbDataReader Unknown();
+                internal static extern System.Data.Common.DbCommand Command();
+                internal static extern void Replace(ref System.Data.Common.DbDataReader reader);
+                internal static int Index() { System.IO.File.Delete("index-argument"); return 0; }
+                internal static int IndexValue { get { System.IO.File.Delete("index-getter"); return 0; } }
+                internal static Task<System.Data.Common.DbDataReader> ReadEffectAsync(System.Data.Common.DbCommand command, CancellationToken token) { System.IO.File.Delete("reader-helper"); return command.ExecuteReaderAsync(token); }
+            }
+            internal static class BlobPipeline
+            {
+                internal static async Task RunAsync(BlobContext db, CancellationToken token) { {{body}} }
+                private static Task<System.Data.Common.DbDataReader> ReadAsync(System.Data.Common.DbCommand command, CancellationToken token) => command.ExecuteReaderAsync(token);
+            }
+            internal sealed class BlobAuthoredReader : System.Data.Common.DbDataReader
+            {
+                public override object this[int ordinal] { get { System.IO.File.Delete("reader-override"); return new byte[0]; } }
+                public override object this[string name] => throw new NotSupportedException();
+                public override int Depth => 0;
+                public override int FieldCount => 1;
+                public override bool HasRows => true;
+                public override bool IsClosed => false;
+                public override int RecordsAffected => 0;
+                public override bool GetBoolean(int ordinal) => false;
+                public override byte GetByte(int ordinal) => 0;
+                public override long GetBytes(int ordinal, long offset, byte[]? buffer, int bufferOffset, int length) => 0;
+                public override char GetChar(int ordinal) => 'a';
+                public override long GetChars(int ordinal, long offset, char[]? buffer, int bufferOffset, int length) => 0;
+                public override string GetDataTypeName(int ordinal) => "blob";
+                public override DateTime GetDateTime(int ordinal) => default;
+                public override decimal GetDecimal(int ordinal) => 0;
+                public override double GetDouble(int ordinal) => 0;
+                public override System.Collections.IEnumerator GetEnumerator() => throw new NotSupportedException();
+                public override Type GetFieldType(int ordinal) => typeof(byte[]);
+                public override float GetFloat(int ordinal) => 0;
+                public override Guid GetGuid(int ordinal) => default;
+                public override short GetInt16(int ordinal) => 0;
+                public override int GetInt32(int ordinal) => 0;
+                public override long GetInt64(int ordinal) => 0;
+                public override string GetName(int ordinal) => "blob";
+                public override int GetOrdinal(string name) => 0;
+                public override string GetString(int ordinal) => "";
+                public override object GetValue(int ordinal) => this[ordinal];
+                public override int GetValues(object[] values) => 0;
+                public override bool IsDBNull(int ordinal) => false;
+                public override bool NextResult() => false;
+                public override bool Read() => true;
+            }
+            """;
+
+        string admission = shape.Contains("missing-admission", StringComparison.Ordinal) || shape == "argument-effect-unadmitted" ? "" : R2Admission
+            + (shape.Contains("released-admission", StringComparison.Ordinal) ? "held.Dispose(); work.Dispose(); " : "");
+
+        string context = shape == "custom-context" ? "new BlobContext(new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<BlobContext>().Options)"
+            : shape == "options-unknown" ? "new BlobContext(BlobInput.Options())"
+            : shape == "options-mixed" ? "new BlobContext(token.CanBeCanceled ? new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<BlobContext>().Options : BlobInput.Options())"
+            : shape == "options-ref" ? "new BlobContext(callerOptions)" : "db";
+
+        string replacement = shape.StartsWith("context-descriptor-", StringComparison.Ordinal)
+            ? "services.AddScoped<BlobContext>(sp => new BlobContext(BlobInput.Options())); "
+            : shape.StartsWith("options-factory-", StringComparison.Ordinal)
+                ? "services.AddScoped<Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext>>(sp => BlobInput.Options()); " : "";
+
+        string registration = "services.AddDbContext<BlobContext>((sp, options) => " + options + "); ";
+
+        if (shape is "builder-opaque" or "builder-provider-mutation") registration = "services.AddDbContext<BlobContext>((sp, options) => { " + options + "; "
+            + (shape == "builder-opaque" ? "BlobInput.MutateOptions(options);" : "options.UseInternalServiceProvider(BlobInput.Provider());") + " }); ";
+
+        registration = shape.EndsWith("-before", StringComparison.Ordinal) ? replacement + registration : registration + replacement;
+
+        if (shape == "registration-opaque") registration += "BlobInput.MutateServices(services); ";
+
+        if (shape == "x-builder-alias") registration = "services.AddDbContext<BlobContext>((sp, options) => { " + options + "; Microsoft.EntityFrameworkCore.DbContextOptionsBuilder alias = options; alias.UseInternalServiceProvider(BlobInput.Provider()); }); ";
+
+        if (shape == "x-factory") registration += "services.AddDbContextFactory<BlobContext>(options => " + options + "); ";
+
+        if (shape == "x-typeof-replace") registration += "services.Add(new ServiceDescriptor(typeof(BlobContext), sp => new BlobContext(BlobInput.Options()), ServiceLifetime.Scoped)); ";
+
+        if (shape == "x-unrelated-descriptor") registration += "services.AddSingleton<UnrelatedService>(); ";
+
+        if (shape == "x-second-unconfigured") registration += "services.AddDbContext<OtherContext>((sp, o) => o.EnableDetailedErrors()); ";
+
+        if (shape is "x-onconfiguring-guard" or "x-onconfiguring-inverted") helpers = helpers.Replace(
+            "Microsoft.EntityFrameworkCore.DbContext(options) { }",
+            "Microsoft.EntityFrameworkCore.DbContext(options) { protected override void OnConfiguring(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder builder) { "
+                + (shape == "x-onconfiguring-guard" ? "if (builder.IsConfigured) return; builder.UseInternalServiceProvider(BlobInput.Provider());" : "if (!builder.IsConfigured) { builder.UseInternalServiceProvider(BlobInput.Provider()); }") + " } }", StringComparison.Ordinal);
+
+        helpers += " public sealed class UnrelatedService { } public sealed class OtherContext(Microsoft.EntityFrameworkCore.DbContextOptions<OtherContext> options) : Microsoft.EntityFrameworkCore.DbContext(options) { } ";
+
+        if (shape.StartsWith("onconfiguring-", StringComparison.Ordinal)) helpers = helpers.Replace(
+            "Microsoft.EntityFrameworkCore.DbContext(options) { }",
+            "Microsoft.EntityFrameworkCore.DbContext(options) { protected override void OnConfiguring(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder builder) { "
+                + (shape == "onconfiguring-effect" ? "System.IO.File.Delete(\"on-configuring\");" : "builder.UseInternalServiceProvider(BlobInput.Provider());") + " } }", StringComparison.Ordinal);
+
+        helpers = helpers.Replace("internal static extern System.Data.Common.DbDataReader Unknown();",
+            "internal static extern Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> Options(); "
+                + "internal static extern void ReplaceOptions(ref Microsoft.EntityFrameworkCore.DbContextOptions<BlobContext> options); "
+                + "internal static extern void MutateOptions(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder options); "
+                + "internal static extern IServiceProvider Provider(); "
+                + "internal static extern void MutateServices(Microsoft.Extensions.DependencyInjection.IServiceCollection services); "
+                + "internal static extern System.Data.Common.DbDataReader Unknown();", StringComparison.Ordinal);
+
+        string callerSetup = shape == "options-ref" ? "var callerOptions = new Microsoft.EntityFrameworkCore.DbContextOptionsBuilder<BlobContext>().Options; BlobInput.ReplaceOptions(ref callerOptions); " : "";
+
+        string source = RegistrationSource(registration + "services.AddHostedService<Worker>();")
+            .Replace("public class Worker : IHostedService", "public class Worker(BlobContext db) : IHostedService", StringComparison.Ordinal)
+            .Replace("static Worker Factory(IServiceProvider provider) => new Worker();", "static Worker Factory(IServiceProvider provider) => new Worker(provider.GetRequiredService<BlobContext>());", StringComparison.Ordinal)
+            .Replace("public Task StartAsync(CancellationToken token) => Task.CompletedTask;", "public async Task StartAsync(CancellationToken token) { " + admission + callerSetup + "await BlobPipeline.RunAsync(" + context + ", token); }", StringComparison.Ordinal)
+            + AdmissionTypes + helpers;
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        const string callee = "System.Data.Common.DbDataReader.this[]";
+
+        // The exact consumer must be reached before judging its certificate. Source-only
+        // provider probes do not claim metadata invokes the authored OnConfiguring body.
+        Assert.True(result.Items.Any(site => site.Callee == callee)
+            || result.Diagnostics.Any(diagnostic => diagnostic.Detail == callee));
+
+        Assert.Equal(database, result.Items.Any(site => site.Kind == HostedProducerSiteKind.DatabaseAccess && site.Callee == callee));
+
+        Assert.Equal(!database, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee));
+
+        if (database)
+        {
+            HostedProducerSite blob = Assert.Single(result.Items, site => site.Kind == HostedProducerSiteKind.DatabaseAccess && site.Callee == callee);
+
+            Assert.Equal(admitted, blob.WorkFrontierCapsuleId is not null);
+
+            Assert.Equal(!admitted, result.Diagnostics.Any(diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == callee));
+        }
+
+        if (shape.Contains("-effect", StringComparison.Ordinal))
+        {
+            HostedProducerSite argument = Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+            Assert.Equal(admitted, argument.WorkFrontierCapsuleId is not null);
+
+            Assert.Equal(admitted, argument.EffectFrontierCapsuleId is not null);
+
+            if (!admitted)
+            {
+                Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+
+                Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+            }
+        }
+
+        // This is effect categorization and current work proof, not reader/transaction liveness.
+        // Source analysis only: no connection, SQL, reader or provider is executed.
+    }
+
+    [Theory]
+    [InlineData("frames-count", true)]
+    [InlineData("frames-getter-effect", true)]
+    [InlineData("frames-unknown", false)]
+    [InlineData("frames-ref", false)]
+    [InlineData("frames-replaced", false)]
+    [InlineData("frames-aliased", false)]
+    [InlineData("frames-escape", false)]
+    [InlineData("frames-other-instance", false)]
+    [InlineData("frames-counterfeit", false)]
+    public void HierarchyFrameCardinalityRequiresClosedExactReceiver(string shape, bool reviewed) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, reviewed);
+
+    [Theory]
+    [InlineData("index-frontier", true)]
+    [InlineData("sum", true)]
+    [InlineData("index-remove", true)]
+    [InlineData("select-list", true)]
+    [InlineData("index-added", false)]
+    [InlineData("index-replaced", false)]
+    [InlineData("index-ref", false)]
+    [InlineData("index-deferred-write", false)]
+    [InlineData("index-helper-effect", true)]
+    [InlineData("index-getter-effect", true)]
+    [InlineData("sum-selector-helper-effect", true)]
+    [InlineData("sum-unknown-selector", false)]
+    [InlineData("sum-mixed-selector", false)]
+    [InlineData("sum-ref-selector", false)]
+    [InlineData("sum-local-conversion", false)]
+    [InlineData("sum-counterfeit", false)]
+    [InlineData("index-alias-write", false)]
+    [InlineData("index-mixed", false)]
+    [InlineData("sum-conversion", false)]
+    [InlineData("index-cursor-roundtrip", false)]
+    [InlineData("select-cursor-roundtrip", false)]
+    [InlineData("select-local-conversion", false)]
+    [InlineData("select-unknown", false)]
+    [InlineData("sum-ref-alias-selector", false)]
+    [InlineData("select-list-remove", true)]
+    [InlineData("index-helper-constant-input", true)]
+    [InlineData("index-helper-argument-effect", true)]
+    [InlineData("sum-effect", true)]
+    public void HierarchyElementsAndSelectorsRequireClosedSourceGrammar(string shape, bool reviewed) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, reviewed);
+
+    [Theory]
+    [InlineData("cursor-roundtrip")]
+    [InlineData("cursor-roundtrip-local")]
+    [InlineData("cursor-roundtrip-alias")]
+    public void HierarchyCursorReceiverRetainsContextualConstructionConversions(string shape) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, false);
+
+    [Theory]
+    [InlineData("element-helper-input-local")]
+    [InlineData("element-helper-input-return")]
+    public void HierarchyElementHelperInputsRetainContextualConversionEffects(string shape) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, false);
+
+    [Theory]
+    [InlineData("cursor-helper-input-local")]
+    [InlineData("cursor-helper-input-return")]
+    public void HierarchyCursorHelperInputsRetainContextualConversionEffects(string shape) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, false);
+
+    [Theory]
+    [InlineData("cursor-helper-constant-input")]
+    [InlineData("cursor-helper-argument-effect")]
+    public void HierarchyCursorHelperInputsRequireReviewedArguments(string shape) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, true);
+
+    [Theory]
+    [InlineData("scalar-explicit-this", true)]
+    [InlineData("scalar-initializer-literal", true)]
+    [InlineData("scalar-other-instance", false)]
+    [InlineData("scalar-alias-self", false)]
+    [InlineData("scalar-mutual", false)]
+    [InlineData("scalar-helper-recurrence", false)]
+    [InlineData("scalar-increment", false)]
+    [InlineData("scalar-embedded-assignment", false)]
+    [InlineData("scalar-partial-unknown", false)]
+    [InlineData("scalar-initializer-conversion", false)]
+    [InlineData("scalar-return-conversion", false)]
+    [InlineData("scalar-unknown-write", false)]
+    [InlineData("scalar-nonauto-getter", false)]
+    [InlineData("scalar-nonauto-setter", false)]
+    [InlineData("scalar-ref-carrier", false)]
+    [InlineData("scalar-opaque-carrier", false)]
+    [InlineData("scalar-unknown-receiver", false)]
+    [InlineData("scalar-mixed-receiver", false)]
+    [InlineData("scalar-authored-base-escape", false)]
+    [InlineData("scalar-metadata-base", false)]
+    [InlineData("scalar-generic-carrier-unknown-write", false)]
+    [InlineData("scalar-generic-domain-unknown-write", false)]
+    public void HierarchyScalarObservationRequiresClosedCurrentInstanceWrites(string shape, bool reviewed) =>
+        HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(shape, reviewed);
+
+    [Theory]
+    [InlineData("list-count", true)]
+    [InlineData("frames-count", true)]
+    [InlineData("index-frontier", true)]
+    [InlineData("sum", true)]
+    [InlineData("max-default", true)]
+    [InlineData("max-base", true)]
+    [InlineData("max-recurrence", true)]
+    [InlineData("actual-next", true)]
+    [InlineData("actual-loop", true)]
+    [InlineData("actual-loop-children", true)]
+    [InlineData("children-new-list", true)]
+    [InlineData("children-plain-await", true)]
+    [InlineData("children-subclass-list", false)]
+    [InlineData("children-reassigned", false)]
+    [InlineData("children-ref-alias-write", false)]
+    [InlineData("children-ref-alias-subclass", false)]
+    [InlineData("children-extern-helper", false)]
+    [InlineData("children-boundary-conversion", false)]
+    [InlineData("children-id-through-unknown-call", false)]
+    [InlineData("children-other-element-type", false)]
+    [InlineData("children-implicit-initializer-conversion", false)]
+    [InlineData("children-explicit-cast-conversion", false)]
+    [InlineData("list-unknown", false)]
+    [InlineData("list-ref", false)]
+    [InlineData("index-alias-write", false)]
+    [InlineData("index-mixed", false)]
+    [InlineData("sum-effect", true)]
+    [InlineData("sum-conversion", false)]
+    [InlineData("getter-effect", false)]
+    [InlineData("helper-effect", true)]
+    [InlineData("count-counterfeit", false)]
+    [InlineData("partial-write", false)]
+    [InlineData("unsupported-recurrence", false)]
+    [InlineData("base-conversion-direct", false)]
+    [InlineData("base-conversion-local", false)]
+    [InlineData("base-unary-direct", false)]
+    [InlineData("base-unary-local", false)]
+    [InlineData("base-binary-direct", false)]
+    [InlineData("base-binary-local", false)]
+    [InlineData("recurrence-conversion-direct", false)]
+    [InlineData("recurrence-conversion-local", false)]
+    [InlineData("recurrence-unary-direct", false)]
+    [InlineData("recurrence-unary-local", false)]
+    [InlineData("recurrence-binary-direct", false)]
+    [InlineData("recurrence-binary-local", false)]
+    public void HierarchyFrontierObservationRequiresReachedCompleteScalarOrigins(string shape, bool reviewed)
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        SyntaxNode actual = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root,
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.HierarchyCandidates.cs"))).GetRoot();
+
+        ClassDeclarationSyntax cursorSyntax = actual.DescendantNodes().OfType<ClassDeclarationSyntax>()
+            .Single(static type => type.Identifier.ValueText == "HierarchyLeafCursor");
+
+        string cursor = cursorSyntax.ToString();
+
+        string baseWrite = cursorSyntax.DescendantNodes().OfType<ExpressionStatementSyntax>()
+            .Single(static statement => statement.Expression.ToString() == "MaximumFrontierCount = _frames.Count").ToString();
+
+        string recurrenceWrite = cursorSyntax.DescendantNodes().OfType<ExpressionStatementSyntax>()
+            .Single(static statement => statement.Expression.ToString() == "MaximumFrontierCount = Math.Max(MaximumFrontierCount, _frames.Count)").ToString();
+
+        bool operatorProbe = shape.StartsWith("base-", StringComparison.Ordinal) || shape.StartsWith("recurrence-", StringComparison.Ordinal);
+
+        bool nextReached = operatorProbe || shape.StartsWith("scalar-", StringComparison.Ordinal) || shape.StartsWith("children-", StringComparison.Ordinal) || shape is "actual-next" or "actual-loop" or "actual-loop-children" or "getter-effect" or "helper-effect" or "partial-write" or "unsupported-recurrence";
+
+        if (operatorProbe)
+        {
+            string operand = shape.Contains("-unary-", StringComparison.Ordinal) ? "-new FrontierOperand()"
+                : shape.Contains("-binary-", StringComparison.Ordinal) ? "new FrontierOperand() + new FrontierOperand()" : "new FrontierOperand()";
+
+            bool copied = shape.EndsWith("-local", StringComparison.Ordinal);
+
+            string value = copied ? "substitutedValue" : operand;
+
+            string write = shape.StartsWith("base-", StringComparison.Ordinal) ? "MaximumFrontierCount = " + value + ";"
+                : "MaximumFrontierCount = Math.Max(MaximumFrontierCount, " + value + ");";
+
+            cursor = cursor.Replace(shape.StartsWith("base-", StringComparison.Ordinal) ? baseWrite : recurrenceWrite,
+                (copied ? "int substitutedValue = " + operand + "; " : "") + write, StringComparison.Ordinal);
+        }
+
+        if (shape is "getter-effect" or "helper-effect") cursor = cursor.Replace(baseWrite,
+            "MaximumFrontierCount = " + (shape == "getter-effect" ? "ScalarInput.Value" : "ScalarInput.Read()") + ";", StringComparison.Ordinal);
+
+        if (shape == "unsupported-recurrence") cursor = cursor.Replace(recurrenceWrite, "MaximumFrontierCount += _frames.Count;", StringComparison.Ordinal);
+
+        if (shape == "partial-write") cursor = cursor.Replace("private sealed class HierarchyLeafCursor", "private sealed partial class HierarchyLeafCursor", StringComparison.Ordinal);
+
+        string partial = shape == "partial-write" ? "private sealed partial class HierarchyLeafCursor { private void LaterWrite() { MaximumFrontierCount = new FrontierOperand(); } }" : "";
+
+        const string scalarProperty = "internal int MaximumFrontierCount { get; private set; }";
+
+        string? scalarRecurrence = shape switch
+        {
+            "scalar-explicit-this" => "this.MaximumFrontierCount = Math.Max(this.MaximumFrontierCount, _frames.Count);",
+            "scalar-other-instance" => "MaximumFrontierCount = Math.Max(new HierarchyLeafCursor(Guid.Empty).MaximumFrontierCount, _frames.Count);",
+            "scalar-alias-self" => "var self = this; MaximumFrontierCount = Math.Max(self.MaximumFrontierCount, _frames.Count);",
+            "scalar-mutual" => "OtherMaximum = MaximumFrontierCount; MaximumFrontierCount = Math.Max(OtherMaximum, _frames.Count);",
+            "scalar-helper-recurrence" => "MaximumFrontierCount = Math.Max(ReadMaximum(), _frames.Count);",
+            "scalar-increment" => "MaximumFrontierCount++;",
+            "scalar-embedded-assignment" => "(MaximumFrontierCount, _) = (_frames.Count, 0);",
+            _ => null,
+        };
+
+        if (scalarRecurrence is not null) cursor = cursor.Replace(recurrenceWrite, scalarRecurrence, StringComparison.Ordinal);
+
+        if (shape == "scalar-mutual") cursor = cursor.Replace(scalarProperty, scalarProperty + " private int OtherMaximum { get; set; }", StringComparison.Ordinal);
+
+        if (shape == "scalar-helper-recurrence") cursor = cursor.Replace(scalarProperty, scalarProperty + " private int ReadMaximum() => MaximumFrontierCount;", StringComparison.Ordinal);
+
+        if (shape is "scalar-initializer-literal" or "scalar-initializer-conversion") cursor = cursor.Replace(scalarProperty,
+            scalarProperty + " = " + (shape == "scalar-initializer-literal" ? "1" : "new FrontierOperand()") + ";", StringComparison.Ordinal);
+
+        if (shape is "scalar-return-conversion" or "scalar-unknown-write") cursor = cursor.Replace(baseWrite,
+            "MaximumFrontierCount = " + (shape == "scalar-return-conversion" ? "ConvertedInput()" : "ScalarInput.Unknown()") + ";", StringComparison.Ordinal);
+
+        if (shape == "scalar-nonauto-getter") cursor = cursor.Replace(scalarProperty,
+            "private int _maximum; internal int MaximumFrontierCount { get { System.IO.File.Delete(\"scalar-getter\"); return _maximum; } private set { _maximum = value; } }", StringComparison.Ordinal);
+
+        if (shape == "scalar-nonauto-setter") cursor = cursor.Replace(scalarProperty,
+            "private int _maximum; internal int MaximumFrontierCount { get => _maximum; private set { _maximum = ScalarInput.Unknown(); } }", StringComparison.Ordinal);
+
+        if (shape == "scalar-partial-unknown") cursor = cursor.Replace("private sealed class HierarchyLeafCursor", "private sealed partial class HierarchyLeafCursor", StringComparison.Ordinal);
+
+        // The finite scalar profile must close the inherited instance behavior as well as the
+        // declared carrier body. These variants still reach the real NextAsync SQL consumer.
+        if (shape is "scalar-authored-base-escape" or "scalar-metadata-base") cursor = cursor.Replace(
+            "private sealed class HierarchyLeafCursor(Guid root)",
+            "private sealed class HierarchyLeafCursor(Guid root) : "
+                + (shape == "scalar-authored-base-escape" ? "EscapingCursorBase()" : "System.Exception()"), StringComparison.Ordinal);
+
+        if (shape == "scalar-authored-base-escape") partial +=
+            "private class EscapingCursorBase { protected EscapingCursorBase() { EscapeCursorObject(this); } }";
+
+        if (shape is "scalar-generic-carrier-unknown-write" or "scalar-generic-domain-unknown-write") cursor = cursor.Replace(
+            scalarProperty, scalarProperty + " private void DormantUnknownWrite() { MaximumFrontierCount = ScalarInput.Unknown(); }", StringComparison.Ordinal);
+
+        if (shape is "max-base" or "max-recurrence") cursor = cursor.Replace("internal int FrontierCount", "internal void ProbeUpdate() { " + baseWrite + (shape == "max-recurrence" ? " " + recurrenceWrite : "") + " } internal int FrontierCount", StringComparison.Ordinal);
+
+        if (shape is "frames-getter-effect" or "index-getter-effect") cursor = cursor.Replace("internal int FrontierCount => _frames.Count;", "internal int FrontierCount { get { System.IO.File.Delete(\"frame-getter\"); return _frames.Count; } }", StringComparison.Ordinal);
+
+        if (shape == "frames-replaced") cursor = cursor.Replace("private readonly List<", "private List<", StringComparison.Ordinal);
+
+        if (shape is "frames-aliased" or "frames-escape") cursor = cursor.Replace("internal int FrontierCount", "private void Escape() { "
+            + (shape == "frames-aliased" ? "var alias = _frames; EscapeFrames(alias);" : "EscapeFrames(_frames);")
+            + " } private static extern void EscapeFrames(List<(Guid Node, int NextOrdinal)> value); internal int FrontierCount", StringComparison.Ordinal);
+
+        if (shape == "frames-other-instance") cursor = cursor.Replace("internal int FrontierCount => _frames.Count;", "internal int FrontierCount => UnknownCursor()._frames.Count;", StringComparison.Ordinal);
+
+        if (shape == "frames-counterfeit") cursor = cursor.Replace("internal int FrontierCount => _frames.Count;", "internal int FrontierCount => new CounterfeitCount().Count;", StringComparison.Ordinal);
+
+        const string record = "LongRestHierarchyBuilder.TraversalFrontier.Record";
+
+        string run = shape switch
+        {
+            "cursor-roundtrip" or "cursor-roundtrip-local" or "cursor-roundtrip-alias" => "var cursor = ReturnedCursor(); " + record + "(cursor.FrontierCount);",
+            "list-count" => "List<int> values = [1, 2]; " + record + "(values.Count);",
+            "list-unknown" => "List<int> values = UnknownList(); " + record + "(values.Count);",
+            "list-ref" => "List<int> values = [1]; Replace(ref values); " + record + "(values.Count);",
+            "count-counterfeit" => record + "(new CounterfeitCount().Count);",
+            "frames-unknown" => "var cursor = UnknownCursor(); " + record + "(cursor.FrontierCount);",
+            "frames-ref" => "var cursor = new HierarchyLeafCursor(Guid.Empty); ReplaceCursor(ref cursor); " + record + "(cursor.FrontierCount);",
+            "frames-count" or "frames-getter-effect" or "frames-replaced" or "frames-aliased" or "frames-escape" or "frames-other-instance" or "frames-counterfeit" => "var cursor = new HierarchyLeafCursor(Guid.Empty); " + record + "(cursor.FrontierCount);",
+            "index-cursor-roundtrip" => "List<HierarchyLeafCursor> branches = [ReturnedCursor()]; " + record + "(branches[0].FrontierCount);",
+            "select-cursor-roundtrip" => "List<Guid> children = [Guid.Empty]; var branches = children.Select(child => ReturnedCursor()).ToList(); " + record + "(branches[0].FrontierCount);",
+            "select-local-conversion" => "List<Guid> children = [Guid.Empty]; var branches = children.Select(child => { CursorWrapper value = new HierarchyLeafCursor(child); HierarchyLeafCursor result = value; return result; }).ToList(); " + record + "(branches[0].FrontierCount);",
+            "select-unknown" => "List<Guid> children = [Guid.Empty]; var branches = children.Select(child => UnknownCursor()).ToList(); " + record + "(branches[0].FrontierCount);",
+            "sum-ref-alias-selector" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; Func<HierarchyLeafCursor, int> selector = item => item.FrontierCount; ref Func<HierarchyLeafCursor, int> alias = ref selector; alias = UnknownSelector(); " + record + "(branches.Sum(selector));",
+            "select-list-remove" => "List<Guid> children = [Guid.Empty, Guid.Empty]; var branches = children.Select(child => new HierarchyLeafCursor(child)).ToList(); branches.RemoveAt(1); _ = branches.Count; " + record + "(branches.Sum(item => item.FrontierCount) - branches[0].FrontierCount);",
+            "index-helper-constant-input" => "var branches = BranchesWithInput(1); " + record + "(branches[0].FrontierCount);",
+            "index-helper-argument-effect" => "var branches = BranchesWithInput(ScalarInput.Read()); " + record + "(branches[0].FrontierCount);",
+            "cursor-helper-constant-input" => "var cursor = CursorWithInput(1); " + record + "(cursor.FrontierCount);",
+            "cursor-helper-argument-effect" => "var cursor = CursorWithInput(ScalarInput.Read()); " + record + "(cursor.FrontierCount);",
+            "cursor-helper-input-local" => "int value = new FrontierOperand(); var cursor = CursorWithInput(value); " + record + "(cursor.FrontierCount);",
+            "cursor-helper-input-return" => "var cursor = CursorWithInput(ConvertedInput()); " + record + "(cursor.FrontierCount);",
+            "element-helper-input-local" => "int value = new FrontierOperand(); var branches = BranchesWithInput(value); " + record + "(branches[0].FrontierCount);",
+            "element-helper-input-return" => "var branches = BranchesWithInput(ConvertedInput()); " + record + "(branches[0].FrontierCount);",
+            "index-frontier" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches[0].FrontierCount);",
+            "index-getter-effect" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches[0].FrontierCount);",
+            "index-remove" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty), new(Guid.Empty)]; branches.RemoveAt(1); " + record + "(branches[0].FrontierCount);",
+            "select-list" => "List<Guid> children = [Guid.Empty]; var branches = children.Select(child => new HierarchyLeafCursor(child)).ToList(); " + record + "(branches.Sum(item => item.FrontierCount));",
+            "index-added" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; branches.Add(new(Guid.Empty)); " + record + "(branches[0].FrontierCount);",
+            "index-replaced" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; branches[0] = new(Guid.Empty); " + record + "(branches[0].FrontierCount);",
+            "index-ref" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; ReplaceBranches(ref branches); " + record + "(branches[0].FrontierCount);",
+            "index-deferred-write" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; Action later = () => branches[0] = UnknownCursor(); " + record + "(branches[0].FrontierCount); later();",
+            "index-helper-effect" => "List<HierarchyLeafCursor> branches = CreateBranches(); " + record + "(branches[0].FrontierCount);",
+            "sum-selector-helper-effect" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches.Sum(item => SelectorValue(item)));",
+            "sum-unknown-selector" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches.Sum(UnknownSelector()));",
+            "sum-mixed-selector" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; Func<HierarchyLeafCursor, int> selector = token.CanBeCanceled ? item => item.FrontierCount : UnknownSelector(); " + record + "(branches.Sum(selector));",
+            "sum-ref-selector" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; Func<HierarchyLeafCursor, int> selector = item => item.FrontierCount; ReplaceSelector(ref selector); " + record + "(branches.Sum(selector));",
+            "sum-local-conversion" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches.Sum(item => { int value = new FrontierOperand(); return value; }));",
+            "sum-counterfeit" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(CounterfeitSum(branches, item => item.FrontierCount));",
+            "index-alias-write" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; var alias = branches; alias[0] = UnknownCursor(); " + record + "(branches[0].FrontierCount);",
+            "index-mixed" => "List<HierarchyLeafCursor> branches = [token.CanBeCanceled ? new(Guid.Empty) : UnknownCursor()]; " + record + "(branches[0].FrontierCount);",
+            "sum" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches.Sum(item => item.FrontierCount));",
+            "sum-effect" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches.Sum(item => { System.IO.File.Delete(\"selector\"); return item.FrontierCount; }));",
+            "sum-conversion" => "List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; " + record + "(branches.Sum(item => (int)new FrontierOperand()));",
+            "max-default" => "var cursor = new HierarchyLeafCursor(Guid.Empty); " + record + "(cursor.MaximumFrontierCount);",
+            "max-base" or "max-recurrence" => "var cursor = new HierarchyLeafCursor(Guid.Empty); cursor.ProbeUpdate(); " + record + "(cursor.MaximumFrontierCount);",
+            _ => "var cursor = new HierarchyLeafCursor(Guid.Empty); _ = await cursor.NextAsync(connection, transaction, Guid.Empty, token); " + record + "(cursor.MaximumFrontierCount);",
+        };
+
+        if (shape is "scalar-ref-carrier" or "scalar-opaque-carrier") run = run.Replace("_ = await cursor.NextAsync",
+            (shape == "scalar-ref-carrier" ? "ReplaceCursor(ref cursor); " : "EscapeCursorObject(cursor); ") + "_ = await cursor.NextAsync", StringComparison.Ordinal);
+
+        if (shape is "scalar-unknown-receiver" or "scalar-mixed-receiver") run = run.Replace("new HierarchyLeafCursor(Guid.Empty)",
+            shape == "scalar-unknown-receiver" ? "UnknownCursor()" : "(token.CanBeCanceled ? new HierarchyLeafCursor(Guid.Empty) : UnknownCursor())", StringComparison.Ordinal);
+
+        string readChildren = "";
+
+        // The children of one summary are read from storage by the real helper, as production reads them. The children-* rows
+        // change one condition of the reviewed storage contract at a time; only the first two stay inside it.
+        bool storedChildren = shape == "actual-loop-children" || shape.StartsWith("children-", StringComparison.Ordinal);
+
+        if (shape == "actual-loop" || storedChildren)
+        {
+            string Declaration(string name) => actual.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                .Single(statement => statement.Declaration.Variables.Any(variable => variable.Identifier.ValueText == name)).ToString();
+
+            WhileStatementSyntax loop = actual.DescendantNodes().OfType<WhileStatementSyntax>()
+                .Single(static statement => statement.Condition.ToString() == "branches.Count > 0 && emitted < LongRestDiscoveryLimits.ExpandedLeaves");
+
+            ForStatementSyntax branchLoop = loop.Statement.DescendantNodes().OfType<ForStatementSyntax>().Single();
+
+            StatementSyntax[] selected = ((BlockSyntax)branchLoop.Statement).Statements
+                .TakeWhile(static statement => statement is not LocalDeclarationStatementSyntax local || local.Declaration.Type.ToString() != "LongRestSourceLeaf").ToArray();
+
+            string branchBody = string.Join("\n", selected) + "\nemitted++;";
+
+            string childrenDeclaration = "List<Guid> children = [Guid.Empty];";
+
+            string branchesDeclaration = Declaration("branches");
+
+            if (storedChildren)
+            {
+                string helper = actual.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "ReadChildNodesAsync").ToString();
+
+                childrenDeclaration = "SummaryRank selected = new(Guid.Empty, 0d); " + actual.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                    .Single(static statement => statement.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "children" && variable.Initializer?.Value is AwaitExpressionSyntax));
+
+                readChildren = " private sealed record SummaryRank(Guid Node, double Score);";
+
+                switch (shape)
+                {
+                    case "children-new-list":
+                        helper = helper.Replace("List<Guid> children = [];", "List<Guid> children = new();", StringComparison.Ordinal);
+
+                        break;
+
+                    case "children-plain-await":
+                        childrenDeclaration = childrenDeclaration.Replace(".ConfigureAwait(false)", "", StringComparison.Ordinal);
+
+                        break;
+
+                    case "children-subclass-list":
+                        // The list the helper returns is a subclass, whose enumerator would be authored work that the Select reaches only through the framework.
+                        helper = helper.Replace("List<Guid> children = [];", "List<Guid> children = new GuidList();", StringComparison.Ordinal);
+
+                        readChildren += " private sealed class GuidList : List<Guid> { }";
+
+                        break;
+
+                    case "children-reassigned":
+                        helper = helper.Replace("return children;", "children = UnknownIds(); return children;", StringComparison.Ordinal);
+
+                        readChildren += " private static extern List<Guid> UnknownIds();";
+
+                        break;
+
+                    case "children-ref-alias-write" or "children-ref-alias-subclass":
+                        // The list is replaced through a ref alias, which a plain scan for assignments to the returned local does not see.
+                        helper = helper.Replace("return children;", shape == "children-ref-alias-write"
+                            ? "ref List<Guid> alias = ref children; alias = UnknownIds(); return children;"
+                            : "ref List<Guid> alias = ref children; alias = new GuidList(); return children;", StringComparison.Ordinal);
+
+                        readChildren += shape == "children-ref-alias-write" ? " private static extern List<Guid> UnknownIds();" : " private sealed class GuidList : List<Guid> { }";
+
+                        break;
+
+                    case "children-extern-helper":
+                        helper = "private static extern Task<List<Guid>> ReadChildNodesAsync(SqliteConnection connection, SqliteTransaction transaction, Guid generation, Guid parent, CancellationToken cancellationToken);";
+
+                        break;
+
+                    case "children-boundary-conversion":
+                        childrenDeclaration = childrenDeclaration.Replace("ReadChildNodesAsync(connection,", "ReadChildNodesAsync(new ConnectionHandle(),", StringComparison.Ordinal);
+
+                        readChildren += " private sealed class ConnectionHandle { public static implicit operator SqliteConnection(ConnectionHandle value) { System.IO.File.Delete(\"boundary\"); return null!; } }";
+
+                        break;
+
+                    case "children-id-through-unknown-call":
+                        branchesDeclaration = branchesDeclaration.Replace("new HierarchyLeafCursor(child)", "new HierarchyLeafCursor(UnknownId(child))", StringComparison.Ordinal);
+
+                        readChildren += " private static extern Guid UnknownId(Guid id);";
+
+                        break;
+
+                    case "children-implicit-initializer-conversion" or "children-explicit-cast-conversion":
+                        // The list is converted by an authored operator on its way into the local the sequence is read from.
+                        childrenDeclaration = childrenDeclaration.Replace("List<Guid> children = await", shape == "children-implicit-initializer-conversion"
+                            ? "IdList children = await" : "IdList children = (IdList)await", StringComparison.Ordinal);
+
+                        readChildren += " private sealed class IdList(List<Guid> ids) : IEnumerable<Guid> { public static implicit operator IdList(List<Guid> value) { System.IO.File.Delete(\"ids\"); return new(value); }"
+                            + " public IEnumerator<Guid> GetEnumerator() => ids.GetEnumerator(); System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator(); }";
+
+                        break;
+
+                    case "children-other-element-type":
+                        helper = helper.Replace("List<Guid>", "List<string>", StringComparison.Ordinal)
+                            .Replace("children.Add(Guid.Parse(reader.GetString(0)))", "children.Add(reader.GetString(0))", StringComparison.Ordinal);
+
+                        childrenDeclaration = childrenDeclaration.Replace("List<Guid>", "List<string>", StringComparison.Ordinal);
+
+                        branchesDeclaration = branchesDeclaration.Replace("new HierarchyLeafCursor(child)", "new HierarchyLeafCursor(Guid.Parse(child))", StringComparison.Ordinal);
+
+                        break;
+                }
+
+                readChildren = helper + readChildren;
+            }
+
+            run = "var generation = new Generation(Guid.Empty); CancellationToken cancellationToken = token; "
+                + childrenDeclaration + " " + branchesDeclaration + Declaration("emitted")
+                + "while (" + loop.Condition + ") { for (" + branchLoop.Declaration + "; " + branchLoop.Condition + ";) { " + branchBody + " } }";
+        }
+
+        string fields = string.Join("\n", CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root,
+            "src/RetroDownfall.Arcanum.Infrastructure/Weave/LongRestHierarchyBuilder.cs"))).GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>());
+
+        string meter = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "src/RetroDownfall.Arcanum.Core/Telemetry/ArcanumMetrics.cs")))
+            .GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>().Single(static field => field.Declaration.Variables.Any(static value => value.Identifier.ValueText == "Meter")).ToString();
+
+        string limits = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "src/RetroDownfall.Arcanum.Core/LongRest/LongRestDiscoveryPolicy.cs")))
+            .GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().Single(static type => type.Identifier.ValueText == "LongRestDiscoveryLimits").ToString();
+
+        string returnedCursor = shape == "cursor-roundtrip-local" ? "{ CursorWrapper value = new HierarchyLeafCursor(Guid.Empty); HierarchyLeafCursor result = value; return result; }"
+            : shape == "cursor-roundtrip-alias" ? "{ CursorWrapper value = new HierarchyLeafCursor(Guid.Empty); CursorWrapper alias = value; HierarchyLeafCursor result = alias; return result; }"
+            : "=> RoundTrip();";
+
+        string source = "using System.Diagnostics.Metrics; using System.Linq; using System.IO; using System.Collections.Generic; using Microsoft.Data.Sqlite; using RetroDownfall.Arcanum.Core.Telemetry; "
+            + R2Source("await CursorSlice.RunAsync(null!, null!, token);", "internal static class LongRestHierarchyBuilder { " + fields + " } "
+                + "namespace RetroDownfall.Arcanum.Core.Telemetry { public static class ArcanumMetrics { " + meter + " } } "
+                + "internal static class CursorSlice { " + cursor + partial + readChildren + limits
+                + " private sealed record Generation(Guid GenerationId); internal static async Task RunAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken token) { System.IO.File.Exists(\"frontier-root\"); " + run + " } "
+                + "private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql, params (string, object)[] parameters) { SqliteCommand command = connection.CreateCommand(); command.Transaction = transaction; return command; } "
+                + "private sealed class CursorWrapper { public static implicit operator CursorWrapper(HierarchyLeafCursor value) { System.IO.File.Delete(\"cursor-forward\"); return new(); } public static implicit operator HierarchyLeafCursor(CursorWrapper value) { System.IO.File.Delete(\"cursor-reverse\"); return new(Guid.Empty); } } private static CursorWrapper RoundTrip() => new HierarchyLeafCursor(Guid.Empty); private static HierarchyLeafCursor ReturnedCursor() " + returnedCursor
+                + "private static List<HierarchyLeafCursor> CreateBranches() { System.IO.File.Delete(\"branch-helper\"); return [new(Guid.Empty)]; } private static int SelectorValue(HierarchyLeafCursor item) { System.IO.File.Delete(\"selector-helper\"); return item.FrontierCount; } "
+                + "private static HierarchyLeafCursor CursorWithInput(int value) => new(Guid.Empty); "
+                + "private static List<HierarchyLeafCursor> BranchesWithInput(int value) => [new(Guid.Empty)]; private static int ConvertedInput() => new FrontierOperand(); "
+                + "private static extern void ReplaceBranches(ref List<HierarchyLeafCursor> values); private static extern Func<HierarchyLeafCursor, int> UnknownSelector(); private static extern void ReplaceSelector(ref Func<HierarchyLeafCursor, int> selector); private static int CounterfeitSum(List<HierarchyLeafCursor> values, Func<HierarchyLeafCursor, int> selector) => ScalarInput.Unknown(); "
+                + "private static string Format(Guid value) => value.ToString(\"D\"); private static extern HierarchyLeafCursor UnknownCursor(); private static extern void ReplaceCursor(ref HierarchyLeafCursor cursor); private static extern void EscapeCursorObject(object cursor); private static extern List<int> UnknownList(); private static extern void Replace(ref List<int> values); } "
+                + "internal sealed class FrontierOperand { public static implicit operator int(FrontierOperand value) { System.IO.File.Delete(\"conversion\"); return 1; } public static int operator -(FrontierOperand value) { System.IO.File.Delete(\"unary\"); return 1; } public static int operator +(FrontierOperand left, FrontierOperand right) { System.IO.File.Delete(\"binary\"); return 1; } } "
+                + "internal static class ScalarInput { internal static int Value { get { System.IO.File.Delete(\"getter\"); return 1; } } internal static int Read() { System.IO.File.Delete(\"helper\"); return 1; } internal static extern int Unknown(); } internal sealed class CounterfeitCount { internal int Count => ScalarInput.Unknown(); }");
+
+        if (shape == "scalar-partial-unknown") source = source.Replace("internal static class CursorSlice", "internal static partial class CursorSlice", StringComparison.Ordinal);
+
+        if (shape == "scalar-generic-carrier-unknown-write") source = source.Replace("HierarchyLeafCursor", "HierarchyLeafCursor<int>", StringComparison.Ordinal)
+            .Replace("private sealed class HierarchyLeafCursor<int>(Guid root)", "private sealed class HierarchyLeafCursor<T>(Guid root)", StringComparison.Ordinal);
+
+        if (shape == "scalar-generic-domain-unknown-write") source = source.Replace("internal static class CursorSlice", "internal static class CursorSlice<T>", StringComparison.Ordinal)
+            .Replace("await CursorSlice.RunAsync", "await CursorSlice<int>.RunAsync", StringComparison.Ordinal);
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        if (shape == "scalar-partial-unknown") compilation = compilation.AddSyntaxTrees(CSharpSyntaxTree.ParseText(
+            "internal static partial class CursorSlice { private sealed partial class HierarchyLeafCursor { private void ExtraWrite() { MaximumFrontierCount = ScalarInput.Unknown(); } } }",
+            (CSharpParseOptions)compilation.SyntaxTrees.First().Options, path: "src/ScalarPartial.cs"));
+
+        compilation = compilation.RemoveReferences(compilation.References.Where(reference =>
+            compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" }));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        string expectedSliceType = shape == "scalar-generic-domain-unknown-write" ? "CursorSlice`1" : "CursorSlice";
+
+        string expectedCursorType = shape switch
+        {
+            "scalar-generic-carrier-unknown-write" => "CursorSlice.HierarchyLeafCursor`1",
+            "scalar-generic-domain-unknown-write" => "CursorSlice`1.HierarchyLeafCursor",
+            _ => "CursorSlice.HierarchyLeafCursor",
+        };
+
+        Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == "src/Fixture.cs"
+            && site.EnclosingType == expectedSliceType && site.Member == "RunAsync" && site.Callee == "System.IO.File.Exists");
+
+        if (nextReached) Assert.Contains(result.Items, site => site.RootType == "Worker" && site.SourcePath == "src/Fixture.cs"
+            && site.EnclosingType == expectedCursorType && site.Member == "NextAsync"
+            && site.Kind == HostedProducerSiteKind.DatabaseAccess && site.Callee == "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync");
+
+        if (shape is "sum-effect" or "getter-effect" or "helper-effect" or "frames-getter-effect" or "index-helper-effect" or "index-getter-effect" or "sum-selector-helper-effect" or "index-helper-argument-effect" or "cursor-helper-argument-effect" or "scalar-nonauto-getter")
+        {
+            HostedProducerSite effect = Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+            if (shape is "getter-effect" or "helper-effect") Assert.Equal("ScalarInput", effect.EnclosingType);
+
+            if (shape == "getter-effect") Assert.Equal("get_Value", effect.Member);
+
+            if (shape == "helper-effect") Assert.Equal("Read", effect.Member);
+
+            if (shape == "scalar-nonauto-getter")
+            {
+                Assert.Equal("CursorSlice.HierarchyLeafCursor", effect.EnclosingType);
+
+                Assert.Equal("get_MaximumFrontierCount", effect.Member);
+            }
+
+            Assert.All(new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }, code =>
+                Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                    && diagnostic.Identity.EndsWith(effect.OperationId[effect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+        }
+
+        if (shape.StartsWith("element-helper-input-", StringComparison.Ordinal) || shape.StartsWith("cursor-helper-input-", StringComparison.Ordinal))
+        {
+            HostedProducerSite? conversion = result.Items.SingleOrDefault(static site => site.EnclosingType == "FrontierOperand" && site.Callee == "System.IO.File.Delete");
+
+            bool retained = conversion is not null && new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }.All(code =>
+                result.Diagnostics.Any(diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                    && diagnostic.Identity.EndsWith(conversion.OperationId[conversion.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal)));
+
+            Assert.True(retained || result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record"),
+                "An unused source helper input must retain its conversion work or refuse the exact Record.");
+
+            return;
+        }
+
+        if (shape.StartsWith("cursor-roundtrip", StringComparison.Ordinal))
+        {
+            HostedProducerSite[] conversions = result.Items.Where(static site => site.EnclosingType == "CursorSlice.CursorWrapper" && site.Callee == "System.IO.File.Delete").ToArray();
+
+            bool bothRetained = conversions.Length == 2 && conversions.All(effect =>
+                new[] { "HOSTED_SITE_WORK_FRONTIER_MISSING", "HOSTED_SITE_EFFECT_FRONTIER_MISSING" }.All(code =>
+                    result.Diagnostics.Any(diagnostic => diagnostic.Code == code && diagnostic.Detail == "System.IO.File.Delete"
+                        && diagnostic.Identity.EndsWith(effect.OperationId[effect.OperationId.LastIndexOf("/site@", StringComparison.Ordinal)..], StringComparison.Ordinal))));
+
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record") || bothRetained,
+                "Exact cursor construction must not hide intermediate contextual conversions.");
+
+            return;
+        }
+
+        Assert.Equal(!reviewed, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record"));
+
+        // Probe only. Root and actual awaited SQL reachability precede the value verdict.
+        // The source-derived branch loop stops before unrelated leaf materialization. No SQL,
+        // provider, Histogram or SDK executes; declaration presence is not traversal evidence.
+    }
+
+    [Fact]
+    public void ActualHierarchyFrontierObservationRequiresCompleteValueOrigins() =>
+        LongRestHistogramObservationRequiresExactOwnedReadonlyOrigin("SelectedSummaries", "actual-frontier", true, false);
+
+    [Theory]
+    [InlineData("SelectedSummaries", "actual", true, false)]
+    [InlineData("TraversalFrontier", "actual", true, false)]
+    [InlineData("ExpandedLeaves", "actual", true, false)]
+    [InlineData("SelectedSummaries", "alias", true, false)]
+    [InlineData("SelectedSummaries", "helper", true, false)]
+    [InlineData("SelectedSummaries", "argument", true, true)]
+    [InlineData("SelectedSummaries", "getter", true, true)]
+    [InlineData("SelectedSummaries", "wrapper", true, true)]
+    [InlineData("SelectedSummaries", "listener", true, true)]
+    [InlineData("SelectedSummaries", "unknown", false, false)]
+    [InlineData("SelectedSummaries", "mixed", false, false)]
+    [InlineData("SelectedSummaries", "mutable", false, false)]
+    [InlineData("SelectedSummaries", "reassigned", false, false)]
+    [InlineData("SelectedSummaries", "ref", false, false)]
+    [InlineData("SelectedSummaries", "tags", false, false)]
+    [InlineData("SelectedSummaries", "other-meter", false, false)]
+    [InlineData("SelectedSummaries", "conversion-direct", false, false)]
+    [InlineData("SelectedSummaries", "conversion-local", false, false)]
+    [InlineData("SelectedSummaries", "unary-direct", false, false)]
+    [InlineData("SelectedSummaries", "unary-local", false, false)]
+    [InlineData("SelectedSummaries", "binary-direct", false, false)]
+    [InlineData("SelectedSummaries", "binary-local", false, false)]
+    [InlineData("SelectedSummaries", "actual-best-count", true, false)]
+    [InlineData("SelectedSummaries", "actual-emitted", true, false)]
+    [InlineData("SelectedSummaries", "incoming-count", true, false)]
+    [InlineData("SelectedSummaries", "queue-direct", true, false)]
+    [InlineData("SelectedSummaries", "queue-alias", true, false)]
+    [InlineData("SelectedSummaries", "queue-helper", true, false)]
+    [InlineData("SelectedSummaries", "queue-helper-effect", true, true)]
+    [InlineData("SelectedSummaries", "queue-getter-effect", false, true)]
+    [InlineData("SelectedSummaries", "queue-unknown", false, false)]
+    [InlineData("SelectedSummaries", "queue-mixed", false, false)]
+    [InlineData("SelectedSummaries", "queue-reassigned", false, false)]
+    [InlineData("SelectedSummaries", "queue-ref", false, false)]
+    [InlineData("SelectedSummaries", "queue-comparer", false, false)]
+    [InlineData("SelectedSummaries", "queue-derived", false, false)]
+    [InlineData("SelectedSummaries", "queue-counterfeit", false, false)]
+    [InlineData("SelectedSummaries", "histogram-counterfeit", false, false)]
+    public void LongRestHistogramObservationRequiresExactOwnedReadonlyOrigin(string field, string shape, bool reviewed, bool effect)
+    {
+        string root = TestRepositoryPaths.RepositoryRoot();
+
+        ClassDeclarationSyntax builder = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "src/RetroDownfall.Arcanum.Infrastructure/Weave/LongRestHierarchyBuilder.cs")))
+            .GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().Single();
+
+        string fields = string.Join("\n", builder.Members.OfType<FieldDeclarationSyntax>());
+
+        string meter = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "src/RetroDownfall.Arcanum.Core/Telemetry/ArcanumMetrics.cs")))
+            .GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>()
+            .Single(static declaration => declaration.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "Meter")).ToString();
+
+        if (shape == "mutable") fields = fields.Replace("static readonly", "static", StringComparison.Ordinal);
+
+        if (shape == "other-meter") fields = fields.Replace("ArcanumMetrics.Meter", "HistogramInput.Other", StringComparison.Ordinal);
+
+        string owned = "LongRestHierarchyBuilder." + field;
+
+        string origin = shape switch
+        {
+            "unknown" => "HistogramInput.Unknown()",
+            "mixed" => "DateTime.UtcNow.Ticks > 0 ? " + owned + " : HistogramInput.Unknown()",
+            "helper" => "HistogramInput.Known()",
+            "getter" => "HistogramInput.Effectful",
+            _ => owned,
+        };
+
+        bool operatorProbe = shape.StartsWith("conversion-", StringComparison.Ordinal)
+            || shape.StartsWith("unary-", StringComparison.Ordinal) || shape.StartsWith("binary-", StringComparison.Ordinal);
+
+        string operand = shape.StartsWith("unary-", StringComparison.Ordinal) ? "-new HistogramOperand()"
+            : shape.StartsWith("binary-", StringComparison.Ordinal) ? "new HistogramOperand() + new HistogramOperand()" : "new HistogramOperand()";
+
+        string probeSetup = operatorProbe && shape.EndsWith("-local", StringComparison.Ordinal) ? "int probeValue = " + operand + "; " : "";
+
+        string measured = operatorProbe ? (probeSetup.Length == 0 ? operand : "probeValue") : shape == "argument" ? "HistogramInput.Value()" : "3";
+
+        string body = probeSetup + "Histogram<int> instrument = " + origin + "; "
+            + (shape == "reassigned" ? "instrument = HistogramInput.Unknown(); " : shape == "ref" ? "HistogramInput.Replace(ref instrument); " : "")
+            + (shape == "alias" ? "Histogram<int> alias = instrument; " : "")
+            + (shape == "listener" ? "using MeterListener listener = new(); listener.SetMeasurementEventCallback<int>((instrument, measurement, tags, state) => System.IO.File.Delete(\"listener\")); " : "")
+            + (shape == "wrapper" ? "HistogramInput.Wrapper();" : (shape == "alias" ? "alias" : "instrument")
+                + ".Record(" + measured
+                + (shape == "tags" ? ", new System.Collections.Generic.KeyValuePair<string, object?>(\"tag\", 1)" : "") + ");");
+
+        string extra = "";
+
+        if (shape.StartsWith("actual-", StringComparison.Ordinal))
+        {
+            SyntaxNode actual = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.HierarchyCandidates.cs"))).GetRoot();
+
+            string Statement(string instrument) => actual.DescendantNodes().OfType<ExpressionStatementSyntax>()
+                .Single(statement => statement.Expression is InvocationExpressionSyntax invocation
+                    && invocation.Expression.ToString() == "LongRestHierarchyBuilder." + instrument + ".Record").ToString();
+
+            if (shape == "actual-best-count")
+            {
+                extra = ActualHierarchyRankingSlice().Replace("return best.UnorderedItems", Statement("SelectedSummaries") + " return best.UnorderedItems", StringComparison.Ordinal);
+
+                body = "_ = RankingSlice.Select([Guid.Empty], [1d], 8);";
+            }
+            else if (shape == "actual-emitted")
+            {
+                string declaration = actual.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                    .Single(statement => statement.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "emitted")).ToString();
+
+                string increment = actual.DescendantNodes().OfType<ExpressionStatementSyntax>()
+                    .Single(static statement => statement.Expression.ToString() == "emitted++").ToString();
+
+                body = declaration + " for (int index = 0; index < 3; index++) { " + increment + " } " + Statement("ExpandedLeaves");
+            }
+            else
+            {
+                string cursor = actual.DescendantNodes().OfType<ClassDeclarationSyntax>()
+                    .Single(static declaration => declaration.Identifier.ValueText == "HierarchyLeafCursor").ToString();
+
+                string Values(string name) => actual.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+                    .Single(statement => statement.Declaration.Variables.Any(variable => variable.Identifier.ValueText == name)).ToString();
+
+                string limit = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(root, "src/RetroDownfall.Arcanum.Core/LongRest/LongRestDiscoveryPolicy.cs")))
+                    .GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>()
+                    .Single(static declaration => declaration.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "HierarchyLevels")).ToString();
+
+                extra = "internal static class CursorSlice { " + cursor + " internal static void Run() { List<HierarchyLeafCursor> branches = [new(Guid.Empty)]; int branch = 0; "
+                    + Values("otherFrames") + Values("frontier") + Statement("TraversalFrontier") + " } "
+                    + "private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql, params (string, object)[] parameters) => throw new NotSupportedException(); private static string Format(Guid value) => value.ToString(\"D\"); private static class LongRestDiscoveryLimits { " + limit + " } }";
+
+                body = "CursorSlice.Run();";
+            }
+        }
+
+        if (shape.StartsWith("queue-", StringComparison.Ordinal))
+        {
+            const string queue = "PriorityQueue<Guid, (double Score, ulong High, ulong Low)>";
+
+            string originQueue = shape switch
+            {
+                "queue-unknown" => "QueueCountInput.Unknown()",
+                "queue-mixed" => "DateTime.UtcNow.Ticks > 0 ? new " + queue + "() : QueueCountInput.Unknown()",
+                "queue-helper" or "queue-helper-effect" => "QueueCountInput.Create()",
+                "queue-comparer" => "new " + queue + "(Comparer<(double, ulong, ulong)>.Create((left, right) => { System.IO.File.Delete(\"queue-comparer\"); return 0; }))",
+                "queue-derived" => "new QueueCountDerived()",
+                _ => "new " + queue + "()",
+            };
+
+            string receiver = shape == "queue-alias" ? "alias" : "queue";
+
+            body = queue + " queue = " + originQueue + "; "
+                + (shape == "queue-alias" ? "var alias = queue; " : shape == "queue-reassigned" ? "queue = QueueCountInput.Unknown(); "
+                    : shape == "queue-ref" ? "QueueCountInput.Replace(ref queue); " : "")
+                + owned + ".Record(" + receiver + ".Count" + (shape == "queue-getter-effect" ? " + QueueCountInput.Value" : "") + ");";
+
+            extra = "internal sealed class QueueCountDerived : " + queue + " { } "
+                + "internal static class QueueCountInput { internal static " + queue + " Create() { "
+                + (shape == "queue-helper-effect" ? "System.IO.File.Delete(\"queue-helper\"); " : "") + "return new(); } "
+                + "internal static int Value { get { System.IO.File.Delete(\"queue-getter\"); return 0; } } "
+                + "internal static extern " + queue + " Unknown(); internal static extern void Replace(ref " + queue + " queue); }";
+        }
+
+        if (shape == "queue-counterfeit") body = body.Replace("PriorityQueue", "counterfeit::System.Collections.Generic.PriorityQueue", StringComparison.Ordinal);
+
+        if (shape == "histogram-counterfeit") body = "new counterfeit::System.Diagnostics.Metrics.Histogram<int>().Record(3);";
+
+        if (shape == "incoming-count") body = "HistogramInput.RecordValue(3);";
+
+        string source = (shape.EndsWith("counterfeit", StringComparison.Ordinal) ? "extern alias counterfeit; " : "") + "using System.Diagnostics.Metrics; using System.Linq; using System.IO; using System.Collections.Generic; using System.Buffers.Binary; using Microsoft.Data.Sqlite; using RetroDownfall.Arcanum.Core.Telemetry; "
+            + R2Source(body, extra + " internal static class LongRestHierarchyBuilder { " + fields + " } "
+                + "namespace RetroDownfall.Arcanum.Core.Telemetry { public static class ArcanumMetrics { " + meter + " } } "
+                + "internal sealed class HistogramOperand { public static implicit operator int(HistogramOperand value) { System.IO.File.Delete(\"conversion\"); return 3; } public static int operator -(HistogramOperand value) { System.IO.File.Delete(\"unary\"); return 3; } public static int operator +(HistogramOperand left, HistogramOperand right) { System.IO.File.Delete(\"binary\"); return 3; } } "
+                + "internal static class HistogramInput { internal static readonly Meter Other = new(\"Other\"); internal static extern Histogram<int> Unknown(); internal static extern void Replace(ref Histogram<int> value); internal static Histogram<int> Known() => " + owned + "; "
+                + "internal static Histogram<int> Effectful { get { System.IO.File.Delete(\"getter\"); return " + owned + "; } } "
+                + "internal static int Value() { System.IO.File.Delete(\"argument\"); return 3; } internal static void Wrapper() { System.IO.File.Delete(\"wrapper\"); " + owned + ".Record(3); } internal static void RecordValue(int value) { " + owned + ".Record(value); } }");
+
+        CSharpCompilation compilation = CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api");
+
+        if (shape.EndsWith("counterfeit", StringComparison.Ordinal))
+        {
+            CSharpCompilation foreign = CompileWithProductionReferencePack("namespace System.Collections.Generic { public sealed class PriorityQueue<T, P> { public int Count => 0; } } namespace System.Diagnostics.Metrics { public sealed class Histogram<T> { public void Record(T value) { } } }", "RetroDownfall.Arcanum.Api")
+                .WithAssemblyName("Untrusted.Observation");
+
+            using MemoryStream image = new();
+
+            Assert.True(foreign.Emit(image).Success);
+
+            compilation = compilation.AddReferences(MetadataReference.CreateFromImage(image.ToArray(), new MetadataReferenceProperties(aliases: ["counterfeit"])));
+        }
+
+        compilation = compilation.RemoveReferences(compilation.References.Where(reference =>
+            compilation.GetAssemblyOrModuleSymbol(reference) is IAssemblySymbol { Name: "RetroDownfall.Arcanum.Core" }));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites(
+            [compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        if (operatorProbe)
+        {
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                    && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record")
+                || result.Items.Any(static site => site.Callee == "System.IO.File.Delete")
+                    && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete")
+                    && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete"));
+
+            return;
+        }
+
+        Assert.Equal(!reviewed, result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+            && diagnostic.Detail == "System.Diagnostics.Metrics.Histogram`1.Record"));
+
+        if (shape == "listener")
+        {
+            // Authored registration is explicitly refused. This is not proof that Record
+            // enumerates every listener body; the runtime fixture separately shows its effects.
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                && diagnostic.Detail.StartsWith("System.Diagnostics.Metrics.MeterListener.SetMeasurementEventCallback;", StringComparison.Ordinal));
+
+            return;
+        }
+
+        Assert.Equal(effect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        if (effect)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+        }
+
+        // Authored listener work is retained or refused. This does not close arbitrary
+        // runtime-installed listeners, static initialization timing or third-party observers.
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HistogramObservationExecutesListenersSynchronouslyAndPreservesTheirFaults(bool throws)
+    {
+        using System.Diagnostics.Metrics.Meter meter = new("Task6.Observation." + Guid.NewGuid().ToString("N"));
+
+        System.Diagnostics.Metrics.Histogram<int> histogram = meter.CreateHistogram<int>("count");
+
+        List<string> events = [];
+
+        InvalidOperationException fault = new("fixture-observer");
+
+        using System.Diagnostics.Metrics.MeterListener listener = new();
+
+        listener.InstrumentPublished = (instrument, active) =>
+        {
+            if (ReferenceEquals(instrument, histogram)) active.EnableMeasurementEvents(instrument);
+        };
+
+        listener.SetMeasurementEventCallback<int>((instrument, value, tags, state) =>
+        {
+            Assert.Same(histogram, instrument);
+
+            Assert.Equal(3, value);
+
+            Assert.True(tags.IsEmpty);
+
+            events.Add("listener");
+
+            if (throws) throw fault;
+        });
+
+        listener.Start();
+
+        events.Add("before");
+
+        if (throws)
+        {
+            Assert.Same(fault, Assert.Throws<InvalidOperationException>(() => histogram.Record(3)));
+        }
+        else
+        {
+            histogram.Record(3);
+        }
+
+        events.Add("after");
+
+        Assert.Equal(["before", "listener", "after"], events);
+    }
+
+    private static string ActualHierarchyRankingSlice()
+    {
+        string file = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.HierarchyCandidates.cs");
+
+        SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot();
+
+        LocalDeclarationStatementSyntax queue = root.DescendantNodes().OfType<LocalDeclarationStatementSyntax>()
+            .Single(static declaration => declaration.Declaration.Variables.Any(static variable => variable.Identifier.ValueText == "best"));
+
+        VariableDeclaratorSyntax rank = root.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+            .Single(static variable => variable.Identifier.ValueText == "rank");
+
+        var rankStatement = (StatementSyntax)rank.Parent!.Parent!;
+
+        BlockSyntax block = (BlockSyntax)rankStatement.Parent!;
+
+        string enqueue = string.Join("\n", block.Statements.SkipWhile(statement => statement != rankStatement).Skip(1)
+            .TakeWhile(static statement => statement is not IfStatementSyntax));
+
+        return "public static class RankingSlice { private sealed record SummaryRank(Guid Node, double Score); public static Guid[] Select(Guid[] nodes, double[] scores, int count) { "
+            + queue + " for (int index = 0; index < nodes.Length; index++) { SummaryRank rank = new(nodes[index], scores[index]); "
+            + enqueue + " if (best.Count > count) best.Dequeue(); } return best.UnorderedItems.Select(item => item.Element).OrderByDescending(item => item.Score).ThenBy(item => item.Node.ToString(\"D\"), StringComparer.Ordinal).Select(item => item.Node).ToArray(); } }";
+    }
+
+    [Fact]
+    public void ActualHierarchyRankingSliceHasClosedDefaultPriorityAnalysis()
+    {
+        string source = "using System.Linq; using System.Collections.Generic; using System.Buffers.Binary; " + R2Source(
+            "_ = RankingSlice.Select(new Guid[] { Guid.Empty }, new double[] { 1 }, 8);", ActualHierarchyRankingSlice());
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Empty(result.Items);
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Fact]
+    public void ActualHierarchyRankingSlicePreservesOldComparatorForAllPrimitiveBoundaries()
+    {
+        // Compile only the actual trusted queue/priority expressions, with no external fixture execution.
+        CSharpCompilation compilation = Compile("using System; using System.Linq; using System.Collections.Generic; using System.Buffers.Binary; "
+            + ActualHierarchyRankingSlice()).WithAssemblyName("ActualRankingSliceFixture");
+
+        using MemoryStream image = new();
+
+        var emitted = compilation.Emit(image);
+
+        Assert.True(emitted.Success, string.Join(global::System.Environment.NewLine, emitted.Diagnostics));
+
+        image.Position = 0;
+
+        System.Runtime.Loader.AssemblyLoadContext load = new("ranking-expression", isCollectible: true);
+
+        try
+        {
+            var select = load.LoadFromStream(image).GetType("RankingSlice")!.GetMethod("Select")!.CreateDelegate<Func<Guid[], double[], int, Guid[]>>();
+
+            Guid[] nodes = [.. new[] { "00000000", "7fffffff", "80000000", "ffffffff" }
+                .SelectMany(high => new[] { "0000", "7fff", "8000", "ffff" }.Select(low => Guid.Parse($"{high}-1234-5678-{low}-abcdef123456")))];
+
+            double[] values = [double.NaN, double.NegativeInfinity, -1, -0.0, 0.0, 0.92, 1, double.PositiveInfinity];
+
+            foreach (bool reverse in new[] { false, true })
+            foreach (int count in new[] { 1, 8, 9, 16 })
+            foreach (bool tied in new[] { false, true })
+            {
+                Guid[] order = reverse ? nodes.Reverse().ToArray() : nodes;
+
+                // Duplicating every identity/score checks repeated equal priorities too.
+                order = [.. order, .. order];
+
+                double[] scores = [.. order.Select((_, index) => tied ? 1.0 : values[index % values.Length])];
+
+                PriorityQueue<(Guid Node, double Score), (Guid Node, double Score)> original = new(Comparer<(Guid Node, double Score)>.Create(static (left, right) =>
+                {
+                    int score = left.Score.CompareTo(right.Score);
+
+                    return score != 0 ? score : -StringComparer.Ordinal.Compare(left.Node.ToString("D"), right.Node.ToString("D"));
+                }));
+
+                for (int index = 0; index < order.Length; index++)
+                {
+                    var candidate = (order[index], scores[index]);
+
+                    original.Enqueue(candidate, candidate);
+
+                    if (original.Count > count) original.Dequeue();
+                }
+
+                Guid[] expected = [.. original.UnorderedItems.Select(static item => item.Element).OrderByDescending(static item => item.Score)
+                    .ThenBy(static item => item.Node.ToString("D"), StringComparer.Ordinal).Select(static item => item.Node)];
+
+                Assert.Equal(expected, select(order, scores, count));
+            }
+        }
+        finally
+        {
+            load.Unload();
+        }
+    }
+
+    [Theory]
+    [InlineData("default", true)]
+    [InlineData("alias", true)]
+    [InlineData("helper", true)]
+    [InlineData("unknown", false)]
+    [InlineData("mixed", false)]
+    [InlineData("reassigned", false)]
+    [InlineData("ref", false)]
+    [InlineData("comparer", false)]
+    [InlineData("comparable", false)]
+    [InlineData("element-conversion", false)]
+    [InlineData("priority-conversion", false)]
+    [InlineData("local-conversion", false)]
+    [InlineData("copied-conversion", false)]
+    [InlineData("element-operator", false)]
+    [InlineData("priority-operator", false)]
+    [InlineData("counterfeit", false)]
+    public void PrimitivePriorityQueueRequiresCompleteDefaultOriginsAtConsumption(string shape, bool safe)
+    {
+        const string queue = "PriorityQueue<Guid, (double Score, ulong ReverseHigh, ulong ReverseLow)>";
+
+        string origin = shape switch
+        {
+            "unknown" => "Unknown()",
+            "mixed" => "DateTime.UtcNow.Ticks > 0 ? new " + queue + "() : Unknown()",
+            "helper" => "Create()",
+            "comparer" => "new " + queue + "(Comparer<(double, ulong, ulong)>.Create((left, right) => { System.IO.File.Delete(\"deferred-comparer\"); return 0; }))",
+            _ => "new " + queue + "()",
+        };
+
+        string body = queue + " pending = " + origin + "; ";
+
+        if (shape == "alias") body += "var alias = pending; ";
+        if (shape == "reassigned") body += "pending = Unknown(); ";
+        if (shape == "ref") body += "Escape(ref pending); ";
+
+        string receiver = shape == "alias" ? "alias" : "pending";
+
+        body += receiver + ".Enqueue(Guid.Empty, (1, 0UL, 0UL)); " + receiver + ".Enqueue(Guid.Empty, (2, 0UL, 0UL)); _ = " + receiver + ".Count; _ = " + receiver + ".Dequeue(); foreach (var item in " + receiver + ".UnorderedItems) { _ = item.Element; }";
+
+        if (shape == "element-conversion") body = queue + " pending = new(); pending.Enqueue(new QueueElementProbe(), (1, 0UL, 0UL));";
+        if (shape == "priority-conversion") body = queue + " pending = new(); pending.Enqueue(Guid.Empty, (new QueuePriorityProbe(), 0UL, 0UL));";
+        if (shape == "local-conversion") body = queue + " pending = new(); double score = new QueuePriorityProbe(); pending.Enqueue(Guid.Empty, (score, 0UL, 0UL));";
+        if (shape == "copied-conversion") body = queue + " pending = new(); Guid element = new QueueElementProbe(); Guid copy = element; pending.Enqueue(copy, (1, 0UL, 0UL));";
+        if (shape == "element-operator") body = queue + " pending = new(); pending.Enqueue(-new QueueElementProbe(), (1, 0UL, 0UL));";
+        if (shape == "priority-operator") body = queue + " pending = new(); pending.Enqueue(Guid.Empty, (-new QueuePriorityProbe(), 0UL, 0UL));";
+
+        string helper = "static class QueueProbe { public static void Run() { " + body + " } private static " + queue + " Create() { var queue = new " + queue + "(); return queue; } private static extern " + queue + " Unknown(); private static extern void Escape(ref " + queue + " pending); }";
+
+        if (shape == "comparable") helper = "sealed class Priority : IComparable<Priority> { public int CompareTo(Priority other) { System.IO.File.Delete(\"comparable\"); return 0; } } static class QueueProbe { public static void Run() { var pending = new PriorityQueue<Guid, Priority>(); pending.Enqueue(Guid.Empty, new()); pending.Enqueue(Guid.Empty, new()); _ = pending.Dequeue(); } }";
+
+        if (shape == "counterfeit") helper += "namespace System.Collections.Generic { public sealed class PriorityQueue<T, P> { public void Enqueue(T item, P priority) { System.IO.File.Delete(\"counterfeit\"); } public T Dequeue() { System.IO.File.Delete(\"counterfeit-consumption\"); return default; } public int Count => 0; public (T Element, P Priority)[] UnorderedItems => new (T, P)[0]; } }";
+
+        helper += "sealed class QueueElementProbe { public static Guid operator -(QueueElementProbe value) { System.IO.File.Delete(\"element-operator\"); return Guid.Empty; } public static implicit operator Guid(QueueElementProbe value) { System.IO.File.Delete(\"element-conversion\"); return Guid.Empty; } } sealed class QueuePriorityProbe { public static double operator -(QueuePriorityProbe value) { System.IO.File.Delete(\"priority-operator\"); return 1; } public static implicit operator double(QueuePriorityProbe value) { System.IO.File.Delete(\"priority-conversion\"); return 1; } }";
+
+        string source = "using System.Collections.Generic; " + R2Source("QueueProbe.Run();", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        if (safe)
+        {
+            Assert.Empty(result.Items);
+
+            Assert.Empty(result.Diagnostics);
+        }
+        else
+        {
+            // Refusal must remain at the deferred comparison's consumption, not only construction.
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED"
+                    && diagnostic.Detail is "System.Collections.Generic.PriorityQueue`2.Enqueue" or "System.Collections.Generic.PriorityQueue`2.Dequeue")
+                || result.Items.Any(static site => site.Callee == "System.IO.File.Delete")
+                    && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete")
+                    && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete"));
+        }
+    }
+
+    private static string ActualClusterProjectionSlice()
+    {
+        string file = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Core/Weave/Tapestry/SphericalKMeans.cs");
+
+        MethodDeclarationSyntax method = CSharpSyntaxTree.ParseText(File.ReadAllText(file)).GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static candidate => candidate.Identifier.ValueText == "BuildClusters");
+
+        return "public sealed record SphericalKMeansCluster(int Ordinal, IReadOnlyList<string> MemberIds, float[] Centroid); public static class ClusterSlice { public static SphericalKMeansCluster[] Run() => BuildClusters(new string[] { \"z\", \"a\", \"b\" }, new int[] { 0, 1, 1 }, new float[][] { new float[] { 1, 0 }, new float[] { 0, 1 } }); " + method + " }";
+    }
+
+    [Fact]
+    public void ActualClusterProjectionHasClosedPrivateSortKeyAnalysis()
+    {
+        string source = "using System.Collections.Generic; " + R2Source("_ = ClusterSlice.Run();", ActualClusterProjectionSlice());
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Empty(result.Items);
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    private static string LongRestIdentityExpression(string shape)
+    {
+        string relative = shape switch
+        {
+            "node" => "src/RetroDownfall.Arcanum.Core/LongRest/LongRestHierarchy.cs",
+            "metadata" => "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.Metadata.cs",
+            _ => "src/RetroDownfall.Arcanum.Infrastructure/Weave/LongRestHierarchyBuilder.cs",
+        };
+
+        SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(TestRepositoryPaths.RepositoryRoot(), relative))).GetRoot();
+
+        return shape switch
+        {
+            "node" => ((ConditionalExpressionSyntax)root.DescendantNodes().OfType<MethodDeclarationSyntax>()
+                .Single(static method => method.Identifier.ValueText == "ChildId").ExpressionBody!.Expression).WhenFalse.ToString(),
+            "metadata" => root.DescendantNodes().OfType<BinaryExpressionSyntax>()
+                .Single(static comparison => comparison.IsKind(SyntaxKind.NotEqualsExpression) && comparison.Left.ToString() == "work.ItemId").Right.ToString(),
+            _ => ((BaseObjectCreationExpressionSyntax)root.DescendantNodes().OfType<VariableDeclaratorSyntax>()
+                .Single(static variable => variable.Identifier.ValueText == "work").Initializer!.Value).ArgumentList!.Arguments[2].Expression.ToString(),
+        };
+    }
+
+    private static string LongRestIdentitySource(string expression) => "public static class IdentitySlice { public static string Format(int layer, long group, System.Guid node) { var child = new IdentityChild { Layer = layer, Group = group, NodeId = node }; var generation = new IdentityGeneration { FoldLayer = layer, FoldGroup = group }; return " + expression + "; } } public sealed class IdentityChild { public int Layer; public long Group; public System.Guid NodeId; } public sealed class IdentityGeneration { public int FoldLayer; public long FoldGroup; }";
+
+    [Theory]
+    [InlineData("node")]
+    [InlineData("fold")]
+    [InlineData("metadata")]
+    public void ActualLongRestIdentityExpressionsPreserveInvariantLiteralsAndExtremes(string shape)
+    {
+        // Execute only the extracted trusted primitive expressions; no SDK or external fixture assembly runs.
+        string source = "using System; using System.Globalization; " + LongRestIdentitySource(LongRestIdentityExpression(shape));
+
+        CSharpCompilation compilation = Compile(source).WithAssemblyName("IdentityExpressionFixture" + shape);
+
+        using MemoryStream image = new();
+
+        Microsoft.CodeAnalysis.Emit.EmitResult emitted = compilation.Emit(image);
+
+        Assert.True(emitted.Success, string.Join(global::System.Environment.NewLine, emitted.Diagnostics));
+
+        image.Position = 0;
+
+        System.Runtime.Loader.AssemblyLoadContext load = new("identity-expression-" + shape, isCollectible: true);
+
+        System.Globalization.CultureInfo original = System.Globalization.CultureInfo.CurrentCulture;
+
+        try
+        {
+            var assembly = load.LoadFromStream(image);
+
+            var format = assembly.GetType("IdentitySlice")!.GetMethod("Format")!.CreateDelegate<Func<int, long, Guid, string>>();
+
+            Guid node = Guid.Parse("807f00ff-1234-5678-9abc-def012345678");
+
+            foreach (string culture in new[] { "en-US", "fr-FR", "ar-SA" })
+            {
+                var selected = (System.Globalization.CultureInfo)System.Globalization.CultureInfo.GetCultureInfo(culture).Clone();
+
+                selected.NumberFormat.NegativeSign = "custom-minus";
+
+                System.Globalization.CultureInfo.CurrentCulture = selected;
+
+                foreach ((int layer, long group) in new[] { (0, 0L), (1, 2L), (-1, -2L), (int.MinValue, long.MinValue), (int.MaxValue, long.MaxValue) })
+                {
+                    string expected = shape switch
+                    {
+                        "node" => FormattableString.Invariant($"node:{layer:D2}:{group:D20}:{node:D}"),
+                        "metadata" => FormattableString.Invariant($"fold:{Math.Max(1, layer)}:{group}"),
+                        _ => FormattableString.Invariant($"fold:{layer}:{group}"),
+                    };
+
+                    Assert.Equal(expected, format(layer, group, node));
+                }
+            }
+
+            Assert.Equal(shape == "node" ? "node:00:00000000000000000000:807f00ff-1234-5678-9abc-def012345678"
+                : shape == "metadata" ? "fold:1:0" : "fold:0:0", format(0, 0, node));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+
+            load.Unload();
+        }
+    }
+
+    [Theory]
+    [InlineData("node")]
+    [InlineData("fold")]
+    [InlineData("metadata")]
+    public void ActualLongRestIdentityExpressionsHaveClosedPrimitiveAnalysis(string shape)
+    {
+        string source = "using System.Globalization; " + R2Source("_ = IdentitySlice.Format(int.MinValue, long.MaxValue, Guid.Empty);",
+            LongRestIdentitySource(LongRestIdentityExpression(shape)));
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Empty(result.Items);
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("lazy", true, false)]
+    [InlineData("foreach", true, false)]
+    [InlineData("selected-consumed", true, true)]
+    [InlineData("selected-dropped", false, true)]
+    [InlineData("unknown-consumer", false, true)]
+    [InlineData("released", false, true)]
+    [InlineData("argument", false, true)]
+    [InlineData("counterfeit", false, true)]
+    public void ExactIntegerRangeRetainsDeferredSelectorAndArgumentEffects(string shape, bool safe, bool effect)
+    {
+        const string sequence = "Enumerable.Range(0, 4).Select(value => { System.IO.File.Delete(\"selector\"); return value; })";
+
+        string body = shape switch
+        {
+            "lazy" => "_ = Enumerable.Range(0, 4);",
+            "foreach" => "foreach (int value in Enumerable.Range(0, 4)) { _ = value; }",
+            "selected-consumed" => R2Admission + "_ = " + sequence + ".ToArray();",
+            "selected-dropped" => R2Admission + "_ = " + sequence + ";",
+            "unknown-consumer" => R2Admission + "RangeProbe.Consume(" + sequence + ");",
+            "released" => R2Admission + "var values = " + sequence + "; lease.Dispose(); _ = values.ToArray();",
+            "argument" => "_ = Enumerable.Range(RangeProbe.Start(), 4);",
+            _ => "_ = System.Linq.Enumerable.Range(0, 4);",
+        };
+
+        string helper = "static class RangeProbe { public static int Start() { System.IO.File.Delete(\"argument\"); return 0; } public static extern void Consume(System.Collections.Generic.IEnumerable<int> values); }";
+
+        if (shape == "counterfeit") helper += "namespace System.Linq { static class Enumerable { public static System.Collections.Generic.IEnumerable<int> Range(int start, int count) { System.IO.File.Delete(\"counterfeit\"); return new int[0]; } } }";
+
+        string source = "using System.Linq; " + R2Source(body, helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(effect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        if (safe) Assert.Empty(result.Diagnostics);
+        else Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_WORK_FRONTIER_MISSING");
+
+        if (shape != "counterfeit") Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Linq.Enumerable.Range");
+    }
+
+    [Fact]
+    public void ActualLongRestQueueReadIsCompletionOwnedCoordinationBeforeAdmission()
+    {
+        string path = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRest/LongRestSweepQueue.cs");
+
+        string fixture = "global using System; global using System.Threading; global using System.Threading.Tasks; " + R2Source("var queue = new RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepQueue(); _ = await queue.ReadAsync(token).ConfigureAwait(false);");
+
+        CSharpCompilation compilation = Compile(fixture).AddSyntaxTrees(CSharpSyntaxTree.ParseText(File.ReadAllText(path), path: "src/LongRestSweepQueue.cs"));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Empty(result.Items);
+
+        IPropertySymbol reader = compilation.GetTypeByMetadataName("System.Threading.Channels.Channel`2")!
+            .GetMembers("Reader").OfType<IPropertySymbol>().Single();
+
+        Assert.True(result.Diagnostics.Count == 0, "Exact Reader setter: " + reader.SetMethod?.DeclaredAccessibility
+            + "; " + string.Join("; ", result.Diagnostics));
+    }
+
+    [Theory]
+    [InlineData("readonly", true)]
+    [InlineData("alias", true)]
+    [InlineData("helper", true)]
+    [InlineData("helper-alias", true)]
+    [InlineData("unknown", false)]
+    [InlineData("mixed", false)]
+    [InlineData("mutable", false)]
+    [InlineData("ref-reader", false)]
+    [InlineData("reassigned", false)]
+    [InlineData("dropped-callback", false)]
+    [InlineData("override", false)]
+    [InlineData("inherited", false)]
+    [InlineData("dropped", false)]
+    [InlineData("getawaiter-only", false)]
+    [InlineData("getter-effect", false)]
+    [InlineData("argument-effect", false)]
+    [InlineData("counterfeit", false)]
+    public void BoundedGuidChannelCoordinationRequiresCompleteOriginsAndCompletion(string shape, bool safe)
+    {
+        const string factory = "Channel.CreateBounded<Guid>(new BoundedChannelOptions(1) { SingleReader = true, FullMode = BoundedChannelFullMode.DropWrite })";
+
+        string origin = shape switch
+        {
+            "unknown" => "UnknownChannel()",
+            "mixed" => "DateTime.UtcNow.Ticks > 0 ? " + factory + " : UnknownChannel()",
+            "dropped-callback" => factory[..^1] + ", item => System.IO.File.Delete(\"drop\"))",
+            "helper" or "helper-alias" => "Create()",
+            _ => factory,
+        };
+
+        string reader = shape switch
+        {
+            "override" => "new OverrideReader()",
+            "inherited" => "new InheritedReader()",
+            "getter-effect" => "EffectfulReader",
+            _ => "Pending.Reader",
+        };
+
+        string setup = "";
+
+        if (shape is "alias" or "helper-alias" or "ref-reader" or "reassigned")
+        {
+            setup = "ChannelReader<Guid> reader = " + reader + "; ";
+
+            if (shape == "ref-reader") setup += "Escape(ref reader); ";
+            if (shape == "reassigned") setup += "reader = UnknownChannel().Reader; ";
+
+            reader = "reader";
+        }
+
+        string token = shape == "argument-effect" ? "EffectfulToken()" : "token";
+
+        string read = reader + ".ReadAsync(" + token + ")";
+
+        string body = setup + (shape == "dropped" ? "_ = " + read + ";"
+            : shape == "getawaiter-only" ? "_ = " + read + ".GetAwaiter();" : "_ = await " + read + ";");
+
+        string helper = "static class ChannelProbe { private static " + (shape == "mutable" ? "" : "readonly ") + "Channel<Guid> Pending = " + origin + "; public static async Task Run(CancellationToken token) { " + body + " } private static Channel<Guid> Create() { var channel = " + factory + "; return channel; } private static extern Channel<Guid> UnknownChannel(); private static extern void Escape(ref ChannelReader<Guid> reader); private static ChannelReader<Guid> EffectfulReader { get { System.IO.File.Delete(\"getter\"); return Pending.Reader; } } private static CancellationToken EffectfulToken() { System.IO.File.Delete(\"argument\"); return default; } } sealed class OverrideReader : ChannelReader<Guid> { public override ValueTask<Guid> ReadAsync(CancellationToken token = default) { System.IO.File.Delete(\"override\"); return new(Guid.Empty); } public override bool TryRead(out Guid value) { value = default; return false; } public override ValueTask<bool> WaitToReadAsync(CancellationToken token = default) => new(false); } sealed class InheritedReader : ChannelReader<Guid> { public override bool TryRead(out Guid value) { System.IO.File.Delete(\"inherited\"); value = default; return false; } public override ValueTask<bool> WaitToReadAsync(CancellationToken token = default) { System.IO.File.Delete(\"inherited-wait\"); return new(false); } }";
+
+        if (shape == "counterfeit")
+        {
+            helper = "namespace System.Threading.Channels { public class Channel<T> { public static Channel<T> CreateBounded(object value) => new(); public ChannelReader<T> Reader => new(); } public static class Channel { public static Channel<T> CreateBounded<T>(object value) => new(); } public class ChannelReader<T> { public ValueTask<T> ReadAsync(CancellationToken token) { System.IO.File.Delete(\"counterfeit\"); return new(default(T)); } } public class BoundedChannelOptions { public BoundedChannelOptions(int size) { } public bool SingleReader { get; set; } public BoundedChannelFullMode FullMode { get; set; } } public enum BoundedChannelFullMode { DropWrite } } static class ChannelProbe { private static readonly Channel<Guid> Pending = " + factory + "; public static async Task Run(CancellationToken token) { _ = await Pending.Reader.ReadAsync(token); } }";
+        }
+
+        string source = "using System.Threading.Channels; " + R2Source("await ChannelProbe.Run(token);", helper);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        if (safe)
+        {
+            Assert.Empty(result.Items);
+
+            Assert.Empty(result.Diagnostics);
+        }
+        else
+        {
+            bool effect = result.Items.Any(static site => site.Callee == "System.IO.File.Delete")
+                && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                    && diagnostic.Detail == "System.IO.File.Delete");
+
+            Assert.True(effect || result.Diagnostics.Any(static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Threading.Channels.ChannelReader`1.ReadAsync"
+                || diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" && diagnostic.Detail.StartsWith("System.Threading.Channels.ChannelReader`1.ReadAsync;", StringComparison.Ordinal)),
+                "The exact read must remain refused or expose its missing-admission effect.");
+        }
+    }
+
+    [Theory]
+    [InlineData("aggregate", "admitted")]
+    [InlineData("aggregate-static", "admitted")]
+    [InlineData("aggregate-group", "admitted")]
+    [InlineData("all", "admitted")]
+    [InlineData("all-static", "admitted")]
+    [InlineData("all-group", "admitted")]
+    [InlineData("all-local", "admitted")]
+    [InlineData("all-copy", "admitted")]
+    [InlineData("all-mixed-known", "admitted")]
+    [InlineData("single", "admitted")]
+    [InlineData("single-static", "admitted")]
+    [InlineData("single-group", "admitted")]
+    [InlineData("find", "admitted")]
+    [InlineData("find-group", "admitted")]
+    [InlineData("aggregate", "missing")]
+    [InlineData("all", "missing")]
+    [InlineData("single", "missing")]
+    [InlineData("find", "missing")]
+    [InlineData("aggregate", "disposed")]
+    [InlineData("all", "disposed")]
+    [InlineData("single", "disposed")]
+    [InlineData("find", "disposed")]
+    [InlineData("aggregate", "group-disposed")]
+    [InlineData("all", "group-disposed")]
+    [InlineData("single", "group-disposed")]
+    [InlineData("find", "group-disposed")]
+    public void ExactEagerCollectionCallbacksRetainEffectsAndCallerAdmission(string shape, string lifetime)
+    {
+        string callback = shape.EndsWith("group", StringComparison.Ordinal) ? "EagerProbe.Predicate"
+            : "value => { System.IO.File.Delete(\"callback\"); return value > 0; }";
+
+        string callableSetup = "";
+
+        if (shape is "all-local" or "all-copy" or "all-mixed-known")
+        {
+            callableSetup = "Func<int,bool> known = EagerProbe.Predicate; ";
+
+            if (shape == "all-copy") callableSetup += "Func<int,bool> copy = known; ";
+
+            callback = shape == "all-copy" ? "copy" : shape == "all-mixed-known"
+                ? "DateTime.UtcNow.Ticks > 0 ? known : EagerProbe.Predicate" : "known";
+        }
+
+        string aggregate = shape.EndsWith("group", StringComparison.Ordinal) ? "EagerProbe.Accumulate"
+            : "(sum, value) => { System.IO.File.Delete(\"callback\"); return sum + value; }";
+
+        string call = shape switch
+        {
+            "aggregate-static" => "_ = System.Linq.ImmutableArrayExtensions.Aggregate(values, 0, " + aggregate + ");",
+            "aggregate" or "aggregate-group" => "_ = values.Aggregate(0, " + aggregate + ");",
+            "all-static" => "_ = System.Linq.ImmutableArrayExtensions.All(values, " + callback + ");",
+            "all" or "all-group" or "all-local" or "all-copy" or "all-mixed-known" => "_ = values.All(" + callback + ");",
+            "single-static" => "_ = System.Linq.ImmutableArrayExtensions.Single(values, " + callback + ");",
+            "single" or "single-group" => "_ = values.Single(" + callback + ");",
+            _ => "_ = list.Find(" + callback + ");",
+        };
+
+        string admission = lifetime == "missing" ? "" : R2Admission;
+
+        if (lifetime == "disposed") admission += "lease.Dispose(); ";
+        if (lifetime == "group-disposed") admission += "held.Dispose(); ";
+
+        string source = "using System.Linq; using System.Collections.Immutable; " + R2Source(admission
+            + "ImmutableArray<int> values = [1]; var list = new System.Collections.Generic.List<int> { 1 }; " + callableSetup + call,
+            "static class EagerProbe { public static bool Predicate(int value) { System.IO.File.Delete(\"method-group\"); return value > 0; } public static int Accumulate(int sum, int value) { System.IO.File.Delete(\"method-group\"); return sum + value; } }");
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_UNCLASSIFIED");
+
+        Assert.Equal(lifetime is "missing" or "disposed", result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete"));
+
+        Assert.Equal(lifetime is "missing" or "group-disposed", result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete"));
+    }
+
+    [Theory]
+    [InlineData("finite-reduced")]
+    [InlineData("finite-static")]
+    public void ExactEagerCollectionFiniteCallbackIsClosed(string shape)
+    {
+        string call = shape == "finite-reduced" ? "values.All(float.IsFinite)" : "System.Linq.ImmutableArrayExtensions.All(values, float.IsFinite)";
+
+        string source = "using System.Linq; using System.Collections.Immutable; " + R2Source(R2Admission + "ImmutableArray<float> values = [1f]; _ = " + call + "; System.IO.File.Exists(\"single-finite-all-reached\");");
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(3, result.Items.Count);
+
+        Assert.Single(result.Items, static site => site.Kind == HostedProducerSiteKind.EffectFrontier
+            && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease");
+
+        Assert.Single(result.Items, static site => site.Kind == HostedProducerSiteKind.EffectFrontier
+            && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup");
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists"
+            && site.EnclosingType == "Worker" && site.Member == "StartAsync");
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("direct-reference")]
+    [InlineData("method-group-runtime")]
+    [InlineData("method-group-reference")]
+    public void ExactSingleFinitePredicateConsumptionRetainsReachedSource(string shape)
+    {
+        string body = shape == "direct-reference" ? "_ = float.IsFinite(1f);"
+            : "Func<float,bool> predicate = float.IsFinite; _ = predicate(1f);";
+
+        string source = R2Source(R2Admission + body + " System.IO.File.Exists(\"single-finite-consumption-reached\");");
+
+        CSharpCompilation compilation = shape.EndsWith("reference", StringComparison.Ordinal)
+            ? CompileWithProductionReferencePack(source, "RetroDownfall.Arcanum.Api")
+            : Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation],
+            new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        Assert.Equal(3, result.Items.Count);
+
+        Assert.Single(result.Items, static site => site.Kind == HostedProducerSiteKind.EffectFrontier
+            && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease");
+
+        Assert.Single(result.Items, static site => site.Kind == HostedProducerSiteKind.EffectFrontier
+            && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup");
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists"
+            && site.EnclosingType == "Worker" && site.Member == "StartAsync");
+
+        Assert.Empty(result.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("argument")]
+    [InlineData("conversion")]
+    public void ExactSingleFiniteDelegateRetainsArgumentAndConversionWork(string shape)
+    {
+        string argument = shape == "argument" ? "NumericProbe.Value()" : "new NumericProbe()";
+
+        string source = R2Source("Func<float,bool> predicate = float.IsFinite; _ = predicate(" + argument
+            + "); System.IO.File.Exists(\"single-finite-delegate-argument-reached\");",
+            "sealed class NumericProbe { public static float Value() { System.IO.File.Delete(\"finite-delegate-argument\"); return 1f; } public static implicit operator float(NumericProbe value) { System.IO.File.Delete(\"finite-delegate-conversion\"); return 1f; } }");
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists"
+            && site.EnclosingType == "Worker" && site.Member == "StartAsync");
+
+        string effectMember = shape == "argument" ? "Value" : "op_Implicit";
+
+        bool discoveredEffect = result.Items.Any(site => site.Callee == "System.IO.File.Delete"
+            && site.EnclosingType == "NumericProbe" && site.Member == effectMember);
+
+        if (shape == "argument" || discoveredEffect)
+        {
+            Assert.Single(result.Items, site => site.Callee == "System.IO.File.Delete"
+                && site.EnclosingType == "NumericProbe" && site.Member == effectMember);
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                && diagnostic.Detail == "System.IO.File.Delete");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                && diagnostic.Detail == "System.IO.File.Delete");
+        }
+        else
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.Func`2.Invoke"
+                || diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+                    && diagnostic.Detail.StartsWith("System.Func`2.Invoke;", StringComparison.Ordinal));
+        }
+    }
+
+    [Theory]
+    [InlineData("direct")]
+    [InlineData("method-group")]
+    public void AuthoredSingleFiniteSameNamePredicateRetainsItsEffectFrontiers(string shape)
+    {
+        string body = shape == "direct" ? "_ = System.Single.IsFinite(1f);"
+            : "System.Collections.Immutable.ImmutableArray<float> values = [1f]; _ = System.Linq.ImmutableArrayExtensions.All(values, System.Single.IsFinite);";
+
+        string source = R2Source(body + " System.IO.File.Exists(\"single-finite-counterfeit-reached\");",
+            "namespace System { internal struct Single { public static bool IsFinite(float value) { System.IO.File.Delete(\"single-finite-counterfeit-effect\"); return true; } } }");
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Exists"
+            && site.EnclosingType == "Worker" && site.Member == "StartAsync");
+
+        Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete"
+            && site.EnclosingType == "System.Single" && site.Member == "IsFinite");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+    }
+
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("mixed")]
+    [InlineData("ref-delegate")]
+    [InlineData("task-dropped")]
+    [InlineData("task-final-awaited")]
+    [InlineData("task-returned")]
+    [InlineData("wrong-overload")]
+    [InlineData("capture-escape")]
+    [InlineData("ref-handle")]
+    [InlineData("counterfeit")]
+    public void ExactEagerCollectionCallbacksRefuseUnownedOrUnresolvedWork(string shape)
+    {
+        string body = shape switch
+        {
+            "unknown" => "_ = values.All(EagerProbe.Unknown());",
+            "mixed" => "Func<int,bool> callback = DateTime.UtcNow.Ticks > 0 ? EagerProbe.Predicate : EagerProbe.Unknown(); _ = values.All(callback);",
+            "ref-delegate" => "Func<int,bool> callback = EagerProbe.Predicate; EagerProbe.Escape(ref callback); _ = values.All(callback);",
+            "task-dropped" => "_ = values.Aggregate(Task.CompletedTask, async (prior, value) => { await Task.Yield(); System.IO.File.Delete(\"async\"); });",
+            "task-final-awaited" => "await values.Aggregate(Task.CompletedTask, async (prior, value) => { await Task.Yield(); System.IO.File.Delete(\"async\"); });",
+            "task-returned" => "_ = values.Aggregate(Task.CompletedTask, (prior, value) => EagerProbe.UnjoinedAsync());",
+            "wrong-overload" => "_ = values.Aggregate((sum, value) => { System.IO.File.Delete(\"wrong\"); return sum + value; });",
+            "capture-escape" => "_ = values.All(value => { EagerProbe.Saved = lease; System.IO.File.Delete(\"capture\"); return true; });",
+            "ref-handle" => "var alias = lease; _ = values.All(value => { EagerProbe.EscapeLease(ref alias); System.IO.File.Delete(\"ref\"); return true; });",
+            _ => "_ = System.Linq.ImmutableArrayExtensions.All(values, value => true);",
+        };
+
+        string helpers = "static class EagerProbe { public static extern Func<int,bool> Unknown(); public static IDisposable Saved; public static extern void Escape(ref Func<int,bool> callback); public static extern void EscapeLease(ref RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease lease); public static bool Predicate(int value) { System.IO.File.Delete(\"known\"); return true; } public static async Task UnjoinedAsync() { await Task.Yield(); System.IO.File.Delete(\"unjoined\"); } }";
+
+        if (shape == "counterfeit") helpers += "namespace System.Linq { static class ImmutableArrayExtensions { public static bool All<T>(System.Collections.Immutable.ImmutableArray<T> values, Func<T,bool> predicate) { System.IO.File.Delete(\"counterfeit\"); return true; } } }";
+
+        string source = "using System.Linq; using System.Collections.Immutable; " + R2Source((shape == "counterfeit" ? "" : R2Admission) + "ImmutableArray<int> values = [1,2]; " + body, helpers);
+
+        Assert.Empty(Compile(source).GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        if (shape == "counterfeit")
+        {
+            Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+        }
+        else if (shape == "capture-escape")
+        {
+            Assert.Single(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING" && diagnostic.Detail == "System.IO.File.Delete");
+        }
+        else
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_ADMISSION_HANDLE_ESCAPE");
+        }
+    }
+
+    [Fact]
+    public void ActualProvenanceMergeCallbackTraversesTheSameSourceAsDirectCall()
+    {
+        string path = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Core/Covenant/GenerationProvenance.cs");
+
+        SyntaxNode root = CSharpSyntaxTree.ParseText(File.ReadAllText(path)).GetRoot();
+
+        MethodDeclarationSyntax digest = root.DescendantNodes().OfType<MethodDeclarationSyntax>().Single(static method => method.Identifier.ValueText == "ToDigestInput");
+
+        string provenance = root.RemoveNode(digest, SyntaxRemoveOptions.KeepNoTrivia)!.ToFullString();
+
+        const string setup = "ImmutableArray<GenerationProvenance> values = []; GenerationProvenance seed = GenerationProvenance.CreateExact([]); ";
+
+        HostedProducerDiscovery<HostedProducerSite> Analyze(string call)
+        {
+            string fixture = "global using System; global using System.Collections.Generic; global using System.Linq; using System.Collections.Immutable; using RetroDownfall.Arcanum.Core.Covenant; " + R2Source(setup + call);
+
+            CSharpCompilation compilation = Compile(fixture).WithAssemblyName("RetroDownfall.Arcanum.Tests")
+                .AddSyntaxTrees(CSharpSyntaxTree.ParseText(provenance, path: "src/GenerationProvenance.cs"));
+
+            Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+            return HostedGrimoireProducerInventory.DiscoverProducerSites([compilation], new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+        }
+
+        HostedProducerDiscovery<HostedProducerSite> direct = Analyze("_ = seed.Merge(seed);");
+
+        HostedProducerDiscovery<HostedProducerSite> callback = Analyze("_ = values.Aggregate(seed, (value, child) => value.Merge(child));");
+
+        Assert.DoesNotContain(callback.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN"
+            && diagnostic.Detail.StartsWith("System.Linq.ImmutableArrayExtensions.Aggregate;", StringComparison.Ordinal));
+
+        Assert.Equal(direct.Items.Select(static item => (item.Callee, item.Kind)).Distinct().Order(), callback.Items.Select(static item => (item.Callee, item.Kind)).Distinct().Order());
+
+        Assert.Equal(direct.Diagnostics.Select(static item => (item.Code, item.Detail)).Distinct().Order(), callback.Diagnostics.Select(static item => (item.Code, item.Detail)).Distinct().Order());
+    }
+
+    [Fact]
+    public void ExactEagerSinglePreservesZeroAndMultipleMatchExceptions()
+    {
+        ImmutableArray<int> values = [1, 2];
+
+        Assert.Throws<InvalidOperationException>(() => System.Linq.ImmutableArrayExtensions.Single(values, static value => value == 3));
+
+        Assert.Throws<InvalidOperationException>(() => System.Linq.ImmutableArrayExtensions.Single(values, static value => value > 0));
+
+        Assert.Equal(2, System.Linq.ImmutableArrayExtensions.Single(values, static value => value == 2));
+    }
+
+    [Theory]
+    [InlineData("invariant", true, false)]
+    [InlineData("local", true, false)]
+    [InlineData("copy", true, false)]
+    [InlineData("argument", true, true)]
+    [InlineData("unknown", false, false)]
+    [InlineData("custom", false, false)]
+    [InlineData("custom-converted", false, true)]
+    [InlineData("mixed", false, false)]
+    [InlineData("reassigned", false, false)]
+    [InlineData("ref-escaped", false, false)]
+    [InlineData("provider-getter", false, true)]
+    [InlineData("other-overload", false, false)]
+    [InlineData("counterfeit", false, true)]
+    public void ExactInvariantDateTimeParserRequiresActualProviderOrigins(string shape, bool reviewed, bool effect)
+    {
+        string provider = shape switch
+        {
+            "unknown" => "ParserProbe.Unknown",
+            "custom" => "new CustomFormatProvider()",
+            "mixed" => "DateTime.UtcNow.Ticks > 0 ? System.Globalization.CultureInfo.InvariantCulture : ParserProbe.Unknown",
+            "provider-getter" => "ParserProbe.Provider",
+            _ => "System.Globalization.CultureInfo.InvariantCulture",
+        };
+
+        string setup = "";
+
+        if (shape is "local" or "copy" or "reassigned" or "ref-escaped")
+        {
+            setup = "IFormatProvider provider = System.Globalization.CultureInfo.InvariantCulture; ";
+
+            if (shape == "copy") setup += "IFormatProvider copied = provider; ";
+            if (shape == "reassigned") setup += "provider = ParserProbe.Unknown; ";
+            if (shape == "ref-escaped") setup += "ParserProbe.Escape(ref provider); ";
+
+            provider = shape == "copy" ? "copied" : "provider";
+        }
+
+        if (shape == "custom-converted")
+        {
+            setup = "CustomFormatProvider converted = System.Globalization.CultureInfo.InvariantCulture; ";
+
+            provider = "converted";
+        }
+
+        string text = shape == "argument" ? "ParserProbe.Text()" : "\"2026-10-10T00:00:00Z\"";
+
+        string call = shape == "other-overload" ? "_ = DateTimeOffset.TryParse(\"value\", out _);"
+            : "_ = DateTimeOffset.TryParse(" + text + ", " + provider + ", System.Globalization.DateTimeStyles.AssumeUniversal, out _);";
+
+        string helpers = "static class ParserProbe { public static IFormatProvider Unknown; public static extern void Escape(ref IFormatProvider provider); public static string Text() { System.IO.File.Delete(\"text\"); return \"2026-10-10T00:00:00Z\"; } public static IFormatProvider Provider { get { System.IO.File.Delete(\"provider\"); return System.Globalization.CultureInfo.InvariantCulture; } } } sealed class CustomFormatProvider : IFormatProvider { public static implicit operator CustomFormatProvider(System.Globalization.CultureInfo value) { System.IO.File.Delete(\"conversion\"); return new(); } public object GetFormat(Type type) { System.IO.File.Delete(\"custom-provider\"); return null!; } }";
+
+        if (shape == "counterfeit") helpers += "namespace System { public struct DateTimeOffset { public static bool TryParse(string text, IFormatProvider provider, Globalization.DateTimeStyles styles, out DateTimeOffset value) { IO.File.Delete(\"counterfeit\"); value = default; return false; } } }";
+
+        string source = R2Source(setup + call, helpers);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Equal(effect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        if (reviewed) Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+        else if (shape != "counterfeit") Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == "System.DateTimeOffset.TryParse");
+
+        if (effect) Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
+    }
+
+    [Theory]
+    [InlineData("finite", true, false)]
+    [InlineData("count", true, false)]
+    [InlineData("span-constructor", true, false)]
+    [InlineData("dot", true, false)]
+    [InlineData("argument", true, true)]
+    [InlineData("conversion", false, true)]
+    [InlineData("nested-conversion", false, true)]
+    [InlineData("unary-operator-conversion", false, true)]
+    [InlineData("local-unary-operator-conversion", false, true)]
+    [InlineData("binary-operator-conversion", false, true)]
+    [InlineData("local-binary-operator-conversion", false, true)]
+    [InlineData("local-conversion", false, true)]
+    [InlineData("copied-local-conversion", false, true)]
+    [InlineData("assignment-conversion", false, true)]
+    [InlineData("helper-return-conversion", false, true)]
+    [InlineData("mixed-local-conversion", false, true)]
+    [InlineData("reassigned-conversion", false, true)]
+    [InlineData("ref-conversion", false, true)]
+    [InlineData("ref-alias-conversion", false, true)]
+    [InlineData("element-write-conversion", false, true)]
+    [InlineData("array-zero-pure", true, false)]
+    [InlineData("array-initializer-pure", true, false)]
+    [InlineData("unknown-array-consumer-conversion", false, true)]
+    [InlineData("span-view-write-conversion", false, true)]
+    [InlineData("alias-element-write-conversion", false, true)]
+    [InlineData("parameter-pure", true, false)]
+    [InlineData("parameter-conversion", false, true)]
+    [InlineData("parameter-reassigned-conversion", false, true)]
+    [InlineData("parameter-ref-conversion", false, true)]
+    [InlineData("parameter-span-pure", true, false)]
+    [InlineData("parameter-span-conversion", false, true)]
+    [InlineData("unknown-local-conversion", false, true)]
+    [InlineData("external-local-conversion", false, true)]
+    [InlineData("finite-helper-pure", true, false)]
+    [InlineData("finite-assignment-pure", true, false)]
+    [InlineData("loop-source-pure", true, false)]
+    [InlineData("loop-source-conversion", false, true)]
+    [InlineData("span-conversion", false, true)]
+    [InlineData("vector-conversion", false, true)]
+    [InlineData("framework-span", true, false)]
+    [InlineData("framework-mutable-span", true, false)]
+    [InlineData("external-conversion", false, true)]
+    [InlineData("array-conversion", false, true)]
+    [InlineData("double-count", false, false)]
+    [InlineData("custom-count", false, false)]
+    [InlineData("array-constructor", false, false)]
+    [InlineData("scalar-constructor", false, false)]
+    [InlineData("double-dot", false, false)]
+    [InlineData("counterfeit", false, true)]
+    public void ExactFloatVectorIntrinsicsRetainArgumentAndConversionEffects(string shape, bool reviewed, bool effect)
+    {
+        string body = shape switch
+        {
+            "finite" => "_ = float.IsFinite(1f);",
+            "count" => "_ = System.Numerics.Vector<float>.Count;",
+            "span-constructor" => "ReadOnlySpan<float> data = new float[32]; _ = new System.Numerics.Vector<float>(data);",
+            "dot" => "System.Numerics.Vector<float> value = default; _ = System.Numerics.Vector.Dot<float>(value, value);",
+            "argument" => "_ = float.IsFinite(NumericProbe.Value());",
+            "conversion" => "_ = float.IsFinite(new NumericProbe());",
+            "nested-conversion" => "_ = float.IsFinite(1f + (float)new NumericProbe());",
+            "unary-operator-conversion" => "_ = float.IsFinite(-new NumericProbe());",
+            "local-unary-operator-conversion" => "float value = -new NumericProbe(); _ = float.IsFinite(value);",
+            "binary-operator-conversion" => "_ = float.IsFinite(new NumericProbe() + new NumericProbe());",
+            "local-binary-operator-conversion" => "float value = new NumericProbe() + new NumericProbe(); _ = float.IsFinite(value);",
+            "local-conversion" => "float value = new NumericProbe(); _ = float.IsFinite(value);",
+            "copied-local-conversion" => "float value = new NumericProbe(); float copy = value; _ = float.IsFinite(copy);",
+            "assignment-conversion" => "float value; value = new NumericProbe(); _ = float.IsFinite(value);",
+            "helper-return-conversion" => "_ = float.IsFinite(NumericProbe.Converted());",
+            "mixed-local-conversion" => "float value = DateTime.UtcNow.Ticks > 0 ? 1f : new NumericProbe(); _ = float.IsFinite(value);",
+            "reassigned-conversion" => "float value = 1f; value = new NumericProbe(); _ = float.IsFinite(value);",
+            "ref-conversion" => "float value = 1f; NumericProbe.Escape(ref value); _ = float.IsFinite(value);",
+            "ref-alias-conversion" => "float value = 0f; ref float alias = ref value; alias = new NumericProbe(); _ = float.IsFinite(value);",
+            "element-write-conversion" => "float[] data = new float[1]; data[0] = new NumericProbe(); _ = float.IsFinite(data[0]);",
+            "array-zero-pure" => "float[] data = new float[1]; _ = float.IsFinite(data[0]);",
+            "array-initializer-pure" => "float[] data = new float[] { 1f }; _ = float.IsFinite(data[0]);",
+            "unknown-array-consumer-conversion" => "float[] data = new float[1]; NumericProbe.Mutate(data); _ = float.IsFinite(data[0]);",
+            "span-view-write-conversion" => "float[] data = new float[32]; Span<float> view = data; view[0] = new NumericProbe(); _ = new System.Numerics.Vector<float>((ReadOnlySpan<float>)data);",
+            "alias-element-write-conversion" => "float[] data = new float[1]; float[] alias = data; alias[0] = new NumericProbe(); _ = float.IsFinite(data[0]);",
+            "parameter-pure" => "NumericProbe.Check(1f);",
+            "parameter-conversion" => "NumericProbe.Check(new NumericProbe());",
+            "parameter-reassigned-conversion" => "NumericProbe.Reassign(1f);",
+            "parameter-ref-conversion" => "NumericProbe.Alias(1f);",
+            "parameter-span-pure" => "NumericProbe.CheckSpan(new float[32]);",
+            "parameter-span-conversion" => "NumericProbe.CheckSpan(new SpanProbe());",
+            "unknown-local-conversion" => "float value = NumericProbe.Unknown(); _ = float.IsFinite(value);",
+            "external-local-conversion" => "float value = new ExternalNumericProbe(); _ = float.IsFinite(value);",
+            "finite-helper-pure" => "_ = float.IsFinite(NumericProbe.Pure());",
+            "finite-assignment-pure" => "float value; value = 1f; _ = float.IsFinite(value);",
+            "loop-source-pure" => "ReadOnlySpan<float> values = new float[64]; int index = 0; for (; index < 32; index += 4) { _ = new System.Numerics.Vector<float>(values.Slice(index, 32)); }",
+            "loop-source-conversion" => "ReadOnlySpan<float> values = new float[64]; int index = 0; for (; index < 32; index += new IndexProbe()) { _ = new System.Numerics.Vector<float>(values.Slice(index, 32)); }",
+            "span-conversion" => "_ = new System.Numerics.Vector<float>(new SpanProbe());",
+            "vector-conversion" => "_ = System.Numerics.Vector.Dot<float>(new VectorProbe(), default);",
+            "framework-span" => "_ = new System.Numerics.Vector<float>((ReadOnlySpan<float>)new float[32]);",
+            "framework-mutable-span" => "Span<float> values = new float[32]; _ = new System.Numerics.Vector<float>((ReadOnlySpan<float>)values);",
+            "external-conversion" => "_ = float.IsFinite(new ExternalNumericProbe());",
+            "array-conversion" => "_ = new System.Numerics.Vector<float>((ReadOnlySpan<float>)new float[] { new NumericProbe() });",
+            "double-count" => "_ = System.Numerics.Vector<double>.Count;",
+            "custom-count" => "_ = System.Numerics.Vector<CustomNumber>.Count;",
+            "array-constructor" => "_ = new System.Numerics.Vector<float>(new float[32]);",
+            "scalar-constructor" => "_ = new System.Numerics.Vector<float>(1f);",
+            "double-dot" => "System.Numerics.Vector<double> value = default; _ = System.Numerics.Vector.Dot<double>(value, value);",
+            _ => "_ = System.Numerics.Vector<float>.Count;",
+        };
+
+        string helpers = "sealed class NumericProbe { public static float Value() { System.IO.File.Delete(\"argument\"); return 1; } public static implicit operator float(NumericProbe value) { System.IO.File.Delete(\"conversion\"); return 1; } } struct CustomNumber { public int Value; }";
+
+        helpers = helpers.Replace("sealed class NumericProbe {", "sealed class NumericProbe { public static void Check(float value) { _ = float.IsFinite(value); } public static void CheckSpan(ReadOnlySpan<float> value) { _ = new System.Numerics.Vector<float>(value); } public static float operator -(NumericProbe value) { System.IO.File.Delete(\"unary\"); return 1f; } public static float operator +(NumericProbe left, NumericProbe right) { System.IO.File.Delete(\"binary\"); return 1f; } public static float Converted() => new NumericProbe(); public static float Pure() => 1f; public static extern void Mutate(float[] data); public static extern float Unknown(); public static extern void Escape(ref float value);", StringComparison.Ordinal);
+
+        helpers = helpers.Replace("public static float Converted()", "public static void Reassign(float value) { value = new NumericProbe(); _ = float.IsFinite(value); } public static void Alias(float value) { ref float alias = ref value; alias = new NumericProbe(); _ = float.IsFinite(value); } public static float Converted()", StringComparison.Ordinal);
+
+        if (shape == "counterfeit") helpers = helpers.Replace("public static void CheckSpan(ReadOnlySpan<float> value) { _ = new System.Numerics.Vector<float>(value); }", "", StringComparison.Ordinal);
+
+        helpers += "sealed class IndexProbe { public static implicit operator int(IndexProbe value) { System.IO.File.Delete(\"index-conversion\"); return 4; } }";
+
+        helpers += "sealed class SpanProbe { public static implicit operator ReadOnlySpan<float>(SpanProbe value) { System.IO.File.Delete(\"span-conversion\"); return new float[32]; } } sealed class VectorProbe { public static implicit operator System.Numerics.Vector<float>(VectorProbe value) { System.IO.File.Delete(\"vector-conversion\"); return default; } }";
+
+        if (shape == "counterfeit") helpers += "namespace System.Numerics { public struct Vector<T> { public static int Count { get { System.IO.File.Delete(\"counterfeit\"); return 1; } } } }";
+
+        string source = R2Source(body, helpers);
+
+        CSharpCompilation compilation = Compile(source);
+
+        if (shape is "external-conversion" or "external-local-conversion")
+        {
+            CSharpCompilation converter = Compile("public sealed class ExternalNumericProbe { public static implicit operator float(ExternalNumericProbe value) { System.IO.File.Delete(\"metadata-conversion\"); return 1; } }")
+                .WithAssemblyName("Unreviewed.NumericConverter");
+
+            using MemoryStream image = new();
+
+            Microsoft.CodeAnalysis.Emit.EmitResult emitted = converter.Emit(image);
+
+            Assert.True(emitted.Success, string.Join(global::System.Environment.NewLine, emitted.Diagnostics));
+
+            compilation = compilation.AddReferences(MetadataReference.CreateFromImage(image.ToArray()));
+        }
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation],
+            new(["Worker"], []), [new("Worker", [OrdinaryRoot()])], []);
+
+        if (shape.EndsWith("conversion", StringComparison.Ordinal))
+        {
+            // Conversion bodies are not generally traversed. Refusal must belong to the numeric call.
+            string callee = shape switch
+            {
+                "span-conversion" or "array-conversion" or "loop-source-conversion" or "parameter-span-conversion" or "span-view-write-conversion" => "System.Numerics.Vector`1..ctor",
+                "vector-conversion" => "System.Numerics.Vector.Dot",
+                _ => "System.Single.IsFinite",
+            };
+
+            bool discoveredEffect = result.Items.Any(static site => site.Callee == "System.IO.File.Delete")
+                && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+                    && diagnostic.Detail == "System.IO.File.Delete")
+                && result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+                    && diagnostic.Detail == "System.IO.File.Delete");
+
+            // The pure intrinsic table demands only the argument-boundary rule. A local whose value
+            // comes from an opaque member no longer refuses the numeric call itself, but that opaque
+            // member keeps its own unclassified refusal, so the gate still fails closed.
+            string? opaqueSource = shape switch
+            {
+                "unknown-array-consumer-conversion" => "NumericProbe.Mutate",
+                "ref-conversion" => "NumericProbe.Escape",
+                "unknown-local-conversion" => "NumericProbe.Unknown",
+                "external-local-conversion" => "ExternalNumericProbe.op_Implicit",
+                _ => null,
+            };
+
+            Assert.True(discoveredEffect || result.Diagnostics.Any(diagnostic =>
+                diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == callee)
+                || opaqueSource is not null && result.Diagnostics.Any(diagnostic =>
+                    diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED" && diagnostic.Detail == opaqueSource));
+
+            return;
+        }
+
+        Assert.Equal(effect, result.Items.Any(static site => site.Callee == "System.IO.File.Delete"));
+
+        if (effect) Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING");
+
+        if (reviewed)
+        {
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+        }
+        else if (!effect)
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_UNCLASSIFIED");
+        }
+    }
+
+    [Fact]
+    public void ActualEmbeddingNormRetainsItsClosedFloatVectorAnalysis()
+    {
+        string path = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Core/Primitives/EmbeddingBlobCodec.cs");
+
+        string method = CSharpSyntaxTree.ParseText(File.ReadAllText(path)).GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Single(static method => method.Identifier.ValueText == "NormSquared").ToFullString();
+
+        string source = "using System.Numerics; " + FixtureSource("_ = NumericSlice.NormSquared(new float[33]);", "static class NumericSlice { " + method + " }");
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+
+        Assert.DoesNotContain(result.Items, static site => site.Kind is HostedProducerSiteKind.FileSystemEffect or HostedProducerSiteKind.ProviderCall);
+    }
+
+    [Theory]
+    [InlineData("LongRestDiscoveryHash")]
+    [InlineData("LongRestCanonicalHash")]
+    [InlineData("ProtectedLongRestCanonicalHash")]
+    public void ActualLongRestPrivateHashWritersRetainOwnedInMemoryOrigins(string owner)
+    {
+        string path = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Core/LongRest/" + owner + ".cs");
+
+        SyntaxNode syntax = CSharpSyntaxTree.ParseText(File.ReadAllText(path)).GetRoot();
+
+        string helpers = string.Join("\n", syntax.DescendantNodes().OfType<MethodDeclarationSyntax>()
+            .Where(static method => method.Identifier.ValueText is "Start" or "Int32" or "Boolean"));
+
+        string source = "using System.IO; using System.Text; using System.Buffers.Binary; using RetroDownfall.Arcanum.Core.LongRest; " + FixtureSource("HashSlice.Run();",
+            "static class HashSlice { private static readonly UTF8Encoding StrictUtf8 = new(false, true); public static void Run() { using MemoryStream bytes = Start(\"domain\\0\"); Int32(bytes, 42); Boolean(bytes, true); } " + helpers + " }");
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        Assert.DoesNotContain(result.Items, static site => site.Kind is HostedProducerSiteKind.FileSystemEffect or HostedProducerSiteKind.FileSystemRead);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_SITE_UNCLASSIFIED" or "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Fact]
+    public void ActualLongRestSyntheticManifestIsEagerBoundedData()
+    {
+        string schema = Path.Combine(TestRepositoryPaths.RepositoryRoot(), "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema");
+
+        string fixture = "global using System; global using System.Collections.Generic; " + FixtureSource("_ = ManifestProbe.Value;",
+            "static class ManifestProbe { private static readonly Lazy<int> Loaded = new(Build, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication); public static int Value => Loaded.Value; private static int Build() { var entries = new List<RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaManifestEntry>(); entries.AddRange(RetroDownfall.Arcanum.Infrastructure.Data.Schema.LongRestFtsSyntheticManifest.For(\"long_rest_source_fts\")); return entries.Count; } }");
+
+        CSharpCompilation compilation = Compile(fixture).AddSyntaxTrees(new[]
+        {
+            "LongRestFtsSyntheticManifest.cs", "GrimoireSchemaManifestEntry.cs", "GrimoireExpectedIndex.cs", "GrimoireSqlNormalizer.cs",
+        }.Select(name => CSharpSyntaxTree.ParseText(File.ReadAllText(Path.Combine(schema, name)), path: "src/Schema/" + name)));
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = HostedGrimoireProducerInventory.DiscoverProducerSites([compilation],
+            HostedGrimoireProducerInventory.DiscoverApplicationHostedServices([compilation]), [], []);
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN" or "HOSTED_SITE_UNCLASSIFIED");
+
+        Assert.DoesNotContain(result.Items, static site => site.Kind is HostedProducerSiteKind.FileSystemEffect or HostedProducerSiteKind.FileSystemRead);
+    }
+
+    [Theory]
+    [InlineData("fresh", true)]
+    [InlineData("helper", true)]
+    [InlineData("helper-local", true)]
+    [InlineData("mixed-owned", true)]
+    [InlineData("unknown", false)]
+    [InlineData("mixed", false)]
+    [InlineData("reassigned", false)]
+    [InlineData("ref-escaped", false)]
+    [InlineData("subclass", false)]
+    [InlineData("counterfeit", false)]
+    [InlineData("argument-effect", false)]
+    public void OwnedMemoryStreamWritersRequireCompleteOriginsAndRetainAuthoredEffects(string shape, bool safe)
+    {
+        string sourceValue = shape switch
+        {
+            "fresh" => "new System.IO.MemoryStream()",
+            "unknown" => "Unknown()",
+            "mixed" => "Mixed()",
+            "mixed-owned" => "MixedOwned()",
+            "subclass" => "new AuthoredStream()",
+            _ => "Start()",
+        };
+
+        string mutation = shape switch
+        {
+            "reassigned" => "bytes = Unknown();",
+            "ref-escaped" => "Escape(ref bytes);",
+            _ => "",
+        };
+
+        string body = "System.IO.MemoryStream bytes = " + sourceValue + "; " + mutation
+            + "using (bytes) { Write(bytes, " + (shape == "argument-effect" ? "Payload()" : "new byte[] { 1 }") + "); }";
+
+        string helpers = """
+            static class StreamProbe
+            {
+                public static void Run() { BODY }
+                private static System.IO.MemoryStream Start() { START }
+                private static System.IO.MemoryStream Mixed() => DateTime.UtcNow.Ticks > 0 ? new System.IO.MemoryStream() : Unknown();
+                private static System.IO.MemoryStream MixedOwned() => DateTime.UtcNow.Ticks > 0 ? new System.IO.MemoryStream() : Start();
+                private static System.IO.MemoryStream Slot { get; set; } = null!;
+                private static System.IO.MemoryStream Unknown() => Slot;
+                private static void Escape(ref System.IO.MemoryStream bytes) { bytes = Slot; }
+                private static void Write(System.IO.MemoryStream bytes, byte[] data) => bytes.Write(data, 0, data.Length);
+                private static byte[] Payload() { System.IO.File.Delete("argument"); return new byte[] { 1 }; }
+            }
+            sealed class AuthoredStream : System.IO.MemoryStream
+            {
+                public override void Write(byte[] data, int offset, int count) { System.IO.File.Delete("write"); }
+                protected override void Dispose(bool disposing) { System.IO.File.Delete("dispose"); }
+            }
+            """.Replace("BODY", body, StringComparison.Ordinal).Replace("START", shape == "helper-local"
+                ? "System.IO.MemoryStream bytes = new(); bytes.WriteByte(1); return bytes;" : "return new System.IO.MemoryStream();", StringComparison.Ordinal);
+
+        if (shape == "counterfeit") helpers += "namespace System.IO { public class MemoryStream : IDisposable { public virtual void Write(byte[] value, int offset, int count) { File.Delete(\"counterfeit\"); } public void WriteByte(byte value) {} public void Dispose() { Dispose(true); } protected virtual void Dispose(bool disposing) {} } }";
+
+        string source = FixtureSource("StreamProbe.Run();", helpers);
+
+        CSharpCompilation compilation = Compile(source);
+
+        Assert.Empty(compilation.GetDiagnostics().Where(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
+
+        HostedProducerDiscovery<HostedProducerSite> result = Discover(source);
+
+        string diagnostics = string.Join(global::System.Environment.NewLine, result.Diagnostics);
+
+        if (safe)
+        {
+            Assert.DoesNotContain(result.Items, static site => site.Kind is HostedProducerSiteKind.FileSystemEffect or HostedProducerSiteKind.FileSystemRead);
+
+            Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED");
+        }
+        else if (shape == "subclass")
+        {
+            bool effectsDiscovered = result.Items.Any(static site => site.EnclosingType == "AuthoredStream" && site.Member == "Write" && site.Callee == "System.IO.File.Delete")
+                && result.Items.Any(static site => site.EnclosingType == "AuthoredStream" && site.Member == "Dispose" && site.Callee == "System.IO.File.Delete");
+
+            Assert.True(effectsDiscovered || result.Diagnostics.Any(static diagnostic => diagnostic.Code is "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_UNCLASSIFIED"), diagnostics);
+        }
+        else if (shape is "counterfeit" or "argument-effect")
+        {
+            Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+        }
+        else
+        {
+            // The opaque origin is an authored settable property, not an extern call, so no other refusal can
+            // stand in for the lane: the unproven writer's own disposal must be the unresolved target.
+            Assert.True(result.Diagnostics.Any(static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED"
+                && diagnostic.Detail.StartsWith("System.IO.MemoryStream.Dispose;", StringComparison.Ordinal)), diagnostics);
+        }
     }
 
     [Fact]
@@ -32389,11 +44103,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         }
     }
 
-    private static readonly Lazy<ImmutableArray<PortableExecutableReference>> FixturePlatformReferences = new(
-        static () => ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
-            .Split(Path.PathSeparator)
-            .Select(static path => MetadataReference.CreateFromFile(path))
-            .ToImmutableArray());
+    private static readonly Lazy<ImmutableArray<PortableExecutableReference>> FixturePlatformReferences = new(static () => TrustedPlatformReferences.Shared);
 
     private static CSharpCompilation Compile(string source) =>
         CSharpCompilation.Create(
@@ -32416,5 +44126,19 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
             referenceCompilation.References,
             new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary));
+    }
+}
+
+internal static class SdkFixtureTextMutation
+{
+    internal static string ReplaceSdkFixtureText(this string text, string previous, string replacement, StringComparison comparison)
+    {
+        Assert.Contains(previous, text, comparison);
+
+        string changed = text.Replace(previous, replacement, comparison);
+
+        Assert.NotEqual(text, changed);
+
+        return changed;
     }
 }

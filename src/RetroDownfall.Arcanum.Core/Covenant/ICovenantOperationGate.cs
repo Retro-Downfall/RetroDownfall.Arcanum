@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public interface ICovenantOperationGate
 {
-
     ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
         CancellationToken cancellationToken);
 
@@ -34,6 +33,10 @@ public interface ICovenantOperationGate
     ValueTask<Result<CovenantTurnLease>> AcquireTurnAsync(
         CanonicalCampaignContext campaign,
         CancellationToken cancellationToken);
+
+    /// <summary>Validates the exact still-live borrowed wrapper issued by this gate.</summary>
+    ValueTask<Result> ValidateTurnLeaseAsync(CovenantTurnLease lease, CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Result.Failure(new Error(ErrorCodes.Covenant.ForbiddenAuthority, "This gate cannot verify borrowed turn ownership.")));
 
     ValueTask<Result<CovenantMcpLease>> AcquireMcpAsync(
         CovenantOperationScope scope,
@@ -98,5 +101,4 @@ public interface ICovenantOperationGate
     ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken);
-
 }

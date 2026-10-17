@@ -1,0 +1,839 @@
+using System.Globalization;
+using System.Text.Json;
+using RetroDownfall.Arcanum.Core.LongRest;
+
+namespace RetroDownfall.Arcanum.Tests.Packaging;
+
+internal sealed partial class LongRestQualificationRun
+{
+    /// <summary>The first attempt state a paid unit is settled in: every lower one (<c>Prepared</c>, <c>Disclosed</c>, <c>Sent</c>) is still in flight.</summary>
+    private const int AttemptStateSettledLow = (int)LongRestDispatchAttemptState.Accepted;
+
+    private readonly List<string> _findings = [];
+
+    private readonly HashSet<string> _gradedMemories = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Product-level findings the run recorded and kept going past, so that one run reports every scenario's result; the test fails with
+    /// all of them after the last scenario.
+    /// </summary>
+    public IReadOnlyList<string> Findings => _findings;
+
+    /// <summary>What the host's metrics endpoint exposes, by series name only: how many series, and which Arcanum families carry Long Rest or budget names.</summary>
+    private static string DescribeMetrics(IReadOnlyDictionary<string, double> metrics)
+    {
+        string[] names = [.. metrics.Keys.Select(static key => key.Contains('{', StringComparison.Ordinal) ? key[..key.IndexOf('{', StringComparison.Ordinal)] : key).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)];
+
+        string[] relevant = [.. names.Where(static name => name.Contains("long_rest", StringComparison.Ordinal) || name.Contains("budget", StringComparison.Ordinal) || name.Contains("operation", StringComparison.Ordinal))];
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{metrics.Count} series in {names.Length} families; Long Rest, budget or operation families: {(relevant.Length == 0 ? "none" : string.Join(", ", relevant))}");
+    }
+
+    /// <summary>Dumps a few rows of a diagnostic table into the observations, so a surprising figure can be traced to its rows.</summary>
+    private async Task ObserveRowsAsync(string title, string select, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<string[]> rows = await Grimoire.DumpAsync(select, cancellationToken);
+
+            Observe($"{title}: {(rows.Count == 0 ? "no rows" : string.Join(" | ", rows.Select(static row => string.Join(", ", row))))}");
+        }
+        catch (Exception exception) when (exception is Microsoft.Data.Sqlite.SqliteException or InvalidOperationException)
+        {
+            Observe($"{title}: unreadable ({exception.GetType().Name})");
+        }
+    }
+
+    /// <summary>A product-level expectation: when it does not hold, the run records it and goes on, so the later scenarios still report.</summary>
+    private void Check(bool holds, string finding)
+    {
+        if (!holds)
+        {
+            RecordFinding(finding);
+        }
+    }
+
+    private void RecordFinding(string finding)
+    {
+        _findings.Add(finding);
+
+        _log.Info("FINDING " + finding);
+    }
+
+    /// <summary>
+    /// Grades every consolidation the sweeps applied against the corpus's labels. A memory belongs under a survivor when both say the same
+    /// thing (one cluster, or the same text); a memory folded into a survivor of another topic is suppressed from recall for good, so a
+    /// sweep that does that has destroyed data. The decision is the model's, over a pack discovery assembled, so this is where a weak
+    /// model, a loose gate or an all-or-nothing group decision shows. A finding is recorded when more memories were folded into a survivor of
+    /// another topic than <paramref name="allowedWrong"/>.
+    /// </summary>
+    private FoldGrade GradeConsolidations(string scenario, IReadOnlyList<LongRestApiMemory> memories, int allowedWrong = 0)
+    {
+        Dictionary<string, LongRestSeededMemory> seeded = _corpus.ToDictionary(static memory => NormalizeIdentity(memory.Id), StringComparer.Ordinal);
+
+        HashSet<string> duplicateLabels = DuplicateLabels();
+
+        List<string> wrong = [];
+
+        int exact = 0;
+
+        int paraphrase = 0;
+
+        foreach (LongRestApiMemory memory in memories.Where(static memory => memory.ConsolidatedIntoMemoryId is not null))
+        {
+            if (!_gradedMemories.Add(memory.Id)
+                || !seeded.TryGetValue(NormalizeIdentity(memory.Id), out LongRestSeededMemory? source)
+                || !seeded.TryGetValue(NormalizeIdentity(memory.ConsolidatedIntoMemoryId!), out LongRestSeededMemory? survivor)
+                || source.Label == LongRestQualificationCorpus.UnmatchedLabel
+                || survivor.Label == LongRestQualificationCorpus.UnmatchedLabel)
+            {
+                continue;
+            }
+
+            bool sameThing = string.Equals(source.Content, survivor.Content, StringComparison.Ordinal)
+                || (source.Label == survivor.Label && source.Label != LongRestQualificationCorpus.SingleLabel);
+
+            if (!sameThing)
+            {
+                wrong.Add($"\"{source.Content}\" ({source.Label}) into \"{survivor.Content}\" ({survivor.Label})");
+            }
+            else if (duplicateLabels.Contains(source.Label))
+            {
+                exact++;
+            }
+            else
+            {
+                paraphrase++;
+            }
+        }
+
+        FoldGrade grade = new(exact, paraphrase, wrong.Count, PossibleExactFolds(), PossibleParaphraseFolds());
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario} consolidation quality: {exact + paraphrase} memories folded into a survivor that says the same thing ({exact} of {grade.PossibleExact} possible exact-duplicate folds, {paraphrase} of {grade.PossibleParaphrase} possible paraphrase folds), {wrong.Count} folded into a survivor about something else"));
+
+        if (wrong.Count > allowedWrong)
+        {
+            RecordFinding(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{scenario}: Long Rest folded {wrong.Count} memories into survivors of a different topic ({exact + paraphrase} correctly), which suppresses them from recall{(allowedWrong > 0 ? string.Create(CultureInfo.InvariantCulture, $" (the embedding model leaves {allowedWrong} such pairs at or above their anchor's floor)") : string.Empty)}. For example: {string.Join("; ", wrong.Take(5))}."));
+        }
+
+        return grade;
+    }
+
+    /// <summary>The labels whose ordinary memories are all one text: the exact-duplicate groups, which a sweep folds without a model call.</summary>
+    private HashSet<string> DuplicateLabels() =>
+        new(
+            _corpus
+                .Where(static memory => memory.Role == LongRestCorpusRole.Ordinary && memory.Label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel))
+                .GroupBy(static memory => memory.Label, StringComparer.Ordinal)
+                .Where(static group => group.Count() > 1 && group.Select(static memory => memory.Content).Distinct(StringComparer.Ordinal).Count() == 1)
+                .Select(static group => group.Key),
+            StringComparer.Ordinal);
+
+    /// <summary>The folds an exact-duplicate group allows: all of its memories but one.</summary>
+    private int PossibleExactFolds()
+    {
+        HashSet<string> duplicates = DuplicateLabels();
+
+        return _corpus.Count(memory => memory.Role == LongRestCorpusRole.Ordinary && duplicates.Contains(memory.Label)) - duplicates.Count;
+    }
+
+    /// <summary>The folds the other clusters allow: all of the ordinary memories of a cluster but one.</summary>
+    private int PossibleParaphraseFolds()
+    {
+        HashSet<string> duplicates = DuplicateLabels();
+
+        return _corpus
+            .Where(memory => memory.Role == LongRestCorpusRole.Ordinary
+                && memory.Label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel)
+                && !duplicates.Contains(memory.Label))
+            .GroupBy(static memory => memory.Label, StringComparer.Ordinal)
+            .Sum(static group => group.Count() - 1);
+    }
+
+    /// <summary>
+    /// Embedding-Bounded Summary: every accepted summary of a completed generation must fit the byte bound the recipe derives from the
+    /// embedding window, because a longer one is a summary the embedding model could not read whole.
+    /// </summary>
+    private void CheckSummaryBound(string scenario, IReadOnlyList<LongRestNodeRow> nodes)
+    {
+        int bound = LongRestPromptLayout.SummaryBoundUtf8Bytes(_options.EmbeddingWindow);
+
+        IReadOnlyList<(string NodeId, int Bytes)> oversized = LongRestQualificationChecks.OversizedSummaries(nodes, bound);
+
+        Check(
+            oversized.Count == 0,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"{scenario}: {oversized.Count} accepted summaries exceed the {bound}-byte Embedding-Bounded Summary limit of the {_options.EmbeddingWindow}-token embedding window ({string.Join(", ", oversized.Take(5).Select(static node => $"{Short(node.NodeId)} {node.Bytes} bytes"))})."));
+
+        int summaries = nodes.Count(static node => node.Layer > 0 && node.Summary is not null);
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario}: {summaries - oversized.Count} of {summaries} accepted summaries fit the {bound}-byte Embedding-Bounded Summary limit"));
+    }
+
+    /// <summary>The readiness report after a scenario: not Unhealthy, and the Long Rest component present and healthy.</summary>
+    private async Task CheckHealthAsync(string scenario, CancellationToken cancellationToken)
+    {
+        LongRestApiHealth health;
+
+        try
+        {
+            health = await Api.GetHealthAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException or JsonException or HttpRequestException or FormatException)
+        {
+            // An answer the run cannot read is a finding about the host, not a reason to lose the scenarios that follow.
+            RecordFinding($"{scenario}: GET /api/health could not be read ({exception.GetType().Name}: {LongRestQualificationChecks.NoValues(exception.Message)}).");
+
+            return;
+        }
+
+        string? finding = LongRestQualificationChecks.HealthFinding(scenario, health);
+
+        if (finding is not null)
+        {
+            RecordFinding(finding);
+        }
+
+        Observe($"{scenario} health: {health.Status} ({string.Join(", ", health.Components.Select(static component => $"{component.Name} {component.Status}"))})");
+    }
+
+    /// <summary>
+    /// Fetches the receipt each consolidated memory names, through the API an operator would use, and checks that it is that receipt,
+    /// names the memory and its survivor, and carries no memory text.
+    /// </summary>
+    private async Task CheckReceiptsAsync(string scenario, IReadOnlyList<LongRestApiMemory> consolidated, CancellationToken cancellationToken)
+    {
+        string[] corpus = [.. _corpus.Select(static memory => memory.Content)];
+
+        LongRestApiMemory[] named = [.. consolidated
+            .Where(static memory => !string.IsNullOrEmpty(memory.LongRestReceiptId))
+            .GroupBy(static memory => memory.LongRestReceiptId, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => group.First())
+            .Take(10)];
+
+        Check(named.Length > 0, $"{scenario}: no consolidated memory names a receipt to fetch.");
+
+        int problems = 0;
+
+        foreach (LongRestApiMemory memory in named)
+        {
+            LongRestApiReceipt receipt;
+
+            try
+            {
+                receipt = await Api.GetReceiptAsync(memory.LongRestReceiptId!, cancellationToken);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException or JsonException or HttpRequestException or FormatException)
+            {
+                problems++;
+
+                RecordFinding($"{scenario}: the receipt memory {Short(memory.Id)} names could not be fetched through the API ({exception.GetType().Name}: {LongRestQualificationChecks.NoValues(exception.Message)}).");
+
+                continue;
+            }
+
+            foreach (string problem in LongRestQualificationChecks.ReceiptProblems(receipt, memory, corpus))
+            {
+                problems++;
+
+                RecordFinding($"{scenario}: {problem}.");
+            }
+        }
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario}: {named.Length} receipt(s) fetched through GET /api/memory/saga/long-rest/receipts/{{id}}, {problems} problem(s) (each must be the receipt its memory names, name the memory and its survivor, and carry no memory text)"));
+    }
+
+    /// <summary>What reached the provider so far, by kind, for a failure that needs to say what the sweep had done.</summary>
+    private static string DescribeTraffic(IReadOnlyList<LongRestRecordedRequest> traffic) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Embedding)} embeddings, "
+            + $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Summary)} summaries, "
+            + $"{traffic.Count(static request => request.Kind == LongRestProviderRequestKind.Adjudication)} adjudications, "
+            + $"{traffic.Count(static request => request.Kind is not (LongRestProviderRequestKind.Embedding or LongRestProviderRequestKind.Summary or LongRestProviderRequestKind.Adjudication))} other requests");
+
+    /// <summary>How many unordered labelled pairs of different topics were at or above the lower floor of the two when the calibration was taken.</summary>
+    private int _crossPairsAtOrAboveFloor;
+
+    /// <summary>The calibration, once the clean sweep has completed: printed whatever happens afterwards.</summary>
+    public string? CalibrationText { get; private set; }
+
+    public string? CalibrationJson { get; private set; }
+
+    /// <summary>
+    /// The text of a memory the operator excluded must appear in no request the provider received: neither a chat prompt nor an
+    /// embedding input. The check reads the decoded text the provider was shown, so JSON escaping cannot hide a hit.
+    /// </summary>
+    private async Task AssertNeverSentAsync(IReadOnlyList<LongRestRecordedRequest> traffic, LongRestCorpusRole role, CancellationToken cancellationToken)
+    {
+        LongRestSeededMemory memory = _corpus.Single(candidate => candidate.Role == role);
+
+        // The disclosure journal agrees: the memory is no input of any unit and no leaf of any generation.
+        long journaled = await Grimoire.CountJournaledMemoriesAsync([memory.Id], cancellationToken);
+
+        Check(journaled == 0, $"The {role} memory appears {journaled} time(s) in the disclosure journal; a sweep must leave it out of its corpus.");
+
+        foreach (LongRestRecordedRequest request in traffic)
+        {
+            Check(
+                !request.ProviderVisibleText.Contains(memory.Content, StringComparison.OrdinalIgnoreCase),
+                $"The {role} memory's text reached the provider in request #{request.Sequence} ({request.Kind}); it must never be sent.");
+        }
+
+        _log.Info($"The {role} memory's text appears in none of the {traffic.Count} requests the provider received");
+    }
+
+    /// <summary>The fast model serves every Long Rest chat call, the embedding model every embedding, each through its own provider entry's credential.</summary>
+    private void AssertServedBy(IReadOnlyList<LongRestRecordedRequest> traffic, bool requireBothKinds)
+    {
+        LongRestRecordedRequest[] chat = [.. traffic.Where(static request => request.IsLongRestChat)];
+
+        LongRestRecordedRequest[] embeddings = [.. traffic.Where(static request => request.Kind == LongRestProviderRequestKind.Embedding)];
+
+        // A second sweep over what the first one left may need no adjudication at all (what remains has no neighbours), so only the
+        // first sweep must show both kinds; every sweep must show some Long Rest chat call.
+        Assert.NotEmpty(chat);
+
+        if (requireBothKinds)
+        {
+            Check(chat.Any(static request => request.Kind == LongRestProviderRequestKind.Summary), "No Long Rest summary request reached the provider.");
+
+            Check(chat.Any(static request => request.Kind == LongRestProviderRequestKind.Adjudication), "No Long Rest adjudication request reached the provider.");
+        }
+
+        foreach (LongRestRecordedRequest request in chat)
+        {
+            Check(
+                string.Equals(request.Model, _options.ChatModel, StringComparison.Ordinal),
+                $"Long Rest chat request #{request.Sequence} was served by '{request.Model}', not the fast model '{_options.ChatModel}'.");
+
+            Check(
+                request.Credential == LongRestRequestCredential.Chat,
+                $"Long Rest chat request #{request.Sequence} carried the {request.Credential} credential, not the chat entry's.");
+        }
+
+        foreach (LongRestRecordedRequest request in embeddings)
+        {
+            Check(
+                string.Equals(request.Model, _options.EmbeddingModel, StringComparison.Ordinal),
+                $"Embedding request #{request.Sequence} named '{request.Model}', not the embedding model '{_options.EmbeddingModel}'.");
+
+            Check(
+                request.Credential == LongRestRequestCredential.Embedding,
+                $"Embedding request #{request.Sequence} carried the {request.Credential} credential, not the embedding entry's.");
+        }
+
+        Check(
+            !traffic.Any(request => string.Equals(request.Model, _options.DefaultModel, StringComparison.Ordinal)),
+            $"The default model '{_options.DefaultModel}' served a Long Rest call; the fast model must serve them all.");
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"Served by: {chat.Length} Long Rest chat calls ({chat.Count(static request => request.Kind == LongRestProviderRequestKind.Summary)} summary, "
+            + $"{chat.Count(static request => request.Kind == LongRestProviderRequestKind.Adjudication)} adjudication) all on '{_options.ChatModel}' with the chat entry's credential; "
+            + $"{embeddings.Length} embeddings on '{_options.EmbeddingModel}' with the embedding entry's credential; the default model '{_options.DefaultModel}' served none of them"));
+    }
+
+    /// <summary>
+    /// What the real models did with the requests: how many calls of each kind, how long they took, how much they wrote, and how many
+    /// were cut off at the output cap. A reasoning-capable model spends its cap on thought, so this is where a malformed or truncated
+    /// answer shows its cause.
+    /// </summary>
+    private void ObserveModelBehavior(string scenario, IReadOnlyList<LongRestRecordedRequest> traffic)
+    {
+        foreach (LongRestProviderRequestKind kind in new[]
+        {
+            LongRestProviderRequestKind.Summary,
+            LongRestProviderRequestKind.Adjudication,
+            LongRestProviderRequestKind.Embedding,
+        })
+        {
+            LongRestRecordedRequest[] calls = [.. traffic.Where(request => request.Kind == kind && request.CompletedAt is not null)];
+
+            if (calls.Length == 0)
+            {
+                continue;
+            }
+
+            CalibrationDistribution seconds = CalibrationDistribution.Of(
+                [.. calls.Select(static request => (request.CompletedAt!.Value - request.StartedAt).TotalSeconds)]);
+
+            CalibrationDistribution written = CalibrationDistribution.Of(
+                [.. calls.Where(static request => request.CompletionTokens is not null).Select(static request => (double)request.CompletionTokens!.Value)]);
+
+            int cut = calls.Count(static request => string.Equals(request.FinishReason, "length", StringComparison.Ordinal));
+
+            int refused = calls.Count(static request => request.StatusCode is not (>= 200 and < 300));
+
+            Observe(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{scenario} model behavior, {kind}: {calls.Length} calls, {seconds.Median:0.0} s median ({seconds.P90:0.0} s p90, {seconds.Maximum:0.0} s max), "
+                + $"{written.Median:0} completion tokens median ({written.P90:0} p90, {written.Maximum:0} max), {cut} cut off at the output cap, {refused} without a 2xx answer (refused or aborted)"));
+        }
+    }
+
+    /// <summary>
+    /// How well discovery grouped the corpus: each adjudication request lists the memories it compares, and the corpus knows which
+    /// cluster each belongs to, so the packs the sweep paid to adjudicate can be graded by whether they hold one topic or several. A
+    /// request that holds memories of more than one cluster, or an unrelated single beside others, is a finding: the Pairing Gate exists so
+    /// that no pack is ever put to the model that is not a clique of one topic.
+    /// </summary>
+    private void ObservePacks(string scenario, IReadOnlyList<LongRestRecordedRequest> traffic)
+    {
+        Dictionary<string, string> labels = _corpus
+            .GroupBy(static memory => memory.Content, StringComparer.Ordinal)
+            .ToDictionary(static group => group.Key, static group => group.First().Label, StringComparer.Ordinal);
+
+        List<string[]> packs = [];
+
+        foreach (LongRestRecordedRequest request in traffic.Where(static request => request.Kind == LongRestProviderRequestKind.Adjudication))
+        {
+            packs.Add([.. ReadPackContents(request.UserText).Select(content => labels.GetValueOrDefault(content, LongRestQualificationCorpus.UnmatchedLabel))]);
+        }
+
+        if (packs.Count == 0)
+        {
+            return;
+        }
+
+        CalibrationDistribution sizes = CalibrationDistribution.Of([.. packs.Select(static pack => (double)pack.Length)]);
+
+        int mixed = packs.Count(static pack => pack.Where(static label => label is not (LongRestQualificationCorpus.SingleLabel or LongRestQualificationCorpus.UnmatchedLabel)).Distinct(StringComparer.Ordinal).Count() > 1);
+
+        int withUnrelated = packs.Count(static pack => pack.Contains(LongRestQualificationCorpus.SingleLabel, StringComparer.Ordinal) && pack.Length > 1);
+
+        int pure = packs.Count(static pack => pack.Distinct(StringComparer.Ordinal).Count() == 1);
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario} adjudication packs: {packs.Count} requests, {sizes.Median:0} memories median ({sizes.Maximum:0} max); {pure} hold one cluster, {mixed} hold memories of more than one cluster, {withUnrelated} hold an unrelated single beside others"));
+
+        Check(
+            mixed == 0,
+            string.Create(CultureInfo.InvariantCulture, $"{scenario}: {mixed} of {packs.Count} adjudication requests held memories of more than one labelled cluster; every pack must be a clique of one topic."));
+
+        Check(
+            withUnrelated == 0,
+            string.Create(CultureInfo.InvariantCulture, $"{scenario}: {withUnrelated} of {packs.Count} adjudication requests held an unrelated single beside other memories."));
+    }
+
+    /// <summary>
+    /// Whether the models' answers were ones Long Rest accepts: an adjudication is valid when it is an instance of the closed member-verdict
+    /// shape, a summary when it is valid JSON within the recipe's byte bound. The grading is the rule the request's own prompt states, so a
+    /// count of invalid answers says how often the model ignored its instructions. Returns the number of invalid adjudication answers.
+    /// </summary>
+    private int ObserveAnswerQuality(string scenario, IReadOnlyList<LongRestRecordedRequest> traffic)
+    {
+        Dictionary<string, int> adjudications = new(StringComparer.Ordinal);
+
+        Dictionary<string, int> summaries = new(StringComparer.Ordinal);
+
+        int bound = LongRestPromptLayout.SummaryBoundUtf8Bytes(_options.EmbeddingWindow);
+
+        foreach (LongRestRecordedRequest request in traffic.Where(static request => request.IsLongRestChat && request.StatusCode is >= 200 and < 300 && request.Delivered))
+        {
+            Dictionary<string, int> tally = request.Kind == LongRestProviderRequestKind.Adjudication ? adjudications : summaries;
+
+            string verdict = request.Kind == LongRestProviderRequestKind.Adjudication
+                ? GradeAdjudication(request)
+                : GradeSummary(request.ResponseContent, bound);
+
+            tally[verdict] = tally.GetValueOrDefault(verdict) + 1;
+        }
+
+        foreach ((string kind, Dictionary<string, int> tally) in new[] { ("adjudication", adjudications), ("summary", summaries) })
+        {
+            if (tally.Count > 0)
+            {
+                Observe($"{scenario} {kind} answers: {string.Join(", ", tally.OrderBy(static pair => pair.Key, StringComparer.Ordinal).Select(static pair => $"{pair.Key} x{pair.Value}"))}");
+            }
+        }
+
+        return adjudications.Where(static pair => pair.Key.StartsWith("invalid", StringComparison.Ordinal)).Sum(static pair => pair.Value);
+    }
+
+    /// <summary>
+    /// Grades one adjudication answer the way the product reads it. Valid is an object with exactly one property, <c>memories</c>, an array of
+    /// entries with exactly <c>memory</c> (an integer), <c>fact</c> (a string) and <c>sameAs</c> (an array of integers). Among valid answers it
+    /// says how many pairs of the request's memories the model asserted the same fact for, in either direction: every pair (the unit would be
+    /// folded whole), some, or none.
+    /// </summary>
+    internal static string GradeAdjudication(LongRestRecordedRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.ResponseContent is not { } content)
+        {
+            return "invalid: no content";
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(content);
+
+            JsonElement root = document.RootElement;
+
+            if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 1 || !root.TryGetProperty("memories", out JsonElement memories) || memories.ValueKind != JsonValueKind.Array)
+            {
+                return "invalid: not the member-verdict shape";
+            }
+
+            int count = LongRestQualificationProxy.CountMemories(request.UserText);
+
+            int[] listed = new int[count + 1];
+
+            List<(int Memory, List<int> Same)> entries = [];
+
+            foreach (JsonElement entry in memories.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object
+                    || entry.EnumerateObject().Select(static property => property.Name).Order(StringComparer.Ordinal).SequenceEqual(["fact", "memory", "sameAs"]) is false
+                    || entry.GetProperty("memory").ValueKind != JsonValueKind.Number
+                    || !entry.GetProperty("memory").TryGetInt32(out int memory)
+                    || entry.GetProperty("fact").ValueKind != JsonValueKind.String
+                    || entry.GetProperty("sameAs").ValueKind != JsonValueKind.Array)
+                {
+                    return "invalid: not the member-verdict shape";
+                }
+
+                List<int> same = [];
+
+                foreach (JsonElement reference in entry.GetProperty("sameAs").EnumerateArray())
+                {
+                    if (reference.ValueKind != JsonValueKind.Number || !reference.TryGetInt32(out int number))
+                    {
+                        return "invalid: not the member-verdict shape";
+                    }
+
+                    same.Add(number);
+                }
+
+                if (memory >= 1 && memory <= count)
+                {
+                    listed[memory]++;
+                }
+
+                entries.Add((memory, same));
+            }
+
+            HashSet<(int, int)> pairs = [];
+
+            foreach ((int memory, List<int> same) in entries)
+            {
+                if (memory < 1 || memory > count || listed[memory] != 1)
+                {
+                    continue;
+                }
+
+                foreach (int other in same.Where(other => other >= 1 && other <= count && other != memory))
+                {
+                    _ = pairs.Add((Math.Min(memory, other), Math.Max(memory, other)));
+                }
+            }
+
+            int possible = count * (count - 1) / 2;
+
+            return possible == 0 || pairs.Count == 0
+                ? "valid: no pair asserted"
+                : pairs.Count == possible ? "valid: every pair asserted" : "valid: some pairs asserted";
+        }
+        catch (JsonException)
+        {
+            return request.FinishReason == "length" ? "invalid: cut off at the output cap" : "invalid: not JSON";
+        }
+    }
+
+    internal static string GradeSummary(string? content, int boundBytes)
+    {
+        if (content is null)
+        {
+            return "invalid: no content";
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(content);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("summary", out JsonElement summary)
+                || summary.ValueKind != JsonValueKind.String)
+            {
+                return "invalid: no summary";
+            }
+
+            return System.Text.Encoding.UTF8.GetByteCount(summary.GetString() ?? string.Empty) <= boundBytes ? "valid" : "valid but over the byte bound";
+        }
+        catch (JsonException)
+        {
+            return "invalid: not JSON";
+        }
+    }
+
+    /// <summary>
+    /// The text of each memory an adjudication request lists, in the order it lists them. A request names no identity (a memory is a place and
+    /// its text), so the corpus label of a memory is found by its text.
+    /// </summary>
+    internal static IEnumerable<string> ReadPackContents(string userText)
+    {
+        ArgumentNullException.ThrowIfNull(userText);
+
+        string[] lines = userText.Split('\n');
+
+        for (int index = 0; index + 1 < lines.Length; index++)
+        {
+            if (lines[index].Length == 9 && lines[index].StartsWith("Memory ", StringComparison.Ordinal) && char.IsAsciiDigit(lines[index][7]) && char.IsAsciiDigit(lines[index][8]))
+            {
+                yield return lines[index + 1];
+            }
+        }
+    }
+
+    /// <summary>No paid unit of a finished sweep is left mid-attempt, and a clean one needed no failed attempt.</summary>
+    private void AssertEffectsSettled(IReadOnlyList<LongRestEffectRow> effects)
+    {
+        Assert.NotEmpty(effects);
+
+        foreach (LongRestEffectRow row in effects)
+        {
+            Check(
+                row.StateCode >= AttemptStateSettledLow,
+                $"Work item {Short(row.WorkItemId)} ended the sweep unsettled in attempt state {row.StateCode}.");
+        }
+
+        IEnumerable<string> states = effects
+            .GroupBy(static row => row.StateCode)
+            .OrderBy(static group => group.Key)
+            .Select(static group => $"state {group.Key} x{group.Count()}");
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"Provider-effects journal: {effects.Count} work items ({string.Join(", ", states)}); sent {effects.Sum(static row => row.SentCount)}, paid {effects.Sum(static row => row.PaidCount)}, "
+            + $"invalid {effects.Sum(static row => row.InvalidCount)}, failed {effects.Sum(static row => row.FailureCount)}; "
+            + $"{effects.Sum(static row => row.InputTokens)} input and {effects.Sum(static row => row.OutputTokens)} output tokens"));
+    }
+
+    /// <summary>
+    /// The host's accounting must equal what the provider actually reported: every paid call the journal counts is a response that reached
+    /// the host, once, and the tokens and the budget's spend are those responses' tokens. A call that went out and never came back (the
+    /// killed attempt) is counted by neither side as paid.
+    /// </summary>
+    private void AssertAccounting(
+        string scenario,
+        IReadOnlyList<LongRestEffectRow> effects,
+        IReadOnlyList<LongRestRecordedRequest> traffic,
+        decimal spendDelta,
+        LongRestRecordedRequest? killedRequest,
+        decimal heldUsd = 0m)
+    {
+        LongRestRecordedRequest[] delivered =
+        [
+            .. traffic.Where(static request =>
+                request.Kind is LongRestProviderRequestKind.Summary or LongRestProviderRequestKind.Adjudication or LongRestProviderRequestKind.Embedding
+                && request.Delivered
+                && request.StatusCode is >= 200 and < 300),
+        ];
+
+        if (killedRequest is not null)
+        {
+            Assert.DoesNotContain(delivered, request => request.Sequence == killedRequest.Sequence);
+        }
+
+        long paidCalls = effects.Sum(static row => row.PaidCount);
+
+        long promptTokens = delivered.Sum(static request => request.PromptTokens ?? 0);
+
+        long completionTokens = delivered.Sum(static request => request.CompletionTokens ?? 0);
+
+        long cachedTokens = delivered.Sum(static request => request.CachedPromptTokens ?? 0);
+
+        long journalInput = effects.Sum(static row => row.InputTokens);
+
+        long journalOutput = effects.Sum(static row => row.OutputTokens);
+
+        long journalCached = effects.Sum(static row => row.CachedInputTokens);
+
+        // The host bills the prompt tokens the provider served from its cache at the cached rate and the rest at the input rate.
+        decimal expectedSpend = ((((promptTokens - cachedTokens) * LongRestQualificationConfiguration.InputPricePerMillion)
+            + (cachedTokens * LongRestQualificationConfiguration.CachedPricePerMillion)
+            + (completionTokens * LongRestQualificationConfiguration.OutputPricePerMillion)) / 1_000_000m) + heldUsd;
+
+        Observe(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{scenario} accounting: provider delivered {delivered.Length} paid responses ({promptTokens} prompt of which {cachedTokens} cached, {completionTokens} completion tokens); "
+            + $"journal counts {paidCalls} paid calls ({journalInput} input of which {journalCached} cached, {journalOutput} output tokens); budget spend {spendDelta:0.000000} USD against {expectedSpend:0.000000} USD from the provider's figures{(heldUsd > 0m ? $" plus {heldUsd:0.000000} USD held for unknown usage" : string.Empty)}"));
+
+        Check(
+            paidCalls == delivered.Length,
+            $"{scenario}: the journal counts {paidCalls} paid calls but the provider delivered {delivered.Length} paid responses; a paid send was counted twice or not at all.");
+
+        Check(
+            journalInput == promptTokens,
+            $"{scenario}: the journal records {journalInput} input tokens but the provider reported {promptTokens}.");
+
+        Check(
+            journalCached == cachedTokens,
+            $"{scenario}: the journal records {journalCached} cached input tokens but the provider reported {cachedTokens}.");
+
+        Check(
+            journalOutput == completionTokens,
+            $"{scenario}: the journal records {journalOutput} output tokens but the provider reported {completionTokens}.");
+
+        decimal tolerance = Math.Max(0.0005m, expectedSpend * 0.02m);
+
+        Check(
+            Math.Abs(spendDelta - expectedSpend) <= tolerance,
+            $"{scenario}: the budget's spend moved by {spendDelta:0.000000} USD but the provider's reported usage prices at {expectedSpend:0.000000} USD (holds for unknown usage included).");
+    }
+
+    /// <summary>
+    /// Reads the clean sweep's completed generation, which the next completed sweep deletes, and calibrates the discovery thresholds
+    /// against the labelled corpus with the real vectors. The report is written before anything later in the run can fail.
+    /// </summary>
+    private async Task CaptureCalibrationAsync(
+        string generationId,
+        IReadOnlyList<LongRestApiMemory> memories,
+        CancellationToken cancellationToken)
+    {
+        (IReadOnlyList<LongRestNodeRow> nodes, IReadOnlyList<(string Parent, string Child)> edges) =
+            await Grimoire.ReadHierarchyAsync(generationId, cancellationToken);
+
+        IReadOnlyDictionary<string, float[]> vectors = await Grimoire.ReadMemoryVectorsAsync(cancellationToken);
+
+        HashSet<string> leafMemories = new(
+            nodes.Where(static node => node.Layer == 0 && node.MemoryId is not null).Select(static node => NormalizeIdentity(node.MemoryId!)),
+            StringComparer.Ordinal);
+
+        // The corpus the generation read: the labelled memories that were leaves of it (the retired and the pinned were not captured).
+        List<CalibrationMemory> corpus = [];
+
+        foreach (LongRestSeededMemory seeded in _corpus)
+        {
+            if (seeded.Fact is null
+                || seeded.Role != LongRestCorpusRole.Ordinary
+                || !leafMemories.Contains(NormalizeIdentity(seeded.Id))
+                || !vectors.TryGetValue(seeded.Id, out float[]? vector))
+            {
+                continue;
+            }
+
+            corpus.Add(new CalibrationMemory(seeded.Id, seeded.Label, memories.Single(memory => memory.Id == seeded.Id).Content, vector));
+        }
+
+        Dictionary<string, string?> leafByNode = nodes
+            .Where(static node => node.Layer == 0)
+            .ToDictionary(static node => node.NodeId, static node => node.MemoryId, StringComparer.OrdinalIgnoreCase);
+
+        List<CalibrationSummary> summaries = [];
+
+        foreach (LongRestNodeRow node in nodes.Where(static node => node.Layer > 0 && node.Vector is not null && node.Summary is not null))
+        {
+            summaries.Add(new CalibrationSummary(
+                node.NodeId,
+                node.Layer,
+                node.Summary!,
+                node.Vector!,
+                [.. edges.Where(edge => string.Equals(edge.Parent, node.NodeId, StringComparison.OrdinalIgnoreCase)).Select(static edge => edge.Child)]));
+        }
+
+        // The Background Floor is read from every leaf of the generation, in memory id order, whatever its label.
+        List<CalibrationLeaf> generationLeaves =
+        [
+            .. nodes
+                .Where(node => node.Layer == 0 && node.MemoryId is not null && vectors.ContainsKey(node.MemoryId))
+                .OrderBy(static node => node.MemoryId!.ToLowerInvariant(), StringComparer.Ordinal)
+                .Select(node => new CalibrationLeaf(node.MemoryId!, vectors[node.MemoryId!])),
+        ];
+
+        CalibrationReport report = LongRestQualificationCalibration.Calibrate(
+            corpus,
+            summaries,
+            leafByNode,
+            LongRestPromptLayout.SummaryBoundUtf8Bytes(_options.EmbeddingWindow),
+            generationLeaves);
+
+        CalibrationText = LongRestQualificationCalibration.RenderText(report, _options);
+
+        CalibrationJson = LongRestQualificationCalibration.RenderJson(report);
+
+        await WriteResultsAsync("long-rest-calibration.txt", CalibrationText);
+
+        await WriteResultsAsync("long-rest-calibration.json", CalibrationJson);
+
+        foreach (string line in CalibrationText.Split('\n'))
+        {
+            _log.Info("CALIBRATION " + line.TrimEnd('\r'));
+        }
+
+        // The Pairing Gate on the real vectors: the guarantee that holds whatever the model answers is that no pair reaches it unless it is at least
+        // as close as its anchor's floor, so what the gate keeps of the true pairs and lets through of the others is the evidence for the embedding
+        // model in use. A true pair the gate refuses is only a fold lost; another pair at or above a floor is one the model alone then stands in front of.
+        if (report.Floors is { } floors)
+        {
+            _crossPairsAtOrAboveFloor = floors.CrossPairsAtOrAboveEitherFloor;
+
+            Check(
+                floors.WithinPairs == 0 || floors.WithinRetained >= 0.9,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The Pairing Gate keeps {floors.WithinRetained:P1} of the labelled true pairs ({floors.WithinAtOrAboveFloor} of {floors.WithinPairs}); at least 90% of them should be at or above their anchor's floor."));
+
+            Check(
+                floors.CrossAtOrAboveFloor == 0,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{floors.CrossAtOrAboveFloor} labelled pairs of different topics are at or above their anchor's floor on the embedding model '{_options.EmbeddingModel}' (the smallest margin below a floor is {(floors.CrossMargin.Count == 0 ? double.NaN : floors.CrossMargin.Minimum):0.000}). Those can reach the model as a pair or within a clique; this is the documented residual of an embedding model that does not separate topics."));
+
+            Observe(string.Create(
+                CultureInfo.InvariantCulture,
+                $"Pairing Gate on '{_options.EmbeddingModel}': per-anchor floors {floors.Floors.Minimum:0.000} to {floors.Floors.Maximum:0.000} (median {floors.Floors.Median:0.000}); {floors.WithinAtOrAboveFloor} of {floors.WithinPairs} true pairs paired (lowest margin above a floor {floors.WithinMargin.Minimum:0.000}); {floors.CrossAtOrAboveFloor} of {floors.CrossPairs} other pairs at or above a floor (the smallest margin below one is {(floors.CrossMargin.Count == 0 ? double.NaN : floors.CrossMargin.Minimum):0.000})"));
+        }
+
+        // Loosely: the report must have measured something, and the real models must at least rank true pairs above the others.
+        Check(report.Lexical.Within.Count > 0 && report.Lexical.Cross.Count > 0, "The calibration found no lexical pairs to compare.");
+
+        Check(report.Vector.Within.Count > 0 && report.Vector.Cross.Count > 0, "The calibration found no vector pairs to compare.");
+
+        Check(
+            report.Vector.Within.Count == 0 || report.Vector.Cross.Count == 0 || report.Vector.Within.Median > report.Vector.Cross.Median,
+            $"The embedding model does not rank true pairs (median {report.Vector.Within.Median:0.000}) above the others (median {report.Vector.Cross.Median:0.000}).");
+
+        Check(
+            report.Lexical.Within.Count == 0 || report.Lexical.Cross.Count == 0 || report.Lexical.Within.Median > report.Lexical.Cross.Median,
+            $"The lexical score does not rank true pairs (median {report.Lexical.Within.Median:0}) above the others (median {report.Lexical.Cross.Median:0}).");
+    }
+
+    private async Task WriteResultsAsync(string name, string contents)
+    {
+        if (_options.ResultsDirectory is not { } directory)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(directory);
+
+        await File.WriteAllTextAsync(Path.Combine(directory, name), contents);
+    }
+
+    private static string Short(string identity) => identity.Length > 8 ? identity[..8] : identity;
+
+    private static string NormalizeIdentity(string identity) => LongRestQualificationChecks.NormalizeIdentity(identity);
+}
+
+/// <summary>How a scenario's consolidations were graded against the corpus's labels.</summary>
+internal sealed record FoldGrade(int ExactFolds, int ParaphraseFolds, int WrongFolds, int PossibleExact, int PossibleParaphrase)
+{
+    public int RightFolds => ExactFolds + ParaphraseFolds;
+
+    public int PossibleFolds => PossibleExact + PossibleParaphrase;
+}

@@ -16,27 +16,21 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 
 public sealed class SanctumGuardTests : IAsyncLifetime
 {
-
     private readonly TempWorkspace _workspace = new();
 
     public Task InitializeAsync()
     {
-
         return _workspace.InitializeAsync();
-
     }
 
     public Task DisposeAsync()
     {
-
         return _workspace.DisposeAsync();
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_EnforcePathBoundaryDisabled_AllowsOutsidePath()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -57,13 +51,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_InvalidRequestedPath_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -82,13 +74,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("Invalid path", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_SanctumDisabled_AllowsEscapeAttempt()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -105,13 +95,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_PathUnderWorkspace_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -130,13 +118,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_PathOutsideWorkspace_DeniesAndRecordsBreach()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -174,13 +160,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         {
             Directory.Delete(outside, recursive: true);
         }
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_AllowedPathSubdirectory_AllowsNestedFile()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -207,7 +191,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [SkippableFact]
@@ -247,13 +230,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_AllowedPathsFirstMissSecondMatch_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -282,13 +263,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_SiblingAllowedPathUnderWorkspace_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -315,13 +294,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_AllowedPathsExtraRoot_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -355,13 +332,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         {
             Directory.Delete(extraRoot, recursive: true);
         }
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_InvalidAllowedPathEntry_SkipsAndDeniesOutsidePath()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -391,13 +366,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         {
             Directory.Delete(outside, recursive: true);
         }
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_InvalidCampaignWorkspacePath_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -416,13 +389,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("could not be resolved", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_UnknownCampaign_Denies()
     {
-
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidatePathAsync(
             Guid.NewGuid().ToString(),
             "/etc/passwd",
@@ -432,13 +403,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("does not resolve to a known campaign", result.DenyReason, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidatePathAsync_EmptyCampaignId_AllowsWithoutRepositoryLookup()
     {
-
         FakeCampaignRepository repository = new();
 
         SanctumResult result = await CreateGuard(repository).ValidatePathAsync(
@@ -450,13 +419,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.True(result.Allowed);
 
         Assert.False(repository.WasQueried);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowAllPolicy_AllowsPrivateUrl()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -476,13 +443,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_DenyAllPolicy_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -504,13 +469,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("denied by this Sanctum", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListMatchingHost_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -531,13 +494,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListUnknownHost_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -560,13 +521,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_EmptyUrl_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -586,13 +545,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_InvalidUrlScheme_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -615,13 +572,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("valid HTTP or HTTPS", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateToolAsync_DisabledTool_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -642,13 +597,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("disabled in this Sanctum", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateToolAsync_EnabledTool_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -667,13 +620,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "read_file_chunk");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_InvalidCampaignId_Denies()
     {
-
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidateNetworkAsync(
             "not-a-valid-guid",
             "https://example.com",
@@ -682,13 +633,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("Invalid campaign identifier", result.DenyReason, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_UnknownCampaign_Denies()
     {
-
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidateNetworkAsync(
             Guid.NewGuid().ToString(),
             "https://example.com",
@@ -697,13 +646,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("does not resolve to a known campaign", result.DenyReason, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_SanctumDisabled_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -723,13 +670,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListExactHostMatch_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -750,13 +695,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListEmptyDomains_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -777,13 +720,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.False(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListWithLiteralIp_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -804,13 +745,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListWithEquivalentIpv6Literal_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -831,7 +770,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     /// <summary>
@@ -842,7 +780,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     [Fact]
     public async Task ValidateNetworkAsync_AllowListHostnameResolvingToAllowedIpLiteral_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -865,13 +802,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListUnresolvableAllowedDomain_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -892,13 +827,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.False(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_NotAbsoluteUrl_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -921,13 +854,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("valid HTTP or HTTPS", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateToolAsync_InvalidCampaignId_Denies()
     {
-
         SanctumResult result = await CreateGuard(new FakeCampaignRepository()).ValidateToolAsync(
             "not-a-valid-guid",
             "read_file_chunk");
@@ -935,13 +866,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("Invalid campaign identifier", result.DenyReason, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateToolAsync_UnknownCampaign_Denies()
     {
-
         // A well-formed campaign id the repository no longer resolves (e.g. deleted mid-turn) must
         // deny rather than fall through to full permission — "execute_command" stands in for
         // whatever this now-gone campaign's DisabledTools would have named; there is no config left
@@ -953,13 +882,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("does not resolve to a known campaign", result.DenyReason, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task ValidateToolAsync_SanctumDisabled_AllowsDisabledTool()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -978,13 +905,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "execute_command");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListSkipsWhitespaceWhileResolvingAllowedDomains_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1007,13 +932,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListLeadingDotSubdomain_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1034,7 +957,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     /// <summary>
@@ -1047,7 +969,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     [Fact]
     public async Task ValidateNetworkAsync_AllowListHostSharingAnAddressWithAnAllowedDomain_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1071,13 +992,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListResolvedAllowedHostname_Allows()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1098,13 +1017,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.True(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListWhitespaceDomainEntry_IgnoresAndDeniesUnknownHost()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1125,13 +1042,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             "fetch_url");
 
         Assert.False(result.Allowed);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListLiteralIpMismatch_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1154,13 +1069,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListResolvedHostnameMismatch_Denies()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1183,13 +1096,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task ValidateNetworkAsync_AllowListUnresolvableAllowedDomain_DeniesResolvableHost()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1212,13 +1123,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(result.Allowed);
 
         Assert.Contains("not in the Sanctum allowed domain list", result.DenyReason, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [Fact]
     public async Task GetEffectiveResourceLimitsForWorkspaceAsync_KnownCampaign_ReturnsClampedLimits()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         SanctumConfig config = new SanctumConfig
@@ -1246,29 +1155,24 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.True(limits.MaxFileWriteMb < 99999);
 
         Assert.True(limits.ProcessTimeoutSeconds < 99999);
-
     }
 
     [Fact]
     public async Task GetEffectiveResourceLimitsForWorkspaceAsync_EmptyWorkspace_ReturnsDefaultClampedLimits()
     {
-
         ResourceLimits limits = await CreateGuard(new FakeCampaignRepository())
             .GetEffectiveResourceLimitsForWorkspaceAsync("   ");
 
         Assert.Equal(ArcanumSettingClamps.SanctumMaxProcessMemoryMb(new ResourceLimits().MaxProcessMemoryMb), limits.MaxProcessMemoryMb);
-
     }
 
     [Fact]
     public async Task GetEffectiveResourceLimitsForWorkspaceAsync_UnknownWorkspace_ReturnsDefaultClampedLimits()
     {
-
         ResourceLimits limits = await CreateGuard(new FakeCampaignRepository())
             .GetEffectiveResourceLimitsForWorkspaceAsync("/no/such/workspace");
 
         Assert.Equal(ArcanumSettingClamps.SanctumMaxProcessMemoryMb(new ResourceLimits().MaxProcessMemoryMb), limits.MaxProcessMemoryMb);
-
     }
 
     [Theory]
@@ -1278,7 +1182,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     public async Task GetChildProcessBoundaryForWorkspaceAsync_EmptyWorkspace_ReturnsNullWithoutLookup(
         string? workspaceRoot)
     {
-
         FakeCampaignRepository repository = new();
 
         SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
@@ -1287,13 +1190,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.Null(boundary);
 
         Assert.False(repository.WasQueried);
-
     }
 
     [Fact]
     public async Task GetChildProcessBoundaryForWorkspaceAsync_InvalidWorkspace_ReturnsNullWithoutLookup()
     {
-
         FakeCampaignRepository repository = new();
 
         SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
@@ -1302,13 +1203,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.Null(boundary);
 
         Assert.False(repository.WasQueried);
-
     }
 
     [Fact]
     public async Task GetChildProcessBoundaryForWorkspaceAsync_UnknownWorkspace_ReturnsNull()
     {
-
         FakeCampaignRepository repository = new();
 
         SanctumChildProcessBoundary? boundary = await CreateGuard(repository)
@@ -1317,7 +1216,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.Null(boundary);
 
         Assert.True(repository.WasQueried);
-
     }
 
     [Theory]
@@ -1329,7 +1227,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         bool enforcePathBoundary,
         bool expectedBoundaryRequired)
     {
-
         Guid campaignId = Guid.NewGuid();
 
         string allowedPath = _workspace.CreateSubdir("shared-" + campaignId.ToString("N"));
@@ -1355,13 +1252,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.Equal(expectedBoundaryRequired, boundary.PathBoundaryRequired);
 
         Assert.Collection(boundary.AllowedPaths, path => Assert.Equal(allowedPath, path));
-
     }
 
     [Fact]
     public async Task GetChildProcessBoundaryForWorkspaceAsync_InvalidCampaignPath_UsesResolvedLookupPath()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         Campaign campaign = CreateCampaign(
@@ -1381,7 +1276,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.Equal(Path.GetFullPath(_workspace.Root), boundary.WorkspaceRoot);
 
         Assert.True(boundary.PathBoundaryRequired);
-
     }
 
     [Theory]
@@ -1394,7 +1288,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         string resourceName,
         string? actualValue)
     {
-
         Guid campaignId = Guid.NewGuid();
 
         const int maxBreachCount = 321;
@@ -1436,13 +1329,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.Equal(actualValue, record.Details.ActualValue);
 
         Assert.Equal(maxBreachCount, breachRepository.LastMaxBreachCount);
-
     }
 
     [Fact]
     public async Task RecordResourceLimitBreachAsync_EmptyWorkspace_DoesNotQueryOrPersist()
     {
-
         FakeCampaignRepository repository = new();
 
         FakeSanctumBreachRepository breachRepository = new();
@@ -1459,13 +1350,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(breachRepository.WasCalled);
 
         Assert.Empty(breachRepository.Records);
-
     }
 
     [Fact]
     public async Task RecordResourceLimitBreachAsync_UnknownWorkspace_DoesNotPersist()
     {
-
         FakeCampaignRepository repository = new();
 
         FakeSanctumBreachRepository breachRepository = new();
@@ -1482,13 +1371,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.False(breachRepository.WasCalled);
 
         Assert.Empty(breachRepository.Records);
-
     }
 
     [Fact]
     public async Task RecordResourceLimitBreachAsync_PersistenceFailure_DoesNotEscape()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1510,13 +1397,11 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.True(breachRepository.WasCalled);
 
         Assert.Empty(breachRepository.Records);
-
     }
 
     [Fact]
     public async Task RecordResourceLimitBreachAsync_Cancellation_Propagates()
     {
-
         Guid campaignId = Guid.NewGuid();
 
         FakeCampaignRepository repository = new();
@@ -1543,7 +1428,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
         Assert.True(breachRepository.WasCalled);
 
         Assert.Empty(breachRepository.Records);
-
     }
 
     private static SanctumGuard CreateGuard(
@@ -1554,6 +1438,7 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             repository,
             breachRepository ?? new FakeSanctumBreachRepository(),
             NullLogger<SanctumGuard>.Instance,
+            UnregisteredCampaignRoots.Instance,
             dnsResolver ?? DeterministicDns());
 
     /// <summary>
@@ -1571,7 +1456,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
     /// </remarks>
     private static FakeDnsResolver DeterministicDns()
     {
-
         FakeDnsResolver resolver = new();
 
         // Literal request hosts: the real resolver returns the parsed literal without a lookup.
@@ -1612,7 +1496,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
     private sealed class FakeCampaignRepository : ICampaignRepository
     {
-
         private readonly Dictionary<Guid, Campaign> _byId = new();
 
         private readonly Dictionary<string, Campaign> _byPath = new(StringComparer.Ordinal);
@@ -1621,7 +1504,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public void SetCampaign(Campaign campaign)
         {
-
             _byId[campaign.Id] = campaign;
 
             try
@@ -1632,32 +1514,26 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             {
                 // Allow campaigns with invalid paths for path-resolution tests.
             }
-
         }
 
         public void SetCampaignForPath(Campaign campaign, string lookupPath)
         {
-
             _byId[campaign.Id] = campaign;
 
             _byPath[Path.GetFullPath(lookupPath.Trim())] = campaign;
-
         }
 
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-
             WasQueried = true;
 
             _byId.TryGetValue(id, out Campaign? campaign);
 
             return Task.FromResult(campaign);
-
         }
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default)
         {
-
             WasQueried = true;
 
             string full = Path.GetFullPath(path.Trim());
@@ -1665,8 +1541,14 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             _byPath.TryGetValue(full, out Campaign? campaign);
 
             return Task.FromResult(campaign);
-
         }
+
+        // Every scenario here asks about the very root its Campaign is registered at, so the exact match is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
@@ -1689,12 +1571,10 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
-
     }
 
     private sealed class FakeSanctumBreachRepository : ISanctumBreachRepository
     {
-
         public List<SanctumBreachRecord> Records { get; } = [];
 
         public bool WasCalled { get; private set; }
@@ -1705,22 +1585,18 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public Task RecordAsync(SanctumBreachRecord breach, int maxBreachCount, CancellationToken ct = default)
         {
-
             WasCalled = true;
 
             LastMaxBreachCount = maxBreachCount;
 
             if (ExceptionToThrow is not null)
             {
-
                 return Task.FromException(ExceptionToThrow);
-
             }
 
             Records.Add(breach with { Id = Guid.NewGuid().ToString("N") });
 
             return Task.CompletedTask;
-
         }
 
         public Task<IReadOnlyList<SanctumBreachRecord>> QueryAsync(
@@ -1730,7 +1606,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             string? toolName = null,
             CancellationToken ct = default)
         {
-
             IEnumerable<SanctumBreachRecord> query = Records.Where(r => r.CampaignId == campaignId);
 
             if (before is not null)
@@ -1749,7 +1624,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
                 .ToList();
 
             return Task.FromResult(result);
-
         }
 
         public Task<int> GetCountAsync(string campaignId, CancellationToken ct = default) =>
@@ -1757,7 +1631,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
 
         public Task<int> DeleteOldestAsync(string campaignId, int count, CancellationToken ct = default)
         {
-
             List<SanctumBreachRecord> toRemove = Records
                 .Where(r => r.CampaignId == campaignId)
                 .OrderBy(r => r.OccurredAt)
@@ -1770,9 +1643,6 @@ public sealed class SanctumGuardTests : IAsyncLifetime
             }
 
             return Task.FromResult(toRemove.Count);
-
         }
-
     }
-
 }

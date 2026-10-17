@@ -335,6 +335,7 @@ internal static class CliSurfaceExamples
         ["key list"] = ["arcanum key list"],
         ["key provider status"] = ["arcanum key provider status openai"],
         ["data factory-reset"] = ["arcanum data factory-reset --all --dry-run"],
+        ["data repair-installation-identity"] = ["arcanum data repair-installation-identity --dry-run"],
 
         // Watch
         ["watch session"] = ["arcanum watch session --reconnect"],

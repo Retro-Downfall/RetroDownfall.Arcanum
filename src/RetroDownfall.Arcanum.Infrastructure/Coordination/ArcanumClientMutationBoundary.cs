@@ -4,18 +4,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Coordination;
 
 public enum ArcanumClientMutationDisposition : byte
 {
-
     Completed,
 
     Blocked,
 
     Unsafe,
-
 }
 
 public sealed class ArcanumClientMutationResult<T>
 {
-
     private readonly T? _value;
 
     private ArcanumClientMutationResult(
@@ -23,25 +20,20 @@ public sealed class ArcanumClientMutationResult<T>
         T? value,
         Error error)
     {
-
         if (disposition is ArcanumClientMutationDisposition.Completed
-            && error != Error.None)
+            && !error.IsNone)
         {
-
             throw new ArgumentException(
                 "A completed client mutation cannot carry an error.",
                 nameof(error));
-
         }
 
         if (disposition is not ArcanumClientMutationDisposition.Completed
-            && error == Error.None)
+            && error.IsNone)
         {
-
             throw new ArgumentException(
                 "A refused client mutation must carry an error.",
                 nameof(error));
-
         }
 
         Disposition = disposition;
@@ -49,7 +41,6 @@ public sealed class ArcanumClientMutationResult<T>
         _value = value;
 
         Error = error;
-
     }
 
     public ArcanumClientMutationDisposition Disposition { get; }
@@ -81,12 +72,10 @@ public sealed class ArcanumClientMutationResult<T>
             ArcanumClientMutationDisposition.Unsafe,
             value: default,
             error);
-
 }
 
 public interface IArcanumClientMutationBoundary
 {
-
     Task<ArcanumClientMutationResult<T>> RunAsync<T>(
         Func<T> mutation,
         CancellationToken cancellationToken = default);
@@ -94,25 +83,21 @@ public interface IArcanumClientMutationBoundary
     Task<ArcanumClientMutationResult<T>> RunAsync<T>(
         Func<CancellationToken, Task<T>> mutation,
         CancellationToken cancellationToken = default);
-
 }
 
 internal enum ClientMutationEvidenceDisposition : byte
 {
-
     Clear,
 
     Blocked,
 
     Unsafe,
-
 }
 
 internal readonly record struct ClientMutationEvidenceResult(
     ClientMutationEvidenceDisposition Disposition,
     Error Error)
 {
-
     internal static ClientMutationEvidenceResult Clear() =>
         new(ClientMutationEvidenceDisposition.Clear, Error.None);
 
@@ -121,20 +106,16 @@ internal readonly record struct ClientMutationEvidenceResult(
 
     internal static ClientMutationEvidenceResult Unsafe(Error error) =>
         new(ClientMutationEvidenceDisposition.Unsafe, error);
-
 }
 
 internal interface IClientMutationEvidenceProbe
 {
-
     Task<ClientMutationEvidenceResult> InspectAsync(
         CancellationToken cancellationToken);
-
 }
 
 public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBoundary
 {
-
     private readonly string _guardedRoot;
 
     private readonly IClientMutationEvidenceProbe _evidence;
@@ -150,7 +131,6 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
             string,
             ArcanumClientMutationLockAcquisitionResult>? acquire = null)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(guardedRoot);
 
         _guardedRoot = Path.TrimEndingDirectorySeparator(
@@ -159,14 +139,12 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
         _evidence = evidence ?? throw new ArgumentNullException(nameof(evidence));
 
         _acquire = acquire ?? ArcanumClientMutationLock.AcquireDetailed;
-
     }
 
     public async Task<ArcanumClientMutationResult<T>> RunAsync<T>(
         Func<T> mutation,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(mutation);
 
         ArcanumClientMutationResult<ArcanumClientMutationLock> admission =
@@ -174,9 +152,7 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
 
         if (!admission.IsCompleted)
         {
-
             return Refusal<T>(admission);
-
         }
 
         using ArcanumClientMutationLock held = admission.Value;
@@ -184,14 +160,12 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
         cancellationToken.ThrowIfCancellationRequested();
 
         return ArcanumClientMutationResult<T>.Completed(mutation());
-
     }
 
     public async Task<ArcanumClientMutationResult<T>> RunAsync<T>(
         Func<CancellationToken, Task<T>> mutation,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(mutation);
 
         ArcanumClientMutationResult<ArcanumClientMutationLock> admission =
@@ -199,9 +173,7 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
 
         if (!admission.IsCompleted)
         {
-
             return Refusal<T>(admission);
-
         }
 
         using ArcanumClientMutationLock held = admission.Value;
@@ -211,13 +183,11 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
         T value = await mutation(cancellationToken).ConfigureAwait(false);
 
         return ArcanumClientMutationResult<T>.Completed(value);
-
     }
 
     private async Task<ArcanumClientMutationResult<ArcanumClientMutationLock>>
         AcquireAdmittedLockAsync(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         ArcanumClientMutationLockAcquisitionResult acquired =
@@ -226,23 +196,19 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
         if (acquired.Disposition
             is ArcanumClientMutationLockAcquisitionDisposition.Contended)
         {
-
             return ArcanumClientMutationResult<ArcanumClientMutationLock>.Blocked(
                 new Error(
                     ErrorCodes.Data.FileLocked,
                     "Another Arcanum client mutation or installation maintenance operation is active."));
-
         }
 
         if (acquired.Disposition
             is ArcanumClientMutationLockAcquisitionDisposition.Unsafe)
         {
-
             return ArcanumClientMutationResult<ArcanumClientMutationLock>.Unsafe(
                 new Error(
                     ErrorCodes.Data.ControlPathUnavailable,
                     "The client-mutation lock topology, identity, or owner-only permissions could not be validated safely."));
-
         }
 
         ArcanumClientMutationLock held = acquired.BorrowAcquiredLock();
@@ -251,26 +217,20 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
 
         try
         {
-
             evidence = await _evidence
                 .InspectAsync(cancellationToken)
                 .ConfigureAwait(false);
-
         }
         catch
         {
-
             held.Dispose();
 
             throw;
-
         }
 
         if (evidence.Disposition is ClientMutationEvidenceDisposition.Clear)
         {
-
             return ArcanumClientMutationResult<ArcanumClientMutationLock>.Completed(held);
-
         }
 
         held.Dispose();
@@ -278,7 +238,6 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
         return evidence.Disposition is ClientMutationEvidenceDisposition.Blocked
             ? ArcanumClientMutationResult<ArcanumClientMutationLock>.Blocked(evidence.Error)
             : ArcanumClientMutationResult<ArcanumClientMutationLock>.Unsafe(evidence.Error);
-
     }
 
     private static ArcanumClientMutationResult<T> Refusal<T>(
@@ -286,5 +245,4 @@ public sealed class ArcanumClientMutationBoundary : IArcanumClientMutationBounda
         admission.Disposition is ArcanumClientMutationDisposition.Blocked
             ? ArcanumClientMutationResult<T>.Blocked(admission.Error)
             : ArcanumClientMutationResult<T>.Unsafe(admission.Error);
-
 }

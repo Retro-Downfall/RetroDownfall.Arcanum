@@ -62,6 +62,8 @@ internal enum HostedProducerSiteKind : byte
     EffectFrontier = 6,
 
     DatabaseAccess = 7,
+
+    LeaseHandoff = 8,
 }
 
 internal sealed record HostedProducerSite(
@@ -83,7 +85,9 @@ internal sealed record HostedProducerSite(
     internal string CapsuleId => HostedGrimoireProducerInventory.CapsuleId(this);
 }
 
-internal sealed record HostedProducerOperationEntry(string OperationId, string SourcePath, string EnclosingType, string Member, HostedProducerAuthorityKind Authority, GrimoireWorkKind? WorkKind, string? Proof, IReadOnlyList<HostedProducerSite> Sites);
+// LeaseFormal names the one IGrimoireWorkLease parameter of a Lease-Handoff Root: the root's admission origin, minted by
+// its callers and carried in by value. It is null for every other root.
+internal sealed record HostedProducerOperationEntry(string OperationId, string SourcePath, string EnclosingType, string Member, HostedProducerAuthorityKind Authority, GrimoireWorkKind? WorkKind, string? Proof, IReadOnlyList<HostedProducerSite> Sites, string? LeaseFormal = null);
 
 internal sealed record HostedProducerServiceEntry(string ServiceType, IReadOnlyList<HostedProducerOperationEntry> Operations);
 
@@ -253,6 +257,41 @@ internal sealed record HostedProducerCleanupCacheMetric(
     int ValueFlowBuilds,
     int ValueFlowStableHits);
 
+// Diagnostic observation only: immutable copies of an already admitted exact state.
+internal sealed record HostedProducerAdmittedStateObservation(
+    int Worker,
+    int Occurrence,
+    int Sequence,
+    int CumulativeCount,
+    string RootType,
+    string RootOperation,
+    string AssemblyName,
+    string AssemblyVersion,
+    string AssemblyCulture,
+    string AssemblyKeyOrToken,
+    bool AssemblyHasPublicKey,
+    bool AssemblyRetargetable,
+    int AssemblyContentType,
+    int Compilation,
+    int Tree,
+    string Method,
+    int SpanStart,
+    int SpanLength,
+    int SelectionStart,
+    int SelectionLength,
+    int? EvaluationEnvironmentToken,
+    string FallbackAdmissionBindings,
+    string FallbackEvaluationEnvironment,
+    string FallbackValueBindings,
+    string FallbackConcreteBindings,
+    string FallbackRecoveryBindings,
+    string? WorkFrontier,
+    string? EffectFrontier,
+    string? RecoveryEffectFrontier,
+    string FieldPublications,
+    bool CompletionOwned,
+    bool Lifecycle);
+
 internal sealed record HostedProducerAnalysisMetrics(
     IReadOnlyList<HostedProducerRecoveryConditionMetric> RecoveryConditions,
     IReadOnlyList<HostedProducerRetainedAdmissionMetric> RetainedAdmissions,
@@ -303,6 +342,9 @@ internal static partial class HostedGrimoireProducerInventory
     private const int DefaultTraversalMaximumDepth = 128;
 
     private const int DefaultMaximumAnalyzedStatesPerRoot = 8192;
+
+    // The per-root cap, readable by the headroom ratchet. Reading it changes nothing: the constant above is the one limit.
+    internal static int MaximumAnalyzedStatesPerRoot => DefaultMaximumAnalyzedStatesPerRoot;
 
     private const int RootStateProgressInterval = 256;
 
@@ -537,30 +579,48 @@ internal static partial class HostedGrimoireProducerInventory
         return new([.. ReviewedCapsules.Value.Diagnostics, .. ValidateManifestRoots(ReviewedCapsules.Value.Sites), .. validation.Diagnostics]);
     }
 
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverProductionSites()
-    {
-        HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverProductionSites() =>
+        DiscoverProductionSites(HostedProducerProductionPartition.Primary);
 
-        return DiscoverProducerSites(ProductionCompilations, registrations, Catalog, NonHostedCatalog,
-            rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
-    }
+    private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites() =>
+        DiscoverProductionSites(HostedProducerProductionPartition.Additional);
 
-    private static HostedProducerDiscovery<HostedProducerSite> DiscoverAdditionalProductionSites()
+    // The Production Discovery Entry: the one place that discovers the production partitions. It is the only
+    // production caller that requests premises (always ProductionPremises, never a parameter), so the primary
+    // run, the additional run and any scoped run (a root subset) share exactly one classification regime.
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProductionSites(
+        HostedProducerProductionPartition partition,
+        IReadOnlyCollection<string>? rootSubset = null)
     {
+        int rootWorkers = HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS"));
+
+        if (partition == HostedProducerProductionPartition.Primary)
+        {
+            HostedProducerDiscovery<string> registrations = DiscoverApplicationHostedServices(ProductionCompilations);
+
+            ProductionRootSelection primary = SelectProductionRoots(rootSubset, registrations, Catalog, NonHostedCatalog);
+
+            return DiscoverProducerSitesUnderPremises(ProductionPremises, ProductionCompilations, primary.Registrations, primary.Catalog, primary.NonHostedCatalog,
+                rootWorkers: rootWorkers);
+        }
+
         using HostedProducerPhaseProgress preparation = HostedProducerPhaseProgress.Start("additional-preparation", 0);
 
         IReadOnlyList<NonHostedProducerChainEntry> roots = AdditionalProductionRoots;
 
         preparation.Complete();
 
+        ProductionRootSelection additional = SelectProductionRoots(rootSubset, new([], []), [], roots);
+
         using HostedProducerPhaseProgress traversal = HostedProducerPhaseProgress.Start("additional-traversal", 0);
 
-        HostedProducerDiscovery<HostedProducerSite> result = DiscoverProducerSites(
+        HostedProducerDiscovery<HostedProducerSite> result = DiscoverProducerSitesUnderPremises(
+            ProductionPremises,
             ProductionCompilations,
-            new([], []),
-            [],
-            roots,
-            rootWorkers: HostedProducerRootWorkers.ParseCount(global::System.Environment.GetEnvironmentVariable("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS")));
+            additional.Registrations,
+            additional.Catalog,
+            additional.NonHostedCatalog,
+            rootWorkers: rootWorkers);
 
         traversal.Complete();
 
@@ -700,6 +760,20 @@ internal static partial class HostedGrimoireProducerInventory
             : containingNamespace + "." + type.MetadataName;
     }
 
+    // A lookup into a tree the analysis does not read (generated code under obj/, a tree outside src/) refuses the traversal's
+    // completion with this code, naming the declaration, and the caller takes the value it takes when it cannot prove it.
+    internal const string UnanalysedTreeCode = "HOSTED_TREE_UNANALYSED";
+
+    private static int connectionReplacementScans;
+
+    private static long connectionReplacementScanTicks;
+
+    // Counts whole-tree connection-replacement scans so a test can prove a discovery scans once and shares the verdict.
+    internal static int ConnectionReplacementScans => Volatile.Read(ref connectionReplacementScans);
+
+    // The wall-clock time those scans took, summed over every scan, so the cost of the fact is observable.
+    internal static TimeSpan ConnectionReplacementScanTime => TimeSpan.FromTicks(Volatile.Read(ref connectionReplacementScanTicks));
+
     private static readonly IReadOnlyDictionary<string, HostedProducerSiteKind> Vocabulary = new Dictionary<string, HostedProducerSiteKind>(StringComparer.Ordinal)
     {
         ["Microsoft.Extensions.AI.IChatClient.GetResponseAsync"] = (HostedProducerSiteKind)3,
@@ -829,6 +903,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Buffers.Text.Base64.DecodeFromUtf8",
         "System.Buffers.Text.Base64.EncodeToUtf8",
         "System.Buffers.Text.Base64Url.DecodeFromChars",
+        "System.Buffers.Text.Base64Url.EncodeToUtf8",
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove",
         "System.Collections.Concurrent.ConcurrentQueue`1.TryDequeue",
         "System.Collections.Generic.Dictionary`2.Remove",
@@ -998,6 +1073,17 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Version",
     };
 
+    // ReviewedIntrinsicExternalTypes is keyed by name. A name the compilation binds as a Roslyn special type
+    // (System.Double, System.Int32, System.String, ...) has an exact identity from the compilation's own core
+    // library that a same-named type from another assembly never has, so those names are accepted only when
+    // the type is that special type.
+    private static readonly IReadOnlySet<string> ReviewedSpecialTypeNames = ReviewedIntrinsicExternalTypes
+        .Where(static name => Enum.TryParse(name.Replace('.', '_'), out SpecialType special) && special != SpecialType.None)
+        .ToHashSet(StringComparer.Ordinal);
+
+    private static bool HasExactSpecialTypeIdentity(ITypeSymbol type) =>
+        !ReviewedSpecialTypeNames.Contains(TypeKey(type)) || type.OriginalDefinition.SpecialType != SpecialType.None;
+
     // Reviewed against the pinned Microsoft.Extensions.AI 10.8.1 source at
     // dotnet/extensions e9be58acf7ef5e001b6685c8d505e5963c2a9ffe. These accessors
     // store or return values without enumerating them or invoking supplied code.
@@ -1018,6 +1104,7 @@ internal static partial class HostedGrimoireProducerInventory
         "Microsoft.Extensions.AI.ChatOptions.AdditionalProperties",
         "Microsoft.Extensions.AI.ChatOptions.FrequencyPenalty",
         "Microsoft.Extensions.AI.ChatOptions.MaxOutputTokens",
+        "Microsoft.Extensions.AI.ChatOptions.ModelId",
         "Microsoft.Extensions.AI.ChatOptions.PresencePenalty",
         "Microsoft.Extensions.AI.ChatOptions.Reasoning",
         "Microsoft.Extensions.AI.ChatOptions.ResponseFormat",
@@ -1041,6 +1128,7 @@ internal static partial class HostedGrimoireProducerInventory
         "Microsoft.Extensions.AI.FunctionCallContent.Arguments",
         "Microsoft.Extensions.AI.FunctionCallContent.Name",
         "Microsoft.Extensions.AI.FunctionResultContent.Result",
+        "Microsoft.Extensions.AI.EmbeddingGenerationOptions.ModelId",
         "Microsoft.Extensions.AI.ReasoningOptions.Effort",
         "Microsoft.Extensions.AI.ReasoningOptions.Output",
         "Microsoft.Extensions.AI.TextContent.Text",
@@ -1070,6 +1158,15 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Text.Json.JsonReaderOptions.MaxDepth",
     };
 
+    // Only these getters are reviewed. Their setters retain the ordinary
+    // external-boundary requirement even when the SDK exposes a storage setter.
+    private static readonly IReadOnlySet<string> ReviewedExactReadOnlyStoredExternalProperties = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "Microsoft.Extensions.AI.ChatResponse.Messages",
+        "Microsoft.Extensions.AI.ChatResponse.Usage",
+        "Microsoft.Extensions.AI.GeneratedEmbeddings`1.Usage",
+    };
+
     // Documentation IDs retain overload and generic arity. In particular the
     // generic AdditionalPropertiesDictionary.TryGetValue<T> conversion invokes
     // IConvertible, and LinkedList.Remove(T) invokes value equality; neither is
@@ -1082,6 +1179,7 @@ internal static partial class HostedGrimoireProducerInventory
         "M:Microsoft.Extensions.AI.ChatMessage.#ctor",
         "M:Microsoft.Extensions.AI.ChatMessage.#ctor(Microsoft.Extensions.AI.ChatRole,System.String)",
         "M:Microsoft.Extensions.AI.ChatMessage.#ctor(Microsoft.Extensions.AI.ChatRole,System.Collections.Generic.IList{Microsoft.Extensions.AI.AIContent})",
+        "M:Microsoft.Extensions.AI.EmbeddingGenerationOptions.#ctor",
         "M:Microsoft.Extensions.AI.ChatOptions.#ctor",
         "M:Microsoft.Extensions.AI.ChatResponseFormat.ForJsonSchema(System.Text.Json.JsonElement,System.String,System.String)",
         "M:Microsoft.Extensions.AI.ChatRole.ToString",
@@ -1196,11 +1294,18 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue",
         "System.Collections.Generic.KeyValuePair.Create",
         "System.Collections.Generic.KeyNotFoundException..ctor",
+        "System.Collections.ObjectModel.ReadOnlyCollection.CreateCollection",
+        "Serilog.Sinks.File.FileLifecycleHooks..ctor",
+        "System.TimeoutException..ctor",
         "System.ComponentModel.Win32Exception..ctor",
         "System.ComponentModel.Win32Exception.NativeErrorCode",
         "System.Console.Error",
+        "System.Console.IsInputRedirected",
+        "System.Console.KeyAvailable",
         "System.Console.Out",
         "System.Console.ReadKey",
+        "System.Console.TreatControlCAsInput",
+        "System.Console.TreatControlCAsInput setter",
         "System.ConsoleKeyInfo.Key",
         "System.ConsoleKeyInfo.KeyChar",
         "System.ConsoleKeyInfo.Modifiers",
@@ -1272,7 +1377,6 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Linq.ImmutableArrayExtensions.ToArray",
         "System.MemoryExtensions.Contains",
         "System.MemoryExtensions.SequenceEqual",
-        "System.Net.Http.IHttpClientFactory.CreateClient",
         "System.Random.Next",
         "System.Random.Shared",
         "System.Reflection.Assembly.GetName",
@@ -1281,6 +1385,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Reflection.CustomAttributeExtensions.GetCustomAttribute",
         "System.Runtime.CompilerServices.ConditionalWeakTable`2.Add",
         "System.Runtime.CompilerServices.ConditionalWeakTable`2.GetOrCreateValue",
+        "System.Runtime.CompilerServices.ConditionalWeakTable`2.Remove",
         "System.Runtime.CompilerServices.ConditionalWeakTable`2.TryGetValue",
         "System.Runtime.CompilerServices.TaskAwaiter.GetResult",
         "System.Runtime.CompilerServices.TaskAwaiter`1.GetResult",
@@ -1474,6 +1579,7 @@ internal static partial class HostedGrimoireProducerInventory
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.CampaignForkFrontierBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.CovenantReviewEventBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IdentitySpellingBackfill",
+        "RetroDownfall.Arcanum.Infrastructure.Data.Schema.LongRestSourceIdentityBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.MemoryAnnalsBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.SagaExtractionCursorBackfill",
         "RetroDownfall.Arcanum.Infrastructure.Data.Schema.SagaMemoryCampaignScopeBackfill",
@@ -1531,6 +1637,24 @@ internal static partial class HostedGrimoireProducerInventory
             },
         };
 
+    // The slots of a class that more than one authored class overrides, called through a receiver nothing proves, with the complete set
+    // of classes that override each. The call runs one of those overrides and the census cannot tell which, so every one of them is
+    // traversed; a set that is not exactly this one (a class added, or one removed) is refused like any unreviewed slot.
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> ReviewedClosedOverrideSets =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror.ReadAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Security.DataProtectionStoreCredentialMirror",
+                "RetroDownfall.Arcanum.Infrastructure.Security.ProtectedFileCredentialMirror",
+            },
+            ["RetroDownfall.Arcanum.Infrastructure.Security.CredentialMirror.WriteAsync"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Security.DataProtectionStoreCredentialMirror",
+                "RetroDownfall.Arcanum.Infrastructure.Security.ProtectedFileCredentialMirror",
+            },
+        };
+
     // Task 14 fills independently reviewed site/frontier evidence. Producer tasks must not edit this catalog.
     private static IReadOnlyList<HostedProducerServiceEntry> CatalogRoots { get; } =
     [
@@ -1563,6 +1687,11 @@ internal static partial class HostedGrimoireProducerInventory
         Ordinary("Data", "DataRetentionSweepHostedService", GrimoireWorkKind.DataRetentionSweep),
         Ordinary("A2A", "A2ASendingLeaseRenewer", GrimoireWorkKind.A2ASendingLeaseRenewal),
         Ordinary("Hosting", "Loremaster", GrimoireWorkKind.LoremasterSummarization),
+        new("LongRestSweepHostedService",
+        [
+            Operation("Hosting", "LongRestSweepHostedService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRestSweep),
+            Handoff(Operation("Intelligence", "LongRestMaintenance", "ProcessAdmittedAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.LongRestSweep, project: "Api"), "admission"),
+        ]),
         new("ApprenticeService",
         [
             Operation("Hosting", "ApprenticeService", "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, GrimoireWorkKind.ApprenticeExecution),
@@ -1596,6 +1725,9 @@ internal static partial class HostedGrimoireProducerInventory
         Chain("Cli", "Commands", "BackupCommands", "Create", HostedProducerAuthorityKind.OwnerBoundMaintenance, "IGrimoireCliInitialization.RunExclusiveAsync holds installation maintenance lock and client mutation boundary; BackupService.CreateAsync owns durable backup operation and Covenant installation read lease"),
         Chain("Infrastructure", "Backup", "BackupRestoreService", "RestoreAsync", HostedProducerAuthorityKind.StoppedHost, "restore safety-backup under exact stopped-host restore ownership"),
         Chain("Infrastructure", "InstallationReset", "InstallationResetService", "ApplyFullUnderMaintenanceLockAsync", HostedProducerAuthorityKind.OwnerBoundMaintenance, "generation-bound installation reset maintenance lock and authenticated reset owner"),
+        Chain("Infrastructure", "InstallationReset", "InstallationResetService", "ApplyFreshUnderMaintenanceLockAsync", HostedProducerAuthorityKind.OwnerBoundMaintenance, "generation-bound installation reset maintenance lock and authenticated reset owner; the stopped-host data step is the ExistingGrimoire plan or the claimed factory erasure"),
+        Chain("Infrastructure", "InstallationReset", "InstallationResetService", "ApplyUnderMaintenanceLockAsync", HostedProducerAuthorityKind.OwnerBoundMaintenance, "generation-bound installation reset maintenance lock and authenticated reset owner; resume recovers the transition journal first, then continues the claimed data step"),
+        Chain("Infrastructure", "InstallationReset", "StoppedHostFactoryErasure", "ApplyAsync", HostedProducerAuthorityKind.OwnerBoundMaintenance, "installation-reset maintenance lock lent by the stopped-host issuer; the authenticated reset record claims the nested operation"),
         Chain("Infrastructure", "GrimoireTransitions", "GrimoireOfflineTransitionStartupRecovery", "RecoverBeforeBootstrapAsync", HostedProducerAuthorityKind.OwnerBoundRecovery, "authenticated offline-transition owner before Grimoire bootstrap"),
     ];
 
@@ -1706,17 +1838,19 @@ internal static partial class HostedGrimoireProducerInventory
 
         foreach (HostedProducerSite site in sites)
         {
-            ValidateManifestFrontier(site, site.WorkFrontierCapsuleId, ".TryAcquireWorkLease", "work", sites, diagnostics);
+            ValidateManifestFrontier(site, site.WorkFrontierCapsuleId, IsWorkFrontierCallee, "work", sites, diagnostics);
 
-            ValidateManifestFrontier(site, site.EffectFrontierCapsuleId, ".TryBeginExternalEffectGroup", "effect", sites, diagnostics);
+            ValidateManifestFrontier(site, site.EffectFrontierCapsuleId, static callee => callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal), "effect", sites, diagnostics);
 
-            bool workFrontier = site.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal);
+            bool workFrontier = IsWorkFrontierCallee(site.Callee);
 
             if (workFrontier != site.AdmittedWorkKind.HasValue)
             {
                 diagnostics.Add(new("HOSTED_MANIFEST_WORK_KIND_INVALID", StableSiteIdentity(site), "Exactly a work-admission frontier must name its admitted work kind."));
             }
         }
+
+        ValidateManifestHandoffBindings(sites, diagnostics);
 
         return new(sites, diagnostics.Distinct().ToArray());
     }
@@ -1740,14 +1874,14 @@ internal static partial class HostedGrimoireProducerInventory
 
     private static bool IsSha256(string value) => value.Length == 64 && value.All(static character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
 
-    private static void ValidateManifestFrontier(HostedProducerSite site, string? frontierId, string expectedCalleeSuffix, string frontierKind, IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics)
+    private static void ValidateManifestFrontier(HostedProducerSite site, string? frontierId, Func<string, bool> isFrontierCallee, string frontierKind, IReadOnlyList<HostedProducerSite> sites, List<HostedProducerInventoryDiagnostic> diagnostics)
     {
         if (frontierId is null)
         {
             return;
         }
 
-        HostedProducerSite[] matches = sites.Where(candidate => candidate.RootType == site.RootType && candidate.AuthorityOperationId == site.AuthorityOperationId && candidate.CapsuleId == frontierId && candidate.Kind == HostedProducerSiteKind.EffectFrontier && candidate.Callee.EndsWith(expectedCalleeSuffix, StringComparison.Ordinal)).ToArray();
+        HostedProducerSite[] matches = sites.Where(candidate => candidate.RootType == site.RootType && candidate.AuthorityOperationId == site.AuthorityOperationId && candidate.CapsuleId == frontierId && candidate.Kind == HostedProducerSiteKind.EffectFrontier && isFrontierCallee(candidate.Callee)).ToArray();
 
         if (matches.Length != 1)
         {
@@ -1962,6 +2096,10 @@ internal static partial class HostedGrimoireProducerInventory
         return new(enclosingType + "." + member, $"src/RetroDownfall.Arcanum.{project}/{folder}/{sourceFile ?? type + ".cs"}", enclosingType, member, authority, kind, proof is null ? null : enclosingType + "." + member + ": " + proof, []);
     }
 
+    // A Lease-Handoff Root is an ordinary hosted root whose admission is not minted inside it: its callers carry a work lease in by
+    // value, and the named formal is the root's admission origin (the Root Lease Formal).
+    private static HostedProducerOperationEntry Handoff(HostedProducerOperationEntry operation, string leaseFormal) => operation with { LeaseFormal = leaseFormal };
+
     private static HostedProducerOperationEntry AtCall(HostedProducerOperationEntry operation, string callee, int occurrence, string exactExpression) => operation with { OperationId = operation.OperationId + "::call:" + callee + "#" + occurrence + "~" + Fingerprint(SyntaxFactory.ParseExpression(exactExpression)) };
 
     private static HostedProducerServiceEntry Ordinary(string folder, string type, GrimoireWorkKind kind, bool stop = false, string? sourceFile = null) => new(type, stop ? [Operation(folder, type, "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, kind, sourceFile: sourceFile), Operation(folder, type, "StopAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, kind, sourceFile: sourceFile)] : [Operation(folder, type, "ExecuteAsync", HostedProducerAuthorityKind.OrdinaryHostedWork, kind, sourceFile: sourceFile)]);
@@ -1970,14 +2108,30 @@ internal static partial class HostedGrimoireProducerInventory
 
     internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations) => DiscoverProducerSites(compilations, registrations, Catalog, NonHostedCatalog);
 
-    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false)
+    // Fixtures never request premises: this overload has no premise parameter, so every caller that does not
+    // use the premise seam below runs with HostedProducerPremises.None and today's strict behaviour.
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSites(IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null) =>
+        DiscoverProducerSitesUnderPremises(HostedProducerPremises.None, compilations, registrations, catalog, nonHostedCatalog, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, recoverySelectionProbe, auditRecoveryReachabilityParity, rootWorkers, reverseRootFamilies, admittedStateObserver, nestedReuseObserver);
+
+    // The only seam that accepts premises. Its callers are the Production Discovery Entry and the
+    // ClosedWorldPremises fixtures; an architecture pin keeps it that way.
+    internal static HostedProducerDiscovery<HostedProducerSite> DiscoverProducerSitesUnderPremises(HostedProducerPremises premises, IReadOnlyList<CSharpCompilation> compilations, HostedProducerDiscovery<string> registrations, IReadOnlyList<HostedProducerServiceEntry> catalog, IReadOnlyList<NonHostedProducerChainEntry> nonHostedCatalog, int evaluationEnvironmentMaximumMembers = DefaultEvaluationEnvironmentMaximumMembers, int evaluationEnvironmentMaximumDepth = DefaultEvaluationEnvironmentMaximumDepth, int traversalMaximumDepth = DefaultTraversalMaximumDepth, int maximumAnalyzedStatesPerRoot = DefaultMaximumAnalyzedStatesPerRoot, HostedProducerRecoverySelectionProbe? recoverySelectionProbe = null, bool auditRecoveryReachabilityParity = false, int rootWorkers = 1, bool reverseRootFamilies = false, Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null, Action<int, int, int, int, bool>? nestedReuseObserver = null)
     {
         if (rootWorkers is not (1 or 2 or 3))
         {
             throw new ArgumentOutOfRangeException(nameof(rootWorkers));
         }
 
-        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity);
+        // Verified once per discovery, by an unbudgeted enumeration; every isolated worker graph shares the verdict.
+        HostedProducerPremiseLedger ledger = premises == HostedProducerPremises.None
+            ? HostedProducerPremiseLedger.None
+            : VerifyPremises(compilations, premises);
+
+        // Facts about the analysed compilations alone: computed at most once per discovery, by a scan that does not
+        // depend on which isolated worker asks first, and shared by every worker graph.
+        InventoryFacts facts = new(compilations);
+
+        ProducerGraph CreateGraph() => new(compilations, evaluationEnvironmentMaximumMembers, evaluationEnvironmentMaximumDepth, traversalMaximumDepth, maximumAnalyzedStatesPerRoot, auditRecoveryReachabilityParity, admittedStateObserver, nestedReuseObserver, ledger, facts);
 
         return HostedProducerRootWorkers.OnAnalysisStack(() => rootWorkers == 1
             ? CreateGraph().Discover(registrations, catalog, nonHostedCatalog, recoverySelectionProbe)
@@ -2013,6 +2167,100 @@ internal static partial class HostedGrimoireProducerInventory
         IReadOnlyList<(SemanticModel Model, IMethodSymbol Method, SyntaxNode Syntax)> queries) =>
         new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
             .ProbeMemberMethodIdentities(queries);
+
+    // The authored types whose static initialization can reach a producer site, over the given compilations.
+    internal static IReadOnlyList<string> ProbeStaticInitializationHazards(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .StaticInitializationHazardNames();
+
+    // The authored implementers of the framework slots (ToString, Equals, GetHashCode, CompareTo, GetFormat, ...) that reach
+    // a producer site or cannot be followed, over the given compilations.
+    // The classes of framework entry point a limit pin asks about (see ProducerGraph.FrameworkEntryPointsThatReach).
+    internal enum FrameworkEntryPoints
+    {
+        // An authored override of a member whose first declaration is the framework's.
+        Overrides,
+
+        // An authored implementation of IDisposable.Dispose or IAsyncDisposable.DisposeAsync.
+        Disposals,
+
+        // An authored property getter with a body.
+        Accessors,
+    }
+
+    // The authored framework entry points of one class that reach a classified producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeFrameworkEntryPointsThatReach(IReadOnlyList<CSharpCompilation> compilations, FrameworkEntryPoints kind) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .FrameworkEntryPointsThatReach(kind);
+
+    // Every class of framework entry point, answered by one graph over the compilations: the graph is the cost, and its scans are shared.
+    internal static IReadOnlyDictionary<FrameworkEntryPoints, IReadOnlyList<string>> ProbeAllFrameworkEntryPointsThatReach(IReadOnlyList<CSharpCompilation> compilations)
+    {
+        ProducerGraph graph = new(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true);
+
+        return Enum.GetValues<FrameworkEntryPoints>().ToDictionary(static kind => kind, kind => graph.FrameworkEntryPointsThatReach(kind));
+    }
+
+    // The authored methods a predicate selects that reach a classified producer site or cannot be followed, over the given compilations.
+    internal static IReadOnlyList<string> ProbeMembersThatReach(IReadOnlyList<CSharpCompilation> compilations, Func<INamedTypeSymbol, IMethodSymbol, bool> selected) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .MembersThatReach(selected);
+
+    internal static IReadOnlyList<string> ProbeCallbackImplementersThatReach(IReadOnlyList<CSharpCompilation> compilations, CallbackFamilies? families = null) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .CallbackImplementersThatReach(families);
+
+    // The families of slots the callback work probe asks about.
+    internal const CallbackFamilies CallbackWorkFamilies = ProducerGraph.CallbackWorkFamilies;
+
+    // The pool of the bindings strings the keys of the cleanup caches share.
+    internal static (bool SharedInstance, bool EqualToAnUnpooledCopy, int Probed) ProbeCleanupBindingPool(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeCleanupBindingPool();
+
+    // The key of the answers for an authored implementation of a callback slot: the judgement of one implementation for an anchor member, for
+    // the same member again, and for a member over the same syntax with other bindings.
+    internal static (int First, int Repeated, int OtherBindings) ProbeCallbackReachKey(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackReachKey();
+
+    // The key of the answers for a type: the implementers of one authored type judged for an anchor member, for the same member again, and for a
+    // member over the same syntax with other bindings.
+    internal static (int First, int Repeated, int OtherBindings) ProbeCallbackImplementersKey(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackImplementersKey();
+
+    // The semantic model of a tree in a compilation, as two discoveries over the compilation and a discovery over another compilation
+    // that holds the same tree are given it: whether the two discoveries over one compilation read one model, and whether the other
+    // compilation reads a model of its own.
+    internal static (bool SharedByDiscoveries, bool DistinctAcrossCompilations) ProbeSemanticModelSharing(CSharpCompilation compilation, CSharpCompilation other, SyntaxTree tree)
+    {
+        SemanticModel first = new InventoryFacts([compilation]).SemanticModelOf(compilation, tree);
+
+        SemanticModel second = new InventoryFacts([compilation]).SemanticModelOf(compilation, tree);
+
+        SemanticModel foreign = new InventoryFacts([other]).SemanticModelOf(other, tree);
+
+        return (ReferenceEquals(first, second), !ReferenceEquals(first, foreign) && ReferenceEquals(foreign.Compilation, other));
+    }
+
+    // The work the callback judgement does over the authored formatters of the compilations: judged for object and then for a value, which ask
+    // about the same implementations.
+    internal static (int Implementations, int FirstResolutions, int FirstSteps, bool FirstReaches, int SecondResolutions, int SecondSteps, bool SecondReaches) ProbeCallbackReachWork(IReadOnlyList<CSharpCompilation> compilations) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeCallbackReachWork();
+
+    // The indexes and memos a graph answers program-wide queries from, beside the passes and computations they replace, over a sample of the queries:
+    // the counts of what was compared and the queries that differ.
+    internal static (int Calls, int Constructors, int Implementers, int Parameters, int Mutations, IReadOnlyList<string> Mismatches) ProbeProgramIndexes(IReadOnlyList<CSharpCompilation> compilations, int sample) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
+            .ProbeProgramIndexes(sample);
+
+    // Where the candidates of a callback slot are read from an index of the authored formatters instead of asked of every formatter, this is
+    // the pairs of receiver type and slot, over a sample of the formatters, for which the index and the definition disagree.
+    internal static (int Pairs, int Selective, IReadOnlyList<string> Mismatches) ProbeFormatterCandidateIndex(IReadOnlyList<CSharpCompilation> compilations, int receiverSample) =>
+        new ProducerGraph(compilations, DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, sitesOnly: true)
+            .ProbeFormatterCandidateIndex(receiverSample);
 
     internal static IReadOnlyList<HostedProducerProjectionSymbolProbe> ProbeProjectionSymbolLookups(
         CSharpCompilation compilation,
@@ -2097,6 +2345,47 @@ internal static partial class HostedGrimoireProducerInventory
         bool useStructuralEntry = false) =>
         new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false)
             .ProbeRepeatedBoundedDataRollback(repetitions, useStructuralEntry);
+
+    // This fixture-only seam supplies real compiled call/constructor contexts to the same
+    // planned root path. It cannot inject state tokens, completion bits or certificate keys.
+    internal static HostedProducerDiscovery<HostedProducerSite> ProbeWholeRootInvocationContexts(
+        CSharpCompilation compilation,
+        HostedProducerOperationEntry root,
+        string firstCaller,
+        string secondCaller,
+        bool declaredFirst,
+        Action<HostedProducerAdmittedStateObservation> observer) =>
+        new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, admittedStateObserver: observer)
+            .ProbeWholeRootInvocationContexts(root, firstCaller, secondCaller, declaredFirst);
+
+    // Fixture-only planned boundary exercise: actual source, an existing proof helper,
+    // and one exact observer exception. No identity, completion or witness injection.
+    internal static HostedProducerDiscovery<HostedProducerSite> ProbeNestedRootBoundary(
+        CSharpCompilation compilation,
+        HostedProducerOperationEntry root,
+        string boundary,
+        Action<HostedProducerAdmittedStateObservation> observer,
+        Action<int, int, int, int, bool> nestedObserver)
+    {
+        InvalidOperationException sentinel = new("nested-source-interrupted");
+
+        bool interrupted = false;
+
+        void Observe(HostedProducerAdmittedStateObservation state)
+        {
+            observer(state);
+
+            if (boundary == "source-exception" && !interrupted && state.Lifecycle && state.Method == "M:Worker.After")
+            {
+                interrupted = true;
+
+                throw sentinel;
+            }
+        }
+
+        return new ProducerGraph([compilation], DefaultEvaluationEnvironmentMaximumMembers, DefaultEvaluationEnvironmentMaximumDepth, DefaultTraversalMaximumDepth, DefaultMaximumAnalyzedStatesPerRoot, false, Observe, nestedObserver)
+            .ProbeNestedRootBoundary(root, boundary, sentinel);
+    }
 
     private enum RecoveryDisposition : byte
     {
@@ -2224,6 +2513,35 @@ internal static partial class HostedGrimoireProducerInventory
             bool CompletionOwned,
             bool Lifecycle);
 
+        private sealed class TraversalCompletionFrame
+        {
+            internal bool Complete { get; set; } = true;
+
+            internal bool FreshNestedPath { get; set; } = true;
+        }
+
+        private readonly record struct CompletedLifecycleRoot(string Operation, int Occurrence, TraversalEvidence Evidence);
+
+        private sealed record CompletedNestedBody(TraversalStateIdentity[] Ancestors, TraversalEvidence Evidence);
+
+        private sealed record CompletedNestedRoot(
+            PlannedRoot Plan,
+            TraversalStateIdentity State,
+            IReadOnlyDictionary<(TraversalStateIdentity State, string Operation), CompletedNestedBody> Bodies);
+
+        private sealed class NestedRootCohort(PlannedRoot plan, TraversalStateIdentity state, CompletedNestedRoot? earlier)
+        {
+            internal PlannedRoot Plan { get; } = plan;
+
+            internal TraversalStateIdentity State { get; } = state;
+
+            internal CompletedNestedRoot? Earlier { get; } = earlier;
+
+            internal bool Eligible { get; set; } = true;
+
+            internal Dictionary<(TraversalStateIdentity State, string Operation), CompletedNestedBody> Pending { get; } = [];
+        }
+
         private enum TraversalEvidence : byte
         {
             NoEvidence = 0,
@@ -2320,6 +2638,12 @@ internal static partial class HostedGrimoireProducerInventory
             internal const int MaximumWork = 256;
 
             internal bool CollectionIndexerProof { get; init; }
+
+            /// <summary>
+            /// Demands the final-provider certificate for a container-built DbContext rather than
+            /// the registration-only provenance cleanup tracking uses. Never shares the stable cache.
+            /// </summary>
+            internal bool ClosedSqliteProvider { get; init; }
 
             internal Dictionary<CleanupEnvironmentCacheIdentity, CleanupProvenance> Cache { get; } = [];
 
@@ -2457,7 +2781,16 @@ internal static partial class HostedGrimoireProducerInventory
             InvocationExpressionSyntax[] Invocations,
             AssignmentExpressionSyntax[] Assignments,
             LocalDeclarationStatementSyntax[] LocalDeclarations,
-            SyntaxNode[] LifetimeNodes);
+            SyntaxNode[] LifetimeNodes,
+            Lazy<ClosureUse[]> ClosureUses);
+
+        // Code a member makes runnable without calling it by name: a lambda it creates, a local function it names (called or not), a
+        // member of a value it names turned into a delegate. The lifetime scan does not descend into a lambda or a local function, so
+        // whatever such a callable does to a handle it captures or is handed is found through the use, at the use's position.
+        private readonly record struct ClosureUse(
+            SyntaxNode Node,
+            IMethodSymbol? LocalFunction,
+            ExpressionSyntax? MethodGroupReceiver);
 
         private sealed record PublicationRegionSyntaxPlan(
             InvocationExpressionSyntax[] Invocations,
@@ -2696,6 +3029,10 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly HashSet<ServiceBinding> bindings = [];
 
+        private readonly Dictionary<BoundTypeIdentity, INamedTypeSymbol> boundImplementationTypes = [];
+
+        private readonly HashSet<BoundTypeIdentity> incompleteInterfaceBindings = [];
+
         private readonly HashSet<BoundContractIdentity> boundContracts = [];
 
         private readonly Dictionary<DiConstructorDependencyIdentity, bool>
@@ -2758,6 +3095,24 @@ internal static partial class HostedGrimoireProducerInventory
             admissionOriginPossibility = [];
 
         private readonly Dictionary<TraversalStateIdentity, TraversalEvidence> analyzedStates = [];
+
+        // Completion is independent of Evidence: a visited site can mask an incomplete child.
+        // These keys retain every normal state field, including Lifecycle.
+        private readonly Dictionary<TraversalStateIdentity, bool> completedTraversalStates = [];
+
+        private readonly Dictionary<TraversalStateIdentity, CompletedLifecycleRoot> completedLifecycleRoots = [];
+
+        private TraversalCompletionFrame? traversalCompletion;
+
+        private readonly Dictionary<TraversalStateIdentity, CompletedNestedRoot> completedNestedRoots = [];
+
+        private NestedRootCohort? nestedRootCohort;
+
+        private bool boundedDataProbeEncountered;
+
+        private int retainedNestedWitnesses;
+
+        private int nestedReuseHits;
 
         private readonly Dictionary<string, int> analyzedStateCounts = new(StringComparer.Ordinal);
 
@@ -2933,6 +3288,27 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly Dictionary<SyntaxTree, SemanticModel> semanticModels = new(ReferenceEqualityComparer.Instance);
 
+        // The model of an analysed tree, or null with the traversal refused. The analysis reads the trees under src/ that are not
+        // generated; a declaration in any other tree (generated code under obj/, a tree outside src/) has no model here. A lookup that
+        // reaches one fails closed with HOSTED_TREE_UNANALYSED naming the declaration, and its caller takes the value it takes when
+        // it cannot prove the declaration, never an exception out of the discovery.
+        private SemanticModel? AnalysedModel(SyntaxNode declaration)
+        {
+            if (semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
+            {
+                return model;
+            }
+
+            RefuseTraversalCompletion();
+
+            diagnostics.Add(new(
+                UnanalysedTreeCode,
+                Location(declaration),
+                "The declaration is in a tree the analysis does not read (generated code or a tree outside src/), so it is not followed."));
+
+            return null;
+        }
+
         private readonly Dictionary<Compilation, Dictionary<IAssemblySymbol, int>> authoredCompilationIdentities = new(ReferenceEqualityComparer.Instance);
 
         private RecoveryMatrix? recoveryMatrix;
@@ -2951,14 +3327,48 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly bool auditRecoveryReachabilityParity;
 
+        private readonly Action<HostedProducerAdmittedStateObservation>? admittedStateObserver;
+
+        private readonly Action<int, int, int, int, bool>? nestedReuseObserver;
+
+        private readonly HostedProducerPremiseLedger premises;
+
+        private readonly InventoryFacts inventoryFacts;
+
+        private readonly IReadOnlyList<CSharpCompilation> analysedCompilations;
+
+        // A graph that answers one question only: whether a body can reach a producer site that is classified (a member of the
+        // vocabulary or an external producer). It does not ask whether the body uses a framework member nobody has reviewed,
+        // or a construct it cannot follow, which the traversal of a body refuses. The static initialization of a type is
+        // judged by such a graph, because no traversal ever enters it.
+        private readonly bool scanSitesOnly;
+
         internal ProducerGraph(
             IReadOnlyList<CSharpCompilation> compilations,
             int evaluationEnvironmentMaximumMembers,
             int evaluationEnvironmentMaximumDepth,
             int traversalMaximumDepth,
             int maximumAnalyzedStatesPerRoot,
-            bool auditRecoveryReachabilityParity)
+            bool auditRecoveryReachabilityParity,
+            Action<HostedProducerAdmittedStateObservation>? admittedStateObserver = null,
+            Action<int, int, int, int, bool>? nestedReuseObserver = null,
+            HostedProducerPremiseLedger? premises = null,
+            InventoryFacts? facts = null,
+            bool sitesOnly = false)
         {
+            this.premises = premises ?? HostedProducerPremiseLedger.None;
+
+            inventoryFacts = facts ?? new InventoryFacts(compilations);
+
+            scanSitesOnly = sitesOnly;
+
+            analysedCompilations = compilations;
+
+            foreach (HostedProducerInventoryDiagnostic violation in this.premises.Violations)
+            {
+                diagnostics.Add(violation);
+            }
+
             this.evaluationEnvironmentMaximumMembers =
                 evaluationEnvironmentMaximumMembers;
 
@@ -2971,6 +3381,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             this.auditRecoveryReachabilityParity = auditRecoveryReachabilityParity;
 
+            this.admittedStateObserver = admittedStateObserver;
+
+            this.nestedReuseObserver = nestedReuseObserver;
+
             foreach (CSharpCompilation compilation in compilations)
             {
                 _ = CompilationIdentity(compilation);
@@ -2982,7 +3396,7 @@ internal static partial class HostedGrimoireProducerInventory
                         continue;
                     }
 
-                    SemanticModel model = compilation.GetSemanticModel(tree);
+                    SemanticModel model = inventoryFacts.SemanticModelOf(compilation, tree);
 
                     semanticModels.Add(tree, model);
 
@@ -3029,8 +3443,6 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
-        private static MethodIdentity Identity(IMethodSymbol method) => new(method.ContainingAssembly.Identity, MethodKey(method));
-
         private IEnumerable<AuthoredMember> AuthoredMembers => members.Values.SelectMany(static group => group);
 
         private void AddMember(AuthoredMember member)
@@ -3053,7 +3465,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             candidates.Add(member);
 
-            if (member.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null })
+            if (member.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null } && !IsBodilessAccessorSlot(member))
             {
                 MethodIdentity identity = new(member.Symbol.ContainingAssembly.Identity, key);
 
@@ -3065,6 +3477,16 @@ internal static partial class HostedGrimoireProducerInventory
                 exactCandidates.Add(member);
             }
         }
+
+        // An accessor declared without a body that is not an auto-property accessor: an abstract or extern accessor, an
+        // interface member, the definition part of a partial property. Like a bodiless method it stands for whatever the
+        // runtime type selects, or for the implementation part, never for code of its own.
+        private static bool IsBodilessAccessorSlot(AuthoredMember member) =>
+            member.Syntax is AccessorDeclarationSyntax { Body: null, ExpressionBody: null }
+            && (member.Symbol.IsAbstract
+                || member.Symbol.IsExtern
+                || member.Symbol.ContainingType.TypeKind == TypeKind.Interface
+                || member.Symbol.AssociatedSymbol is IPropertySymbol { IsPartialDefinition: true });
 
         private int CompilationIdentity(Compilation compilation)
         {
@@ -3449,6 +3871,19 @@ internal static partial class HostedGrimoireProducerInventory
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
 
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(references, "value-constant");
+
+                        AppendIdentitySegment(
+                            references,
+                            BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(references, constantIdentity);
+
+                        continue;
+                    }
+
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
                             normalizedSource.Caller,
@@ -3678,6 +4113,19 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
+
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(references, "value-constant");
+
+                        AppendIdentitySegment(
+                            references,
+                            BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(references, constantIdentity);
+
+                        continue;
+                    }
 
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
@@ -4022,6 +4470,17 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundValueSource normalizedSource =
                         NormalizeEvaluationValueSource(source);
+
+                    if (TryConstantValueIdentity(normalizedSource, out string constantIdentity))
+                    {
+                        AppendIdentitySegment(value, "value-constant");
+
+                        AppendIdentitySegment(value, BindingSymbolIdentity(symbol, member));
+
+                        AppendIdentitySegment(value, constantIdentity);
+
+                        continue;
+                    }
 
                     AuthoredMember projectedCaller =
                         ProjectEvaluationEnvironment(
@@ -4390,8 +4849,16 @@ internal static partial class HostedGrimoireProducerInventory
 
             while (true)
             {
-                ExpressionSyntax expression = StripTransparentExpression(
-                    source.Expression);
+                if (!TryNormalizeBuiltInCleanupValue(
+                        source.Caller.Model,
+                        source.Expression,
+                        out ExpressionSyntax expression,
+                        requireIdentityPreservingCasts: true))
+                {
+                    complete = false;
+
+                    break;
+                }
 
                 source = new(source.Caller, expression);
 
@@ -4558,10 +5025,22 @@ internal static partial class HostedGrimoireProducerInventory
             };
 
             if (returned is null
-                || StripTransparentExpression(returned) is not
-                    IdentifierNameSyntax identifier
+                || !TryNormalizeBuiltInCleanupValue(
+                    target.Model,
+                    returned,
+                    out ExpressionSyntax normalizedReturn,
+                    requireIdentityPreservingCasts: true)
+                || normalizedReturn is not IdentifierNameSyntax identifier
                 || target.Model.GetSymbolInfo(identifier).Symbol is not
                     IParameterSymbol returnedParameter
+                || !SymbolEqualityComparer.Default.Equals(
+                    returnedParameter.ContainingSymbol,
+                    target.Symbol)
+                || returnedParameter.Ordinal < 0
+                || returnedParameter.Ordinal >= target.Symbol.Parameters.Length
+                || !SymbolEqualityComparer.Default.Equals(
+                    returnedParameter,
+                    target.Symbol.Parameters[returnedParameter.Ordinal])
                 || !SymbolEqualityComparer.Default.Equals(
                     returnedParameter.Type,
                     target.Symbol.ReturnType)
@@ -4630,7 +5109,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (ISymbol candidate in candidates)
             {
-                if (ExpressionDependsOnSymbol(
+                if (IsCertifiedOwnEnumSlot(member, candidate)
+                    || ExpressionDependsOnSymbol(
                     member,
                     expression,
                     candidate,
@@ -4951,7 +5431,7 @@ internal static partial class HostedGrimoireProducerInventory
                 HashSet<ISymbol> retained = new(
                     candidates.Where(candidate =>
                         candidate is not IParameterSymbol parameter
-                        || member.Symbol.MethodKind != MethodKind.Ordinary
+                        || !MemberCannotBeNestedInAMethod(member)
                         || parameter.ContainingSymbol is not IMethodSymbol
                         {
                             MethodKind: MethodKind.Ordinary,
@@ -4990,7 +5470,9 @@ internal static partial class HostedGrimoireProducerInventory
                     SymbolEqualityComparer.Default);
             }
 
-            if (required.Count == candidates.Count)
+            IReadOnlySet<ISymbol> inertPayloads = InertPayloadParameters(member);
+
+            if (required.Count == candidates.Count && inertPayloads.Count == 0)
             {
                 return member;
             }
@@ -5014,7 +5496,7 @@ internal static partial class HostedGrimoireProducerInventory
                         SymbolEqualityComparer.Default),
                 ConcreteBindings = ProjectEvaluationBindings(
                     member.ConcreteBindings,
-                    required),
+                    new HashSet<ISymbol>(required.Where(symbol => !inertPayloads.Contains(symbol)), SymbolEqualityComparer.Default)),
                 RecoveryBindings = ProjectEvaluationBindings(
                     member.RecoveryBindings,
                     required),
@@ -5457,6 +5939,17 @@ internal static partial class HostedGrimoireProducerInventory
                 return;
             }
 
+            if (TryGetExactScopedEnumerableDescriptor(invocation, bound, model,
+                out InvocationExpressionSyntax descriptor, out IMethodSymbol descriptorMethod))
+            {
+                IndexResolvedRegistration(diActivationRegistrations, descriptor, model,
+                    descriptorMethod, includeFactoryConstruction: true);
+
+                ReadServiceBinding(descriptor, model, descriptorMethod);
+
+                return;
+            }
+
             if (bound.Name is
                     "AddHostedService" or "AddSingleton" or "TryAddSingleton"
                         or "AddScoped" or "TryAddScoped"
@@ -5490,6 +5983,12 @@ internal static partial class HostedGrimoireProducerInventory
                 return;
             }
 
+            ReadServiceBinding(invocation, model, bound);
+        }
+
+        private void ReadServiceBinding(InvocationExpressionSyntax invocation, SemanticModel model,
+            IMethodSymbol bound)
+        {
             ITypeSymbol? contract = bound.TypeArguments.FirstOrDefault();
 
             if (contract is null)
@@ -5507,9 +6006,17 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     BoundTypeIdentity contractIdentity = TypeIdentity(contract, model.Compilation);
 
-                    bindings.Add(new(contractIdentity, TypeIdentity(implementation!, model.Compilation)));
+                    BoundTypeIdentity implementationIdentity = TypeIdentity(implementation!, model.Compilation);
+
+                    bindings.Add(new(contractIdentity, implementationIdentity));
+
+                    boundImplementationTypes[implementationIdentity] = (INamedTypeSymbol)implementation!;
 
                     boundContracts.Add(new(contractIdentity.Assembly, contractIdentity.Type));
+                }
+                else if (contract.TypeKind == TypeKind.Interface)
+                {
+                    incompleteInterfaceBindings.Add(TypeIdentity(contract, model.Compilation));
                 }
             }
         }
@@ -5723,6 +6230,83 @@ internal static partial class HostedGrimoireProducerInventory
             return CompleteDiscovery();
         }
 
+        internal HostedProducerDiscovery<HostedProducerSite> ProbeWholeRootInvocationContexts(
+            HostedProducerOperationEntry root, string firstCaller, string secondCaller, bool declaredFirst)
+        {
+            PlannedRoot[] plans = PrepareRoots(new([root.EnclosingType], []), [new(root.EnclosingType, [root])], [])
+                .Where(plan => plan.Operation == root.OperationId).ToArray();
+
+            if (plans is not [{ Lifecycle: true }, { Lifecycle: false }]) throw new InvalidOperationException("Expected one automatic and one declared whole root.");
+
+            AuthoredMember Bind(string callerName, AuthoredMember target)
+            {
+                AuthoredMember caller = AuthoredMembers.Single(member => member.Symbol.Name == callerName);
+
+                InvocationExpressionSyntax call = caller.Syntax.DescendantNodes().OfType<InvocationExpressionSyntax>().Single();
+
+                if (caller.Model.GetSymbolInfo(call).Symbol is not IMethodSymbol method
+                    || ResolveInvocationTarget(method, caller, call) is not { } resolved
+                    || MemberIdentity(resolved) != MemberIdentity(target)) throw new InvalidOperationException("Expected an exact call to this root.");
+
+                return BindInvocationContext(caller, call, target);
+            }
+
+            plans[0] = plans[0] with { Member = Bind(firstCaller, plans[0].Member) };
+
+            plans[1] = plans[1] with { Member = Bind(secondCaller, plans[1].Member) };
+
+            foreach (PlannedRoot plan in declaredFirst ? plans.Reverse() : plans) TraversePlannedRoot(plan);
+
+            CompletePrimaryRoots(null);
+
+            return CompleteDiscovery();
+        }
+
+        internal HostedProducerDiscovery<HostedProducerSite> ProbeNestedRootBoundary(HostedProducerOperationEntry root, string boundary, Exception sentinel)
+        {
+            if (boundary is not ("probe-before" or "probe-between" or "cached-probe-between" or "direct-probe-between" or "source-exception" or "unplanned-first" or "unplanned-second")) throw new ArgumentOutOfRangeException(nameof(boundary));
+
+            PlannedRoot[] plans = PrepareRoots(new([root.EnclosingType], []), [new(root.EnclosingType, [root])], [])
+                .Where(plan => plan.Operation == root.OperationId).ToArray();
+
+            if (plans is not [{ Lifecycle: true }, { Lifecycle: false }]) throw new InvalidOperationException("Expected exact automatic and declared roots.");
+
+            void Probe(bool structural, int repetitions)
+            {
+                var result = ProbeRepeatedBoundedDataRollback(repetitions, structural);
+
+                if (result.Proofs.Length != repetitions || result.Proofs.Any(static proof => proof != "PureBoundedData")) throw new InvalidOperationException("Expected the actual compiled pure bounded factory.");
+            }
+
+            if (boundary == "probe-before") Probe(true, 1);
+
+            try
+            {
+                if (boundary == "unplanned-first")
+                {
+                    progressOccurrence = plans[0].Occurrence + 1;
+
+                    _ = TraverseRoot(plans[0].Member, plans[0].RootType, plans[0].Operation, true);
+                }
+                else TraversePlannedRoot(plans[0]);
+            }
+            catch (Exception exception) when (ReferenceEquals(exception, sentinel)) { }
+
+            if (boundary is "probe-between" or "cached-probe-between" or "direct-probe-between") Probe(boundary != "direct-probe-between", boundary == "cached-probe-between" ? 2 : 1);
+
+            if (boundary == "unplanned-second")
+            {
+                progressOccurrence = plans[1].Occurrence + 1;
+
+                _ = TraverseRoot(plans[1].Member, plans[1].RootType, plans[1].Operation, false, plans[1].Selection);
+            }
+            else TraversePlannedRoot(plans[1]);
+
+            CompletePrimaryRoots(null);
+
+            return CompleteDiscovery();
+        }
+
         private sealed record PlannedRoot(
             int Occurrence,
             string Family,
@@ -5812,9 +6396,19 @@ internal static partial class HostedGrimoireProducerInventory
             Dictionary<string, int> familyOwners = plans[0].GroupBy(static root => root.Family, StringComparer.Ordinal)
                 .ToDictionary(static family => family.Key, family => owners[family.First().Occurrence], StringComparer.Ordinal);
 
+            HashSet<string> handoffServices = [.. coordinator.leaseHandoffRootTypes.Values];
+
+            foreach (string service in handoffServices)
+            {
+                if (plans[0].Where(root => root.RootType == service).Select(root => owners[root.Occurrence]).Distinct().Count() > 1)
+                {
+                    throw new InvalidOperationException("The roots of a service that declares a lease-handoff root were split across workers.");
+                }
+            }
+
             ProducerGraph Owner(string rootType, string operation)
             {
-                string family = rootType + "|" + coordinator.RootOperation(operation);
+                string family = HostedProducerRootWorkers.FamilyOf(rootType, coordinator.RootOperation(operation), handoffServices.Contains(rootType));
 
                 if (!familyOwners.TryGetValue(family, out int worker))
                 {
@@ -5845,6 +6439,8 @@ internal static partial class HostedGrimoireProducerInventory
                 coordinator.lifecycleMembers.UnionWith(worker.lifecycleMembers);
 
                 coordinator.ownerRecoveryAssociations.UnionWith(worker.ownerRecoveryAssociations);
+
+                coordinator.provenLeaseHandoffCalls.UnionWith(worker.provenLeaseHandoffCalls);
             }
 
             ProducerGraph? matrixOwner = workers.FirstOrDefault(static worker => worker.recoveryMatrixResolved);
@@ -5979,15 +6575,37 @@ internal static partial class HostedGrimoireProducerInventory
 
                 string rootType = root.Symbol.ContainingType.Name;
 
-                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation), rootType, operation, root, true, null));
+                planned.Add(new(planned.Count, HostedProducerRootWorkers.FamilyOf(rootType, RootOperation(operation), serviceDeclaresLeaseHandoff: false), rootType, operation, root, true, null));
             }
 
             foreach ((HostedProducerOperationEntry operation, AuthoredMember root, SyntaxNode selection) in resolvedRoots)
             {
                 string rootType = catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.ServiceType ?? nonHostedCatalog.FirstOrDefault(chain => chain.ChainId == operation.OperationId)?.EnclosingType ?? operation.EnclosingType;
 
-                planned.Add(new(planned.Count, rootType + "|" + RootOperation(operation.OperationId), rootType, operation.OperationId, root, false, selection));
+                if (operation.LeaseFormal is not null)
+                {
+                    leaseHandoffRootTypes[operation.OperationId] = rootType;
+                }
+
+                planned.Add(new(planned.Count, HostedProducerRootWorkers.FamilyOf(rootType, RootOperation(operation.OperationId), serviceDeclaresLeaseHandoff: false), rootType, operation.OperationId, root, false, selection));
             }
+
+            // A service that declares a lease-handoff root is one family: its roots cut to the handoff root, whose closure is shared only
+            // through the state cache of the worker that runs it, so a pool that split them would admit the closure once for every worker.
+            HashSet<string> handoffServices = [.. leaseHandoffRootTypes.Values];
+
+            for (int index = 0; index < planned.Count; index++)
+            {
+                if (handoffServices.Contains(planned[index].RootType))
+                {
+                    planned[index] = planned[index] with
+                    {
+                        Family = HostedProducerRootWorkers.FamilyOf(planned[index].RootType, RootOperation(planned[index].Operation), serviceDeclaresLeaseHandoff: true),
+                    };
+                }
+            }
+
+            ValidateLeaseHandoffDeclarations();
 
             preparedOwnerRecoveryAnchor = resolvedRoots.FirstOrDefault(static root => root.Operation.Authority == HostedProducerAuthorityKind.OwnerBoundRecovery).Selection;
 
@@ -5998,7 +6616,7 @@ internal static partial class HostedGrimoireProducerInventory
         {
             progressOccurrence = root.Occurrence + 1;
 
-            _ = TraverseRoot(root.Member, root.RootType, root.Operation, root.Lifecycle, root.Selection);
+            _ = TraverseRoot(root.Member, root.RootType, root.Operation, root.Lifecycle, root.Selection, root);
         }
 
         private void CompletePrimaryRoots(HostedProducerRecoverySelectionProbe? recoverySelectionProbe)
@@ -6015,6 +6633,8 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             ValidateOwnerRecoveryAssociations();
+
+            CheckLeaseHandoffCallerCensus();
         }
 
         private void DiscoverExternalRoots(
@@ -6080,6 +6700,8 @@ internal static partial class HostedGrimoireProducerInventory
 
         private HostedProducerDiscovery<HostedProducerSite> CompleteDiscovery()
         {
+            nestedReuseObserver?.Invoke(progressWorker, completedNestedRoots.Count, retainedNestedWitnesses, nestedReuseHits, boundedDataProbeEncountered);
+
             using HostedProducerPhaseProgress progress = HostedProducerPhaseProgress.Start("complete-discovery", progressWorker);
 
             HostedProducerAnalysisMetrics analysisMetrics = new(
@@ -6288,7 +6910,8 @@ internal static partial class HostedGrimoireProducerInventory
             string rootType,
             string operationId,
             bool lifecycle,
-            SyntaxNode? selection = null)
+            SyntaxNode? selection = null,
+            PlannedRoot? plannedRoot = null)
         {
             string rootOperation = RootOperation(operationId);
 
@@ -6322,12 +6945,11 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                member = BindLifecycleRootFactoryContext(member);
-
-                member = BindDeclaredRootFactoryContext(
+                (member, string? rootWork) = CanonicalDeclaredRoot(
                     member,
                     operationId,
-                    selection);
+                    selection,
+                    lifecycle);
 
                 TraversalEvidence result = Traverse(
                     member,
@@ -6335,7 +6957,9 @@ internal static partial class HostedGrimoireProducerInventory
                     operationId,
                     [],
                     lifecycle,
-                    selection: selection);
+                    inheritedWork: rootWork,
+                    selection: selection,
+                    plannedRoot: plannedRoot);
 
                 completed = true;
 
@@ -7403,8 +8027,200 @@ internal static partial class HostedGrimoireProducerInventory
             return bound;
         }
 
-        private AuthoredMember? ResolveInvocationTarget(IMethodSymbol method, AuthoredMember member, SyntaxNode node)
+        private static bool IsExactSqliteCommandFactorySlot(IMethodSymbol method) =>
+            method.Name == "CreateCommand"
+                && method.MethodKind == MethodKind.Ordinary
+                && !method.IsStatic && method.IsVirtual && method.Arity == 0
+                && method.Parameters.IsEmpty
+                && IsExactFrameworkType(method.ContainingType,
+                    "Microsoft.Data.Sqlite.SqliteConnection", typeof(Microsoft.Data.Sqlite.SqliteConnection).Assembly.GetName())
+                && IsExactFrameworkType(method.ReturnType,
+                    "Microsoft.Data.Sqlite.SqliteCommand", typeof(Microsoft.Data.Sqlite.SqliteConnection).Assembly.GetName());
+
+        private bool TryGetExactSqliteReceiverAllocation(AuthoredMember member, ExpressionSyntax receiver,
+            CleanupProvenanceContext proof, out BoundValueSource allocation)
         {
+            allocation = null!;
+
+            HashSet<ISymbol> visited = new(SymbolEqualityComparer.Default);
+
+            HashSet<GraphMemberIdentity> factories = [];
+
+            while (proof.RemainingWork > 0)
+            {
+                // Reuse the stable-local proof, including its conversion check at
+                // every initializer. Never consult cast-erasing cleanup caches.
+                ExpressionSyntax? value = PerUnitStableLocalValue(member, receiver, receiver.Span.End,
+                    proof, new HashSet<ISymbol>(SymbolEqualityComparer.Default), requireBuiltInConversions: true,
+                    requireUncapturedSqliteSlots: true);
+
+                if (value is null) return false;
+
+                if (value is BaseObjectCreationExpressionSyntax
+                    && member.Model.GetOperation(value) is IObjectCreationOperation { Constructor: not null })
+                {
+                    allocation = new(member, value);
+
+                    return proof.RemainingWork > 0;
+                }
+
+                if (value is AwaitExpressionSyntax awaited)
+                {
+                    // This is only a selected object-value return hop. Factory
+                    // execution, cleanup and admission still use normal traversal.
+                    if (proof.RemainingWork-- <= 0
+                        || member.Model.GetOperation(awaited) is not IAwaitOperation
+                            { Operation: IInvocationOperation configured, Type: { } resultType }
+                        || !IsExactFrameworkType(resultType, "Microsoft.Data.Sqlite.SqliteConnection",
+                            typeof(Microsoft.Data.Sqlite.SqliteConnection).Assembly.GetName())
+                        || !IsExactFrameworkConfigureAwait(configured.TargetMethod)
+                        || configured.TargetMethod.ContainingType is not { TypeArguments: [ITypeSymbol taskValue] } task
+                        || !IsExactFrameworkType(task, "System.Threading.Tasks.Task`1", typeof(Task).Assembly.GetName())
+                        || !SymbolEqualityComparer.Default.Equals(taskValue, resultType)
+                        || configured.Arguments is not [{ Value.ConstantValue: { HasValue: true, Value: false } }]
+                        || configured.Instance is not IInvocationOperation sourceCall
+                        || sourceCall.Syntax is not InvocationExpressionSyntax sourceSyntax
+                        || sourceCall.TargetMethod is not { IsStatic: true, MethodKind: MethodKind.Ordinary, Arity: 0 }
+                        || sourceCall.TargetMethod.Parameters.Any(static parameter => parameter.RefKind != RefKind.None)
+                        || !SymbolEqualityComparer.Default.Equals(sourceCall.Type, task)
+                        || Resolve(sourceCall.TargetMethod, member.Model.Compilation) is not { } factory
+                        || factory.Symbol is not { IsStatic: true, IsAsync: true, RefKind: RefKind.None }
+                        || factory.Syntax is not MethodDeclarationSyntax
+                        || !factories.Add(MemberIdentity(factory))) return false;
+
+                    // ReturnedExpressions excludes nested callable bodies. Charge
+                    // every candidate and reject exhaustion before using the sole
+                    // successful returned expression; catch-dispose/throw adds none.
+                    ExpressionSyntax[] returned = PerUnitVisited(ReturnedExpressions(factory.Syntax), proof).ToArray();
+
+                    if (proof.RemainingWork <= 0 || returned is not [ExpressionSyntax successful]) return false;
+
+                    member = BindAdmissionArguments(member, sourceSyntax, factory);
+
+                    receiver = successful;
+
+                    // The next iteration checks the original return and each local
+                    // or bound argument with the same built-in-only normalizer.
+                    continue;
+                }
+
+                ISymbol? symbol = member.Model.GetSymbolInfo(value).Symbol;
+
+                if (symbol is IFieldSymbol field)
+                {
+                    if (field is not { IsStatic: false, IsReadOnly: true, DeclaredAccessibility: Accessibility.Private }
+                        || member.Model.GetOperation(value) is not IFieldReferenceOperation { Instance: IInstanceReferenceOperation }
+                        || !SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)) return false;
+                }
+                else if (symbol is not IParameterSymbol { RefKind: RefKind.None }
+                    || !SqliteValueSlotHasNoLexicalCapture(member, symbol, proof)) return false;
+
+                // These existing bindings retain the actual constructor RHS or
+                // caller argument. Unsupported/unbound fields and factories refuse.
+                if (!visited.Add(symbol)
+                    || !IsStableAcrossAdmissionCleanupBackEdges(member, value, symbol)
+                    || !TryResolveStableBoundValueSource(member, value, out BoundValueSource? source)
+                    || source is null) return false;
+
+                member = source.Caller;
+
+                receiver = source.Expression;
+            }
+
+            return false;
+        }
+
+        private static bool SqliteValueSlotHasNoLexicalCapture(AuthoredMember member, ISymbol slot,
+            CleanupProvenanceContext proof)
+        {
+            // A constructor/heap can store a callback without an invocation argument
+            // exposing its mutation. Refuse capture rather than interpret that owner.
+            foreach (SyntaxNode callable in PerUnitVisited(member.Syntax.DescendantNodes()
+                .Where(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax), proof))
+            {
+                if (SyntaxReferencesSymbol(member.Model, callable, slot)) return false;
+            }
+
+            return proof.RemainingWork > 0;
+        }
+
+        private bool IsReviewedExactSqliteCommandFactory(IMethodSymbol method, SyntaxNode? node, AuthoredMember? member)
+        {
+            if (member is null || node is not InvocationExpressionSyntax call
+                || member.Model.GetOperation(call) is not IInvocationOperation invocation
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, method.OriginalDefinition)) return false;
+
+            // A base invocation selects the metadata body directly; it cannot
+            // dispatch to the source subclass's override.
+            if (!invocation.IsVirtual) return true;
+
+            // SqliteSealedByUse: no subclass of SqliteConnection exists in the analysed universe, so the
+            // virtual slot selects the reviewed framework body for a receiver of any provenance.
+            if (SqliteSealedByUse) return true;
+
+            CleanupProvenanceContext proof = new();
+
+            return AdmissionReceiver(member, call) is { } receiver
+                && TryGetExactSqliteReceiverAllocation(member, receiver, proof, out BoundValueSource allocation)
+                && IsExactFrameworkType(allocation.Caller.Model.GetTypeInfo(allocation.Expression).Type,
+                    "Microsoft.Data.Sqlite.SqliteConnection", typeof(Microsoft.Data.Sqlite.SqliteConnection).Assembly.GetName());
+        }
+
+        private AuthoredMember? ResolveExactSqliteCommandFactoryOverride(
+            IMethodSymbol method,
+            AuthoredMember member,
+            SyntaxNode node,
+            CleanupProvenanceContext? existingProof)
+        {
+            if (!IsExactSqliteCommandFactorySlot(method)
+                || node is not InvocationExpressionSyntax call
+                || member.Model.GetOperation(call) is not IInvocationOperation { IsVirtual: true } invocation
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, method.OriginalDefinition)
+                || AdmissionReceiver(member, call) is not { } receiver)
+            {
+                return null;
+            }
+
+            CleanupProvenanceContext proof = existingProof ?? new();
+
+            if (!TryGetExactSqliteReceiverAllocation(member, receiver, proof, out BoundValueSource allocation)
+                || allocation.Caller.Model.GetTypeInfo(allocation.Expression).Type is not INamedTypeSymbol
+                    { TypeKind: TypeKind.Class, IsAbstract: false, IsSealed: true } concrete) return null;
+
+            for (INamedTypeSymbol? current = concrete; current is not null; current = current.BaseType)
+            {
+                if (proof.RemainingWork-- <= 0) return null;
+
+                foreach (IMethodSymbol candidate in current.GetMembers(method.Name).OfType<IMethodSymbol>())
+                {
+                    if (proof.RemainingWork-- <= 0) return null;
+
+                    for (IMethodSymbol? overridden = candidate; overridden is not null; overridden = overridden.OverriddenMethod)
+                    {
+                        if (proof.RemainingWork-- <= 0) return null;
+
+                        if (!SymbolEqualityComparer.Default.Equals(overridden.OriginalDefinition, method.OriginalDefinition)) continue;
+
+                        if (Resolve(candidate, member.Model.Compilation) is not { } target
+                            || !SameBoundType(target.Symbol.ContainingType, target.Model.Compilation,
+                                concrete, allocation.Caller.Model.Compilation)) return null;
+
+                        return BindCleanupInvocationContext(member, call, target, proof, selectedReceiver: allocation);
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private AuthoredMember? ResolveInvocationTarget(IMethodSymbol method, AuthoredMember member, SyntaxNode node,
+            CleanupProvenanceContext? cleanupProof = null)
+        {
+            if (ResolveExactSqliteCommandFactoryOverride(method, member, node, cleanupProof) is { } exactOverride)
+            {
+                return exactOverride;
+            }
+
             if (method.ContainingType.TypeKind == TypeKind.Interface
                 && node is InvocationExpressionSyntax call
                 && AdmissionReceiver(member, call) is { } receiver
@@ -7429,8 +8245,16 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
-            return Resolve(method, member.Model.Compilation);
+            // An authored default is only effective when the exact concrete receiver or each
+            // proven registration inherits that slot. Its body alone does not close dispatch.
+            return IsDefaultInterfaceSlot(method) ? null : Resolve(method, member.Model.Compilation);
         }
+
+        private static bool IsDefaultInterfaceSlot(IMethodSymbol method) =>
+            method.ContainingType.TypeKind == TypeKind.Interface && !method.IsAbstract && !method.IsStatic && method.IsVirtual;
+
+        private bool HasIncompleteDefaultInterfaceBinding(IMethodSymbol method, Compilation consumingCompilation) =>
+            IsDefaultInterfaceSlot(method) && incompleteInterfaceBindings.Contains(TypeIdentity(method.ContainingType, consumingCompilation));
 
         private ITypeSymbol? ExactOptionalDiDefaultCleanupReceiverType(
             AuthoredMember member,
@@ -7511,31 +8335,22 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (ServiceBinding binding in eligibleBindings)
             {
-                if (binding.Implementation.Compilation is not int implementationCompilation
-                    || !membersByType.TryGetValue(
-                        new(
-                            binding.Implementation.Assembly,
-                            implementationCompilation,
-                            binding.Implementation.Type),
-                        out List<AuthoredMember>? implementationMembers))
+                if (binding.Implementation.Compilation is null
+                    || !boundImplementationTypes.TryGetValue(binding.Implementation, out INamedTypeSymbol? concrete))
                 {
                     continue;
                 }
 
-                foreach (AuthoredMember candidate in implementationMembers)
+                foreach (IMethodSymbol slot in concrete.AllInterfaces
+                    .Where(slotType => slotType.ContainingAssembly.Identity.Equals(contract.Assembly)
+                        && TypeKey(slotType) == contract.Type)
+                    .SelectMany(static slotType => slotType.GetMembers())
+                    .OfType<IMethodSymbol>()
+                    .Where(slot => MethodKey(slot) == MethodKey(method)))
                 {
-                    bool implements = candidate.Symbol.ContainingType.AllInterfaces
-                        .Where(slotType => slotType.ContainingAssembly.Identity.Equals(contract.Assembly)
-                            && TypeKey(slotType) == contract.Type)
-                        .SelectMany(static slotType => slotType.GetMembers())
-                        .OfType<IMethodSymbol>()
-                        .Any(slot => MethodKey(slot) == MethodKey(method)
-                            && candidate.Symbol.ContainingType.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation
-                            && SymbolEqualityComparer.Default.Equals(
-                                implementation.OriginalDefinition,
-                                candidate.Symbol.OriginalDefinition));
-
-                    if (implements && seen.Add(MemberIdentity(candidate)))
+                    if (concrete.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation
+                        && Resolve(implementation, consumingCompilation) is { } candidate
+                        && seen.Add(MemberIdentity(candidate)))
                     {
                         implementations.Add(candidate);
                     }
@@ -8074,7 +8889,7 @@ internal static partial class HostedGrimoireProducerInventory
                 failures.Distinct(StringComparer.Ordinal).ToArray());
         }
 
-        private static RecoveryDisposition? RecoveryDispositionOf(
+        private RecoveryDisposition? RecoveryDispositionOf(
             AuthoredMember classifier,
             ExpressionSyntax expression)
         {
@@ -8699,6 +9514,21 @@ internal static partial class HostedGrimoireProducerInventory
                 IsExactProductionFrameworkServiceBuilder(method)
                 && !RecoveryRegistrationMentionsProtectedType(member, call);
 
+            IMethodSymbol tryAddEnumerableDefinition = method.ReducedFrom ?? method;
+
+            bool protectedTryAddEnumerableCandidate =
+                tryAddEnumerableDefinition.Name == "TryAddEnumerable"
+                && TypeKey(tryAddEnumerableDefinition.ContainingType) ==
+                    "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions"
+                && RecoveryRegistrationMentionsProtectedType(member, call);
+
+            if (protectedTryAddEnumerableCandidate
+                && !TryGetExactScopedEnumerableDescriptor(call, method, member.Model,
+                    out _, out _))
+            {
+                return true;
+            }
+
             if (IsRecoveryServiceCollectionType(method.ReturnType)
                 && !IsExactServiceCollectionFluentMethod(method)
                 && !authoredCollectionForwardingIsInspectable
@@ -8829,45 +9659,16 @@ internal static partial class HostedGrimoireProducerInventory
                     && exactHandlerContract(descriptorAliasContract)
                     && ExactFactoryAlias(invocation));
 
-            IMethodSymbol mutationDefinition = method.ReducedFrom ?? method;
-
-            InvocationExpressionSyntax? exactTryAddEnumerableDescriptor =
-                method.Name == "TryAddEnumerable"
-                && IsExactFrameworkMethod(
-                    method,
-                    "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions",
-                    "TryAddEnumerable",
-                    "Microsoft.Extensions.DependencyInjection.Abstractions")
-                && mutationDefinition.Parameters is
-                    [IParameterSymbol { Type: ITypeSymbol collection },
-                        IParameterSymbol { Type: ITypeSymbol descriptorType }]
-                && IsExactFrameworkType(
-                    collection,
-                    "Microsoft.Extensions.DependencyInjection.IServiceCollection",
-                    typeof(Microsoft.Extensions.DependencyInjection.IServiceCollection)
-                        .Assembly.GetName())
-                && IsExactFrameworkType(
-                    descriptorType,
-                    "Microsoft.Extensions.DependencyInjection.ServiceDescriptor",
-                    typeof(Microsoft.Extensions.DependencyInjection.ServiceDescriptor)
-                        .Assembly.GetName())
-                && call.ArgumentList.Arguments
-                    .Where(argument => !ExpressionUsesRecoveryCollection(
-                        member,
-                        argument.Expression,
-                        services))
-                    .Select(argument => StripTransparentExpression(
-                        argument.Expression))
-                    .ToArray() is [InvocationExpressionSyntax descriptorInvocation]
-                    ? descriptorInvocation
-                    : null;
+            bool exactTryAddEnumerableDescriptor =
+                TryGetExactScopedEnumerableDescriptor(call, method, member.Model,
+                    out InvocationExpressionSyntax tryAddDescriptor, out _)
+                && ExactRecoveryDescriptor(tryAddDescriptor);
 
             bool exactDescriptor = IsExactServiceDescriptorCollectionAdd(method)
                     && call.DescendantNodes()
                         .OfType<InvocationExpressionSyntax>()
                         .Any(ExactRecoveryDescriptor)
-                || exactTryAddEnumerableDescriptor is { } tryAddDescriptor
-                    && ExactRecoveryDescriptor(tryAddDescriptor);
+                || exactTryAddEnumerableDescriptor;
 
             bool exactDispatcher = method.Name == "TryAddSingleton"
                 && IsExactFrameworkMethod(
@@ -8887,6 +9688,62 @@ internal static partial class HostedGrimoireProducerInventory
 
             return !exactHandler && !exactDescriptor && !exactDispatcher;
         }
+
+        private static bool IsExactTryAddEnumerableMutation(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return method.Name == "TryAddEnumerable"
+                && IsExactFrameworkMethod(method,
+                    "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions",
+                    "TryAddEnumerable", "Microsoft.Extensions.DependencyInjection.Abstractions")
+                && definition.Parameters is
+                    [IParameterSymbol { Type: ITypeSymbol collection },
+                     IParameterSymbol { Type: ITypeSymbol descriptor }]
+                && IsExactFrameworkType(collection,
+                    "Microsoft.Extensions.DependencyInjection.IServiceCollection",
+                    typeof(Microsoft.Extensions.DependencyInjection.IServiceCollection).Assembly.GetName())
+                && IsExactFrameworkType(descriptor,
+                    "Microsoft.Extensions.DependencyInjection.ServiceDescriptor",
+                    typeof(Microsoft.Extensions.DependencyInjection.ServiceDescriptor).Assembly.GetName());
+        }
+
+        private static bool TryGetExactScopedEnumerableDescriptor(InvocationExpressionSyntax call,
+            IMethodSymbol method, SemanticModel model,
+            out InvocationExpressionSyntax descriptor, out IMethodSymbol descriptorMethod)
+        {
+            descriptor = null!;
+            descriptorMethod = null!;
+
+            if (!IsExactTryAddEnumerableMutation(method)
+                || model.GetOperation(call) is not IInvocationOperation invocation) return false;
+
+            IArgumentOperation[] descriptors = invocation.Arguments.Where(argument =>
+                argument.Parameter is { } parameter && IsExactFrameworkType(parameter.Type,
+                    "Microsoft.Extensions.DependencyInjection.ServiceDescriptor",
+                    typeof(Microsoft.Extensions.DependencyInjection.ServiceDescriptor).Assembly.GetName())).ToArray();
+
+            if (descriptors is not [IArgumentOperation argument]
+                || argument.Value.Syntax is not ExpressionSyntax expression
+                || !TryNormalizeBuiltInCleanupValue(model, expression, out ExpressionSyntax normalized)
+                || normalized is not InvocationExpressionSyntax nested
+                || model.GetSymbolInfo(nested).Symbol is not IMethodSymbol bound
+                || bound.Name != "Scoped" || !IsExactRecoveryRegistrationMethod(bound)) return false;
+
+            descriptor = nested;
+            descriptorMethod = bound;
+
+            return true;
+        }
+
+        private static bool IsExactIndexedScopedDescriptor(InvocationExpressionSyntax call,
+            IMethodSymbol method, SemanticModel model) =>
+            method.Name == "Scoped" && IsExactRecoveryRegistrationMethod(method)
+                && call.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault() is { } outer
+                && model.GetSymbolInfo(outer).Symbol is IMethodSymbol mutation
+                && TryGetExactScopedEnumerableDescriptor(outer, mutation, model,
+                    out InvocationExpressionSyntax nested, out _)
+                && ReferenceEquals(nested, call);
 
         private static bool IsExactProductionFrameworkServiceBuilder(
             IMethodSymbol method)
@@ -9394,6 +10251,10 @@ internal static partial class HostedGrimoireProducerInventory
             SyntaxNode anchor,
             RecoveryMatrix matrix)
         {
+            // This delegated cache can contain partial targets without a completion fact.
+            // Its ordinary result remains useful, but cannot certify whole-root reuse.
+            RefuseTraversalCompletion();
+
             RecoveryHandlerResolutionIdentity contractIdentity = new(
                 TypeIdentity(
                     contractMethod.ContainingType,
@@ -9857,10 +10718,32 @@ internal static partial class HostedGrimoireProducerInventory
             AssemblyName trustedAssembly) =>
             type is not null
             && TypeKey(type) == expectedType
-            && FrameworkAssemblyIdentityMatches(
-                type.ContainingAssembly.Identity,
-                trustedAssembly)
+            && (FrameworkAssemblyIdentityMatches(
+                    type.ContainingAssembly.Identity,
+                    trustedAssembly)
+                || IsReviewedSystemMemoryContractType(
+                    type,
+                    expectedType,
+                    trustedAssembly))
             && !type.Locations.Any(static location => location.IsInSource);
+
+        // Runtime-library types that the production reference pack declares in the System.Memory contract
+        // assembly while the runtime implements them in System.Private.CoreLib. Each is reviewed by name: the
+        // contract mapping above is deliberately limited to the contracts whose every type is implemented there.
+        private static readonly IReadOnlySet<string> SystemMemoryContractTypes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "System.Text.SpanRuneEnumerator",
+        };
+
+        private static bool IsReviewedSystemMemoryContractType(
+            ITypeSymbol type,
+            string expectedType,
+            AssemblyName trustedAssembly) =>
+            trustedAssembly.Name == "System.Private.CoreLib"
+            && SystemMemoryContractTypes.Contains(expectedType)
+            && AssemblyIdentityMatches(
+                type.ContainingAssembly.Identity,
+                Assembly.Load(new AssemblyName("System.Memory")).GetName());
 
         private bool IsExactScopedFactoryAlias(
             InvocationExpressionSyntax registration,
@@ -10086,7 +10969,8 @@ internal static partial class HostedGrimoireProducerInventory
         private string? RecoveryEffectFrontierAt(
             AuthoredMember member,
             InvocationExpressionSyntax dispatch,
-            string operationId)
+            string operationId,
+            string? work)
         {
             TryStatementSyntax? protector = dispatch.Ancestors()
                 .OfType<TryStatementSyntax>()
@@ -10182,9 +11066,21 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            return RootOperation(operationId)
-                + "@effect:"
-                + Location(admission);
+            // CK-3: the recovery effect is the shell's own acquisition, never a lease the shell was handed or took twice.
+            if (!LeaseReceiverIsOwnAcquisition(member, admission, work))
+            {
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(LeaseReceiverMismatch(operationId, admission));
+
+                return null;
+            }
+
+            // The group's own site records its effect with the origin of the lease it was begun on; the recovery effect is the same string.
+            return EffectOf(
+                RootOperation(operationId),
+                Location(admission),
+                LeaseReceiverProven(member, admission, out string? begunOn) ? begunOn : null);
         }
 
         private bool RuntimeRecoveryDispatchRejectsNonGenericTuples(
@@ -10201,6 +11097,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (candidates is not [AuthoredMember method])
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                     Location(anchor),
@@ -10221,6 +11119,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (settlementCalls is not [InvocationExpressionSyntax settlement])
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                     Location(method.Syntax),
@@ -10249,6 +11149,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!supported)
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                     Location(method.Syntax),
@@ -10271,6 +11173,8 @@ internal static partial class HostedGrimoireProducerInventory
             if (methods is not [AuthoredMember method]
                 || !active.Any(state => state.Member == MemberIdentity(method)))
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                     Location(anchor),
@@ -10287,6 +11191,8 @@ internal static partial class HostedGrimoireProducerInventory
             if (settlers is not [AuthoredMember settle]
                 || !active.Any(state => state.Member == MemberIdentity(settle)))
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                     Location(anchor),
@@ -10307,6 +11213,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (handlerSettlements is not [InvocationExpressionSyntax handlerSettlement])
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                     Location(settle.Syntax),
@@ -10369,6 +11277,8 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
+            RefuseTraversalCompletion();
+
             diagnostics.Add(new(
                 "HOSTED_RECOVERY_DISPATCH_UNPROVEN",
                 Location(settle.Syntax),
@@ -10403,6 +11313,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (roots is not [HostedProducerOperationEntry root])
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_AUTHORITY_UNPROVEN",
                     operationId,
@@ -10468,6 +11380,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (root.Authority == HostedProducerAuthorityKind.OwnerBoundRecovery)
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_OWNER_DISPATCH_UNPROVEN",
                     operationId,
@@ -10481,6 +11395,8 @@ internal static partial class HostedGrimoireProducerInventory
             if (root.Authority is not HostedProducerAuthorityKind.OrdinaryHostedWork
                 and not HostedProducerAuthorityKind.PreReadinessStartup)
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_RECOVERY_AUTHORITY_UNPROVEN",
                     operationId,
@@ -10530,6 +11446,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (operation is null)
                     {
+                        RefuseTraversalCompletion();
+
                         diagnostics.Add(new(
                             "HOSTED_RECOVERY_HANDLER_UNPROVEN",
                             Location(target.Member.Syntax),
@@ -10543,6 +11461,8 @@ internal static partial class HostedGrimoireProducerInventory
                         && tuple.Disposition == RecoveryDisposition.OrdinaryExternalEffect
                         && recoveryEffect is null)
                     {
+                        RefuseTraversalCompletion();
+
                         diagnostics.Add(new(
                             "HOSTED_RECOVERY_EFFECT_FRONTIER_UNPROVEN",
                             operationId + "/recovery@" + tuple.Kind + ":" + tuple.CheckpointVersion,
@@ -10591,6 +11511,122 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return evidence;
+        }
+
+        private readonly Dictionary<GraphMemberIdentity, bool> ordinaryScopedHolderDemands = [];
+
+        // Ambient Holder Refusal. The lease travels by value: the worker mints it and hands it down as a formal. A member that reads a
+        // lease out of another object's instance property or field holds the lease of whatever last stored it there, which is not
+        // the lease the worker handed down, so it may not hold the worker's Work. The demand is on what is read, never on what the
+        // holder is called or how it came by its lease: a binder of any name, a setter, a constructor, or no assignment at all.
+        // No witness can lift it, which is why the traversal drops the Work of the member rather than looking for one. The name
+        // predates the retirement of the holder-era witnesses that used to lift it.
+        //
+        // What it reads is exact: an instance property or field whose declared type is IGrimoireWorkLease, declared in authored
+        // source, reached through a member access or a conditional access in the member's own body (a lambda or a local function of
+        // it is a member of its own), and it applies to every member under an ordinary hosted root, a recovery handler included. A
+        // lease that comes out of an object some other way (a simple name inside the holder, a property pattern, a method's return,
+        // a slot of a class that implements the interface) is not read here; the Lease Receiver Proof refuses any group begun on it
+        // and the send under such a group holds no Effect, and AmbientHolderLeftToTheReceiverProofIsStillRefusedAtItsGroup pins that.
+        private bool RequiresOrdinaryScopedHolderWitness(AuthoredMember member)
+        {
+            GraphMemberIdentity identity = MemberIdentity(member);
+
+            if (ordinaryScopedHolderDemands.TryGetValue(identity, out bool cached)) return cached;
+
+            CleanupProvenanceContext proof = new();
+
+            bool demand = false;
+
+            static bool InMemberBody(AuthoredMember member, SyntaxNode node) =>
+                node == member.Syntax || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax;
+
+            foreach (MemberAccessExpressionSyntax access in member.Syntax.DescendantNodesAndSelf(node => InMemberBody(member, node))
+                .OfType<MemberAccessExpressionSyntax>())
+            {
+                if (proof.RemainingWork-- <= 0 || ReadsHolderLease(member, access))
+                {
+                    demand = true;
+                    break;
+                }
+            }
+
+            // A conditional access reads the holder the same way, and a read of that spelling must not slip past the refusal.
+            if (!demand)
+            {
+                demand = member.Syntax.DescendantNodesAndSelf(node => InMemberBody(member, node))
+                    .OfType<MemberBindingExpressionSyntax>().Any(binding => ReadsHolderLease(member, binding));
+            }
+
+            ordinaryScopedHolderDemands[identity] = demand;
+
+            return demand;
+        }
+
+        private bool ReadsHolderLease(AuthoredMember member, SyntaxNode access) => member.Model.GetOperation(access) switch
+        {
+            IPropertyReferenceOperation { Property: { IsStatic: false } property } =>
+                IsAuthoredLeaseSlot(property, property.Type, member.Model.Compilation),
+            IFieldReferenceOperation { Field: { IsStatic: false } field } =>
+                IsAuthoredLeaseSlot(field, field.Type, member.Model.Compilation),
+            _ => false,
+        };
+
+        private bool IsAuthoredLeaseSlot(ISymbol slot, ITypeSymbol type, Compilation compilation) =>
+            !slot.DeclaringSyntaxReferences.IsEmpty
+            && IsExactAuthoredProtocolType(type, "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease", compilation);
+
+        private static IEnumerable<T> PerUnitVisited<T>(IEnumerable<T> candidates, CleanupProvenanceContext proof)
+        {
+            foreach (T candidate in candidates)
+            {
+                if (proof.RemainingWork-- <= 0) yield break;
+
+                yield return candidate;
+            }
+        }
+
+        private static IOperation PerUnitTransparentOperation(IOperation operation)
+        {
+            while (operation is IConversionOperation { OperatorMethod: null } conversion
+                && (conversion.Conversion.IsIdentity || conversion.Conversion.IsReference)) operation = conversion.Operand;
+
+            return operation;
+        }
+
+        private ExpressionSyntax? PerUnitStableLocalValue(AuthoredMember member, ExpressionSyntax expression,
+            int through, CleanupProvenanceContext proof, HashSet<ISymbol> active, bool requireBuiltInConversions = false,
+            bool requireUncapturedSqliteSlots = false)
+        {
+            if (requireBuiltInConversions)
+            {
+                if (!TryNormalizeBuiltInCleanupValue(member.Model, expression, out ExpressionSyntax normalized)) return null;
+
+                expression = normalized;
+            }
+            else expression = StripTransparentExpression(expression);
+
+            if (proof.RemainingWork-- <= 0) return null;
+
+            if (member.Model.GetSymbolInfo(expression).Symbol is not ILocalSymbol local) return expression;
+
+            if (!active.Add(local)) return null;
+
+            try
+            {
+                if (local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable
+                    || variable.SyntaxTree != member.Syntax.SyntaxTree || !member.Syntax.Span.Contains(variable.Span)
+                    || !SymbolIsStableWithin(member, local, variable.Span.End, through)
+                    || requireUncapturedSqliteSlots && !SqliteValueSlotHasNoLexicalCapture(member, local, proof)) return null;
+
+                return PerUnitStableLocalValue(member, initializer, through, proof, active, requireBuiltInConversions,
+                    requireUncapturedSqliteSlots);
+            }
+            finally
+            {
+                active.Remove(local);
+            }
         }
 
         private TraversalEvidence TraverseAuthenticatedRecoveryDispatch(
@@ -17539,7 +18575,7 @@ internal static partial class HostedGrimoireProducerInventory
                 && !expression.DescendantNodesAndSelf()
                     .OfType<IdentifierNameSyntax>()
                     .Any(reference => member.Model.GetSymbolInfo(reference).Symbol is { } symbol
-                        && member.ValueBindings!.ContainsKey(symbol)))
+                        && member.ValueBindings?.ContainsKey(symbol) == true))
             {
                 return null;
             }
@@ -17928,6 +18964,20 @@ internal static partial class HostedGrimoireProducerInventory
                     path);
             }
 
+            if (symbol is IPropertySymbol { IsStatic: false } recordProperty
+                && recordProperty.ContainingType.IsRecord && recordProperty.ContainingType.IsSealed
+                && SymbolEqualityComparer.Default.Equals(recordProperty.ContainingType, member.Symbol.ContainingType)
+                && HasExactAutoInitAssignmentSemantics(recordProperty)
+                && TryResolveStableBoundValueSource(member, expression, out BoundValueSource? propertySource)
+                && propertySource is { Expression: LiteralExpressionSyntax recordLiteral }
+                && (recordLiteral.Parent is ArgumentSyntax
+                    || recordLiteral.Parent is AssignmentExpressionSyntax literalAssignment && literalAssignment.Right == recordLiteral)
+                && SymbolEqualityComparer.Default.Equals(propertySource.Caller.Model.GetTypeInfo(recordLiteral).Type, recordProperty.Type)
+                && !path.Contains(MemberIdentity(propertySource.Caller)))
+            {
+                return RecoveryValue(propertySource.Caller, propertySource.Expression, path, context);
+            }
+
             if (symbol is IPropertySymbol property
                 && SymbolEqualityComparer.Default.Equals(
                     property.ContainingType,
@@ -17939,7 +18989,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (symbol is ILocalSymbol local
                 && local.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax() is
-                    VariableDeclaratorSyntax { Initializer.Value: { } initializer })
+                    VariableDeclaratorSyntax { Initializer.Value: { } initializer } declarator)
             {
                 var localKey = (MemberIdentity(member), initializer.SpanStart);
 
@@ -17952,21 +19002,26 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     List<ExpressionSyntax> values = [initializer];
 
-                    if (initializer.Ancestors().OfType<BlockSyntax>().FirstOrDefault() is { } block)
+                    // The initializer and the plain assignments before the use are the local's values only when no other write
+                    // can reach the use; a local written through a reference, by a compound assignment or around a loop is unknown.
+                    if (!RecoveryLocalAssignments(
+                            member,
+                            local,
+                            declarator,
+                            (SyntaxNode?)initializer.Ancestors().OfType<BlockSyntax>().FirstOrDefault() ?? initializer.SyntaxTree.GetRoot(),
+                            expression,
+                            out IReadOnlyList<AssignmentExpressionSyntax> assignments))
                     {
-                        values.AddRange(block.DescendantNodes()
-                            .OfType<AssignmentExpressionSyntax>()
-                            .Where(assignment => assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-                                && assignment.SpanStart < expression.SpanStart
-                                && SymbolEqualityComparer.Default.Equals(
-                                    member.Model.GetSymbolInfo(assignment.Left).Symbol,
-                                    local)
-                                && RecoveryNodeMayExecute(
-                                    member,
-                                    assignment,
-                                    context))
-                            .Select(static assignment => assignment.Right));
+                        return default;
                     }
+
+                    values.AddRange(assignments
+                        .Where(assignment => assignment.SpanStart < expression.SpanStart
+                            && RecoveryNodeMayExecute(
+                                member,
+                                assignment,
+                                context))
+                        .Select(static assignment => assignment.Right));
 
                     RecoveryLocalValueIdentity? valueIdentity = context is null
                         ? null
@@ -18382,6 +19437,16 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            // A null test of a work lease the traversal knows to be the null constant. Only the lease protocol interface has this
+            // rule: it declares no operators, so `is null` is the reference test and the null constant matches it.
+            if (value is null
+                && pattern is ConstantPatternSyntax { Expression: LiteralExpressionSyntax { RawKind: (int)SyntaxKind.NullLiteralExpression } } nullTest
+                && member.Model.GetOperation(nullTest) is IConstantPatternOperation { InputType: { } leaseType }
+                && TypeKey(leaseType) == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease")
+            {
+                return true;
+            }
+
             if (pattern is ConstantPatternSyntax constant
                 && RecoveryValue(member, constant.Expression, []) is
                 {
@@ -18728,8 +19793,73 @@ internal static partial class HostedGrimoireProducerInventory
 
         private bool HasAuthoredTarget(IMethodSymbol method) => members.TryGetValue(MethodKey(method), out List<AuthoredMember>? group) && group.Any(static candidate => candidate.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody: null });
 
-        private TraversalEvidence Traverse(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork = null, string? inheritedEffect = null, SyntaxNode? selection = null, IReadOnlySet<int>? fieldPublications = null, bool completionOwned = false, string? recoveryEffect = null)
+        private void RefuseTraversalCompletion()
         {
+            if (traversalCompletion is { } frame) frame.Complete = false;
+        }
+
+        private TraversalEvidence Traverse(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork = null, string? inheritedEffect = null, SyntaxNode? selection = null, IReadOnlySet<int>? fieldPublications = null, bool completionOwned = false, string? recoveryEffect = null, PlannedRoot? plannedRoot = null)
+        {
+            TraversalCompletionFrame? parent = traversalCompletion;
+
+            NestedRootCohort? previousCohort = nestedRootCohort;
+
+            bool rootEntry = active.Count == 0;
+
+            if (rootEntry)
+            {
+                if (previousCohort is not null) previousCohort.Eligible = false;
+
+                nestedRootCohort = null;
+            }
+
+            TraversalCompletionFrame frame = new();
+
+            traversalCompletion = frame;
+
+            bool returned = false;
+
+            try
+            {
+                TraversalEvidence result = TraverseState(member, rootType, operationId, active, lifecycle, inheritedWork, inheritedEffect, selection, fieldPublications, completionOwned, recoveryEffect, plannedRoot);
+
+                if (rootEntry && nestedRootCohort is { Eligible: true, Plan.Lifecycle: true } cohort
+                    && !boundedDataProbeEncountered && cohort.Pending.Count != 0
+                    && completedNestedRoots.TryAdd(cohort.State, new(cohort.Plan, cohort.State, new Dictionary<(TraversalStateIdentity State, string Operation), CompletedNestedBody>(cohort.Pending))))
+                {
+                    retainedNestedWitnesses += cohort.Pending.Count;
+                }
+
+                returned = true;
+
+                return result;
+            }
+            finally
+            {
+                if (rootEntry) nestedRootCohort = previousCohort;
+
+                if (!returned) frame.Complete = false;
+
+                if (!frame.Complete && parent is not null) parent.Complete = false;
+
+                if (!returned) frame.FreshNestedPath = false;
+
+                if (!frame.FreshNestedPath && parent is not null) parent.FreshNestedPath = false;
+
+                traversalCompletion = parent;
+            }
+        }
+
+        private TraversalEvidence TraverseState(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork, string? inheritedEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, string? recoveryEffect, PlannedRoot? plannedRoot)
+        {
+            // A member that reads a lease out of a holder object takes no Work from its caller, before any child getter or call can
+            // inherit it. Nothing lifts this refusal and no member is exempt from it, a recovery handler included; generic WorkAt keeps
+            // its existing contract for every other member.
+            if (inheritedWork is not null
+                && declaredOperations.Any(operation => operation.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork
+                    && RootOperation(operation.OperationId) == RootOperation(operationId))
+                && RequiresOrdinaryScopedHolderWitness(member)) inheritedWork = null;
+
             member = ProjectTraversalRecoveryEnvironment(member);
 
             member = ProjectTraversalEvaluationEnvironment(
@@ -18753,6 +19883,8 @@ internal static partial class HostedGrimoireProducerInventory
                         $"The exact semantic graph exceeded {traversalMaximumDepth} nested states for one authority root."));
                 }
 
+                RefuseTraversalCompletion();
+
                 return TraversalEvidence.Inconclusive;
             }
 
@@ -18770,8 +19902,93 @@ internal static partial class HostedGrimoireProducerInventory
                 environmentToken,
                 environmentTokenObtained);
 
+            if (state.EvaluationEnvironmentToken is null || activeBoundedDataProbe is not null)
+            {
+                RefuseTraversalCompletion();
+            }
+
+            bool wholePlannedRoot = plannedRoot is { } planned
+                && active.Count == 0
+                && activeBoundedDataProbe is null
+                && planned.Lifecycle == lifecycle
+                && planned.Operation == operationId
+                && operationId == TypeKey(member.Symbol.ContainingType) + "." + member.Symbol.Name
+                && planned.Member.Syntax == member.Syntax
+                && (lifecycle ? selection is null : selection == member.Syntax)
+                && !selectedRoots.ContainsKey(visitKey)
+                && state.EvaluationEnvironmentToken is not null;
+
+            // This is a directed planned-root lookup, never a false-state cache alias.
+            // Both binders and projections have already produced the exact current inputs.
+            if (wholePlannedRoot && !lifecycle
+                && completedLifecycleRoots.TryGetValue(state with { Lifecycle = true }, out CompletedLifecycleRoot completedRoot)
+                && completedRoot.Operation == operationId
+                && completedRoot.Occurrence < plannedRoot!.Occurrence
+                && traversalCompletion!.Complete)
+            {
+                traversalCompletion!.FreshNestedPath = false;
+
+                return completedRoot.Evidence;
+            }
+
+            if (wholePlannedRoot && !boundedDataProbeEncountered)
+            {
+                if (lifecycle)
+                {
+                    nestedRootCohort = new(plannedRoot!, state, null);
+                }
+                else if (completedNestedRoots.TryGetValue(state with { Lifecycle = true }, out CompletedNestedRoot? earlier)
+                    && earlier is not null
+                    && earlier.Plan.Operation == operationId
+                    && earlier.Plan.Family == plannedRoot!.Family
+                    && earlier.Plan.Member.Syntax == plannedRoot.Member.Syntax
+                    && earlier.Plan.Occurrence < plannedRoot.Occurrence)
+                {
+                    nestedRootCohort = new(plannedRoot, state, earlier);
+                }
+            }
+
+            if (nestedRootCohort is { } current && active.Count != 0)
+            {
+                // A certificate cannot indirectly skip a selected or independent root lane.
+                if (state.RootType != current.State.RootType || state.RootOperation != current.State.RootOperation
+                    || state.Lifecycle != current.State.Lifecycle
+                    || !operationId.StartsWith(current.Plan.Operation + "/", StringComparison.Ordinal)
+                    || selection is not null && selection != member.Syntax
+                    || selectedRoots.ContainsKey(visitKey)
+                    || !active.Contains(current.State)
+                    || active.Any(ancestor => ancestor.RootType != current.State.RootType
+                        || ancestor.RootOperation != current.State.RootOperation
+                        || ancestor.Lifecycle != current.State.Lifecycle
+                        || ancestor.EvaluationEnvironmentToken is null))
+                {
+                    current.Eligible = false;
+                }
+
+                // Full projected identities and the raw path are necessary but insufficient:
+                // the original active ancestor set must also match, without normalizing keys.
+                if (current.Eligible && !boundedDataProbeEncountered && !lifecycle
+                    && state.EvaluationEnvironmentToken is not null && !active.Contains(state)
+                    && current.Earlier is { } source
+                    && source.Bodies.TryGetValue((state with { Lifecycle = true }, operationId), out CompletedNestedBody? body)
+                    && body is not null
+                    && body.Ancestors.Length == active.Count
+                    && body.Ancestors.All(ancestor => active.Contains(ancestor with { Lifecycle = false })))
+                {
+                    nestedReuseHits++;
+
+                    traversalCompletion!.FreshNestedPath = false;
+
+                    return body.Evidence;
+                }
+            }
+
             if (analyzedStates.TryGetValue(state, out TraversalEvidence cachedEvidence))
             {
+                traversalCompletion!.FreshNestedPath = false;
+
+                if (!completedTraversalStates.GetValueOrDefault(state)) RefuseTraversalCompletion();
+
                 return cachedEvidence;
             }
 
@@ -18784,15 +20001,62 @@ internal static partial class HostedGrimoireProducerInventory
                     diagnostics.Add(new("HOSTED_TRAVERSAL_STATE_LIMIT_EXCEEDED", state.RootOperation, $"The exact semantic graph exceeded {maximumAnalyzedStatesPerRoot} states for one authority root."));
                 }
 
+                RefuseTraversalCompletion();
+
                 return TraversalEvidence.Inconclusive;
             }
 
+            TraversalStateIdentity[]? nestedAncestors = nestedRootCohort is { Eligible: true, Plan.Lifecycle: true }
+                && !boundedDataProbeEncountered && state.EvaluationEnvironmentToken is not null
+                && active.Count != 0 && !active.Contains(state)
+                    ? active.ToArray()
+                    : null;
+
             if (!active.Add(state))
             {
+                RefuseTraversalCompletion();
+
                 return TraversalEvidence.Inconclusive;
             }
 
             analyzedStateCounts[root] = stateCount + 1;
+
+            if (admittedStateObserver is not null)
+            {
+                admittedStateObserver(new(
+                    progressWorker,
+                    progressOccurrence,
+                    rootTraversalSequence,
+                    stateCount + 1,
+                    state.RootType,
+                    state.RootOperation,
+                    state.Member.Assembly.Name,
+                    state.Member.Assembly.Version.ToString(),
+                    state.Member.Assembly.CultureName,
+                    Convert.ToHexString((state.Member.Assembly.HasPublicKey ? state.Member.Assembly.PublicKey : state.Member.Assembly.PublicKeyToken).AsSpan()),
+                    state.Member.Assembly.HasPublicKey,
+                    state.Member.Assembly.IsRetargetable,
+                    (int)state.Member.Assembly.ContentType,
+                    state.Member.Compilation,
+                    state.Member.Tree,
+                    state.Member.Method,
+                    state.Member.SpanStart,
+                    state.Member.SpanLength,
+                    state.SelectionStart,
+                    state.SelectionLength,
+                    state.EvaluationEnvironmentToken,
+                    state.FallbackAdmissionBindings,
+                    state.FallbackEvaluationEnvironment,
+                    state.FallbackValueBindings,
+                    state.FallbackConcreteBindings,
+                    state.FallbackRecoveryBindings,
+                    state.WorkFrontier,
+                    state.EffectFrontier,
+                    state.RecoveryEffectFrontier,
+                    state.FieldPublications,
+                    state.CompletionOwned,
+                    state.Lifecycle));
+            }
 
             if (!analyzedMemberStateCounts.TryGetValue(
                     root,
@@ -18825,6 +20089,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             RecoveryConditionEvaluationContext recoveryConditionEvaluations = new();
 
+            HashSet<(int Start, int Length, MethodIdentity Method)> executedConversions = [];
+
             try
             {
                 if (lifecycle)
@@ -18833,6 +20099,15 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && (operationId == entry.OperationId || operationId.StartsWith(entry.OperationId + "/", StringComparison.Ordinal)));
+
+                // The Root Lease Formal is a handoff root's admission origin, so its frontier row is the root's own.
+                if (ordinary is { LeaseFormal: not null } handoffRoot
+                    && operationId == handoffRoot.OperationId
+                    && LeaseHandoffRootFor(handoffRoot) is { } formalRoot
+                    && SymbolEqualityComparer.Default.Equals(formalRoot.Member.Symbol, member.Symbol))
+                {
+                    emittedEvidence = MergeEvidence(emittedEvidence, AddLeaseFormalSite(member, rootType, operationId, formalRoot));
+                }
 
                 if (ordinary is not null && selection is not null && selection != member.Syntax)
                 {
@@ -18847,6 +20122,35 @@ internal static partial class HostedGrimoireProducerInventory
                             emittedEvidence = MergeEvidence(emittedEvidence, AddSite(HostedProducerSiteKind.EffectFrontier, Normalize(gate), member, rootType, operationId, admission));
                         }
                     }
+                }
+
+                if (selection is null && AsyncBuilderReachesProducerSite(member, out INamedTypeSymbol? asyncBuilder))
+                {
+                    RefuseTraversalCompletion();
+
+                    diagnostics.Add(new(
+                        "HOSTED_SITE_UNCLASSIFIED",
+                        Location(member.Syntax),
+                        TypeKey(asyncBuilder!) + "; An authored async method builder runs its Create, Start, AwaitOnCompleted, SetResult, SetException and Task members at points of the state machine nothing here places."));
+                }
+
+                if (selection is null
+                    && member.Symbol is { MethodKind: MethodKind.Constructor, IsStatic: false }
+                    && member.Syntax is ConstructorDeclarationSyntax constructorDeclaration)
+                {
+                    emittedEvidence = MergeEvidence(
+                        emittedEvidence,
+                        TraverseConstructionPreamble(
+                            member,
+                            constructorDeclaration,
+                            rootType,
+                            operationId,
+                            active,
+                            lifecycle,
+                            ordinary?.WorkKind,
+                            inheritedWork,
+                            inheritedEffect,
+                            recoveryEffect));
                 }
 
                 foreach (SyntaxNode node in (selection ?? member.Syntax).DescendantNodesAndSelf(node => node == (selection ?? member.Syntax) || node is not LocalFunctionStatementSyntax and not AnonymousFunctionExpressionSyntax))
@@ -18873,6 +20177,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (node is InvocationExpressionSyntax && member.Model.GetOperation(node) is IDynamicInvocationOperation)
                     {
+                        RefuseTraversalCompletion();
+
                         diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), "Dynamic invocation has no exact call target."));
 
                         continue;
@@ -18883,12 +20189,268 @@ internal static partial class HostedGrimoireProducerInventory
                             or ImplicitElementAccessSyntax
                         && member.Model.GetOperation(node) is IDynamicIndexerAccessOperation)
                     {
+                        RefuseTraversalCompletion();
+
                         diagnostics.Add(new(
                             "HOSTED_CALL_TARGET_UNRESOLVED",
                             Location(node),
                             "Dynamic indexer access has no exact accessor target."));
 
                         continue;
+                    }
+
+                    if (node is AssignmentExpressionSyntax staticStore && StoresAdmissionCarrierInStaticStorage(member, staticStore, out string staticRoot))
+                    {
+                        RefuseTraversalCompletion();
+
+                        diagnostics.Add(new("HOSTED_ADMISSION_HANDLE_ESCAPE", operationId + "/store@" + Location(node), staticRoot + "; A retained handle stored in static storage has no proven lifetime continuation."));
+                    }
+
+                    if (StaticInitializationStartedAt(member, node) is { } initializedType)
+                    {
+                        RefuseTraversalCompletion();
+
+                        diagnostics.Add(new(
+                            "HOSTED_SITE_UNCLASSIFIED",
+                            Location(node),
+                            TypeKey(initializedType) + ".cctor; The static initialization of the type can reach a producer site, and the point at which the runtime first uses the type is not modeled."));
+                    }
+
+                    if (ImplicitCallsAt(member, selection ?? member.Syntax, node) is { Count: > 0 } implicitCalls)
+                    {
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            TraverseImplicitCalls(
+                                member,
+                                implicitCalls,
+                                rootType,
+                                operationId,
+                                active,
+                                lifecycle,
+                                ordinary?.WorkKind,
+                                inheritedWork,
+                                inheritedEffect,
+                                recoveryEffect));
+                    }
+
+                    foreach (IConversionOperation conversion in UserConversionsAt(member, node))
+                    {
+                        IMethodSymbol selectedOperator = conversion.OperatorMethod!;
+
+                        SyntaxNode conversionSyntax = conversion.Syntax;
+
+                        if (!(selection ?? member.Syntax).Span.Contains(conversionSyntax.Span)
+                            || !executedConversions.Add((conversionSyntax.SpanStart,
+                                conversionSyntax.Span.Length, Identity(selectedOperator)))) continue;
+
+                        string callee = Normalize(selectedOperator);
+
+                        AuthoredMember? target = Resolve(selectedOperator, member.Model.Compilation);
+
+                        if (target is null)
+                        {
+                            if (!IsReviewedEffectFreeExternalMember(selectedOperator,
+                                conversionSyntax, member.Model, member))
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(conversionSyntax), callee));
+                            }
+
+                            continue;
+                        }
+
+                        if (target.Syntax is ConversionOperatorDeclarationSyntax { Body: null, ExpressionBody: null }
+                            || selectedOperator.Parameters is not [IParameterSymbol parameter]
+                            || conversion.Operand.Syntax is not ExpressionSyntax operand)
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(conversionSyntax), callee));
+
+                            continue;
+                        }
+
+                        // The operand has completed before this operator begins. Existing
+                        // lifetime comparisons use strict <, so include a call ending exactly
+                        // at the operand boundary while retaining the conversion's region.
+                        int position = conversion.Operand.Syntax.Span.End + 1;
+
+                        string? workAdmitted = WorkAt(member, conversionSyntax, operationId, ordinary?.WorkKind, inheritedWork, position);
+
+                        string? effectGroup = EffectAt(member, conversionSyntax, operationId, inheritedEffect, position);
+
+                        bool operandLifetimeUnproven = (workAdmitted is not null || effectGroup is not null || recoveryEffect is not null)
+                            && ConversionOperandHasUnsupportedLifetime(member, conversion.Operand, target);
+
+                        if (operandLifetimeUnproven)
+                        {
+                            RefuseTraversalCompletion();
+
+                            workAdmitted = null;
+
+                            effectGroup = null;
+                        }
+
+                        AuthoredMember bound = BindArguments(member, [(operand, parameter, parameter.RefKind)], target);
+
+                        bool detached = IsAwaitable(target.Symbol.ReturnType) || IsLazySequence(target.Symbol.ReturnType);
+
+                        if (detached)
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
+                                operationId + "/conversion@" + Location(conversionSyntax),
+                                callee + "; An awaitable or lazy conversion has no proven completion within its caller's retained lifetime."));
+                        }
+
+                        emittedEvidence = MergeEvidence(emittedEvidence,
+                            Traverse(bound, rootType, operationId + "/conversion@" + Location(conversionSyntax),
+                                active, lifecycle, detached ? null : workAdmitted, detached ? null : effectGroup,
+                                recoveryEffect: detached || operandLifetimeUnproven ? null : recoveryEffect));
+                    }
+
+                    if (UserDefinedOperatorAt(member, node) is { } selectedOperation)
+                    {
+                        IMethodSymbol selectedOperator = selectedOperation.Method;
+
+                        string callee = Normalize(selectedOperator);
+
+                        AuthoredMember? target = Resolve(selectedOperator, member.Model.Compilation);
+
+                        if (target is null)
+                        {
+                            List<AuthoredMember> equalityTargets = [];
+
+                            bool canonicalEquality = false;
+
+                            bool liftedEquality = selectedOperation.Unsupported
+                                && member.Model.GetOperation(node) is IBinaryOperation
+                                {
+                                    IsLifted: true,
+                                    OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals,
+                                };
+
+                            bool equalityCertified = (!selectedOperation.Unsupported || liftedEquality)
+                                && TryGeneratedRecordEqualityTargets(member, selectedOperator, selectedOperation.Operands, out equalityTargets, out canonicalEquality, liftedEquality);
+
+                            if (equalityCertified || equalityTargets.Count != 0)
+                            {
+                                int position = selectedOperation.Operands.Max(static operand => operand.Syntax.Span.End) + 1;
+
+                                string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, position);
+
+                                string? effectGroup = EffectAt(member, node, operationId, inheritedEffect, position);
+
+                                CleanupProvenanceContext operandProof = new();
+
+                                bool operandLifetimeUnproven = !equalityCertified
+                                    || (workAdmitted is not null || effectGroup is not null || recoveryEffect is not null)
+                                        && equalityTargets.Any(equalityTarget => selectedOperation.Operands.Any(operand =>
+                                                ConversionOperandHasUnsupportedLifetime(member, operand, equalityTarget, operandProof,
+                                                    typeInitializationProven: canonicalEquality)));
+
+                                if (operandLifetimeUnproven)
+                                {
+                                    RefuseTraversalCompletion();
+
+                                    workAdmitted = null;
+
+                                    effectGroup = null;
+                                }
+
+                                foreach (AuthoredMember equalityTarget in equalityTargets)
+                                {
+                                    // Canonical Equals Traversal names the body by its root and type, so every
+                                    // comparison site under one root and frontier reaches the one state.
+                                    string equalityOperation = canonicalEquality
+                                        ? RootOperation(operationId) + "/equals@" + TypeKey(equalityTarget.Symbol.ContainingType)
+                                        : operationId + "/operator@" + Location(node);
+
+                                    emittedEvidence = MergeEvidence(emittedEvidence,
+                                        Traverse(equalityTarget, rootType, equalityOperation, active, lifecycle,
+                                            workAdmitted, effectGroup,
+                                            recoveryEffect: operandLifetimeUnproven ? null : recoveryEffect));
+                                }
+                            }
+
+                            if (!equalityCertified && !IsReviewedEffectFreeExternalMember(selectedOperator, node, member.Model, member))
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), callee));
+                            }
+                        }
+                        else if (selectedOperation.Unsupported
+                            || target.Syntax is not OperatorDeclarationSyntax operatorDeclaration
+                            || operatorDeclaration.Body is null && operatorDeclaration.ExpressionBody is null
+                            || !selectedOperator.IsStatic
+                            || selectedOperator.Parameters.Length != selectedOperation.Operands.Length
+                            || selectedOperator.Parameters.Any(static parameter => parameter.RefKind != RefKind.None)
+                            || selectedOperation.Operands.Any(static operand => operand.Syntax is not ExpressionSyntax))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
+                        }
+                        else
+                        {
+                            int position = selectedOperation.Operands.Max(static operand => operand.Syntax.Span.End) + 1;
+
+                            string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork, position);
+
+                            string? effectGroup = EffectAt(member, node, operationId, inheritedEffect, position);
+
+                            CleanupProvenanceContext operandProof = new();
+
+                            bool operandLifetimeUnproven = (workAdmitted is not null || effectGroup is not null || recoveryEffect is not null)
+                                && selectedOperation.Operands.Any(operand => ConversionOperandHasUnsupportedLifetime(member, operand, target, operandProof));
+
+                            if (operandLifetimeUnproven)
+                            {
+                                RefuseTraversalCompletion();
+
+                                workAdmitted = null;
+
+                                effectGroup = null;
+                            }
+
+                            AuthoredMember bound = BindArguments(member, selectedOperation.Operands.Select((operand, index) =>
+                                ((ExpressionSyntax)operand.Syntax, (IParameterSymbol?)selectedOperator.Parameters[index], RefKind.None)), target);
+
+                            bool detached = IsAwaitable(target.Symbol.ReturnType) || IsLazySequence(target.Symbol.ReturnType);
+
+                            if (detached)
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", operationId + "/operator@" + Location(node),
+                                    callee + "; An awaitable or lazy operator has no proven completion within its caller's retained lifetime."));
+                            }
+
+                            emittedEvidence = MergeEvidence(emittedEvidence,
+                                Traverse(bound, rootType, operationId + "/operator@" + Location(node), active, lifecycle,
+                                    detached ? null : workAdmitted, detached ? null : effectGroup,
+                                    recoveryEffect: detached || operandLifetimeUnproven ? null : recoveryEffect));
+                        }
+                    }
+
+                    // An implicit-this DbContext property used as the receiver of a further member
+                    // (`Database.CanConnect()`) is not visited as a property read below, but it is
+                    // the first use of the context's services all the same.
+                    if (node is IdentifierNameSyntax { Parent: MemberAccessExpressionSyntax receiverAccess } receiverName
+                        && ReferenceEquals(receiverAccess.Expression, receiverName)
+                        && IsExactEfDbContext(member.Symbol.ContainingType)
+                        && !IsLongRestSdkFactoryReceiverProperty(node, member)
+                        && member.Model.GetSymbolInfo(receiverName).Symbol is IPropertySymbol receiverProperty
+                        && DbContextFirstUseHooks(member, node, receiverProperty) is { Count: > 0 } receiverHooks)
+                    {
+                        // EF runs the context's authored hooks at the first service use, which is not this read, so
+                        // no admission current here is inherited (see DbContextFirstUseHooks).
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            TraverseDbContextHooks(receiverHooks, rootType, operationId, node, active, lifecycle));
                     }
 
                     ISymbol? symbol = node is InvocationExpressionSyntax
@@ -18900,7 +20462,9 @@ internal static partial class HostedGrimoireProducerInventory
                         or ImplicitElementAccessSyntax
                             ? member.Model.GetSymbolInfo(node).Symbol
                             : node is IdentifierNameSyntax
-                                && node.Parent is not MemberAccessExpressionSyntax
+                                && (node.Parent is not MemberAccessExpressionSyntax readReceiver
+                                    || readReceiver.Expression == node
+                                    || IsLongRestSdkFactoryReceiverProperty(node, member))
                                     ? member.Model.GetSymbolInfo(node).Symbol switch
                                     {
                                         IPropertySymbol property => property,
@@ -18909,6 +20473,11 @@ internal static partial class HostedGrimoireProducerInventory
                                     }
                                     : null;
 
+                    if (symbol is IFieldSymbol dbSetField && IsEfDbSetType(dbSetField.Type) && node is ExpressionSyntax dbSetFieldRead)
+                    {
+                        RefuseEscapingEfQuery(member, dbSetFieldRead, Normalize(dbSetField));
+                    }
+
                     if (symbol is IMethodSymbol method && node is not MemberAccessExpressionSyntax)
                     {
                         string? workAdmitted = WorkAt(member, node, operationId, ordinary?.WorkKind, inheritedWork);
@@ -18916,6 +20485,97 @@ internal static partial class HostedGrimoireProducerInventory
                         string? effectGroup = EffectAt(member, node, operationId, inheritedEffect);
 
                         string callee = Normalize(method);
+
+                        // A call that builds an EF query hands back a value whose execution must be followed from here.
+                        if (node is InvocationExpressionSyntax queryBuilding
+                            && Resolve(method.ReducedFrom ?? method, member.Model.Compilation) is null
+                            && IsEfQueryOperand(member, queryBuilding))
+                        {
+                            RefuseEscapingEfQuery(member, queryBuilding, callee);
+                        }
+
+                        // Disposing a context, or a container scope that disposes the contexts it built, raises the disposal
+                        // callbacks of the connection under the frontiers live at the disposal.
+                        if (node is InvocationExpressionSyntax
+                            {
+                                Expression: MemberAccessExpressionSyntax { Expression: { } disposedResource },
+                                ArgumentList.Arguments.Count: 0,
+                            } disposalCall
+                            && method.Name is "Dispose" or "DisposeAsync")
+                        {
+                            bool disposalJoined = !IsAwaitable(method.ReturnType)
+                                || CompletionPoint(member, disposalCall, completionOwned) is not null;
+
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                TraverseDisposalCallbacks(
+                                    member,
+                                    disposedResource,
+                                    member.Model.GetTypeInfo(disposedResource).Type,
+                                    method.Name == "DisposeAsync",
+                                    node,
+                                    rootType,
+                                    operationId,
+                                    active,
+                                    lifecycle,
+                                    disposalJoined ? workAdmitted : null,
+                                    disposalJoined ? effectGroup : null,
+                                    recoveryEffect));
+                        }
+
+                        // H7: EF runs OnConfiguring at the first use of the context's services,
+                        // whichever DbContext member that is; judge it at every such use.
+                        if (node is InvocationExpressionSyntax
+                            && DbContextFirstUseHooks(member, node, method) is { Count: > 0 } firstUseHooks)
+                        {
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                TraverseDbContextHooks(firstUseHooks, rootType, operationId, node, active, lifecycle));
+                        }
+
+                        // Activating a context runs the field and property initializers of the type and of every
+                        // authored base where the creation is written, under the frontiers live there. The constructor
+                        // the creation names is traversed with the other targets below.
+                        if (node is BaseObjectCreationExpressionSyntax contextCreation
+                            && method.ContainingType is { TypeKind: TypeKind.Class } createdContext
+                            && IsAuthoredSymbol(createdContext)
+                            && IsExactEfDbContext(createdContext))
+                        {
+                            foreach (AuthoredMember initializer in ActivationMembers(createdContext, member.Model.Compilation, includeConstructors: false))
+                            {
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    Traverse(
+                                        initializer,
+                                        rootType,
+                                        operationId + "/activate@" + Location(contextCreation),
+                                        active,
+                                        lifecycle,
+                                        workAdmitted,
+                                        effectGroup,
+                                        recoveryEffect: recoveryEffect));
+                            }
+                        }
+
+                        if ((node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax)
+                            && Resolve(method, member.Model.Compilation) is null
+                            && method.Locations.All(static location => !location.IsInSource)
+                            && FrameworkMemberRunsAuthoredEnumerator(member, node, method, out string enumerationDetail))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/enumerable@" + Location(node), enumerationDetail));
+                        }
+
+                        if ((node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax)
+                            && Resolve(method, member.Model.Compilation) is null
+                            && method.Locations.All(static location => !location.IsInSource)
+                            && FrameworkMemberRunsAuthoredCallback(member, node, method, out string callbackDetail))
+                        {
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/callback@" + Location(node), callbackDetail));
+                        }
 
                         if (node is InvocationExpressionSyntax explicitCleanup
                             && (IsTrustedFrameworkCleanupSlot(method)
@@ -18934,6 +20594,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (!joined)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                     operationId + "/call@" + Location(node),
                                     callee + "; Explicit asynchronous cleanup must complete within its caller's retained lifetime."));
@@ -18958,8 +20620,11 @@ internal static partial class HostedGrimoireProducerInventory
                                 && cleanup.Targets.Count == 0
                                 && cleanup.ExternalEffects.Count == 0
                                 && !IsExactAdmissionCleanupValue(member, cleanupReceiver,
-                                    new HashSet<ISymbol>(SymbolEqualityComparer.Default)))
+                                    new HashSet<ISymbol>(SymbolEqualityComparer.Default))
+                                && !IsExactConditionalNullCleanupValue(member, explicitCleanup, cleanupReceiver))
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_DISPOSAL_TARGET_UNRESOLVED",
                                     operationId + "/dispose@" + Location(node),
                                     callee + "; Explicit cleanup must resolve to exactly one compiler-effective target."));
@@ -18980,7 +20645,13 @@ internal static partial class HostedGrimoireProducerInventory
                         bool synchronousCallback = method.MethodKind == MethodKind.DelegateInvoke
                             || IsKnownSynchronousCallback(method)
                                 && method.Parameters.Any(static parameter =>
-                                    parameter.Type.TypeKind == TypeKind.Delegate);
+                                    parameter.Type.TypeKind == TypeKind.Delegate)
+                                && (!IsExactEagerCollectionCallback(method)
+                                    || node is InvocationExpressionSyntax eagerCall
+                                        && eagerCall.ArgumentList.Arguments
+                                            .Where(argument => IsDelegateExpression(member.Model, argument.Expression))
+                                            .All(argument => HasCompleteEagerCallableOrigin(argument.Expression, member.Model,
+                                                new HashSet<ISymbol>(SymbolEqualityComparer.Default), member)));
 
                         bool knownCallback = asynchronousCallback || synchronousCallback || lazyCallback;
 
@@ -18994,7 +20665,9 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
-                        if (CompletionOwnedExternalAwaitables.Contains(callee))
+                        if (CompletionOwnedExternalAwaitables.Contains(callee)
+                            || node is InvocationExpressionSyntax channelRead
+                                && IsOwnedBoundedGuidChannelRead(member, channelRead, method))
                         {
                             if (node is not InvocationExpressionSyntax ownedAwaitable
                                 || CompletionPoint(
@@ -19002,6 +20675,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     ownedAwaitable,
                                     completionOwned) is null)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                     RootOperation(operationId)
@@ -19041,6 +20716,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     testSeamCall,
                                     completionOwned) is null)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                     RootOperation(operationId)
@@ -19115,6 +20792,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (opaqueCallbacks.Any(callback => ResolveCallable(callback, member.Model, member.CallableBindings, member.AbsentCallables) is not { } body || HasAdmissionSeed(body) || ContainsPotentialProducerSite(body)))
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/callback@" + Location(node), callee + "; Opaque callback semantics cannot prove execution or completion ownership."));
                             }
                         }
@@ -19236,22 +20915,30 @@ internal static partial class HostedGrimoireProducerInventory
 
                             SyntaxNode? completion = awaitableReturn ? CompletionPoint(member, callbackCall, completionOwned) : lazyCallback ? LazyCompletionPoint(member, callbackCall) : synchronousCallback ? callbackCall : null;
 
+                            // A lazy operator runs its callbacks on every MoveNext of its consumer, so a consuming loop is judged at
+                            // its operand, its back-edge and its end, exactly as a lazy iterator result is.
+                            int?[] completionPositions = completion is not null && lazyCallback
+                                ? LazyConsumptionPositions(completion)
+                                : [null];
+
                             string? completionWork = completion is null
                                 ? null
-                                : WorkAt(
+                                : CommonFrontier(completionPositions.Select(completionPosition => WorkAt(
                                     member,
                                     completion,
                                     operationId,
                                     ordinary?.WorkKind,
-                                    inheritedWork);
+                                    inheritedWork,
+                                    completionPosition)));
 
                             string? completionEffect = completion is null
                                 ? null
-                                : EffectAt(
+                                : CommonFrontier(completionPositions.Select(completionPosition => EffectAt(
                                     member,
                                     completion,
                                     operationId,
-                                    inheritedEffect);
+                                    inheritedEffect,
+                                    completionPosition)));
 
                             bool owned = knownCallback
                                 && completion is not null
@@ -19308,6 +20995,8 @@ internal static partial class HostedGrimoireProducerInventory
                                         member.Model,
                                         member))
                                     {
+                                        RefuseTraversalCompletion();
+
                                         diagnostics.Add(new(
                                             "HOSTED_SITE_UNCLASSIFIED",
                                             Location(callback),
@@ -19356,6 +21045,19 @@ internal static partial class HostedGrimoireProducerInventory
                                     emittedEvidence = MergeEvidence(emittedEvidence, bodyEvidence);
                                 }
 
+                                if (IsExactSinglePredicateDelegateInvoke(method)
+                                    && IsEffectFreeExternalCallable(callback, member)
+                                    && (member.Model.GetOperation(callbackCall) is not IInvocationOperation singlePredicateInvocation
+                                        || !singlePredicateInvocation.Arguments.All(argument => HasReviewedValueConversions(argument.Value, member))))
+                                {
+                                    RefuseTraversalCompletion();
+
+                                    diagnostics.Add(new(
+                                        "HOSTED_SITE_UNCLASSIFIED",
+                                        Location(callbackCall),
+                                        callee));
+                                }
+
                                 if (!everyBodyOwned
                                     && !IsEffectFreeExternalCallable(callback, member)
                                     && (bodies.Length == 0
@@ -19377,6 +21079,8 @@ internal static partial class HostedGrimoireProducerInventory
                                                     ? "callback target is not exact"
                                                     : "callback body cannot inherit this completion";
 
+                                    RefuseTraversalCompletion();
+
                                     diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", operationId + "/callback@" + Location(callbackCall), callee + "; Callback execution must bind once and complete before its inherited admission lifetime ends; " + reason + "."));
                                 }
                             }
@@ -19397,6 +21101,19 @@ internal static partial class HostedGrimoireProducerInventory
                             node,
                             member);
 
+                        if (kind == HostedProducerSiteKind.DatabaseAccess
+                            && !ReviewedProviderMemberIsClosed(method, node, member.Model, member))
+                        {
+                            // The access is real whatever the receiver is, and is reported below. What the receiver may
+                            // hold behind the framework wrapper is code no traversal reaches.
+                            RefuseTraversalCompletion();
+
+                            diagnostics.Add(new(
+                                "HOSTED_CALL_TARGET_UNRESOLVED",
+                                Location(node),
+                                callee + "; The receiver can be an authored subclass of the provider type, whose overrides this call would run."));
+                        }
+
                         if (kind is not null && !aggregate)
                         {
                             if (node is InvocationExpressionSyntax lazyRead && IsLazyDirectoryEnumeration(callee))
@@ -19405,10 +21122,16 @@ internal static partial class HostedGrimoireProducerInventory
 
                                 bool ownedByIteratorConsumer = consumption is null && completionOwned && IsIteratorMember(member);
 
-                                string? consumedWork = ownedByIteratorConsumer ? workAdmitted : consumption is null ? null : WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork);
+                                string? consumedWork = ownedByIteratorConsumer
+                                    ? workAdmitted
+                                    : consumption is null
+                                        ? null
+                                        : CommonFrontier(LazyConsumptionPositions(consumption).Select(consumedPosition => WorkAt(member, consumption, operationId, ordinary?.WorkKind, inheritedWork, consumedPosition)));
 
                                 if ((!ownedByIteratorConsumer && consumption is null) || consumedWork != workAdmitted)
                                 {
+                                    RefuseTraversalCompletion();
+
                                     diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/call@" + Location(node), callee + "; A lazy filesystem sequence must be consumed synchronously before its work lease ends."));
 
                                     workAdmitted = null;
@@ -19417,6 +21140,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (node is InvocationExpressionSyntax sensitiveCall && IsAwaitable(method.ReturnType) && CompletionPoint(member, sensitiveCall, completionOwned) is null)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", RootOperation(operationId) + "/call@" + Location(node), callee + "; An awaitable sensitive boundary must complete before its retained admission lifetime ends."));
 
                                 workAdmitted = null;
@@ -19425,6 +21150,32 @@ internal static partial class HostedGrimoireProducerInventory
                             }
 
                             emittedEvidence = MergeEvidence(emittedEvidence, AddSite(kind.Value, callee, member, rootType, operationId, node, effectGroup, workAdmitted));
+
+                            // An EF operation raises the callbacks of the interceptors registered on its context.
+                            if (kind == HostedProducerSiteKind.DatabaseAccess && node is InvocationExpressionSyntax efCall
+                                && InterceptionOf(method.ReducedFrom ?? method) != EfInterception.None)
+                            {
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    TraverseEfOperationCallbacks(member, efCall, method.ReducedFrom ?? method, callee, rootType, operationId, active, lifecycle, workAdmitted, effectGroup, recoveryEffect));
+                            }
+                            else if (kind == HostedProducerSiteKind.DatabaseAccess
+                                && node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                                && ClassifyEfQueryCall(member, node, method, out List<ExpressionSyntax> queryOperands) == EfQueryCall.Terminal)
+                            {
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    TraverseEfQueryCallbacks(member, node, queryOperands, method.ReducedFrom ?? method, callee, rootType, operationId, active, lifecycle, workAdmitted, effectGroup, recoveryEffect));
+                            }
+                            else if (kind == HostedProducerSiteKind.DatabaseAccess
+                                && node is InvocationExpressionSyntax
+                                && IsConnectionStateChangingCall(method))
+                            {
+                                // The connection raises StateChange inside this call, so its handlers run under the frontiers live here.
+                                emittedEvidence = MergeEvidence(
+                                    emittedEvidence,
+                                    TraverseConnectionStateHandlers(node, callee, rootType, operationId, active, lifecycle, workAdmitted, effectGroup, recoveryEffect));
+                            }
                         }
 
                         if (node is InvocationExpressionSyntax recoveryCall
@@ -19471,7 +21222,10 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
-                        AuthoredMember? target = ResolveInvocationTarget(method, member, node);
+                        AuthoredMember? target = node is InvocationExpressionSyntax sdkFactoryCall
+                            ? ResolveLongRestSdkFactoryTarget(method, member, sdkFactoryCall, new CleanupProvenanceContext())
+                                ?? ResolveInvocationTarget(method, member, node)
+                            : ResolveInvocationTarget(method, member, node);
 
                         AuthoredMember[] boundTargets = target is null
                             ? ResolveBoundImplementations(method, member.Model.Compilation)
@@ -19487,6 +21241,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (callee == "RetroDownfall.Arcanum.Infrastructure.Data.Schema.IGrimoireSchemaBackfill.AdvanceBatchAsync" && strategyTargets.Length != SchemaBackfillStrategies.Count)
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new("HOSTED_STRATEGY_BINDING_UNRESOLVED", Location(node), callee + "; Every configured concrete strategy must bind exactly once."));
                         }
 
@@ -19506,12 +21262,16 @@ internal static partial class HostedGrimoireProducerInventory
                                 member.Model,
                                 member))
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), callee));
                         }
 
                         if (node is InvocationExpressionSyntax handleCall && !IsCompletionCombinator(method) && (AdmissionArguments(member, handleCall).Any(argument => argument.Expression is not DeclarationExpressionSyntax && MayCarryAdmissionHandle(member, argument.Expression) && (argument.RefKind is RefKind.Ref or RefKind.Out || target is null && boundTargets.Length == 0 && reviewedClosedTargets.Length == 0))
                             || AdmissionReceiver(member, handleCall) is { } receiverExpression && MayCarryAdmissionHandle(member, receiverExpression) && !PreservesAdmissionReceiver(method) && !ConsumesAdmissionReceiver(method)))
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new("HOSTED_ADMISSION_HANDLE_ESCAPE", operationId + "/call@" + Location(node), callee + "; A retained handle passed by ref/out or to an opaque callee has no proven lifetime continuation."));
                         }
 
@@ -19526,26 +21286,64 @@ internal static partial class HostedGrimoireProducerInventory
                             || aggregate
                             || TransparentProducerBoundaries.Contains(callee))
                         {
+                            // A virtual or abstract method of a class the source declares runs the override of the runtime type of
+                            // its receiver, not the body of the slot the call names.
+                            AccessorDispatch? classDispatch = strategyTargets.Length == 0 && boundTargets.Length == 0 && reviewedClosedTargets.Length == 0
+                                ? ClassMethodDispatch(member, method, node)
+                                : null;
+
                             AuthoredMember[] targets = strategyTargets.Length != 0
                                 ? strategyTargets
-                                : target is not null
-                                    ? [target]
-                                    : boundTargets.Length != 0
-                                        ? boundTargets
-                                        : reviewedClosedTargets;
+                                : classDispatch is { } dispatched
+                                    ? [.. dispatched.Targets]
+                                    : target is not null
+                                        ? [target]
+                                        : boundTargets.Length != 0
+                                            ? boundTargets
+                                            : reviewedClosedTargets;
+
+                            if (classDispatch is { Unresolved: true })
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
+                            }
+
+                            if (target is null && boundTargets.Length != 0
+                                && HasIncompleteDefaultInterfaceBinding(method, member.Model.Compilation))
+                            {
+                                RefuseTraversalCompletion();
+
+                                diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
+                            }
 
                             if (targets.Length != 0)
                             {
-                                bool directlyJoined = node is InvocationExpressionSyntax invocation
-                                    && CompletionPoint(
-                                        member,
-                                        invocation,
-                                        completionOwned) is not null;
+                                SyntaxNode? directCompletion = node is InvocationExpressionSyntax invocation
+                                    ? CompletionPoint(member, invocation, completionOwned) : null;
+
+                                bool directlyJoined = directCompletion is not null;
 
                                 TraversalEvidence targetEvidence = TraversalEvidence.NoEvidence;
 
                                 foreach (AuthoredMember exactTarget in targets)
                                 {
+                                    // A lease-carried awaited call to a declared handoff root re-roots under that root's operation id and
+                                    // canonical Work, so the root's closure is judged once, under its own budget.
+                                    if (node is InvocationExpressionSyntax handoffCall
+                                        && TryLeaseHandoff(member, handoffCall, exactTarget, targets.Length, rootType, operationId, ordinary, workAdmitted, effectGroup, recoveryEffect) is { } handoffEdge)
+                                    {
+                                        TraversalEvidence handoffEvidence = MergeEvidence(
+                                            Traverse(handoffEdge.Root.Member, handoffEdge.Root.RootType, handoffEdge.Root.Entry.OperationId, active, false, handoffEdge.Root.Work, null, handoffEdge.Root.Selection),
+                                            AddSite(HostedProducerSiteKind.LeaseHandoff, handoffEdge.Root.Entry.OperationId, member, rootType, operationId, node, null, workAdmitted));
+
+                                        targetEvidence = MergeEvidence(targetEvidence, handoffEvidence);
+
+                                        emittedEvidence = MergeEvidence(emittedEvidence, handoffEvidence);
+
+                                        continue;
+                                    }
+
                                     bool hostedTaskTransfer =
                                         node is InvocationExpressionSyntax hostedTaskCall
                                         && IsReviewedHostedTaskTransfer(
@@ -19573,22 +21371,51 @@ internal static partial class HostedGrimoireProducerInventory
                                         nextRecoveryEffect = RecoveryEffectFrontierAt(
                                             member,
                                             recoveryEntry,
-                                            operationId);
+                                            operationId,
+                                            workAdmitted);
                                     }
 
                                     SyntaxNode? lazyCompletion = node is InvocationExpressionSyntax lazyCall && IsLazySequence(exactTarget.Symbol.ReturnType) ? LazyCompletionPoint(member, lazyCall) : null;
 
-                                    bool lazyOwned = lazyCompletion is not null && WorkAt(member, lazyCompletion, operationId, ordinary?.WorkKind, inheritedWork) == workAdmitted && EffectAt(member, lazyCompletion, operationId, inheritedEffect) == effectGroup;
+                                    (SyntaxNode Site, int Position)? scopedConsumption = lazyCompletion is null && node is InvocationExpressionSyntax scopedCall && IsLazySequence(exactTarget.Symbol.ReturnType)
+                                        ? ScopedEnumeratorConsumption(member, scopedCall) : null;
 
-                                    bool detached = IsAwaitable(exactTarget.Symbol.ReturnType) && !joined || IsLazySequence(exactTarget.Symbol.ReturnType) && !lazyOwned;
+                                    bool lazyOwned = lazyCompletion is not null
+                                            && LazyConsumptionPositions(lazyCompletion).All(lazyPosition => WorkAt(member, lazyCompletion, operationId, ordinary?.WorkKind, inheritedWork, lazyPosition) == workAdmitted && EffectAt(member, lazyCompletion, operationId, inheritedEffect, lazyPosition) == effectGroup)
+                                        || scopedConsumption is { } scoped
+                                            && WorkAt(member, scoped.Site, operationId, ordinary?.WorkKind, inheritedWork, scoped.Position) == workAdmitted
+                                            && EffectAt(member, scoped.Site, operationId, inheritedEffect, scoped.Position) == effectGroup;
 
-                                    if (detached)
+                                    // An iterator that returns an enumerator runs its body on the MoveNext calls that follow. That is owned only
+                                    // by the enumeration of the loop that called the provider returning it; anywhere else it is unowned.
+                                    bool lazyEnumerator = node is InvocationExpressionSyntax && IsLazyEnumerator(exactTarget.Symbol.ReturnType) && IsIteratorMember(exactTarget);
+
+                                    if (lazyEnumerator && OwnsLazyEnumeratorCall(node))
                                     {
+                                        lazyOwned = true;
+                                    }
+
+                                    bool detached = IsAwaitable(exactTarget.Symbol.ReturnType) && !joined || IsLazySequence(exactTarget.Symbol.ReturnType) && !lazyOwned || lazyEnumerator && !lazyOwned;
+
+                                    // An asynchronous sequence's body runs where it is consumed. When no consumption can be proven, the
+                                    // body is traversed with no frontier, and the refusal is owed only if that traversal finds a site.
+                                    bool deferredAsyncRefusal = detached && IsAsyncSequence(exactTarget.Symbol.ReturnType) && !IsAwaitable(exactTarget.Symbol.ReturnType);
+
+                                    SyntaxNode? targetCompletion = IsAwaitable(exactTarget.Symbol.ReturnType) ? directCompletion
+                                        : IsLazySequence(exactTarget.Symbol.ReturnType) ? lazyCompletion ?? scopedConsumption?.Site : node;
+
+                                    if (detached && !deferredAsyncRefusal)
+                                    {
+                                        RefuseTraversalCompletion();
+
                                         diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", operationId + "/call@" + Location(node), callee + "; An awaitable or lazy helper must complete within its caller's retained lifetime."));
                                     }
 
                                     AuthoredMember boundTarget = node switch
                                     {
+                                        InvocationExpressionSyntax boundCall when IsLongRestSdkSetupDependency(exactTarget)
+                                            || IsExactLongRestHttpFactoryMethod(method) && IsLongRestSdkSetupDependency(member) =>
+                                            BindCleanupInvocationContext(member, boundCall, exactTarget, new CleanupProvenanceContext()),
                                         InvocationExpressionSyntax boundCall =>
                                             BindInvocationContext(
                                                 member,
@@ -19618,11 +21445,20 @@ internal static partial class HostedGrimoireProducerInventory
                                         targetEvidence = MergeEvidence(targetEvidence, exactEvidence);
 
                                         emittedEvidence = MergeEvidence(emittedEvidence, exactEvidence);
+
+                                        if (deferredAsyncRefusal && exactEvidence != TraversalEvidence.NoEvidence)
+                                        {
+                                            RefuseTraversalCompletion();
+
+                                            diagnostics.Add(new("HOSTED_CALLBACK_OWNERSHIP_UNPROVEN", operationId + "/call@" + Location(node), callee + "; An awaitable or lazy helper must complete within its caller's retained lifetime."));
+                                        }
                                     }
                                 }
 
                                 if (AggregateBoundaries.Contains(callee) && targetEvidence == TraversalEvidence.NoEvidence)
                                 {
+                                    RefuseTraversalCompletion();
+
                                     diagnostics.Add(new("HOSTED_AGGREGATE_PROOF_MISSING", operationId + "/call@" + Location(node), "The exact bound aggregate target set produced no executable site evidence; prose is not a proof."));
                                 }
 
@@ -19630,6 +21466,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     && (!ownedTransparentCallbackCarrier
                                         || targetEvidence == TraversalEvidence.NoEvidence))
                                 {
+                                    RefuseTraversalCompletion();
+
                                     diagnostics.Add(new(
                                         "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                         operationId + "/callback@" + Location(node),
@@ -19638,6 +21476,8 @@ internal static partial class HostedGrimoireProducerInventory
                             }
                             else if (aggregate)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_AGGREGATE_PROOF_MISSING", Location(node), callee));
                             }
                             else if ((unresolvedAuthoredTarget || method.ContainingType.TypeKind == TypeKind.Interface && method.ContainingNamespace.ToDisplayString().StartsWith("RetroDownfall.", StringComparison.Ordinal) || method.ContainingType.TypeKind == TypeKind.Interface && method.ContainingType.Locations.Any(static location => location.IsInSource))
@@ -19646,6 +21486,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     node,
                                     member.Model))
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
                             }
                         }
@@ -19707,6 +21549,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (resolution is null)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_SITE_UNCLASSIFIED",
                                     Location(node),
@@ -19725,6 +21569,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                             if (boundedData == BoundedDataProof.Unknown)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_SITE_UNCLASSIFIED",
                                     Location(node),
@@ -19756,6 +21602,8 @@ internal static partial class HostedGrimoireProducerInventory
                                     resolution.Factory,
                                     new HashSet<GraphMemberIdentity>()))
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                     RootOperation(operationId)
@@ -19772,18 +21620,35 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
+                        if (!propertyMutation && IsEfDbSetType(property.Type) && node is ExpressionSyntax dbSetRead)
+                        {
+                            RefuseEscapingEfQuery(member, dbSetRead, callee);
+                        }
+
+                        if (!propertyMutation
+                            && DbContextFirstUseHooks(member, node, property) is { Count: > 0 } propertyHooks)
+                        {
+                            // EF runs the context's authored hooks on the first use of its services, which can be a
+                            // later consumer of a value read here, so no admission current at this read is inherited.
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                TraverseDbContextHooks(propertyHooks, rootType, operationId, node, active, lifecycle));
+                        }
+
                         HostedProducerSiteKind? externalPropertyKind =
                             IsBootstrapConsoleRedirection(member)
                             && TypeKey(property.ContainingType) == "System.IO.StreamWriter"
                             && property.Name == "AutoFlush"
                             && propertyMutation
                                 ? HostedProducerSiteKind.FileSystemEffect
-                                : TryClassifyExternalProducer(
-                                    property,
-                                    propertyMutation,
-                                    out HostedProducerSiteKind classifiedProperty)
-                                        ? classifiedProperty
-                                        : null;
+                                : IsExactSqliteBaseReaderProperty(property, propertyMutation, node, member)
+                                    ? HostedProducerSiteKind.DatabaseAccess
+                                    : TryClassifyExternalProducer(
+                                        property,
+                                        propertyMutation,
+                                        out HostedProducerSiteKind classifiedProperty)
+                                            ? classifiedProperty
+                                            : null;
 
                         if (TypeKey(property.ContainingType)
                                 == "System.IO.FileSystemWatcher"
@@ -19793,6 +21658,8 @@ internal static partial class HostedGrimoireProducerInventory
                                 member,
                                 watcherActivation.Expression))
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new(
                                 "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                 RootOperation(operationId)
@@ -19826,6 +21693,8 @@ internal static partial class HostedGrimoireProducerInventory
                             }
                             else if (!authoredAutoProperty)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), setter));
                             }
 
@@ -19848,17 +21717,18 @@ internal static partial class HostedGrimoireProducerInventory
                             member.Model,
                             member))
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new("HOSTED_SITE_UNCLASSIFIED", Location(node), callee));
                         }
 
+                        (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(propertyReference?.Instance);
+
                         foreach (IMethodSymbol accessor in new[] { reads ? property.GetMethod : null, writes ? property.SetMethod : null }.OfType<IMethodSymbol>())
                         {
-                            if (Resolve(accessor, member.Model.Compilation) is { } target
-                                && target.Syntax is not AccessorDeclarationSyntax
-                                {
-                                    Body: null,
-                                    ExpressionBody: null,
-                                })
+                            AccessorDispatch dispatch = ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, property.IsIndexer);
+
+                            foreach (AuthoredMember target in dispatch.Targets)
                             {
                                 AuthoredMember boundTarget = propertyReference is null
                                     ? target
@@ -19869,12 +21739,19 @@ internal static partial class HostedGrimoireProducerInventory
                                         target,
                                         assignedValue);
 
+                                boundTarget = BindReceiverContext(
+                                    member,
+                                    propertyReference?.Instance is { IsImplicit: false, Syntax: ExpressionSyntax writtenReceiver } ? writtenReceiver : null,
+                                    target,
+                                    boundTarget);
+
                                 emittedEvidence = MergeEvidence(emittedEvidence, Traverse(boundTarget, rootType, operationId + (accessor.MethodKind == MethodKind.PropertyGet ? "/get@" : "/set@") + Location(node), active, lifecycle, workAdmitted, effectGroup, recoveryEffect: recoveryEffect));
                             }
-                            else if (property.IsIndexer
-                                && accessor.Locations.Any(static location =>
-                                    location.IsInSource))
+
+                            if (dispatch.Unresolved)
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_CALL_TARGET_UNRESOLVED",
                                     Location(node),
@@ -19887,9 +21764,11 @@ internal static partial class HostedGrimoireProducerInventory
                         && authoredMutation.Left == node
                         && authoredMutation.Kind() is SyntaxKind.AddAssignmentExpression
                             or SyntaxKind.SubtractAssignmentExpression
-                        && authoredEvent.DeclaringSyntaxReferences
-                            .Select(static reference => reference.GetSyntax())
-                            .SingleOrDefault() is EventDeclarationSyntax)
+                        && authoredEvent.Locations.Any(static location => location.IsInSource)
+                        && (authoredEvent.DeclaringSyntaxReferences
+                                .Select(static reference => reference.GetSyntax())
+                                .SingleOrDefault() is EventDeclarationSyntax
+                            || (authoredEvent.AddMethod is { } declaredAdd && IsDispatchedMember(declaredAdd))))
                     {
                         bool addsHandler = authoredMutation.IsKind(
                             SyntaxKind.AddAssignmentExpression);
@@ -19911,23 +21790,30 @@ internal static partial class HostedGrimoireProducerInventory
                             operationId,
                             inheritedEffect);
 
-                        if (accessor is not null
-                            && Resolve(
-                                accessor,
-                                member.Model.Compilation) is { } target
-                            && target.Syntax is not AccessorDeclarationSyntax
-                            {
-                                Body: null,
-                                ExpressionBody: null,
-                            })
+                        (ITypeSymbol? receiverType, ExpressionSyntax? receiverExpression, bool exactReceiver) = AccessorReceiver(
+                            member.Model.GetOperation(authoredMutation) is IEventAssignmentOperation { EventReference: IEventReferenceOperation eventReference }
+                                ? eventReference.Instance
+                                : null);
+
+                        AccessorDispatch dispatch = accessor is null
+                            ? new([], true)
+                            : ResolveAccessorDispatch(member, accessor, receiverType, receiverExpression, exactReceiver, indexer: false);
+
+                        foreach (AuthoredMember target in dispatch.Targets)
                         {
-                            AuthoredMember boundTarget = accessor.Parameters is
+                            AuthoredMember boundTarget = accessor!.Parameters is
                                 [IParameterSymbol handler]
                                     ? BindArguments(
                                         member,
                                         [(authoredMutation.Right, handler, RefKind.None)],
                                         target)
                                     : target;
+
+                            boundTarget = BindReceiverContext(
+                                member,
+                                receiverExpression,
+                                target,
+                                boundTarget);
 
                             emittedEvidence = MergeEvidence(
                                 emittedEvidence,
@@ -19943,8 +21829,11 @@ internal static partial class HostedGrimoireProducerInventory
                                     effectGroup,
                                     recoveryEffect: recoveryEffect));
                         }
-                        else
+
+                        if (dispatch.Unresolved || dispatch.Targets.Count == 0 && authoredEvent.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()).SingleOrDefault() is EventDeclarationSyntax)
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new(
                                 "HOSTED_CALL_TARGET_UNRESOLVED",
                                 Location(node),
@@ -19952,6 +21841,17 @@ internal static partial class HostedGrimoireProducerInventory
                                     ? Normalize(authoredEvent)
                                     : Normalize(accessor)));
                         }
+                    }
+                    else if (symbol is IEventSymbol stateEvent
+                        && node.Parent is AssignmentExpressionSyntax stateMutation
+                        && stateMutation.Left == node
+                        && stateMutation.Kind() is SyntaxKind.AddAssignmentExpression
+                            or SyntaxKind.SubtractAssignmentExpression
+                        && stateEvent.Locations.All(static location => !location.IsInSource)
+                        && IsReviewedConnectionStateWiring(stateEvent))
+                    {
+                        // Subscribing a handler to DbConnection.StateChange runs none: every handler in the analysed source
+                        // is named, and each is entered where a connection changes state (see TraverseConnectionStateHandlers).
                     }
                     else if (symbol is IEventSymbol declaredEvent
                         && node.Parent is AssignmentExpressionSyntax eventMutation
@@ -19975,6 +21875,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (!ownedWatcherEvent)
                         {
+                            RefuseTraversalCompletion();
+
                             diagnostics.Add(new(
                                 "HOSTED_SITE_UNCLASSIFIED",
                                 Location(node),
@@ -20028,6 +21930,8 @@ internal static partial class HostedGrimoireProducerInventory
                                 || handlerEvidence != TraversalEvidence.NoEvidence
                                     && !HasAdmissionSeed(handler))
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                                     RootOperation(operationId)
@@ -20040,7 +21944,26 @@ internal static partial class HostedGrimoireProducerInventory
                     }
                     else if (node is InvocationExpressionSyntax && symbol is null)
                     {
+                        RefuseTraversalCompletion();
+
                         diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), node.ToString()));
+                    }
+
+                    if (node is CommonForEachStatementSyntax or SpreadElementSyntax)
+                    {
+                        emittedEvidence = MergeEvidence(
+                            emittedEvidence,
+                            TraverseEnumeration(
+                                member,
+                                node,
+                                rootType,
+                                operationId,
+                                active,
+                                lifecycle,
+                                ordinary?.WorkKind,
+                                inheritedWork,
+                                inheritedEffect,
+                                recoveryEffect));
                     }
 
                     if (node is UsingStatementSyntax { Expression: { } resource } expressionUsing)
@@ -20100,6 +22023,8 @@ internal static partial class HostedGrimoireProducerInventory
                                         new HashSet<ISymbol>(
                                             SymbolEqualityComparer.Default)).Count == 0))
                             {
+                                RefuseTraversalCompletion();
+
                                 diagnostics.Add(new(
                                     "HOSTED_DISPOSAL_TARGET_UNRESOLVED",
                                     operationId + "/dispose@" + Location(resource),
@@ -20108,6 +22033,22 @@ internal static partial class HostedGrimoireProducerInventory
                                         + disposeName
                                         + "; Expression disposal must resolve to exactly one compiler-effective authored cleanup."));
                             }
+
+                            emittedEvidence = MergeEvidence(
+                                emittedEvidence,
+                                TraverseDisposalCallbacks(
+                                    member,
+                                    resource,
+                                    resourceType,
+                                    expressionUsing.AwaitKeyword.RawKind != 0,
+                                    resource,
+                                    rootType,
+                                    operationId,
+                                    active,
+                                    lifecycle,
+                                    retainedWork,
+                                    retainedEffect,
+                                    recoveryEffect));
                         }
                     }
 
@@ -20178,6 +22119,8 @@ internal static partial class HostedGrimoireProducerInventory
                                             new HashSet<ISymbol>(
                                                 SymbolEqualityComparer.Default)).Count == 0))
                                 {
+                                    RefuseTraversalCompletion();
+
                                     diagnostics.Add(new(
                                         "HOSTED_DISPOSAL_TARGET_UNRESOLVED",
                                         operationId + "/dispose@" + Location(variable),
@@ -20187,6 +22130,25 @@ internal static partial class HostedGrimoireProducerInventory
                                                 ? "DisposeAsync"
                                                 : "Dispose")
                                             + "; Declaration disposal must resolve to exactly one compiler-effective authored cleanup."));
+                                }
+
+                                if (cleanupResource is not null)
+                                {
+                                    emittedEvidence = MergeEvidence(
+                                        emittedEvidence,
+                                        TraverseDisposalCallbacks(
+                                            member,
+                                            cleanupResource,
+                                            disposable,
+                                            asynchronous,
+                                            variable,
+                                            rootType,
+                                            operationId,
+                                            active,
+                                            lifecycle,
+                                            retainedWork,
+                                            retainedEffect,
+                                            recoveryEffect));
                                 }
                             }
                         }
@@ -20240,11 +22202,212 @@ internal static partial class HostedGrimoireProducerInventory
 
             analyzedStates[state] = emittedEvidence;
 
+            bool complete = traversalCompletion!.Complete;
+
+            completedTraversalStates[state] = complete;
+
+            if (complete && traversalCompletion!.FreshNestedPath && nestedAncestors is not null && !boundedDataProbeEncountered
+                && nestedRootCohort is { Eligible: true, Plan.Lifecycle: true } sourceCohort)
+            {
+                // Only a fresh body reaches this point. Cache hits cannot invent raw provenance.
+                sourceCohort.Pending.TryAdd((state, operationId), new(nestedAncestors, emittedEvidence));
+            }
+
+            if (wholePlannedRoot && lifecycle && complete)
+            {
+                completedLifecycleRoots[state] = new(operationId, plannedRoot!.Occurrence, emittedEvidence);
+            }
+
             return emittedEvidence;
         }
 
-        private static TraversalEvidence MergeEvidence(TraversalEvidence left, TraversalEvidence right)
+        private bool ConversionOperandHasUnsupportedLifetime(AuthoredMember member, IOperation operand, AuthoredMember conversionTarget, CleanupProvenanceContext? sharedProof = null, bool typeInitializationProven = false)
         {
+            CleanupProvenanceContext proof = sharedProof ?? new();
+
+            HashSet<GraphMemberIdentity> path = [];
+
+            bool HasInitializationFreeEntry(INamedTypeSymbol type, bool defaultConstruction = false)
+            {
+                if (type.TypeKind != TypeKind.Class || type.DeclaringSyntaxReferences.IsEmpty) return false;
+
+                if (defaultConstruction && (type.BaseType is not { } baseType
+                    || !IsExactFrameworkType(baseType, "System.Object", typeof(object).Assembly.GetName()))) return false;
+
+                foreach (SyntaxReference reference in type.DeclaringSyntaxReferences)
+                {
+                    if (proof.RemainingWork-- <= 0
+                        || reference.GetSyntax() is not TypeDeclarationSyntax declaration
+                        || declaration is not ClassDeclarationSyntax
+                            && declaration is not RecordDeclarationSyntax { ParameterList: null }
+                        || declaration is RecordDeclarationSyntax && (!type.IsRecord || !type.IsSealed)
+                        || !semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model)
+                        || !SymbolEqualityComparer.Default.Equals(model.GetDeclaredSymbol(declaration)?.OriginalDefinition,
+                            type.OriginalDefinition)) return false;
+
+                    foreach (MemberDeclarationSyntax declared in declaration.Members)
+                    {
+                        if (proof.RemainingWork-- <= 0) return false;
+
+                        // Source bodies omit declaring-type initialization. Default
+                        // construction also needs the existing instance-initializer exclusion.
+                        // Record entry uses only an unparameterized declaration's implicit
+                        // zero-argument constructor; authored record constructors stay refused.
+                        if (declared is ConstructorDeclarationSyntax initializer
+                                && (initializer.Modifiers.Any(SyntaxKind.StaticKeyword) || declaration is RecordDeclarationSyntax)
+                            || declared is PropertyDeclarationSyntax { Initializer: not null } property
+                                && (defaultConstruction || property.Modifiers.Any(SyntaxKind.StaticKeyword))) return false;
+
+                        if (declared is BaseFieldDeclarationSyntax field && !field.Modifiers.Any(SyntaxKind.ConstKeyword)
+                            && (defaultConstruction || field.Modifiers.Any(SyntaxKind.StaticKeyword)))
+                        {
+                            foreach (VariableDeclaratorSyntax variable in field.Declaration.Variables)
+                            {
+                                if (proof.RemainingWork-- <= 0 || variable.Initializer is not null) return false;
+                            }
+                        }
+                    }
+                }
+
+                return true;
+            }
+
+            bool SourceHasUnsupportedLifetime(AuthoredMember owner, IMethodSymbol method, SyntaxNode syntax)
+            {
+                if (method is { IsImplicitlyDeclared: true, MethodKind: MethodKind.Constructor, Parameters.Length: 0 })
+                    return !HasInitializationFreeEntry(method.ContainingType, defaultConstruction: true);
+
+                AuthoredMember? target = ResolveInvocationTarget(method, owner, syntax);
+
+                if (target is null)
+                {
+                    // Ordinary reviewed cleanup is already included in the post-operand
+                    // frontier query. Opaque execution does not earn a new lifetime proof.
+                    return !ConsumesAdmissionReceiver(method) && !PreservesAdmissionReceiver(method)
+                        && !IsReviewedEffectFreeExternalMember(method, syntax, owner.Model, owner);
+                }
+
+                // Captured admission in a called local/lambda body is not accounted for
+                // by the explicit-argument lifetime walk used by the ordinary query.
+                if (target.Syntax is LocalFunctionStatementSyntax or AnonymousFunctionExpressionSyntax
+                    || !HasInitializationFreeEntry(target.Symbol.ContainingType)) return true;
+
+                GraphMemberIdentity identity = MemberIdentity(target);
+
+                if (!path.Add(identity)) return true;
+
+                try
+                {
+                    return target.Model.GetOperation(target.Syntax) is not { } body
+                        || Inspect(target, body, enteredCallable: true);
+                }
+                finally
+                {
+                    path.Remove(identity);
+                }
+            }
+
+            bool Inspect(AuthoredMember owner, IOperation operation, bool enteredCallable = false)
+            {
+                if (proof.RemainingWork-- <= 0) return true;
+
+                if (!enteredCallable && operation is IAnonymousFunctionOperation or ILocalFunctionOperation) return false;
+
+                // AdmissionEndedBefore follows explicit calls. Only known transparent
+                // data/structure and the checked execution lanes below retain authority;
+                // unknown semantic operations may hide execution absent from their children.
+                if (operation.Type?.TypeKind == TypeKind.Dynamic) return true;
+
+                switch (operation)
+                {
+                    case IInvocationOperation call:
+                        if (SourceHasUnsupportedLifetime(owner, call.TargetMethod, call.Syntax)) return true;
+
+                        break;
+
+                    case IObjectCreationOperation { Constructor: { } constructor } creation:
+                        if (constructor.Parameters.Length != 0
+                            || SourceHasUnsupportedLifetime(owner, constructor, creation.Syntax)) return true;
+
+                        break;
+
+                    case IConversionOperation conversion when conversion.OperatorMethod is null
+                        && conversion.Conversion.Exists && conversion.Conversion.MethodSymbol is null:
+                    case IArgumentOperation argument when argument.Parameter?.RefKind == RefKind.None
+                        && argument.InConversion.MethodSymbol is null && argument.OutConversion.MethodSymbol is null:
+                    case IMethodBodyOperation:
+                    case IBlockOperation:
+                    case IReturnOperation:
+                    case IExpressionStatementOperation:
+                    case IVariableDeclarationGroupOperation:
+                    case IVariableDeclarationOperation:
+                    case IVariableDeclaratorOperation:
+                    case IVariableInitializerOperation:
+                    case ILocalReferenceOperation:
+                    case IParameterReferenceOperation:
+                    case IInstanceReferenceOperation:
+                    case ILiteralOperation:
+                    case IDefaultValueOperation:
+                    case IParenthesizedOperation:
+                    case IDelegateCreationOperation:
+                    case IMethodReferenceOperation:
+                    case IEmptyOperation:
+                        break;
+
+                    default:
+                        return true;
+                }
+
+                foreach (IOperation child in operation.ChildOperations)
+                {
+                    if (Inspect(owner, child)) return true;
+                }
+
+                return false;
+            }
+
+            // A closed-value record target has already proved that neither it nor any nested record
+            // declares a static constructor or static initializer, so no hidden type initialization
+            // can run before its Equals. The operand walk below is unchanged.
+            return !(typeInitializationProven || HasInitializationFreeEntry(conversionTarget.Symbol.ContainingType)) || Inspect(member, operand);
+        }
+
+        private static (IMethodSymbol Method, IOperation[] Operands, bool Unsupported)? UserDefinedOperatorAt(AuthoredMember member, SyntaxNode node)
+        {
+            if (node is not (PrefixUnaryExpressionSyntax or BinaryExpressionSyntax)) return null;
+
+            return member.Model.GetOperation(node) switch
+            {
+                IUnaryOperation { OperatorMethod: { } method } unary => (method, [unary.Operand], unary.IsLifted),
+                IBinaryOperation { OperatorMethod: { } method } binary => (method, [binary.LeftOperand, binary.RightOperand],
+                    binary.IsLifted || binary.OperatorKind is BinaryOperatorKind.ConditionalAnd or BinaryOperatorKind.ConditionalOr),
+                _ => null,
+            };
+        }
+
+        private static IEnumerable<IConversionOperation> UserConversionsAt(AuthoredMember member, SyntaxNode node)
+        {
+            if (node is not ExpressionSyntax) yield break;
+
+            // The operation selected for an expression can be its operand, with a
+            // contextual return, argument or initializer conversion only in Parent.
+            // Parentheses can share that syntax. The state's occurrence set emits each
+            // compiler-selected operator once without walking uninvoked callable bodies.
+            for (IOperation? operation = member.Model.GetOperation(node); operation is not null; operation = operation.Parent)
+            {
+                if (operation is IConversionOperation { OperatorMethod: not null } conversion) yield return conversion;
+
+                if (operation.Parent is not (IConversionOperation or IParenthesizedOperation)) yield break;
+            }
+        }
+
+        private TraversalEvidence MergeEvidence(TraversalEvidence left, TraversalEvidence right)
+        {
+            if (left == TraversalEvidence.Inconclusive || right == TraversalEvidence.Inconclusive)
+            {
+                RefuseTraversalCompletion();
+            }
+
             if (left == TraversalEvidence.Evidence || right == TraversalEvidence.Evidence)
             {
                 return TraversalEvidence.Evidence;
@@ -21153,13 +23316,199 @@ internal static partial class HostedGrimoireProducerInventory
                 : null;
         }
 
+        private bool IsOwnedBoundedGuidChannelRead(AuthoredMember member, InvocationExpressionSyntax read, IMethodSymbol method)
+        {
+            static bool GuidType(ITypeSymbol type) => IsExactFrameworkType(type, "System.Guid", typeof(Guid).Assembly.GetName());
+
+            static bool ChannelType(ITypeSymbol type, string name, int arity) => type is INamedTypeSymbol named
+                && named.TypeArguments.Length == arity && named.TypeArguments.All(GuidType)
+                && IsExactFrameworkType(type, name, typeof(System.Threading.Channels.Channel).Assembly.GetName());
+
+            if (method.IsStatic || method.Name != "ReadAsync" || method.Arity != 0
+                || !ChannelType(method.ContainingType, "System.Threading.Channels.ChannelReader`1", 1)
+                || !HasExactParameterTypes(method, "System.Threading.CancellationToken")
+                || method.ReturnType is not INamedTypeSymbol { TypeArguments: [{ } result] } returned
+                || !GuidType(result)
+                || !IsExactFrameworkType(returned, "System.Threading.Tasks.ValueTask`1", typeof(ValueTask<>).Assembly.GetName())
+                || read.Expression is not MemberAccessExpressionSyntax access)
+            {
+                return false;
+            }
+
+            CleanupProvenanceContext proof = new();
+
+            bool Origin(ExpressionSyntax expression, SemanticModel model, HashSet<ISymbol> path, AuthoredMember? context, bool reader)
+            {
+                if (context is null || proof.RemainingWork-- <= 0)
+                {
+                    return false;
+                }
+
+                expression = StripTransparentExpression(expression);
+
+                AuthoredMember owner = context with { Model = model };
+
+                ISymbol? symbol = model.GetSymbolInfo(expression).Symbol;
+
+                if (reader && expression is MemberAccessExpressionSyntax propertyAccess
+                    && symbol is IPropertySymbol { Name: "Reader", IsStatic: false, GetMethod.DeclaredAccessibility: Accessibility.Public, SetMethod.DeclaredAccessibility: Accessibility.Protected } property
+                    && ChannelType(property.ContainingType, "System.Threading.Channels.Channel`2", 2)
+                    && ChannelType(property.Type, "System.Threading.Channels.ChannelReader`1", 1))
+                {
+                    return Origin(propertyAccess.Expression, model, path, owner, false);
+                }
+
+                if (expression is InvocationExpressionSyntax call && symbol is IMethodSymbol factory)
+                {
+                    if (!reader && factory.IsStatic && factory.Name == "CreateBounded"
+                        && factory.TypeArguments is [{ } item] && GuidType(item)
+                        && IsExactFrameworkType(factory.ContainingType, "System.Threading.Channels.Channel", typeof(System.Threading.Channels.Channel).Assembly.GetName())
+                        && HasExactParameterTypes(factory, "System.Threading.Channels.BoundedChannelOptions")
+                        && ChannelType(factory.ReturnType, "System.Threading.Channels.Channel`1", 1)
+                        && call.ArgumentList.Arguments is [{ Expression: BaseObjectCreationExpressionSyntax options }]
+                        && model.GetSymbolInfo(options).Symbol is IMethodSymbol constructor
+                        && IsExactFrameworkType(constructor.ContainingType, "System.Threading.Channels.BoundedChannelOptions", typeof(System.Threading.Channels.Channel).Assembly.GetName())
+                        && HasExactParameterTypes(constructor, "System.Int32")
+                        && options.ArgumentList?.Arguments is [{ Expression: { } capacity }]
+                        && model.GetConstantValue(capacity) is { HasValue: true, Value: 1 }
+                        && options.Initializer?.Expressions is { Count: 2 } settings)
+                    {
+                        bool single = false;
+                        bool drop = false;
+
+                        foreach (ExpressionSyntax setting in settings)
+                        {
+                            if (setting is not AssignmentExpressionSyntax { RawKind: (int)SyntaxKind.SimpleAssignmentExpression } assignment
+                                || model.GetSymbolInfo(assignment.Left).Symbol is not IPropertySymbol option)
+                            {
+                                return false;
+                            }
+
+                            single |= option.Name == "SingleReader"
+                                && IsExactFrameworkType(option.ContainingType, "System.Threading.Channels.ChannelOptions", typeof(System.Threading.Channels.Channel).Assembly.GetName())
+                                && model.GetConstantValue(assignment.Right) is { HasValue: true, Value: true };
+
+                            drop |= option.Name == "FullMode"
+                                && IsExactFrameworkType(option.ContainingType, "System.Threading.Channels.BoundedChannelOptions", typeof(System.Threading.Channels.Channel).Assembly.GetName())
+                                && model.GetSymbolInfo(assignment.Right).Symbol is IFieldSymbol { Name: "DropWrite" } mode
+                                && IsExactFrameworkType(mode.ContainingType, "System.Threading.Channels.BoundedChannelFullMode", typeof(System.Threading.Channels.Channel).Assembly.GetName());
+                        }
+
+                        return single && drop;
+                    }
+
+                    if (ResolveCleanupInvocationTarget(factory, owner, call, proof) is { } target && path.Add(factory))
+                    {
+                        try
+                        {
+                            AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                            ExpressionSyntax[] values = ReturnedExpressions(bound.Syntax);
+
+                            return values.Length != 0 && values.All(value => Origin(value, bound.Model, path, bound, reader));
+                        }
+                        finally
+                        {
+                            path.Remove(factory);
+                        }
+                    }
+                }
+
+                return HasOnlyReviewedValueSources(expression, model, path, owner,
+                    (value, sourceModel, sourcePath, sourceContext) => Origin(value, sourceModel, sourcePath, sourceContext, reader));
+            }
+
+            return Origin(access.Expression, member.Model, new(SymbolEqualityComparer.Default), member, true);
+        }
+
+        private bool HasCompleteEagerCallableOrigin(
+            ExpressionSyntax expression,
+            SemanticModel model,
+            HashSet<ISymbol> path,
+            AuthoredMember? context)
+        {
+            if (expression is AnonymousFunctionExpressionSyntax
+                || expression is not InvocationExpressionSyntax
+                    && model.GetSymbolInfo(expression).Symbol is IMethodSymbol)
+            {
+                return true;
+            }
+
+            if (expression is ConditionalExpressionSyntax conditional)
+            {
+                return HasCompleteEagerCallableOrigin(conditional.WhenTrue, model, path, context)
+                    && HasCompleteEagerCallableOrigin(conditional.WhenFalse, model, path, context);
+            }
+
+            return HasOnlyReviewedValueSources(expression, model, path, context, HasCompleteEagerCallableOrigin);
+        }
+
+        private static bool IsExactEagerCollectionCallback(IMethodSymbol method)
+        {
+            IMethodSymbol definition = (method.ReducedFrom ?? method).OriginalDefinition;
+
+            if (definition.Parameters.Any(static parameter => parameter.RefKind != RefKind.None)
+                || IsAwaitable(method.ReturnType))
+            {
+                return false;
+            }
+
+            static bool Same(ITypeSymbol left, ITypeSymbol right) => SymbolEqualityComparer.Default.Equals(left, right);
+
+            static bool Carrier(ITypeSymbol type, string name, params ITypeSymbol[] arguments) =>
+                type is INamedTypeSymbol named
+                && IsExactFrameworkType(named, name, name == "System.Collections.Immutable.ImmutableArray`1"
+                    ? typeof(ImmutableArray<>).Assembly.GetName() : typeof(Func<>).Assembly.GetName())
+                && named.TypeArguments.Length == arguments.Length
+                && named.TypeArguments.Zip(arguments).All(static pair => Same(pair.First, pair.Second));
+
+            if (!definition.IsStatic && definition.Name == "Find" && definition.Arity == 0
+                && IsExactFrameworkType(definition.ContainingType, "System.Collections.Generic.List`1", typeof(List<>).Assembly.GetName())
+                && definition.ContainingType.TypeArguments is [{ } element]
+                && definition.Parameters is [{ Type: { } predicate }])
+            {
+                return Same(definition.ReturnType, element)
+                    && Carrier(predicate, "System.Predicate`1", element);
+            }
+
+            if (!definition.IsStatic
+                || !IsExactFrameworkType(definition.ContainingType, "System.Linq.ImmutableArrayExtensions", typeof(ImmutableArray<>).Assembly.GetName()))
+            {
+                return false;
+            }
+
+            if (definition.Name == "Aggregate"
+                && definition.TypeParameters is [{ } accumulator, { } item]
+                && definition.Parameters is [{ Type: { } source }, { Type: { } seed }, { Type: { } callback }])
+            {
+                return Carrier(source, "System.Collections.Immutable.ImmutableArray`1", item)
+                    && Same(seed, accumulator)
+                    && Same(definition.ReturnType, accumulator)
+                    && Carrier(callback, "System.Func`3", accumulator, item, accumulator);
+            }
+
+            if (definition.Name is "All" or "Single"
+                && definition.TypeParameters is [{ } value]
+                && definition.Parameters is [{ Type: { } values }, { Type: INamedTypeSymbol { TypeArguments: [_, { } result] } filter }])
+            {
+                return Carrier(values, "System.Collections.Immutable.ImmutableArray`1", value)
+                    && result.SpecialType == SpecialType.System_Boolean
+                    && Carrier(filter, "System.Func`2", value, result)
+                    && (definition.Name == "All" ? definition.ReturnType.SpecialType == SpecialType.System_Boolean
+                        : Same(definition.ReturnType, value));
+            }
+
+            return false;
+        }
+
         private static bool IsKnownSynchronousCallback(IMethodSymbol method)
         {
             IMethodSymbol definition = method.ReducedFrom ?? method;
 
             string type = TypeKey(definition.ContainingType);
 
-            return type == "System.Linq.Enumerable"
+            return IsExactEagerCollectionCallback(method)
+                || type == "System.Linq.Enumerable"
                     && definition.Name is "Aggregate" or "All" or "Any" or "Average" or "Count" or "First" or "FirstOrDefault" or "Last" or "LastOrDefault" or "LongCount" or "Max" or "MaxBy" or "Min" or "MinBy" or "Single" or "SingleOrDefault" or "Sum" or "ToDictionary" or "ToHashSet" or "ToLookup"
                 || type == "System.Array"
                     && definition.Name is "Exists" or "Sort"
@@ -21327,17 +23676,11 @@ internal static partial class HostedGrimoireProducerInventory
 
                 foreach (AuthoredMember body in bodies)
                 {
-                    AuthoredMember detachedBody = WithoutInheritedAdmission(
-                        body with
-                        {
-                            AdmissionBindings = member.AdmissionBindings,
-                            CallableBindings = member.CallableBindings,
-                            AbsentCallables = member.AbsentCallables,
-                            ConcreteBindings = member.ConcreteBindings,
-                            RecoveryBindings = member.RecoveryBindings,
-                            RecoveryContext = member.RecoveryContext,
-                            ValueBindings = member.ValueBindings,
-                        });
+                    AuthoredMember capturedBody = BindExternalCallbackContext(member, body);
+
+                    bool capturesOuterAdmission = CallbackCapturesOuterAdmission(capturedBody);
+
+                    AuthoredMember detachedBody = WithoutInheritedAdmission(capturedBody);
 
                     TraversalEvidence bodyEvidence = Traverse(
                         detachedBody,
@@ -21352,13 +23695,16 @@ internal static partial class HostedGrimoireProducerInventory
 
                     evidence = MergeEvidence(evidence, bodyEvidence);
 
-                    proven &= bodyEvidence == TraversalEvidence.NoEvidence
-                        || HasAdmissionSeed(detachedBody);
+                    proven &= !capturesOuterAdmission
+                        && (bodyEvidence == TraversalEvidence.NoEvidence
+                            || HasAdmissionSeed(detachedBody));
                 }
             }
 
             if (!proven)
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new(
                     "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN",
                     RootOperation(operationId)
@@ -21369,6 +23715,85 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             return evidence;
+        }
+
+        private static AuthoredMember BindExternalCallbackContext(
+            AuthoredMember caller,
+            AuthoredMember body) => body with
+            {
+                AdmissionBindings = caller.AdmissionBindings,
+                CallableBindings = caller.CallableBindings,
+                AbsentCallables = caller.AbsentCallables,
+                ConcreteBindings = caller.ConcreteBindings,
+                RecoveryBindings = caller.RecoveryBindings,
+                RecoveryContext = caller.RecoveryContext,
+                ValueBindings = caller.ValueBindings,
+            };
+
+        private bool CallbackCapturesOuterAdmission(AuthoredMember body, string? origin = null)
+        {
+            AdmissionOriginQueryContext query = new();
+
+            Stack<SyntaxNode> pending = new();
+
+            pending.Push(body.Syntax);
+
+            while (pending.TryPop(out SyntaxNode? node))
+            {
+                if (!query.Visit()) return true;
+
+                if (node is InvocationExpressionSyntax invocation)
+                {
+                    if (!query.Visit()) return true;
+
+                    if (body.Model.GetOperation(invocation) is INameOfOperation) continue;
+                }
+
+                foreach (SyntaxNode child in node.ChildNodes())
+                {
+                    if (!query.Visit()) return true;
+
+                    pending.Push(child);
+                }
+
+                if (node is not IdentifierNameSyntax reference) continue;
+
+                ISymbol? symbol = body.Model.GetSymbolInfo(reference).Symbol;
+
+                if (symbol is not ILocalSymbol and not IParameterSymbol
+                    || symbol.DeclaringSyntaxReferences.Any(declaration =>
+                        declaration.SyntaxTree == body.Syntax.SyntaxTree
+                            && body.Syntax.Span.Contains(declaration.Span))) continue;
+
+                // A captured outer handle is not admission acquired by the callback.
+                // Keep the caller's bindings for this check, before detaching authority.
+                ITypeSymbol? capturedType = body.Model.GetTypeInfo(reference).Type;
+
+                if (capturedType?.TypeKind == TypeKind.Enum
+                    || capturedType?.SpecialType is SpecialType.System_String or SpecialType.System_Boolean
+                        or SpecialType.System_Char or SpecialType.System_SByte or SpecialType.System_Byte
+                        or SpecialType.System_Int16 or SpecialType.System_UInt16
+                        or SpecialType.System_Int32 or SpecialType.System_UInt32
+                        or SpecialType.System_Int64 or SpecialType.System_UInt64
+                        or SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal
+                        or SpecialType.System_IntPtr or SpecialType.System_UIntPtr) continue;
+
+                bool carries = MayCarryAdmissionHandle(body, reference, query);
+
+                if (!query.Complete) return true;
+
+                if (carries)
+                {
+                    if (origin is null) return true;
+
+                    IReadOnlySet<string> origins = AdmissionOrigins(body, reference,
+                        new HashSet<ISymbol>(SymbolEqualityComparer.Default), query);
+
+                    if (!query.Complete || origins.Contains(origin)) return true;
+                }
+            }
+
+            return false;
         }
 
         private LazyFactoryResolution? ResolveLazyFactory(
@@ -21426,7 +23851,10 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            SemanticModel model = semanticModels[construction.SyntaxTree];
+            if (AnalysedModel(construction) is not { } model)
+            {
+                return null;
+            }
 
             if (model.GetOperation(construction) is not
                 IObjectCreationOperation operation)
@@ -21677,6 +24105,12 @@ internal static partial class HostedGrimoireProducerInventory
         private BoundedDataProof ProveBoundedLazyData(
             LazyFactoryResolution resolution)
         {
+            // Permanent for this graph, including cached proofs: rollback leaves helper caches.
+            boundedDataProbeEncountered = true;
+
+            // Even a previously completed proof belongs to the rollback lane, not this witness.
+            RefuseTraversalCompletion();
+
             if (boundedLazyData.TryGetValue(
                     resolution.Storage,
                     out BoundedDataProof cached))
@@ -21771,6 +24205,8 @@ internal static partial class HostedGrimoireProducerInventory
         private BoundedDataProof ProbeBoundedDataTraversal(
             LazyFactoryResolution resolution)
         {
+            boundedDataProbeEncountered = true;
+
             int diagnosticStart = diagnostics.Count;
 
             HashSet<string> existingSites = [.. sites.Keys];
@@ -22024,6 +24460,11 @@ internal static partial class HostedGrimoireProducerInventory
                             : boundTargets.Length != 0
                                 ? boundTargets
                                 : reviewedClosedTargets;
+
+                    if (target is null && HasIncompleteDefaultInterfaceBinding(method, member.Model.Compilation))
+                    {
+                        proof = MergeBoundedDataProof(proof, BoundedDataProof.Unknown);
+                    }
 
                     foreach (AuthoredMember exactTarget in targets)
                     {
@@ -22443,11 +24884,11 @@ internal static partial class HostedGrimoireProducerInventory
                         _ => null,
                     };
 
-                    if (initializer is not null)
+                    if (initializer is not null && AnalysedModel(initializer) is { } initializerModel)
                     {
                         CollectLazyConstructions(
                             initializer,
-                            semanticModels[initializer.SyntaxTree],
+                            initializerModel,
                             lazyType,
                             constructions,
                             path);
@@ -22673,7 +25114,7 @@ internal static partial class HostedGrimoireProducerInventory
                     && definition.Name is "Select" or "Where";
         }
 
-        private static bool IsLazySequence(ITypeSymbol type) => TypeKey(type) is "System.Collections.IEnumerable" or "System.Collections.Generic.IEnumerable`1";
+        private static bool IsLazySequence(ITypeSymbol type) => TypeKey(type) is "System.Collections.IEnumerable" or "System.Collections.Generic.IEnumerable`1" or "System.Collections.Generic.IAsyncEnumerable`1";
 
         private static bool IsIteratorMember(AuthoredMember member) => member.Syntax.DescendantNodesAndSelf(node => node == member.Syntax || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax).Any(static node => node is YieldStatementSyntax);
 
@@ -22691,6 +25132,34 @@ internal static partial class HostedGrimoireProducerInventory
 
             return TypeKey(definition.ContainingType) == "System.Linq.Enumerable"
                 && definition.Name is "Aggregate" or "All" or "Any" or "Average" or "Contains" or "Count" or "ElementAt" or "ElementAtOrDefault" or "First" or "FirstOrDefault" or "Last" or "LastOrDefault" or "LongCount" or "Max" or "MaxBy" or "Min" or "MinBy" or "SequenceEqual" or "Single" or "SingleOrDefault" or "Sum" or "ToArray" or "ToDictionary" or "ToHashSet" or "ToList" or "ToLookup";
+        }
+
+        // A lazy sequence's body runs on every MoveNext of its consumer, wherever the consumer resumes it, so the Work
+        // and effect group it ran under must be live at every one of those points. A consuming loop resumes it
+        // after its operand, after each pass of its body (the back-edge) and when it ends; any other consumer
+        // consumes it in one step.
+        private static int?[] LazyConsumptionPositions(SyntaxNode completion)
+        {
+            if (completion is not CommonForEachStatementSyntax loop)
+            {
+                return [null];
+            }
+
+            int entry = loop.Expression.Span.End + 1;
+
+            int backEdge = Math.Max(entry, loop.Statement.Span.End);
+
+            int exit = Math.Max(backEdge, loop.Span.End);
+
+            return [entry, backEdge, exit];
+        }
+
+        // The frontier several positions share, or null when any two differ.
+        private static string? CommonFrontier(IEnumerable<string?> frontiers)
+        {
+            string?[] all = [.. frontiers];
+
+            return all.Length != 0 && all.All(frontier => frontier == all[0]) ? all[0] : null;
         }
 
         private SyntaxNode? LazyCompletionPoint(AuthoredMember member, InvocationExpressionSyntax source)
@@ -22745,7 +25214,8 @@ internal static partial class HostedGrimoireProducerInventory
                 && suppliedParameter.Ordinal < consumer.Symbol.Parameters.Length
                 && ConsumesLazyParameterSynchronously(
                     consumer,
-                    consumer.Symbol.Parameters[suppliedParameter.Ordinal]))
+                    consumer.Symbol.Parameters[suppliedParameter.Ordinal])
+                && !ConsumerMayHoldTheAdmission(member, consumerCall, argument))
             {
                 return consumerCall;
             }
@@ -22775,6 +25245,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             return uses is [IdentifierNameSyntax use] ? Consumption(use) : null;
         }
+
+        // The sequence runs in the consumer's loop, wherever that loop and its body put the lease. A consumer that is
+        // handed anything that carries the admission (another argument, or the receiver it is called on) can end it
+        // between two MoveNext calls, so the Work live at the call says nothing about the body.
+        private bool ConsumerMayHoldTheAdmission(AuthoredMember member, InvocationExpressionSyntax consumerCall, ArgumentSyntax lazyArgument) =>
+            consumerCall.ArgumentList.Arguments.Any(other => other != lazyArgument && MayCarryAdmissionHandle(member, other.Expression))
+            || consumerCall.Expression is MemberAccessExpressionSyntax { Expression: { } receiver } && MayCarryAdmissionHandle(member, receiver);
 
         private static bool ConsumesLazyParameterSynchronously(
             AuthoredMember consumer,
@@ -22894,7 +25371,32 @@ internal static partial class HostedGrimoireProducerInventory
             IMethodSymbol method,
             Compilation compilation) => Resolve(method, compilation) is null
                 && !Vocabulary.ContainsKey(Normalize(method))
-                && IsReviewedEffectFreeExternalMember(method);
+                && (IsExactSingleFinitePredicate(method)
+                    || IsReviewedEffectFreeExternalMember(method));
+
+        private static bool IsExactSingleFinitePredicate(IMethodSymbol method) =>
+            method.MethodKind == MethodKind.Ordinary
+            && method.IsStatic
+            && method.Name == "IsFinite"
+            && method.Arity == 0
+            && !method.ReturnsByRef
+            && !method.ReturnsByRefReadonly
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && method.Parameters is [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Single }]
+            && method.ContainingType.SpecialType == SpecialType.System_Single
+            && method.DeclaringSyntaxReferences.Length == 0
+            && !method.Locations.Any(static location => location.IsInSource)
+            && IsExactFrameworkType(method.ContainingType, "System.Single", typeof(float).Assembly.GetName());
+
+        private static bool IsExactSinglePredicateDelegateInvoke(IMethodSymbol method) =>
+            method.MethodKind == MethodKind.DelegateInvoke
+            && !method.IsStatic
+            && method.Arity == 0
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && method.Parameters is [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Single }]
+            && method.ContainingType.TypeArguments is
+                [{ SpecialType: SpecialType.System_Single }, { SpecialType: SpecialType.System_Boolean }]
+            && IsExactFrameworkType(method.ContainingType, "System.Func`2", typeof(Func<,>).Assembly.GetName());
 
         private bool RequiresExternalBoundaryClassification(
             IMethodSymbol method,
@@ -22921,7 +25423,9 @@ internal static partial class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
-                || IsReviewedChatSdkConstruction(method, node, model, context)
+                || IsReviewedLongRestHistogramObservation(method, node, model, context)
+                || IsReviewedArcanumTokenHistogramObservation(method, node, model, context)
+                || IsReviewedCodeOwnedSdkConstruction(method, node, model, context)
                 || IsReviewedConcreteTokenizerCall(method, node, model, context)
                 || IsReviewedCampaignEncodingMethod(method, node, model, context)
                 || IsReviewedCampaignAclMethod(method, node, model, context)
@@ -22929,7 +25433,8 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedEffectFreeExternalMember(
                     method,
                     node,
-                    model))
+                    model,
+                    context))
             {
                 return false;
             }
@@ -22939,21 +25444,297 @@ internal static partial class HostedGrimoireProducerInventory
                 return Resolve(method, compilation) is null;
             }
 
+            if (method.MethodKind == MethodKind.Ordinary
+                && method.IsExtern
+                && !method.IsAbstract
+                && method.ContainingType.TypeKind != TypeKind.Interface
+                && method.PartialDefinitionPart is null
+                && method.PartialImplementationPart is null
+                && method.DeclaringSyntaxReferences.Any(static reference =>
+                    reference.GetSyntax() is MethodDeclarationSyntax { Body: null, ExpressionBody: null } declaration
+                    && declaration.Modifiers.Any(SyntaxKind.ExternKeyword)
+                    && !declaration.Modifiers.Any(SyntaxKind.PartialKeyword)))
+            {
+                return true;
+            }
+
             return Resolve(method, compilation) is null
                 && method.Locations.All(static location => !location.IsInSource)
                 && !method.ContainingNamespace.ToDisplayString()
                     .StartsWith("RetroDownfall.", StringComparison.Ordinal);
         }
 
-        private bool IsReviewedChatSdkConstruction(
+        private static bool IsExactLongRestHistogramRecord(IMethodSymbol method) =>
+            !method.IsStatic && method.Name == "Record" && method.Arity == 0 && method.ReturnsVoid
+            && HasExactParameterTypes(method, "System.Int32")
+            && method.ContainingType.TypeArguments is [{ SpecialType: SpecialType.System_Int32 }]
+            && IsExactFrameworkType(method.ContainingType, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName());
+
+        private bool IsReviewedLongRestHistogramObservation(IMethodSymbol method, SyntaxNode? node, SemanticModel? model, AuthoredMember? context)
+        {
+            if (!IsExactLongRestHistogramRecord(method)
+                || node is not InvocationExpressionSyntax call || model?.GetOperation(call) is not IInvocationOperation { Instance.Syntax: ExpressionSyntax receiver } invocation
+                || context is null || !invocation.Arguments.All(argument => HasReviewedValueConversions(argument.Value, context, hierarchyObservation: true))) return false;
+
+            CleanupProvenanceContext proof = new();
+
+            bool ExactMeter(IFieldSymbol meter)
+            {
+                if (!meter.IsReadOnly || !meter.IsStatic || meter.Name != "Meter"
+                    || TypeKey(meter.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                    || !IsExactFrameworkType(meter.Type, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    || HasAuthoredStorageWrite(meter)
+                    || meter.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } value }
+                    || !semanticModels.TryGetValue(value.SyntaxTree, out SemanticModel? meterModel)
+                    || meterModel.GetOperation(value) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } creation) return false;
+
+                return IsExactFrameworkType(constructor.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    && HasExactParameterTypes(constructor, "System.String", "System.String")
+                    && creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: "Arcanum" } },
+                        { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
+            }
+
+            bool ExactInstrument(IFieldSymbol field)
+            {
+                if (!field.IsReadOnly || !field.IsStatic || HasAuthoredStorageWrite(field)
+                    || field.Type is not INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int32 }] }
+                    || !IsExactFrameworkType(field.Type, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                    || field.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                    || !semanticModels.TryGetValue(initializer.SyntaxTree, out SemanticModel? fieldModel)
+                    || fieldModel.GetOperation(initializer) is not IInvocationOperation { Instance: IFieldReferenceOperation meter } created) return false;
+
+                IMethodSymbol factory = created.TargetMethod;
+
+                return !factory.IsStatic && factory.Name == "CreateHistogram" && factory.Arity == 1
+                    && factory.TypeArguments is [{ SpecialType: SpecialType.System_Int32 }]
+                    && IsExactFrameworkType(factory.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    && HasExactParameterTypes(factory, "System.String")
+                    && SymbolEqualityComparer.Default.Equals(factory.ReturnType, field.Type)
+                    && created.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: string name } }]
+                    && name is "arcanum.long_rest.discovery.selected_summaries" or "arcanum.long_rest.discovery.frontier" or "arcanum.long_rest.discovery.expanded_leaves"
+                    && ExactMeter(meter.Field);
+            }
+
+            bool Origin(ExpressionSyntax value, SemanticModel valueModel, HashSet<ISymbol> path, AuthoredMember? owner)
+            {
+                if (owner is null || proof.RemainingWork-- <= 0) return false;
+
+                value = StripTransparentExpression(value);
+
+                ISymbol? symbol = valueModel.GetSymbolInfo(value).Symbol;
+
+                if (symbol is IFieldSymbol field) return ExactInstrument(field);
+
+                if (symbol is ILocalSymbol or IParameterSymbol && HasCollectionValueReplacement(owner, symbol)) return false;
+
+                if (value is InvocationExpressionSyntax invocation && symbol is IMethodSymbol invoked
+                    && ResolveCleanupInvocationTarget(invoked, owner, invocation, proof) is { } target && path.Add(invoked))
+                {
+                    try
+                    {
+                        AuthoredMember bound = BindCleanupInvocationContext(owner, invocation, target, proof);
+
+                        ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                        return returns.Length != 0 && returns.All(returned => Origin(returned, bound.Model, path, bound));
+                    }
+                    finally
+                    {
+                        path.Remove(invoked);
+                    }
+                }
+
+                if (symbol is IPropertySymbol { SetMethod: null, GetMethod: { } getter } && Resolve(getter, valueModel.Compilation) is { } property && path.Add(getter))
+                {
+                    try
+                    {
+                        ExpressionSyntax[] returns = ReturnedExpressions(property.Syntax);
+
+                        return returns.Length != 0 && returns.All(returned => Origin(returned, property.Model, path, property));
+                    }
+                    finally
+                    {
+                        path.Remove(getter);
+                    }
+                }
+
+                return HasOnlyReviewedValueSources(value, valueModel, path, owner, Origin);
+            }
+
+            // This is tagless observation under DESIGN 10.4, not listener purity. Record can
+            // synchronously execute and propagate faults from runtime observers. Authored
+            // arguments/getters/wrappers and listener work remain traversed or refused; ambient/static initialization,
+            // reflection/loader/native behavior and third-party observer closure remain unproved.
+            return Origin(receiver, context.Model, new(SymbolEqualityComparer.Default), context);
+        }
+
+        // Exact reviewed contract (Triage Ladder D4) for the three Arcanum token-count instruments. Each is a
+        // static readonly Histogram<long> of ArcanumMetrics, created from the exact ArcanumMetrics.Meter by
+        // the exact CreateHistogram<long>(string, string?, string?) overload with constant arguments, under
+        // one of these constant names. The recorded value is evaluated, and any authored work in it is
+        // traversed, where it is written; it needs only the argument-boundary rule. Each tag is narrower
+        // (IsReviewedArcanumTokenTag), because the first-party Prometheus listener runs synchronously inside
+        // Record and formats every tag value with Convert.ToString: an authored ToString or IFormattable on
+        // a tag value would be executable work that no traversal of this call site reaches. Other listeners
+        // run synchronously and may do work or throw, as for every histogram here, and nothing in this
+        // contract waives that limit or any producer authority.
+        private static readonly HashSet<string> ArcanumTokenHistogramNames = new(StringComparer.Ordinal)
+        {
+            "arcanum_estimated_input_tokens",
+            "arcanum_provider_reported_input_tokens",
+            "arcanum_input_token_estimation_variance",
+        };
+
+        private static bool IsExactArcanumTokenHistogramRecord(IMethodSymbol method) =>
+            !method.IsStatic && method.Name == "Record" && method.Arity == 0 && method.ReturnsVoid
+            && method.ContainingType.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
+            && IsExactFrameworkType(method.ContainingType, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+            && method.Parameters.Length is >= 1 and <= 4
+            && method.Parameters[0] is { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int64 }
+            && method.Parameters.Skip(1).All(static tag => tag is { RefKind: RefKind.None, IsParams: false }
+                && tag.Type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String }, { SpecialType: SpecialType.System_Object }] } pair
+                && IsExactFrameworkType(pair, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName()));
+
+        private bool IsReviewedArcanumTokenHistogramObservation(IMethodSymbol method, SyntaxNode? node, SemanticModel? model, AuthoredMember? context)
+        {
+            if (!IsExactArcanumTokenHistogramRecord(method)
+                || context is null || node is not InvocationExpressionSyntax
+                || model?.GetOperation(node) is not IInvocationOperation { Instance.Syntax: ExpressionSyntax receiver } invocation
+                || !invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions)
+                || !invocation.Arguments.Where(static argument => argument.Parameter?.Ordinal != 0)
+                    .All(argument => IsReviewedArcanumTokenTag(argument, context))
+                || model.GetSymbolInfo(StripTransparentExpression(receiver)).Symbol is not IFieldSymbol field) return false;
+
+            bool ExactMeter(IFieldSymbol meter)
+            {
+                if (!meter.IsReadOnly || !meter.IsStatic || meter.Name != "Meter"
+                    || TypeKey(meter.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                    || !IsExactFrameworkType(meter.Type, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    || HasAuthoredStorageWrite(meter)
+                    || meter.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } value }
+                    || !semanticModels.TryGetValue(value.SyntaxTree, out SemanticModel? meterModel)
+                    || meterModel.GetOperation(value) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } creation) return false;
+
+                return IsExactFrameworkType(constructor.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                    && HasExactParameterTypes(constructor, "System.String", "System.String")
+                    && creation.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: "Arcanum" } },
+                        { Value.ConstantValue: { HasValue: true, Value: "0.1.0" } }];
+            }
+
+            if (!field.IsReadOnly || !field.IsStatic || HasAuthoredStorageWrite(field)
+                || TypeKey(field.ContainingType) != "RetroDownfall.Arcanum.Core.Telemetry.ArcanumMetrics"
+                || field.Type is not INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] }
+                || !IsExactFrameworkType(field.Type, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                || field.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                || !semanticModels.TryGetValue(initializer.SyntaxTree, out SemanticModel? fieldModel)
+                || fieldModel.GetOperation(initializer) is not IInvocationOperation { Instance: IFieldReferenceOperation meterReference } created) return false;
+
+            IMethodSymbol factory = created.TargetMethod;
+
+            // Only the (name, unit, description) overload is reviewed: the instrument-tags and advice overloads
+            // carry authored data into the instrument, and a constant argument keeps static initialization free
+            // of work that no traversal reaches.
+            return !factory.IsStatic && factory.Name == "CreateHistogram" && factory.Arity == 1
+                && factory.TypeArguments is [{ SpecialType: SpecialType.System_Int64 }]
+                && IsExactFrameworkType(factory.ContainingType, "System.Diagnostics.Metrics.Meter", typeof(System.Diagnostics.Metrics.Meter).Assembly.GetName())
+                && HasExactParameterTypes(factory, "System.String", "System.String", "System.String")
+                && factory.ReturnType is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int64 }] } returned
+                && IsExactFrameworkType(returned, "System.Diagnostics.Metrics.Histogram`1", typeof(System.Diagnostics.Metrics.Histogram<>).Assembly.GetName())
+                && created.Arguments is [
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: string name } },
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } },
+                    { ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: null or string } }]
+                && ArcanumTokenHistogramNames.Contains(name)
+                && ExactMeter(meterReference.Field);
+        }
+
+        // A tag is either an inline KeyValuePair<string, object?> creation or a never-reassigned local whose
+        // only definition is one. The key is a constant and the value is statically System.String (or a null
+        // or string constant), so the object the listener formats is a string or null and never a type with an
+        // authored ToString or IFormattable. Authored work that produces the string is traversed where written.
+        private bool IsReviewedArcanumTokenTag(IArgumentOperation argument, AuthoredMember context)
+        {
+            IOperation tag = argument.Value;
+
+            while (tag is IParenthesizedOperation parenthesized) tag = parenthesized.Operand;
+
+            if (tag is ILocalReferenceOperation { Local: { RefKind: RefKind.None, IsConst: false } local })
+            {
+                if (local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
+                    || initializer.SyntaxTree != context.Model.SyntaxTree
+                    || !IsExactTokenTagType(local.Type)
+                    || HasCollectionValueReplacement(context, local)
+                    || context.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<PrefixUnaryExpressionSyntax>()
+                        .Any(address => address.IsKind(SyntaxKind.AddressOfExpression)
+                            && SyntaxReferencesSymbol(context.Model, address.Operand, local))
+                    || context.Model.GetOperation(initializer) is not { } initial) return false;
+
+                tag = initial;
+
+                while (tag is IParenthesizedOperation parenthesizedInitial) tag = parenthesizedInitial.Operand;
+            }
+
+            return tag is IObjectCreationOperation { Initializer: null, Constructor: { MethodKind: MethodKind.Constructor } constructor } creation
+                && IsExactTokenTagType(constructor.ContainingType)
+                && constructor.Parameters.Length == 2
+                && creation.Arguments.SingleOrDefault(static item => item.Parameter?.Ordinal == 0) is { } key
+                && creation.Arguments.SingleOrDefault(static item => item.Parameter?.Ordinal == 1) is { } value
+                && creation.Arguments.Length == 2
+                && ArgumentBoundaryUsesOnlyBuiltInConversions(key)
+                && key.Value.ConstantValue is { HasValue: true, Value: string }
+                && ArgumentBoundaryUsesOnlyBuiltInConversions(value)
+                && IsStringOrNullTagValue(value.Value);
+        }
+
+        private static bool IsExactTokenTagType(ITypeSymbol? type) =>
+            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String }, { SpecialType: SpecialType.System_Object }] } pair
+            && IsExactFrameworkType(pair, "System.Collections.Generic.KeyValuePair`2", typeof(KeyValuePair<,>).Assembly.GetName());
+
+        // Looks through parentheses and the reference or boxing conversions to object; what remains must be
+        // statically System.String, or a constant that is null or a string. A boxed value, an object-typed
+        // value and a value of any other class or struct type are refused.
+        private static bool IsStringOrNullTagValue(IOperation value)
+        {
+            for (int depth = 0; depth < 64; depth++)
+            {
+                switch (value)
+                {
+                    case IParenthesizedOperation parenthesized:
+                        value = parenthesized.Operand;
+
+                        continue;
+
+                    case IConversionOperation { OperatorMethod: null, Conversion.IsUserDefined: false, Type.SpecialType: SpecialType.System_Object } conversion:
+                        value = conversion.Operand;
+
+                        continue;
+                }
+
+                return value.ConstantValue.HasValue
+                    ? value.ConstantValue.Value is null or string
+                    : value.Type?.SpecialType == SpecialType.System_String;
+            }
+
+            return false;
+        }
+
+        private bool IsReviewedCodeOwnedSdkConstruction(
             IMethodSymbol method,
             SyntaxNode? node,
             SemanticModel? model,
             AuthoredMember? context)
         {
+            bool chat = IsExactFrameworkType(method.ContainingType, "OpenAI.Chat.ChatClient", typeof(OpenAI.Chat.ChatClient).Assembly.GetName());
+
+            bool embedding = IsExactFrameworkType(method.ContainingType, "OpenAI.Embeddings.EmbeddingClient", typeof(OpenAI.Embeddings.EmbeddingClient).Assembly.GetName());
+
             if (method.MethodKind != MethodKind.Constructor
-                || !IsExactFrameworkType(method.ContainingType, "OpenAI.Chat.ChatClient",
-                    typeof(OpenAI.Chat.ChatClient).Assembly.GetName())
+                || !chat && !embedding
                 || !HasExactParameterTypes(method, "System.String", "System.ClientModel.ApiKeyCredential", "OpenAI.OpenAIClientOptions")
                 || node is null
                 || model?.GetOperation(node) is not IObjectCreationOperation creation
@@ -22963,7 +25744,312 @@ internal static partial class HostedGrimoireProducerInventory
                 return false;
             }
 
-            return HasExactCodeOwnedChatOptions(options, model, context);
+            return chat && HasExactCodeOwnedChatOptions(options, model, context)
+                || context is not null && HasExactLongRestSdkOptions(options, context);
+        }
+
+        private static bool IsExactLongRestHttpFactoryMethod(IMethodSymbol method) =>
+            !method.IsStatic && method.Arity == 0 && method.Name == "CreateClient"
+            && IsExactFrameworkType(method.ContainingType, "System.Net.Http.IHttpClientFactory", typeof(System.Net.Http.IHttpClientFactory).Assembly.GetName())
+            && HasExactParameterTypes(method, "System.String")
+            && IsExactFrameworkType(method.ReturnType, "System.Net.Http.HttpClient", typeof(System.Net.Http.HttpClient).Assembly.GetName());
+
+        private static bool IsLongRestSdkFactoryReceiverProperty(SyntaxNode node, AuthoredMember member) =>
+            node.Parent is MemberAccessExpressionSyntax access
+            && access.Expression == node && access.Parent is InvocationExpressionSyntax call
+            && member.Model.GetSymbolInfo(call).Symbol is IMethodSymbol method
+            && IsExactLongRestHttpFactoryMethod(method)
+            && IsLongRestSdkSetupDependency(member)
+            && member.Model.GetSymbolInfo(node).Symbol is IPropertySymbol property
+            && IsExactFrameworkType(property.Type, "System.Net.Http.IHttpClientFactory", typeof(System.Net.Http.IHttpClientFactory).Assembly.GetName());
+
+        private static bool IsLongRestSdkSetupDependency(AuthoredMember member) =>
+            member.Syntax.DescendantNodesAndSelf().OfType<BaseObjectCreationExpressionSyntax>()
+                .Any(creation => member.Model.GetSymbolInfo(creation).Symbol is IMethodSymbol constructor
+                    && (IsExactFrameworkType(constructor.ContainingType, "OpenAI.OpenAIClientOptions", typeof(OpenAI.OpenAIClientOptions).Assembly.GetName())
+                            && constructor.Parameters.IsEmpty
+                        || (IsExactFrameworkType(constructor.ContainingType, "OpenAI.Chat.ChatClient", typeof(OpenAI.Chat.ChatClient).Assembly.GetName())
+                                || IsExactFrameworkType(constructor.ContainingType, "OpenAI.Embeddings.EmbeddingClient", typeof(OpenAI.Embeddings.EmbeddingClient).Assembly.GetName()))
+                            && HasExactParameterTypes(constructor, "System.String", "System.ClientModel.ApiKeyCredential", "OpenAI.OpenAIClientOptions")));
+
+        private BoundValueSource[]? LongRestSdkValueSources(
+            AuthoredMember member,
+            ExpressionSyntax expression,
+            CleanupProvenanceContext proof)
+        {
+            List<BoundValueSource> origins = [];
+
+            static bool ConstantOrDefault(IArgumentOperation argument)
+            {
+                if (argument.InConversion.MethodSymbol is not null || argument.OutConversion.MethodSymbol is not null) return false;
+
+                IOperation value = argument.Value;
+
+                while (value is IConversionOperation { OperatorMethod: null } conversion) value = conversion.Operand;
+
+                return value.ConstantValue.HasValue || value is IDefaultValueOperation;
+            }
+
+            bool StableOrigin(ExpressionSyntax value, SemanticModel model, HashSet<ISymbol> path, AuthoredMember? owner)
+            {
+                if (owner is null || proof.RemainingWork-- <= 0) return false;
+
+                IOperation? operation = model.GetOperation(value);
+
+                // Returned syntax and bound argument syntax omit implicit conversions. Keep
+                // the compiler context at each followed source; no authored or unknown external
+                // conversion body is proved by the exact construction found further downstream.
+                while (operation?.Parent is IConversionOperation or IParenthesizedOperation) operation = operation.Parent;
+
+                if (operation is null) return false;
+
+                Stack<IOperation> pending = new();
+
+                pending.Push(operation);
+
+                while (pending.TryPop(out IOperation? current))
+                {
+                    if (proof.RemainingWork-- <= 0 || current is IConversionOperation { OperatorMethod: not null }) return false;
+
+                    foreach (IOperation child in current.ChildOperations) pending.Push(child);
+                }
+
+                value = StripTransparentExpression(value);
+
+                ISymbol? symbol = model.GetSymbolInfo(value).Symbol;
+
+                if (symbol is ILocalSymbol or IParameterSymbol && HasCollectionValueReplacement(owner, symbol)) return false;
+
+                if (symbol is IParameterSymbol { ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor } constructor } captured
+                    && captured.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax() is ParameterSyntax { Parent.Parent: TypeDeclarationSyntax }
+                    && !HasExactPrimaryConstructorParameterReadSemantics(captured, constructor.ContainingType, constructor)) return false;
+
+                if (symbol is IFieldSymbol field)
+                {
+                    if (!field.IsReadOnly || !CanUseCurrentInstanceStorageBinding(field, value)
+                        || HasAuthoredStorageWrite(field)) return false;
+
+                    if (owner.ValueBindings?.TryGetValue(field, out BoundValueSource? bound) == true && bound is not null && path.Add(field))
+                    {
+                        try { return StableOrigin(bound.Expression, bound.Caller.Model, path, bound.Caller); }
+                        finally { path.Remove(field); }
+                    }
+                }
+
+                if (symbol is IPropertySymbol { IsStatic: false, SetMethod: null, Parameters.Length: 0, GetMethod: { IsVirtual: false } getter } property
+                    && property.ContainingType.IsSealed && !owner.Symbol.IsStatic
+                    && (value is IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax })
+                    && SymbolEqualityComparer.Default.Equals(property.ContainingType, owner.Symbol.ContainingType)
+                    && Resolve(getter, model.Compilation) is { } getterTarget && path.Add(getter))
+                {
+                    try
+                    {
+                        AuthoredMember bound = BindStableCapturedCleanupContext(owner, value, getterTarget);
+
+                        ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                        return returns.Length != 0 && returns.All(returned => StableOrigin(returned, bound.Model, path, bound));
+                    }
+                    finally { path.Remove(getter); }
+                }
+
+                if (value is BaseObjectCreationExpressionSyntax)
+                {
+                    // This new setup profile closes only construction with no initializer and
+                    // compiler-proved constant/default inputs. A primitive declared type on a
+                    // local or helper result does not prove its earlier conversions or effects.
+                    // Ordinary authored constructor/helper traversal remains independent.
+                    if (model.GetOperation(value) is not IObjectCreationOperation { Initializer: null } creation
+                        || creation.Arguments.Any(static argument => !ConstantOrDefault(argument))) return false;
+
+                    origins.Add(new(owner, value));
+
+                    return true;
+                }
+
+                if (value is ConditionalExpressionSyntax conditional)
+                    return StableOrigin(conditional.WhenTrue, model, path, owner) && StableOrigin(conditional.WhenFalse, model, path, owner);
+
+                if (value is InvocationExpressionSyntax invocation && symbol is IMethodSymbol invoked
+                    && ResolveCleanupInvocationTarget(invoked, owner, invocation, proof) is { } target && path.Add(invoked))
+                {
+                    try
+                    {
+                        // Even unused helper inputs are evaluated. Preserve complete actual
+                        // conversion origins before following the helper's exact returned object.
+                        if (model.GetOperation(invocation) is not IInvocationOperation call
+                            || call.Arguments.Any(argument => argument.Parameter?.RefKind != RefKind.None
+                                || argument.InConversion.MethodSymbol is not null || argument.OutConversion.MethodSymbol is not null
+                                || !HasReviewedValueConversions(argument.Value, owner))) return false;
+
+                        AuthoredMember bound = BindCleanupInvocationContext(owner, invocation, target, proof);
+
+                        ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                        return returns.Length != 0 && returns.All(returned => StableOrigin(returned, bound.Model, path, bound));
+                    }
+                    finally { path.Remove(invoked); }
+                }
+
+                return HasOnlyReviewedValueSources(value, model, path, owner, StableOrigin);
+            }
+
+            return StableOrigin(expression, member.Model, new(SymbolEqualityComparer.Default), member)
+                ? origins.ToArray()
+                : null;
+        }
+
+        private AuthoredMember? ResolveLongRestSdkFactoryTarget(
+            IMethodSymbol method,
+            AuthoredMember member,
+            InvocationExpressionSyntax call,
+            CleanupProvenanceContext proof)
+        {
+            if (!IsExactLongRestHttpFactoryMethod(method)
+                || !IsLongRestSdkSetupDependency(member)
+                || AdmissionReceiver(member, call) is not { } receiver)
+            {
+                return null;
+            }
+
+            // The setup observation profile needs the exact caller-selected factory, not a
+            // declaration or DI fallback. Primary captures are checked across all partials;
+            // known bodies still enter ordinary traversal with their original frontiers.
+            if (LongRestSdkValueSources(member, receiver, proof) is not [BoundValueSource source]
+                || CleanupProvenanceOf(source.Caller, source.Expression, proof) is not { Complete: true, Candidates: [CleanupTypeCandidate candidate] }
+                || candidate.Type is not INamedTypeSymbol { IsSealed: true, IsAbstract: false } concrete) return null;
+
+            IMethodSymbol[] implementations = concrete.AllInterfaces
+                .Where(contract => contract.ContainingAssembly.Identity.Equals(method.ContainingAssembly.Identity)
+                    && TypeKey(contract) == TypeKey(method.ContainingType))
+                .SelectMany(static contract => contract.GetMembers()).OfType<IMethodSymbol>()
+                .Where(slot => MethodKey(slot) == MethodKey(method))
+                .Select(slot => concrete.FindImplementationForInterfaceMember(slot)).OfType<IMethodSymbol>()
+                .DistinctBy(static implementation => implementation.OriginalDefinition, SymbolEqualityComparer.Default).ToArray();
+
+            return implementations is [IMethodSymbol implementation]
+                && Resolve(implementation, member.Model.Compilation) is { } target
+                    ? BindCleanupInvocationContext(member, call, target, proof, selectedReceiver: source)
+                    : null;
+        }
+
+        private bool HasExactLongRestSdkOptions(ExpressionSyntax expression, AuthoredMember member)
+        {
+            CleanupProvenanceContext proof = new();
+
+            HashSet<ISymbol> uses = new(SymbolEqualityComparer.Default);
+
+            bool ClosedUses(ISymbol storage, AuthoredMember owner)
+            {
+                if (!uses.Add(storage)) return false;
+
+                try
+                {
+                    if (HasCollectionValueReplacement(owner, storage)) return false;
+
+                    foreach (ExpressionSyntax reference in SymbolReferences(owner, storage))
+                    {
+                        if (reference == expression || reference.Parent is ReturnStatementSyntax) continue;
+
+                        if (reference.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax alias }
+                            && owner.Model.GetDeclaredSymbol(alias) is ILocalSymbol local && ClosedUses(local, owner)) continue;
+
+                        return false;
+                    }
+
+                    return true;
+                }
+                finally
+                {
+                    uses.Remove(storage);
+                }
+            }
+
+            bool ExactCreation(IObjectCreationOperation creation, AuthoredMember owner)
+            {
+                if (creation.Constructor is not { Parameters.Length: 0 } constructor
+                    || !IsExactFrameworkType(constructor.ContainingType, "OpenAI.OpenAIClientOptions", typeof(OpenAI.OpenAIClientOptions).Assembly.GetName())
+                    || creation.Initializer?.Initializers is not { Length: 3 } initializers) return false;
+
+                HashSet<string> assigned = new(StringComparer.Ordinal);
+
+                foreach (IOperation initializer in initializers)
+                {
+                    if (initializer is not ISimpleAssignmentOperation { Target: IPropertyReferenceOperation target, Value: { } value }
+                        || !assigned.Add(target.Property.Name)) return false;
+
+                    while (value is IConversionOperation { OperatorMethod: null } conversion) value = conversion.Operand;
+
+                    if (value is not IObjectCreationOperation { Constructor: { } nested, Initializer: null } child) return false;
+
+                    bool accepted = target.Property.Name switch
+                    {
+                        "Endpoint" => IsExactFrameworkType(target.Property.ContainingType, "OpenAI.OpenAIClientOptions", typeof(OpenAI.OpenAIClientOptions).Assembly.GetName())
+                            && (IsExactFrameworkType(target.Property.Type, "System.Uri", typeof(Uri).Assembly.GetName())
+                                || IsExactFrameworkType(target.Property.Type, "System.Uri", typeof(object).Assembly.GetName()))
+                            && (IsExactFrameworkType(nested.ContainingType, "System.Uri", typeof(Uri).Assembly.GetName())
+                                || IsExactFrameworkType(nested.ContainingType, "System.Uri", typeof(object).Assembly.GetName()))
+                            && HasExactParameterTypes(nested, "System.String"),
+                        "RetryPolicy" => IsExactFrameworkType(target.Property.ContainingType, "System.ClientModel.Primitives.ClientPipelineOptions", typeof(System.ClientModel.Primitives.ClientPipelineOptions).Assembly.GetName())
+                            && IsExactFrameworkType(target.Property.Type, "System.ClientModel.Primitives.PipelinePolicy", typeof(System.ClientModel.Primitives.PipelinePolicy).Assembly.GetName())
+                            && IsExactFrameworkType(nested.ContainingType, "System.ClientModel.Primitives.ClientRetryPolicy", typeof(System.ClientModel.Primitives.ClientRetryPolicy).Assembly.GetName())
+                            && HasExactParameterTypes(nested, "System.Int32")
+                            && child.Arguments is [{ Value.ConstantValue: { HasValue: true, Value: 0 } }],
+                        "Transport" => IsExactFrameworkType(target.Property.ContainingType, "System.ClientModel.Primitives.ClientPipelineOptions", typeof(System.ClientModel.Primitives.ClientPipelineOptions).Assembly.GetName())
+                            && IsExactFrameworkType(target.Property.Type, "System.ClientModel.Primitives.PipelineTransport", typeof(System.ClientModel.Primitives.PipelineTransport).Assembly.GetName())
+                            && IsExactFrameworkType(nested.ContainingType, "System.ClientModel.Primitives.HttpClientPipelineTransport", typeof(System.ClientModel.Primitives.HttpClientPipelineTransport).Assembly.GetName())
+                            && HasExactParameterTypes(nested, "System.Net.Http.HttpClient")
+                            && child.Arguments is [{ Value: { Type: { } clientType } suppliedClient }]
+                            && IsExactFrameworkType(clientType, "System.Net.Http.HttpClient", typeof(System.Net.Http.HttpClient).Assembly.GetName())
+                            && !suppliedClient.DescendantsAndSelf().OfType<IConversionOperation>()
+                                .Any(static conversion => conversion.OperatorMethod is not null),
+                        _ => false,
+                    };
+
+                    if (!accepted) return false;
+                }
+
+                return true;
+            }
+
+            bool Origin(ExpressionSyntax value, SemanticModel model, HashSet<ISymbol> path, AuthoredMember? owner)
+            {
+                if (owner is null || proof.RemainingWork-- <= 0) return false;
+
+                value = StripTransparentExpression(value);
+
+                ISymbol? symbol = model.GetSymbolInfo(value).Symbol;
+
+                if (symbol is ILocalSymbol or IParameterSymbol && !ClosedUses(symbol, owner)) return false;
+
+                if (model.GetOperation(value) is IObjectCreationOperation creation) return ExactCreation(creation, owner);
+
+                if (value is InvocationExpressionSyntax call && symbol is IMethodSymbol method
+                    && ResolveCleanupInvocationTarget(method, owner, call, proof) is { } target && path.Add(method))
+                {
+                    try
+                    {
+                        AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                        ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                        return returns.Length != 0 && returns.All(returned => Origin(returned, bound.Model, path, bound));
+                    }
+                    finally
+                    {
+                        path.Remove(method);
+                    }
+                }
+
+                return HasOnlyReviewedValueSources(value, model, path, owner, Origin);
+            }
+
+            // Exact transport construction validates and stores its typed client; factory/getter/
+            // conversion work and future sends are separate execution obligations, never purity.
+            // Ambient Chat telemetry switches, BeforeFieldInit/shared HttpClient
+            // observers, reflection/loader/native behavior and third-party observer closure are
+            // outside this authored proof. Authored arguments, getters and callbacks still traverse.
+            return Origin(expression, member.Model, new(SymbolEqualityComparer.Default), member);
         }
 
         private bool HasExactCodeOwnedChatOptions(ExpressionSyntax expression, SemanticModel model, AuthoredMember? context)
@@ -22981,7 +26067,13 @@ internal static partial class HostedGrimoireProducerInventory
                 }
 
                 expression = StripTransparentExpression(initializer);
-                model = semanticModels[expression.SyntaxTree];
+
+                if (AnalysedModel(expression) is not { } initializerModel)
+                {
+                    return false;
+                }
+
+                model = initializerModel;
             }
 
             if (model.GetOperation(expression) is not IObjectCreationOperation creation
@@ -23137,8 +26229,13 @@ internal static partial class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
-                || IsReviewedCampaignModelIndexer(property, mutation, node, model, context)
-                || IsReviewedNonProducerExternalMember(property, mutation))
+                || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
+                || IsReviewedExactMeAiDimensionsProperty(property, mutation)
+                || IsReviewedNonProducerExternalMember(property, mutation)
+                || !mutation && IsReviewedFrameworkEventDataRead(property)
+                || IsReviewedDatabaseSupportMember(property, mutation)
+                    && !(mutation && TrackingBlockedByIdentityResolution(property))
+                    && ReviewedProviderMemberIsClosed(property, node, model, context))
             {
                 return false;
             }
@@ -23166,14 +26263,35 @@ internal static partial class HostedGrimoireProducerInventory
         private bool IsReviewedEffectFreeExternalMember(
             IMethodSymbol method,
             SyntaxNode? node = null,
-            SemanticModel? model = null)
+            SemanticModel? model = null,
+            AuthoredMember? context = null)
         {
+            if (IsExactSqliteCommandFactorySlot(method))
+                return IsReviewedExactSqliteCommandFactory(method, node, context);
+
             if (CompletionOwnedExternalAwaitables.Contains(Normalize(method))
                 || ReviewedBoundedIntrinsicMembers.Contains(Normalize(method))
                 || ReviewedNonProducerExternalMembers.Contains(Normalize(method))
+                || IsReviewedExactNativeImport(method)
                 || IsReviewedExactBoundedExternalMember(method)
+                || IsExactEmbeddingSdkAdapterFactory(method)
                 || IsReviewedDatabaseSupportMember(method)
+                    && !TrackingBlockedByIdentityResolution(method)
+                    && ReviewedProviderMemberIsClosed(method, node, model, context)
+                || IsReviewedEfInterceptorBaseCall(method, node, model)
+                || IsReviewedAccessorLoggerFactoryRead(method) && inventoryFacts.AuthoredLoggerType is null
+                || IsReviewedEfQueryOperator(method, node, model, context)
+                || IsReviewedProviderNeutralOptionsBuilderMember(method)
                 || IsReviewedRuntimeCleanup(method)
+                || IsReviewedFloatVectorMember(method, node, model, context)
+                || IsReviewedExactInMemoryConstruction(method)
+                || IsReviewedAsyncStateMachineMember(method)
+                || IsReviewedExactFrameworkScalarOperator(method, node, model, context)
+                || IsReviewedExactTypeOfEqualityOperator(method, node, model)
+                || IsReviewedPrimitiveQueueMember(method, node, model, context)
+                || IsReviewedInvariantDateTimeParser(method, node, model)
+                || IsReviewedDefaultProviderUInt32Format(method, node, model)
+                || IsExactIntegerRange(method)
                 || IsReviewedCollectionMechanicalMember(method)
                 || IsReviewedInterpolatedStringCreate(method)
                 || IsReviewedSequenceOperation(method, node, model)
@@ -23184,6 +26302,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (!ReviewedIntrinsicExternalTypes.Contains(
                     TypeKey(method.ContainingType))
+                || !HasExactSpecialTypeIdentity(method.ContainingType)
                 || method.Parameters.Any(static parameter =>
                     parameter.RefKind != RefKind.None
                     || parameter.Type.TypeKind == TypeKind.Delegate))
@@ -23195,6 +26314,1487 @@ internal static partial class HostedGrimoireProducerInventory
                 method,
                 node,
                 model);
+        }
+
+        private static bool IsExactIntegerRange(IMethodSymbol method) =>
+            method is { IsStatic: true, Arity: 0, Name: "Range" }
+                && IsExactFrameworkType(method.ContainingType,
+                    "System.Linq.Enumerable", typeof(Enumerable).Assembly.GetName())
+                && method.Parameters is
+                [
+                    { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 },
+                    { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 },
+                ]
+                && method.ReturnType is INamedTypeSymbol
+                {
+                    TypeArguments: [{ SpecialType: SpecialType.System_Int32 }],
+                } sequence
+                && IsExactFrameworkType(sequence, "System.Collections.Generic.IEnumerable`1",
+                    typeof(IEnumerable<>).Assembly.GetName());
+
+        // The state machine an async method compiles to is the body of that async method: an authored builder's Start calls
+        // its MoveNext, and what MoveNext runs is the async method, which is traversed as the method itself.
+        private static bool IsReviewedAsyncStateMachineMember(IMethodSymbol method) =>
+            method is { Name: "MoveNext" or "SetStateMachine", IsStatic: false }
+            && IsExactFrameworkType(method.ContainingType, "System.Runtime.CompilerServices.IAsyncStateMachine", typeof(System.Runtime.CompilerServices.IAsyncStateMachine).Assembly.GetName());
+
+        // UInt32.TryFormat(Span<char>, out int, ReadOnlySpan<char>, IFormatProvider) writes the digits of the value into the
+        // caller's span. It runs no supplied code when the provider is the default one the caller did not pass: a provider
+        // that was passed is asked for its number format, which an authored provider answers with code of its own.
+        private static bool IsReviewedDefaultProviderUInt32Format(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model) =>
+            !method.IsStatic && method.Arity == 0 && method.Name == "TryFormat"
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && IsExactFrameworkType(method.ContainingType, "System.UInt32", typeof(uint).Assembly.GetName())
+            && method.Parameters is
+            [
+                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "Span", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } destination },
+                { RefKind: RefKind.Out, Type.SpecialType: SpecialType.System_Int32 },
+                { RefKind: RefKind.None, Type: INamedTypeSymbol { Name: "ReadOnlySpan", TypeArguments: [{ SpecialType: SpecialType.System_Char }] } format },
+                { RefKind: RefKind.None, Type: { } providerType },
+            ]
+            && IsExactFrameworkType(destination, "System.Span`1", typeof(Span<>).Assembly.GetName())
+            && IsExactFrameworkType(format, "System.ReadOnlySpan`1", typeof(ReadOnlySpan<>).Assembly.GetName())
+            && IsExactFrameworkType(providerType, "System.IFormatProvider", typeof(IFormatProvider).Assembly.GetName())
+            && node is not null
+            && model?.GetOperation(node) is IInvocationOperation invocation
+            && invocation.Arguments.Any(static argument => argument.Parameter?.Ordinal == 3 && argument.ArgumentKind == ArgumentKind.DefaultValue);
+
+        private bool IsReviewedInvariantDateTimeParser(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model)
+        {
+            if (!method.IsStatic || method.Arity != 0 || method.Name != "TryParse"
+                || method.ReturnType.SpecialType != SpecialType.System_Boolean
+                || !IsExactFrameworkType(method.ContainingType, "System.DateTimeOffset", typeof(DateTimeOffset).Assembly.GetName())
+                || method.Parameters is not
+                [
+                    { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_String },
+                    { RefKind: RefKind.None, Type: { } providerType },
+                    { RefKind: RefKind.None, Type: { } stylesType },
+                    { RefKind: RefKind.Out, Type: { } resultType },
+                ]
+                || !IsExactFrameworkType(providerType, "System.IFormatProvider", typeof(IFormatProvider).Assembly.GetName())
+                || !IsExactFrameworkType(stylesType, "System.Globalization.DateTimeStyles", typeof(DateTimeStyles).Assembly.GetName())
+                || !IsExactFrameworkType(resultType, "System.DateTimeOffset", typeof(DateTimeOffset).Assembly.GetName())
+                || node is null || model?.GetOperation(node) is not IInvocationOperation invocation
+                || invocation.Arguments.FirstOrDefault(static argument => argument.Parameter?.Ordinal == 1)?.Value.Syntax
+                    is not ExpressionSyntax provider)
+            {
+                return false;
+            }
+
+            bool InvariantOrigin(ExpressionSyntax expression, SemanticModel semanticModel, HashSet<ISymbol> path, AuthoredMember? context)
+            {
+                ITypeSymbol? valueType = semanticModel.GetTypeInfo(expression).Type;
+
+                if (valueType is null
+                    || !IsExactFrameworkType(valueType, "System.Globalization.CultureInfo", typeof(CultureInfo).Assembly.GetName())
+                        && !IsExactFrameworkType(valueType, "System.IFormatProvider", typeof(IFormatProvider).Assembly.GetName()))
+                {
+                    return false;
+                }
+
+                if (semanticModel.GetSymbolInfo(expression).Symbol is IPropertySymbol
+                    { Name: "InvariantCulture", IsStatic: true, GetMethod: not null, SetMethod: null } property
+                    && IsExactFrameworkType(property.ContainingType, "System.Globalization.CultureInfo", typeof(CultureInfo).Assembly.GetName())
+                    && IsExactFrameworkType(property.Type, "System.Globalization.CultureInfo", typeof(CultureInfo).Assembly.GetName()))
+                {
+                    return true;
+                }
+
+                return HasOnlyReviewedValueSources(expression, semanticModel, path, context, InvariantOrigin);
+            }
+
+            return InvariantOrigin(provider, model, new(SymbolEqualityComparer.Default), null);
+        }
+
+        private static bool IsExactFrameworkScalarConversionOperator(IMethodSymbol method)
+        {
+            bool index = method is { IsStatic: true, Arity: 0, Name: "op_Implicit", Parameters: [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }] }
+                && IsExactFrameworkType(method.ContainingType, "System.Index", typeof(Index).Assembly.GetName())
+                && IsExactFrameworkType(method.ReturnType, "System.Index", typeof(Index).Assembly.GetName());
+
+            bool int128 = method is { IsStatic: true, Arity: 0, Name: "op_Implicit", Parameters: [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 }] }
+                && IsExactFrameworkType(method.ContainingType, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(method.ReturnType, "System.Int128", typeof(Int128).Assembly.GetName());
+
+            return index || int128;
+        }
+
+        // Exact framework scalar binary operators: Int128 arithmetic and CancellationToken equality.
+        private static bool IsExactFrameworkScalarBinaryOperator(IMethodSymbol method)
+        {
+            bool int128 = method is { IsStatic: true, Arity: 0, MethodKind: MethodKind.UserDefinedOperator, Name: "op_Addition" or "op_Subtraction" or "op_Multiply" or "op_Division" }
+                && method.Parameters is [{ RefKind: RefKind.None } leftInt, { RefKind: RefKind.None } rightInt]
+                && IsExactFrameworkType(method.ContainingType, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(method.ReturnType, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(leftInt.Type, "System.Int128", typeof(Int128).Assembly.GetName())
+                && IsExactFrameworkType(rightInt.Type, "System.Int128", typeof(Int128).Assembly.GetName());
+
+            bool token = method is { IsStatic: true, Arity: 0, MethodKind: MethodKind.UserDefinedOperator, Name: "op_Equality" or "op_Inequality", ReturnType.SpecialType: SpecialType.System_Boolean }
+                && method.Parameters is [{ RefKind: RefKind.None } leftToken, { RefKind: RefKind.None } rightToken]
+                && IsExactFrameworkType(method.ContainingType, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName())
+                && IsExactFrameworkType(leftToken.Type, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName())
+                && IsExactFrameworkType(rightToken.Type, "System.Threading.CancellationToken", typeof(CancellationToken).Assembly.GetName());
+
+            return int128 || token;
+        }
+
+        // Framework value conversions that may appear inside an operand without making it an
+        // authored conversion: the exact scalar operators above, and the exact float Span carriers.
+        private static bool IsReviewedFrameworkValueConversion(IMethodSymbol method) =>
+            IsExactFrameworkScalarConversionOperator(method)
+            || method is { IsStatic: true, Arity: 0, MethodKind: MethodKind.Conversion, Name: "op_Implicit", Parameters: [{ RefKind: RefKind.None }] }
+                && (IsExactFloatCarrier(method.ContainingType, "System.Span`1")
+                    || IsExactFloatCarrier(method.ContainingType, "System.ReadOnlySpan`1"));
+
+        // Structural Operand Rule. The operand expression contains no user-defined conversion at
+        // the operator boundary: only parentheses and conversions are walked, and every selected
+        // conversion operator must be an exact framework value conversion. Everything beneath
+        // that boundary (calls, property reads, locals, operators) is traversed where it is
+        // written, so no execution is hidden by accepting the framework operator itself.
+        private static bool OperandUsesOnlyBuiltInConversions(IOperation operand)
+        {
+            for (int depth = 0; depth < 64; depth++)
+            {
+                switch (operand)
+                {
+                    case IParenthesizedOperation parenthesized:
+                        operand = parenthesized.Operand;
+
+                        continue;
+
+                    case IConversionOperation conversion:
+                        IMethodSymbol? selected = conversion.OperatorMethod ?? conversion.Conversion.MethodSymbol;
+
+                        if (selected is null ? conversion.Conversion.IsUserDefined : !IsReviewedFrameworkValueConversion(selected)) return false;
+
+                        operand = conversion.Operand;
+
+                        continue;
+
+                    default:
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ArgumentBoundaryUsesOnlyBuiltInConversions(IArgumentOperation argument) =>
+            argument.Parameter is { RefKind: RefKind.None }
+            && argument.InConversion.MethodSymbol is null
+            && argument.OutConversion.MethodSymbol is null
+            && OperandUsesOnlyBuiltInConversions(argument.Value);
+
+        private bool IsReviewedExactFrameworkScalarOperator(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model,
+            AuthoredMember? context)
+        {
+            if (context is null || node is null || model is null) return false;
+
+            if (IsExactFrameworkScalarConversionOperator(method))
+            {
+                IConversionOperation? conversion = UserConversionsAt(context, node)
+                    .FirstOrDefault(candidate => SymbolEqualityComparer.Default.Equals(candidate.OperatorMethod, method));
+
+                return conversion is not null && OperandUsesOnlyBuiltInConversions(conversion.Operand);
+            }
+
+            return IsExactFrameworkScalarBinaryOperator(method)
+                && node is BinaryExpressionSyntax
+                && model.GetOperation(node) is IBinaryOperation { IsLifted: false, OperatorMethod: { } selected } binary
+                && SymbolEqualityComparer.Default.Equals(selected, method)
+                && OperandUsesOnlyBuiltInConversions(binary.LeftOperand)
+                && OperandUsesOnlyBuiltInConversions(binary.RightOperand);
+        }
+
+        private static bool IsExactFloatCarrier(ITypeSymbol type, string metadataName) =>
+            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Single }] }
+            && IsExactFrameworkType(type, metadataName, typeof(float).Assembly.GetName());
+
+        private static bool IsExactFloatVectorCarrier(ITypeSymbol type) =>
+            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Single }] }
+            && IsExactFloatVectorType(type, "System.Numerics.Vector`1");
+
+        private static bool IsExactFloatVectorType(ITypeSymbol type, string metadataName) =>
+            metadataName is "System.Numerics.Vector" or "System.Numerics.Vector`1"
+            && (IsExactFrameworkType(type, metadataName, typeof(float).Assembly.GetName())
+                || IsExactFrameworkType(
+                    type,
+                    metadataName,
+                    Assembly.Load(new AssemblyName("System.Numerics.Vectors")).GetName()));
+
+        private static bool IsReviewedFloatVectorProperty(IPropertySymbol property) =>
+            property.Name == "Count"
+            && property.IsStatic
+            && property.Parameters.IsEmpty
+            && property.GetMethod is not null
+            && property.SetMethod is null
+            && property.Type.SpecialType == SpecialType.System_Int32
+            && IsExactFloatVectorCarrier(property.ContainingType);
+
+        private static bool IsReviewedExactGeneratedEmbeddingRead(IPropertySymbol property, bool mutation)
+        {
+            AssemblyName sdkAssembly = typeof(Microsoft.Extensions.AI.GeneratedEmbeddings<>).Assembly.GetName();
+
+            if (mutation
+                || property.IsStatic
+                || property.Locations.Any(static location => location.IsInSource)
+                || property.ExplicitInterfaceImplementations.Length != 0
+                || property.GetMethod is not { } getter
+                || getter.IsStatic
+                || getter.IsAbstract
+                || getter.IsVirtual
+                || getter.IsOverride
+                || getter.ReturnsByRef
+                || getter.ReturnsByRefReadonly
+                || getter.MethodKind != MethodKind.PropertyGet
+                || getter.Locations.Any(static location => location.IsInSource)
+                || !IsExactFrameworkType(property.ContainingType,
+                    "Microsoft.Extensions.AI.GeneratedEmbeddings`1", sdkAssembly)
+                || property.ContainingType is not INamedTypeSymbol
+                    { IsSealed: true, TypeArguments: [INamedTypeSymbol embedding] }
+                || !IsExactFrameworkType(embedding, "Microsoft.Extensions.AI.Embedding`1", sdkAssembly)
+                || embedding.TypeArguments is not [{ SpecialType: SpecialType.System_Single }]
+                || !IsExactFrameworkType(getter.ContainingType,
+                    "Microsoft.Extensions.AI.GeneratedEmbeddings`1", sdkAssembly)
+                || !SymbolEqualityComparer.Default.Equals(getter.ReturnType, property.Type))
+            {
+                return false;
+            }
+
+            bool exactCount = property.Name == "Count"
+                && !property.IsIndexer
+                && property.Parameters.IsEmpty
+                && property.SetMethod is null
+                && property.Type.SpecialType == SpecialType.System_Int32
+                && getter.MetadataName == "get_Count"
+                && getter.Parameters.IsEmpty;
+
+            bool exactIndexer = property.IsIndexer
+                && property.MetadataName == "Item"
+                && property.Parameters is [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }]
+                && getter.MetadataName == "get_Item"
+                && getter.Parameters is [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }]
+                && SymbolEqualityComparer.Default.Equals(property.Type, embedding)
+                && SymbolEqualityComparer.Default.Equals(getter.ReturnType, embedding);
+
+            return exactCount || exactIndexer;
+        }
+
+        private static bool IsExactPrimitivePriorityQueue(ITypeSymbol type) => type is INamedTypeSymbol
+            {
+                TypeArguments: [_, INamedTypeSymbol priority],
+            } queue
+            && IsExactFrameworkType(queue, "System.Collections.Generic.PriorityQueue`2", typeof(PriorityQueue<,>).Assembly.GetName())
+            && IsExactFrameworkType(priority.TupleUnderlyingType ?? priority, "System.ValueTuple`3", typeof(object).Assembly.GetName())
+            && priority.TypeArguments is
+                [{ SpecialType: SpecialType.System_Double }, { SpecialType: SpecialType.System_UInt64 }, { SpecialType: SpecialType.System_UInt64 }];
+
+        private static bool IsExactPrimitiveQueueMember(IMethodSymbol method)
+        {
+            if (!IsExactPrimitivePriorityQueue(method.ContainingType) || method.IsStatic || method.Arity != 0) return false;
+
+            return method.MethodKind == MethodKind.Constructor && method.Parameters.IsEmpty
+                || method.Name == "Enqueue" && method.ReturnsVoid && method.Parameters is [{ RefKind: RefKind.None } element, { RefKind: RefKind.None } priority]
+                    && SymbolEqualityComparer.Default.Equals(element.Type, method.ContainingType.TypeArguments[0])
+                    && SymbolEqualityComparer.Default.Equals(priority.Type, method.ContainingType.TypeArguments[1])
+                || method.Name == "Dequeue" && method.Parameters.IsEmpty
+                    && SymbolEqualityComparer.Default.Equals(method.ReturnType, method.ContainingType.TypeArguments[0]);
+        }
+
+        private static bool IsExactPrimitiveQueueProperty(IPropertySymbol property) => !property.IsStatic
+            && IsExactPrimitivePriorityQueue(property.ContainingType)
+            && property.Parameters.IsEmpty && property.GetMethod is not null && property.SetMethod is null
+            && (property.Name == "Count" && property.Type.SpecialType == SpecialType.System_Int32
+                || property.Name == "UnorderedItems" && property.Type is INamedTypeSymbol items
+                    && items.Name == "UnorderedItemsCollection"
+                    && SymbolEqualityComparer.Default.Equals(items.ContainingType, property.ContainingType)
+                    && FrameworkAssemblyIdentityMatches(items.ContainingAssembly.Identity, typeof(PriorityQueue<,>).Assembly.GetName()));
+
+        private bool HasExactDefaultPrimitiveQueueOrigin(ExpressionSyntax expression, AuthoredMember member)
+        {
+            CleanupProvenanceContext proof = new();
+
+            bool Origin(ExpressionSyntax value, SemanticModel model, HashSet<ISymbol> path, AuthoredMember? owner)
+            {
+                if (owner is null || proof.RemainingWork-- <= 0) return false;
+
+                value = StripTransparentExpression(value);
+
+                ISymbol? symbol = model.GetSymbolInfo(value).Symbol;
+
+                if (symbol is ILocalSymbol or IParameterSymbol
+                    && HasCollectionValueReplacement(owner, symbol)) return false;
+
+                if (model.GetOperation(value) is IObjectCreationOperation { Constructor: { } constructor, Initializer: null }
+                    && IsExactPrimitiveQueueMember(constructor)) return true;
+
+                if (value is InvocationExpressionSyntax call && symbol is IMethodSymbol method
+                    && ResolveCleanupInvocationTarget(method, owner, call, proof) is { } target && path.Add(method))
+                {
+                    try
+                    {
+                        AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                        ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                        return returns.Length != 0 && returns.All(returned => Origin(returned, bound.Model, path, bound));
+                    }
+                    finally
+                    {
+                        path.Remove(method);
+                    }
+                }
+
+                return HasOnlyReviewedValueSources(value, model, path, owner, Origin);
+            }
+
+            return Origin(expression, member.Model, new(SymbolEqualityComparer.Default), member);
+        }
+
+        private bool IsReviewedPrimitiveQueueMember(IMethodSymbol method, SyntaxNode? node, SemanticModel? model, AuthoredMember? context)
+        {
+            if (!IsExactPrimitiveQueueMember(method) || node is null || model is null || context is null) return false;
+
+            if (method.MethodKind == MethodKind.Constructor) return model.GetOperation(node) is IObjectCreationOperation { Initializer: null };
+
+            // The receiver must still be an exact default-constructed queue, so its priority comparison is the
+            // pure primitive tuple comparison. The arguments need only the argument-boundary rule: they are
+            // evaluated and traversed where they are written, and the queue merely stores and orders them.
+            return model.GetOperation(node) is IInvocationOperation invocation
+                && invocation.Instance?.Syntax is ExpressionSyntax receiver
+                && HasExactDefaultPrimitiveQueueOrigin(receiver, context)
+                && invocation.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions);
+        }
+
+        private bool IsReviewedPrimitiveQueueProperty(IPropertySymbol property, bool mutation, SyntaxNode? node, AuthoredMember? context) =>
+            !mutation && IsExactPrimitiveQueueProperty(property) && context is not null
+            && node is MemberAccessExpressionSyntax access && HasExactDefaultPrimitiveQueueOrigin(access.Expression, context);
+
+        private bool HasReviewedPrimitiveQueueItems(ExpressionSyntax expression, SemanticModel model, AuthoredMember? context) =>
+            context is not null && expression is MemberAccessExpressionSyntax access
+            && model.GetSymbolInfo(access).Symbol is IPropertySymbol { Name: "UnorderedItems" } property
+            && IsExactPrimitiveQueueProperty(property)
+            && HasExactDefaultPrimitiveQueueOrigin(access.Expression, context);
+
+        private static bool IsExactFloatVectorSignature(IMethodSymbol method)
+        {
+            bool finite = method.IsStatic
+                && method.Name == "IsFinite"
+                && method.Arity == 0
+                && method.ReturnType.SpecialType == SpecialType.System_Boolean
+                && HasExactParameterTypes(method, "System.Single")
+                && IsExactFrameworkType(method.ContainingType, "System.Single", typeof(float).Assembly.GetName());
+
+            bool constructor = method.MethodKind == MethodKind.Constructor
+                && !method.IsStatic
+                && IsExactFloatVectorCarrier(method.ContainingType)
+                && method.Parameters is [{ RefKind: RefKind.None, Type: { } span }]
+                && IsExactFloatCarrier(span, "System.ReadOnlySpan`1");
+
+            bool dot = method.IsStatic
+                && method.Name == "Dot"
+                && method.TypeArguments is [{ SpecialType: SpecialType.System_Single }]
+                && method.ReturnType.SpecialType == SpecialType.System_Single
+                && method.Parameters.Length == 2
+                && method.Parameters.All(static parameter => parameter.RefKind == RefKind.None
+                    && IsExactFloatVectorCarrier(parameter.Type))
+                && IsExactFloatVectorType(method.ContainingType, "System.Numerics.Vector");
+
+            return finite || constructor || dot;
+        }
+
+        // The pure intrinsic table: float and double IsFinite, the Vector<float>(ReadOnlySpan<float>)
+        // constructor and Vector.Dot<float>. Each is an exact framework identity with no effect and
+        // no handle; the argument-boundary rule (no ref or out parameter, no user-defined
+        // conversion at the boundary) is the whole demand, because the argument expressions are
+        // themselves traversed where they are written.
+        private static bool IsExactDoubleFiniteSignature(IMethodSymbol method) =>
+            method.IsStatic
+            && method.Name == "IsFinite"
+            && method.Arity == 0
+            && method.ReturnType.SpecialType == SpecialType.System_Boolean
+            && HasExactParameterTypes(method, "System.Double")
+            && IsExactFrameworkType(method.ContainingType, "System.Double", typeof(double).Assembly.GetName());
+
+        private bool IsReviewedFloatVectorMember(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model,
+            AuthoredMember? context)
+        {
+            if (!IsExactFloatVectorSignature(method) && !IsExactDoubleFiniteSignature(method))
+            {
+                return false;
+            }
+
+            IEnumerable<IArgumentOperation> arguments = node is null || model is null ? [] : model.GetOperation(node) switch
+            {
+                IInvocationOperation invocation => invocation.Arguments,
+                IObjectCreationOperation creation => creation.Arguments,
+                _ => [],
+            };
+
+            return node is not null && model is not null
+                && arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions);
+        }
+
+        private bool HasReviewedValueConversions(IOperation value, AuthoredMember? member, bool hierarchyObservation = false)
+        {
+            if (member is null)
+            {
+                return false;
+            }
+
+            CleanupProvenanceContext proof = new();
+
+            HashSet<ISymbol> path = new(SymbolEqualityComparer.Default);
+
+            bool Carrier(ITypeSymbol? type) => type is IArrayTypeSymbol
+                || type is INamedTypeSymbol named
+                    && (IsExactFrameworkType(named, "System.Span`1", typeof(object).Assembly.GetName())
+                        || IsExactFrameworkType(named, "System.ReadOnlySpan`1", typeof(object).Assembly.GetName()));
+
+            HashSet<ISymbol> carrierUses = new(SymbolEqualityComparer.Default);
+
+            bool ClosedCarrierUses(ISymbol storage, AuthoredMember owner)
+            {
+                if (!carrierUses.Add(storage)) return false;
+
+                try
+                {
+                    if (HasCollectionValueReplacement(owner, storage)) return false;
+
+                    bool ReadUse(IOperation operation, bool view = false)
+                    {
+                        if (proof.RemainingWork-- <= 0) return false;
+
+                        while (operation.Parent is IParenthesizedOperation
+                            || operation.Parent is IConversionOperation conversion
+                                && (conversion.OperatorMethod is null
+                                    || IsExactFloatCarrier(conversion.OperatorMethod.ContainingType, "System.Span`1")
+                                    || IsExactFloatCarrier(conversion.OperatorMethod.ContainingType, "System.ReadOnlySpan`1")))
+                        {
+                            view |= operation.Parent is IConversionOperation converted && Carrier(converted.Type);
+
+                            operation = operation.Parent;
+                        }
+
+                        if (operation.Parent is IArrayElementReferenceOperation element && element.ArrayReference == operation) return true;
+
+                        if (operation.Parent is IPropertyReferenceOperation property && property.Instance == operation
+                            && FrameworkAssemblyIdentityMatches(property.Property.ContainingAssembly.Identity, typeof(object).Assembly.GetName())
+                            && (property.Property.Name == "Length" && property.Property.Parameters.IsEmpty
+                                && property.Property.Type.SpecialType == SpecialType.System_Int32
+                                || property.Property.IsIndexer && Carrier(property.Property.ContainingType)
+                                    && property.Property.Parameters is [{ Type.SpecialType: SpecialType.System_Int32 }])) return true;
+
+                        if (operation.Parent is IInvocationOperation slice && slice.Instance == operation
+                            && Carrier(slice.TargetMethod.ContainingType) && Carrier(slice.TargetMethod.ReturnType)
+                            && slice.TargetMethod.Name == "Slice" && slice.TargetMethod.Parameters.Length is 1 or 2
+                            && slice.TargetMethod.Parameters.All(static parameter => parameter.RefKind == RefKind.None
+                                && parameter.Type.SpecialType == SpecialType.System_Int32)) return ReadUse(slice, true);
+
+                        if (operation.Parent is IArgumentOperation argument && argument.Parameter?.RefKind == RefKind.None)
+                        {
+                            IMethodSymbol? consumer = argument.Parent switch
+                            {
+                                IInvocationOperation invocation => invocation.TargetMethod,
+                                IObjectCreationOperation creation => creation.Constructor,
+                                _ => null,
+                            };
+
+                            if (consumer is not null && IsExactFloatVectorSignature(consumer)) return true;
+
+                            if (consumer is not null && argument.Parameter.Ordinal == 0
+                                && IsExactFrameworkType(consumer.ContainingType, "System.MemoryExtensions", typeof(object).Assembly.GetName())
+                                && consumer.Name == "AsSpan" && consumer.IsStatic && consumer.TypeArguments.Length == 1
+                                && consumer.Parameters.Length is 1 or 2 or 3
+                                && consumer.Parameters[0].Type is IArrayTypeSymbol
+                                && consumer.Parameters.Skip(1).All(static parameter => parameter.RefKind == RefKind.None
+                                    && parameter.Type.SpecialType == SpecialType.System_Int32)
+                                && Carrier(consumer.ReturnType)) return ReadUse(argument.Parent!, true);
+
+                            if (consumer is not null && consumer.IsStatic && consumer.Name == "ReadUInt64BigEndian"
+                                && consumer.ReturnType.SpecialType == SpecialType.System_UInt64
+                                && consumer.Parameters is [{ RefKind: RefKind.None, Type: INamedTypeSymbol span }]
+                                && span.TypeArguments is [{ SpecialType: SpecialType.System_Byte }]
+                                && IsExactFrameworkType(span, "System.ReadOnlySpan`1", typeof(object).Assembly.GetName())
+                                && IsExactFrameworkType(consumer.ContainingType, "System.Buffers.Binary.BinaryPrimitives", typeof(object).Assembly.GetName())) return true;
+                        }
+
+                        // Only exact framework views can transfer to another local. Ordinary
+                        // mutable aliases and unproved consumers refuse; no heap model is inferred.
+                        if (view && operation.Parent is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation variable }
+                            && Carrier(variable.Symbol.Type)) return ClosedCarrierUses(variable.Symbol, owner);
+
+                        return false;
+                    }
+
+                    foreach (IdentifierNameSyntax reference in owner.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                        .Where(reference => SymbolEqualityComparer.Default.Equals(owner.Model.GetSymbolInfo(reference).Symbol, storage)))
+                    {
+                        if (owner.Model.GetOperation(reference) is not { } operation || !ReadUse(operation)) return false;
+                    }
+
+                    return true;
+                }
+                finally
+                {
+                    carrierUses.Remove(storage);
+                }
+            }
+
+            bool ExactList(INamedTypeSymbol? type) => type is not null
+                && IsExactFrameworkType(type, "System.Collections.Generic.List`1", typeof(List<>).Assembly.GetName());
+
+            bool FrameCardinality(IPropertyReferenceOperation count, AuthoredMember owner)
+            {
+                if (count.Property.Name != "Count" || count.Property.IsStatic || count.Property.IsIndexer
+                    || count.Property.Type.SpecialType != SpecialType.System_Int32 || !ExactList(count.Property.ContainingType)
+                    || count.Instance is not IFieldReferenceOperation
+                    {
+                        Field: { IsStatic: false, IsReadOnly: true, DeclaredAccessibility: Accessibility.Private } field,
+                        Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance },
+                    }
+                    || !SymbolEqualityComparer.Default.Equals(field.ContainingType, owner.Symbol.ContainingType)
+                    || !ExactList(field.Type as INamedTypeSymbol) || HasAuthoredStorageWrite(field)
+                    || field.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: CollectionExpressionSyntax initializer }
+                    || initializer.Elements.Any(static element => element is not ExpressionElementSyntax)) return false;
+
+                // Cardinality certifies the exact owned list receiver, not values obtained from
+                // its elements. Its source-authored mutations and evaluated inputs still traverse.
+                // Complete symbol uses permit only the actual frame Count/index/Add/RemoveAt
+                // grammar; aliases, replacement, escaped receivers and opaque consumers refuse.
+                foreach (SemanticModel model in semanticModels.Values.Where(model => ReferenceEquals(model.Compilation, owner.Model.Compilation)))
+                {
+                    foreach (IdentifierNameSyntax reference in model.SyntaxTree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                        .Where(reference => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(reference).Symbol, field)))
+                    {
+                        if (proof.RemainingWork-- <= 0 || model.GetOperation(reference) is not IFieldReferenceOperation
+                            { Instance: IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } }) return false;
+
+                        if (reference.Parent is MemberAccessExpressionSyntax access && access.Expression == reference)
+                        {
+                            ISymbol? selected = model.GetSymbolInfo(access).Symbol;
+
+                            if (selected is IPropertySymbol { Name: "Count", IsStatic: false, Parameters.Length: 0, Type.SpecialType: SpecialType.System_Int32 } property
+                                && ExactList(property.ContainingType)) continue;
+
+                            if (selected is IMethodSymbol { IsStatic: false, Arity: 0, ReturnsVoid: true } method
+                                && ExactList(method.ContainingType) && access.Parent is InvocationExpressionSyntax call
+                                && call.Expression == access
+                                && (method.Name == "Add" && method.Parameters is [{ RefKind: RefKind.None }]
+                                    || method.Name == "RemoveAt" && HasExactParameterTypes(method, "System.Int32"))) continue;
+                        }
+
+                        if (reference.Parent is ElementAccessExpressionSyntax element && element.Expression == reference
+                            && model.GetSymbolInfo(element).Symbol is IPropertySymbol { IsIndexer: true, IsStatic: false } indexer
+                            && ExactList(indexer.ContainingType) && indexer.Parameters is [{ Type.SpecialType: SpecialType.System_Int32 }]) continue;
+
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            bool ContextualOperatorsAreBuiltin(ExpressionSyntax expression, AuthoredMember owner)
+            {
+                IOperation? operation = owner.Model.GetOperation(expression);
+
+                while (operation?.Parent is IConversionOperation or IParenthesizedOperation) operation = operation.Parent;
+
+                if (operation is null) return false;
+
+                Stack<IOperation> pending = new();
+
+                pending.Push(operation);
+
+                while (pending.TryPop(out IOperation? current))
+                {
+                    if (proof.RemainingWork-- <= 0 || current is IConversionOperation { OperatorMethod: not null }
+                        or IUnaryOperation { OperatorMethod: not null } or IBinaryOperation { OperatorMethod: not null }) return false;
+
+                    foreach (IOperation child in current.ChildOperations) pending.Push(child);
+                }
+
+                return true;
+            }
+
+            bool ExactHierarchySequence(IMethodSymbol method)
+            {
+                IMethodSymbol selected = method.ReducedFrom ?? method;
+
+                if (!selected.IsStatic || selected.Parameters.Any(static parameter => parameter.RefKind != RefKind.None)
+                    || !IsExactFrameworkType(selected.ContainingType, "System.Linq.Enumerable", typeof(Enumerable).Assembly.GetName())
+                    || selected.Parameters.Length == 0
+                    || selected.Parameters[0].Type is not INamedTypeSymbol { TypeArguments: [ITypeSymbol element] } source
+                    || !IsExactFrameworkType(source, "System.Collections.Generic.IEnumerable`1", typeof(List<>).Assembly.GetName())) return false;
+
+                if (selected.Name == "ToList") return selected.Arity == 1 && selected.Parameters.Length == 1
+                    && selected.ReturnType is INamedTypeSymbol list && ExactList(list)
+                    && SymbolEqualityComparer.Default.Equals(list.TypeArguments[0], element);
+
+                return selected.Parameters is [_, { Type: INamedTypeSymbol { TypeArguments: [ITypeSymbol input, ITypeSymbol output] } callback }]
+                    && IsExactFrameworkType(callback, "System.Func`2", typeof(object).Assembly.GetName())
+                    && SymbolEqualityComparer.Default.Equals(input, element)
+                    && (selected.Name == "Sum" && selected.Arity == 1 && output.SpecialType == SpecialType.System_Int32
+                            && selected.ReturnType.SpecialType == SpecialType.System_Int32
+                        || selected.Name == "Select" && selected.Arity == 2
+                            && selected.ReturnType is INamedTypeSymbol { TypeArguments: [ITypeSymbol result] } sequence
+                            && IsExactFrameworkType(sequence, "System.Collections.Generic.IEnumerable`1", typeof(List<>).Assembly.GetName())
+                            && SymbolEqualityComparer.Default.Equals(output, result));
+            }
+
+            bool ClosedBranchListUses(ISymbol storage, AuthoredMember owner)
+            {
+                if (storage is not ILocalSymbol { RefKind: RefKind.None }
+                    and not IParameterSymbol { RefKind: RefKind.None }
+                    || HasCollectionValueReplacement(owner, storage)) return false;
+
+                foreach (IdentifierNameSyntax reference in owner.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                    .Where(reference => SymbolEqualityComparer.Default.Equals(owner.Model.GetSymbolInfo(reference).Symbol, storage)))
+                {
+                    if (proof.RemainingWork-- <= 0 || owner.Model.GetOperation(reference) is not { } use) return false;
+
+                    while (use.Parent is IConversionOperation { OperatorMethod: null } or IParenthesizedOperation) use = use.Parent;
+
+                    if (use.Parent is IPropertyReferenceOperation property && property.Instance == use && ExactList(property.Property.ContainingType))
+                    {
+                        if (property.Property.Name == "Count" && property.Property.Parameters.IsEmpty
+                            && property.Property.Type.SpecialType == SpecialType.System_Int32) continue;
+
+                        if (property.Property.IsIndexer && property.Property.Parameters is [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }]
+                            && property.Parent is not IAssignmentOperation and not IIncrementOrDecrementOperation
+                            && property.Parent is not IArgumentOperation { Parameter.RefKind: not RefKind.None }
+                            && property.Syntax.Parent is not RefExpressionSyntax
+                            && property.Arguments.All(argument => Review(argument.Value, owner))) continue;
+                    }
+
+                    if (use.Parent is IInvocationOperation removal && removal.Instance == use
+                        && removal.TargetMethod is { Name: "RemoveAt", IsStatic: false, Arity: 0, ReturnsVoid: true } method
+                        && ExactList(method.ContainingType) && HasExactParameterTypes(method, "System.Int32")
+                        && removal.Arguments.All(argument => Review(argument.Value, owner))) continue;
+
+                    if (use.Parent is IArgumentOperation { Parameter.Ordinal: 0, Parameter.RefKind: RefKind.None, Parent: IInvocationOperation call }
+                        && ExactHierarchySequence(call.TargetMethod)) continue;
+
+                    return false;
+                }
+
+                return true;
+            }
+
+            BoundValueSource[]? BoundHierarchySelector(IInvocationOperation call, AuthoredMember owner, BoundValueSource[] elements)
+            {
+                if (call.Arguments is not [_, IArgumentOperation selector]
+                    || selector.Value.Syntax is not ExpressionSyntax expression
+                    || !HasCompleteEagerCallableOrigin(expression, owner.Model, new(SymbolEqualityComparer.Default), owner)
+                    || ResolveCallable(expression, owner.Model, owner.CallableBindings, owner.AbsentCallables) is not { Symbol.IsAsync: false } target
+                    || target.Symbol.Parameters is not [IParameterSymbol { RefKind: RefKind.None } parameter]) return null;
+
+                ISymbol? storage = owner.Model.GetSymbolInfo(expression).Symbol;
+
+                if (storage is ILocalSymbol or IParameterSymbol && (HasCollectionValueReplacement(owner, storage)
+                    || owner.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<RefExpressionSyntax>()
+                        .Any(reference => SyntaxReferencesSymbol(owner.Model, reference.Expression, storage)))) return null;
+
+                AuthoredMember captured = BindStableCapturedCleanupContext(owner, expression, target);
+
+                List<BoundValueSource> returns = [];
+
+                foreach (BoundValueSource element in elements)
+                {
+                    Dictionary<ISymbol, BoundValueSource> bindings = captured.ValueBindings?.ToDictionary(
+                        static pair => pair.Key, static pair => pair.Value, SymbolEqualityComparer.Default)
+                        ?? new(SymbolEqualityComparer.Default);
+
+                    bindings[parameter] = element;
+
+                    AuthoredMember bound = captured with { ValueBindings = bindings };
+
+                    ExpressionSyntax[] values = ReturnedExpressions(bound.Syntax);
+
+                    if (values.Length == 0) return null;
+
+                    returns.AddRange(values.Select(value => new BoundValueSource(bound, value)));
+                }
+
+                return returns.ToArray();
+            }
+
+            bool ExactGuidList(ITypeSymbol? type) => type is INamedTypeSymbol { TypeArguments: [ITypeSymbol element] } list
+                && ExactList(list) && IsExactFrameworkType(element, "System.Guid", typeof(Guid).Assembly.GetName());
+
+            // A list the helper created empty and may only fill: nothing else can be the list it returns, so it is the framework List<Guid>
+            // and not a subclass whose enumerator is authored work that no traversal of the Select would reach.
+            bool ExactEmptyGuidList(ExpressionSyntax source, SemanticModel model, HashSet<ISymbol> active, AuthoredMember? caller) => source switch
+            {
+                CollectionExpressionSyntax { Elements.Count: 0 } => ExactGuidList(model.GetTypeInfo(source).ConvertedType),
+                BaseObjectCreationExpressionSyntax { Initializer: null, ArgumentList: null or { Arguments.Count: 0 } } => model.GetOperation(source)
+                    is IObjectCreationOperation { Constructor.Parameters.Length: 0 } created && ExactGuidList(created.Type),
+                _ => false,
+            };
+
+            // The children of one summary are read from storage by an authored helper, so how many there are and which ids they carry is data.
+            // The Record argument depends on neither: a cursor is built from an id, no certified getter reads it, and every cursor is the one
+            // sealed class. The sequence is therefore taken as an opaque run of System.Guid values, and as nothing else, when the helper is
+            // an exact authored static method that returns the framework List<Guid> it created empty itself, its call boundary uses only
+            // built-in conversions, and the id reaches the cursor as the System.Guid lambda parameter (StorageGuidElement). The helper, its
+            // arguments and the ids are ordinary executable work, traversed where they are written. A helper that cannot be resolved exactly,
+            // a list that is not the empty framework list, a list the helper replaces (by assignment, an out or ref argument, a deconstruction
+            // or a ref alias; HasCollectionValueReplacement), a boundary conversion and any other element type are all refused.
+            bool StorageGuidSequence(ExpressionSyntax expression, AuthoredMember owner)
+            {
+                // Only parentheses are looked through: a cast is a conversion, and a conversion the helper's list goes through may be authored.
+                static ExpressionSyntax Unparenthesized(ExpressionSyntax value)
+                {
+                    while (value is ParenthesizedExpressionSyntax parenthesized) value = parenthesized.Expression;
+
+                    return value;
+                }
+
+                expression = Unparenthesized(expression);
+
+                // The list must reach its use as itself: a user-defined conversion between the helper's result and the place that
+                // receives it (a local's declared type, an argument) would be authored work in the sequence that nothing here proves.
+                for (IOperation? context = owner.Model.GetOperation(expression)?.Parent; context is IConversionOperation or IParenthesizedOperation; context = context.Parent)
+                {
+                    if (context is IConversionOperation { OperatorMethod: not null } or IConversionOperation { Conversion.IsUserDefined: true }) return false;
+                }
+
+                bool awaited = expression is AwaitExpressionSyntax;
+
+                if (expression is AwaitExpressionSyntax awaiting)
+                {
+                    expression = Unparenthesized(awaiting.Expression);
+
+                    if (expression is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax { Expression: { } pending } } configure
+                        && owner.Model.GetOperation(configure) is IInvocationOperation
+                        {
+                            TargetMethod: { Name: "ConfigureAwait", IsStatic: false, Arity: 0 } configured,
+                            Arguments: [{ ArgumentKind: ArgumentKind.Explicit, Value.ConstantValue: { HasValue: true, Value: false } }],
+                        }
+                        && IsExactFrameworkType(configured.ContainingType, "System.Threading.Tasks.Task`1", typeof(Task<>).Assembly.GetName()))
+                    {
+                        expression = Unparenthesized(pending);
+                    }
+                }
+
+                if (expression is not InvocationExpressionSyntax call
+                    || owner.Model.GetOperation(call) is not IInvocationOperation { TargetMethod: { IsStatic: true, Arity: 0 } helper } invoked
+                    || !invoked.Arguments.All(ArgumentBoundaryUsesOnlyBuiltInConversions)) return false;
+
+                ITypeSymbol returnType = helper.ReturnType;
+
+                if (awaited)
+                {
+                    if (returnType is not INamedTypeSymbol { TypeArguments: [ITypeSymbol result] } task
+                        || !IsExactFrameworkType(task, "System.Threading.Tasks.Task`1", typeof(Task<>).Assembly.GetName())) return false;
+
+                    returnType = result;
+                }
+
+                if (!ExactGuidList(returnType)
+                    || ResolveCleanupInvocationTarget(helper, owner, call, proof) is not { } target
+                    || !SymbolEqualityComparer.Default.Equals(target.Symbol.OriginalDefinition, helper.OriginalDefinition)) return false;
+
+                AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                return returns.Length != 0 && returns.All(returned => StripTransparentExpression(returned) is IdentifierNameSyntax identifier
+                    && bound.Model.GetSymbolInfo(identifier).Symbol is ILocalSymbol local && ExactGuidList(local.Type)
+                    && HasOnlyReviewedValueSources(identifier, bound.Model, new(SymbolEqualityComparer.Default), bound, ExactEmptyGuidList)
+                    && !HasCollectionValueReplacement(bound, local));
+            }
+
+            bool StorageGuidElement(IParameterSymbol parameter, BoundValueSource bound) =>
+                IsExactFrameworkType(parameter.Type, "System.Guid", typeof(Guid).Assembly.GetName()) && StorageGuidSequence(bound.Expression, bound.Caller);
+
+            HashSet<(SyntaxTree Tree, int Start, int Length)> hierarchyElementPath = [];
+
+            BoundValueSource[]? HierarchyElements(ExpressionSyntax expression, AuthoredMember owner, Func<ISymbol, AuthoredMember, bool>? storageProof = null)
+            {
+                var identity = (expression.SyntaxTree, expression.SpanStart, expression.Span.Length);
+
+                if (!hierarchyElementPath.Add(identity)) return null;
+
+                try
+                {
+                    // The ids are opaque, and the cursors a selector builds from them are still enumerated (see StorageGuidSequence). Its own
+                    // boundary check stands in for the operator walk below, which would charge the proof for every node of the helper call.
+                    if (StorageGuidSequence(expression, owner)) return [new BoundValueSource(owner, expression)];
+
+                    if (!ContextualOperatorsAreBuiltin(expression, owner)) return null;
+
+                    expression = StripTransparentExpression(expression);
+
+                    ISymbol? symbol = owner.Model.GetSymbolInfo(expression).Symbol;
+
+                    if (symbol is ILocalSymbol or IParameterSymbol)
+                    {
+                        if (!(storageProof?.Invoke(symbol, owner) ?? ClosedBranchListUses(symbol, owner))) return null;
+
+                        List<BoundValueSource> values = [];
+
+                        bool complete = HasOnlyReviewedValueSources(expression, owner.Model, new(SymbolEqualityComparer.Default), owner,
+                            (source, _, _, context) =>
+                            {
+                                if (context is null || HierarchyElements(source, context, storageProof) is not { } elements) return false;
+
+                                values.AddRange(elements);
+
+                                return true;
+                            });
+
+                        return complete ? values.ToArray() : null;
+                    }
+
+                    if (expression is InvocationExpressionSyntax call && owner.Model.GetOperation(call) is IInvocationOperation invoked)
+                    {
+                        if (ExactHierarchySequence(invoked.TargetMethod)
+                            && invoked.Arguments[0].Value.Syntax is ExpressionSyntax sequence
+                            && HierarchyElements(sequence, owner, storageProof) is { } elements)
+                        {
+                            if (invoked.TargetMethod.Name == "ToList") return elements;
+
+                            if (invoked.TargetMethod.Name == "Select") return BoundHierarchySelector(invoked, owner, elements);
+                        }
+
+                        // A returned list does not excuse evaluated inputs, including an
+                        // unused argument whose conversion occurred in a local or helper return.
+                        if (invoked.Arguments.Any(argument => argument.Parameter?.RefKind != RefKind.None
+                                || argument.InConversion.MethodSymbol is not null || argument.OutConversion.MethodSymbol is not null
+                                || !HasReviewedValueConversions(argument.Value, owner))
+                            || ResolveCleanupInvocationTarget(invoked.TargetMethod, owner, call, proof) is not { } target) return null;
+
+                        AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                        ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                        if (returns.Length == 0) return null;
+
+                        List<BoundValueSource> sources = [];
+
+                        foreach (ExpressionSyntax returned in returns)
+                        {
+                            if (HierarchyElements(returned, bound, storageProof) is not { } values) return null;
+
+                            sources.AddRange(values);
+                        }
+
+                        return sources.ToArray();
+                    }
+
+                    // Keep raw elements and their bound context. Cleanup's object identity
+                    // reduction is insufficient evidence for contextual element conversions.
+                    if (expression is CollectionExpressionSyntax collection && IsExactFrameworkCollectionMaterialization(owner, expression)
+                        && collection.Elements.All(static element => element is ExpressionElementSyntax))
+                    {
+                        return collection.Elements.OfType<ExpressionElementSyntax>()
+                            .Select(element => new BoundValueSource(owner, element.Expression)).ToArray();
+                    }
+
+                    return null;
+                }
+                finally { hierarchyElementPath.Remove(identity); }
+            }
+
+            bool HierarchySum(IInvocationOperation call, AuthoredMember owner)
+            {
+                return call.TargetMethod.Name == "Sum" && ExactHierarchySequence(call.TargetMethod)
+                    && call.Arguments[0].Value.Syntax is ExpressionSyntax sequence
+                    && HierarchyElements(sequence, owner) is { Length: > 0 } elements
+                    && BoundHierarchySelector(call, owner, elements) is { Length: > 0 } values
+                    && values.All(value => Expression(value.Expression, value.Caller));
+            }
+
+            BoundValueSource[]? HierarchyReceiverOrigins(ExpressionSyntax expression, AuthoredMember owner, Func<ISymbol, AuthoredMember, bool>? storageProof = null)
+            {
+                List<BoundValueSource> sources = [];
+
+                bool Origin(ExpressionSyntax value, SemanticModel model, HashSet<ISymbol> active, AuthoredMember? caller)
+                {
+                    if (caller is null || proof.RemainingWork-- <= 0) return false;
+
+                    if (!ContextualOperatorsAreBuiltin(value, caller)) return false;
+
+                    value = StripTransparentExpression(value);
+
+                    if (model.GetOperation(value) is IPropertyReferenceOperation { Property.IsIndexer: true } indexed
+                        && ExactList(indexed.Property.ContainingType)
+                        && indexed.Property.Parameters is [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }]
+                        && indexed.Instance?.Syntax is ExpressionSyntax sequence
+                        && indexed.Arguments.All(argument => Review(argument.Value, caller))
+                        && HierarchyElements(sequence, caller, storageProof) is { Length: > 0 } elements)
+                    {
+                        return elements.All(element => Origin(element.Expression, element.Caller.Model, active, element.Caller));
+                    }
+
+                    ISymbol? symbol = model.GetSymbolInfo(value).Symbol;
+
+                    if (symbol is ILocalSymbol or IParameterSymbol && storageProof is not null && !storageProof(symbol, caller)) return false;
+
+                    // Keep raw source and compiler conversion context before cleanup reduces
+                    // receiver identity. This observation lane does not certify storage getters,
+                    // mixed branches, or arbitrary heap aliases by their declared cursor type.
+                    if (symbol is IFieldSymbol or IPropertySymbol
+                        || symbol is ILocalSymbol { RefKind: not RefKind.None }
+                        || symbol is IParameterSymbol { RefKind: not RefKind.None }
+                        || symbol is ILocalSymbol or IParameterSymbol && HasCollectionValueReplacement(caller, symbol)) return false;
+
+                    if (value is BaseObjectCreationExpressionSyntax)
+                    {
+                        sources.Add(new(caller, value));
+
+                        return true;
+                    }
+
+                    if (value is InvocationExpressionSyntax call && symbol is IMethodSymbol method
+                        && ResolveCleanupInvocationTarget(method, caller, call, proof) is { } target && active.Add(method))
+                    {
+                        try
+                        {
+                            if (model.GetOperation(call) is not IInvocationOperation invoked
+                                || invoked.Arguments.Any(argument => argument.Parameter?.RefKind != RefKind.None
+                                    || argument.InConversion.MethodSymbol is not null || argument.OutConversion.MethodSymbol is not null
+                                    || !HasReviewedValueConversions(argument.Value, caller))) return false;
+
+                            AuthoredMember bound = BindCleanupInvocationContext(caller, call, target, proof);
+
+                            ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                            return returns.Length != 0 && returns.All(returned => Origin(returned, bound.Model, active, bound));
+                        }
+                        finally { active.Remove(method); }
+                    }
+
+                    return HasOnlyReviewedValueSources(value, model, active, caller, Origin);
+                }
+
+                return Origin(expression, owner.Model, new(SymbolEqualityComparer.Default), owner) ? sources.ToArray() : null;
+            }
+
+            bool HierarchyGetter(IPropertyReferenceOperation access, AuthoredMember owner)
+            {
+                IPropertySymbol property = access.Property;
+
+                if (property.IsStatic || property.Parameters.Length != 0 || property.SetMethod is not null
+                    || property.Type.SpecialType != SpecialType.System_Int32
+                    || property.ContainingType is not { IsSealed: true, DeclaredAccessibility: Accessibility.Private or Accessibility.Internal }
+                    || property.GetMethod is not { IsVirtual: false } getter
+                    || Resolve(getter, owner.Model.Compilation) is not { } target || !path.Add(property)) return false;
+
+                try
+                {
+                    List<AuthoredMember> getters = [];
+
+                    if (access.Instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance }
+                        && SymbolEqualityComparer.Default.Equals(owner.Symbol.ContainingType, property.ContainingType))
+                    {
+                        getters.Add(BindStableCapturedCleanupContext(owner, (ExpressionSyntax)access.Syntax, target));
+                    }
+                    else
+                    {
+                        if (access.Instance?.Syntax is not ExpressionSyntax receiver) return false;
+
+                        ISymbol? storage = owner.Model.GetSymbolInfo(receiver).Symbol;
+
+                        if (storage is ILocalSymbol or IParameterSymbol && HasCollectionValueReplacement(owner, storage)) return false;
+
+                        BoundValueSource[]? sources = HierarchyReceiverOrigins(receiver, owner);
+
+                        if (sources is not { Length: > 0 }) return false;
+
+                        foreach (BoundValueSource source in sources)
+                        {
+                            if (StripTransparentExpression(source.Expression) is not BaseObjectCreationExpressionSyntax creation
+                                || source.Caller.Model.GetOperation(creation) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } created
+                                || !SameBoundType(constructor.ContainingType, source.Caller.Model.Compilation, property.ContainingType, owner.Model.Compilation)
+                                || !created.Arguments.All(argument => HasReviewedValueConversions(argument.Value, source.Caller))
+                                || ResolveConstructorContextTarget(constructor, source.Caller.Model.Compilation) is not { } constructorTarget) return false;
+
+                            AuthoredMember constructed = BindConstructedReadonlyFieldContext(BindCleanupConstructorArguments(source.Caller, creation, constructorTarget));
+
+                            getters.Add(MergeValueContext(target, constructed));
+                        }
+                    }
+
+                    return getters.All(getterContext => GetterValueLeaves(getterContext) is { Length: > 0 } returns
+                        && returns.All(returned => Expression(returned, getterContext)));
+                }
+                finally { path.Remove(property); }
+            }
+
+            bool HierarchyScalar(IPropertyReferenceOperation access, AuthoredMember owner)
+            {
+                IPropertySymbol property = access.Property;
+
+                if (property.IsStatic || property.IsIndexer || property.Type.SpecialType != SpecialType.System_Int32
+                    || property.ContainingType is not { IsSealed: true, TypeKind: TypeKind.Class, DeclaredAccessibility: Accessibility.Private, ContainingType: { } domainType } carrier
+                    || !SymbolEqualityComparer.Default.Equals(carrier.BaseType, owner.Model.Compilation.GetSpecialType(SpecialType.System_Object))
+                    || property.GetMethod is not { IsVirtual: false, IsStatic: false, IsExtern: false, IsAbstract: false }
+                    || property.SetMethod is not { IsVirtual: false, IsStatic: false, IsExtern: false, IsAbstract: false, IsInitOnly: false, DeclaredAccessibility: Accessibility.Private }
+                    || property.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                    || declaration.GetSyntax() is not PropertyDeclarationSyntax { AccessorList.Accessors: var accessors } syntax
+                    || accessors.Count != 2 || accessors.Any(static accessor => accessor.Body is not null
+                        || accessor.ExpressionBody is not null || accessor.SemicolonToken.RawKind == 0)
+                    || !accessors.Any(static accessor => accessor.IsKind(SyntaxKind.GetAccessorDeclaration))
+                    || !accessors.Any(static accessor => accessor.IsKind(SyntaxKind.SetAccessorDeclaration))
+                    || !IsAuthoredCleanupSymbol(property, owner.Model.Compilation)
+                    || access.Instance?.Syntax is not ExpressionSyntax receiver
+                    || !path.Add(property)) return false;
+
+                try
+                {
+                    for (INamedTypeSymbol? type = carrier; type is not null; type = type.ContainingType)
+                    {
+                        if (proof.RemainingWork-- <= 0 || type.Arity != 0) return false;
+                    }
+
+                    bool Same(ISymbol? symbol) => SymbolEqualityComparer.Default.Equals(symbol, property);
+
+                    bool SameCarrier(ITypeSymbol? type) => SymbolEqualityComparer.Default.Equals(type, carrier);
+
+                    bool Carries(ITypeSymbol? type) => SameCarrier(type) || type is IArrayTypeSymbol array && Carries(array.ElementType)
+                        || type is INamedTypeSymbol named && named.TypeArguments.Any(Carries);
+
+                    HashSet<ISymbol> usePath = new(SymbolEqualityComparer.Default);
+
+                    bool ClosedUses(ISymbol storage, AuthoredMember context, bool sequence)
+                    {
+                        if (storage is not ILocalSymbol { RefKind: RefKind.None } and not IParameterSymbol { RefKind: RefKind.None }
+                            || HasCollectionValueReplacement(context, storage) || !usePath.Add(storage)) return false;
+
+                        try
+                        {
+                            foreach (IdentifierNameSyntax reference in context.Model.SyntaxTree.GetRoot().DescendantNodes().OfType<IdentifierNameSyntax>()
+                                .Where(reference => SymbolEqualityComparer.Default.Equals(context.Model.GetSymbolInfo(reference).Symbol, storage)))
+                            {
+                                // ClosedUse charges this reference operation once, including
+                                // any nested result-use checks; do not charge it a second time here.
+                                if (!SymbolEqualityComparer.Default.Equals(context.Model.GetEnclosingSymbol(reference.SpanStart)?.OriginalDefinition, storage.ContainingSymbol.OriginalDefinition)
+                                    || context.Model.GetOperation(reference) is not { } use || !ClosedUse(use, context, sequence)) return false;
+                            }
+
+                            return true;
+                        }
+                        finally { usePath.Remove(storage); }
+                    }
+
+                    bool ClosedUse(IOperation use, AuthoredMember context, bool sequence)
+                    {
+                        if (proof.RemainingWork-- <= 0) return false;
+
+                        while (use.Parent is IParenthesizedOperation || use.Parent is IConversionOperation { OperatorMethod: null } conversion
+                            && (conversion.Conversion.IsIdentity || sequence && conversion.Conversion.IsReference
+                                && use.Type is INamedTypeSymbol { TypeArguments: [ITypeSymbol element] } list && ExactList(list)
+                                && conversion.Type is INamedTypeSymbol { TypeArguments: [ITypeSymbol selectedElement] } enumerable
+                                && SymbolEqualityComparer.Default.Equals(element, selectedElement)
+                                && IsExactFrameworkType(enumerable, "System.Collections.Generic.IEnumerable`1", typeof(List<>).Assembly.GetName())
+                                && conversion.Parent is IArgumentOperation { Parameter.Ordinal: 0, Parameter.RefKind: RefKind.None, Parent: IInvocationOperation sequenceArgument }
+                                && ExactHierarchySequence(sequenceArgument.TargetMethod))) use = use.Parent;
+
+                        if (use.Parent is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation variable })
+                            return ClosedUses(variable.Symbol, context, sequence);
+
+                        if (!sequence)
+                        {
+                            if (use.Parent is IPropertyReferenceOperation selected && selected.Instance == use
+                                && SameCarrier(selected.Property.ContainingType) && !selected.Property.IsIndexer
+                                && selected.Parent is not IAssignmentOperation and not IIncrementOrDecrementOperation
+                                && selected.Property.Type.SpecialType == SpecialType.System_Int32) return true;
+
+                            return use.Parent is IInvocationOperation invoked && invoked.Instance == use
+                                && SameCarrier(invoked.TargetMethod.ContainingType) && !invoked.TargetMethod.IsStatic
+                                && !Carries(invoked.TargetMethod.ReturnType)
+                                && IsAuthoredCleanupSymbol(invoked.TargetMethod, context.Model.Compilation);
+                        }
+
+                        if (use.Parent is IPropertyReferenceOperation listProperty && listProperty.Instance == use && ExactList(listProperty.Property.ContainingType))
+                        {
+                            if (listProperty.Property is { Name: "Count", IsStatic: false, Parameters.Length: 0, Type.SpecialType: SpecialType.System_Int32 }) return true;
+
+                            return listProperty.Property is { IsIndexer: true, IsStatic: false, Parameters: [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }] }
+                                && listProperty.Arguments.All(argument => argument.InConversion.MethodSymbol is null && argument.OutConversion.MethodSymbol is null && Review(argument.Value, context))
+                                && ClosedUse(listProperty, context, false);
+                        }
+
+                        if (use.Parent is IInvocationOperation removal && removal.Instance == use
+                            && removal.TargetMethod is { Name: "RemoveAt", IsStatic: false, Arity: 0, ReturnsVoid: true }
+                            && ExactList(removal.TargetMethod.ContainingType) && HasExactParameterTypes(removal.TargetMethod, "System.Int32"))
+                            return removal.Arguments.All(argument => argument.InConversion.MethodSymbol is null && argument.OutConversion.MethodSymbol is null && Review(argument.Value, context));
+
+                        if (use.Parent is IArgumentOperation { Parameter.Ordinal: 0, Parameter.RefKind: RefKind.None, Parent: IInvocationOperation sequenceCall }
+                            && ExactHierarchySequence(sequenceCall.TargetMethod) && sequenceCall.TargetMethod.Name == "Sum"
+                            && sequenceCall.Arguments is [_, { Value.Syntax: ExpressionSyntax selector }]
+                            && HasCompleteEagerCallableOrigin(selector, context.Model, new(SymbolEqualityComparer.Default), context)
+                            && ResolveCallable(selector, context.Model, context.CallableBindings, context.AbsentCallables) is { Symbol.IsAsync: false, Symbol.Parameters: [IParameterSymbol { RefKind: RefKind.None } parameter] } target)
+                            return ClosedUses(parameter, target, false);
+
+                        return false;
+                    }
+
+                    bool ScalarStorageUses(ISymbol storage, AuthoredMember context)
+                    {
+                        ITypeSymbol? type = storage switch { ILocalSymbol local => local.Type, IParameterSymbol parameter => parameter.Type, _ => null };
+
+                        return Carries(type) ? ClosedUses(storage, context, !SameCarrier(type)) : ClosedBranchListUses(storage, context);
+                    }
+
+                    // The strict use predicate travels through every already-authenticated raw
+                    // receiver/element source. A separate origin traversal would repeat that proof.
+                    BoundValueSource[]? receivers = HierarchyReceiverOrigins(receiver, owner, ScalarStorageUses);
+
+                    if (receivers is not { Length: > 0 }) return false;
+
+                    List<AuthoredMember> constructions = [];
+
+                    foreach (BoundValueSource source in receivers)
+                    {
+                        if (StripTransparentExpression(source.Expression) is not BaseObjectCreationExpressionSyntax creation
+                            || source.Caller.Model.GetOperation(creation) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } created
+                            || !SameCarrier(constructor.ContainingType)
+                            || !created.Arguments.All(argument => HasReviewedValueConversions(argument.Value, source.Caller))
+                            || ResolveConstructorContextTarget(constructor, source.Caller.Model.Compilation) is not { } target) return false;
+
+                        constructions.Add(BindConstructedReadonlyFieldContext(BindCleanupConstructorArguments(source.Caller, creation, target)));
+                    }
+
+                    // Source-domain enumeration follows the private mutable-property precedent,
+                    // but retains raw contextual RHS operations and never treats a cycle as proof.
+                    List<(SyntaxNode Domain, SemanticModel Model)> domains = [];
+
+                    foreach (SyntaxReference reference in domainType.DeclaringSyntaxReferences)
+                    {
+                        if (reference.GetSyntax() is not TypeDeclarationSyntax domain
+                            || !semanticModels.TryGetValue(domain.SyntaxTree, out SemanticModel? model)
+                            || !ReferenceEquals(model.Compilation, owner.Model.Compilation)) return false;
+
+                        domains.Add((domain, model));
+                    }
+
+                    if (domains.Count == 0) return false;
+
+                    bool CurrentProperty(IOperation operation) => operation is IPropertyReferenceOperation selected && Same(selected.Property)
+                        && selected.Instance is IInstanceReferenceOperation { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance };
+
+                    foreach ((SyntaxNode domain, SemanticModel model) in domains)
+                    {
+                        foreach (TypeDeclarationSyntax type in domain.DescendantNodesAndSelf().OfType<TypeDeclarationSyntax>()
+                            .Where(type => SameCarrier(model.GetDeclaredSymbol(type))))
+                        {
+                            if (type.Members.OfType<BaseMethodDeclarationSyntax>().Any(static method => method.Modifiers.Any(SyntaxKind.ExternKeyword))) return false;
+
+                            // As in FrameCardinality, enumerate the complete syntax domain but
+                            // spend proof work on relevant instance uses, not unrelated SQL nodes.
+                            // This includes accessors and nested captures as well as method bodies.
+                            foreach (ExpressionSyntax expression in type.DescendantNodes().OfType<ExpressionSyntax>()
+                                .Where(expression => SameCarrier(model.GetEnclosingSymbol(expression.SpanStart)?.ContainingType)))
+                            {
+                                IOperation? selectedOperation = model.GetOperation(expression);
+
+                                bool memberName = expression.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == expression
+                                    || expression.Parent is InvocationExpressionSyntax call && call.Expression == expression;
+
+                                if (selectedOperation is null && !memberName
+                                    && (expression is ThisExpressionSyntax || model.GetSymbolInfo(expression).Symbol is { IsStatic: false } unresolved
+                                        && SameCarrier(unresolved.ContainingType))) return false;
+
+                                IInstanceReferenceOperation? instance = selectedOperation switch
+                                {
+                                    IInstanceReferenceOperation current => current,
+                                    IFieldReferenceOperation { Instance: IInstanceReferenceOperation current } => current,
+                                    IPropertyReferenceOperation { Instance: IInstanceReferenceOperation current } => current,
+                                    IInvocationOperation { Instance: IInstanceReferenceOperation current } => current,
+                                    IMethodReferenceOperation { Instance: IInstanceReferenceOperation current } => current,
+                                    _ => null,
+                                };
+
+                                if (instance is not { ReferenceKind: InstanceReferenceKind.ContainingTypeInstance } || !SameCarrier(instance.Type)) continue;
+
+                                if (proof.RemainingWork-- <= 0 || !(instance.Parent is IFieldReferenceOperation field && SameCarrier(field.Field.ContainingType)
+                                    || instance.Parent is IPropertyReferenceOperation selected && SameCarrier(selected.Property.ContainingType)
+                                    || instance.Parent is IInvocationOperation invoked && invoked.Instance == instance
+                                        && SameCarrier(invoked.TargetMethod.ContainingType) && IsAuthoredCleanupSymbol(invoked.TargetMethod, model.Compilation))) return false;
+
+                                for (IOperation? parent = instance.Parent; parent is not null; parent = parent.Parent)
+                                    if (parent is IAnonymousFunctionOperation or ILocalFunctionOperation) return false;
+                            }
+                        }
+
+                        foreach (AssignmentExpressionSyntax assignment in domain.DescendantNodesAndSelf().OfType<AssignmentExpressionSyntax>())
+                        {
+                            if (!assignment.Left.DescendantNodesAndSelf().OfType<ExpressionSyntax>().Any(left => Same(model.GetSymbolInfo(left).Symbol))) continue;
+
+                            if (!assignment.IsKind(SyntaxKind.SimpleAssignmentExpression) || !Same(model.GetSymbolInfo(assignment.Left).Symbol)
+                                || model.GetOperation(assignment.Left) is not { } left || !CurrentProperty(left)
+                                || model.GetEnclosingSymbol(assignment.SpanStart) is not IMethodSymbol writer
+                                || !SameCarrier(writer.ContainingType) || Resolve(writer, model.Compilation) is not { } target) return false;
+
+                            foreach (AuthoredMember constructed in constructions)
+                            {
+                                AuthoredMember context = MergeValueContext(ValueExpressionContext(target, assignment.Right, model), constructed);
+
+                                if (model.GetOperation(assignment.Right) is IInvocationOperation max
+                                    && max.TargetMethod.Name == "Max" && max.TargetMethod.IsStatic
+                                    && max.TargetMethod.ReturnType.SpecialType == SpecialType.System_Int32
+                                    && HasExactParameterTypes(max.TargetMethod, "System.Int32", "System.Int32")
+                                    && IsExactFrameworkType(max.TargetMethod.ContainingType, "System.Math", typeof(Math).Assembly.GetName())
+                                    && max.Arguments is [IArgumentOperation self, IArgumentOperation other] && CurrentProperty(self.Value)
+                                    && self.InConversion.IsIdentity && self.OutConversion.IsIdentity
+                                    && other.InConversion.MethodSymbol is null && other.OutConversion.MethodSymbol is null)
+                                {
+                                    if (!Review(other.Value, context)) return false;
+                                }
+                                else if (!Expression(assignment.Right, context)) return false;
+                            }
+                        }
+
+                        if (domain.DescendantNodesAndSelf().Any(node => node switch
+                            {
+                                PrefixUnaryExpressionSyntax prefix when prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression) => Same(model.GetSymbolInfo(prefix.Operand).Symbol),
+                                PostfixUnaryExpressionSyntax postfix when postfix.IsKind(SyntaxKind.PostIncrementExpression) || postfix.IsKind(SyntaxKind.PostDecrementExpression) => Same(model.GetSymbolInfo(postfix.Operand).Symbol),
+                                _ => false,
+                            })) return false;
+                    }
+
+                    return syntax.Initializer is null || constructions.All(constructed =>
+                        Expression(syntax.Initializer.Value, constructed with { Model = owner.Model.Compilation.GetSemanticModel(syntax.SyntaxTree) }));
+                }
+                finally { path.Remove(property); }
+            }
+
+            bool Expression(ExpressionSyntax expression, AuthoredMember owner)
+            {
+                IOperation? operation = owner.Model.GetOperation(expression);
+
+                // Syntax-only initializer/return sources omit their compiler-inserted conversion.
+                // Retain its contextual operation instead of trusting the final primitive type.
+                while (operation?.Parent is IConversionOperation conversion)
+                {
+                    operation = conversion;
+                }
+
+                return operation is not null && Review(operation, owner);
+            }
+
+            bool Review(IOperation operation, AuthoredMember owner)
+            {
+                if (proof.RemainingWork-- <= 0)
+                {
+                    return false;
+                }
+
+                if (operation is IConversionOperation { OperatorMethod: { } conversion }
+                    && !(conversion.Name == "op_Implicit"
+                        && conversion.IsStatic
+                        && IsExactFloatCarrier(conversion.ReturnType, "System.ReadOnlySpan`1")
+                        && (IsExactFloatCarrier(conversion.ContainingType, "System.ReadOnlySpan`1")
+                            || IsExactFloatCarrier(conversion.ContainingType, "System.Span`1"))
+                        && conversion.Parameters is [{ RefKind: RefKind.None, Type: { } source }]
+                        && (source is IArrayTypeSymbol { Rank: 1, ElementType.SpecialType: SpecialType.System_Single }
+                            || IsExactFloatCarrier(source, "System.Span`1"))))
+                {
+                    return false;
+                }
+
+                // These exact intrinsic profiles do not prove authored or unknown
+                // operator bodies. Keep their consuming boundary refused instead.
+                if (operation is IUnaryOperation { OperatorMethod: not null }
+                    or IBinaryOperation { OperatorMethod: not null }) return false;
+
+                if (operation.ConstantValue.HasValue || operation is IDefaultValueOperation)
+                {
+                    return true;
+                }
+
+                if (operation is ILocalReferenceOperation localReference)
+                {
+                    ILocalSymbol local = localReference.Local;
+
+                    if (Carrier(local.Type) && !ClosedCarrierUses(local, owner)) return false;
+
+                    if (!path.Add(local)) return false;
+
+                    try
+                    {
+                        if (local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
+                            || declaration.GetSyntax() is not VariableDeclaratorSyntax variable)
+                        {
+                            return false;
+                        }
+
+                        if (AnalysedModel(variable) is not { } model)
+                        {
+                            return false;
+                        }
+
+                        SyntaxNode root = variable.SyntaxTree.GetRoot();
+
+                        bool Refers(ExpressionSyntax expression) => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(expression).Symbol, local);
+
+                        if (root.DescendantNodes().Any(node => node switch
+                            {
+                                ArgumentSyntax argument when argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword => Refers(argument.Expression),
+                                RefExpressionSyntax reference => SyntaxReferencesSymbol(model, reference.Expression, local),
+                                PrefixUnaryExpressionSyntax address when address.IsKind(SyntaxKind.AddressOfExpression) => SyntaxReferencesSymbol(model, address.Operand, local),
+                                _ => false,
+                            })) return false;
+
+                        AssignmentExpressionSyntax[] assignments = root.DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                            .Where(assignment => Refers(assignment.Left)).ToArray();
+
+                        AssignmentExpressionSyntax[] initialWrites = assignments.Where(static assignment =>
+                            assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)).ToArray();
+
+                        if (initialWrites.Length + (variable.Initializer is null ? 0 : 1) != 1) return false;
+
+                        AuthoredMember sourceOwner = owner with { Model = model };
+
+                        foreach (AssignmentExpressionSyntax update in assignments.Except(initialWrites))
+                        {
+                            // Norm's counted loop uses only int32 addition. This proves the
+                            // absence of hidden conversions, not arbitrary mutable local purity.
+                            if (model.GetOperation(update) is not ICompoundAssignmentOperation
+                                {
+                                    OperatorKind: BinaryOperatorKind.Add,
+                                    OperatorMethod: null,
+                                    Type.SpecialType: SpecialType.System_Int32,
+                                    Target.Type.SpecialType: SpecialType.System_Int32,
+                                    Value.Type.SpecialType: SpecialType.System_Int32,
+                                    InConversion.IsIdentity: true,
+                                    InConversion.MethodSymbol: null,
+                                    OutConversion.IsIdentity: true,
+                                    OutConversion.MethodSymbol: null,
+                                } compound
+                                || !Review(compound.Value, sourceOwner)) return false;
+                        }
+
+                        IEnumerable<ExpressionSyntax> changes = root.DescendantNodes().OfType<ExpressionSyntax>().Where(change =>
+                            change is PostfixUnaryExpressionSyntax postfix && Refers(postfix.Operand)
+                                && (postfix.IsKind(SyntaxKind.PostIncrementExpression) || postfix.IsKind(SyntaxKind.PostDecrementExpression))
+                            || change is PrefixUnaryExpressionSyntax prefix && Refers(prefix.Operand)
+                                && (prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression)));
+
+                        if (changes.Any(change => model.GetOperation(change) is not IIncrementOrDecrementOperation
+                            {
+                                OperatorMethod: null,
+                                Type.SpecialType: SpecialType.System_Int32,
+                                Target.Type.SpecialType: SpecialType.System_Int32,
+                            })) return false;
+
+                        ExpressionSyntax localSource = variable.Initializer?.Value ?? initialWrites[0].Right;
+
+                        return Expression(localSource, sourceOwner);
+                    }
+                    finally
+                    {
+                        path.Remove(local);
+                    }
+                }
+
+                if (operation is IParameterReferenceOperation parameter)
+                {
+                    if (parameter.Parameter.RefKind != RefKind.None
+                        || Carrier(parameter.Parameter.Type) && !ClosedCarrierUses(parameter.Parameter, owner)
+                        || HasCollectionValueReplacement(owner, parameter.Parameter)
+                        || !path.Add(parameter.Parameter)) return false;
+
+                    try
+                    {
+                        return owner.ValueBindings?.TryGetValue(parameter.Parameter, out BoundValueSource? bound) == true
+                            && bound is not null && (StorageGuidElement(parameter.Parameter, bound) || Expression(bound.Expression, bound.Caller));
+                    }
+                    finally
+                    {
+                        path.Remove(parameter.Parameter);
+                    }
+                }
+
+                if (operation is IInvocationOperation invocation && invocation.Syntax is InvocationExpressionSyntax call)
+                {
+                    if (hierarchyObservation && HierarchySum(invocation, owner)) return true;
+
+                    if (!invocation.ChildOperations.All(child => Review(child, owner))) return false;
+
+                    if (ResolveCleanupInvocationTarget(invocation.TargetMethod, owner, call, proof) is { } target)
+                    {
+                        if (!path.Add(invocation.TargetMethod)) return false;
+
+                        try
+                        {
+                            AuthoredMember bound = BindCleanupInvocationContext(owner, call, target, proof);
+
+                            ExpressionSyntax[] returns = ReturnedExpressions(bound.Syntax);
+
+                            return returns.Length != 0 && returns.All(expression => Expression(expression, bound));
+                        }
+                        finally
+                        {
+                            path.Remove(invocation.TargetMethod);
+                        }
+                    }
+
+                    return FrameworkAssemblyIdentityMatches(invocation.TargetMethod.ContainingAssembly.Identity, typeof(object).Assembly.GetName())
+                        && ReviewedIntrinsicExternalTypes.Contains(TypeKey(invocation.TargetMethod.ContainingType));
+                }
+
+                if (operation is IFieldReferenceOperation or IPropertyReferenceOperation)
+                {
+                    ISymbol symbol = operation is IFieldReferenceOperation field ? field.Field : ((IPropertyReferenceOperation)operation).Property;
+
+                    // Only the owned Histogram consumption may compose the bounded hierarchy
+                    // cardinality/getter certificate. Numeric/queue/general cleanup rules stay strict.
+                    if (hierarchyObservation && operation is IPropertyReferenceOperation hierarchyProperty
+                        && (FrameCardinality(hierarchyProperty, owner) || HierarchyGetter(hierarchyProperty, owner) || HierarchyScalar(hierarchyProperty, owner))) return true;
+
+                    // Count uses the already-closed exact default queue certificate. Its
+                    // receiver/helper/getter evaluations still traverse as ordinary authored work.
+                    if (symbol is IPropertySymbol { Name: "Count", Type.SpecialType: SpecialType.System_Int32 } count
+                        && IsReviewedPrimitiveQueueProperty(count, mutation: false, operation.Syntax, owner)) return true;
+
+                    // Mutable carrier storage behind a field/property has no closed local
+                    // use proof here. Do not infer its contents from its declared type.
+                    if (Carrier(operation.Type)) return false;
+
+                    if (FrameworkAssemblyIdentityMatches(symbol.ContainingAssembly.Identity, typeof(object).Assembly.GetName())
+                            && ReviewedIntrinsicExternalTypes.Contains(TypeKey(symbol.ContainingType))
+                        || symbol is IPropertySymbol property && IsReviewedFloatVectorProperty(property))
+                    {
+                        return operation.ChildOperations.All(child => Review(child, owner));
+                    }
+
+                    if (operation.Syntax is not ExpressionSyntax expression || !path.Add(symbol)) return false;
+
+                    try
+                    {
+                        CleanupValueFlow flow = CleanupValueFlowOf(owner, expression, proof);
+
+                        return flow.Complete && flow.Values.Count != 0 && flow.Values.All(source =>
+                            source.Expression != expression && Expression(source.Expression, source.Caller));
+                    }
+                    finally
+                    {
+                        path.Remove(symbol);
+                    }
+                }
+
+                return operation.ChildOperations.All(child => Review(child, owner));
+            }
+
+            return Review(value, member);
         }
 
         private static bool IsReviewedRuntimeCleanup(IMethodSymbol method)
@@ -23792,6 +28392,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return true;
             }
 
+            // Authored Enumerables Absent: no authored type implements the read-only list contract, so a value of that
+            // interface is a framework list and its indexer a framework member, whatever produced the value.
+            if (type == "System.Collections.Generic.IReadOnlyList`1"
+                && AuthoredEnumerablesAbsentByUse
+                && IsPremiseCoveredEnumerationInterface(property.ContainingType))
+            {
+                return true;
+            }
+
             return HasReviewedFrameworkCollectionIndexerReceiver(
                 access.Expression,
                 model,
@@ -24024,6 +28633,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             ITypeSymbol? expressionType = model.GetTypeInfo(expression).Type;
 
+            if (HasReviewedPrimitiveQueueItems(expression, model, context)) return true;
+
             if (expressionType is IArrayTypeSymbol
                 || expressionType is not null
                     && ReviewedInMemoryEnumerableTypes.Contains(
@@ -24038,6 +28649,7 @@ internal static partial class HostedGrimoireProducerInventory
                 string callee = Normalize(method);
 
                 if (Vocabulary.ContainsKey(callee)
+                    || IsExactIntegerRange(method)
                     || Resolve(method, model.Compilation) is not null
                     || callee is
                         "System.Text.Json.JsonElement.EnumerateArray"
@@ -24161,7 +28773,14 @@ internal static partial class HostedGrimoireProducerInventory
                                 model.GetSymbolInfo(argument.Expression).Symbol,
                                 local));
 
+                    // A tuple deconstruction reassigns each local it names, but its left side is a tuple, not the
+                    // local, so the assignments above never see it.
+                    bool deconstructed = root.DescendantNodes()
+                        .OfType<AssignmentExpressionSyntax>()
+                        .Any(assignment => DeconstructsInto(assignment, model, local));
+
                     if (mutatedByReference
+                        || deconstructed
                         || assignments.Any(static assignment =>
                             !assignment.IsKind(
                                 SyntaxKind.SimpleAssignmentExpression)))
@@ -24175,12 +28794,14 @@ internal static partial class HostedGrimoireProducerInventory
                         .ToArray();
                 }
 
+                // A source in a tree the analysis does not hold (generated code) cannot be followed, so the value is not proved.
                 return sources.Length != 0
-                    && sources.All(source => review(
-                        source,
-                        semanticModels[source.SyntaxTree],
-                        path,
-                        context));
+                    && sources.All(source => semanticModels.TryGetValue(source.SyntaxTree, out SemanticModel? sourceModel)
+                        && review(
+                            source,
+                            sourceModel,
+                            path,
+                            context));
             }
             finally
             {
@@ -24193,10 +28814,17 @@ internal static partial class HostedGrimoireProducerInventory
                 .SelectMany(static reference => reference.GetSyntax()
                     .DescendantNodes()
                     .OfType<AssignmentExpressionSyntax>())
-                .Any(assignment => SymbolEqualityComparer.Default.Equals(
-                    semanticModels[assignment.SyntaxTree]
-                        .GetSymbolInfo(assignment.Left).Symbol,
-                    storage)) == true;
+                .Any(assignment => semanticModels.TryGetValue(assignment.SyntaxTree, out SemanticModel? assignmentModel)
+                    && (SymbolEqualityComparer.Default.Equals(
+                            assignmentModel.GetSymbolInfo(assignment.Left).Symbol,
+                            storage)
+                        || DeconstructsInto(assignment, assignmentModel, storage))) == true;
+
+        // True when the assignment is a tuple deconstruction that names the storage among its targets.
+        private static bool DeconstructsInto(AssignmentExpressionSyntax assignment, SemanticModel model, ISymbol storage) =>
+            assignment.Left is TupleExpressionSyntax tuple
+            && tuple.DescendantNodes().OfType<IdentifierNameSyntax>().Any(name =>
+                SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, storage));
 
         private static ExpressionSyntax StripTransparentExpression(
             ExpressionSyntax expression) => expression switch
@@ -24363,9 +28991,10 @@ internal static partial class HostedGrimoireProducerInventory
                         };
 
                         if (initializer is not null
+                            && AnalysedModel(initializer) is { } initializerModel
                             && IsReviewedPureComparerExpression(
                                 initializer,
-                                semanticModels[initializer.SyntaxTree],
+                                initializerModel,
                                 path))
                         {
                             return true;
@@ -24411,6 +29040,57 @@ internal static partial class HostedGrimoireProducerInventory
                     or "System.Collections.Generic.IComparer`1"
                     or "System.Collections.Generic.IEqualityComparer`1";
 
+        // Pinned M.E.AI 10.8.1 EmbeddingGenerationOptions.Dimensions is a nonvirtual nullable-int
+        // storage getter; its nonvirtual setter validates null or values >= 1 before storing. Keep it
+        // separate from the storage-only inventory so no other validating setter is implied.
+        private static bool IsReviewedExactMeAiDimensionsProperty(
+            IPropertySymbol property,
+            bool mutation)
+        {
+            if (Normalize(property) != "Microsoft.Extensions.AI.EmbeddingGenerationOptions.Dimensions"
+                || property.IsStatic
+                || property.IsIndexer
+                || !property.Parameters.IsEmpty
+                || property.ExplicitInterfaceImplementations.Length != 0
+                || !IsExactFrameworkType(
+                    property.ContainingType,
+                    "Microsoft.Extensions.AI.EmbeddingGenerationOptions",
+                    typeof(Microsoft.Extensions.AI.EmbeddingGenerationOptions).Assembly.GetName())
+                || !IsExactFrameworkType(property.Type, "System.Nullable`1", typeof(int?).Assembly.GetName())
+                || property.Type is not INamedTypeSymbol
+                { TypeArguments: [{ SpecialType: SpecialType.System_Int32 }] })
+            {
+                return false;
+            }
+
+            IMethodSymbol? accessor = mutation ? property.SetMethod : property.GetMethod;
+
+            if (accessor is null
+                || accessor.IsStatic
+                || accessor.IsAbstract
+                || accessor.IsVirtual
+                || accessor.IsOverride)
+            {
+                return false;
+            }
+
+            bool exactGetter = !mutation
+                && accessor.MethodKind == MethodKind.PropertyGet
+                && accessor.Parameters.IsEmpty
+                && SymbolEqualityComparer.Default.Equals(accessor.ReturnType, property.Type);
+
+            bool exactSetter = mutation
+                && accessor.MethodKind == MethodKind.PropertySet
+                && accessor.ReturnType.SpecialType == SpecialType.System_Void
+                && accessor.Parameters is [{ RefKind: RefKind.None } parameter]
+                && SymbolEqualityComparer.Default.Equals(parameter.Type, property.Type);
+
+            // Setter behavior is the pinned null-or->=1 validation followed by storage. Its receiver
+            // and input expressions remain subject to the ordinary authored traversal.
+            return (exactGetter || exactSetter)
+                && HasReviewedExactExternalIdentity(property);
+        }
+
         private static bool IsReviewedExactStoredExternalProperty(
             IPropertySymbol property,
             bool mutation)
@@ -24423,7 +29103,8 @@ internal static partial class HostedGrimoireProducerInventory
                 && !accessor.IsAbstract
                 && !accessor.IsVirtual
                 && !accessor.IsOverride
-                && ReviewedExactStoredExternalProperties.Contains(Normalize(property))
+                && (ReviewedExactStoredExternalProperties.Contains(Normalize(property))
+                    || !mutation && ReviewedExactReadOnlyStoredExternalProperties.Contains(Normalize(property)))
                 && HasReviewedExactExternalIdentity(property);
         }
 
@@ -24466,8 +29147,10 @@ internal static partial class HostedGrimoireProducerInventory
             IPropertySymbol property,
             bool mutation) =>
             ReviewedIntrinsicExternalTypes.Contains(TypeKey(property.ContainingType))
+            || !mutation && IsReviewedFloatVectorProperty(property)
+            || IsReviewedExactGeneratedEmbeddingRead(property, mutation)
             || IsReviewedExactStoredExternalProperty(property, mutation)
-            || IsReviewedDatabaseSupportMember(property, mutation)
+            || !mutation && IsReviewedProviderNeutralOptionsBuilderMember(property)
             || ReviewedNonProducerExternalMembers.Contains(
                 Normalize(property) + (mutation ? " setter" : string.Empty));
 
@@ -24722,12 +29405,14 @@ internal static partial class HostedGrimoireProducerInventory
                         },
                         ])
                     {
-                        return ResolveContextualCallable(
-                            initializer,
-                            semanticModels[initializer.SyntaxTree],
-                            callableBindings,
-                            absentCallables,
-                            path);
+                        return AnalysedModel(initializer) is { } initializerModel
+                            ? ResolveContextualCallable(
+                                initializer,
+                                initializerModel,
+                                callableBindings,
+                                absentCallables,
+                                path)
+                            : default;
                     }
                 }
                 finally
@@ -24839,6 +29524,12 @@ internal static partial class HostedGrimoireProducerInventory
                     return default;
                 }
 
+                // The same reason: a callable declared in a tree the analysis does not read is written there, unseen.
+                if (symbol.DeclaringSyntaxReferences.Any(reference => AnalysedModel(reference.GetSyntax()) is null))
+                {
+                    return default;
+                }
+
                 if (symbol is IEventSymbol eventSymbol)
                 {
                     return HasAuthoredCallableMutation(eventSymbol) ? default : new(true, null, true, false);
@@ -24853,15 +29544,24 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     SyntaxNode? declaration = local.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax();
 
-                    if (declaration is VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable
-                        && !variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => SymbolEqualityComparer.Default.Equals(semanticModels[assignment.SyntaxTree].GetSymbolInfo(assignment.Left).Symbol, local)))
+                    if (declaration is VariableDeclaratorSyntax { Initializer.Value: { } initializer } variable)
                     {
-                        return ResolveClosedCallable(initializer, semanticModels[initializer.SyntaxTree], path);
+                        if (AnalysedModel(variable) is not { } variableModel)
+                        {
+                            return default;
+                        }
+
+                        if (!variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Any(assignment => SymbolEqualityComparer.Default.Equals(variableModel.GetSymbolInfo(assignment.Left).Symbol, local)))
+                        {
+                            return ResolveClosedCallable(initializer, variableModel, path);
+                        }
                     }
 
                     if (declaration?.AncestorsAndSelf().OfType<IsPatternExpressionSyntax>().FirstOrDefault() is { } pattern)
                     {
-                        return ResolveClosedCallable(pattern.Expression, semanticModels[pattern.SyntaxTree], path);
+                        return AnalysedModel(pattern) is { } patternModel
+                            ? ResolveClosedCallable(pattern.Expression, patternModel, path)
+                            : default;
                     }
 
                     return default;
@@ -24909,7 +29609,12 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (reference.GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } initializer })
                     {
-                        values.Add(ResolveClosedCallable(initializer, semanticModels[initializer.SyntaxTree], path));
+                        if (AnalysedModel(initializer) is not { } initializerModel)
+                        {
+                            return default;
+                        }
+
+                        values.Add(ResolveClosedCallable(initializer, initializerModel, path));
                     }
                 }
 
@@ -25040,46 +29745,40 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (method.MethodKind == MethodKind.Constructor)
             {
-                foreach ((BaseObjectCreationExpressionSyntax creation, SemanticModel model) in objectCreations)
+                foreach ((BaseObjectCreationExpressionSyntax creation, SemanticModel model) in CreationsOf(method))
                 {
-                    if (model.GetSymbolInfo(creation).Symbol is IMethodSymbol target && Identity(target) == Identity(method))
+                    ClosedCallableValue value = ResolveArgument(
+                        parameter,
+                        creation.ArgumentList?.Arguments ?? default,
+                        model,
+                        path);
+
+                    values.Add(value);
+
+                    AuthoredMember? owner = AuthoredMembers
+                        .Where(member => member.Syntax.SyntaxTree == creation.SyntaxTree
+                            && member.Syntax.Span.Contains(creation.Span))
+                        .OrderBy(member => member.Syntax.Span.Length)
+                        .FirstOrDefault();
+
+                    if (owner is not null)
                     {
-                        ClosedCallableValue value = ResolveArgument(
-                            parameter,
-                            creation.ArgumentList?.Arguments ?? default,
-                            model,
-                            path);
+                        GraphMemberIdentity identity = MemberIdentity(owner);
 
-                        values.Add(value);
-
-                        AuthoredMember? owner = AuthoredMembers
-                            .Where(member => member.Syntax.SyntaxTree == creation.SyntaxTree
-                                && member.Syntax.Span.Contains(creation.Span))
-                            .OrderBy(member => member.Syntax.Span.Length)
-                            .FirstOrDefault();
-
-                        if (owner is not null)
+                        if (!constructionValues.TryGetValue(
+                                identity,
+                                out List<ClosedCallableValue>? ownedValues))
                         {
-                            GraphMemberIdentity identity = MemberIdentity(owner);
-
-                            if (!constructionValues.TryGetValue(
-                                    identity,
-                                    out List<ClosedCallableValue>? ownedValues))
-                            {
-                                constructionValues.Add(identity, ownedValues = []);
-                            }
-
-                            ownedValues.Add(value);
+                            constructionValues.Add(identity, ownedValues = []);
                         }
+
+                        ownedValues.Add(value);
                     }
                 }
 
-                foreach ((ConstructorInitializerSyntax initializer, SemanticModel model) in constructorInitializers)
+                foreach ((ConstructorInitializerSyntax initializer, SemanticModel model) in InitializersOf(method))
                 {
-                    if (model.GetSymbolInfo(initializer).Symbol is IMethodSymbol target && Identity(target) == Identity(method))
-                    {
-                        values.Add(ResolveArgument(parameter, initializer.ArgumentList.Arguments, model, path));
-                    }
+                    values.Add(ResolveArgument(parameter, initializer.ArgumentList.Arguments, model, path));
                 }
 
                 if (constructionValues.Values.Any(group => group
@@ -25091,12 +29790,9 @@ internal static partial class HostedGrimoireProducerInventory
             }
             else
             {
-                foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
+                foreach ((InvocationExpressionSyntax call, SemanticModel model) in InvocationsOf(method))
                 {
-                    if (model.GetSymbolInfo(call).Symbol is IMethodSymbol target && Identity(target) == Identity(method))
-                    {
-                        values.Add(ResolveArgument(parameter, call.ArgumentList.Arguments, model, path));
-                    }
+                    values.Add(ResolveArgument(parameter, call.ArgumentList.Arguments, model, path));
                 }
             }
 
@@ -25224,6 +29920,15 @@ internal static partial class HostedGrimoireProducerInventory
                 return absent;
             }
 
+            // A callable declared in a tree the analysis does not read can be assigned there, in code nothing here sees, so it is
+            // never proven absent: the lookup refuses and the callable stays unproven.
+            if (symbol.DeclaringSyntaxReferences.Any(reference => AnalysedModel(reference.GetSyntax()) is null))
+            {
+                absentTestCallables[symbol] = false;
+
+                return false;
+            }
+
             ITypeSymbol? callableType = symbol switch
             {
                 IEventSymbol declaredEvent => declaredEvent.Type,
@@ -25237,7 +29942,7 @@ internal static partial class HostedGrimoireProducerInventory
                 VariableDeclaratorSyntax variable => variable.Initializer?.Value,
                 PropertyDeclarationSyntax property => property.Initializer?.Value,
                 _ => null,
-            }).OfType<ExpressionSyntax>().Any(initializer => initializer is not DefaultExpressionSyntax && !(initializer is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.DefaultLiteralExpression)) && semanticModels[initializer.SyntaxTree].GetConstantValue(initializer) is not { HasValue: true, Value: null });
+            }).OfType<ExpressionSyntax>().Any(initializer => initializer is not DefaultExpressionSyntax && !(initializer is LiteralExpressionSyntax literal && literal.IsKind(SyntaxKind.DefaultLiteralExpression)) && (AnalysedModel(initializer) is not { } initializerModel || initializerModel.GetConstantValue(initializer) is not { HasValue: true, Value: null }));
 
             absent = symbol.DeclaredAccessibility is Accessibility.Private or Accessibility.Internal or Accessibility.ProtectedAndInternal
                 && callableType?.TypeKind == TypeKind.Delegate
@@ -25405,7 +30110,84 @@ internal static partial class HostedGrimoireProducerInventory
             return constructorParameter;
         }
 
-        private bool ContainsPotentialProducerSite(AuthoredMember member) => ContainsPotentialProducerSite(member, []);
+        // The scan of a member from a fresh path depends only on its syntax and semantic model, so a root scan is
+        // computed once. A scan that continues a path ends where it meets the path, so it is never cached. A root scan
+        // that is asked for again while it is being computed (a body whose implicit call resolves to the body itself)
+        // ends there as a scan meeting its own path does, and a result that was cut that way is not cached.
+        private readonly Dictionary<ProducerSiteScanKey, bool> producerSiteScans = new(ProducerSiteScanKeyComparer.Instance);
+
+        private readonly HashSet<GraphMemberIdentity> producerSiteScansInProgress = [];
+
+        private int producerSiteScanCuts;
+
+        // What a scan consults besides the syntax and the semantic model: the bindings the member was bound with (callables,
+        // values, concrete types, admissions, recovery tuples, constructor contexts), which a receiver proof and a callable
+        // resolution read. Two scans of one body are the same scan only when they were bound with the very same bindings.
+        private readonly record struct ProducerSiteScanKey(GraphMemberIdentity Member, object?[] Bindings);
+
+        private sealed class ProducerSiteScanKeyComparer : IEqualityComparer<ProducerSiteScanKey>
+        {
+            internal static readonly ProducerSiteScanKeyComparer Instance = new();
+
+            public bool Equals(ProducerSiteScanKey left, ProducerSiteScanKey right) =>
+                left.Member.Equals(right.Member)
+                && left.Bindings.Length == right.Bindings.Length
+                && left.Bindings.Zip(right.Bindings).All(static pair => ReferenceEquals(pair.First, pair.Second));
+
+            public int GetHashCode(ProducerSiteScanKey key)
+            {
+                HashCode hash = new();
+
+                hash.Add(key.Member);
+
+                foreach (object? binding in key.Bindings)
+                {
+                    hash.Add(binding is null ? 0 : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(binding));
+                }
+
+                return hash.ToHashCode();
+            }
+        }
+
+        private static ProducerSiteScanKey ScanKey(GraphMemberIdentity identity, AuthoredMember member) =>
+            new(identity, [member.AdmissionBindings, member.CallableBindings, member.AbsentCallables, member.ConcreteBindings, member.RecoveryBindings, member.RecoveryContext, member.ValueBindings, member.ConstructorContexts]);
+
+        private bool ContainsPotentialProducerSite(AuthoredMember member)
+        {
+            GraphMemberIdentity identity = MemberIdentity(member);
+
+            ProducerSiteScanKey scanKey = ScanKey(identity, member);
+
+            if (producerSiteScans.TryGetValue(scanKey, out bool reaches))
+            {
+                return reaches;
+            }
+
+            if (!producerSiteScansInProgress.Add(identity))
+            {
+                producerSiteScanCuts++;
+
+                return false;
+            }
+
+            int cutsBefore = producerSiteScanCuts;
+
+            try
+            {
+                reaches = ContainsPotentialProducerSite(member, []);
+            }
+            finally
+            {
+                producerSiteScansInProgress.Remove(identity);
+            }
+
+            if (producerSiteScanCuts == cutsBefore)
+            {
+                producerSiteScans[scanKey] = reaches;
+            }
+
+            return reaches;
+        }
 
         private bool ContainsPotentialProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path)
         {
@@ -25416,8 +30198,34 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
+                if (ConstructionPreambleReachesProducerSite(member, path) || AsyncBuilderReachesProducerSite(member, out _))
+                {
+                    return true;
+                }
+
                 foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf(candidate => candidate == member.Syntax || candidate is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax))
                 {
+                    if (node is CommonForEachStatementSyntax or SpreadElementSyntax
+                        && EnumerationReachesProducerSite(member, node, path))
+                    {
+                        return true;
+                    }
+
+                    if (ImplicitCallsAt(member, member.Syntax, node).Any(call => ImplicitCallReachesProducerSite(member, call, path))
+                        || LaneImplicitCallsReachProducerSite(member, node, path)
+                        || LaneRefusalsReachProducerSite(member, node, path))
+                    {
+                        return true;
+                    }
+
+                    // A method group names a method without calling it. Whether a body can reach a producer site through it is
+                    // the question of where the delegate is called, which a scan for sites alone does not ask of the body that
+                    // merely passes it (the factory handed to a Lazy runs at the first read of its value).
+                    if (scanSitesOnly && member.Model.GetOperation(node) is IMethodReferenceOperation)
+                    {
+                        continue;
+                    }
+
                     if (member.Model.GetSymbolInfo(node).Symbol is IMethodSymbol method)
                     {
                         string callee = Normalize(method);
@@ -25436,8 +30244,17 @@ internal static partial class HostedGrimoireProducerInventory
 
                         AuthoredMember? target = Resolve(method, member.Model.Compilation);
 
-                        if (target is not null && ContainsPotentialProducerSite(target, path)
+                        if (ClassMethodDispatch(member, method, node) is { } scannedDispatch)
+                        {
+                            if (!scanSitesOnly && scannedDispatch.Unresolved || scannedDispatch.Targets.Any(dispatched => ContainsPotentialProducerSite(dispatched, path)))
+                            {
+                                return true;
+                            }
+                        }
+                        else if (target is not null && ContainsPotentialProducerSite(target, path)
                             || target is null
+                                && !scanSitesOnly
+                                && !IsReviewedFrameworkRangeMember(method)
                                 && RequiresExternalBoundaryClassification(
                                     method,
                                     member.Model.Compilation,
@@ -25455,14 +30272,15 @@ internal static partial class HostedGrimoireProducerInventory
                                 node.Parent is AssignmentExpressionSyntax assignment
                                     && assignment.Left == node,
                                 out _)
-                            || RequiresExternalBoundaryClassification(
-                                property,
-                                member.Model.Compilation,
-                                node.Parent is AssignmentExpressionSyntax propertyMutation
-                                    && propertyMutation.Left == node,
-                                node,
-                                member.Model,
-                                member)))
+                            || !scanSitesOnly
+                                && RequiresExternalBoundaryClassification(
+                                    property,
+                                    member.Model.Compilation,
+                                    node.Parent is AssignmentExpressionSyntax propertyMutation
+                                        && propertyMutation.Left == node,
+                                    node,
+                                    member.Model,
+                                    member)))
                     {
                         return true;
                     }
@@ -25476,8 +30294,30 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
-        private IReadOnlySet<string> AdmissionOrigins(AuthoredMember member, ExpressionSyntax expression, HashSet<ISymbol> path)
+        private sealed class AdmissionOriginQueryContext(CleanupProvenanceContext? sharedProof = null)
         {
+            private int remaining = CleanupProvenanceContext.MaximumWork;
+
+            internal bool Complete { get; set; } = true;
+
+            internal bool Visit()
+            {
+                if (Complete && (sharedProof is null ? remaining-- > 0 : sharedProof.RemainingWork-- > 0)) return true;
+
+                Complete = false;
+
+                return false;
+            }
+        }
+
+        private IReadOnlySet<string> AdmissionOrigins(AuthoredMember member, ExpressionSyntax expression, HashSet<ISymbol> path,
+            AdmissionOriginQueryContext? query = null)
+        {
+            if (query is not null)
+            {
+                return query.Visit() ? ResolveAdmissionOrigins(member, expression, path, query) : new HashSet<string>();
+            }
+
             bool cacheable = path.Count == 0;
 
             GraphMemberIdentity memberIdentity = MemberIdentity(member);
@@ -25489,7 +30329,7 @@ internal static partial class HostedGrimoireProducerInventory
                 return cached;
             }
 
-            IReadOnlySet<string> resolved = ResolveAdmissionOrigins(member, expression, path);
+            IReadOnlySet<string> resolved = ResolveAdmissionOrigins(member, expression, path, query);
 
             if (cacheable)
             {
@@ -25499,7 +30339,11 @@ internal static partial class HostedGrimoireProducerInventory
             return resolved;
         }
 
-        private static string AdmissionBindingIdentity(AuthoredMember member)
+        // A parameter or local is identified by its declaration, never by its ordinal or name alone. A lambda or a local function sees the formals of
+        // the method that declares it as well as its own, and two different binding maps that label their formals by ordinal alone
+        // (`parameter:0 L0; parameter:1 L0`) are not the same map: one may bind the formal a body reads and the other bind nothing
+        // it reads. Every cache keyed on this identity must tell them apart.
+        private string AdmissionBindingIdentity(AuthoredMember member)
         {
             if (member.AdmissionBindings is null)
             {
@@ -25510,9 +30354,13 @@ internal static partial class HostedGrimoireProducerInventory
 
             static void AppendPart(System.Text.StringBuilder target, string value) => target.Append(value.Length).Append(':').Append(value);
 
-            foreach ((ISymbol symbol, IReadOnlySet<string> origins) in member.AdmissionBindings.OrderBy(static pair => pair.Key is IParameterSymbol parameter ? parameter.Ordinal : int.MaxValue).ThenBy(static pair => pair.Key.Kind).ThenBy(static pair => pair.Key.ToDisplayString(), StringComparer.Ordinal))
+            string Declaration(ISymbol symbol) => symbol.DeclaringSyntaxReferences.FirstOrDefault() is { } reference
+                ? TreeIdentity(reference.SyntaxTree).ToString(System.Globalization.CultureInfo.InvariantCulture) + "@" + reference.Span.Start.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : "external";
+
+            foreach ((ISymbol symbol, IReadOnlySet<string> origins) in member.AdmissionBindings.OrderBy(static pair => pair.Key is IParameterSymbol parameter ? parameter.Ordinal : int.MaxValue).ThenBy(static pair => pair.Key.Kind).ThenBy(static pair => pair.Key.ToDisplayString(), StringComparer.Ordinal).ThenBy(pair => Declaration(pair.Key), StringComparer.Ordinal))
             {
-                AppendPart(identity, symbol is IParameterSymbol parameter ? "parameter:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) : symbol.Kind + ":" + symbol.ToDisplayString());
+                AppendPart(identity, symbol is IParameterSymbol parameter ? "parameter:" + parameter.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) + "@" + Declaration(parameter) : symbol.Kind + ":" + symbol.ToDisplayString() + "@" + Declaration(symbol));
 
                 foreach (string origin in origins.Order(StringComparer.Ordinal))
                 {
@@ -25560,15 +30408,19 @@ internal static partial class HostedGrimoireProducerInventory
             return merged;
         }
 
-        private IReadOnlySet<string> ResolveAdmissionOrigins(AuthoredMember member, ExpressionSyntax expression, HashSet<ISymbol> path)
+        private IReadOnlySet<string> ResolveAdmissionOrigins(AuthoredMember member, ExpressionSyntax expression, HashSet<ISymbol> path,
+            AdmissionOriginQueryContext? query = null)
         {
             SemanticModel model = expression.SyntaxTree == member.Model.SyntaxTree ? member.Model : member.Model.Compilation.GetSemanticModel(expression.SyntaxTree);
 
             HashSet<string> origins = new(StringComparer.Ordinal);
 
-            origins.UnionWith(
-                ResolveReturnedAdmissionProofs(member, expression)
-                    .Select(static proof => proof.Origin));
+            if (query is null)
+            {
+                origins.UnionWith(
+                    ResolveReturnedAdmissionProofs(member, expression)
+                        .Select(static proof => proof.Origin));
+            }
 
             HashSet<ISymbol> references = new(SymbolEqualityComparer.Default);
 
@@ -25587,8 +30439,35 @@ internal static partial class HostedGrimoireProducerInventory
 
                 while (pending.TryPop(out IOperation? current))
                 {
+                    if (query?.Visit() == false) return origins;
+
+                    if (query is not null && current is IInvocationOperation)
+                    {
+                        // Returned-handle source/lifetime proofs are not part of this
+                        // query. Unknown is a refusal, never a complete empty origin set.
+                        query.Complete = false;
+
+                        return origins;
+                    }
+
                     if (current is IAnonymousFunctionOperation or ILocalFunctionOperation)
                     {
+                        continue;
+                    }
+
+                    if (query is not null && current is IPropertyReferenceOperation unknownProperty
+                        && !IsMaintenanceRevocationValueProjection(unknownProperty.Property, model.Compilation))
+                    {
+                        query.Complete = false;
+
+                        return origins;
+                    }
+
+                    if (current is IPropertyReferenceOperation property
+                        && IsMaintenanceRevocationValueProjection(property.Property, model.Compilation))
+                    {
+                        // This protocol property returns a token value, not the lease receiver.
+                        // Getter and argument effects are still visited by the normal call traversal.
                         continue;
                     }
 
@@ -25603,6 +30482,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                     foreach (IOperation child in current.ChildOperations)
                     {
+                        if (query?.Visit() == false) return origins;
+
                         pending.Push(child);
                     }
                 }
@@ -25610,11 +30491,36 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (ISymbol symbol in references)
             {
-                origins.UnionWith(AdmissionOrigins(member, symbol, model, path));
+                // Closed pure data cannot carry a lease or a group, whatever call produced it.
+                if (HoldsHandleIncapableValue(symbol, model.Compilation)) continue;
+
+                origins.UnionWith(AdmissionOrigins(member, symbol, model, path, query));
             }
 
             return origins;
         }
+
+        private bool IsMaintenanceRevocationValueProjection(
+            IPropertySymbol property,
+            Compilation consumingCompilation) =>
+            property.MetadataName == "MaintenanceRevocation"
+            && !property.IsStatic
+            && !property.IsIndexer
+            && !property.ReturnsByRef
+            && !property.ReturnsByRefReadonly
+            && property.Parameters.IsEmpty
+            && property.GetMethod is { Parameters.IsEmpty: true }
+            && property.SetMethod is null
+            && property.ContainingType.TypeKind == TypeKind.Interface
+            && property.ContainingAssembly.Name == "RetroDownfall.Arcanum.Infrastructure"
+            && IsExactAuthoredProtocolType(
+                property.ContainingType,
+                "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease",
+                consumingCompilation)
+            && IsExactFrameworkType(
+                property.Type,
+                "System.Threading.CancellationToken",
+                typeof(CancellationToken).Assembly.GetName());
 
         private readonly record struct ReturnedAdmissionProof(
             string Origin,
@@ -25786,8 +30692,7 @@ internal static partial class HostedGrimoireProducerInventory
 
             analysis.OriginPossibilityBuilds++;
 
-            possible = member.AdmissionBindings?.Values.Any(
-                static origins => origins.Count > 0) == true;
+            possible = HasLiveAdmissionOrigin(member);
 
             if (!possible)
             {
@@ -25874,7 +30779,7 @@ internal static partial class HostedGrimoireProducerInventory
 
         private bool HasAdmissionSeed(AuthoredMember member)
         {
-            if (member.AdmissionBindings?.Values.Any(static origins => origins.Count > 0) == true)
+            if (HasLiveAdmissionOrigin(member))
             {
                 return true;
             }
@@ -25937,8 +30842,11 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
-        private IReadOnlySet<string> AdmissionOrigins(AuthoredMember member, ISymbol symbol, SemanticModel model, HashSet<ISymbol> path)
+        private IReadOnlySet<string> AdmissionOrigins(AuthoredMember member, ISymbol symbol, SemanticModel model, HashSet<ISymbol> path,
+            AdmissionOriginQueryContext? query = null)
         {
+            if (query?.Visit() == false) return new HashSet<string>();
+
             if (!path.Add(symbol))
             {
                 return new HashSet<string>();
@@ -25946,11 +30854,21 @@ internal static partial class HostedGrimoireProducerInventory
 
             try
             {
-                HashSet<string> origins = member.AdmissionBindings?.TryGetValue(symbol, out IReadOnlySet<string>? bound) == true ? new(bound, StringComparer.Ordinal) : new(StringComparer.Ordinal);
+                HashSet<string> origins = new(StringComparer.Ordinal);
+
+                if (member.AdmissionBindings?.TryGetValue(symbol, out IReadOnlySet<string>? bound) == true)
+                {
+                    foreach (string origin in bound)
+                    {
+                        if (query?.Visit() == false) return origins;
+
+                        origins.Add(origin);
+                    }
+                }
 
                 SyntaxNode? declaration = symbol.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax();
 
-                if (declaration is SingleVariableDesignationSyntax designation && designation.Ancestors().OfType<InvocationExpressionSyntax>().FirstOrDefault() is { } call && model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")
+                if (declaration is SingleVariableDesignationSyntax designation && designation.Ancestors().TakeWhile(_ => query?.Visit() != false).OfType<InvocationExpressionSyntax>().FirstOrDefault() is { } call && model.GetSymbolInfo(call).Symbol is IMethodSymbol method && Normalize(method) is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")
                 {
                     origins.Add(Location(call));
                 }
@@ -25959,13 +30877,29 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     if (variable.Initializer is not null)
                     {
-                        origins.UnionWith(AdmissionOrigins(member, variable.Initializer.Value, path));
+                        origins.UnionWith(AdmissionOrigins(member, variable.Initializer.Value, path, query));
+                    }
+
+                    BlockSyntax? block = variable.Ancestors().TakeWhile(_ => query?.Visit() != false)
+                        .OfType<BlockSyntax>().FirstOrDefault();
+
+                    if (query is not null && (!query.Complete || block is null))
+                    {
+                        query.Complete = false;
+
+                        return origins;
                     }
 
                     // May-alias joins deliberately retain prior origins across ambiguous assignments.
-                    foreach (AssignmentExpressionSyntax assignment in variable.Ancestors().OfType<BlockSyntax>().First().DescendantNodes().OfType<AssignmentExpressionSyntax>().Where(assignment => SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(assignment.Left).Symbol, symbol)))
+                    foreach (SyntaxNode node in (block ?? variable.Ancestors().OfType<BlockSyntax>().First()).DescendantNodes())
                     {
-                        origins.UnionWith(AdmissionOrigins(member, assignment.Right, path));
+                        if (query?.Visit() == false) return origins;
+
+                        if (node is AssignmentExpressionSyntax assignment
+                            && SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(assignment.Left).Symbol, symbol))
+                        {
+                            origins.UnionWith(AdmissionOrigins(member, assignment.Right, path, query));
+                        }
                     }
                 }
 
@@ -25975,6 +30909,130 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 path.Remove(symbol);
             }
+        }
+
+        private static bool HasFiniteEnumMethodShape(IMethodSymbol method, Compilation compilation)
+        {
+            if (method is not { MethodKind: MethodKind.Ordinary, IsStatic: true, Arity: 1, ReducedFrom: null }
+                || method.IsVirtual || method.IsOverride || method.IsAbstract || method.IsVararg
+                || method.ReturnsByRef || method.ReturnsByRefReadonly
+                || !SymbolEqualityComparer.Default.Equals(method, method.OriginalDefinition)
+                || method.DeclaringSyntaxReferences.Length != 1
+                || method.DeclaringSyntaxReferences[0].GetSyntax() is not MethodDeclarationSyntax
+                || method.Parameters.Any(static parameter => parameter.RefKind != RefKind.None))
+            {
+                return false;
+            }
+
+            for (INamedTypeSymbol? containing = method.ContainingType; containing is not null; containing = containing.ContainingType)
+            {
+                if (containing.Arity != 0) return false;
+            }
+
+            ITypeParameterSymbol ownType = method.TypeParameters[0];
+
+            return ownType.TypeParameterKind == TypeParameterKind.Method
+                && SymbolEqualityComparer.Default.Equals(ownType.ContainingSymbol, method)
+                && ownType.HasValueTypeConstraint
+                && ownType.ConstraintTypes.Length == 1
+                && SymbolEqualityComparer.Default.Equals(ownType.ConstraintTypes[0], compilation.GetSpecialType(SpecialType.System_Enum));
+        }
+
+        private static bool IsClosedFiniteEnum(ITypeSymbol? type)
+        {
+            if (type is not INamedTypeSymbol { TypeKind: TypeKind.Enum, Arity: 0 } enumeration) return false;
+
+            for (INamedTypeSymbol? containing = enumeration.ContainingType; containing is not null; containing = containing.ContainingType)
+            {
+                if (containing.Arity != 0) return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsCertifiedOwnEnumSlot(AuthoredMember member, ISymbol candidate)
+        {
+            return HasFiniteEnumMethodShape(member.Symbol, member.Model.Compilation)
+                && SymbolEqualityComparer.Default.Equals(candidate, member.Symbol.TypeParameters[0])
+                && member.ConcreteBindings?.TryGetValue(candidate, out ITypeSymbol? type) == true
+                && IsClosedFiniteEnum(type);
+        }
+
+        private IReadOnlyDictionary<ISymbol, ITypeSymbol>? ClosedEnumInvocationBindings(
+            AuthoredMember caller,
+            InvocationExpressionSyntax call,
+            AuthoredMember target)
+        {
+            // This is one selected invocation's finite substitution, not a type-based
+            // purity rule or a change to value/ref demand. Unsupported inputs retain
+            // the existing conservative binding and authored traversal paths.
+            if (!HasFiniteEnumMethodShape(target.Symbol, target.Model.Compilation)
+                || caller.Model.GetOperation(call) is not IInvocationOperation invocation
+                || invocation.IsVirtual
+                || invocation.TargetMethod.ReducedFrom is not null
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, target.Symbol)
+                || invocation.TargetMethod.TypeArguments.Length != 1)
+            {
+                return null;
+            }
+
+            ITypeParameterSymbol targetType = target.Symbol.TypeParameters[0];
+
+            ITypeSymbol selectedType = invocation.TargetMethod.TypeArguments[0];
+
+            ITypeSymbol closedType = selectedType;
+
+            if (selectedType is ITypeParameterSymbol)
+            {
+                // One exact caller-own slot lookup only; no recursive substitution.
+                if (!HasFiniteEnumMethodShape(caller.Symbol, caller.Model.Compilation)
+                    || !SymbolEqualityComparer.Default.Equals(selectedType, caller.Symbol.TypeParameters[0])
+                    || caller.ConcreteBindings?.TryGetValue(selectedType, out ITypeSymbol? boundType) != true
+                    || boundType is null
+                    || !IsClosedFiniteEnum(boundType))
+                {
+                    return null;
+                }
+
+                closedType = boundType;
+            }
+
+            if (!IsClosedFiniteEnum(closedType)) return null;
+
+            foreach (IArgumentOperation argument in invocation.Arguments)
+            {
+                if (argument.ArgumentKind != ArgumentKind.Explicit
+                    || argument.Parameter is not { RefKind: RefKind.None } parameter
+                    || parameter.Ordinal < 0 || parameter.Ordinal >= target.Symbol.Parameters.Length
+                    || !SymbolEqualityComparer.Default.Equals(parameter.OriginalDefinition, target.Symbol.Parameters[parameter.Ordinal])
+                    || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity
+                    || argument.Value.DescendantsAndSelf().OfType<IConversionOperation>().Any(static conversion => !conversion.Conversion.IsIdentity))
+                {
+                    return null;
+                }
+
+                if (!SymbolEqualityComparer.Default.Equals(target.Symbol.Parameters[parameter.Ordinal].Type, targetType)) continue;
+
+                if (!SymbolEqualityComparer.Default.Equals(parameter.Type, selectedType)
+                    || !SymbolEqualityComparer.Default.Equals(argument.Value.Type, selectedType)) return null;
+
+                if (argument.Value.Syntax is not ExpressionSyntax expression) return null;
+
+                if (ConcreteType(caller, expression) is { } concrete
+                    && !SymbolEqualityComparer.Default.Equals(concrete, closedType)) return null;
+            }
+
+            Dictionary<ISymbol, ITypeSymbol> bindings = new(SymbolEqualityComparer.Default)
+            {
+                [targetType] = closedType,
+            };
+
+            foreach (IParameterSymbol parameter in target.Symbol.Parameters)
+            {
+                if (SymbolEqualityComparer.Default.Equals(parameter.Type, targetType)) bindings.Add(parameter, closedType);
+            }
+
+            return bindings;
         }
 
         private AuthoredMember BindAdmissionArguments(
@@ -25987,7 +31045,8 @@ internal static partial class HostedGrimoireProducerInventory
                 caller,
                 AdmissionArguments(caller, call),
                 target,
-                recoveryProvenance);
+                recoveryProvenance,
+                ClosedEnumInvocationBindings(caller, call, target));
         }
 
         private AuthoredMember BindInvocationContext(
@@ -26002,6 +31061,23 @@ internal static partial class HostedGrimoireProducerInventory
                 target,
                 recoveryProvenance);
 
+            ExpressionSyntax? written = call.Expression is MemberAccessExpressionSyntax access
+                ? access.Expression
+                : null;
+
+            return BindReceiverContext(caller, written, target, bound, recoveryProvenance);
+        }
+
+        // The context the receiver of an instance member brings to the member it runs: the callables and values the receiver
+        // was constructed with, which a written call and an accessor access bind the same way. A receiver that is not written
+        // (an implicit this) brings the caller's own context.
+        private AuthoredMember BindReceiverContext(
+            AuthoredMember caller,
+            ExpressionSyntax? written,
+            AuthoredMember target,
+            AuthoredMember bound,
+            RecoveryTupleProvenanceContext? recoveryProvenance = null)
+        {
             if (target.Symbol.IsStatic)
             {
                 return bound;
@@ -26040,10 +31116,7 @@ internal static partial class HostedGrimoireProducerInventory
                     _ => false,
                 }) == true;
 
-            ExpressionSyntax? receiver = call.Expression is
-                MemberAccessExpressionSyntax access
-                    ? access.Expression
-                    : null;
+            ExpressionSyntax? receiver = written;
 
             bool hasBoundReceiverContext = receiver is not null
                 && caller.Model.GetSymbolInfo(
@@ -26054,6 +31127,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (!hasCallableContext
                 && !typeCarriesCallableState
                 && !typeCarriesCleanupState
+                && !IsLongRestSdkSetupDependency(target)
                 && !hasReceiverValueContext
                 && !hasBoundReceiverContext)
             {
@@ -26755,9 +31829,9 @@ internal static partial class HostedGrimoireProducerInventory
                     (ExpressionSyntax Expression, SemanticModel Model)? value =
                         initializers is [ExpressionSyntax propertyInitializer]
                             && assignments.Length == 0
-                                ? (
-                                    propertyInitializer,
-                                    semanticModels[propertyInitializer.SyntaxTree])
+                                ? (AnalysedModel(propertyInitializer) is { } propertyInitializerModel
+                                    ? (propertyInitializer, propertyInitializerModel)
+                                    : null)
                                 : initializers.Length == 0
                                     && assignments is
                                     [
@@ -26904,9 +31978,14 @@ internal static partial class HostedGrimoireProducerInventory
                                 Initializer.Value: { } fieldInitializer,
                             })
                         {
+                            if (AnalysedModel(fieldInitializer) is not { } fieldInitializerModel)
+                            {
+                                return null;
+                            }
+
                             values.Add((
                                 fieldInitializer,
-                                semanticModels[fieldInitializer.SyntaxTree]));
+                                fieldInitializerModel));
                         }
                     }
 
@@ -27268,10 +32347,11 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 ParameterList: { } parameters,
             }
+            && AnalysedModel(parameters) is { } parametersModel
                 ? new(
                     constructor,
                     parameters,
-                    semanticModels[parameters.SyntaxTree])
+                    parametersModel)
                 : null;
         }
 
@@ -27797,7 +32877,8 @@ internal static partial class HostedGrimoireProducerInventory
             AuthoredMember caller,
             IEnumerable<(ExpressionSyntax Expression, IParameterSymbol? Parameter, RefKind RefKind)> arguments,
             AuthoredMember target,
-            RecoveryTupleProvenanceContext? recoveryProvenance = null)
+            RecoveryTupleProvenanceContext? recoveryProvenance = null,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol>? closedEnumBindings = null)
         {
             Dictionary<ISymbol, IReadOnlySet<string>> bindings = new(SymbolEqualityComparer.Default);
 
@@ -27806,6 +32887,14 @@ internal static partial class HostedGrimoireProducerInventory
             HashSet<ISymbol> absentCallables = new(SymbolEqualityComparer.Default);
 
             Dictionary<ISymbol, ITypeSymbol> concreteBindings = new(SymbolEqualityComparer.Default);
+
+            if (closedEnumBindings is not null)
+            {
+                foreach (var binding in closedEnumBindings)
+                {
+                    concreteBindings.Add(binding.Key, binding.Value);
+                }
+            }
 
             Dictionary<ISymbol, RecoveryTuple> recoveryBindings = new(SymbolEqualityComparer.Default);
 
@@ -27822,10 +32911,12 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     IParameterSymbol targetParameter = target.Symbol.Parameters[parameter.Ordinal];
 
-                    bindings[targetParameter] = AdmissionOrigins(caller, argument.Expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default));
+                    bindings[targetParameter] = BoundAdmissionOrigins(caller, argument.Expression);
 
                     if (argument.RefKind is not RefKind.Out
                         && (RequiresExactValueProvenance(target, targetParameter)
+                            || RequiresEnumArgumentSource(caller, argument.Expression, argument.RefKind,
+                                target, targetParameter, closedEnumBindings)
                             || argument.RefKind == RefKind.None
                                 && targetParameter.RefKind == RefKind.None
                                 && targetParameter.Type.SpecialType == SpecialType.System_Boolean
@@ -27955,6 +33046,1357 @@ internal static partial class HostedGrimoireProducerInventory
             return bound;
         }
 
+        private static bool IsEnumConstrainedParameter(
+            AuthoredMember member,
+            IParameterSymbol parameter)
+        {
+            // Deliberately broader than the finite optimization shape: excluded
+            // multi-T and containing-type-T edges must retain their source too.
+            return parameter.Type is ITypeParameterSymbol type
+                && type.ConstraintTypes.Any(constraint => SymbolEqualityComparer.Default.Equals(
+                    constraint,
+                    member.Model.Compilation.GetSpecialType(SpecialType.System_Enum)));
+        }
+
+        private static ExpressionSyntax EnumCopyOperand(ExpressionSyntax expression)
+        {
+            while (expression is ParenthesizedExpressionSyntax parenthesized)
+            {
+                expression = parenthesized.Expression;
+            }
+
+            return expression;
+        }
+
+        private static bool IsPlainOwnEnumForwarding(
+            AuthoredMember caller,
+            IParameterSymbol source,
+            AuthoredMember callee,
+            IParameterSymbol destination,
+            IArgumentOperation argument)
+        {
+            if (!HasFiniteEnumMethodShape(caller.Symbol, caller.Model.Compilation)
+                || !HasFiniteEnumMethodShape(callee.Symbol, callee.Model.Compilation)
+                || source.RefKind != RefKind.None || destination.RefKind != RefKind.None
+                || !SymbolEqualityComparer.Default.Equals(source.ContainingSymbol, caller.Symbol)
+                || !SymbolEqualityComparer.Default.Equals(destination.ContainingSymbol, callee.Symbol)
+                || !SymbolEqualityComparer.Default.Equals(source.Type, caller.Symbol.TypeParameters[0])
+                || !SymbolEqualityComparer.Default.Equals(destination.Type, callee.Symbol.TypeParameters[0])
+                || argument.Parent is not IInvocationOperation invocation
+                || invocation.IsVirtual || invocation.TargetMethod.ReducedFrom is not null
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, callee.Symbol)
+                || invocation.TargetMethod.TypeArguments.Length != 1
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.TypeArguments[0], caller.Symbol.TypeParameters[0])
+                || argument.Parameter is not { RefKind: RefKind.None } selectedParameter
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter.OriginalDefinition, destination)
+                || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity
+                || argument.Syntax is not ArgumentSyntax { RefKindKeyword.RawKind: 0 } syntax
+                || EnumCopyOperand(syntax.Expression) is not IdentifierNameSyntax identifier
+                || !SymbolEqualityComparer.Default.Equals(caller.Model.GetSymbolInfo(identifier).Symbol, source))
+            {
+                return false;
+            }
+
+            IOperation value = argument.Value;
+
+            while (value is IParenthesizedOperation parenthesized) value = parenthesized.Operand;
+
+            return value is IParameterReferenceOperation reference
+                && SymbolEqualityComparer.Default.Equals(reference.Parameter, source)
+                && SymbolEqualityComparer.Default.Equals(value.Type, caller.Symbol.TypeParameters[0]);
+        }
+
+        private bool RequiresEnumArgumentSource(
+            AuthoredMember caller,
+            ExpressionSyntax expression,
+            RefKind refKind,
+            AuthoredMember target,
+            IParameterSymbol parameter,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol>? selectedBindings)
+        {
+            if (!IsEnumConstrainedParameter(target, parameter)) return false;
+
+            if (!HasFiniteEnumMethodShape(target.Symbol, target.Model.Compilation)
+                || refKind != RefKind.None || parameter.RefKind != RefKind.None
+                || !SymbolEqualityComparer.Default.Equals(parameter.ContainingSymbol, target.Symbol)
+                || !SymbolEqualityComparer.Default.Equals(parameter.Type, target.Symbol.TypeParameters[0])
+                || selectedBindings is null
+                || !selectedBindings.TryGetValue(target.Symbol.TypeParameters[0], out ITypeSymbol? ownType)
+                || !selectedBindings.TryGetValue(parameter, out ITypeSymbol? valueType)
+                || !IsClosedFiniteEnum(ownType)
+                || !SymbolEqualityComparer.Default.Equals(ownType, valueType))
+            {
+                return true;
+            }
+
+            // Only the explicit per-invocation R88 certificate is consulted here.
+            // General concrete bindings and definition-cached booleans cannot
+            // reconstruct an earlier excluded wrapper or captured source.
+            ExpressionSyntax operand = EnumCopyOperand(expression);
+
+            if (caller.Model.GetSymbolInfo(operand).Symbol is ILocalSymbol) return true;
+
+            if (caller.Model.GetSymbolInfo(operand).Symbol is IParameterSymbol source)
+            {
+                return expression.Parent is not ArgumentSyntax syntax
+                    || caller.Model.GetOperation(syntax) is not IArgumentOperation argument
+                    || !IsPlainOwnEnumForwarding(caller, source, target, parameter, argument);
+            }
+
+            IOperation? operation = caller.Model.GetOperation(operand);
+
+            if (HasOwnedEnumPropertyIngress(caller, operand, target, parameter, ownType!, selectedBindings)) return false;
+
+            // Closed ingress can be an evaluated factory/property/field/constant.
+            // A nested local/parameter source is conservatively retained rather
+            // than treated as a new closed ingress or recursively reconstructed.
+            return operation is null
+                || !SymbolEqualityComparer.Default.Equals(operation.Type, ownType)
+                || operation.DescendantsAndSelf().Any(static value => value is ILocalReferenceOperation or IParameterReferenceOperation);
+        }
+
+        private bool HasOwnedEnumPropertyIngress(
+            AuthoredMember caller,
+            ExpressionSyntax expression,
+            AuthoredMember target,
+            IParameterSymbol parameter,
+            ITypeSymbol closedType,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol> selectedBindings)
+        {
+            // Each use supplies its own complete certificate. The original caller,
+            // receiver and getter still traverse with their independent demands.
+            if (!TryGetOwnedEnumPropertyReceiver(caller, expression, target, parameter, closedType, selectedBindings, out ISymbol receiverSymbol)) return false;
+
+            // Retain the existing stable local source requirement at this use.
+            if (receiverSymbol is ILocalSymbol
+                && (!TryResolveStableLocalInitializerValueSource(caller, ((MemberAccessExpressionSyntax)expression).Expression, out BoundValueSource? stable)
+                    || stable is null)) return false;
+
+            // This certificate belongs to the copied enum argument, not its
+            // receiver's other uses. Caller/getter effects retain their original
+            // contexts; the receiving helper still needs its exact own-T proof.
+            return HasDirectOwnedEnumBytePair(target, parameter, closedType, selectedBindings)
+                || HasOwnedEnumUIntTail(target, parameter, closedType, selectedBindings)
+                || HasOwnedEnumUIntWrapper(target, parameter, closedType, selectedBindings);
+        }
+
+        private bool TryGetOwnedEnumPropertyReceiver(
+            AuthoredMember caller,
+            ExpressionSyntax expression,
+            AuthoredMember target,
+            IParameterSymbol parameter,
+            ITypeSymbol closedType,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol> selectedBindings,
+            out ISymbol receiverSymbol)
+        {
+            receiverSymbol = null!;
+
+            if (caller.Symbol.MethodKind != MethodKind.Ordinary
+                || caller.Syntax is not MethodDeclarationSyntax
+                || !ReferenceEquals(caller.Model.Compilation, target.Model.Compilation)
+                || !HasFiniteEnumMethodShape(target.Symbol, target.Model.Compilation)
+                || parameter.RefKind != RefKind.None
+                || !SymbolEqualityComparer.Default.Equals(parameter.ContainingSymbol, target.Symbol)
+                || !SymbolEqualityComparer.Default.Equals(parameter.Type, target.Symbol.TypeParameters[0])
+                || !IsClosedFiniteEnum(closedType)
+                || !selectedBindings.TryGetValue(target.Symbol.TypeParameters[0], out ITypeSymbol? ownType)
+                || !selectedBindings.TryGetValue(parameter, out ITypeSymbol? valueType)
+                || !SymbolEqualityComparer.Default.Equals(ownType, closedType)
+                || !SymbolEqualityComparer.Default.Equals(valueType, closedType)
+                || expression is not MemberAccessExpressionSyntax { Expression: IdentifierNameSyntax receiver } access
+                || access.SyntaxTree != caller.Syntax.SyntaxTree || !caller.Syntax.Span.Contains(access.Span)
+                || access.Parent is not ArgumentSyntax { RefKindKeyword.RawKind: 0 } argumentSyntax
+                || caller.Model.GetOperation(argumentSyntax) is not IArgumentOperation argument
+                || argument.ArgumentKind != ArgumentKind.Explicit
+                || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity
+                || argument.Parameter is not { RefKind: RefKind.None } selectedParameter
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter.OriginalDefinition, parameter)
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter.Type, closedType)
+                || argument.Parent is not IInvocationOperation invocation
+                || invocation.IsVirtual || invocation.Instance is not null || !invocation.TargetMethod.IsStatic
+                || invocation.TargetMethod.ReducedFrom is not null
+                || (invocation.Arguments.Length != 1
+                    && !HasOwnedEnumUIntWrapperCall(caller, invocation, argument, target, parameter, closedType, selectedBindings))
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, target.Symbol)
+                || invocation.TargetMethod.TypeArguments is not [var selectedType]
+                || !SymbolEqualityComparer.Default.Equals(selectedType, closedType)
+                || argument.Value is not IPropertyReferenceOperation read
+                || read.Syntax != access
+                || read.Property is not { IsStatic: false, IsIndexer: false, IsVirtual: false, IsOverride: false, IsAbstract: false, ReturnsByRef: false, ReturnsByRefReadonly: false, GetMethod: { } getter }
+                || !SymbolEqualityComparer.Default.Equals(read.Type, closedType)
+                || read.Property.ContainingType is not { TypeKind: TypeKind.Class, IsSealed: true } container
+                || getter.IsVirtual || getter.IsOverride || getter.IsAbstract || getter.IsExtern
+                || (getter.DeclaringSyntaxReferences.Length != 1
+                || Resolve(getter, caller.Model.Compilation) is not { } authoredGetter
+                || !SymbolEqualityComparer.Default.Equals(authoredGetter.Symbol, getter)
+                || !(authoredGetter.Syntax is AccessorDeclarationSyntax { Body: not null } or AccessorDeclarationSyntax { ExpressionBody: not null }
+                    || authoredGetter.Syntax is ExpressionSyntax { Parent: ArrowExpressionClauseSyntax { Parent: PropertyDeclarationSyntax propertyDeclaration } } getterExpression
+                        && propertyDeclaration.ExpressionBody?.Expression == getterExpression
+                        && SymbolEqualityComparer.Default.Equals(authoredGetter.Model.GetDeclaredSymbol(propertyDeclaration), read.Property)))
+                    && !HasExactGeneratedPositionalEnumGetter(read.Property, getter, caller.Model.Compilation))
+            {
+                return false;
+            }
+
+            for (INamedTypeSymbol? containing = container; containing is not null; containing = containing.ContainingType)
+            {
+                if (containing.Arity != 0) return false;
+            }
+
+            if (read.Instance is IParameterReferenceOperation { Parameter.RefKind: RefKind.None } input
+                && SymbolEqualityComparer.Default.Equals(input.Parameter.ContainingSymbol, caller.Symbol)
+                && SymbolEqualityComparer.Default.Equals(input.Parameter.Type, container))
+            {
+                receiverSymbol = input.Parameter;
+            }
+            else if (read.Instance is ILocalReferenceOperation { Local.RefKind: RefKind.None } local
+                && SymbolEqualityComparer.Default.Equals(local.Local.ContainingSymbol, caller.Symbol)
+                && SymbolEqualityComparer.Default.Equals(local.Local.Type, container)
+                && local.Local.DeclaringSyntaxReferences.Length == 1
+                && local.Local.DeclaringSyntaxReferences[0].GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } initializer } declaration
+                && declaration.SyntaxTree == caller.Syntax.SyntaxTree
+                && caller.Syntax.Span.Contains(declaration.Span)
+                && declaration.Span.End < receiver.SpanStart
+                && caller.Model.GetOperation(initializer) is IInvocationOperation { IsVirtual: false, TargetMethod.ReturnsByRef: false, TargetMethod.ReturnsByRefReadonly: false } factory
+                && SymbolEqualityComparer.Default.Equals(factory.Type, container)
+                && Resolve(factory.TargetMethod, caller.Model.Compilation) is { Syntax: MethodDeclarationSyntax { Body: not null } or MethodDeclarationSyntax { ExpressionBody: not null } })
+            {
+                receiverSymbol = local.Local;
+            }
+            else
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool HasExactGeneratedPositionalEnumGetter(IPropertySymbol property, IMethodSymbol getter, Compilation compilation)
+        {
+            // A generated positional getter has primary-parameter syntax, not an
+            // authored body. Authenticate that exact compiler/source association.
+            if (!getter.IsImplicitlyDeclared
+                || getter.MethodKind != MethodKind.PropertyGet
+                || !SymbolEqualityComparer.Default.Equals(getter.AssociatedSymbol, property)
+                || !SymbolEqualityComparer.Default.Equals(property.GetMethod, getter)
+                || property.IsStatic || property.IsIndexer || property.IsVirtual || property.IsOverride || property.IsAbstract
+                || property.ReturnsByRef || property.ReturnsByRefReadonly
+                || property.ContainingType is not { TypeKind: TypeKind.Class, IsRecord: true, IsSealed: true, Arity: 0 } container
+                || getter.IsStatic || getter.IsVirtual || getter.IsOverride || getter.IsAbstract || getter.IsExtern
+                || getter.ReturnsByRef || getter.ReturnsByRefReadonly || getter.Parameters.Length != 0
+                || !SymbolEqualityComparer.Default.Equals(getter.ContainingType, container)
+                || !SymbolEqualityComparer.Default.Equals(getter.ReturnType, property.Type)
+                || property.DeclaringSyntaxReferences is not [SyntaxReference propertyReference]
+                || getter.DeclaringSyntaxReferences is not [SyntaxReference getterReference]
+                || propertyReference.GetSyntax() is not ParameterSyntax
+                {
+                    Parent: ParameterListSyntax { Parent: RecordDeclarationSyntax record } parameterList,
+                } parameterSyntax
+                || getterReference.SyntaxTree != parameterSyntax.SyntaxTree
+                || getterReference.Span != parameterSyntax.Span
+                || getterReference.GetSyntax() is not ParameterSyntax
+                || record.ParameterList != parameterList
+                || !compilation.ContainsSyntaxTree(parameterSyntax.SyntaxTree)
+                || !semanticModels.TryGetValue(parameterSyntax.SyntaxTree, out SemanticModel? model)
+                || !ReferenceEquals(model.Compilation, compilation)
+                || !SymbolEqualityComparer.Default.Equals(model.GetDeclaredSymbol(record), container)
+                || model.GetDeclaredSymbol(parameterSyntax) is not IParameterSymbol
+                {
+                    RefKind: RefKind.None,
+                    ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor, IsStatic: false } constructor,
+                } parameter
+                || !SymbolEqualityComparer.Default.Equals(constructor.ContainingType, container)
+                || !SymbolEqualityComparer.Default.Equals(parameter.Type, property.Type)
+                || parameter.Name != property.Name
+                || parameter.Ordinal != parameterList.Parameters.IndexOf(parameterSyntax)
+                || parameter.Ordinal < 0 || parameter.Ordinal >= constructor.Parameters.Length
+                || !SymbolEqualityComparer.Default.Equals(constructor.Parameters[parameter.Ordinal], parameter)
+                || parameter.DeclaringSyntaxReferences is not [SyntaxReference parameterReference]
+                || parameterReference.SyntaxTree != parameterSyntax.SyntaxTree
+                || parameterReference.Span != parameterSyntax.Span)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool HasDirectOwnedEnumBytePair(
+            AuthoredMember forward,
+            IParameterSymbol parameter,
+            ITypeSymbol closedType,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol> selectedBindings)
+        {
+            if (!HasImmediateEnumByteMethodShape(forward)
+                || SingleRuntimeEnumParameterUse(forward, parameter) is not { Parent: ArgumentSyntax syntax } use
+                || syntax.Expression != use
+                || forward.Model.GetOperation(syntax) is not IArgumentOperation argument
+                || argument.ArgumentKind != ArgumentKind.Explicit
+                || argument.Parent is not IInvocationOperation { Syntax: InvocationExpressionSyntax call } invocation
+                || Resolve(invocation.TargetMethod, forward.Model.Compilation) is not { } copy
+                || !HasImmediateEnumByteMethodShape(copy)
+                || SymbolEqualityComparer.Default.Equals(copy.Symbol, forward.Symbol)
+                || !IsPlainOwnEnumForwarding(forward, parameter, copy, copy.Symbol.Parameters[0], argument)
+                || !IsImmediateEnumByteReturn(forward, invocation, call)
+                || SingleRuntimeEnumParameterUse(copy, copy.Symbol.Parameters[0]) is not { Parent: ArgumentSyntax storage } leaf
+                || storage.Expression != leaf
+                || !IsOwnedEnumByteValueRead(copy, copy.Symbol.Parameters[0], storage))
+            {
+                return false;
+            }
+
+            // Only the already-selected own-T slots cross this one authored edge.
+            // This temporary proof view neither binds runtime values nor registers
+            // a new evaluation context or a reusable certificate cache.
+            AuthoredMember selectedForward = forward with { ConcreteBindings = selectedBindings };
+
+            IReadOnlyDictionary<ISymbol, ITypeSymbol>? copiedBindings = ClosedEnumInvocationBindings(selectedForward, call, copy);
+
+            return copiedBindings is not null
+                && copiedBindings.TryGetValue(copy.Symbol.TypeParameters[0], out ITypeSymbol? copyType)
+                && copiedBindings.TryGetValue(copy.Symbol.Parameters[0], out ITypeSymbol? copyValue)
+                && SymbolEqualityComparer.Default.Equals(copyType, closedType)
+                && SymbolEqualityComparer.Default.Equals(copyValue, closedType);
+        }
+
+        private bool HasOwnedEnumUIntWrapperCall(
+            AuthoredMember caller,
+            IInvocationOperation invocation,
+            IArgumentOperation enumArgument,
+            AuthoredMember target,
+            IParameterSymbol parameter,
+            ITypeSymbol closedType,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol> selectedBindings)
+        {
+            // The same selected two-argument alternative guards both ingress
+            // and every receiver use. The string keeps ordinary source binding.
+            if (!HasFiniteEnumMethodShape(target.Symbol, target.Model.Compilation)
+                || !ReferenceEquals(caller.Model.Compilation, target.Model.Compilation)
+                || invocation.Syntax is not InvocationExpressionSyntax { ArgumentList.Arguments: [var valueSyntax, var nameSyntax] } call
+                || call.SyntaxTree != caller.Syntax.SyntaxTree || !caller.Syntax.Span.Contains(call.Span)
+                || valueSyntax.RefKindKeyword.RawKind != 0 || nameSyntax.RefKindKeyword.RawKind != 0
+                || invocation.IsVirtual || invocation.Instance is not null || !invocation.TargetMethod.IsStatic
+                || invocation.TargetMethod.ReducedFrom is not null
+                || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, target.Symbol)
+                || invocation.TargetMethod.TypeArguments is not [var selectedType]
+                || !SymbolEqualityComparer.Default.Equals(selectedType, closedType)
+                || invocation.Type?.SpecialType != SpecialType.System_UInt32
+                || target.Symbol.Parameters is not [var valueParameter, var nameParameter]
+                || !SymbolEqualityComparer.Default.Equals(valueParameter, parameter)
+                || !SymbolEqualityComparer.Default.Equals(valueParameter.Type, target.Symbol.TypeParameters[0])
+                || nameParameter.Type.SpecialType != SpecialType.System_String
+                || invocation.Arguments is not [var valueArgument, var nameArgument]
+                || !ReferenceEquals(valueArgument, enumArgument)
+                || valueArgument.Syntax != valueSyntax || nameArgument.Syntax != nameSyntax
+                || !SymbolEqualityComparer.Default.Equals(valueArgument.Value.Type, closedType)
+                || nameArgument.Value.Type?.SpecialType != SpecialType.System_String) return false;
+
+            for (int index = 0; index < invocation.Arguments.Length; index++)
+            {
+                IArgumentOperation argument = invocation.Arguments[index];
+
+                if (argument.ArgumentKind != ArgumentKind.Explicit
+                    || argument.Parameter is not { RefKind: RefKind.None } formal
+                    || formal.Ordinal != index
+                    || !SymbolEqualityComparer.Default.Equals(formal.OriginalDefinition, target.Symbol.Parameters[index])
+                    || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity) return false;
+            }
+
+            return ClosedEnumInvocationBindings(caller, call, target) is { } bindings
+                && bindings.TryGetValue(target.Symbol.TypeParameters[0], out ITypeSymbol? ownType)
+                && SymbolEqualityComparer.Default.Equals(ownType, closedType)
+                && bindings.TryGetValue(parameter, out ITypeSymbol? valueType)
+                && SymbolEqualityComparer.Default.Equals(valueType, closedType)
+                && HasOwnedEnumUIntWrapper(target, parameter, closedType, selectedBindings);
+        }
+
+        private bool HasOwnedEnumUIntWrapper(
+            AuthoredMember wrapper,
+            IParameterSymbol parameter,
+            ITypeSymbol closedType,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol> selectedBindings)
+        {
+            // One fixed outer edge around the unchanged ten-role child. This
+            // proof view supplies own-T slots without changing traversal state.
+            if (!HasEnumTailSourceShape(wrapper, wrapper, true)
+                || !IsClosedFiniteEnum(closedType)
+                || wrapper.Symbol.ReturnType.SpecialType != SpecialType.System_UInt32
+                || wrapper.Symbol.Parameters is not [var valueParameter, var nameParameter]
+                || !SymbolEqualityComparer.Default.Equals(parameter, valueParameter)
+                || !SymbolEqualityComparer.Default.Equals(valueParameter.Type, wrapper.Symbol.TypeParameters[0])
+                || nameParameter.Type.SpecialType != SpecialType.System_String
+                || !selectedBindings.TryGetValue(wrapper.Symbol.TypeParameters[0], out ITypeSymbol? ownType)
+                || !SymbolEqualityComparer.Default.Equals(ownType, closedType)
+                || !selectedBindings.TryGetValue(parameter, out ITypeSymbol? valueType)
+                || !SymbolEqualityComparer.Default.Equals(valueType, closedType)
+                || wrapper.Syntax is not MethodDeclarationSyntax { ExpressionBody: null, Body.Statements: [TryStatementSyntax trySyntax] } declaration
+                || !SymbolEqualityComparer.Default.Equals(wrapper.Model.GetDeclaredSymbol(declaration), wrapper.Symbol)
+                || trySyntax.Finally is not null
+                || trySyntax.Block.Statements is not [ReturnStatementSyntax { Expression: InvocationExpressionSyntax childSyntax } returnSyntax]
+                || childSyntax.ArgumentList.Arguments is not [ArgumentSyntax { RefKindKeyword.RawKind: 0, Expression: IdentifierNameSyntax enumUse }]
+                || trySyntax.Catches is not [CatchClauseSyntax
+                {
+                    Declaration: { } catchDeclaration,
+                    Filter.FilterExpression: IsPatternExpressionSyntax { Expression: IdentifierNameSyntax filterUse } filterSyntax,
+                    Block.Statements: [ThrowStatementSyntax
+                    {
+                        Expression: ObjectCreationExpressionSyntax
+                        {
+                            Initializer: null,
+                            ArgumentList.Arguments:
+                            [
+                                ArgumentSyntax { RefKindKeyword.RawKind: 0, Expression: IdentifierNameSyntax nameUse },
+                                ArgumentSyntax { RefKindKeyword.RawKind: 0, Expression: IdentifierNameSyntax exceptionUse },
+                            ],
+                        } creationSyntax,
+                    } throwSyntax],
+                } catchSyntax]) return false;
+
+            Compilation compilation = wrapper.Model.Compilation;
+
+            INamedTypeSymbol? exceptionType = compilation.GetTypeByMetadataName("System.Exception");
+
+            INamedTypeSymbol? systemExceptionType = compilation.GetTypeByMetadataName("System.SystemException");
+
+            INamedTypeSymbol? argumentType = compilation.GetTypeByMetadataName("System.ArgumentException");
+
+            INamedTypeSymbol? outOfRangeType = compilation.GetTypeByMetadataName("System.ArgumentOutOfRangeException");
+
+            if (!IsEnumWrapperFrameworkType(compilation, exceptionType, "System.Exception")
+                || !IsEnumWrapperFrameworkType(compilation, systemExceptionType, "System.SystemException")
+                || !IsEnumWrapperFrameworkType(compilation, argumentType, "System.ArgumentException")
+                || !IsEnumWrapperFrameworkType(compilation, outOfRangeType, "System.ArgumentOutOfRangeException")
+                || !SymbolEqualityComparer.Default.Equals(exceptionType!.BaseType, compilation.GetSpecialType(SpecialType.System_Object))
+                || !SymbolEqualityComparer.Default.Equals(systemExceptionType!.BaseType, exceptionType)
+                || !SymbolEqualityComparer.Default.Equals(argumentType!.BaseType, systemExceptionType)
+                || !SymbolEqualityComparer.Default.Equals(outOfRangeType!.BaseType, argumentType)
+                || wrapper.Model.GetOperation(trySyntax) is not ITryOperation
+                {
+                    IsImplicit: false,
+                    Finally: null,
+                    Body.Operations: [IReturnOperation { IsImplicit: false, ReturnedValue: IInvocationOperation childCall } returned],
+                    Catches: [var caught],
+                } tried
+                || tried.Body.Syntax != trySyntax.Block || returned.Syntax != returnSyntax || childCall.Syntax != childSyntax
+                || caught.Syntax != catchSyntax || caught.Locals is not [var catchLocal]
+                || catchLocal.RefKind != RefKind.None
+                || !SymbolEqualityComparer.Default.Equals(catchLocal.ContainingSymbol, wrapper.Symbol)
+                || !SymbolEqualityComparer.Default.Equals(wrapper.Model.GetDeclaredSymbol(catchDeclaration), catchLocal)
+                || !SymbolEqualityComparer.Default.Equals(caught.ExceptionType, exceptionType)
+                || !SymbolEqualityComparer.Default.Equals(catchLocal.Type, exceptionType)
+                || !SymbolEqualityComparer.Default.Equals(wrapper.Model.GetTypeInfo(catchDeclaration.Type).Type, exceptionType)
+                || caught.Filter is not IIsPatternOperation
+                {
+                    IsImplicit: false,
+                    Type.SpecialType: SpecialType.System_Boolean,
+                    Value: ILocalReferenceOperation filterReference,
+                    Pattern: IBinaryPatternOperation
+                    {
+                        OperatorKind: BinaryOperatorKind.Or,
+                        LeftPattern: ITypePatternOperation leftPattern,
+                        RightPattern: ITypePatternOperation rightPattern,
+                    } pattern,
+                } filter
+                || filter.Syntax != filterSyntax || filterReference.Syntax != filterUse || pattern.Syntax != filterSyntax.Pattern
+                || !IsEnumTailReference(filterReference, catchLocal)
+                || !SymbolEqualityComparer.Default.Equals(leftPattern.MatchedType, argumentType)
+                || !SymbolEqualityComparer.Default.Equals(rightPattern.MatchedType, outOfRangeType)
+                || caught.Handler.Syntax != catchSyntax.Block
+                || caught.Handler.Operations is not [IThrowOperation { IsImplicit: false, Type: null } thrown]
+                || thrown.Syntax != throwSyntax
+                || !IsEnumWrapperException(wrapper, thrown, creationSyntax, nameParameter, catchLocal, exceptionType!, outOfRangeType!)
+                || tried.DescendantsAndSelf().Any(static operation => operation.Kind is OperationKind.Invalid or OperationKind.None
+                    || operation is INameOfOperation or IDefaultValueOperation)
+                || !HasExactEnumWrapperUses(wrapper, parameter, enumUse)
+                || !HasExactEnumWrapperUses(wrapper, nameParameter, nameUse)
+                || !HasExactEnumWrapperUses(wrapper, catchLocal, filterUse, exceptionUse)) return false;
+
+            wrapper = wrapper with { ConcreteBindings = selectedBindings };
+
+            if (childCall.IsVirtual || childCall.Instance is not null || !childCall.TargetMethod.IsStatic
+                || childCall.TargetMethod.ReducedFrom is not null
+                || childCall.Type?.SpecialType != SpecialType.System_UInt32
+                || childCall.TargetMethod.TypeArguments is not [var childType]
+                || !SymbolEqualityComparer.Default.Equals(childType, wrapper.Symbol.TypeParameters[0])
+                || childCall.Arguments is not [var childArgument]
+                || childArgument.ArgumentKind != ArgumentKind.Explicit
+                || !childArgument.InConversion.IsIdentity || !childArgument.OutConversion.IsIdentity
+                || childArgument.Value.Syntax != enumUse || !IsEnumTailReference(childArgument.Value, parameter)
+                || !SymbolEqualityComparer.Default.Equals(childArgument.Value.Type, wrapper.Symbol.TypeParameters[0])
+                || Resolve(childCall.TargetMethod, compilation) is not { } child
+                || !ReferenceEquals(child.Model.Compilation, compilation)
+                || !HasEnumTailSourceShape(child, child, true)
+                || child.Syntax is not MethodDeclarationSyntax childDeclaration
+                || !SymbolEqualityComparer.Default.Equals(child.Model.GetDeclaredSymbol(childDeclaration), child.Symbol)
+                || !SymbolEqualityComparer.Default.Equals(childCall.TargetMethod.OriginalDefinition, child.Symbol)
+                || SymbolEqualityComparer.Default.Equals(child.Symbol, wrapper.Symbol)
+                || child.Symbol.Parameters is not [var childParameter]
+                || !SymbolEqualityComparer.Default.Equals(childParameter.Type, child.Symbol.TypeParameters[0])
+                || childArgument.Parameter is not { Ordinal: 0, RefKind: RefKind.None } selectedParameter
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter.OriginalDefinition, childParameter)
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter.Type, wrapper.Symbol.TypeParameters[0])
+                || ClosedEnumInvocationBindings(wrapper, childSyntax, child) is not { } childBindings
+                || !childBindings.TryGetValue(child.Symbol.TypeParameters[0], out ITypeSymbol? childOwnType)
+                || !SymbolEqualityComparer.Default.Equals(childOwnType, closedType)
+                || !childBindings.TryGetValue(childParameter, out ITypeSymbol? childValueType)
+                || !SymbolEqualityComparer.Default.Equals(childValueType, closedType)) return false;
+
+            // Only the selected child becomes a new root. Its original same-tree,
+            // same-container and distinct-role checks are unchanged. None of its
+            // ten role signatures can be this two-formal own-T/string wrapper.
+            return HasOwnedEnumUIntTail(child, childParameter, closedType, childBindings);
+        }
+
+        private static bool IsEnumWrapperFrameworkType(Compilation compilation, INamedTypeSymbol? type, string metadataType)
+        {
+            IAssemblySymbol core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+
+            AssemblyIdentity assembly = core.Identity;
+
+            string token = Convert.ToHexString(assembly.PublicKeyToken.AsSpan());
+
+            return type is { TypeKind: TypeKind.Class, Arity: 0 }
+                && SymbolEqualityComparer.Default.Equals(type, compilation.GetTypeByMetadataName(metadataType))
+                && SymbolEqualityComparer.Default.Equals(type.ContainingAssembly, core)
+                && assembly.Version == new Version(10, 0, 0, 0) && string.IsNullOrEmpty(assembly.CultureName)
+                && !assembly.IsRetargetable && assembly.ContentType == System.Reflection.AssemblyContentType.Default
+                && (assembly.Name == "System.Private.CoreLib" && token == "7CEC85D7BEA7798E"
+                    || assembly.Name == "System.Runtime" && token == "B03F5F7F11D50A3A")
+                && type.DeclaringSyntaxReferences.Length == 0
+                && !type.Locations.Any(static location => location.IsInSource);
+        }
+
+        private static bool IsEnumWrapperException(
+            AuthoredMember wrapper,
+            IThrowOperation thrown,
+            ObjectCreationExpressionSyntax syntax,
+            IParameterSymbol nameParameter,
+            ILocalSymbol catchLocal,
+            INamedTypeSymbol exceptionType,
+            INamedTypeSymbol outOfRangeType)
+        {
+            // The observed throw statement has only the implicit framework
+            // exception upcast. This constructor's first string is its message.
+            if (thrown.Exception is not IConversionOperation
+                {
+                    IsImplicit: true,
+                    IsChecked: false,
+                    IsTryCast: false,
+                    OperatorMethod: null,
+                    Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: true, IsUserDefined: false, MethodSymbol: null },
+                    Operand: IObjectCreationOperation { IsImplicit: false, Constructor: { } constructor, Initializer: null } creation,
+                } upcast
+                || upcast.Syntax != syntax || creation.Syntax != syntax
+                || !SymbolEqualityComparer.Default.Equals(upcast.Type, exceptionType)
+                || !SymbolEqualityComparer.Default.Equals(creation.Type, outOfRangeType)
+                || !IsEnumTailFrameworkMethod(wrapper.Model.Compilation, constructor, "System.ArgumentOutOfRangeException")
+                || constructor.MethodKind != MethodKind.Constructor || constructor.IsStatic || constructor.Arity != 0
+                || constructor.Parameters is not [var messageParameter, var innerParameter]
+                || messageParameter.Type.SpecialType != SpecialType.System_String
+                || !SymbolEqualityComparer.Default.Equals(innerParameter.Type, exceptionType)
+                || creation.Arguments is not [var messageArgument, var innerArgument]
+                || !IsEnumTailReference(messageArgument.Value, nameParameter)
+                || messageArgument.Value.Type?.SpecialType != SpecialType.System_String
+                || !IsEnumTailReference(innerArgument.Value, catchLocal)
+                || !SymbolEqualityComparer.Default.Equals(innerArgument.Value.Type, exceptionType)) return false;
+
+            for (int index = 0; index < creation.Arguments.Length; index++)
+            {
+                IArgumentOperation argument = creation.Arguments[index];
+
+                if (argument.ArgumentKind != ArgumentKind.Explicit
+                    || argument.Parameter is not { RefKind: RefKind.None } formal
+                    || formal.Ordinal != index
+                    || !SymbolEqualityComparer.Default.Equals(formal.OriginalDefinition, constructor.Parameters[index])
+                    || argument.Syntax != syntax.ArgumentList!.Arguments[index]
+                    || argument.Value.Syntax != syntax.ArgumentList.Arguments[index].Expression
+                    || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity) return false;
+            }
+
+            return true;
+        }
+
+        private static bool HasExactEnumWrapperUses(AuthoredMember wrapper, ISymbol symbol, params IdentifierNameSyntax[] expected)
+        {
+            IdentifierNameSyntax[] uses = wrapper.Syntax.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>()
+                .Where(use => SymbolEqualityComparer.Default.Equals(wrapper.Model.GetSymbolInfo(use).Symbol, symbol)).ToArray();
+
+            return uses.Length == expected.Length
+                && uses.SequenceEqual(expected)
+                && uses.All(use => !use.Ancestors().TakeWhile(node => node != wrapper.Syntax)
+                    .Any(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax));
+        }
+
+        private bool HasOwnedEnumUIntTail(
+            AuthoredMember root,
+            IParameterSymbol parameter,
+            ITypeSymbol closedType,
+            IReadOnlyDictionary<ISymbol, ITypeSymbol> selectedBindings)
+        {
+            // Fixed, distinct source roles, discovered only through selected edges:
+            // root, copy, support, three zero predicates, positive predicate,
+            // positive range, maximum, range. No role recursion or reusable cache.
+            AuthoredMember?[] roles = new AuthoredMember?[10];
+
+            roles[0] = root with { ConcreteBindings = selectedBindings };
+
+            bool Bind(AuthoredMember caller, InvocationExpressionSyntax syntax, int role, out AuthoredMember target)
+            {
+                target = null!;
+
+                if (caller.Model.GetOperation(syntax) is not IInvocationOperation invocation
+                    || invocation.IsVirtual || invocation.Instance is not null
+                    || invocation.TargetMethod.ReducedFrom is not null
+                    || Resolve(invocation.TargetMethod, caller.Model.Compilation) is not { } selected
+                    || !HasEnumTailSourceShape(selected, root, role != 9)
+                    || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.OriginalDefinition, selected.Symbol)
+                    || invocation.Arguments.Length != selected.Symbol.Parameters.Length
+                    || invocation.Arguments.Where((argument, index) => argument.ArgumentKind != ArgumentKind.Explicit
+                        || argument.Parameter?.Ordinal != index
+                        || !SymbolEqualityComparer.Default.Equals(argument.Parameter.OriginalDefinition, selected.Symbol.Parameters[index])
+                        || argument.Parameter.RefKind != RefKind.None
+                        || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity).Any()) return false;
+
+                if (role != 9)
+                {
+                    // An explicitly closed argument is not this caller's own-T
+                    // edge, even when it happens to name the selected enum.
+                    if (caller.Symbol.TypeParameters.Length != 1
+                        || invocation.TargetMethod.TypeArguments.Length != 1
+                        || !SymbolEqualityComparer.Default.Equals(invocation.TargetMethod.TypeArguments[0], caller.Symbol.TypeParameters[0])
+                        || ClosedEnumInvocationBindings(caller, syntax, selected) is not { } bindings
+                        || !bindings.TryGetValue(selected.Symbol.TypeParameters[0], out ITypeSymbol? selectedType)
+                        || !SymbolEqualityComparer.Default.Equals(selectedType, closedType)) return false;
+
+                    foreach (IParameterSymbol formal in selected.Symbol.Parameters)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(formal.Type, selected.Symbol.TypeParameters[0])
+                            && (!bindings.TryGetValue(formal, out ITypeSymbol? valueType)
+                                || !SymbolEqualityComparer.Default.Equals(valueType, closedType))) return false;
+                    }
+
+                    selected = selected with { ConcreteBindings = bindings };
+                }
+
+                for (int index = 0; index < roles.Length; index++)
+                {
+                    if (roles[index] is not { } previous) continue;
+
+                    bool same = SymbolEqualityComparer.Default.Equals(previous.Symbol, selected.Symbol);
+
+                    if (index == role ? !same : same) return false;
+                }
+
+                roles[role] ??= selected;
+
+                target = roles[role]!;
+
+                return true;
+            }
+
+            root = roles[0]!;
+
+            if (!HasEnumTailSourceShape(root, root, true)
+                || root.Symbol.ReturnType.SpecialType != SpecialType.System_UInt32
+                || root.Symbol.Parameters.Length != 1
+                || !SymbolEqualityComparer.Default.Equals(root.Symbol.Parameters[0], parameter)
+                || !SymbolEqualityComparer.Default.Equals(parameter.Type, root.Symbol.TypeParameters[0])
+                || root.Syntax is not MethodDeclarationSyntax { ExpressionBody: null, Body.Statements: var statements }
+                || statements.Count != 5
+                || !TryEnumTailByteLocal(root, statements[0], out ILocalSymbol code, out InvocationExpressionSyntax copyCall)
+                || !Bind(root, copyCall, 1, out AuthoredMember copy)
+                || copy.Symbol.ReturnType.SpecialType != SpecialType.System_Byte
+                || copy.Symbol.Parameters.Length != 1
+                || !SymbolEqualityComparer.Default.Equals(copy.Symbol.Parameters[0].Type, copy.Symbol.TypeParameters[0])
+                || root.Model.GetOperation(copyCall) is not IInvocationOperation { Arguments: [var copyArgument] }
+                || !IsEnumTailReference(copyArgument.Value, parameter)) return false;
+
+            for (int index = 0; index < 3; index++)
+            {
+                if (statements[index + 1] is not IfStatementSyntax
+                    {
+                        Else: null,
+                        Condition: InvocationExpressionSyntax predicateCall,
+                        Statement: BlockSyntax { Statements: [ReturnStatementSyntax { Expression: InvocationExpressionSyntax rangeCall }] },
+                    }
+                    || !Bind(root, predicateCall, index + 3, out AuthoredMember predicate)
+                    || !IsEnumTailZeroParameterReturn(predicate, SpecialType.System_Boolean)
+                    || !Bind(root, rangeCall, 9, out _)
+                    || root.Model.GetOperation(rangeCall) is not IInvocationOperation { Arguments: [var value, var minimum, var maximum, var name] }
+                    || !IsEnumTailReference(value.Value, code)
+                    || !IsEnumTailByteLiteral(minimum.Value, 0)
+                    || !IsEnumTailByteLiteral(maximum.Value, index + 1)
+                    || !IsEnumTailName(name.Value, parameter)) return false;
+            }
+
+            if (statements[4] is not ReturnStatementSyntax { Expression: InvocationExpressionSyntax positiveCall }
+                || !Bind(root, positiveCall, 7, out AuthoredMember positiveRange)
+                || root.Model.GetOperation(positiveCall) is not IInvocationOperation { Arguments: [var positiveValue, var positiveName] }
+                || !IsEnumTailReference(positiveValue.Value, code)
+                || !IsEnumTailName(positiveName.Value, parameter)
+                || SingleRuntimeEnumParameterUse(root, parameter) is not { } rootUse
+                || rootUse != copyCall.ArgumentList.Arguments[0].Expression) return false;
+
+            if (copy.Syntax is not MethodDeclarationSyntax
+                {
+                    ExpressionBody: null,
+                    Body.Statements:
+                    [
+                        IfStatementSyntax
+                        {
+                            Else: null,
+                            Condition: BinaryExpressionSyntax guard,
+                            Statement: BlockSyntax { Statements: [ThrowStatementSyntax unsupported] },
+                        },
+                        ReturnStatementSyntax { Expression: InvocationExpressionSyntax asCall },
+                    ],
+                }
+                || copy.Model.GetOperation(guard) is not IBinaryOperation
+                {
+                    OperatorKind: BinaryOperatorKind.ConditionalOr,
+                    OperatorMethod: null,
+                    IsLifted: false,
+                    Type.SpecialType: SpecialType.System_Boolean,
+                    LeftOperand: IBinaryOperation
+                    {
+                        OperatorKind: BinaryOperatorKind.NotEquals,
+                        OperatorMethod: null,
+                        IsLifted: false,
+                        Type.SpecialType: SpecialType.System_Boolean,
+                        LeftOperand: IInvocationOperation size,
+                        RightOperand: ISizeOfOperation { TypeOperand.SpecialType: SpecialType.System_Byte, Type.SpecialType: SpecialType.System_Int32 },
+                    },
+                    RightOperand: IUnaryOperation
+                    {
+                        OperatorKind: UnaryOperatorKind.Not,
+                        OperatorMethod: null,
+                        IsLifted: false,
+                        Type.SpecialType: SpecialType.System_Boolean,
+                        Operand: IInvocationOperation { Syntax: InvocationExpressionSyntax supportedCall },
+                    },
+                }
+                || !IsEnumTailSizeOf(copy, size)
+                || !Bind(copy, supportedCall, 2, out AuthoredMember support)
+                || !IsEnumTailZeroParameterReturn(support, SpecialType.System_Boolean)
+                || !IsEnumTailException(copy, unsupported, "System.ArgumentException", copy.Symbol.Parameters[0])
+                || asCall.ArgumentList.Arguments is not [ArgumentSyntax storage]
+                || !IsOwnedEnumByteValueRead(copy, copy.Symbol.Parameters[0], storage)) return false;
+
+            if (support.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody.Expression: { } supportExpression }
+                || !TryEnumTailOrLeaves(support, supportExpression, 4, out ExpressionSyntax[] supportTerms)) return false;
+
+            for (int index = 0; index < supportTerms.Length; index++)
+            {
+                if (supportTerms[index] is not InvocationExpressionSyntax call
+                    || !Bind(support, call, index == 3 ? 6 : index + 3, out _)) return false;
+            }
+
+            HashSet<ISymbol> enumerations = new(SymbolEqualityComparer.Default);
+
+            for (int role = 3; role <= 6; role++)
+            {
+                AuthoredMember predicate = roles[role]!;
+
+                if (!IsEnumTailZeroParameterReturn(predicate, SpecialType.System_Boolean)
+                    || predicate.Syntax is not MethodDeclarationSyntax { Body: null, ExpressionBody.Expression: { } expression }
+                    || !TryEnumTailTypeSet(predicate, expression, role == 6 ? 47 : 1, enumerations)) return false;
+            }
+
+            if (enumerations.Count != 50
+                || positiveRange.Symbol.ReturnType.SpecialType != SpecialType.System_UInt32
+                || positiveRange.Symbol.Parameters is not [var rangeValue, var rangeName]
+                || rangeValue.Type.SpecialType != SpecialType.System_Byte
+                || rangeName.Type.SpecialType != SpecialType.System_String
+                || positiveRange.Syntax is not MethodDeclarationSyntax
+                {
+                    ExpressionBody: null,
+                    Body.Statements: [var maximumStatement, ReturnStatementSyntax { Expression: InvocationExpressionSyntax finalRangeCall }],
+                }
+                || !TryEnumTailByteLocal(positiveRange, maximumStatement, out ILocalSymbol maximumLocal, out InvocationExpressionSyntax maximumCall)
+                || !Bind(positiveRange, maximumCall, 8, out AuthoredMember maximumMember)
+                || !IsEnumTailZeroParameterReturn(maximumMember, SpecialType.System_Byte)
+                || !Bind(positiveRange, finalRangeCall, 9, out _)
+                || positiveRange.Model.GetOperation(finalRangeCall) is not IInvocationOperation { Arguments: [var finalCode, var finalMinimum, var finalMaximum, var finalName] }
+                || !IsEnumTailReference(finalCode.Value, rangeValue)
+                || !IsEnumTailByteLiteral(finalMinimum.Value, 1)
+                || !IsEnumTailReference(finalMaximum.Value, maximumLocal)
+                || !IsEnumTailReference(finalName.Value, rangeName)
+                || maximumMember.Syntax is not MethodDeclarationSyntax { ExpressionBody: null, Body.Statements: var maximumStatements }
+                || maximumStatements.Count != 11) return false;
+
+            int[] maxima = [16, 11, 8, 7, 7, 7, 6, 5, 4, 3];
+
+            int[] typeCounts = [1, 1, 1, 1, 1, 1, 2, 1, 11, 13];
+
+            HashSet<ISymbol> maximumTypes = new(SymbolEqualityComparer.Default);
+
+            for (int index = 0; index < maxima.Length; index++)
+            {
+                if (maximumStatements[index] is not IfStatementSyntax
+                    {
+                        Else: null,
+                        Condition: { } condition,
+                        Statement: BlockSyntax { Statements: [ReturnStatementSyntax returned] },
+                    }
+                    || !TryEnumTailTypeSet(maximumMember, condition, typeCounts[index], maximumTypes)
+                    || maximumMember.Model.GetOperation(returned) is not IReturnOperation { ReturnedValue: { } literal }
+                    || !IsEnumTailByteLiteral(literal, maxima[index])) return false;
+            }
+
+            if (!maximumTypes.IsSubsetOf(enumerations)
+                || maximumStatements[10] is not ReturnStatementSyntax fallback
+                || maximumMember.Model.GetOperation(fallback) is not IReturnOperation { ReturnedValue: { } fallbackValue }
+                || !IsEnumTailByteLiteral(fallbackValue, 2)) return false;
+
+            AuthoredMember range = roles[9]!;
+
+            return roles.All(static role => role is not null)
+                && range.Symbol.ReturnType.SpecialType == SpecialType.System_UInt32
+                && range.Symbol.Parameters is [var rangeCode, var rangeMinimum, var rangeMaximum, var parameterName]
+                && rangeCode.Type.SpecialType == SpecialType.System_Byte
+                && rangeMinimum.Type.SpecialType == SpecialType.System_Byte
+                && rangeMaximum.Type.SpecialType == SpecialType.System_Byte
+                && parameterName.Type.SpecialType == SpecialType.System_String
+                && range.Syntax is MethodDeclarationSyntax { Body: null, ExpressionBody.Expression: ConditionalExpressionSyntax conditional }
+                && range.Model.GetOperation(conditional) is IConditionalOperation
+                {
+                    IsRef: false,
+                    Type.SpecialType: SpecialType.System_Byte,
+                    Condition: IBinaryOperation
+                    {
+                        OperatorKind: BinaryOperatorKind.ConditionalAnd,
+                        OperatorMethod: null,
+                        IsLifted: false,
+                        Type.SpecialType: SpecialType.System_Boolean,
+                        LeftOperand: IBinaryOperation lower,
+                        RightOperand: IBinaryOperation upper,
+                    },
+                    WhenTrue: { Type.SpecialType: SpecialType.System_Byte } accepted,
+                    WhenFalse: { } rejected,
+                } selectedConditional
+                && IsEnumTailComparison(lower, BinaryOperatorKind.GreaterThanOrEqual, rangeCode, rangeMinimum)
+                && IsEnumTailComparison(upper, BinaryOperatorKind.LessThanOrEqual, rangeCode, rangeMaximum)
+                && IsEnumTailReference(accepted, rangeCode)
+                && IsEnumTailUIntResult(selectedConditional)
+                && conditional.WhenFalse is ThrowExpressionSyntax outOfRange
+                && IsEnumTailRangeThrow(range, rejected, outOfRange)
+                && IsEnumTailException(range, outOfRange, "System.ArgumentOutOfRangeException", parameterName);
+        }
+
+        private static bool IsEnumTailUIntResult(IConditionalOperation conditional)
+        {
+            // The authenticated compiler profile promotes the whole byte-valued
+            // conditional, not its true arm. Only this exact return placement fits.
+            return conditional.Type?.SpecialType == SpecialType.System_Byte
+                && conditional.Parent is IConversionOperation
+                {
+                    IsImplicit: true,
+                    IsChecked: false,
+                    IsTryCast: false,
+                    OperatorMethod: null,
+                    Type.SpecialType: SpecialType.System_UInt32,
+                    Conversion: { Exists: true, IsIdentity: false, IsNumeric: true, IsReference: false, IsUserDefined: false, MethodSymbol: null },
+                    Parent: IReturnOperation { IsImplicit: true } returned,
+                } conversion
+                && ReferenceEquals(conversion.Operand, conditional)
+                && ReferenceEquals(returned.ReturnedValue, conversion)
+                && conversion.Syntax == conditional.Syntax && returned.Syntax == conditional.Syntax;
+        }
+
+        private static bool IsEnumTailRangeThrow(AuthoredMember member, IOperation operation, ThrowExpressionSyntax syntax)
+        {
+            // These are the compiler's exact throw-expression adaptation and
+            // framework exception upcast, not primitive numeric conversions.
+            return operation is IConversionOperation
+                {
+                    IsImplicit: true,
+                    IsChecked: false,
+                    IsTryCast: false,
+                    OperatorMethod: null,
+                    Type.SpecialType: SpecialType.System_Byte,
+                    Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: false, IsUserDefined: false, MethodSymbol: null },
+                    Operand: IThrowOperation
+                    {
+                        Type: null,
+                        IsImplicit: false,
+                        Exception: IConversionOperation
+                        {
+                            IsImplicit: true,
+                            IsChecked: false,
+                            IsTryCast: false,
+                            OperatorMethod: null,
+                            Conversion: { Exists: true, IsIdentity: false, IsNumeric: false, IsReference: true, IsUserDefined: false, MethodSymbol: null },
+                            Operand: IObjectCreationOperation { IsImplicit: false, Constructor: { } constructor, Initializer: null } creation,
+                        } upcast,
+                    } thrown,
+                }
+                && operation.Syntax == syntax && thrown.Syntax == syntax
+                && upcast.Syntax == syntax.Expression && creation.Syntax == syntax.Expression
+                && SymbolEqualityComparer.Default.Equals(upcast.Type, member.Model.Compilation.GetTypeByMetadataName("System.Exception"))
+                && SymbolEqualityComparer.Default.Equals(creation.Type, member.Model.Compilation.GetTypeByMetadataName("System.ArgumentOutOfRangeException"))
+                && IsEnumTailFrameworkMethod(member.Model.Compilation, constructor, "System.ArgumentOutOfRangeException");
+        }
+
+        private static bool HasEnumTailSourceShape(AuthoredMember member, AuthoredMember root, bool generic)
+        {
+            IMethodSymbol symbol = member.Symbol;
+
+            return symbol.MethodKind == MethodKind.Ordinary
+                && symbol.IsStatic && !symbol.IsExtern && !symbol.IsAbstract && !symbol.IsVirtual && !symbol.IsOverride
+                && !symbol.IsVararg && symbol.ReducedFrom is null && !symbol.ReturnsByRef && !symbol.ReturnsByRefReadonly
+                && symbol.ContainingType.Arity == 0
+                && SymbolEqualityComparer.Default.Equals(symbol.ContainingType, root.Symbol.ContainingType)
+                && SymbolEqualityComparer.Default.Equals(symbol.ContainingAssembly, member.Model.Compilation.Assembly)
+                && ReferenceEquals(member.Model.Compilation, root.Model.Compilation)
+                && member.Syntax.SyntaxTree == root.Syntax.SyntaxTree
+                && member.Model.Compilation.ContainsSyntaxTree(member.Syntax.SyntaxTree)
+                && symbol.DeclaringSyntaxReferences is [var declaration]
+                && declaration.SyntaxTree == member.Syntax.SyntaxTree && declaration.Span == member.Syntax.Span
+                && member.Syntax is MethodDeclarationSyntax { Body: not null, ExpressionBody: null } or MethodDeclarationSyntax { Body: null, ExpressionBody: not null }
+                && (generic ? HasFiniteEnumMethodShape(symbol, member.Model.Compilation) : symbol.Arity == 0)
+                && symbol.Parameters.All(static parameter => parameter.RefKind == RefKind.None && !parameter.IsOptional && !parameter.IsParams)
+                && !member.Syntax.DescendantNodes().Any(static syntax => syntax is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax);
+        }
+
+        private static bool IsEnumTailZeroParameterReturn(AuthoredMember member, SpecialType result)
+        {
+            return member.Symbol.Parameters.Length == 0 && member.Symbol.ReturnType.SpecialType == result;
+        }
+
+        private static bool TryEnumTailByteLocal(AuthoredMember member, StatementSyntax statement, out ILocalSymbol local, out InvocationExpressionSyntax call)
+        {
+            local = null!;
+
+            call = null!;
+
+            if (statement is not LocalDeclarationStatementSyntax
+                {
+                    Modifiers.Count: 0,
+                    UsingKeyword.RawKind: 0,
+                    AwaitKeyword.RawKind: 0,
+                    Declaration.Variables: [VariableDeclaratorSyntax { Initializer.Value: InvocationExpressionSyntax initializer } declaration],
+                }
+                || member.Model.GetDeclaredSymbol(declaration) is not ILocalSymbol { RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Byte } selected
+                || !SymbolEqualityComparer.Default.Equals(selected.ContainingSymbol, member.Symbol)
+                || member.Model.GetOperation(initializer) is not IInvocationOperation { Type.SpecialType: SpecialType.System_Byte }) return false;
+
+            local = selected;
+
+            call = initializer;
+
+            return true;
+        }
+
+        private static bool IsEnumTailReference(IOperation operation, ISymbol symbol)
+        {
+            return operation.Syntax is IdentifierNameSyntax
+                && (operation is IParameterReferenceOperation parameter && SymbolEqualityComparer.Default.Equals(parameter.Parameter, symbol)
+                    || operation is ILocalReferenceOperation local && local.Local.RefKind == RefKind.None && SymbolEqualityComparer.Default.Equals(local.Local, symbol));
+        }
+
+        private static bool IsEnumTailName(IOperation operation, IParameterSymbol parameter)
+        {
+            return operation is INameOfOperation { Type.SpecialType: SpecialType.System_String, Argument: { } argument }
+                && IsEnumTailReference(argument, parameter)
+                && operation.ConstantValue is { HasValue: true, Value: string name } && name == parameter.Name;
+        }
+
+        private static bool IsEnumTailByteLiteral(IOperation operation, int expected)
+        {
+            // Only the actual fitting literal-to-byte conversion in a byte slot.
+            return expected is >= byte.MinValue and <= byte.MaxValue
+                && operation is IConversionOperation
+                {
+                    IsImplicit: true,
+                    OperatorMethod: null,
+                    Type.SpecialType: SpecialType.System_Byte,
+                    Conversion: { Exists: true, IsIdentity: false, IsReference: false, IsUserDefined: false, MethodSymbol: null },
+                    Operand: ILiteralOperation { Syntax: LiteralExpressionSyntax, Type.SpecialType: SpecialType.System_Int32, ConstantValue: { HasValue: true, Value: int value } },
+                }
+                && value == expected;
+        }
+
+        private static bool IsEnumTailPromotion(IOperation operation, SpecialType result, IParameterSymbol parameter)
+        {
+            return parameter.Type.SpecialType == SpecialType.System_Byte
+                && result is SpecialType.System_Int32 or SpecialType.System_UInt32
+                && operation is IConversionOperation
+                {
+                    IsImplicit: true,
+                    OperatorMethod: null,
+                    Conversion: { Exists: true, IsNumeric: true, IsUserDefined: false, MethodSymbol: null },
+                    Operand: { Type.SpecialType: SpecialType.System_Byte } operand,
+                }
+                && operation.Type?.SpecialType == result
+                && IsEnumTailReference(operand, parameter);
+        }
+
+        private static bool IsEnumTailComparison(IBinaryOperation operation, BinaryOperatorKind kind, IParameterSymbol left, IParameterSymbol right)
+        {
+            return operation.OperatorKind == kind && operation.OperatorMethod is null && !operation.IsLifted
+                && operation.Type?.SpecialType == SpecialType.System_Boolean
+                && IsEnumTailPromotion(operation.LeftOperand, SpecialType.System_Int32, left)
+                && IsEnumTailPromotion(operation.RightOperand, SpecialType.System_Int32, right);
+        }
+
+        private static bool TryEnumTailOrLeaves(AuthoredMember member, ExpressionSyntax expression, int count, out ExpressionSyntax[] leaves)
+        {
+            List<ExpressionSyntax> pending = [expression];
+
+            List<ExpressionSyntax> terms = [];
+
+            // Each expansion consumes one of this fixed profile's finite ORs.
+            for (int index = 0; index < pending.Count && pending.Count <= count * 2 - 1; index++)
+            {
+                ExpressionSyntax current = pending[index];
+
+                if (current is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.LogicalOrExpression))
+                {
+                    if (member.Model.GetOperation(binary) is not IBinaryOperation
+                        {
+                            OperatorKind: BinaryOperatorKind.ConditionalOr,
+                            OperatorMethod: null,
+                            IsLifted: false,
+                            Type.SpecialType: SpecialType.System_Boolean,
+                            LeftOperand.Type.SpecialType: SpecialType.System_Boolean,
+                            RightOperand.Type.SpecialType: SpecialType.System_Boolean,
+                        }) break;
+
+                    pending.Add(binary.Left);
+
+                    pending.Add(binary.Right);
+                }
+                else terms.Add(current);
+            }
+
+            leaves = terms.OrderBy(static term => term.SpanStart).ToArray();
+
+            return pending.Count == count * 2 - 1 && leaves.Length == count;
+        }
+
+        private static bool TryEnumTailTypeSet(AuthoredMember member, ExpressionSyntax expression, int count, HashSet<ISymbol> types)
+        {
+            if (!TryEnumTailOrLeaves(member, expression, count, out ExpressionSyntax[] terms)) return false;
+
+            foreach (ExpressionSyntax term in terms)
+            {
+                if (term is not BinaryExpressionSyntax { Left: TypeOfExpressionSyntax, Right: TypeOfExpressionSyntax }
+                    || member.Model.GetOperation(term) is not IBinaryOperation
+                    {
+                        OperatorKind: BinaryOperatorKind.Equals,
+                        IsLifted: false,
+                        Type.SpecialType: SpecialType.System_Boolean,
+                        OperatorMethod: { } equality,
+                        LeftOperand: ITypeOfOperation left,
+                        RightOperand: ITypeOfOperation right,
+                    }
+                    || !SymbolEqualityComparer.Default.Equals(left.TypeOperand, member.Symbol.TypeParameters[0])
+                    || !IsClosedFiniteEnum(right.TypeOperand)
+                    || right.TypeOperand is not INamedTypeSymbol { EnumUnderlyingType.SpecialType: SpecialType.System_Byte } enumeration
+                    || !SymbolEqualityComparer.Default.Equals(enumeration.ContainingAssembly, member.Model.Compilation.Assembly)
+                    || !IsEnumTailFrameworkMethod(member.Model.Compilation, equality, "System.Type")
+                    || equality.MethodKind != MethodKind.UserDefinedOperator || equality.Name != "op_Equality"
+                    || !equality.IsStatic || equality.Arity != 0 || equality.Parameters is not [var first, var second]
+                    || equality.ReturnType.SpecialType != SpecialType.System_Boolean
+                    || !SymbolEqualityComparer.Default.Equals(first.Type, equality.ContainingType)
+                    || !SymbolEqualityComparer.Default.Equals(second.Type, equality.ContainingType)
+                    || !SymbolEqualityComparer.Default.Equals(left.Type, equality.ContainingType)
+                    || !SymbolEqualityComparer.Default.Equals(right.Type, equality.ContainingType)
+                    || !types.Add(enumeration)) return false;
+            }
+
+            return true;
+        }
+
+        // Runtime Type Identity Comparison. Type == and != are classified when each operand is a
+        // typeof expression or an exact System.Object.GetType() call, so both sides are always
+        // RuntimeType values and the comparison is reference identity. An arbitrary Type value can
+        // be any subclass whose Equals is authored, so it stays unclassified.
+        private static bool IsReviewedExactTypeOfEqualityOperator(
+            IMethodSymbol method,
+            SyntaxNode? node,
+            SemanticModel? model)
+        {
+            return node is BinaryExpressionSyntax
+                && model?.GetOperation(node) is IBinaryOperation
+                {
+                    OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals,
+                    IsLifted: false,
+                    Type.SpecialType: SpecialType.System_Boolean,
+                    OperatorMethod: { } selected,
+                    LeftOperand: { } left,
+                    RightOperand: { } right,
+                } comparison
+                && SymbolEqualityComparer.Default.Equals(selected, method)
+                && IsEnumTailFrameworkMethod(model.Compilation, method, "System.Type")
+                && method.MethodKind == MethodKind.UserDefinedOperator
+                && method.Name == (comparison.OperatorKind == BinaryOperatorKind.Equals ? "op_Equality" : "op_Inequality")
+                && method.IsStatic
+                && method.Arity == 0
+                && method.Parameters is [var first, var second]
+                && method.ReturnType.SpecialType == SpecialType.System_Boolean
+                && SymbolEqualityComparer.Default.Equals(first.Type, method.ContainingType)
+                && SymbolEqualityComparer.Default.Equals(second.Type, method.ContainingType)
+                && IsRuntimeTypeIdentityOperand(left, method.ContainingType, model.Compilation)
+                && IsRuntimeTypeIdentityOperand(right, method.ContainingType, model.Compilation);
+        }
+
+        private static bool IsRuntimeTypeIdentityOperand(IOperation operand, INamedTypeSymbol type, Compilation compilation)
+        {
+            if (!SymbolEqualityComparer.Default.Equals(operand.Type, type)) return false;
+
+            if (operand is ITypeOfOperation) return operand.Syntax is TypeOfExpressionSyntax;
+
+            return operand is IInvocationOperation
+            {
+                TargetMethod: { } getType,
+                Instance: { } receiver,
+                IsVirtual: false,
+                Arguments.Length: 0,
+            } call
+                && call.Syntax is InvocationExpressionSyntax
+                && getType is { Name: "GetType", MethodKind: MethodKind.Ordinary, IsStatic: false, Arity: 0, Parameters.IsEmpty: true }
+                && SymbolEqualityComparer.Default.Equals(getType.ReturnType, type)
+                && IsEnumTailFrameworkMethod(compilation, getType, "System.Object")
+                && OperandUsesOnlyBuiltInConversions(receiver);
+        }
+
+        private static bool IsEnumTailFrameworkMethod(Compilation compilation, IMethodSymbol method, string metadataType)
+        {
+            IAssemblySymbol core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+
+            AssemblyIdentity assembly = core.Identity;
+
+            string token = Convert.ToHexString(assembly.PublicKeyToken.AsSpan());
+
+            return SymbolEqualityComparer.Default.Equals(method.ContainingAssembly, core)
+                && SymbolEqualityComparer.Default.Equals(method.ContainingType, compilation.GetTypeByMetadataName(metadataType))
+                && assembly.Version == new Version(10, 0, 0, 0) && string.IsNullOrEmpty(assembly.CultureName)
+                && !assembly.IsRetargetable && assembly.ContentType == System.Reflection.AssemblyContentType.Default
+                && (assembly.Name == "System.Private.CoreLib" && token == "7CEC85D7BEA7798E"
+                    || assembly.Name == "System.Runtime" && token == "B03F5F7F11D50A3A")
+                && method.DeclaringSyntaxReferences.Length == 0 && method.ContainingType.DeclaringSyntaxReferences.Length == 0
+                && !method.Locations.Any(static location => location.IsInSource)
+                && !method.IsVararg && method.ReducedFrom is null && !method.ReturnsByRef && !method.ReturnsByRefReadonly
+                && method.Parameters.All(static parameter => parameter.RefKind == RefKind.None && !parameter.IsParams && !parameter.IsOptional);
+        }
+
+        private static bool IsEnumTailSizeOf(AuthoredMember member, IInvocationOperation operation)
+        {
+            IMethodSymbol method = operation.TargetMethod;
+
+            return operation.Syntax is InvocationExpressionSyntax && !operation.IsVirtual && operation.Instance is null
+                && operation.Arguments.Length == 0 && operation.Type?.SpecialType == SpecialType.System_Int32
+                && IsEnumTailFrameworkMethod(member.Model.Compilation, method, "System.Runtime.CompilerServices.Unsafe")
+                && method.Name == "SizeOf" && method.MethodKind == MethodKind.Ordinary && method.IsStatic
+                && method.Arity == 1 && method.Parameters.Length == 0 && method.ReturnType.SpecialType == SpecialType.System_Int32
+                && SymbolEqualityComparer.Default.Equals(method.TypeArguments[0], member.Symbol.TypeParameters[0])
+                && method.OriginalDefinition.TypeParameters[0].TypeParameterKind == TypeParameterKind.Method
+                && method.OriginalDefinition.TypeParameters[0].Ordinal == 0
+                && SymbolEqualityComparer.Default.Equals(method.OriginalDefinition.TypeParameters[0].ContainingSymbol, method.OriginalDefinition);
+        }
+
+        private static bool IsEnumTailException(AuthoredMember member, SyntaxNode syntax, string metadataType, IParameterSymbol parameter)
+        {
+            ExpressionSyntax? expression = syntax switch
+            {
+                ThrowStatementSyntax statement => statement.Expression,
+                ThrowExpressionSyntax thrown => thrown.Expression,
+                _ => null,
+            };
+
+            if (expression is not ObjectCreationExpressionSyntax { Initializer: null }
+                || member.Model.GetOperation(syntax) is not IThrowOperation
+                || member.Model.GetOperation(expression) is not IObjectCreationOperation { Constructor: { } constructor, Initializer: null } creation
+                || !IsEnumTailFrameworkMethod(member.Model.Compilation, constructor, metadataType)
+                || constructor.MethodKind != MethodKind.Constructor || constructor.IsStatic || constructor.Arity != 0
+                || constructor.Parameters.Any(static formal => formal.Type.SpecialType != SpecialType.System_String)
+                || creation.Arguments.Where((argument, index) => argument.ArgumentKind != ArgumentKind.Explicit
+                    || argument.Parameter?.Ordinal != index || !argument.InConversion.IsIdentity || !argument.OutConversion.IsIdentity).Any()) return false;
+
+            if (metadataType == "System.ArgumentException")
+            {
+                return creation.Arguments is [var message, var name]
+                    && constructor.Parameters.Length == 2
+                    && message.Value is ILiteralOperation
+                    {
+                        Type.SpecialType: SpecialType.System_String,
+                        ConstantValue: { HasValue: true, Value: "The enum type is not part of the Covenant policy-v1 manifest." },
+                    }
+                    && IsEnumTailName(name.Value, parameter);
+            }
+
+            return metadataType == "System.ArgumentOutOfRangeException"
+                && constructor.Parameters.Length == 1 && creation.Arguments is [var parameterName]
+                && IsEnumTailReference(parameterName.Value, parameter);
+        }
+
+        private static bool HasImmediateEnumByteMethodShape(AuthoredMember member)
+        {
+            return HasFiniteEnumMethodShape(member.Symbol, member.Model.Compilation)
+                && !member.Symbol.IsExtern
+                && member.Syntax is MethodDeclarationSyntax { Body: not null } or MethodDeclarationSyntax { ExpressionBody: not null }
+                && member.Symbol.Parameters.Length == 1
+                && SymbolEqualityComparer.Default.Equals(member.Symbol.Parameters[0].Type, member.Symbol.TypeParameters[0])
+                && member.Symbol.ReturnType.SpecialType == SpecialType.System_Byte;
+        }
+
+        private static IdentifierNameSyntax? SingleRuntimeEnumParameterUse(AuthoredMember member, IParameterSymbol parameter)
+        {
+            IdentifierNameSyntax? runtime = null;
+
+            // Include nested callable syntax: capture and unknown dependent uses
+            // cannot disappear behind a false existential demand or an absent site.
+            foreach (IdentifierNameSyntax use in member.Syntax.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(member.Model.GetSymbolInfo(use).Symbol, parameter)) continue;
+
+                if (use.Ancestors().TakeWhile(node => node != member.Syntax).Any(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax)) return null;
+
+                if (use.Parent is ArgumentSyntax nameArgument
+                    && nameArgument.Parent is ArgumentListSyntax { Parent: InvocationExpressionSyntax nameCall }
+                    && member.Model.GetOperation(nameCall) is INameOfOperation { Argument: IParameterReferenceOperation nameReference }
+                    && SymbolEqualityComparer.Default.Equals(nameReference.Parameter, parameter)) continue;
+
+                if (runtime is not null) return null;
+
+                runtime = use;
+            }
+
+            return runtime;
+        }
+
+        private static bool IsImmediateEnumByteReturn(AuthoredMember member, IInvocationOperation invocation, InvocationExpressionSyntax call)
+        {
+            if (!(call.Parent is ReturnStatementSyntax { Expression: { } returned } && returned == call
+                    || call.Parent is ArrowExpressionClauseSyntax { Expression: { } expression } arrow
+                        && expression == call && arrow.Parent == member.Syntax)) return false;
+
+            IOperation consumed = invocation;
+
+            while (consumed.Parent is IConversionOperation { Conversion.IsIdentity: true, OperatorMethod: null } conversion)
+            {
+                consumed = conversion;
+            }
+
+            return consumed.Parent is IReturnOperation result
+                && result.ReturnedValue == consumed
+                && consumed.Type?.SpecialType == SpecialType.System_Byte;
+        }
+
+        private static bool IsOwnedEnumByteValueRead(
+            AuthoredMember target,
+            IParameterSymbol parameter,
+            ArgumentSyntax argument)
+        {
+            if (!HasFiniteEnumMethodShape(target.Symbol, target.Model.Compilation)
+                || target.Symbol.Parameters.Length != 1
+                || !SymbolEqualityComparer.Default.Equals(target.Symbol.Parameters[0], parameter)
+                || !SymbolEqualityComparer.Default.Equals(parameter.Type, target.Symbol.TypeParameters[0])
+                || target.Symbol.ReturnType.SpecialType != SpecialType.System_Byte
+                || !argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword)
+                || EnumCopyOperand(argument.Expression) is not IdentifierNameSyntax storage
+                || !SymbolEqualityComparer.Default.Equals(target.Model.GetSymbolInfo(storage).Symbol, parameter)
+                || target.Model.GetOperation(argument) is not IArgumentOperation selectedArgument
+                || selectedArgument.Parent is not IInvocationOperation invocation
+                || invocation.Syntax is not InvocationExpressionSyntax call
+                || invocation.Arguments.Length != 1
+                || invocation.IsVirtual
+                || selectedArgument.Parameter is not { RefKind: RefKind.Ref } selectedParameter
+                || !selectedArgument.InConversion.IsIdentity || !selectedArgument.OutConversion.IsIdentity
+                || call.Ancestors().Any(static node => node is AnonymousFunctionExpressionSyntax or LocalFunctionStatementSyntax))
+            {
+                return false;
+            }
+
+            IOperation storageOperation = selectedArgument.Value;
+
+            while (storageOperation is IParenthesizedOperation parenthesized) storageOperation = parenthesized.Operand;
+
+            if (storageOperation is not IParameterReferenceOperation storageReference
+                || !SymbolEqualityComparer.Default.Equals(storageReference.Parameter, parameter)) return false;
+
+            IMethodSymbol selected = invocation.TargetMethod;
+
+            IMethodSymbol definition = selected.OriginalDefinition;
+
+            AssemblyIdentity assembly = selected.ContainingAssembly.Identity;
+
+            string token = Convert.ToHexString(assembly.PublicKeyToken.AsSpan());
+
+            if (!SymbolEqualityComparer.Default.Equals(selected.ContainingAssembly, target.Model.Compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly)
+                || assembly.Version != new Version(10, 0, 0, 0)
+                || !string.IsNullOrEmpty(assembly.CultureName)
+                || assembly.IsRetargetable
+                || assembly.ContentType != System.Reflection.AssemblyContentType.Default
+                || !(assembly.Name == "System.Private.CoreLib" && token == "7CEC85D7BEA7798E"
+                    || assembly.Name == "System.Runtime" && token == "B03F5F7F11D50A3A")
+                || selected.Name != "As"
+                || !SymbolEqualityComparer.Default.Equals(selected.ContainingType, target.Model.Compilation.GetTypeByMetadataName("System.Runtime.CompilerServices.Unsafe"))
+                || selected.DeclaringSyntaxReferences.Length != 0
+                || selected.ContainingType.DeclaringSyntaxReferences.Length != 0
+                || selected.Locations.Any(static location => location.IsInSource)
+                || selected.MethodKind != MethodKind.Ordinary || !selected.IsStatic
+                || selected.ReducedFrom is not null || selected.IsVararg
+                || selected.Arity != 2 || selected.Parameters.Length != 1
+                || !selected.ReturnsByRef || selected.ReturnsByRefReadonly
+                || selected.Parameters[0].RefKind != RefKind.Ref
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter, selected.Parameters[0])
+                || !SymbolEqualityComparer.Default.Equals(selected.TypeArguments[0], target.Symbol.TypeParameters[0])
+                || selected.TypeArguments[1].SpecialType != SpecialType.System_Byte
+                || !SymbolEqualityComparer.Default.Equals(selected.Parameters[0].Type, selected.TypeArguments[0])
+                || !SymbolEqualityComparer.Default.Equals(selected.ReturnType, selected.TypeArguments[1])
+                || definition.TypeParameters[0].Ordinal != 0 || definition.TypeParameters[1].Ordinal != 1
+                || definition.TypeParameters.Any(type => type.TypeParameterKind != TypeParameterKind.Method
+                    || !SymbolEqualityComparer.Default.Equals(type.ContainingSymbol, definition))
+                || !SymbolEqualityComparer.Default.Equals(definition.Parameters[0].Type, definition.TypeParameters[0])
+                || !SymbolEqualityComparer.Default.Equals(definition.ReturnType, definition.TypeParameters[1])
+                || !SymbolEqualityComparer.Default.Equals(selectedParameter.OriginalDefinition, definition.Parameters[0]))
+            {
+                return false;
+            }
+
+            // Conditional compiler/source profile only: the intended intrinsic
+            // returns an alias, and this exact authored form consumes a byte value.
+            // This neither proves native lowering nor skips type/size guards/effects.
+            if (!(call.Parent is ReturnStatementSyntax { Expression: { } returned } && returned == call
+                    || call.Parent is ArrowExpressionClauseSyntax { Expression: { } expression } arrow
+                        && expression == call && arrow.Parent == target.Syntax)) return false;
+
+            IOperation consumed = invocation;
+
+            while (consumed.Parent is IConversionOperation { Conversion.IsIdentity: true, OperatorMethod: null } conversion)
+            {
+                consumed = conversion;
+            }
+
+            if (consumed.Parent is not IReturnOperation returnedOperation
+                || returnedOperation.ReturnedValue != consumed
+                || consumed.Type?.SpecialType != SpecialType.System_Byte) return false;
+
+            int storageUses = 0;
+
+            foreach (IdentifierNameSyntax use in target.Syntax.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+            {
+                if (!SymbolEqualityComparer.Default.Equals(target.Model.GetSymbolInfo(use).Symbol, parameter)) continue;
+
+                if (use == storage)
+                {
+                    storageUses++;
+                    continue;
+                }
+
+                if (use.Parent is ArgumentSyntax nameArgument
+                    && nameArgument.Parent is ArgumentListSyntax { Parent: InvocationExpressionSyntax nameCall }
+                    && target.Model.GetOperation(nameCall) is INameOfOperation { Argument: IParameterReferenceOperation nameReference }
+                    && SymbolEqualityComparer.Default.Equals(nameReference.Parameter, parameter)) continue;
+
+                return false;
+            }
+
+            return storageUses == 1;
+        }
+
         private bool RequiresExactValueProvenance(
             AuthoredMember target,
             IParameterSymbol parameter)
@@ -27995,9 +34437,40 @@ internal static partial class HostedGrimoireProducerInventory
 
             EvaluationEnvironmentCounter(target).ExactValueProvenanceVisits++;
 
+            if (IsExactCancellationToken(parameter.Type))
+            {
+                return false;
+            }
+
             if (RequiresSourceProvenance(parameter.Type))
             {
                 return true;
+            }
+
+            foreach (ExpressionSyntax expression in target.Syntax.DescendantNodesAndSelf(node =>
+                node == target.Syntax
+                    || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax)
+                .OfType<ExpressionSyntax>())
+            {
+                // A closed-value record whose authored Equals can reach no producer site reads no operand
+                // provenance: the canonical traversal binds that Equals with no arguments. Every other
+                // record still needs the actual argument preserved. Keeping the demand for a pure
+                // closed-value comparison would split every caller of a one-line comparison helper into
+                // one state per call site.
+                if (UserDefinedOperatorAt(target, expression) is { Method: { IsImplicitlyDeclared: true,
+                        ContainingType.IsRecord: true, Name: "op_Equality" or "op_Inequality" } } equality
+                    && equality.Operands.Any(operand => operand.Syntax is ExpressionSyntax source
+                        && ExpressionDependsOnSymbol(target, source, parameter,
+                            new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
+                    && !IsProvenanceFreeClosedValueRecordEquality(target, equality.Method))
+                {
+                    // Preserve the actual argument before an authored Equals receiver
+                    // is bound; a concrete record type alone does not identify its fields.
+                    return true;
+                }
+
+                // The Structural Operand Rule classifies an exact framework scalar conversion from its own
+                // operand syntax, so it never reads the value a caller passed for one of its formals.
             }
 
             if (target.Syntax.DescendantNodesAndSelf(node =>
@@ -28016,6 +34489,40 @@ internal static partial class HostedGrimoireProducerInventory
                                     SymbolEqualityComparer.Default), symbols: dependencySymbols)))
             {
                 return true;
+            }
+
+            // The new numeric eligibility guard must see incoming compiler-contextual
+            // values. Request only arguments consumed by its exact authenticated shapes;
+            // existing binding and dependency machinery carries those complete sources.
+            foreach (ExpressionSyntax use in target.Syntax.DescendantNodesAndSelf(node =>
+                node == target.Syntax
+                    || node is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax)
+                .OfType<ExpressionSyntax>()
+                .Where(static expression => expression is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax))
+            {
+                (IMethodSymbol? Method, IEnumerable<IArgumentOperation> Arguments) selected = target.Model.GetOperation(use) switch
+                {
+                    IInvocationOperation invocation => (invocation.TargetMethod, invocation.Arguments),
+                    IObjectCreationOperation creation => (creation.Constructor, creation.Arguments),
+                    _ => (null, []),
+                };
+
+                // Only the consumers that still read a caller's value keep the demand: the Long Rest
+                // histogram arguments (hierarchy observation) and the primitive queue receiver (its default
+                // origin). The pure float intrinsics and the queue arguments need only the argument boundary.
+                if (selected.Method is { } method
+                    && (IsExactPrimitiveQueueMember(method) || IsExactLongRestHistogramRecord(method))
+                    && (IsExactLongRestHistogramRecord(method)
+                            && selected.Arguments.Any(argument => argument.Value.Syntax is ExpressionSyntax expression
+                                && ExpressionDependsOnSymbol(target, expression, parameter,
+                                    new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols))
+                        || IsExactPrimitiveQueueMember(method) && target.Model.GetOperation(use) is IInvocationOperation
+                            { Instance.Syntax: ExpressionSyntax receiver }
+                            && ExpressionDependsOnSymbol(target, receiver, parameter,
+                                new HashSet<ISymbol>(SymbolEqualityComparer.Default), symbols: dependencySymbols)))
+                {
+                    return true;
+                }
             }
 
             bool cleanupCapable =
@@ -28141,7 +34648,8 @@ internal static partial class HostedGrimoireProducerInventory
                         SyntaxKind.RefKeyword or SyntaxKind.OutKeyword
                     && SymbolEqualityComparer.Default.Equals(
                         target.Model.GetSymbolInfo(argument.Expression).Symbol,
-                        parameter))
+                        parameter)
+                    && !IsOwnedEnumByteValueRead(target, parameter, argument))
                 {
                     return true;
                 }
@@ -28207,7 +34715,8 @@ internal static partial class HostedGrimoireProducerInventory
                     bool cleanupCapableReceiverUse = cleanupCapable
                         && (receiverType is null
                             || TypeMayCarryCleanupProvenance(receiverType))
-                        && !IsTrustedNonOwningSafeHandleObservation(method);
+                        && !IsTrustedNonOwningSafeHandleObservation(method)
+                        && !IsTrustedNonOwningProviderObservation(method);
 
                     if (receiverTargetCarriesCleanupState
                         || cleanupCapableReceiverUse)
@@ -28234,9 +34743,17 @@ internal static partial class HostedGrimoireProducerInventory
                             continue;
                         }
 
+                        IParameterSymbol destination = callee.Symbol.Parameters[sourceParameter.Ordinal];
+
+                        if (IsEnumConstrainedParameter(callee, destination)
+                            && !IsPlainOwnEnumForwarding(target, parameter, callee, destination, argument))
+                        {
+                            return true;
+                        }
+
                         if (RequiresExactValueProvenance(
                             callee,
-                            callee.Symbol.Parameters[sourceParameter.Ordinal],
+                            destination,
                             visited))
                         {
                             return true;
@@ -28501,7 +35018,18 @@ internal static partial class HostedGrimoireProducerInventory
                     : [];
             }
 
-            return AuthoredMembers
+            // The members that implement an interface method are the members of the program and the method alone decide, and the members of the
+            // program are fixed once the graph is made, so the answer for a method is read once.
+            if (!interfaceReceiverTargets.TryGetValue(method, out AuthoredMember[]? targets))
+            {
+                interfaceReceiverTargets.Add(method, targets = InterfaceReceiverTargetsOf(method));
+            }
+
+            return targets;
+        }
+
+        private AuthoredMember[] InterfaceReceiverTargetsOf(IMethodSymbol method) =>
+            AuthoredMembers
                 .Where(candidate =>
                     candidate.Symbol.ContainingType.AllInterfaces
                         .Where(contract =>
@@ -28519,7 +35047,8 @@ internal static partial class HostedGrimoireProducerInventory
                                 candidate.Symbol.OriginalDefinition)))
                 .DistinctBy(MemberIdentity)
                 .ToArray();
-        }
+
+        private readonly Dictionary<IMethodSymbol, AuthoredMember[]> interfaceReceiverTargets = new(ReferenceEqualityComparer.Instance);
 
         private bool PrimaryConstructorCapturedReceiverCarriesCleanupState(
             AuthoredMember member,
@@ -28615,6 +35144,11 @@ internal static partial class HostedGrimoireProducerInventory
             ISymbol captured,
             HashSet<(GraphMemberIdentity Member, int Parameter)> path)
         {
+            if (captured is IParameterSymbol { Type: { } capturedType } && IsExactCancellationToken(capturedType))
+            {
+                return false;
+            }
+
             foreach (SyntaxNode node in callback.Syntax.DescendantNodesAndSelf(
                 candidate => candidate == callback.Syntax
                     || candidate is not AnonymousFunctionExpressionSyntax
@@ -28681,7 +35215,8 @@ internal static partial class HostedGrimoireProducerInventory
                         continue;
                     }
 
-                    if (RequiresExactValueProvenance(
+                    if (IsEnumConstrainedParameter(callee, callee.Symbol.Parameters[sourceParameter.Ordinal])
+                        || RequiresExactValueProvenance(
                         callee,
                         callee.Symbol.Parameters[sourceParameter.Ordinal],
                         path))
@@ -28920,7 +35455,8 @@ internal static partial class HostedGrimoireProducerInventory
             bool complete = true;
 
             foreach (ExpressionSyntax candidate in expression
-                .DescendantNodesAndSelf()
+                .DescendantNodesAndSelf(node => node is not InvocationExpressionSyntax
+                    || member.Model.GetOperation(node) is not INameOfOperation)
                 .OfType<ExpressionSyntax>())
             {
                 if (analysis is not null)
@@ -29499,14 +36035,43 @@ internal static partial class HostedGrimoireProducerInventory
                 use.SpanStart);
         }
 
+        // The work budget of one callable-mutation query. It is a field and not a local so that LimitsAreFrozen can pin it.
+        private const int MaxCallableWork = 256;
+
+        // Whether a callable written in the member can mutate the symbol between two positions is decided by the member's syntax, the symbol and the
+        // two positions, bound by the member's semantic model, so the answer is read once per model and query. The memo of a model is let go with
+        // the model, and a symbol is a symbol of the compilation its model belongs to, so no answer is read for another compilation.
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<SemanticModel, System.Collections.Concurrent.ConcurrentDictionary<(SyntaxNode Member, ISymbol Symbol, int Before, int After), bool>> InvokedCallableMutations = new();
+
+        private sealed class InvokedCallableMutationComparer : IEqualityComparer<(SyntaxNode Member, ISymbol Symbol, int Before, int After)>
+        {
+            internal static readonly InvokedCallableMutationComparer Instance = new();
+
+            public bool Equals((SyntaxNode Member, ISymbol Symbol, int Before, int After) left, (SyntaxNode Member, ISymbol Symbol, int Before, int After) right) =>
+                ReferenceEquals(left.Member, right.Member)
+                && left.Before == right.Before
+                && left.After == right.After
+                && SymbolEqualityComparer.Default.Equals(left.Symbol, right.Symbol);
+
+            public int GetHashCode((SyntaxNode Member, ISymbol Symbol, int Before, int After) key) =>
+                HashCode.Combine(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Member), SymbolEqualityComparer.Default.GetHashCode(key.Symbol), key.Before, key.After);
+        }
+
         private static bool InvokedCallableMayMutateSymbol(
             AuthoredMember member,
             ISymbol symbol,
             int before,
-            int after = int.MinValue)
-        {
-            const int MaxCallableWork = 256;
+            int after = int.MinValue) =>
+            InvokedCallableMutations
+                .GetValue(member.Model, static _ => new(InvokedCallableMutationComparer.Instance))
+                .GetOrAdd((member.Syntax, symbol, before, after), static (key, owner) => ComputeInvokedCallableMayMutateSymbol(owner, key.Symbol, key.Before, key.After), member);
 
+        private static bool ComputeInvokedCallableMayMutateSymbol(
+            AuthoredMember member,
+            ISymbol symbol,
+            int before,
+            int after)
+        {
             int work = 0;
 
             Dictionary<IMethodSymbol, LocalFunctionStatementSyntax> localFunctions =
@@ -29836,6 +36401,80 @@ internal static partial class HostedGrimoireProducerInventory
                 || SymbolIsStableWithin(member, symbol, expression.SpanStart, through);
         }
 
+        private bool IsExactConditionalNullCleanupValue(
+            AuthoredMember member,
+            InvocationExpressionSyntax call,
+            ExpressionSyntax receiver)
+        {
+            if (call.Expression is not MemberBindingExpressionSyntax
+                || call.Parent is not ConditionalAccessExpressionSyntax conditional
+                || conditional.WhenNotNull != call
+                || conditional.Expression != receiver)
+            {
+                return false;
+            }
+
+            HashSet<ISymbol> path = new(SymbolEqualityComparer.Default);
+
+            for (int work = 0; work < CleanupProvenanceContext.MaximumWork; work++)
+            {
+                if (!TryNormalizeBuiltInCleanupValue(member.Model, receiver, out receiver))
+                {
+                    return false;
+                }
+
+                if (IsSemanticallyEmptyCleanupValue(member.Model, receiver))
+                {
+                    return true;
+                }
+
+                if (member.Model.GetSymbolInfo(receiver).Symbol is not { } symbol
+                    || symbol is not (ILocalSymbol or IParameterSymbol)
+                    || !path.Add(symbol)
+                    || !IsStableAcrossAdmissionCleanupBackEdges(member, receiver, symbol))
+                {
+                    return false;
+                }
+
+                if (symbol is IParameterSymbol
+                    {
+                        ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor } constructor,
+                    } constructorParameter
+                    && (ResolveConstructorContextTarget(constructor, member.Model.Compilation) is not { } constructorMember
+                        || HasConstructorDependencyMutation(constructorMember, constructorParameter)))
+                {
+                    return false;
+                }
+
+                if (TryResolveStableBoundValueSource(member, receiver, out BoundValueSource? bound)
+                    && bound is not null)
+                {
+                    member = bound.Caller;
+
+                    receiver = bound.Expression;
+
+                    continue;
+                }
+
+                if (symbol is ILocalSymbol
+                    && symbol.DeclaringSyntaxReferences.SingleOrDefault()?.GetSyntax() is
+                        VariableDeclaratorSyntax { Initializer.Value: { } initializer } declaration
+                    && declaration.SyntaxTree == member.Syntax.SyntaxTree
+                    && member.Syntax.Span.Contains(declaration.Span)
+                    && SymbolIsStableWithin(member, symbol, declaration.Span.End, receiver.SpanStart)
+                    && RecoveryTupleSourceIsStable(member, symbol, receiver, allowSimpleLocalAssignments: false))
+                {
+                    receiver = initializer;
+
+                    continue;
+                }
+
+                return false;
+            }
+
+            return false;
+        }
+
         private bool IsExactAdmissionCleanupValue(
             AuthoredMember member,
             ExpressionSyntax expression,
@@ -29955,18 +36594,33 @@ internal static partial class HostedGrimoireProducerInventory
             }
         }
 
-        private bool MayCarryAdmissionHandle(AuthoredMember member, ExpressionSyntax expression)
+        private bool MayCarryAdmissionHandle(AuthoredMember member, ExpressionSyntax expression,
+            AdmissionOriginQueryContext? query = null)
         {
-            if (AdmissionOrigins(member, expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default)).Count == 0)
+            if (AdmissionOrigins(member, expression, new HashSet<ISymbol>(SymbolEqualityComparer.Default), query).Count == 0)
+            {
+                return false;
+            }
+
+            if (IsExactFrameworkPairWithStringPayloads(member, expression))
             {
                 return false;
             }
 
             ITypeSymbol? type = member.Model.GetTypeInfo(expression).Type;
 
-            if (CanCarryAdmissionHandle(type, []))
+            if (CanCarryAdmissionHandle(type, [], query))
             {
                 return true;
+            }
+
+            if (query is not null)
+            {
+                // Nonempty origins in an unsupported carrier are not proof that the
+                // captured object is handle-free. Refuse this strict query instead.
+                query.Complete = false;
+
+                return false;
             }
 
             IEnumerable<ExpressionSyntax> storedValues = expression switch
@@ -29976,11 +36630,73 @@ internal static partial class HostedGrimoireProducerInventory
                 _ => [],
             };
 
-            return storedValues.Any(value => MayCarryAdmissionHandle(member, value));
+            return storedValues.Any(value => MayCarryAdmissionHandle(member, value, query));
         }
 
-        private static bool CanCarryAdmissionHandle(ITypeSymbol? type, HashSet<ITypeSymbol> path)
+        private static bool IsExactFrameworkPairWithStringPayloads(
+            AuthoredMember member,
+            ExpressionSyntax expression)
         {
+            if (!TryNormalizeBuiltInCleanupValue(member.Model, expression, out expression))
+            {
+                return false;
+            }
+
+            if (expression is not BaseObjectCreationExpressionSyntax { Initializer: null }
+                || member.Model.GetOperation(expression) is not IObjectCreationOperation
+                {
+                    Constructor: { MethodKind: MethodKind.Constructor, IsStatic: false, IsVararg: false } constructor,
+                    Initializer: null,
+                    Arguments.Length: 2,
+                } creation
+                || constructor.Parameters is not [IParameterSymbol key, IParameterSymbol value]
+                || creation.Arguments.Count(static argument => argument.Parameter?.Ordinal == 0) != 1
+                || creation.Arguments.Count(static argument => argument.Parameter?.Ordinal == 1) != 1
+                || key.RefKind != RefKind.None
+                || value.RefKind != RefKind.None
+                || constructor.ContainingType.TypeArguments is not
+                    [ITypeSymbol { SpecialType: SpecialType.System_String },
+                     ITypeSymbol { SpecialType: SpecialType.System_Object }]
+                || key.Type.SpecialType != SpecialType.System_String
+                || value.Type.SpecialType != SpecialType.System_Object
+                || !IsExactFrameworkType(
+                    constructor.ContainingType,
+                    "System.Collections.Generic.KeyValuePair`2",
+                    typeof(KeyValuePair<,>).Assembly.GetName()))
+            {
+                return false;
+            }
+
+            foreach (IArgumentOperation argument in creation.Arguments)
+            {
+                if (argument.ArgumentKind != ArgumentKind.Explicit
+                    || argument.Parameter is not { RefKind: RefKind.None } parameter
+                    || !SymbolEqualityComparer.Default.Equals(
+                        parameter,
+                        constructor.Parameters[parameter.Ordinal])
+                    || argument.Syntax is not ArgumentSyntax syntax
+                    || !TryNormalizeBuiltInCleanupValue(
+                        member.Model,
+                        syntax.Expression,
+                        out ExpressionSyntax payload)
+                    || member.Model.GetOperation(payload) is not
+                        (ILiteralOperation or ILocalReferenceOperation or IParameterReferenceOperation)
+                    || member.Model.GetTypeInfo(payload).Type is not
+                        { SpecialType: SpecialType.System_String } payloadType
+                    || CanCarryAdmissionHandle(payloadType, []))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool CanCarryAdmissionHandle(ITypeSymbol? type, HashSet<ITypeSymbol> path,
+            AdmissionOriginQueryContext? query = null)
+        {
+            if (query?.Visit() == false) return false;
+
             if (type is null || !path.Add(type))
             {
                 return false;
@@ -29993,16 +36709,33 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (type is IArrayTypeSymbol array)
             {
-                return CanCarryAdmissionHandle(array.ElementType, path);
+                return CanCarryAdmissionHandle(array.ElementType, path, query);
             }
 
             if (type is INamedTypeSymbol named)
             {
-                return named.AllInterfaces.Any(static contract => TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable") || named.TypeArguments.Any(argument => CanCarryAdmissionHandle(argument, path)) || named.IsTupleType && named.TupleElements.Any(element => CanCarryAdmissionHandle(element.Type, path));
+                // A task is disposable, but it carries a handle only through the result it will produce: it exposes no way to
+                // dispose what it was handed, so forwarding a handle to a call that returns one is no escape of the handle.
+                if (!IsExactFrameworkTask(named))
+                {
+                    foreach (INamedTypeSymbol contract in named.AllInterfaces)
+                    {
+                        if (query?.Visit() == false) return false;
+
+                        if (TypeKey(contract) is "System.IDisposable" or "System.IAsyncDisposable") return true;
+                    }
+                }
+
+                return named.TypeArguments.Any(argument => CanCarryAdmissionHandle(argument, path, query))
+                    || named.IsTupleType && named.TupleElements.Any(element => CanCarryAdmissionHandle(element.Type, path, query));
             }
 
             return false;
         }
+
+        private static bool IsExactFrameworkTask(INamedTypeSymbol type) =>
+            TypeKey(type) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1"
+            && IsExactFrameworkType(type.OriginalDefinition, TypeKey(type), typeof(Task).Assembly.GetName());
 
         private static bool PreservesAdmissionReceiver(IMethodSymbol method) => Normalize(method) == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
@@ -31478,6 +38211,11 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     expression = valueTaskCreation;
                 }
+                else if (expression.Parent is ConditionalAccessExpressionSyntax conditionalAccess
+                    && conditionalAccess.WhenNotNull == expression)
+                {
+                    expression = conditionalAccess;
+                }
                 else if (expression.Parent is ConditionalExpressionSyntax conditional && (conditional.WhenTrue == expression || conditional.WhenFalse == expression))
                 {
                     expression = conditional;
@@ -31561,6 +38299,27 @@ internal static partial class HostedGrimoireProducerInventory
                     typeof(Microsoft.Extensions.AI.IChatClient).Assembly.GetName());
         }
 
+        private static bool IsExactEmbeddingSdkAdapterFactory(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return definition.IsStatic && definition.Name == "AsIEmbeddingGenerator" && definition.Arity == 0
+                && IsExactFrameworkType(definition.ContainingType, "Microsoft.Extensions.AI.OpenAIClientExtensions",
+                    typeof(Microsoft.Extensions.AI.OpenAIClientExtensions).Assembly.GetName())
+                && definition.Parameters is [{ RefKind: RefKind.None } client,
+                    { RefKind: RefKind.None, IsOptional: true, HasExplicitDefaultValue: true, ExplicitDefaultValue: null,
+                        Type: INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Int32 }] } dimensions }]
+                && IsExactFrameworkType(client.Type, "OpenAI.Embeddings.EmbeddingClient", typeof(OpenAI.Embeddings.EmbeddingClient).Assembly.GetName())
+                && IsExactFrameworkType(dimensions, "System.Nullable`1", typeof(object).Assembly.GetName())
+                && IsExactEmbeddingGeneratorContract(definition.ReturnType);
+        }
+
+        private static bool IsExactEmbeddingGeneratorContract(ITypeSymbol type) =>
+            type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_String },
+                INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Single }] } embedding] } generator
+            && IsExactFrameworkType(generator, "Microsoft.Extensions.AI.IEmbeddingGenerator`2", typeof(Microsoft.Extensions.AI.IEmbeddingGenerator<,>).Assembly.GetName())
+            && IsExactFrameworkType(embedding, "Microsoft.Extensions.AI.Embedding`1", typeof(Microsoft.Extensions.AI.Embedding<>).Assembly.GetName());
+
         private static bool IsExactCleanupContract(IMethodSymbol method, ITypeSymbol receiverType)
         {
             bool synchronous = method.Name == "Dispose" && TypeKey(method.ReturnType) == "System.Void";
@@ -31624,6 +38383,54 @@ internal static partial class HostedGrimoireProducerInventory
                     type.ContainingAssembly.Identity,
                     trustedAssembly)
                 && !type.Locations.Any(static location => location.IsInSource);
+        }
+
+        private static readonly string[] MicrosoftPublicKeyTokens =
+        [
+            "adb9793829ddae60",
+            "b03f5f7f11d50a3a",
+            "31bf3856ad364e35",
+            "cc7b13ffcd2ddd51",
+            "b77a5c561934e089",
+            "7cec85d7bea7798e",
+        ];
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, AssemblyName?>
+            hostLoadedAssemblies = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// A metadata assembly is the Microsoft framework only when it is, by name, version,
+        /// culture and public key token, exactly the signed assembly this test host loaded. A
+        /// simple name that merely starts with "Microsoft." is not an identity.
+        /// </summary>
+        private static bool IsHostResolvedMicrosoftAssembly(AssemblyIdentity actual)
+        {
+            if (actual.PublicKeyToken.IsDefaultOrEmpty
+                || !MicrosoftPublicKeyTokens.Contains(
+                    Convert.ToHexString(actual.PublicKeyToken.ToArray()).ToLowerInvariant()))
+            {
+                return false;
+            }
+
+            AssemblyName? trusted = hostLoadedAssemblies.GetOrAdd(
+                actual.Name,
+                static name =>
+                {
+                    try
+                    {
+                        return Assembly.Load(new AssemblyName(name)).GetName();
+                    }
+                    catch (Exception exception) when (exception is
+                        System.IO.FileNotFoundException
+                        or System.IO.FileLoadException
+                        or BadImageFormatException)
+                    {
+                        return null;
+                    }
+                });
+
+            return trusted is not null
+                && AssemblyIdentityMatches(actual, trusted);
         }
 
         private static bool AssemblyIdentityMatches(
@@ -32191,10 +38998,17 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            CleanupProvenance receiverProvenance = CleanupProvenanceOf(
-                member,
-                receiver,
-                context);
+            // SqliteSealedByUse: a receiver whose static type is exactly SqliteConnection or SqliteCommand
+            // is that exact runtime type whatever its provenance. A receiver typed as an abstract Db* type
+            // gets no such shortcut and keeps the provenance proof.
+            CleanupProvenance receiverProvenance = SqliteSealedByUse
+                && member.Model.GetTypeInfo(receiver).Type is { } sealedReceiver
+                && IsSqliteSealedFamilyClass(sealedReceiver)
+                    ? ExactCleanupProvenance(member, sealedReceiver)
+                    : CleanupProvenanceOf(
+                        member,
+                        receiver,
+                        context);
 
             if (!receiverProvenance.Complete
                 || receiverProvenance.Candidates is not
@@ -32492,6 +39306,10 @@ internal static partial class HostedGrimoireProducerInventory
                 context);
 
             if (!contextProvenance.Complete
+                || context.ClosedSqliteProvider
+                    && !IsContainerResolvedDbContextInstance(
+                        member,
+                        contextExpression)
                 || contextProvenance.Candidates is not
                     [CleanupTypeCandidate { Type: INamedTypeSymbol dbContext }]
                 || dbContext is not
@@ -32506,6 +39324,10 @@ internal static partial class HostedGrimoireProducerInventory
                 || !HasExactSqliteDbContextRegistration(
                     dbContext,
                     member.Model.Compilation)
+                || context.ClosedSqliteProvider
+                    && !HasClosedSqliteDbContextConfiguration(
+                        dbContext,
+                        member.Model.Compilation)
                 || member.Model.Compilation.GetTypeByMetadataName(
                     "Microsoft.Data.Sqlite.SqliteConnection") is not
                     INamedTypeSymbol sqliteConnection
@@ -32522,6 +39344,1412 @@ internal static partial class HostedGrimoireProducerInventory
             return ExactTrustedMetadataProvenance(
                 member,
                 sqliteConnection);
+        }
+
+        /// <summary>
+        /// The type-only provenance above cannot tell a container-resolved context from a
+        /// caller-created one: a registration's UseSqlite only configures the instances the
+        /// container builds. Every terminal source of the value must be an exact dependency
+        /// the container injects or an exact framework service resolution.
+        /// </summary>
+        private bool IsContainerResolvedDbContextInstance(
+            AuthoredMember member,
+            ExpressionSyntax contextExpression)
+        {
+            CleanupValueFlow flow = CleanupValueFlowOf(
+                member,
+                contextExpression,
+                new CleanupProvenanceContext());
+
+            return flow.Complete
+                && flow.Values.Count != 0
+                && flow.Values.All(IsContainerResolvedDbContextSource);
+        }
+
+        private bool IsContainerResolvedDbContextSource(BoundValueSource source)
+        {
+            ExpressionSyntax value = StripTransparentExpression(
+                source.Expression);
+
+            ISymbol? symbol = source.Caller.Model.GetSymbolInfo(value).Symbol;
+
+            if (symbol is IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol
+                    {
+                        MethodKind: MethodKind.Constructor,
+                    },
+                    Type: INamedTypeSymbol
+                    {
+                        IsAbstract: false,
+                        IsSealed: true,
+                    } dependencyType,
+                } dependency)
+            {
+                // The value flow follows storage but not a write to the captured parameter itself, so
+                // a parameter that anything in its type writes is not the instance the container injected.
+                return ConstructorParameterNeverWritten(dependency)
+                    && IsExactRegisteredConstructorDependency(
+                        source.Caller,
+                        dependency,
+                        dependencyType);
+            }
+
+            // H1: an exact GetRequiredService on an unproven IServiceProvider is not the
+            // host container (authored or extern providers can return any instance).
+            if (value is not InvocationExpressionSyntax
+                {
+                    Expression: MemberAccessExpressionSyntax { Expression: { } providerExpression },
+                }
+                || symbol is not IMethodSymbol resolver
+                || resolver.Name is not ("GetRequiredService" or "GetService")
+                || !IsExactFrameworkMethod(
+                    resolver,
+                    "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions",
+                    resolver.Name,
+                    "Microsoft.Extensions.DependencyInjection.Abstractions"))
+            {
+                return false;
+            }
+
+            // The receiver must be the container's own provider: a registration factory's
+            // provider parameter, an injected provider or scope factory of an exactly activated
+            // owner, or the ServiceProvider of a scope created from one of those.
+            return IsContainerProviderValue(source.Caller, providerExpression, 0);
+        }
+
+        private bool IsContainerProviderValue(
+            AuthoredMember caller,
+            ExpressionSyntax expression,
+            int depth)
+        {
+            if (depth > 4)
+            {
+                return false;
+            }
+
+            ExpressionSyntax stripped = StripTransparentExpression(expression);
+
+            if (IsContainerProviderSource(new BoundValueSource(caller, stripped), depth, direct: true) is true)
+            {
+                return true;
+            }
+
+            CleanupValueFlow flow = CleanupValueFlowOf(
+                caller,
+                stripped,
+                new CleanupProvenanceContext());
+
+            return flow.Complete
+                && flow.Values.Count != 0
+                && flow.Values.All(value => IsContainerProviderSource(value, depth, direct: false) is true);
+        }
+
+        private bool? IsContainerProviderSource(
+            BoundValueSource source,
+            int depth,
+            bool direct)
+        {
+            ExpressionSyntax value = StripTransparentExpression(
+                source.Expression);
+
+            ISymbol? symbol = source.Caller.Model.GetSymbolInfo(value).Symbol;
+
+            // A parameter the factory body writes anywhere is not the container, whether it is
+            // named here or reached through an alias that captured it after the write.
+            if (IsRegistrationFactoryProvider(symbol)
+                && ParameterNeverWritten((IParameterSymbol)symbol!))
+            {
+                return true;
+            }
+
+            if (symbol is IParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.Constructor },
+                } dependency
+                && ConstructorParameterNeverWritten(dependency)
+                && TypeKey(dependency.Type) is "System.IServiceProvider"
+                    or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory")
+            {
+                return IsExactRegisteredConstructorDependency(
+                    source.Caller,
+                    dependency,
+                    dependency.Type);
+            }
+
+            if (value is MemberAccessExpressionSyntax { Expression: { } scope }
+                && symbol is IPropertySymbol { Name: "ServiceProvider", IsStatic: false } property
+                && TypeKey(property.ContainingType) is "Microsoft.Extensions.DependencyInjection.IServiceScope"
+                    or "Microsoft.Extensions.DependencyInjection.AsyncServiceScope"
+                && !property.Locations.Any(static location => location.IsInSource)
+                && AssemblyIdentityMatches(
+                    property.ContainingAssembly.Identity,
+                    typeof(Microsoft.Extensions.DependencyInjection.IServiceScope).Assembly.GetName()))
+            {
+                CleanupValueFlow scopes = CleanupValueFlowOf(
+                    source.Caller,
+                    scope,
+                    new CleanupProvenanceContext());
+
+                return scopes.Complete
+                    && scopes.Values.Count != 0
+                    && scopes.Values.All(created => IsContainerScopeCreation(created, depth));
+            }
+
+            return direct ? null : false;
+        }
+
+        // Whether a parameter is written is decided by the scopes the parameter itself names (the declarations of its type, or its lambda) and
+        // by trees that do not change once the graph is made, so each answer is read once per parameter.
+        private readonly Dictionary<IParameterSymbol, bool> constructorParametersNeverWritten = new(SymbolEqualityComparer.Default);
+
+        private readonly Dictionary<IParameterSymbol, bool> parametersNeverWritten = new(SymbolEqualityComparer.Default);
+
+        private bool ConstructorParameterNeverWritten(IParameterSymbol parameter)
+        {
+            if (!constructorParametersNeverWritten.TryGetValue(parameter, out bool known))
+            {
+                constructorParametersNeverWritten.Add(parameter, known = ComputeConstructorParameterNeverWritten(parameter));
+            }
+
+            return known;
+        }
+
+        private bool ComputeConstructorParameterNeverWritten(IParameterSymbol parameter) =>
+            parameter.ContainingSymbol is IMethodSymbol { ContainingType: { } owner }
+            && owner.DeclaringSyntaxReferences.Length != 0
+            && ParameterNeverWrittenWithin(parameter, owner.DeclaringSyntaxReferences.Select(static reference => reference.GetSyntax()));
+
+        private bool ParameterNeverWritten(IParameterSymbol parameter)
+        {
+            if (!parametersNeverWritten.TryGetValue(parameter, out bool known))
+            {
+                parametersNeverWritten.Add(parameter, known = ComputeParameterNeverWritten(parameter));
+            }
+
+            return known;
+        }
+
+        private bool ComputeParameterNeverWritten(IParameterSymbol parameter) =>
+            parameter.DeclaringSyntaxReferences is [{ } reference]
+            && reference.GetSyntax().FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is { } function
+            && ParameterNeverWrittenWithin(parameter, [function]);
+
+        private bool ParameterNeverWrittenWithin(IParameterSymbol parameter, IEnumerable<SyntaxNode> scopes)
+        {
+            foreach (SyntaxNode declaration in scopes)
+            {
+                if (!semanticModels.TryGetValue(declaration.SyntaxTree, out SemanticModel? model))
+                {
+                    return false;
+                }
+
+                foreach (IdentifierNameSyntax name in declaration.DescendantNodes().OfType<IdentifierNameSyntax>())
+                {
+                    if (name.Identifier.ValueText != parameter.Name
+                        || !SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, parameter))
+                    {
+                        continue;
+                    }
+
+                    if (IsParameterReferenceWritten(model, name))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// A write is judged on the operation the compiler binds, not on the shape of the syntax around
+        /// the name: an assignment (simple, compound, coalescing or deconstructing, however deeply the
+        /// target tuple nests), a ref, out or in argument, an increment, an address-of, or a ref alias
+        /// all change what the parameter holds. A reference the compiler gives no operation is refused
+        /// unless it only names the parameter.
+        /// </summary>
+        private static bool IsParameterReferenceWritten(SemanticModel model, IdentifierNameSyntax name)
+        {
+            SyntaxNode? parent = name.Parent;
+
+            while (parent is ParenthesizedExpressionSyntax)
+            {
+                parent = parent.Parent;
+            }
+
+            if (parent is ArgumentSyntax { RefKindKeyword.RawKind: not 0 }
+                or RefExpressionSyntax
+                or PrefixUnaryExpressionSyntax { RawKind: (int)SyntaxKind.AddressOfExpression })
+            {
+                return true;
+            }
+
+            if (model.GetOperation(name) is not { } reference)
+            {
+                return !name.Ancestors().OfType<InvocationExpressionSyntax>().Any(static invocation =>
+                    invocation.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" });
+            }
+
+            IOperation node = reference;
+
+            while (node.Parent is ITupleOperation)
+            {
+                node = node.Parent;
+            }
+
+            return node.Parent switch
+            {
+                IAssignmentOperation assignment => ReferenceEquals(assignment.Target, node)
+                    || assignment is ISimpleAssignmentOperation { IsRef: true } && ReferenceEquals(assignment.Value, node),
+                IIncrementOrDecrementOperation => true,
+                IAddressOfOperation => true,
+                IArgumentOperation argument => argument.Parameter is null || argument.Parameter.RefKind != RefKind.None,
+                IVariableInitializerOperation { Parent: IVariableDeclaratorOperation declarator } =>
+                    declarator.Symbol.RefKind != RefKind.None,
+                _ => false,
+            };
+        }
+
+        private bool IsContainerScopeCreation(
+            BoundValueSource source,
+            int depth)
+        {
+            if (StripTransparentExpression(source.Expression) is not InvocationExpressionSyntax creation
+                || source.Caller.Model.GetSymbolInfo(creation).Symbol is not IMethodSymbol method
+                || source.Caller.Model.GetOperation(creation) is not IInvocationOperation operation
+                || ExactInvocationReceiverOrFirstArgument(operation) is not { } factory)
+            {
+                return false;
+            }
+
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            bool exact = definition.Name is "CreateScope" or "CreateAsyncScope"
+                && (IsExactFrameworkMethod(
+                        method,
+                        "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions",
+                        definition.Name,
+                        "Microsoft.Extensions.DependencyInjection.Abstractions")
+                    || TypeKey(definition.ContainingType) == "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
+                        && !definition.Locations.Any(static location => location.IsInSource)
+                        && AssemblyIdentityMatches(
+                            definition.ContainingAssembly.Identity,
+                            typeof(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory).Assembly.GetName()));
+
+            return exact
+                && IsContainerProviderValue(source.Caller, factory, depth + 1);
+        }
+
+        private bool IsRegistrationFactoryProvider(ISymbol? symbol)
+        {
+            if (symbol is not IParameterSymbol
+                {
+                    Ordinal: 0,
+                    ContainingSymbol: IMethodSymbol { MethodKind: MethodKind.AnonymousFunction },
+                    DeclaringSyntaxReferences: [{ } providerReference],
+                } provider
+                || TypeKey(provider.Type) != "System.IServiceProvider"
+                || providerReference.GetSyntax().FirstAncestorOrSelf<AnonymousFunctionExpressionSyntax>() is not
+                {
+                    Parent: ArgumentSyntax { Parent: ArgumentListSyntax { Parent: InvocationExpressionSyntax registration } },
+                } factory
+                || !semanticModels.TryGetValue(factory.SyntaxTree, out SemanticModel? registrationModel)
+                || registrationModel.GetSymbolInfo(registration).Symbol is not IMethodSymbol registrationMethod)
+            {
+                return false;
+            }
+
+            string name = (registrationMethod.ReducedFrom ?? registrationMethod).Name;
+
+            return IsExactFrameworkMethod(
+                    registrationMethod,
+                    "Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions",
+                    name,
+                    "Microsoft.Extensions.DependencyInjection.Abstractions")
+                || IsExactFrameworkMethod(
+                    registrationMethod,
+                    "Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions",
+                    name,
+                    "Microsoft.Extensions.DependencyInjection.Abstractions");
+        }
+
+        // ---- Final options/provider closure for a container-built DbContext (issue #91).
+
+        private IReadOnlyList<(InvocationExpressionSyntax Call, SemanticModel Model, IMethodSymbol Method)>?
+            serviceCollectionMutations;
+
+        private IReadOnlyList<(InvocationExpressionSyntax Call, SemanticModel Model, IMethodSymbol Method)>
+            ServiceCollectionMutations()
+        {
+            if (serviceCollectionMutations is not null)
+            {
+                return serviceCollectionMutations;
+            }
+
+            List<(InvocationExpressionSyntax Call, SemanticModel Model, IMethodSymbol Method)> found = [];
+
+            foreach ((InvocationExpressionSyntax call, SemanticModel model) in invocations)
+            {
+                if (model.GetSymbolInfo(call).Symbol is not IMethodSymbol method)
+                {
+                    continue;
+                }
+
+                IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                bool touchesCollection = definition.Parameters.Any(static parameter =>
+                        IsServiceCollectionType(parameter.Type))
+                    || call.Expression is MemberAccessExpressionSyntax
+                    {
+                        Expression: { } receiver,
+                    }
+                    && model.GetTypeInfo(receiver).Type is { } receiverType
+                    && IsServiceCollectionType(receiverType);
+
+                if (touchesCollection)
+                {
+                    found.Add((call, model, method));
+                }
+            }
+
+            serviceCollectionMutations = found;
+
+            return found;
+        }
+
+        private static bool IsServiceCollectionType(ITypeSymbol type) =>
+            TypeKey(type) is "Microsoft.Extensions.DependencyInjection.IServiceCollection"
+                or "Microsoft.Extensions.DependencyInjection.ServiceCollection";
+
+        /// <summary>
+        /// A context resolved from the container is configured by exactly the descriptors the
+        /// composition leaves in the collection. Any other descriptor for the context or its
+        /// options, or any collection mutation this analysis cannot read, can replace them.
+        /// </summary>
+        private bool HasCompetingDbContextServiceDescriptor(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            foreach ((InvocationExpressionSyntax call, SemanticModel model, IMethodSymbol method)
+                in ServiceCollectionMutations())
+            {
+                IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                if (definition.Name is "AddDbContext" or "AddDbContextPool"
+                    && IsExactFrameworkMethod(
+                        method,
+                        "Microsoft.Extensions.DependencyInjection.EntityFrameworkServiceCollectionExtensions",
+                        definition.Name,
+                        "Microsoft.EntityFrameworkCore"))
+                {
+                    // Exactly EF's registration: for this context the selected registrations are
+                    // validated individually, and for any other context it cannot touch this one.
+                    // A helper that only borrows the name is judged like any other helper below.
+                    continue;
+                }
+
+                if (definition.DeclaringSyntaxReferences.Length != 0)
+                {
+                    if (definition.IsExtern
+                        || definition.IsAbstract
+                        || definition.ContainingType.TypeKind == TypeKind.Interface
+                        || definition.DeclaringSyntaxReferences.Any(static reference =>
+                            reference.GetSyntax() is BaseMethodDeclarationSyntax
+                            {
+                                Body: null,
+                                ExpressionBody: null,
+                            }))
+                    {
+                        return true;
+                    }
+
+                    // An inspectable authored helper registers through the calls its body
+                    // makes; the concrete types reaching it are read at this call site.
+                    if (method.TypeArguments.Any(argument => IsDbContextRelevantServiceType(
+                            argument,
+                            model.Compilation,
+                            dbContext,
+                            consumingCompilation)))
+                    {
+                        return true;
+                    }
+
+                    continue;
+                }
+
+                if (definition.MethodKind == MethodKind.DelegateInvoke)
+                {
+                    return true;
+                }
+
+                // A name that starts with "Microsoft." proves nothing: only the signed assembly this
+                // test host itself loaded, by exact identity, is the framework.
+                if (!IsHostResolvedMicrosoftAssembly(definition.ContainingAssembly.Identity)
+                    && !IsExactProductionFrameworkServiceBuilder(method))
+                {
+                    return true;
+                }
+
+                if (definition.Name is "Clear" or "RemoveAt")
+                {
+                    return true;
+                }
+
+                foreach (ITypeSymbol? serviceType in MutatedServiceTypes(call, model, method))
+                {
+                    if (IsDbContextRelevantServiceType(
+                        serviceType,
+                        model.Compilation,
+                        dbContext,
+                        consumingCompilation))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static IEnumerable<ITypeSymbol?> MutatedServiceTypes(
+            InvocationExpressionSyntax call,
+            SemanticModel model,
+            IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            bool descriptorLevel = definition.Name is "Add" or "TryAdd" or "TryAddEnumerable"
+                or "Replace" or "Remove" or "RemoveAll" or "Insert";
+
+            if (!descriptorLevel)
+            {
+                if (method.TypeArguments.Length != 0)
+                {
+                    yield return method.TypeArguments[0];
+
+                    yield break;
+                }
+
+                foreach (ArgumentSyntax argument in call.ArgumentList.Arguments)
+                {
+                    if (model.GetTypeInfo(argument.Expression).Type is { } argumentType
+                        && TypeKey(argumentType) == "System.Type")
+                    {
+                        yield return TypeOfOperand(argument.Expression, model);
+
+                        yield break;
+                    }
+                }
+
+                yield break;
+            }
+
+            if (method.TypeArguments.Length != 0)
+            {
+                yield return method.TypeArguments[0];
+
+                yield break;
+            }
+
+            bool sawDescriptor = false;
+
+            foreach (ArgumentSyntax argument in call.ArgumentList.Arguments)
+            {
+                ITypeSymbol? type = model.GetTypeInfo(argument.Expression).Type;
+
+                if (type is null)
+                {
+                    continue;
+                }
+
+                if (TypeKey(type) == "System.Type")
+                {
+                    sawDescriptor = true;
+
+                    yield return TypeOfOperand(argument.Expression, model);
+
+                    continue;
+                }
+
+                if (TypeKey(type) != "Microsoft.Extensions.DependencyInjection.ServiceDescriptor")
+                {
+                    continue;
+                }
+
+                sawDescriptor = true;
+
+                yield return DescriptorServiceType(argument.Expression, model);
+            }
+
+            if (!sawDescriptor)
+            {
+                yield return null;
+            }
+        }
+
+        private static ITypeSymbol? TypeOfOperand(ExpressionSyntax expression, SemanticModel model) =>
+            expression is TypeOfExpressionSyntax typeOf
+                ? model.GetTypeInfo(typeOf.Type).Type
+                : null;
+
+        private static ITypeSymbol? DescriptorServiceType(ExpressionSyntax expression, SemanticModel model)
+        {
+            if (expression is BaseObjectCreationExpressionSyntax creation
+                && model.GetSymbolInfo(creation).Symbol is IMethodSymbol constructor
+                && TypeKey(constructor.ContainingType) == "Microsoft.Extensions.DependencyInjection.ServiceDescriptor"
+                && creation.ArgumentList?.Arguments.FirstOrDefault()?.Expression is { } first)
+            {
+                return TypeOfOperand(first, model);
+            }
+
+            if (expression is InvocationExpressionSyntax factory
+                && model.GetSymbolInfo(factory).Symbol is IMethodSymbol describe
+                && TypeKey(describe.ContainingType) == "Microsoft.Extensions.DependencyInjection.ServiceDescriptor")
+            {
+                if (describe.TypeArguments.Length != 0)
+                {
+                    return describe.TypeArguments[0];
+                }
+
+                return factory.ArgumentList.Arguments.FirstOrDefault()?.Expression is { } typeArgument
+                    ? TypeOfOperand(typeArgument, model)
+                    : null;
+            }
+
+            return null;
+        }
+
+        private bool IsDbContextRelevantServiceType(
+            ITypeSymbol? serviceType,
+            Compilation serviceCompilation,
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            if (serviceType is ITypeParameterSymbol
+                {
+                    ContainingSymbol: IMethodSymbol { DeclaringSyntaxReferences.Length: > 0 },
+                })
+            {
+                // Bound by the generic helper's own call sites.
+                return false;
+            }
+
+            if (serviceType is null or ITypeParameterSymbol)
+            {
+                return true;
+            }
+
+            if (serviceType is not INamedTypeSymbol named)
+            {
+                return false;
+            }
+
+            if (named.IsUnboundGenericType
+                || SameBoundType(
+                    named,
+                    serviceCompilation,
+                    dbContext,
+                    consumingCompilation))
+            {
+                return true;
+            }
+
+            string key = TypeKey(named);
+
+            if (key is "Microsoft.EntityFrameworkCore.DbContextOptions"
+                or "System.IServiceProvider"
+                or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
+                or "Microsoft.Extensions.DependencyInjection.IServiceProviderIsService"
+                or "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider")
+            {
+                return true;
+            }
+
+            if (key == "Microsoft.EntityFrameworkCore.DbContextOptions`1"
+                || key.EndsWith(".IDbContextOptionsConfiguration`1", StringComparison.Ordinal))
+            {
+                return named.TypeArguments is not [ITypeSymbol context]
+                    || context is ITypeParameterSymbol
+                    || SameBoundType(
+                        context,
+                        serviceCompilation,
+                        dbContext,
+                        consumingCompilation);
+            }
+
+            // EF may take interceptors from the application's container as well as from the
+            // builder, so a registered interceptor is a competing source of authored callbacks.
+            return key == "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor"
+                || named.AllInterfaces.Any(static inherited =>
+                    TypeKey(inherited) == "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor");
+        }
+
+        // Provider-neutral settings that run no authored code of their own. UseLoggerFactory is
+        // deliberately absent: EF hands every event to the factory's authored loggers, a callback
+        // lane this analysis does not traverse, so a custom factory refuses the certificate.
+        private static readonly HashSet<string> NonProviderOptionsBuilderMembers =
+        [
+            "ConfigureWarnings",
+            "AddInterceptors",
+            "UseModel",
+            "EnableSensitiveDataLogging",
+            "EnableDetailedErrors",
+            "UseQueryTrackingBehavior",
+            "EnableThreadSafetyChecks",
+            "ConfigureLoggingCacheTime",
+        ];
+
+        // The only interceptor callbacks an authored interceptor may implement and still leave
+        // the certificate standing: they observe a connection EF already owns and cannot hand
+        // back a different connection, command or reader.
+        private static readonly HashSet<string> ConnectionLifecycleInterceptorCallbacks =
+        [
+            "ConnectionOpening",
+            "ConnectionOpeningAsync",
+            "ConnectionOpened",
+            "ConnectionOpenedAsync",
+            "ConnectionClosing",
+            "ConnectionClosingAsync",
+            "ConnectionClosed",
+            "ConnectionClosedAsync",
+            "ConnectionFailed",
+            "ConnectionFailedAsync",
+            "ConnectionCanceled",
+            "ConnectionCanceledAsync",
+            "ConnectionDisposing",
+            "ConnectionDisposingAsync",
+            "ConnectionDisposed",
+            "ConnectionDisposedAsync",
+        ];
+
+        private static bool IsOptionsBuilderValue(IOperation? operation)
+        {
+            while (operation is IConversionOperation conversion)
+            {
+                if (IsOptionsBuilderType(conversion.Operand.Type))
+                {
+                    return true;
+                }
+
+                operation = conversion.Operand;
+            }
+
+            return operation is not null && IsOptionsBuilderType(operation.Type);
+        }
+
+        private static bool IsOptionsBuilderType(ITypeSymbol? type) =>
+            type is not null
+            && TypeKey(type) is "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                or "Microsoft.EntityFrameworkCore.Infrastructure.IDbContextOptionsBuilderInfrastructure";
+
+        /// <summary>
+        /// The provider a registration selects is final only when every use of the options
+        /// builder is the exact SQLite selection, a reviewed provider-neutral setting, or an
+        /// authored helper that satisfies the same rule. Any other use, alias or escape
+        /// could select another provider or hide a connection.
+        /// </summary>
+        private bool BuilderScopeCannotChangeProvider(
+            SyntaxNode scope,
+            SemanticModel model,
+            HashSet<GraphMemberIdentity> path,
+            BuilderFacts? facts = null,
+            bool unconditional = true)
+        {
+            IOperation? root = model.GetOperation(scope);
+
+            if (root is null)
+            {
+                return false;
+            }
+
+            foreach (IOperation operation in root.DescendantsAndSelf())
+            {
+                // H5: every builder-valued operation must be consumed by an analysed
+                // invocation, a property read, a discard, or a named-method return. Arrays,
+                // params, tuples, lambda returns and other carriers are escapes.
+                if (IsOptionsBuilderType(operation.Type)
+                    && !BuilderValueConsumedInScope(operation))
+                {
+                    return false;
+                }
+
+                switch (operation)
+                {
+                    case IInvocationOperation invocation
+                        when IsOptionsBuilderValue(invocation.Instance)
+                            || invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)):
+                    {
+                        IMethodSymbol method = invocation.TargetMethod;
+
+                        IMethodSymbol definition = method.ReducedFrom ?? method;
+
+                        if (IsExactSqliteOptionsBuilderCall(method))
+                        {
+                            // H2: only the connection-string overload selects SQLite's own
+                            // connection; a DbConnection argument can be any (derived) connection. The
+                            // interceptor and model facts do not depend on which connection it is.
+                            if (facts is null && definition.Parameters is not [_, { Type.SpecialType: SpecialType.System_String }, ..])
+                            {
+                                return false;
+                            }
+
+                            break;
+                        }
+
+                        if (TypeKey(definition.ContainingType) is
+                                "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                                or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                            && NonProviderOptionsBuilderMembers.Contains(definition.Name)
+                            && !definition.Locations.Any(static location => location.IsInSource)
+                            && AssemblyIdentityMatches(
+                                definition.ContainingAssembly.Identity,
+                                typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName()))
+                        {
+                            // The provider certificate admits only interceptors that cannot hand EF another connection,
+                            // command or reader. The facts walk collects every interceptor instead, because their
+                            // callbacks are traversed at the operations that raise them.
+                            if (facts is null
+                                && definition.Name == "AddInterceptors"
+                                && !InterceptorsCannotReplaceConnection(invocation, model))
+                            {
+                                return false;
+                            }
+
+                            if (facts is not null)
+                            {
+                                if (definition.Name == "UseModel"
+                                    && unconditional
+                                    && invocation.Syntax is InvocationExpressionSyntax useModel
+                                    && CallExecutesUnconditionallyWithin(scope, useModel)
+                                    && invocation.Arguments.LastOrDefault() is { } suppliedModel
+                                    && suppliedModel.Value.ConstantValue is not { HasValue: true, Value: null })
+                                {
+                                    facts.ModelSupplied = true;
+                                }
+                                else if (definition.Name == "AddInterceptors")
+                                {
+                                    CollectInterceptors(invocation, model, facts);
+                                }
+                            }
+
+                            break;
+                        }
+
+                        if (Resolve(method, model.Compilation) is { } target)
+                        {
+                            // H5b: the helper must receive the builder as a builder; an
+                            // object/generic parameter hides later uses from this walk.
+                            if (invocation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)
+                                && !IsOptionsBuilderType(argument.Parameter?.Type)))
+                            {
+                                return false;
+                            }
+
+                            GraphMemberIdentity identity = MemberIdentity(target);
+
+                            if (!path.Add(identity))
+                            {
+                                break;
+                            }
+
+                            try
+                            {
+                                if (!BuilderScopeCannotChangeProvider(
+                                    target.Syntax,
+                                    target.Model,
+                                    path,
+                                    facts,
+                                    unconditional
+                                        && invocation.Syntax is InvocationExpressionSyntax helperCall
+                                        && CallExecutesUnconditionallyWithin(scope, helperCall)))
+                                {
+                                    return false;
+                                }
+                            }
+                            finally
+                            {
+                                _ = path.Remove(identity);
+                            }
+
+                            break;
+                        }
+
+                        return false;
+                    }
+
+                    case IObjectCreationOperation creation
+                        when creation.Arguments.Any(argument => IsOptionsBuilderValue(argument.Value)):
+                    case ISimpleAssignmentOperation assignment
+                        when IsOptionsBuilderValue(assignment.Value)
+                            && assignment.Target is not IDiscardOperation:
+                    case IVariableInitializerOperation initializer
+                        when IsOptionsBuilderValue(initializer.Value):
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
+        // ---- Final-provider closure helpers (judge hardening).
+
+        private static bool InsideNestedFunction(IOperation operation)
+        {
+            for (IOperation? current = operation.Parent; current is not null; current = current.Parent)
+            {
+                if (current is IAnonymousFunctionOperation or ILocalFunctionOperation)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool BuilderValueConsumedInScope(IOperation value)
+        {
+            if (value is IDiscardOperation)
+            {
+                return true;
+            }
+
+            IOperation current = value;
+
+            while (current.Parent is IConversionOperation conversion)
+            {
+                current = conversion;
+            }
+
+            if (!ReferenceEquals(current, value) && IsOptionsBuilderType(current.Type))
+            {
+                // The outer builder-typed conversion is judged on its own visit.
+                return true;
+            }
+
+            return current.Parent switch
+            {
+                null => true,
+                IInvocationOperation invocation => ReferenceEquals(invocation.Instance, current),
+                IArgumentOperation { Parent: IInvocationOperation } => true,
+                IExpressionStatementOperation => true,
+                ISimpleAssignmentOperation { Target: IDiscardOperation } assignment =>
+                    ReferenceEquals(assignment.Value, current),
+                IPropertyReferenceOperation property =>
+                    ReferenceEquals(property.Instance, current) && !property.Property.IsIndexer,
+                IReturnOperation returned => !InsideNestedFunction(returned),
+                _ => false,
+            };
+        }
+
+        private bool? serviceCollectionValueEscapes;
+
+        /// <summary>
+        /// H6: the descriptor scan reads only invocations on IServiceCollection-typed
+        /// receivers or parameters. Any other view of the collection (cast, IList parameter,
+        /// indexer, conditional access, carrier, lambda return, opaque constructor) or an
+        /// authored collection implementation can install a descriptor that scan never sees.
+        /// </summary>
+        private bool ServiceCollectionValueEscapes()
+        {
+            if (serviceCollectionValueEscapes is bool cached)
+            {
+                return cached;
+            }
+
+            bool escapes = false;
+
+            foreach ((SyntaxTree tree, SemanticModel model) in semanticModels)
+            {
+                foreach (SyntaxNode node in tree.GetRoot().DescendantNodes())
+                {
+                    if (node is BaseTypeDeclarationSyntax declaration
+                        && model.GetDeclaredSymbol(declaration) is INamedTypeSymbol declared
+                        && declared.AllInterfaces.Any(static candidate => IsServiceCollectionType(candidate)))
+                    {
+                        escapes = true;
+
+                        break;
+                    }
+
+                    if (node is not (IdentifierNameSyntax or MemberAccessExpressionSyntax
+                            or InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                            or ElementAccessExpressionSyntax or ThisExpressionSyntax)
+                        || node.Parent is MemberAccessExpressionSyntax { Name: var name } && ReferenceEquals(name, node)
+                        || model.GetOperation(node) is not { } operation
+                        || operation.Type is null
+                        || !IsServiceCollectionType(operation.Type))
+                    {
+                        continue;
+                    }
+
+                    if (!ServiceCollectionValueConsumed(operation))
+                    {
+                        escapes = true;
+
+                        break;
+                    }
+                }
+
+                if (escapes)
+                {
+                    break;
+                }
+            }
+
+            serviceCollectionValueEscapes = escapes;
+
+            return escapes;
+        }
+
+        private static bool ServiceCollectionValueConsumed(IOperation value)
+        {
+            IOperation current = value;
+
+            // Conversions and conditional/coalesce branches that keep the collection type are
+            // transparent carriers: the combined value is judged where it is consumed.
+            while (current.Parent is IConversionOperation
+                || current.Parent is IConditionalOperation conditional
+                    && !ReferenceEquals(conditional.Condition, current)
+                    && conditional.Type is { } conditionalType
+                    && IsServiceCollectionType(conditionalType)
+                || current.Parent is ICoalesceOperation coalesce
+                    && coalesce.Type is { } coalesceType
+                    && IsServiceCollectionType(coalesceType))
+            {
+                current = current.Parent;
+            }
+
+            if (current.Type is not null && !IsServiceCollectionType(current.Type))
+            {
+                // A widened view is only accepted for the exact null guard.
+                return current.Parent is IArgumentOperation
+                {
+                    Parent: IInvocationOperation
+                    {
+                        TargetMethod: { Name: "ThrowIfNull", ContainingType: { } guardType },
+                    },
+                }
+                    && TypeKey(guardType) == "System.ArgumentNullException"
+                    && !guardType.Locations.Any(static location => location.IsInSource);
+            }
+
+            return current.Parent switch
+            {
+                null => true,
+                IInvocationOperation invocation => ReferenceEquals(invocation.Instance, current),
+                IArgumentOperation { Parameter.Type: { } parameterType, Parent: IInvocationOperation }
+                    when IsServiceCollectionType(parameterType) => true,
+                IArgumentOperation
+                {
+                    Parameter.Type: { } parameterType,
+                    Parent: IObjectCreationOperation { Constructor: { } constructor },
+                } when IsServiceCollectionType(parameterType) =>
+                    constructor.Locations.Any(static location => location.IsInSource),
+                IExpressionStatementOperation => true,
+                ISimpleAssignmentOperation assignment =>
+                    ReferenceEquals(assignment.Target, current)
+                    || assignment.Target is IDiscardOperation
+                    || assignment.Target.Type is { } target && IsServiceCollectionType(target)
+                        && (assignment.Target is ILocalReferenceOperation or IParameterReferenceOperation
+                            || assignment.Target is IMemberReferenceOperation reference
+                                && reference.Member.Locations.Any(static location => location.IsInSource)),
+                IVariableInitializerOperation { Parent: IVariableDeclaratorOperation { Symbol.Type: { } local } } =>
+                    IsServiceCollectionType(local),
+                IPropertyReferenceOperation property =>
+                    ReferenceEquals(property.Instance, current) && !property.Property.IsIndexer,
+                IReturnOperation returned => !InsideNestedFunction(returned),
+                IIsPatternOperation or IIsNullOperation => true,
+                _ => false,
+            };
+        }
+
+        /// <summary>
+        /// EF's accessor extensions hand out the context's internal services, which can be used to
+        /// replace its connection or provider. The one reviewed read is the logger factory the
+        /// connection interceptor uses to report a failed open: a read-only view with no setter.
+        /// </summary>
+        private static bool IsReviewedAccessorLoggerFactoryRead(IMethodSymbol method)
+        {
+            IMethodSymbol definition = method.ReducedFrom ?? method;
+
+            return definition.Name == "GetService"
+                && method.TypeArguments is [{ } service]
+                && IsExactFrameworkType(
+                    service,
+                    "Microsoft.Extensions.Logging.ILoggerFactory",
+                    typeof(Microsoft.Extensions.Logging.ILoggerFactory).Assembly.GetName())
+                && !definition.Locations.Any(static location => location.IsInSource)
+                && AssemblyIdentityMatches(
+                    definition.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions).Assembly.GetName());
+        }
+
+        /// <summary>
+        /// H3: EF lets a caller replace a built context's connection or provider services after
+        /// resolution. Every reference to a member that can do so refuses the closed certificate,
+        /// whether it is invoked, converted to a delegate, assigned through, or never reached: the
+        /// scan reads each simple name's bound symbol, not the shape of the call around it. The
+        /// verdict is a property of the analysed compilations alone, so it is computed once per
+        /// discovery and shared by every isolated root worker (see <see cref="InventoryFacts"/>).
+        /// </summary>
+        private bool HasDbContextConnectionReplacement() => inventoryFacts.DbContextConnectionReplacement;
+
+        internal static bool ScanForDbContextConnectionReplacement(IReadOnlyList<CSharpCompilation> compilations, Func<CSharpCompilation, SyntaxTree, SemanticModel> modelOf)
+        {
+            _ = Interlocked.Increment(ref connectionReplacementScans);
+
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+
+            try
+            {
+                return ScanForDbContextConnectionReplacementCore(compilations, modelOf);
+            }
+            finally
+            {
+                _ = Interlocked.Add(ref connectionReplacementScanTicks, System.Diagnostics.Stopwatch.GetElapsedTime(started).Ticks);
+            }
+        }
+
+        private static bool ScanForDbContextConnectionReplacementCore(IReadOnlyList<CSharpCompilation> compilations, Func<CSharpCompilation, SyntaxTree, SemanticModel> modelOf)
+        {
+            foreach (CSharpCompilation compilation in compilations)
+            {
+                foreach (SyntaxTree tree in compilation.SyntaxTrees)
+                {
+                    // The same trees the graph analyses: its own source, never generated build output.
+                    if (!tree.FilePath.StartsWith("src/", StringComparison.Ordinal) || tree.FilePath.Contains("/obj/", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    SemanticModel model = modelOf(compilation, tree);
+
+                    foreach (SimpleNameSyntax name in tree.GetRoot().DescendantNodes().OfType<SimpleNameSyntax>())
+                    {
+                        SymbolInfo info = model.GetSymbolInfo(name);
+
+                        if (info.Symbol is { } symbol
+                                ? IsDbContextConnectionReplacementMember(symbol)
+                                : info.CandidateSymbols.Any(IsDbContextConnectionReplacementMember))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsDbContextConnectionReplacementMember(ISymbol symbol)
+        {
+            if (symbol is INamedTypeSymbol)
+            {
+                return false;
+            }
+
+            ISymbol definition = symbol is IMethodSymbol method
+                ? method.ReducedFrom ?? method
+                : symbol;
+
+            if (definition is IMethodSymbol { Name: "UseServiceProviderFactory" or "ConfigureContainer" })
+            {
+                return true;
+            }
+
+            if (definition.ContainingType is not { } type)
+            {
+                return false;
+            }
+
+            string key = TypeKey(type);
+
+            return key == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions"
+                    && definition.Name is "SetDbConnection" or "SetConnectionString"
+                || key == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions"
+                    && !(symbol is IMethodSymbol read && IsReviewedAccessorLoggerFactoryRead(read))
+                || key == "Microsoft.EntityFrameworkCore.Infrastructure.IInfrastructure`1"
+                    && definition.Name == "Instance"
+                || key == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection"
+                || type.AllInterfaces.Any(static inherited =>
+                    TypeKey(inherited) == "Microsoft.EntityFrameworkCore.Storage.IRelationalConnection");
+        }
+
+        /// <summary>
+        /// Interface mapping names the base class's virtual member when a derived interceptor
+        /// only overrides it, so an authored callback is the implementation itself or any
+        /// authored override of it in the interceptor's own hierarchy.
+        /// </summary>
+        private static bool HasAuthoredCallback(
+            INamedTypeSymbol created,
+            IMethodSymbol implementation)
+        {
+            if (implementation.Locations.Any(static location => location.IsInSource))
+            {
+                return true;
+            }
+
+            for (INamedTypeSymbol? current = created;
+                current is not null && current.SpecialType != SpecialType.System_Object;
+                current = current.BaseType)
+            {
+                foreach (IMethodSymbol candidate in current.GetMembers(implementation.Name).OfType<IMethodSymbol>())
+                {
+                    if (!candidate.IsOverride
+                        || !candidate.Locations.Any(static location => location.IsInSource))
+                    {
+                        continue;
+                    }
+
+                    for (IMethodSymbol? overridden = candidate.OverriddenMethod;
+                        overridden is not null;
+                        overridden = overridden.OverriddenMethod)
+                    {
+                        if (SymbolEqualityComparer.Default.Equals(
+                            overridden.OriginalDefinition,
+                            implementation.OriginalDefinition))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private bool InterceptorsCannotReplaceConnection(
+            IInvocationOperation invocation,
+            SemanticModel model)
+        {
+            foreach (IOperation creation in invocation.Descendants().Where(static operation =>
+                operation is IObjectCreationOperation))
+            {
+                if (((IObjectCreationOperation)creation).Type is not INamedTypeSymbol created
+                    || AuthoredCompilationIdentity(created, model.Compilation) is null)
+                {
+                    return false;
+                }
+
+                for (INamedTypeSymbol? current = created;
+                    current is not null && current.SpecialType != SpecialType.System_Object;
+                    current = current.BaseType)
+                {
+                    if (current.GetMembers().OfType<IMethodSymbol>().Any(static method =>
+                        method.IsOverride
+                        && method.Name is "ConnectionCreating" or "ConnectionCreatingAsync"
+                            or "ConnectionCreated" or "ConnectionCreatedAsync"))
+                    {
+                        return false;
+                    }
+                }
+
+                // H4: an implicit or explicit interface implementation replaces the
+                // connection just as an override does; IsOverride is false for both.
+                if (model.Compilation.GetTypeByMetadataName(
+                        "Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor") is not
+                    INamedTypeSymbol connectionInterceptor)
+                {
+                    return false;
+                }
+
+                foreach (IMethodSymbol slot in connectionInterceptor.GetMembers().OfType<IMethodSymbol>()
+                    .Where(static slot => slot.Name is "ConnectionCreating" or "ConnectionCreatingAsync"
+                        or "ConnectionCreated" or "ConnectionCreatedAsync"))
+                {
+                    if (created.FindImplementationForInterfaceMember(slot) is { } implementation
+                        && !SymbolEqualityComparer.Default.Equals(implementation, slot)
+                        && implementation.Locations.Any(static location => location.IsInSource))
+                    {
+                        return false;
+                    }
+                }
+
+                // Every other authored interceptor callback runs code the certificate cannot read:
+                // only the connection-lifecycle callbacks of IDbConnectionInterceptor are reviewed.
+                // Command, transaction, SaveChanges, materialization, query and identity-resolution
+                // interceptors, and any callback that could return a replacement object, refuse.
+                if (model.Compilation.GetTypeByMetadataName(
+                        "Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor") is not
+                    INamedTypeSymbol interceptorRoot)
+                {
+                    return false;
+                }
+
+                foreach (INamedTypeSymbol contract in created.AllInterfaces.Where(candidate =>
+                    SymbolEqualityComparer.Default.Equals(candidate, interceptorRoot)
+                    || candidate.AllInterfaces.Any(inherited => SymbolEqualityComparer.Default.Equals(inherited, interceptorRoot))))
+                {
+                    bool reviewedContract = TypeKey(contract) == "Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor"
+                        && AssemblyIdentityMatches(
+                            contract.ContainingAssembly.Identity,
+                            typeof(Microsoft.EntityFrameworkCore.Diagnostics.IDbConnectionInterceptor).Assembly.GetName());
+
+                    foreach (IMethodSymbol slot in contract.GetMembers().OfType<IMethodSymbol>())
+                    {
+                        if (created.FindImplementationForInterfaceMember(slot) is IMethodSymbol implementation
+                            && HasAuthoredCallback(created, implementation)
+                            && !(reviewedContract && ConnectionLifecycleInterceptorCallbacks.Contains(slot.Name)))
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            // Only inline interceptor allocations are reviewed; a stored or returned
+            // interceptor value is an unknown type.
+            return invocation.Arguments
+                .SelectMany(static argument => argument.Value is IArrayCreationOperation array
+                    ? array.Initializer?.ElementValues ?? []
+                    : [argument.Value])
+                .All(static value =>
+                {
+                    while (value is IConversionOperation conversion)
+                    {
+                        value = conversion.Operand;
+                    }
+
+                    return value is IObjectCreationOperation or IArrayCreationOperation;
+                });
+        }
+
+        private AuthoredMember? AuthoredOnConfiguring(
+            INamedTypeSymbol type,
+            Compilation compilation)
+        {
+            for (INamedTypeSymbol? current = type;
+                current is not null
+                && TypeKey(current) != "Microsoft.EntityFrameworkCore.DbContext";
+                current = current.BaseType)
+            {
+                foreach (IMethodSymbol method in current.GetMembers("OnConfiguring").OfType<IMethodSymbol>())
+                {
+                    if (method.IsOverride
+                        && Resolve(method, compilation) is { } authored)
+                    {
+                        return authored;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        // The interfaces the framework context implements: a member read through one of them is
+        // the context's own member, whichever spelling reaches it.
+        private static readonly HashSet<string> DbContextInterfaceKeys = typeof(Microsoft.EntityFrameworkCore.DbContext)
+            .GetInterfaces()
+            .Select(static contract => contract.Namespace + "." + contract.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        private static (ExpressionSyntax? Receiver, bool ImplicitThis) DbContextUseReceiver(SyntaxNode node)
+        {
+            SyntaxNode name = node is InvocationExpressionSyntax call
+                ? call.Expression
+                : node;
+
+            switch (name)
+            {
+                case MemberAccessExpressionSyntax access:
+                    return (access.Expression, false);
+
+                case MemberBindingExpressionSyntax binding:
+                    return (ConditionalAccessReceiver(binding), false);
+
+                case IdentifierNameSyntax or GenericNameSyntax:
+                    return name.Parent switch
+                    {
+                        MemberBindingExpressionSyntax binding => (ConditionalAccessReceiver(binding), false),
+                        MemberAccessExpressionSyntax access when ReferenceEquals(access.Name, name) =>
+                            (access.Expression, false),
+                        _ => (null, true),
+                    };
+
+                default:
+                    return (null, false);
+            }
+        }
+
+        private static ExpressionSyntax? ConditionalAccessReceiver(SyntaxNode binding) =>
+            binding.Ancestors()
+                .OfType<ConditionalAccessExpressionSyntax>()
+                .FirstOrDefault(access => access.WhenNotNull.Span.Contains(binding.Span))
+                ?.Expression;
+
+        private bool HasClosedDbContextOnConfiguring(INamedTypeSymbol dbContext)
+        {
+            for (INamedTypeSymbol? current = dbContext;
+                current is not null
+                && TypeKey(current) != "Microsoft.EntityFrameworkCore.DbContext";
+                current = current.BaseType)
+            {
+                foreach (IMethodSymbol method in current.GetMembers("OnConfiguring").OfType<IMethodSymbol>())
+                {
+                    if (!method.IsOverride)
+                    {
+                        continue;
+                    }
+
+                    if (method.DeclaringSyntaxReferences.Length != 1
+                        || method.DeclaringSyntaxReferences[0].GetSyntax() is not MethodDeclarationSyntax
+                        {
+                            Body: { } body,
+                        } declaration
+                        || method.Parameters is not [IParameterSymbol builder]
+                        || !StartsWithConfiguredGuard(body, builder, declaration.SyntaxTree))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private bool StartsWithConfiguredGuard(
+            BlockSyntax body,
+            IParameterSymbol builder,
+            SyntaxTree tree)
+        {
+            if (!semanticModels.TryGetValue(tree, out SemanticModel? model))
+            {
+                return false;
+            }
+
+            foreach (StatementSyntax statement in body.Statements)
+            {
+                if (statement is ExpressionStatementSyntax
+                    {
+                        Expression: AssignmentExpressionSyntax
+                        {
+                            Left: IdentifierNameSyntax { Identifier.ValueText: "_" },
+                            Right: IdentifierNameSyntax or ThisExpressionSyntax
+                        },
+                    })
+                {
+                    continue;
+                }
+
+                return statement is IfStatementSyntax
+                    {
+                        Else: null,
+                        Condition: MemberAccessExpressionSyntax
+                        {
+                            Name.Identifier.ValueText: "IsConfigured",
+                            Expression: IdentifierNameSyntax guarded,
+                        },
+                        Statement: ReturnStatementSyntax { Expression: null }
+                            or BlockSyntax { Statements: [ReturnStatementSyntax { Expression: null }] },
+                    }
+                    && SymbolEqualityComparer.Default.Equals(
+                        model.GetSymbolInfo(guarded).Symbol,
+                        builder);
+            }
+
+            return false;
         }
 
         private static bool IsExactEfDbContext(INamedTypeSymbol type)
@@ -32560,12 +40788,46 @@ internal static partial class HostedGrimoireProducerInventory
                 return cached;
             }
 
+            ResolvedRegistration[] registrations = SqliteDbContextRegistrations(
+                dbContext,
+                consumingCompilation);
+
+            bool result = registrations.Length != 0
+                && registrations.All(candidate =>
+                    RegistrationConfiguresExactSqliteProvider(
+                        candidate.Call,
+                        candidate.Model));
+
+            sqliteDbContextRegistrations.Add(identity, result);
+
+            return result;
+        }
+
+        private readonly Dictionary<BoundTypeIdentity, ResolvedRegistration[]> dbContextRegistrationCache = [];
+
+        private ResolvedRegistration[] SqliteDbContextRegistrations(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            BoundTypeIdentity cacheKey = TypeIdentity(dbContext, consumingCompilation);
+
+            if (dbContextRegistrationCache.TryGetValue(cacheKey, out ResolvedRegistration[]? cachedRegistrations))
+            {
+                return cachedRegistrations;
+            }
+
+            return dbContextRegistrationCache[cacheKey] = SelectDbContextRegistrations(dbContext, consumingCompilation);
+        }
+
+        private ResolvedRegistration[] SelectDbContextRegistrations(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
             BoundContractIdentity registrationKey = new(
                 dbContext.ContainingAssembly.Identity,
                 TypeKey(dbContext));
 
-            ResolvedRegistration[] registrations =
-                (sqliteDbContextRegistrationCalls.TryGetValue(
+            return (sqliteDbContextRegistrationCalls.TryGetValue(
                         registrationKey,
                         out List<ResolvedRegistration>? candidates)
                     ? candidates
@@ -32595,17 +40857,193 @@ internal static partial class HostedGrimoireProducerInventory
                                 consumingCompilation));
                     })
                     .ToArray();
+        }
+
+        /// <summary>
+        /// The registration configures the <c>DbContextOptions&lt;T&gt;</c> the container injects, so a
+        /// container-built context is configured by it only when the one constructor the container can
+        /// use hands exactly that parameter, unchanged, to EF's <c>DbContext(DbContextOptions)</c>
+        /// constructor, directly or through authored constructors that each forward their own
+        /// parameter. A context that passes other options to its base class, or whose constructor the
+        /// container may not select, reads a provider its registration never chose.
+        /// </summary>
+        private bool ContextForwardsInjectedOptions(INamedTypeSymbol dbContext)
+        {
+            if (dbContext.InstanceConstructors.Where(static constructor => !constructor.IsStatic).ToArray() is not [IMethodSymbol only]
+                || only.DeclaredAccessibility != Accessibility.Public)
+            {
+                return false;
+            }
+
+            return only.Parameters
+                    .Where(parameter => IsDbContextOptions(parameter.Type, dbContext))
+                    .ToArray() is [IParameterSymbol options]
+                && ConstructorForwardsOptions(only, options, 0);
+        }
+
+        private static bool IsDbContextOptions(ITypeSymbol type, INamedTypeSymbol? generic)
+        {
+            if (type is not INamedTypeSymbol named
+                || !AssemblyIdentityMatches(
+                    named.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.DbContextOptions).Assembly.GetName())
+                || named.Locations.Any(static location => location.IsInSource))
+            {
+                return false;
+            }
+
+            return generic is null
+                ? TypeKey(named) is "Microsoft.EntityFrameworkCore.DbContextOptions"
+                    or "Microsoft.EntityFrameworkCore.DbContextOptions`1"
+                : TypeKey(named) == "Microsoft.EntityFrameworkCore.DbContextOptions`1"
+                    && named.TypeArguments is [ITypeSymbol argument]
+                    && SymbolEqualityComparer.Default.Equals(argument, generic);
+        }
+
+        private bool ConstructorForwardsOptions(
+            IMethodSymbol constructor,
+            IParameterSymbol options,
+            int depth)
+        {
+            if (depth > 8
+                || constructor.DeclaringSyntaxReferences is not [{ } reference]
+                || !ConstructorParameterNeverWritten(options)
+                || !semanticModels.TryGetValue(reference.SyntaxTree, out SemanticModel? model))
+            {
+                return false;
+            }
+
+            SyntaxNode? initializer = reference.GetSyntax() switch
+            {
+                ConstructorDeclarationSyntax declaration => declaration.Initializer,
+                TypeDeclarationSyntax { ParameterList: not null } declaration =>
+                    declaration.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().SingleOrDefault(),
+                ParameterListSyntax { Parent: TypeDeclarationSyntax declaration } =>
+                    declaration.BaseList?.Types.OfType<PrimaryConstructorBaseTypeSyntax>().SingleOrDefault(),
+                _ => null,
+            };
+
+            // An absent initializer is the implicit parameterless base call: nothing is forwarded.
+            ArgumentListSyntax? arguments = initializer switch
+            {
+                ConstructorInitializerSyntax constructorInitializer => constructorInitializer.ArgumentList,
+                PrimaryConstructorBaseTypeSyntax primary => primary.ArgumentList,
+                _ => null,
+            };
+
+            if (arguments is null
+                || model.GetSymbolInfo(initializer!).Symbol is not IMethodSymbol target
+                || target.MethodKind != MethodKind.Constructor)
+            {
+                return false;
+            }
+
+            IParameterSymbol? forwarded = null;
+
+            for (int index = 0; index < arguments.Arguments.Count; index++)
+            {
+                ArgumentSyntax argument = arguments.Arguments[index];
+
+                if (StripTransparentExpression(argument.Expression) is not IdentifierNameSyntax name
+                    || !SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(name).Symbol, options))
+                {
+                    continue;
+                }
+
+                IParameterSymbol? receiving = argument.NameColon is { } named
+                    ? target.Parameters.FirstOrDefault(parameter => parameter.Name == named.Name.Identifier.ValueText)
+                    : index < target.Parameters.Length ? target.Parameters[index] : null;
+
+                if (receiving is null || receiving.IsParams || forwarded is not null)
+                {
+                    return false;
+                }
+
+                forwarded = receiving;
+            }
+
+            if (forwarded is null)
+            {
+                return false;
+            }
+
+            INamedTypeSymbol targetType = target.ContainingType;
+
+            if (TypeKey(targetType) == "Microsoft.EntityFrameworkCore.DbContext"
+                && targetType.Locations.All(static location => !location.IsInSource)
+                && AssemblyIdentityMatches(
+                    targetType.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.DbContext).Assembly.GetName()))
+            {
+                return forwarded.Ordinal == 0
+                    && target.Parameters.Length == 1
+                    && IsDbContextOptions(forwarded.Type, null)
+                    && TypeKey(forwarded.Type) == "Microsoft.EntityFrameworkCore.DbContextOptions";
+            }
+
+            return IsDbContextOptions(forwarded.Type, null)
+                && target.DeclaringSyntaxReferences.Length != 0
+                && IsExactEfDbContext(targetType)
+                && ConstructorForwardsOptions(target, forwarded, depth + 1);
+        }
+
+        private readonly Dictionary<BoundTypeIdentity, bool>
+            closedSqliteDbContextConfigurations = [];
+
+        /// <summary>
+        /// The selected registrations alone configure a container-built context's final options:
+        /// no builder escape or provider change, no competing descriptor, and no authored
+        /// OnConfiguring that can run past the provider-complete guard.
+        /// </summary>
+        private bool HasClosedSqliteDbContextConfiguration(
+            INamedTypeSymbol dbContext,
+            Compilation consumingCompilation)
+        {
+            BoundTypeIdentity identity = TypeIdentity(
+                dbContext,
+                consumingCompilation);
+
+            if (closedSqliteDbContextConfigurations.TryGetValue(
+                    identity,
+                    out bool cached))
+            {
+                return cached;
+            }
+
+            ResolvedRegistration[] registrations = SqliteDbContextRegistrations(
+                dbContext,
+                consumingCompilation);
 
             bool result = registrations.Length != 0
                 && registrations.All(candidate =>
-                    RegistrationConfiguresExactSqliteProvider(
+                    RegistrationBuilderCannotChangeProvider(
                         candidate.Call,
-                        candidate.Model));
+                        candidate.Model))
+                && !HasCompetingDbContextServiceDescriptor(
+                    dbContext,
+                    consumingCompilation)
+                && HasClosedDbContextOnConfiguring(dbContext)
+                && ContextForwardsInjectedOptions(dbContext)
+                && !HasDbContextConnectionReplacement()
+                && !ServiceCollectionValueEscapes();
 
-            sqliteDbContextRegistrations.Add(identity, result);
+            closedSqliteDbContextConfigurations.Add(identity, result);
 
             return result;
         }
+
+        private bool RegistrationBuilderCannotChangeProvider(
+            InvocationExpressionSyntax registration,
+            SemanticModel model) =>
+            registration.ArgumentList.Arguments
+                .SelectMany(static argument => argument.Expression
+                    .DescendantNodesAndSelf()
+                    .OfType<AnonymousFunctionExpressionSyntax>())
+                .ToArray() is [AnonymousFunctionExpressionSyntax callback]
+            && BuilderScopeCannotChangeProvider(
+                callback,
+                model,
+                []);
 
         private bool RegistrationConfiguresExactSqliteProvider(
             InvocationExpressionSyntax registration,
@@ -33211,7 +41649,8 @@ internal static partial class HostedGrimoireProducerInventory
                     TypeKind: TypeKind.Class,
                     IsAbstract: false,
                     IsSealed: true,
-                });
+                }
+                || SqliteSealedByUse && IsSqliteSealedFamilyClass(staticType));
 
             IMethodSymbol? externalCleanup = exactCandidates.Length == 0
                 && closedInterfaceTarget is null
@@ -33544,6 +41983,8 @@ internal static partial class HostedGrimoireProducerInventory
 
             AssemblyName? trusted = TypeKey(exactType) switch
             {
+                "System.IO.MemoryStream" =>
+                    typeof(MemoryStream).Assembly.GetName(),
                 "System.Diagnostics.Process" =>
                     typeof(System.Diagnostics.Process).Assembly.GetName(),
                 "System.Security.Principal.WindowsIdentity" =>
@@ -33580,7 +42021,8 @@ internal static partial class HostedGrimoireProducerInventory
             external = null;
 
             if (name == "Dispose"
-                && IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName()))
+                && (IsExactFrameworkType(staticType, "System.IDisposable", typeof(IDisposable).Assembly.GetName())
+                    || IsExactEmbeddingGeneratorContract(staticType)))
             {
                 ExpressionSyntax adapter = StripTransparentExpression(resource);
 
@@ -33599,11 +42041,13 @@ internal static partial class HostedGrimoireProducerInventory
                     && sources.Values.Count != 0
                     && sources.Values.All(source => StripTransparentExpression(source.Expression) is InvocationExpressionSyntax factory
                         && source.Caller.Model.GetSymbolInfo(factory).Symbol is IMethodSymbol factoryMethod
-                        && IsExactChatSdkAdapterFactory(factoryMethod)))
+                        && (IsExactChatSdkAdapterFactory(factoryMethod)
+                            || IsExactEmbeddingSdkAdapterFactory(factoryMethod))))
                 {
-                    // The pinned AsIChatClient(ChatClient) returns the internal sealed SDK
-                    // adapter, whose explicit IDisposable implementation is a no-op. An
-                    // arbitrary IChatClient or replacement value has no such cleanup proof.
+                    // Each exact pinned chat/embedding factory returns its internal sealed SDK
+                    // adapter with ret-only explicit IDisposable cleanup. Every complete value
+                    // source must be such a factory; arbitrary generators and replacements
+                    // gain no cleanup proof. SDK arguments and physical sends still traverse.
                     return true;
                 }
             }
@@ -34127,6 +42571,7 @@ internal static partial class HostedGrimoireProducerInventory
                 CompleteCleanupEnvironmentIdentity(member, identity);
 
             if (!context.CollectionIndexerProof
+                && !context.ClosedSqliteProvider
                 && cacheIdentity is { } stableIdentity
                 && completeCleanupProvenance.TryGetValue(
                     stableIdentity,
@@ -34186,7 +42631,7 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 context.Cache[completeCacheIdentity] = result;
 
-                if (result.Complete && !context.CollectionIndexerProof)
+                if (result.Complete && !context.CollectionIndexerProof && !context.ClosedSqliteProvider)
                 {
                     completeCleanupProvenance.TryAdd(
                         completeCacheIdentity,
@@ -34228,14 +42673,55 @@ internal static partial class HostedGrimoireProducerInventory
                 : null;
         }
 
+        // The identity of the bindings of a member in a cleanup question holds the bindings of every caller in the chain, so it runs to tens of
+        // thousands of characters, and it is built again for every expression asked about and kept in the key of a cache entry. One instance per
+        // distinct content is kept here and every key shares it, where a key would hold a copy of its own (on the production source the
+        // cleanup caches held about 2.6 GB of copies of 40 MB of distinct strings). A key is still compared by content, so this changes no answer.
+        private readonly HashSet<string> pooledCleanupBindings = new(StringComparer.Ordinal);
+
+        private string PooledCleanupBindings(string identity)
+        {
+            if (pooledCleanupBindings.TryGetValue(identity, out string? pooled))
+            {
+                return pooled;
+            }
+
+            _ = pooledCleanupBindings.Add(identity);
+
+            return identity;
+        }
+
         private CleanupProvenanceIdentity CleanupIdentity(
             AuthoredMember member,
             ExpressionSyntax expression) =>
             new(
                 MemberIdentity(member),
-                CleanupBindingIdentity(member),
+                PooledCleanupBindings(CleanupBindingIdentity(member)),
                 expression.SpanStart,
                 expression.Span.Length);
+
+        // Fixture seam: the keys two questions about one expression of one member make share the string of the bindings (one instance), and a key
+        // is still equal, by content, to a key made with a copy of that string that the pool never saw.
+        internal (bool SharedInstance, bool EqualToAnUnpooledCopy, int Probed) ProbeCleanupBindingPool()
+        {
+            foreach (AuthoredMember member in AuthoredMembers)
+            {
+                if (member.Syntax.DescendantNodes().OfType<ExpressionSyntax>().FirstOrDefault() is not { } expression)
+                {
+                    continue;
+                }
+
+                CleanupProvenanceIdentity first = CleanupIdentity(member, expression);
+
+                CleanupProvenanceIdentity second = CleanupIdentity(member, expression);
+
+                CleanupProvenanceIdentity copy = first with { ConcreteBindings = new string(first.ConcreteBindings.AsSpan()) };
+
+                return (ReferenceEquals(first.ConcreteBindings, second.ConcreteBindings), first.Equals(copy) && !ReferenceEquals(first.ConcreteBindings, copy.ConcreteBindings), pooledCleanupBindings.Count);
+            }
+
+            return (false, false, 0);
+        }
 
         private string CleanupBindingIdentity(AuthoredMember member)
         {
@@ -37718,8 +46204,9 @@ internal static partial class HostedGrimoireProducerInventory
                 if (storage is IFieldSymbol { IsReadOnly: false }
                     || storage is IFieldSymbol readonlyStorage
                         && readonlyStorage.ContainingType.DeclaringSyntaxReferences.Any(reference =>
-                            HasCollectionValueReplacement(
-                                member with { Model = semanticModels[reference.SyntaxTree] },
+                            AnalysedModel(reference.GetSyntax()) is not { } declaredModel
+                            || HasCollectionValueReplacement(
+                                member with { Model = declaredModel },
                                 readonlyStorage,
                                 rejectSimpleAssignment: false))
                     || storage is IPropertySymbol { SetMethod.IsInitOnly: false }
@@ -37876,7 +46363,8 @@ internal static partial class HostedGrimoireProducerInventory
             if (expression is InvocationExpressionSyntax sdkFactory
                 && symbol is IMethodSymbol sdkFactoryMethod
                 && (IsExactSdkClientFactory(sdkFactoryMethod)
-                    || IsExactChatSdkAdapterFactory(sdkFactoryMethod)))
+                    || IsExactChatSdkAdapterFactory(sdkFactoryMethod)
+                    || IsExactEmbeddingSdkAdapterFactory(sdkFactoryMethod)))
             {
                 return new([new(member, sdkFactory)], true, false);
             }
@@ -39272,8 +47760,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (initializer is not null)
                 {
+                    if (AnalysedModel(initializer) is not { } initializerModel)
+                    {
+                        return new([], false, true);
+                    }
+
                     sources.Add(new(
-                        ValueExpressionContext(member, initializer, semanticModels[initializer.SyntaxTree]),
+                        ValueExpressionContext(member, initializer, initializerModel),
                         initializer));
                 }
             }
@@ -39282,7 +47775,10 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 SyntaxNode declaration = reference.GetSyntax();
 
-                SemanticModel model = semanticModels[declaration.SyntaxTree];
+                if (AnalysedModel(declaration) is not { } model)
+                {
+                    return new([], false, true);
+                }
 
                 foreach (AssignmentExpressionSyntax assignment in declaration.DescendantNodes().OfType<AssignmentExpressionSyntax>())
                 {
@@ -40058,11 +48554,82 @@ internal static partial class HostedGrimoireProducerInventory
                     : CleanupProvenanceOf(member, expression, context);
         }
 
+        private static bool TryNormalizeBuiltInCleanupValue(
+            SemanticModel model,
+            ExpressionSyntax expression,
+            out ExpressionSyntax normalized,
+            bool requireIdentityPreservingCasts = false)
+        {
+            normalized = expression;
+
+            for (int work = 0; work < CleanupProvenanceContext.MaximumWork; work++)
+            {
+                Conversion contextual = model.GetConversion(normalized);
+
+                if (contextual.IsUserDefined
+                    || contextual.MethodSymbol is not null
+                    || contextual.IsDynamic)
+                {
+                    return false;
+                }
+
+                if (normalized is ParenthesizedExpressionSyntax parentheses)
+                {
+                    normalized = parentheses.Expression;
+
+                    continue;
+                }
+
+                if (normalized is PostfixUnaryExpressionSyntax suppression
+                    && suppression.IsKind(SyntaxKind.SuppressNullableWarningExpression))
+                {
+                    normalized = suppression.Operand;
+
+                    continue;
+                }
+
+                if (normalized is CastExpressionSyntax cast)
+                {
+                    ITypeSymbol? target = model.GetTypeInfo(cast).Type;
+
+                    if (model.GetOperation(cast) is not IConversionOperation conversion
+                        || conversion.OperatorMethod is not null
+                        || conversion.Conversion.IsUserDefined
+                        || conversion.Operand.Type?.TypeKind == TypeKind.Dynamic
+                        || target is null
+                        || target.TypeKind == TypeKind.Dynamic
+                        || !(requireIdentityPreservingCasts
+                            ? conversion.Conversion.IsIdentity
+                                || conversion.Conversion.IsReference
+                                    && conversion.Operand.Type?.IsReferenceType == true
+                            : target.IsReferenceType
+                                || target is INamedTypeSymbol
+                                {
+                                    OriginalDefinition.SpecialType: SpecialType.System_Nullable_T,
+                                }))
+                    {
+                        return false;
+                    }
+
+                    normalized = cast.Expression;
+
+                    continue;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool IsSemanticallyEmptyCleanupValue(
             SemanticModel model,
             ExpressionSyntax expression)
         {
-            expression = StripTransparentExpression(expression);
+            if (!TryNormalizeBuiltInCleanupValue(model, expression, out expression))
+            {
+                return false;
+            }
 
             if (model.GetConstantValue(expression) is
                 {
@@ -40113,7 +48680,7 @@ internal static partial class HostedGrimoireProducerInventory
             if (method.ContainingType.TypeKind != TypeKind.Interface
                 || AdmissionReceiver(member, call) is not { } receiver)
             {
-                return ResolveInvocationTarget(method, member, call);
+                return ResolveInvocationTarget(method, member, call, context);
             }
 
             CleanupProvenance receiverProvenance = CleanupProvenanceOf(
@@ -40768,49 +49335,26 @@ internal static partial class HostedGrimoireProducerInventory
                     initializer));
             }
 
-            foreach (AuthoredMember constructor in AuthoredMembers.Where(
-                candidate => candidate.Symbol.MethodKind
-                        == MethodKind.Constructor
-                    && SymbolEqualityComparer.Default.Equals(
-                        candidate.Symbol.ContainingType,
-                        field.ContainingType)
-                    && (boundConstructors.Length == 0
-                        || boundConstructors.Any(bound =>
-                            SymbolEqualityComparer.Default.Equals(
-                                bound.OriginalDefinition,
-                                candidate.Symbol.OriginalDefinition)))))
+            foreach (AuthoredMember constructor in ConstructorsOf(field.ContainingType).Where(
+                candidate => boundConstructors.Length == 0
+                    || boundConstructors.Any(bound =>
+                        SymbolEqualityComparer.Default.Equals(
+                            bound.OriginalDefinition,
+                            candidate.Symbol.OriginalDefinition))))
             {
-                if (constructor.Syntax.DescendantNodesAndSelf().Any(node =>
-                    node is RefExpressionSyntax alias
-                        && SymbolEqualityComparer.Default.Equals(
-                            constructor.Model.GetSymbolInfo(alias.Expression).Symbol,
-                            field)
-                    || node is ArgumentSyntax argument
-                        && argument.RefKindKeyword.Kind() is SyntaxKind.RefKeyword or SyntaxKind.OutKeyword
-                        && SymbolEqualityComparer.Default.Equals(
-                            constructor.Model.GetSymbolInfo(argument.Expression).Symbol,
-                            field)))
+                (bool aliased, ExpressionSyntax[] assigned) = ConstructorFieldWrites(constructor, field);
+
+                if (aliased)
                 {
                     return [];
                 }
 
-                values.AddRange(constructor.Syntax.DescendantNodesAndSelf(
-                        node => node == constructor.Syntax
-                            || node is not AnonymousFunctionExpressionSyntax
-                                and not LocalFunctionStatementSyntax)
-                    .OfType<AssignmentExpressionSyntax>()
-                    .Where(assignment => assignment.IsKind(
-                            SyntaxKind.SimpleAssignmentExpression)
-                        && SymbolEqualityComparer.Default.Equals(
-                            constructor.Model.GetSymbolInfo(
-                                assignment.Left).Symbol,
-                            field))
-                    .Select(assignment => new BoundValueSource(
-                        expression is IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }
-                            && SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)
-                            ? MergeValueContext(constructor, member)
-                            : constructor,
-                        assignment.Right)));
+                values.AddRange(assigned.Select(right => new BoundValueSource(
+                    expression is IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }
+                        && SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)
+                        ? MergeValueContext(constructor, member)
+                        : constructor,
+                    right)));
             }
 
             return values.ToArray();
@@ -41247,7 +49791,9 @@ internal static partial class HostedGrimoireProducerInventory
             bool resetAware =
                 IsExactResetAwareHostedServiceRegistration(method);
 
-            if (!hosted && !service && !tryService && !resetAware)
+            bool scopedDescriptor = IsExactIndexedScopedDescriptor(registration, method, model);
+
+            if (!hosted && !service && !tryService && !resetAware && !scopedDescriptor)
             {
                 return false;
             }
@@ -42207,6 +50753,38 @@ internal static partial class HostedGrimoireProducerInventory
             };
         }
 
+        private AuthoredMember? ResolveAuthoredOutInvocationTarget(IMethodSymbol method,
+            AuthoredMember member, InvocationExpressionSyntax call, CleanupProvenanceContext context)
+        {
+            if (ResolveInvocationTarget(method, member, call) is { } resolved) return resolved;
+
+            // A literal construction stored in this readonly field closes the
+            // receiver. An interface factory body or a registration name does not.
+            if (context.RemainingWork-- <= 0 || method.ContainingType.TypeKind != TypeKind.Interface
+                || AdmissionReceiver(member, call) is not { } receiver
+                || receiver is not (IdentifierNameSyntax or MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax })
+                || member.Model.GetSymbolInfo(receiver).Symbol is not IFieldSymbol
+                    { IsReadOnly: true, IsStatic: false, DeclaredAccessibility: Accessibility.Private } field
+                || !SymbolEqualityComparer.Default.Equals(field.ContainingType, member.Symbol.ContainingType)
+                || ExactReadOnlyFieldValues(member, receiver, field) is not [BoundValueSource source]
+                || !TryNormalizeBuiltInCleanupValue(source.Caller.Model, source.Expression, out ExpressionSyntax literal)
+                || literal is not BaseObjectCreationExpressionSyntax creation
+                || source.Caller.Model.GetOperation(creation) is not IObjectCreationOperation
+                    { Type: INamedTypeSymbol { IsSealed: true, IsAbstract: false } concrete, Constructor: not null }
+                || !IsAuthoredCleanupSymbol(concrete, source.Caller.Model.Compilation)) return null;
+
+            Dictionary<ISymbol, ITypeSymbol> bindings = new(SymbolEqualityComparer.Default);
+
+            if (member.ConcreteBindings is { } previous)
+            {
+                foreach ((ISymbol symbol, ITypeSymbol type) in previous) bindings[symbol] = type;
+            }
+
+            bindings[field] = concrete;
+
+            return ResolveInvocationTarget(method, member with { ConcreteBindings = bindings }, call);
+        }
+
         private (AuthoredMember Bound, AssignmentExpressionSyntax[] Assignments)?
             TryExactAuthoredOutLocalAssignments(
                 AuthoredMember member,
@@ -42231,7 +50809,7 @@ internal static partial class HostedGrimoireProducerInventory
                         }
                 || member.Model.GetSymbolInfo(call).Symbol is not
                     IMethodSymbol method
-                || ResolveInvocationTarget(method, member, call) is not
+                || ResolveAuthoredOutInvocationTarget(method, member, call, context) is not
                 { } target
                 || sourceParameter.Ordinal >= target.Symbol.Parameters.Length
                 || !SymbolIsStableWithin(
@@ -42475,7 +51053,7 @@ internal static partial class HostedGrimoireProducerInventory
                     IInvocationOperation operation
                 || member.Model.GetSymbolInfo(forwardingCall).Symbol is not
                     IMethodSymbol method
-                || ResolveInvocationTarget(method, member, forwardingCall)
+                || ResolveAuthoredOutInvocationTarget(method, member, forwardingCall, context)
                     is not { } target
                 || !SameBoundType(
                     member.Symbol.ReturnType,
@@ -43674,7 +52252,20 @@ internal static partial class HostedGrimoireProducerInventory
 
             string? local = FindRetainedAdmission(member, site, "TryBeginExternalEffectGroup", null, position, disposing);
 
-            return local is null ? LiveInheritedAdmission(member, site, inherited, position) : RootOperation(operationId) + "@effect:" + local;
+            if (local is null)
+            {
+                return LiveInheritedAdmission(member, site, inherited, position);
+            }
+
+            // The effect of a group begun here carries the origin of the lease it was begun on, as the group's own site records it.
+            string? begunOn = AdmissionSyntax(member).AdmissionCalls
+                .Where(call => Location(call) == local && call.Expression is MemberAccessExpressionSyntax { Name.Identifier.ValueText: "TryBeginExternalEffectGroup" })
+                .Take(2)
+                .ToArray() is [InvocationExpressionSyntax begun] && LeaseReceiverProven(member, begun, out string? origin)
+                    ? origin
+                    : null;
+
+            return EffectOf(RootOperation(operationId), local, begunOn);
         }
 
         private string? WorkAt(AuthoredMember member, SyntaxNode site, string operationId, GrimoireWorkKind? kind, string? inherited, int? position = null, SyntaxNode? disposing = null)
@@ -43703,9 +52294,12 @@ internal static partial class HostedGrimoireProducerInventory
                 return null;
             }
 
-            string origin = inherited[(inherited.LastIndexOf("@", StringComparison.Ordinal) + 1)..];
+            // An Effect is live while its group's value is; the lease it carries is the Work's to end, and the pairing at the send judges it.
+            string origin = inherited.Contains("@effect:", StringComparison.Ordinal)
+                ? EffectGroupLocation(inherited)
+                : inherited[(inherited.LastIndexOf("@", StringComparison.Ordinal) + 1)..];
 
-            origin = origin[(origin.IndexOf(':') + 1)..];
+            origin = inherited.Contains("@effect:", StringComparison.Ordinal) ? origin : origin[(origin.IndexOf(':') + 1)..];
 
             return AdmissionEndedBefore(member, origin, atPosition ?? site.SpanStart, []) ? null : inherited;
         }
@@ -43754,6 +52348,39 @@ internal static partial class HostedGrimoireProducerInventory
                         return true;
                     }
 
+                    if (node.Span.End < position && UserDefinedOperatorAt(member, node) is { } selectedOperation
+                        && selectedOperation.Operands.Any(operand => operand.Syntax is ExpressionSyntax expression && Carries(expression)))
+                    {
+                        IMethodSymbol selectedOperator = selectedOperation.Method;
+
+                        if (selectedOperation.Unsupported || !selectedOperator.IsStatic
+                            || selectedOperator.Parameters.Length != selectedOperation.Operands.Length
+                            || selectedOperator.Parameters.Any(static parameter => parameter.RefKind != RefKind.None)
+                            || selectedOperation.Operands.Any(static operand => operand.Syntax is not ExpressionSyntax)
+                            || Resolve(selectedOperator, member.Model.Compilation) is not { } target) return true;
+
+                        AuthoredMember bound = BindArguments(member, selectedOperation.Operands.Select((operand, index) =>
+                            ((ExpressionSyntax)operand.Syntax, (IParameterSymbol?)selectedOperator.Parameters[index], RefKind.None)), target);
+
+                        if (AdmissionEndedBefore(bound, origin, int.MaxValue, path)) return true;
+                    }
+
+                    if (node is InvocationExpressionSyntax registration && registration.Span.End < position
+                        && member.Model.GetSymbolInfo(registration).Symbol is IMethodSymbol registrationMethod
+                        && DetachedExternalCallbackMethods.Contains(Normalize(registrationMethod)))
+                    {
+                        foreach (ArgumentSyntax argument in registration.ArgumentList.Arguments)
+                        {
+                            if (!IsDelegateExpression(member.Model, argument.Expression)) continue;
+
+                            AuthoredMember[] callbacks = ResolveCallableTargets(argument.Expression,
+                                member.Model, member.CallableBindings, member.AbsentCallables);
+
+                            if (callbacks.Length == 0 || callbacks.Any(callback => CallbackCapturesOuterAdmission(
+                                BindExternalCallbackContext(member, callback), origin))) return true;
+                        }
+                    }
+
                     if (node is InvocationExpressionSyntax call && call.Span.End < position && Location(call) != origin && AdmissionReceiver(member, call) is { } receiver && Carries(receiver) && (member.Model.GetSymbolInfo(call).Symbol is not IMethodSymbol receiverMethod || !PreservesAdmissionReceiver(receiverMethod) && !IsCompletionCombinator(receiverMethod)))
                     {
                         return true;
@@ -43769,10 +52396,56 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (node is InvocationExpressionSyntax argumentCall && argumentCall.Span.End < position && Location(argumentCall) != origin && (member.Model.GetSymbolInfo(argumentCall).Symbol is not IMethodSymbol argumentMethod || !IsCompletionCombinator(argumentMethod)) && AdmissionArguments(member, argumentCall).Any(argument => argument.Expression is not DeclarationExpressionSyntax && Carries(argument.Expression)))
                     {
-                        if (AdmissionArguments(member, argumentCall).Any(argument => Carries(argument.Expression) && argument.RefKind is RefKind.Ref or RefKind.Out) || member.Model.GetSymbolInfo(argumentCall).Symbol is not IMethodSymbol method || Resolve(method, member.Model.Compilation) is not { } target || AdmissionEndedBefore(BindAdmissionArguments(member, argumentCall, target), origin, int.MaxValue, path))
+                        if (AdmissionArguments(member, argumentCall).Any(argument => Carries(argument.Expression) && argument.RefKind is RefKind.Ref or RefKind.Out) || member.Model.GetSymbolInfo(argumentCall).Symbol is not IMethodSymbol method || Resolve(method, member.Model.Compilation) is not { } target || AdmissionEndedBefore(BindAdmissionArguments(member, argumentCall, target), origin, int.MaxValue, path)
+                            || LeaseHandoffEntryOf(target) is { } handoff && !FormalPreserved(handoff))
                         {
                             return true;
                         }
+                    }
+                }
+
+                // The scan above does not enter a lambda or a local function, and a handle one of them captures is never an argument or a
+                // receiver where it is used. A callable made or named before the position ends the admission when its own body does,
+                // judged by this same rule, wherever the callable is declared; a member group made from a value that carries the
+                // admission is a call of that member at a later, unseen position and ends it.
+                foreach (ClosureUse use in AdmissionSyntax(member).ClosureUses.Value)
+                {
+                    if (use.Node.Span.End >= position)
+                    {
+                        continue;
+                    }
+
+                    if (use.MethodGroupReceiver is { } receiver)
+                    {
+                        if (Carries(receiver))
+                        {
+                            return true;
+                        }
+
+                        continue;
+                    }
+
+                    AuthoredMember? closure = use.LocalFunction is { } function
+                        ? Resolve(function, member.Model.Compilation) is { } declared ? BindExternalCallbackContext(member, declared) : null
+                        : ResolveCallableTargets((ExpressionSyntax)use.Node, member.Model, member.CallableBindings, member.AbsentCallables) is [AuthoredMember created]
+                            ? BindExternalCallbackContext(member, created)
+                            : null;
+
+                    // A callable that cannot be bound cannot be shown to leave the handle alone.
+                    if (closure is null)
+                    {
+                        return true;
+                    }
+
+                    // A callable already being judged further up is judged there, once.
+                    if (path.Contains(MemberIdentity(closure)))
+                    {
+                        continue;
+                    }
+
+                    if (AdmissionEndedBefore(closure, origin, int.MaxValue, path))
+                    {
+                        return true;
                     }
                 }
 
@@ -44098,13 +52771,15 @@ internal static partial class HostedGrimoireProducerInventory
                     .DescendantNodesAndSelf(node => node == member.Syntax
                         || node is not AnonymousFunctionExpressionSyntax
                             and not LocalFunctionStatementSyntax)
-                    .Where(static node => node is InvocationExpressionSyntax
+                    .Where(node => node is InvocationExpressionSyntax
                         or ArrowExpressionClauseSyntax
                         or AssignmentExpressionSyntax
                         or UsingStatementSyntax
                         or VariableDeclarationSyntax
-                        || node is ReturnStatementSyntax { Expression: not null })
-                    .ToArray());
+                        || node is ReturnStatementSyntax { Expression: not null }
+                        || UserDefinedOperatorAt(member, node) is not null)
+                    .ToArray(),
+                new(() => DiscoverClosureUses(member)));
 
             admissionSyntaxPlans.Add(memberKey, result);
 
@@ -44122,6 +52797,84 @@ internal static partial class HostedGrimoireProducerInventory
             analysis.SourceIndexBuilds++;
 
             return result;
+        }
+
+        private ClosureUse[] DiscoverClosureUses(AuthoredMember member)
+        {
+            SyntaxNode? container = member.Syntax.AncestorsAndSelf().FirstOrDefault(static node => node is BaseMethodDeclarationSyntax
+                or AccessorDeclarationSyntax
+                or PropertyDeclarationSyntax
+                or IndexerDeclarationSyntax
+                or EventDeclarationSyntax
+                or BaseFieldDeclarationSyntax);
+
+            HashSet<string> localFunctionNames = container is null
+                ? []
+                : container.DescendantNodes()
+                    .OfType<LocalFunctionStatementSyntax>()
+                    .Select(static function => function.Identifier.ValueText)
+                    .ToHashSet(StringComparer.Ordinal);
+
+            bool InNameOf(SyntaxNode node) => node.Ancestors()
+                .OfType<InvocationExpressionSyntax>()
+                .Any(call => call.Expression is IdentifierNameSyntax { Identifier.ValueText: "nameof" }
+                    && member.Model.GetOperation(call) is INameOfOperation);
+
+            List<ClosureUse> uses = [];
+
+            foreach (SyntaxNode node in member.Syntax.DescendantNodesAndSelf(candidate => candidate == member.Syntax
+                || candidate is not AnonymousFunctionExpressionSyntax and not LocalFunctionStatementSyntax))
+            {
+                if (node == member.Syntax)
+                {
+                    continue;
+                }
+
+                if (node is AnonymousFunctionExpressionSyntax)
+                {
+                    uses.Add(new(node, null, null));
+
+                    continue;
+                }
+
+                if (node is IdentifierNameSyntax name
+                    && localFunctionNames.Contains(name.Identifier.ValueText)
+                    && member.Model.GetSymbolInfo(name).Symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction } localFunction)
+                {
+                    uses.Add(new(name, localFunction, null));
+
+                    continue;
+                }
+
+                // A member group is a delegate bound to its receiver. Invoking it later is the same act as invoking the member there, at a
+                // position the text does not show, so forming it counts as the call. A group made from a static method binds no value.
+                if (node is MemberAccessExpressionSyntax access
+                    && access.IsKind(SyntaxKind.SimpleMemberAccessExpression)
+                    && !(access.Parent is InvocationExpressionSyntax call && call.Expression == access))
+                {
+                    SymbolInfo info = member.Model.GetSymbolInfo(access);
+
+                    IMethodSymbol? group = info.Symbol as IMethodSymbol
+                        ?? info.CandidateSymbols.OfType<IMethodSymbol>().FirstOrDefault();
+
+                    if (group is not null
+                        && (!group.IsStatic || group.ReducedFrom is not null)
+                        && !InNameOf(access))
+                    {
+                        // Parentheses are not part of the value, and carry no operation of their own.
+                        ExpressionSyntax receiver = access.Expression;
+
+                        while (receiver is ParenthesizedExpressionSyntax parenthesized)
+                        {
+                            receiver = parenthesized.Expression;
+                        }
+
+                        uses.Add(new(access, null, receiver));
+                    }
+                }
+            }
+
+            return [.. uses];
         }
 
         private RetainedAdmissionAnalysisCounter RetainedAdmissionCounter(AuthoredMember member)
@@ -44163,6 +52916,18 @@ internal static partial class HostedGrimoireProducerInventory
                 string expected = admissionName == "TryAcquireWorkLease" ? "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease" : "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup";
 
                 if (Normalize(method) != expected || kind is not null && member.Model.GetSymbolInfo(admission.ArgumentList.Arguments[0].Expression).Symbol?.Name != kind.ToString())
+                {
+                    continue;
+                }
+
+                // The Single Gate Census: a lease from a gate the census does not trust retains nothing.
+                if (admissionName == "TryAcquireWorkLease" && !AdmissionGateTrusted)
+                {
+                    continue;
+                }
+
+                // CK-3: a group begun on a receiver that is not a must-alias of a work lease is retained by nothing.
+                if (admissionName == "TryBeginExternalEffectGroup" && !LeaseReceiverProven(member, admission, out _))
                 {
                     continue;
                 }
@@ -44306,6 +53071,13 @@ internal static partial class HostedGrimoireProducerInventory
                             [VariableDeclaratorSyntax variable]
                         || variable.Initializer is null
                         || !ReferencesGroup(variable.Initializer.Value)
+                        || member.Model.GetOperation(variable.Initializer) is not IVariableInitializerOperation initializer
+                        || initializer.Value.DescendantsAndSelf().OfType<IConversionOperation>().Any(static conversion =>
+                            conversion.OperatorMethod is not null
+                            || !(conversion.Conversion.IsIdentity
+                                || conversion.IsImplicit && conversion.Conversion.IsReference))
+                        || PerUnitTransparentOperation(initializer.Value) is not
+                            (ILocalReferenceOperation or IParameterReferenceOperation)
                         || member.Model.GetDeclaredSymbol(variable) is not
                             ILocalSymbol lease
                         || declaration.SpanStart <= admittedAt
@@ -44317,14 +53089,25 @@ internal static partial class HostedGrimoireProducerInventory
 
                     int declarationIndex = block.Statements.IndexOf(declaration);
 
+                    StatementSyntax[] following = declarationIndex < 0
+                        ? []
+                        : block.Statements.Skip(declarationIndex + 1).ToArray();
+
+                    int protectorIndex = Array.FindIndex(following,
+                        static statement => statement is TryStatementSyntax);
+
                     if (declarationIndex < 0
-                        || declarationIndex + 1 >= block.Statements.Count
-                        || block.Statements[declarationIndex + 1] is not
-                            TryStatementSyntax
+                        || block.Statements.Take(declarationIndex)
+                            .Where(statement => statement.Span.End > admittedAt)
+                            .Any(statement => !IsNonThrowingTransferredPrelude(statement))
+                        || protectorIndex < 0
+                        || !following.Take(protectorIndex).All(IsNonThrowingTransferredPrelude)
+                        || following[protectorIndex] is not TryStatementSyntax
                         {
                             Finally: { } finalizer,
                         } protector
-                        || !protector.Block.Span.Contains(site.Span))
+                        || !protector.Block.Span.Contains(site.Span)
+                            && !finalizer.Block.Span.Contains(site.Span))
                     {
                         return false;
                     }
@@ -44343,7 +53126,10 @@ internal static partial class HostedGrimoireProducerInventory
 
                     if (cleanups is not [InvocationExpressionSyntax cleanup]
                         || member.Model.GetSymbolInfo(cleanup).Symbol is not
-                            IMethodSymbol cleanupMethod)
+                            IMethodSymbol cleanupMethod
+                        || !SymbolIsStableWithin(member, lease, variable.Span.End, cleanup.Span.End)
+                        || !protector.Block.Span.Contains(site.Span)
+                            && !FinalizerSiteRunsBeforeCleanup(finalizer, cleanup, site))
                     {
                         return false;
                     }
@@ -44356,7 +53142,10 @@ internal static partial class HostedGrimoireProducerInventory
                             && statement.Expression == cleanup;
                     }
 
-                    return ExactConditionalValueTaskFinallyCompletion(member, cleanup) == finalizer;
+                    return ConsumesAdmissionReceiver(cleanupMethod)
+                        && CompletionPoint(member, cleanup, false) is not null
+                        && (RunsOnEveryFinallyPath(finalizer, cleanup)
+                            || ExactConditionalValueTaskFinallyCompletion(member, cleanup) == finalizer);
                 }
 
                 bool retained = syntax.LocalDeclarations
@@ -44395,15 +53184,47 @@ internal static partial class HostedGrimoireProducerInventory
                 || statement is LocalDeclarationStatementSyntax declaration
                     && declaration.Declaration.Variables.All(variable =>
                         variable.Initializer is null
-                        || member.Model.GetConstantValue(variable.Initializer.Value).HasValue
-                        || variable.Initializer.Value.IsKind(
-                            SyntaxKind.DefaultLiteralExpression)
-                        || variable.Initializer.Value is DefaultExpressionSyntax);
+                        || (member.Model.GetConstantValue(variable.Initializer.Value).HasValue
+                            || variable.Initializer.Value.IsKind(SyntaxKind.DefaultLiteralExpression)
+                            || variable.Initializer.Value is DefaultExpressionSyntax)
+                        && member.Model.GetOperation(variable.Initializer) is IVariableInitializerOperation initializer
+                        && (PerUnitTransparentOperation(initializer.Value).ConstantValue.HasValue
+                            || PerUnitTransparentOperation(initializer.Value) is IDefaultValueOperation
+                            || initializer.Value is IConversionOperation
+                            {
+                                IsImplicit: true, OperatorMethod: null,
+                                Operand: IDefaultValueOperation defaultValue,
+                            } defaultConversion && !defaultConversion.Conversion.IsUserDefined
+                                && SymbolEqualityComparer.Default.Equals(defaultConversion.Type, defaultValue.Type)
+                            || initializer.Value is IConversionOperation
+                            {
+                                IsImplicit: true, OperatorMethod: null,
+                                Operand.ConstantValue: { HasValue: true, Value: null },
+                            } conversion && !conversion.Conversion.IsUserDefined));
+
+            // A site in the finalizer of a manually owned lease runs under the lease when the lease's disposal is on every path of the
+            // finalizer and the site runs before it. The disposal ends the chain of nested finally clauses, so everything that precedes it
+            // is the protected part of the finalizer (the container scope's disposal runs there), and what follows it, or the disposal
+            // itself, is not.
+            bool FinalizerSiteRunsBeforeCleanup(
+                FinallyClauseSyntax finalizer,
+                InvocationExpressionSyntax cleanup,
+                SyntaxNode site) =>
+                finalizer.Block.Span.Contains(site.Span)
+                && site.Span.End <= cleanup.SpanStart
+                && RunsOnEveryFinallyPath(finalizer, cleanup);
 
             bool RunsOnEveryFinallyPath(
                 FinallyClauseSyntax finalizer,
                 InvocationExpressionSyntax cleanup)
             {
+                if (cleanup.Ancestors().TakeWhile(ancestor => ancestor != finalizer)
+                    .Any(static ancestor => ancestor is ConditionalExpressionSyntax or SwitchExpressionArmSyntax
+                        || ancestor is BinaryExpressionSyntax binary && binary.IsKind(SyntaxKind.CoalesceExpression)))
+                {
+                    return false;
+                }
+
                 if (cleanup.Ancestors().OfType<ExpressionStatementSyntax>()
                         .FirstOrDefault() is not { } cleanupStatement
                     || cleanupStatement.Parent is not BlockSyntax cleanupBlock)
@@ -44484,7 +53305,8 @@ internal static partial class HostedGrimoireProducerInventory
                         {
                             Finally: { } finalizer,
                         } protector
-                        && protector.Block.Span.Contains(site.Span))
+                        && (protector.Block.Span.Contains(site.Span)
+                            || finalizer.Block.Span.Contains(site.Span)))
                     {
                         InvocationExpressionSyntax[] cleanups = finalizer.Block
                             .DescendantNodes()
@@ -44503,7 +53325,9 @@ internal static partial class HostedGrimoireProducerInventory
                                 && TypeKey(cleanupMethod.ReturnType) == "System.Void"
                                 || cleanupMethod.Name == "DisposeAsync"
                                 && CompletionPoint(member, cleanup, false) is not null)
-                            && RunsOnEveryFinallyPath(finalizer, cleanup);
+                            && RunsOnEveryFinallyPath(finalizer, cleanup)
+                            && (protector.Block.Span.Contains(site.Span)
+                                || FinalizerSiteRunsBeforeCleanup(finalizer, cleanup, site));
                     }
                 }
 
@@ -44695,6 +53519,7 @@ internal static partial class HostedGrimoireProducerInventory
                         == "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup"))
             {
                 if (!IsGuardedAdmission(admission)
+                    || !LeaseReceiverProven(member, admission, out _)
                     || admission.ArgumentList.Arguments.LastOrDefault()?.Expression is not { } outExpression)
                 {
                     continue;
@@ -44866,9 +53691,19 @@ internal static partial class HostedGrimoireProducerInventory
 
             if (callee.StartsWith("<ambiguous:", StringComparison.Ordinal))
             {
+                RefuseTraversalCompletion();
+
                 diagnostics.Add(new("HOSTED_CALL_TARGET_UNRESOLVED", Location(node), callee));
 
                 return null;
+            }
+
+            // A framework call that executes an EF query is a database access, recognized by the exact framework
+            // identity of the call and the provenance of its operand (see ClassifyEfQueryCall).
+            if (node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax
+                && ClassifyEfQueryCall(member, node, method, out _) == EfQueryCall.Terminal)
+            {
+                return HostedProducerSiteKind.DatabaseAccess;
             }
 
             if ((IsBootstrapConsoleRedirection(member)
@@ -44909,6 +53744,15 @@ internal static partial class HostedGrimoireProducerInventory
             if (method.GetAttributes().Any(static attribute => attribute.AttributeClass?.Name == "GrimoireConnectionAcquisitionRouteAttribute"))
             {
                 return HostedProducerSiteKind.OrdinaryConnectionRoute;
+            }
+
+            // The Single Gate Census: while the analysed source declares a gate other than the reviewed one, an acquisition through the
+            // contract may be that gate's, and nothing it returns is an admitted lease.
+            if (callee == GateAcquisitionCallee && !AdmissionGateTrusted)
+            {
+                RefuseUnreviewedGate(node);
+
+                return null;
             }
 
             if ((callee is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease")
@@ -45161,6 +54005,26 @@ internal static partial class HostedGrimoireProducerInventory
                     && method.Name.StartsWith("sqlite3_backup_", StringComparison.Ordinal);
         }
 
+        private bool IsExactSqliteBaseReaderProperty(IPropertySymbol property, bool mutation, SyntaxNode node, AuthoredMember member)
+        {
+            if (mutation || property.IsStatic || !property.IsIndexer || property.SetMethod is not null
+                || property.Type.SpecialType != SpecialType.System_Object
+                || property.Parameters is not [{ RefKind: RefKind.None, Type.SpecialType: SpecialType.System_Int32 }]
+                || !IsExactFrameworkType(property.ContainingType, "System.Data.Common.DbDataReader", typeof(System.Data.Common.DbDataReader).Assembly.GetName())
+                || member.Model.GetOperation(node) is not IPropertyReferenceOperation { Instance.Syntax: ExpressionSyntax receiver }) return false;
+
+            CleanupProvenance provenance = CleanupProvenanceOf(
+                member,
+                receiver,
+                new CleanupProvenanceContext { ClosedSqliteProvider = true });
+
+            // A widened declaration or cast is not a SQLite certificate. Keep this as an
+            // database effect only when the existing complete factory chain is exact. Work
+            // admission is checked independently at the emitted site.
+            return provenance.Complete && provenance.Candidates is [CleanupTypeCandidate candidate]
+                && IsExactFrameworkType(candidate.Type, "Microsoft.Data.Sqlite.SqliteDataReader", typeof(Microsoft.Data.Sqlite.SqliteDataReader).Assembly.GetName());
+        }
+
         private static bool IsDatabaseOperation(
             IPropertySymbol property,
             bool mutation) => !mutation
@@ -45169,6 +54033,29 @@ internal static partial class HostedGrimoireProducerInventory
                 && AssemblyIdentityMatches(
                     property.ContainingAssembly.Identity,
                     typeof(Microsoft.Data.Sqlite.SqliteDataReader).Assembly.GetName());
+
+        /// <summary>
+        /// The members of EF's own options builder that an unconfigured context's OnConfiguring
+        /// fallback may call without selecting a provider, a connection or a service: they record
+        /// state on the builder and run no code of their own. Reviewed by exact assembly identity,
+        /// so a same-named type or member from another assembly or from source stays unclassified.
+        /// </summary>
+        private static bool IsReviewedProviderNeutralOptionsBuilderMember(ISymbol member)
+        {
+            ISymbol definition = member is IMethodSymbol method
+                ? method.ReducedFrom ?? method
+                : member;
+
+            return TypeKey(definition.ContainingType) is
+                    "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder"
+                    or "Microsoft.EntityFrameworkCore.DbContextOptionsBuilder`1"
+                && definition.Name is "IsConfigured" or "AddInterceptors" or "UseModel"
+                && !definition.IsStatic
+                && !definition.Locations.Any(static location => location.IsInSource)
+                && AssemblyIdentityMatches(
+                    definition.ContainingAssembly.Identity,
+                    typeof(Microsoft.EntityFrameworkCore.DbContextOptionsBuilder).Assembly.GetName());
+        }
 
         private static bool IsReviewedDatabaseSupportMember(IMethodSymbol method)
         {
@@ -45319,6 +54206,46 @@ internal static partial class HostedGrimoireProducerInventory
 
             HostedProducerOperationEntry? ordinary = declaredOperations.FirstOrDefault(entry => entry.Authority == HostedProducerAuthorityKind.OrdinaryHostedWork && rootOperation == entry.OperationId);
 
+            // A member that reads a lease out of a holder object is granted no Effect for a physical send or a group, whichever lease the
+            // group was begun on: nothing witnesses the holder, so its lease is nobody's. A member that carries a recovery context is
+            // judged the same way.
+            bool ordinaryHolderPhysicalGroupProven = ordinary is null
+                || !RequiresOrdinaryScopedHolderWitness(member)
+                || !(RequiresExternalEffect(kind, callee)
+                    || kind == HostedProducerSiteKind.EffectFrontier
+                        && callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal));
+
+            if (!ordinaryHolderPhysicalGroupProven) effectGroup = null;
+
+            // The pair a send holds is one lease's: the Effect carries the origin of the lease its group was begun on, and it is the Effect
+            // of a send only when that is the origin of the Work live at the send.
+            if (kind != HostedProducerSiteKind.EffectFrontier
+                && effectGroup is not null
+                && workAdmitted is not null
+                && EffectLeaseOrigin(effectGroup) is { } effectLease
+                && WorkOrigin(workAdmitted) is { } workLease
+                && effectLease != workLease)
+            {
+                effectGroup = null;
+
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(EffectLeaseMismatch(operationId, node, callee));
+            }
+
+            // CK-3: a group is the Effect of its own site only when its receiver is a must-alias of the lease whose Work is live.
+            bool leaseReceiverProven = kind != HostedProducerSiteKind.EffectFrontier
+                || !callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
+                || node is not InvocationExpressionSyntax groupCall
+                || LeaseReceiverIsLiveWork(member, groupCall, workAdmitted);
+
+            if (!leaseReceiverProven)
+            {
+                RefuseTraversalCompletion();
+
+                diagnostics.Add(LeaseReceiverMismatch(operationId, node));
+            }
+
             if (RequiresExternalEffect(kind, callee)
                 && member.RecoveryContext is
                 {
@@ -45349,7 +54276,7 @@ internal static partial class HostedGrimoireProducerInventory
                 }
             }
 
-            if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal))
+            if (kind == HostedProducerSiteKind.EffectFrontier && IsWorkFrontierCallee(callee))
             {
                 workAdmitted = rootOperation + "@work:" + Location(node);
 
@@ -45363,9 +54290,11 @@ internal static partial class HostedGrimoireProducerInventory
                 operationId += "/work@" + Uri.EscapeDataString(workAdmitted);
             }
 
-            if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal))
+            if (kind == HostedProducerSiteKind.EffectFrontier && callee.EndsWith(".TryBeginExternalEffectGroup", StringComparison.Ordinal)
+                && ordinaryHolderPhysicalGroupProven
+                && leaseReceiverProven)
             {
-                effectGroup = rootOperation + "@effect:" + Location(node);
+                effectGroup = EffectOf(rootOperation, Location(node), node is InvocationExpressionSyntax begun && LeaseReceiverProven(member, begun, out string? begunOn) ? begunOn : null);
 
                 admissionCapsules[effectGroup] = capsuleId;
             }
@@ -45385,6 +54314,11 @@ internal static partial class HostedGrimoireProducerInventory
             if (callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) && node is InvocationExpressionSyntax workAdmission && workAdmission.ArgumentList.Arguments.FirstOrDefault()?.Expression is { } workKindExpression && member.Model.GetSymbolInfo(workKindExpression).Symbol is IFieldSymbol admittedKind && Enum.TryParse(admittedKind.Name, out GrimoireWorkKind parsedKind))
             {
                 admittedWorkKind = parsedKind;
+            }
+
+            if (callee == RootLeaseFormalCallee)
+            {
+                admittedWorkKind = ordinary?.WorkKind;
             }
 
             string? workFrontierCapsuleId = workAdmitted is not null && admissionCapsules.TryGetValue(workAdmitted, out string? workCapsule)
@@ -45547,7 +54481,8 @@ internal static partial class HostedGrimoireProducerInventory
                 {
                     string key = TypeKey(contract) + "." + slot.Name;
 
-                    if ((Vocabulary.ContainsKey(key) || key is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" or "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireConnectionAdmissionGate.TryAcquireWorkLease") && SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot)?.OriginalDefinition, symbol.OriginalDefinition))
+                    // Only the reviewed gate's own slot is the acquisition: an implementation of the contract anywhere else is an authored method.
+                    if ((Vocabulary.ContainsKey(key) || key is "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.TryBeginExternalEffectGroup" || key == GateAcquisitionCallee && TypeKey(type) == ReviewedAdmissionGate) && SymbolEqualityComparer.Default.Equals(type.FindImplementationForInterfaceMember(slot)?.OriginalDefinition, symbol.OriginalDefinition))
                     {
                         candidates.Add(key);
                     }
@@ -45628,7 +54563,18 @@ internal static partial class HostedGrimoireProducerInventory
                     diagnostics.Add(new("HOSTED_SITE_AUTHORITY_INVALID", SiteIdentity(site), "Effect-free authority cannot contain a sensitive producer site."));
                 }
 
-                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && frontier.Callee.EndsWith(".TryAcquireWorkLease", StringComparison.Ordinal) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
+                if (site.Kind == HostedProducerSiteKind.EffectFrontier && site.Callee == RootLeaseFormalCallee && operation.LeaseFormal is null)
+                {
+                    diagnostics.Add(new(LeaseFormalUndeclaredCode, SiteIdentity(site), "A root lease formal belongs only to an operation whose catalog entry declares a lease formal."));
+                }
+
+                if (site.Kind == HostedProducerSiteKind.LeaseHandoff
+                    && !(catalog.FirstOrDefault(service => service.Operations.Contains(operation))?.Operations.Any(declared => declared.LeaseFormal is not null && declared.OperationId == site.Callee) ?? false))
+                {
+                    diagnostics.Add(new(LeaseHandoffUndeclaredCode, SiteIdentity(site), "A handoff binding row must name a declared lease-handoff operation of its own service."));
+                }
+
+                if (ordinary && site.Kind != HostedProducerSiteKind.EffectFrontier && !operation.Sites.Any(frontier => frontier.Kind == HostedProducerSiteKind.EffectFrontier && FrontierIdentity(site, "work") is { } lease && lease == FrontierIdentity(frontier, "work") && IsWorkFrontierCallee(frontier.Callee) && (frontier.Callee != RootLeaseFormalCallee || operation.LeaseFormal is not null) && (frontier.AdmittedWorkKind == operation.WorkKind || frontier.OperationId.Contains("/workKind=" + operation.WorkKind, StringComparison.Ordinal))))
                 {
                     diagnostics.Add(new("HOSTED_SITE_WORK_FRONTIER_MISSING", SiteIdentity(site), "Ordinary work requires admission for its declared work kind before scopes and effects."));
                 }

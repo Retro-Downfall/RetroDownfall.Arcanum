@@ -706,6 +706,22 @@ public sealed class MemoryErasureDigestGrammarTests
             "long_rest_receipts",
             "long_rest_receipt_inputs",
             "long_rest_suppressions",
+            "long_rest_discovery_generations",
+            "long_rest_protected_receipt_inputs",
+            "long_rest_protected_receipt_evidence",
+            "long_rest_clean_fts",
+            "long_rest_protected_fts",
+            "long_rest_discovery_embeddings",
+            "long_rest_discovery_edges",
+            "long_rest_accepted_summaries",
+            "long_rest_adjudications",
+            "long_rest_provider_effects",
+            "long_rest_work_inputs",
+            "long_rest_work_items",
+            "long_rest_discovery_nodes",
+            "long_rest_discovery_leaves",
+            "long_rest_sweeps",
+            "long_rest_sources",
         ];
 
         Assert.Equal(expected, MemoryErasureTableCodes.Tables);
@@ -724,6 +740,16 @@ public sealed class MemoryErasureDigestGrammarTests
         Assert.Equal(30, MemoryErasureTableCodes.For("long_rest_receipt_inputs"));
 
         Assert.Equal(31, MemoryErasureTableCodes.For("long_rest_suppressions"));
+
+        Assert.Equal(32, MemoryErasureTableCodes.For("long_rest_discovery_generations"));
+
+        Assert.Equal(33, MemoryErasureTableCodes.For("long_rest_protected_receipt_inputs"));
+
+        Assert.Equal(34, MemoryErasureTableCodes.For("long_rest_protected_receipt_evidence"));
+
+        Assert.Equal(35, MemoryErasureTableCodes.For("long_rest_clean_fts"));
+
+        Assert.Equal(47, MemoryErasureTableCodes.For("long_rest_sources"));
     }
 
     private static byte[] SagaGlobal(string content) =>

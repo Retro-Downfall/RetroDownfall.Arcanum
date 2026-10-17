@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -17,15 +18,34 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// connection and transaction. Both reach the same proof and collapse every untrusted failure to
 /// one content-free operator remedy.
 /// </remarks>
+/// <summary>
+/// The manifest facts the healthy-catalog proof inspected: the version and installed-catalog
+/// fingerprint of the canonical tier, and of the accelerator tier when one is installed.
+/// </summary>
+/// <remarks>
+/// Content-free by construction: a schema version and a fingerprint of the catalog's shape, which are
+/// exactly what <see cref="CovenantAvailability"/> already publishes for a tier that installed
+/// healthily. They are carried out of the proof so that a stopped-host caller can publish what the
+/// proof saw instead of re-deriving it from a second read.
+/// </remarks>
+internal sealed record CovenantInspectedCatalog(
+    int CanonicalSchemaVersion,
+    string CanonicalInstalledFingerprint,
+    int? AcceleratorSchemaVersion,
+    string? AcceleratorInstalledFingerprint);
+
 internal sealed class CovenantHealthyCatalogErasureGuard(
     IGrimoireOrdinaryConnectionFactory connections,
     GrimoireSchemaManifestInspector inspector)
 {
-
     private static readonly Error UnsafeCatalog = new(
         ErrorCodes.Covenant.IntegrityFailure,
         "Healthy-catalog Covenant erasure requires an intact catalog. Restore a known-good backup, "
             + "run Covenant-family reinitialize, or perform a full installation reset.");
+
+    private static readonly Error CatalogUnavailable = new(
+        ErrorCodes.Covenant.Unavailable,
+        "The Covenant catalog could not be read right now.");
 
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
@@ -39,7 +59,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
     /// </summary>
     internal async Task<Result> RequireHealthyAsync(CancellationToken cancellationToken)
     {
-
         IGrimoireOrdinaryConnectionLease? lease = null;
 
         SqliteTransaction? transaction = null;
@@ -48,7 +67,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
         try
         {
-
             Result<IGrimoireOrdinaryConnectionLease> acquired = await _connections
                 .OpenFreshAsync(
                     GrimoireOrdinaryFreshConnectionKind.ReadOnly,
@@ -57,9 +75,7 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
             if (acquired.IsFailure)
             {
-
                 return Result.Failure(UnsafeCatalog);
-
             }
 
             lease = acquired.Value;
@@ -70,27 +86,25 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
                 .BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            result = await ProveAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            Result<CovenantInspectedCatalog> proved = await ProveAsync(connection, transaction, cancellationToken)
+                .ConfigureAwait(false);
+
+            result = proved.IsSuccess ? Result.Success() : Result.Failure(proved.Error);
 
             await GrimoireScopedConsumerTestSeam.PauseAsync(
                 "CovenantHealthyCatalogErasureGuard.RequireHealthyAsync",
                 GrimoireScopedConsumerFinalUseKind.ReaderMaterialized,
                 result.IsSuccess ? 1 : 0,
                 cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             // Cleanup below is deliberately not caller-cancellable. The original cancellation is
             // rethrown only after the direct handle has been released and unregistered.
-
         }
         catch
         {
-
             result = Result.Failure(UnsafeCatalog);
-
         }
 
         bool cleaned = await CleanupOwnedAsync(transaction, lease).ConfigureAwait(false);
@@ -98,7 +112,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         cancellationToken.ThrowIfCancellationRequested();
 
         return cleaned ? result : Result.Failure(UnsafeCatalog);
-
     }
 
     /// <summary>
@@ -110,48 +123,67 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
+        Result<CovenantInspectedCatalog> inspected = await InspectHealthyWithinAsync(
+            connection,
+            transaction,
+            cancellationToken).ConfigureAwait(false);
 
+        // This verdict keeps its one content-free refusal. The outage that a caller of the inspection
+        // can tell apart is for the caller that publishes what it inspected, not for one that only
+        // asks whether erasure may begin.
+        return inspected.IsSuccess ? Result.Success() : Result.Failure(UnsafeCatalog);
+    }
+
+    /// <summary>
+    /// The same proof as <see cref="RequireHealthyWithinAsync"/>, handing back the facts it inspected.
+    /// </summary>
+    /// <remarks>
+    /// A caller that only needs the verdict discards the facts; a caller that publishes the tier's
+    /// capability reads them from the same snapshot the verdict came from, so the version it publishes
+    /// cannot disagree with the catalog that was proved.
+    /// </remarks>
+    internal async Task<Result<CovenantInspectedCatalog>> InspectHealthyWithinAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CancellationToken cancellationToken)
+    {
         try
         {
-
             if (connection is null
                 || transaction is null
                 || connection.State != ConnectionState.Open
                 || !ReferenceEquals(transaction.Connection, connection))
             {
-
-                return Result.Failure(UnsafeCatalog);
-
+                return Result<CovenantInspectedCatalog>.Failure(UnsafeCatalog);
             }
 
-            Result result = await ProveAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            Result<CovenantInspectedCatalog> result = await ProveAsync(connection, transaction, cancellationToken)
+                .ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
 
             return result;
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
+        }
+        catch (Exception exception) when (GrimoireDatabaseBootstrapper.IsCatalogOutage(exception))
+        {
+            // The catalog could not be read right now, which says nothing about whether it is intact.
+            return Result<CovenantInspectedCatalog>.Failure(CatalogUnavailable);
         }
         catch
         {
-
-            return Result.Failure(UnsafeCatalog);
-
+            return Result<CovenantInspectedCatalog>.Failure(UnsafeCatalog);
         }
-
     }
 
-    private async Task<Result> ProveAsync(
+    private async Task<Result<CovenantInspectedCatalog>> ProveAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         CancellationToken cancellationToken)
     {
-
         GrimoireSchemaManifest canonical = GrimoireSchemaManifests.CovenantCanonical;
 
         GrimoireSchemaInspectionResult canonicalInspection = await _inspector
@@ -166,9 +198,7 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
                 canonicalInspection.InstalledCatalogFingerprint!,
                 cancellationToken).ConfigureAwait(false))
         {
-
-            return Result.Failure(UnsafeCatalog);
-
+            return Result<CovenantInspectedCatalog>.Failure(UnsafeCatalog);
         }
 
         GrimoireSchemaManifest accelerator = GrimoireSchemaManifests.CovenantAccelerator;
@@ -187,9 +217,12 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
         if (trustedAcceleratorObjects == 0 && acceleratorMetadata.Count == 0)
         {
-
-            return Result.Success();
-
+            return Result<CovenantInspectedCatalog>.Success(
+                new CovenantInspectedCatalog(
+                    canonical.Version,
+                    canonicalInspection.InstalledCatalogFingerprint!,
+                    AcceleratorSchemaVersion: null,
+                    AcceleratorInstalledFingerprint: null));
         }
 
         GrimoireSchemaInspectionResult acceleratorInspection = await _inspector
@@ -201,9 +234,13 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
                 acceleratorMetadata,
                 accelerator,
                 acceleratorInspection.InstalledCatalogFingerprint!)
-            ? Result.Success()
-            : Result.Failure(UnsafeCatalog);
-
+            ? Result<CovenantInspectedCatalog>.Success(
+                new CovenantInspectedCatalog(
+                    canonical.Version,
+                    canonicalInspection.InstalledCatalogFingerprint!,
+                    accelerator.Version,
+                    acceleratorInspection.InstalledCatalogFingerprint!))
+            : Result<CovenantInspectedCatalog>.Failure(UnsafeCatalog);
     }
 
     private static bool IsValidInspection(GrimoireSchemaInspectionResult inspection) =>
@@ -217,7 +254,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         string installedFingerprint,
         CancellationToken cancellationToken)
     {
-
         IReadOnlyList<TierMetadata> metadata = await ReadMetadataAsync(
             connection,
             transaction,
@@ -225,7 +261,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
             cancellationToken).ConfigureAwait(false);
 
         return IsExactHealthyMetadata(metadata, manifest, installedFingerprint);
-
     }
 
     private static bool IsExactHealthyMetadata(
@@ -251,7 +286,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         GrimoireSchemaManifest manifest,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -283,7 +317,6 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             rows.Add(
                 new TierMetadata(
                     checked((int)reader.GetInt64(0)),
@@ -291,11 +324,9 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
                     reader.GetString(2),
                     checked((int)reader.GetInt64(3)),
                     reader.IsDBNull(4) ? null : reader.GetString(4)));
-
         }
 
         return rows;
-
     }
 
     private static async Task<int> CountTrustedObjectsAsync(
@@ -304,21 +335,16 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         GrimoireSchemaManifest manifest,
         CancellationToken cancellationToken)
     {
-
         HashSet<string> trustedNames = new(StringComparer.Ordinal);
 
         foreach (GrimoireSchemaManifestEntry entry in manifest.Entries)
         {
-
             _ = trustedNames.Add(entry.Name);
 
             foreach (GrimoireExpectedIndex index in entry.Indexes)
             {
-
                 _ = trustedNames.Add(index.Name);
-
             }
-
         }
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -338,65 +364,46 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             if (trustedNames.Contains(reader.GetString(0)))
             {
-
                 count++;
-
             }
-
         }
 
         return count;
-
     }
 
     private static async Task<bool> CleanupOwnedAsync(
         SqliteTransaction? transaction,
         IGrimoireOrdinaryConnectionLease? lease)
     {
-
         bool clean = true;
 
         if (transaction is not null)
         {
-
             try
             {
-
                 await transaction.DisposeAsync().ConfigureAwait(false);
-
             }
             catch
             {
-
                 clean = false;
-
             }
-
         }
 
         if (lease is not null)
         {
-
             try
             {
-
                 await lease.DisposeAsync().ConfigureAwait(false);
-
             }
             catch
             {
-
                 clean = false;
-
             }
-
         }
 
         return clean;
-
     }
 
     private sealed record TierMetadata(
@@ -405,5 +412,4 @@ internal sealed class CovenantHealthyCatalogErasureGuard(
         string InstalledCatalogFingerprint,
         int HealthCode,
         string? HealthDetailCode);
-
 }

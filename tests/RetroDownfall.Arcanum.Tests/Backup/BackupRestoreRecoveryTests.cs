@@ -260,7 +260,10 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
     /// no default installation — staged gone, live absent, nothing displaced — matched no commit shape and
     /// stopped startup with ReconciliationRequired; and a staged tree that never left staging, beside no
     /// default installation, did the same. Staged gone is a completed commit and staged present is one
-    /// that never began, both only needing their staging removed.
+    /// that never began, both only needing their staging removed. The journal is indexed under the default
+    /// installation, so its start is what resolves it: an outcome that demanded reconciliation here would
+    /// stop that start on every start, over evidence about a root that is not its own, and the staged
+    /// generation was sanitized before the commit published it, so the committed tree needs nothing more.
     /// </remarks>
     [Theory]
     [InlineData(true, false)]
@@ -292,6 +295,10 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
         Assert.Equal(expected, report.Outcome);
 
         Assert.False(Directory.Exists(interrupted.StagingRoot));
+
+        Assert.False(File.Exists(Path.Combine(interrupted.StagingRoot, BackupRestoreJournal.FileName)));
+
+        Assert.Empty(BackupRestoreStagingIndex.Read(_live));
 
         Assert.Equal(defaultInstallationPresent, Directory.Exists(_live));
     }

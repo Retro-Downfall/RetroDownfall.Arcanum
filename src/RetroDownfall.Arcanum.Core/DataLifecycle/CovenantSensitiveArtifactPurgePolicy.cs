@@ -13,13 +13,11 @@ namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 /// </remarks>
 public enum CovenantArtifactPurgeExecutor : byte
 {
-
     /// <summary>One immediate SQLite transaction deletes content, projections, and the label.</summary>
     DatabaseTransaction = 1,
 
     /// <summary>Delegated once to the single managed-file erasure kernel.</summary>
     ManagedFileKernel = 2,
-
 }
 
 /// <summary>
@@ -74,7 +72,6 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
     bool PreservesReplayDenialEvidence,
     string Policy)
 {
-
     /// <summary>
     /// Whether this kind's label is removed by the same database transaction that deletes its content.
     /// </summary>
@@ -84,14 +81,13 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
     /// beside the content, so a second stored field could only ever disagree with the executor.
     /// </remarks>
     public bool RemovesLabelWithContent => Executor == CovenantArtifactPurgeExecutor.DatabaseTransaction;
-
 }
 
 /// <summary>
 /// The one exhaustive code-to-policy table for deleting a Covenant-derived artifact.
 /// </summary>
 /// <remarks>
-/// Thirteen kinds, thirteen literal rules, one owner. Retention purge, family reinitialize, and
+/// Sixteen kinds, sixteen literal rules, one owner. Retention purge, family reinitialize, and
 /// Covenant reset all delete the same artifacts for different reasons, and three independent switch
 /// statements over the same enum is how one of them ends up preserving evidence the other two remove.
 /// Every erasure path resolves its policy here or does not run.
@@ -104,7 +100,6 @@ public sealed record CovenantSensitiveArtifactPurgeRule(
 /// </remarks>
 public static class CovenantSensitiveArtifactPurgePolicy
 {
-
     private static readonly CovenantSensitiveArtifactPurgeRule[] Rules =
     [
         new(
@@ -332,6 +327,22 @@ public static class CovenantSensitiveArtifactPurgePolicy
                 "Delete the Session contribution, dependent Campaign summaries, source manifests, output "
                 + "checkpoints, and labels in one transaction; retire current pointers, preserve sequence and "
                 + "source-generation tombstones, and repair Session sensitivity state."),
+
+        new(
+            SensitiveArtifactKind.LongRestDiscovery,
+            Code: 16,
+            CovenantArtifactPurgeExecutor.DatabaseTransaction,
+            DeletesDerivedProjections: true,
+            RepairsCurrentPointer: false,
+            RepairsSessionSensitivityState: false,
+            AppendsErasureReceipt: false,
+            RequiresDurableTerminalEvidenceFirst: false,
+            PreservesFinalizationAndClaimEvidence: false,
+            PreservesReplayDenialEvidence: false,
+            Policy:
+                "Delete the derived generation's nodes, vectors, edges, search projections, work payloads, "
+                + "and labels in one transaction; preserve canonical source history and Long Rest receipts "
+                + "until participant erasure."),
     ];
 
     private static readonly Dictionary<SensitiveArtifactKind, CovenantSensitiveArtifactPurgeRule> ByKind =
@@ -356,7 +367,6 @@ public static class CovenantSensitiveArtifactPurgePolicy
                     ErrorCodes.Covenant.ManualRecoveryRequired,
                     "This build has no protected-artifact purge policy for the requested artifact kind."));
 
-    /// <summary>Whether a value is one of the thirteen kinds this table covers.</summary>
+    /// <summary>Whether a value is one of the sixteen kinds this table covers.</summary>
     public static bool IsCovered(SensitiveArtifactKind kind) => ByKind.ContainsKey(kind);
-
 }

@@ -384,6 +384,129 @@ public sealed class BackupRestoreJournalAuthenticationTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Restore_journal_installation_identity_is_read_for_a_new_database_and_never_written()
+    {
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        SecretAccessRecordingCredentialStore recording = new(_credentials);
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(recording);
+
+        string account =
+            ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(profile.AccountSuffix);
+
+        // Absence is an answer, and it stays absence: reading is not seeding.
+        Assert.Null(Value(identities.ReadForNewDatabase(_lock, _guarded, profile)));
+
+        Assert.Equal(0, recording.SetCount(account));
+
+        Assert.Equal(
+            BackupRestoreJournalIdentityPresence.Absent,
+            Value(identities.Probe(profile)).Presence);
+
+        Guid carried = Guid.Parse("3a3b3c3d-3e3f-4a4b-8c4d-5e6f7a8b9c0d");
+
+        _ = Value(identities.SeedFromDatabase(_lock, _guarded, profile, carried));
+
+        int writes = recording.SetCount(account);
+
+        Assert.Equal(carried, Value(identities.ReadForNewDatabase(_lock, _guarded, profile)));
+
+        Assert.Equal(writes, recording.SetCount(account));
+
+        // A value that exists and is not one canonical identity is a failure, never absence: reporting
+        // absence would let a new database mint over the binding it exists to hold.
+        _ = _credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            account,
+            carried.ToString("D"));
+
+        Assert.True(identities.ReadForNewDatabase(_lock, _guarded, profile).IsFailure);
+
+        // An unreadable store is a failure too, and a distinct one from absence.
+        recording.FailAccount(account, OsCredentialStoreStatus.Unavailable);
+
+        Result<Guid?> unavailable = identities.ReadForNewDatabase(_lock, _guarded, profile);
+
+        Assert.True(unavailable.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, unavailable.Error.Code);
+    }
+
+    [Fact]
+    public void Restore_journal_installation_identity_read_for_a_new_database_requires_the_held_lock()
+    {
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(_credentials);
+
+        string otherDirectory = Path.Combine(_root, "not-the-guarded-root");
+
+        // The lock proves it guards one path, and AssertHeldFor refuses every other with this type.
+        InvalidOperationException refused = Assert.Throws<InvalidOperationException>(() =>
+            identities.ReadForNewDatabase(_lock, otherDirectory, profile));
+
+        Assert.Contains("guards a different control path", refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A damaged installation identity is recognized by the probe's own answer, wherever up a chain
+    /// that returns the error as it found it the caller holds it, and by nothing else: the same code
+    /// with other words is evidence that failed another contract, and the same words under another
+    /// code is not the probe's answer.
+    /// </summary>
+    [Fact]
+    public void A_damaged_installation_identity_is_told_from_every_other_failure_by_the_probes_own_answer()
+    {
+        BackupRestoreProfileNamespace profile = Namespace();
+
+        BackupRestoreJournalInstallationIdentityProvider identities = new(_credentials);
+
+        Guid carried = Guid.Parse("3a3b3c3d-3e3f-4a4b-8c4d-5e6f7a8b9c0d");
+
+        _ = Value(identities.SeedFromDatabase(_lock, _guarded, profile, carried));
+
+        // A well-formed identity that names another installation is a refusal, and not a damaged value.
+        Result mismatch = identities.RequireMatchesDatabase(
+            profile,
+            Guid.Parse("0a0b0c0d-1111-4222-8333-444455556666"));
+
+        Assert.True(mismatch.IsFailure);
+
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(mismatch.Error));
+
+        // The lowercase spelling of the same value is a different spelling, which is damage.
+        _ = _credentials.Set(
+            ArcanumCredentialIdentity.Service,
+            ArcanumCredentialIdentity.BackupRestoreJournalInstallationAccount(profile.AccountSuffix),
+            carried.ToString("D"));
+
+        Result<BackupRestoreJournalIdentityProbe> probed = identities.Probe(profile);
+
+        Assert.True(probed.IsFailure);
+
+        Assert.True(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(probed.Error));
+
+        Assert.True(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            identities.ReadForNewDatabase(_lock, _guarded, profile).Error));
+
+        Assert.True(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            identities.RequireMatchesDatabase(profile, carried).Error));
+
+        // The same code with other words is some other evidence that failed its own contract.
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "This profile's external installation identity did not read back as written.")));
+
+        // The probe's words under another code are not the probe's answer.
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(
+            new Error(ErrorCodes.Covenant.Unavailable, probed.Error.Message)));
+
+        Assert.False(BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(Error.None));
+    }
+
     // ---------------------------------------------------------------- envelope authentication
 
     [Theory]

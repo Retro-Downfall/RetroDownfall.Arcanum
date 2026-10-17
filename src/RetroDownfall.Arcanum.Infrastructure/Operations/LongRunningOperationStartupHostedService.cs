@@ -359,7 +359,17 @@ internal sealed class LongRunningOperationStartupHostedService(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IGrimoireWorkLease lease = await AcquireWorkLeaseAsync(cancellationToken).ConfigureAwait(false);
+            long observedGeneration = admissionGate.CurrentGeneration;
+
+            // Acquire in this execution context so scopes and per-unit finishers inherit admission.
+            if (!admissionGate.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out IGrimoireWorkLease? admitted))
+            {
+                await admissionGate.WaitForOpenGenerationAfterRefusalAsync(observedGeneration, cancellationToken).ConfigureAwait(false);
+
+                continue;
+            }
+
+            IGrimoireWorkLease lease = admitted!;
             IGrimoireExternalEffectGroup? group = null;
             AsyncServiceScope scope = default;
             bool scopeCreated = false;

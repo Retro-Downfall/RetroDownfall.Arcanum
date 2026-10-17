@@ -5,16 +5,15 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Security;
 
 public sealed class SanctumGuardInvalidCampaignTests
 {
-
     [Fact]
     public async Task ValidatePathAsync_InvalidCampaignId_DeniesBeforeRepositoryLookup()
     {
-
         StubCampaignRepository repository = new();
 
         StubSanctumBreachRepository breachRepository = new();
@@ -22,7 +21,8 @@ public sealed class SanctumGuardInvalidCampaignTests
         SanctumGuard guard = new(
             repository,
             breachRepository,
-            NullLogger<SanctumGuard>.Instance);
+            NullLogger<SanctumGuard>.Instance,
+            UnregisteredCampaignRoots.Instance);
 
         SanctumResult result = await guard.ValidatePathAsync(
             "not-a-valid-guid",
@@ -43,7 +43,6 @@ public sealed class SanctumGuardInvalidCampaignTests
         // Invalid campaign ids are log-only: persisting would violate the SanctumBreaches ->
         // Campaigns foreign key since no campaign row exists to reference.
         Assert.False(breachRepository.WasCalled);
-
     }
 
     /// <summary>
@@ -63,7 +62,6 @@ public sealed class SanctumGuardInvalidCampaignTests
     [InlineData("   ")]
     public async Task ValidateNetworkAsync_NoCampaignContext_AllowsWithoutReadingACampaign(string campaignId)
     {
-
         StubCampaignRepository repository = new();
 
         StubSanctumBreachRepository breachRepository = new();
@@ -71,7 +69,8 @@ public sealed class SanctumGuardInvalidCampaignTests
         SanctumGuard guard = new(
             repository,
             breachRepository,
-            NullLogger<SanctumGuard>.Instance);
+            NullLogger<SanctumGuard>.Instance,
+            UnregisteredCampaignRoots.Instance);
 
         SanctumResult result = await guard.ValidateNetworkAsync(
             campaignId,
@@ -85,7 +84,6 @@ public sealed class SanctumGuardInvalidCampaignTests
         Assert.False(repository.WasQueried);
 
         Assert.False(breachRepository.WasCalled);
-
     }
 
     /// <summary>
@@ -96,7 +94,6 @@ public sealed class SanctumGuardInvalidCampaignTests
     [InlineData("   ")]
     public async Task ValidateToolAsync_NoCampaignContext_AllowsWithoutReadingACampaign(string campaignId)
     {
-
         StubCampaignRepository repository = new();
 
         StubSanctumBreachRepository breachRepository = new();
@@ -104,7 +101,8 @@ public sealed class SanctumGuardInvalidCampaignTests
         SanctumGuard guard = new(
             repository,
             breachRepository,
-            NullLogger<SanctumGuard>.Instance);
+            NullLogger<SanctumGuard>.Instance,
+            UnregisteredCampaignRoots.Instance);
 
         SanctumResult result = await guard.ValidateToolAsync(campaignId, "read_file_chunk");
 
@@ -115,7 +113,6 @@ public sealed class SanctumGuardInvalidCampaignTests
         Assert.False(repository.WasQueried);
 
         Assert.False(breachRepository.WasCalled);
-
     }
 
     /// <summary>
@@ -129,7 +126,6 @@ public sealed class SanctumGuardInvalidCampaignTests
     [Fact]
     public async Task Network_and_tool_gates_deny_a_malformed_campaign_id_before_any_lookup()
     {
-
         StubCampaignRepository repository = new();
 
         StubSanctumBreachRepository breachRepository = new();
@@ -137,7 +133,8 @@ public sealed class SanctumGuardInvalidCampaignTests
         SanctumGuard guard = new(
             repository,
             breachRepository,
-            NullLogger<SanctumGuard>.Instance);
+            NullLogger<SanctumGuard>.Instance,
+            UnregisteredCampaignRoots.Instance);
 
         SanctumResult network = await guard.ValidateNetworkAsync(
             "not-a-valid-guid",
@@ -157,25 +154,28 @@ public sealed class SanctumGuardInvalidCampaignTests
         Assert.False(repository.WasQueried);
 
         Assert.False(breachRepository.WasCalled);
-
     }
 
     private sealed class StubCampaignRepository : ICampaignRepository
     {
-
         public bool WasQueried { get; private set; }
 
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
         {
-
             WasQueried = true;
 
             return Task.FromResult<Campaign?>(null);
-
         }
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+
+        // No root is registered in these scenarios, so the exact match, which finds none, is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
@@ -198,21 +198,17 @@ public sealed class SanctumGuardInvalidCampaignTests
 
         public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(0);
-
     }
 
     private sealed class StubSanctumBreachRepository : ISanctumBreachRepository
     {
-
         public bool WasCalled { get; private set; }
 
         public Task RecordAsync(SanctumBreachRecord breach, int maxBreachCount, CancellationToken ct = default)
         {
-
             WasCalled = true;
 
             return Task.CompletedTask;
-
         }
 
         public Task<IReadOnlyList<SanctumBreachRecord>> QueryAsync(
@@ -228,7 +224,5 @@ public sealed class SanctumGuardInvalidCampaignTests
 
         public Task<int> DeleteOldestAsync(string campaignId, int count, CancellationToken ct = default) =>
             Task.FromResult(0);
-
     }
-
 }

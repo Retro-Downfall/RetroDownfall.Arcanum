@@ -14,12 +14,22 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
 [Collection("GlobalConsole")]
 
 public sealed class ConfigCommandTests
 {
+    /// <summary>
+    /// How long the fake editor has to write its pid file before the test gives up on it. On Windows the editor is
+    /// a PowerShell script, so this covers PowerShell starting, which has taken more than ten seconds on a loaded
+    /// runner. Nothing is being timed: the test waits for the editor to be up and then cancels, so a passing run
+    /// returns as soon as the file exists and the limit only bounds a hang.
+    /// </summary>
+    private static readonly TimeSpan EditorReadinessLimit = TimeSpan.FromSeconds(60);
+
     [Fact]
 
     public void Editor_command_preserves_configured_arguments_without_using_a_shell()
@@ -508,6 +518,10 @@ public sealed class ConfigCommandTests
             script,
             $"$PID | Set-Content -Path '{pidFile}'\r\nStart-Sleep -Seconds 60\r\n");
 
+        // Outside the readiness wait below, so that wait covers the editor script starting and not PowerShell's
+        // first start in this process.
+        await WindowsPowerShellWarmUp.EnsureAsync();
+
         await AssertCancellingTerminatesTheEditorAsync(
             $"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\"",
             directory,
@@ -575,9 +589,9 @@ public sealed class ConfigCommandTests
                 Path.Combine(directory, "arcanum.json"),
                 cancellation.Token);
 
-            DateTime deadline = DateTime.UtcNow.AddSeconds(15);
+            DateTime startDeadline = DateTime.UtcNow + EditorReadinessLimit;
 
-            while (!File.Exists(pidFile) && DateTime.UtcNow < deadline)
+            while (!File.Exists(pidFile) && DateTime.UtcNow < startDeadline)
             {
                 await Task.Delay(25);
             }
@@ -587,7 +601,9 @@ public sealed class ConfigCommandTests
             // The editor writes its pid and then carries on, so wait until the file is complete.
             string pidText = string.Empty;
 
-            while (string.IsNullOrWhiteSpace(pidText) && DateTime.UtcNow < deadline)
+            DateTime writeDeadline = DateTime.UtcNow + EditorReadinessLimit;
+
+            while (string.IsNullOrWhiteSpace(pidText) && DateTime.UtcNow < writeDeadline)
             {
                 pidText = (await File.ReadAllTextAsync(pidFile)).Trim();
 

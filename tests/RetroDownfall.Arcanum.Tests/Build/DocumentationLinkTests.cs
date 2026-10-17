@@ -22,16 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Build;
 /// </remarks>
 public sealed class DocumentationLinkTests
 {
-    /// <summary>
-    /// The one link that is allowed to be dead: the guide the owner is renaming from
-    /// <c>ArcanumOATH.Human.md</c> to <c>Arcanum.OATH.Human.md</c>. The README already links the new
-    /// name. The allowance exists only while the old file is still present and the new one is not, so
-    /// the moment the rename lands the link resolves on its own and the allowance becomes inert.
-    /// </summary>
-    private const string PendingRenameTarget = "docs/Arcanum.OATH.Human.md";
-
-    private const string PendingRenameSource = "docs/ArcanumOATH.Human.md";
-
     private static readonly Regex FencedCodeDelimiter = new(
         @"^\s{0,3}(```|~~~)",
         RegexOptions.CultureInvariant,
@@ -118,10 +108,7 @@ public sealed class DocumentationLinkTests
 
                 if (!ExistsWithExactCase(root, resolved))
                 {
-                    if (!IsPendingRename(root, resolved))
-                    {
-                        offenders.Add($"{location}: ({target}) names no file or directory");
-                    }
+                    offenders.Add($"{location}: ({target}) names no file or directory");
 
                     continue;
                 }
@@ -332,12 +319,6 @@ public sealed class DocumentationLinkTests
         string root,
         string path) =>
         Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
-
-    private static bool IsPendingRename(
-        string root,
-        string resolved) =>
-        ToRepositoryPath(root, resolved) == PendingRenameTarget
-        && File.Exists(Path.Combine(root, PendingRenameSource.Replace('/', Path.DirectorySeparatorChar)));
 
     /// <summary>
     /// The relative link targets in a document with their 1-based line numbers, in the order they

@@ -227,7 +227,8 @@ internal static partial class HostedGrimoireProducerInventory
             if (model.GetSymbolInfo(expression).Symbol is not ILocalSymbol local
                 || local.DeclaringSyntaxReferences is not [SyntaxReference declaration]
                 || declaration.GetSyntax() is not VariableDeclaratorSyntax { Initializer.Value: { } initializer }
-                || !IsExactCampaignSpanReaderCreation(initializer, semanticModels[initializer.SyntaxTree])
+                || AnalysedModel(initializer) is not { } initializerModel
+                || !IsExactCampaignSpanReaderCreation(initializer, initializerModel)
                 || !HasOnlyCampaignStorageUses(local, model, IsCampaignReaderUse))
             {
                 return false;
@@ -475,8 +476,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                 // Unlike the generic source tracer, retain null/default initializers. For Sort they
                 // activate default IComparable callbacks; for TryParse they select CurrentCulture.
-                return sources.Any(source => HasRejectedCampaignEncodingValueSource(source,
-                    semanticModels[source.SyntaxTree], path, context, inspectComparer));
+                return sources.Any(source => AnalysedModel(source) is not { } sourceModel
+                    || HasRejectedCampaignEncodingValueSource(source, sourceModel, path, context, inspectComparer));
             }
             finally
             {
@@ -608,7 +609,10 @@ internal static partial class HostedGrimoireProducerInventory
 
             foreach (SyntaxNode root in roots)
             {
-                SemanticModel partModel = semanticModels[root.SyntaxTree];
+                if (AnalysedModel(root) is not { } partModel)
+                {
+                    return false;
+                }
 
                 foreach (IdentifierNameSyntax reference in root.DescendantNodes().OfType<IdentifierNameSyntax>()
                     .Where(reference => SymbolEqualityComparer.Default.Equals(partModel.GetSymbolInfo(reference).Symbol, storage)))

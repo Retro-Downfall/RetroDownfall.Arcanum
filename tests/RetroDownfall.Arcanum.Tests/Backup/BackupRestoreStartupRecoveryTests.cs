@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Backup;
 
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -17,6 +19,8 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Covenant;
+
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
@@ -60,8 +64,17 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 
     private readonly Guid _installationId = Guid.NewGuid();
 
-    public BackupRestoreStartupRecoveryTests()
+    public BackupRestoreStartupRecoveryTests() : this(root: null)
     {
+    }
+
+    private BackupRestoreStartupRecoveryTests(string? root)
+    {
+        if (root is not null)
+        {
+            _root = root;
+        }
+
         Directory.CreateDirectory(_root);
 
         _guarded = Path.Combine(_root, "arcanum");
@@ -347,6 +360,10 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
             _lock,
             Token));
 
+        await using SqliteConnection committed = await OpenCleanCommittedDatabaseAsync();
+
+        recovery = Recovery(gate, markers, committed);
+
         Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
             .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
 
@@ -381,6 +398,82 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
         Assert.Equal(BackupRestoreJournalAnchorState.Closed, ReadAnchor(interrupted).State);
 
         Assert.False(Directory.Exists(interrupted.StagingRoot));
+    }
+
+    [SkippableFact]
+    public async Task Authority_recovery_accepts_the_actual_database_through_an_allowed_MacOS_system_alias()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "This control exercises the trusted macOS /tmp system alias.");
+
+        using BackupRestoreStartupRecoveryTests aliased = new(Path.Combine("/tmp", "arcanum-restore-system-alias-" + Guid.NewGuid().ToString("N")));
+
+        Interrupted interrupted = aliased.Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        FakeCampaignPathMarkerLifecycle markers = new();
+
+        _ = Value(await aliased.Recovery(gate, markers).RecoverPhysicalTopologyBeforeDatabaseAsync(aliased._lock, Token));
+
+        await using SqliteConnection committed = await aliased.OpenCleanCommittedDatabaseAsync();
+
+        string expected = Path.Combine(aliased._guarded, "arcanum.db");
+
+        Assert.NotEqual(expected, committed.DataSource);
+
+        Assert.Equal(NoFollowPathTopology.NormalizeMacOsSystemAlias(expected), committed.DataSource);
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await aliased.Recovery(gate, markers, committed)
+            .RecoverAuthorityBeforeReadinessAsync(aliased._lock, Token);
+
+        Assert.Equal(BackupRestoreStartupRecoveryOutcome.RecoveredReady, Value(recovered));
+
+        Assert.Equal(1, markers.ReconcileCalls);
+
+        Assert.Equal(1, markers.Finalizer.Invocations);
+
+        Assert.Equal(BackupRestoreJournalAnchorState.Closed, aliased.ReadAnchor(interrupted).State);
+
+        Assert.False(Directory.Exists(interrupted.StagingRoot));
+
+        Assert.Equal(System.Data.ConnectionState.Open, committed.State);
+    }
+
+    [Fact]
+    public async Task Authority_recovery_refuses_a_clean_open_database_outside_the_recovered_installation()
+    {
+        Interrupted interrupted = Interrupt(RestoreCrashPoint.AfterStagedRootRenamedToLive);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        FakeCampaignPathMarkerLifecycle markers = new();
+
+        _ = Value(await Recovery(gate, markers).RecoverPhysicalTopologyBeforeDatabaseAsync(_lock, Token));
+
+        await using SqliteConnection actual = await OpenCleanCommittedDatabaseAsync();
+
+        using BackupRestoreStartupRecoveryTests other = new();
+
+        Directory.CreateDirectory(other._guarded);
+
+        await using SqliteConnection wrong = await other.OpenCleanCommittedDatabaseAsync();
+
+        Result<BackupRestoreStartupRecoveryOutcome> recovered = await Recovery(gate, markers, wrong)
+            .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
+
+        Assert.Equal(BackupRestoreStartupRecoveryOutcome.KeptClosed, Value(recovered));
+
+        Assert.Equal(0, markers.ReconcileCalls);
+
+        Assert.Equal(0, markers.Finalizer.Invocations);
+
+        Assert.Equal(BackupRestoreJournalAnchorState.Active, ReadAnchor(interrupted).State);
+
+        Assert.True(Directory.Exists(interrupted.StagingRoot));
+
+        Assert.Equal(System.Data.ConnectionState.Open, wrong.State);
+
+        Assert.Equal(System.Data.ConnectionState.Open, actual.State);
     }
 
     /// <summary>
@@ -547,11 +640,17 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
             FinalizerOverride = new CancellingFinalizer(startup),
         };
 
-        BackupRestoreRecovery recovery = Recovery(CovenantOperationGateFixture.CreateGate(), markers);
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        BackupRestoreRecovery recovery = Recovery(gate, markers);
 
         _ = Value(await recovery.RecoverPhysicalTopologyBeforeDatabaseAsync(
             _lock,
             Token));
+
+        await using SqliteConnection committed = await OpenCleanCommittedDatabaseAsync();
+
+        recovery = Recovery(gate, markers, committed);
 
         Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
             .RecoverAuthorityBeforeReadinessAsync(_lock, startup.Token);
@@ -624,6 +723,10 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
             _lock,
             Token));
 
+        await using SqliteConnection committed = await OpenCleanCommittedDatabaseAsync();
+
+        recovery = Recovery(gate, markers, committed);
+
         Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
             .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
 
@@ -665,6 +768,10 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
             _lock,
             Token));
 
+        await using SqliteConnection committed = await OpenCleanCommittedDatabaseAsync();
+
+        recovery = Recovery(gate, markers, committed);
+
         Result<BackupRestoreStartupRecoveryOutcome> recovered = await recovery
             .RecoverAuthorityBeforeReadinessAsync(_lock, Token);
 
@@ -679,7 +786,8 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
 
     private BackupRestoreRecovery Recovery(
         CovenantOperationGate? gate = null,
-        ICampaignPathMarkerLifecycle? markers = null) =>
+        ICampaignPathMarkerLifecycle? markers = null,
+        SqliteConnection? committedDatabase = null) =>
         new(
             _guarded,
             new BackupRestoreJournalAnchorStore(
@@ -687,7 +795,33 @@ public sealed class BackupRestoreStartupRecoveryTests : IDisposable
                 new BackupRestoreJournalKeyProvider(_credentials),
                 new BackupRestoreJournalInstallationIdentityProvider(_credentials)),
             gate,
-            markers);
+            markers,
+            committedDatabase);
+
+    private async Task<SqliteConnection> OpenCleanCommittedDatabaseAsync()
+    {
+        // These protocol fixtures must reach marker/disposition handling. Supply an actual clean,
+        // current encrypted Grimoire at the physically recovered path, not a claimed empty proof.
+        await using SagaStoreHarness clean = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        SqliteConnection source = (SqliteConnection)clean.Connection;
+
+        string database = Path.Combine(_guarded, "arcanum.db");
+
+        await new BackupDatabaseSnapshotter().CreateAsync(
+            source.DataSource,
+            database,
+            new SqliteConnectionStringBuilder(source.ConnectionString).Password,
+            Token);
+
+        GrimoireKdfSidecarFile.Write(database, GrimoireKdfSidecarFile.Read(source.DataSource));
+
+        return await BackupRestoreDatabaseWorker.OpenAsync(
+            database,
+            GrimoireFixture.TestGrimoireSecret,
+            readOnly: true,
+            Token);
+    }
 
     private Interrupted Interrupt(RestoreCrashPoint crash) =>
         Interrupt(crash, ImmutableArray<Guid>.Empty);

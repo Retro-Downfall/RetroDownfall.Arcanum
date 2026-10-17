@@ -269,6 +269,24 @@ public sealed class CovenantErasureFreshProcessRecoveryTests
 
         builder.Services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
 
+        // Inference is outside this fixture; fail explicitly if Long Rest provider work is reached.
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>();
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
+
+        builder.Services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Tests.Support.UnreachedLongRestMaintenance>());
+
+        // This Infrastructure-only container supplies the API-owned configuration boundary,
+        // just as it supplies the inference ports above. Use the actual process epoch.
+        builder.Services.AddSingleton(sp => new RetroDownfall.Arcanum.Api.Intelligence.LongRestConfigurationEpoch(
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>>(),
+            sp.GetRequiredService<CovenantProcessBootIdentity>().BootId));
+
+        builder.Services.AddSingleton<RetroDownfall.Arcanum.Core.LongRest.ILongRestConfigurationProvider>(
+            static sp => sp.GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestConfigurationEpoch>());
+
         // The production authority borrows the installation lock the database hosted service holds,
         // and this fresh process is a bare container with no hosted services in it - so nothing has
         // attached one and every journal it tried to open would refuse. The substitute is the real

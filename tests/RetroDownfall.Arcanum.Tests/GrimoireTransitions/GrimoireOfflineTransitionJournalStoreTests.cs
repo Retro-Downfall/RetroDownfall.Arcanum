@@ -16,7 +16,7 @@ using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Tests.GrimoireTransitions;
 
-public sealed class GrimoireOfflineTransitionJournalStoreTests : IDisposable
+public sealed partial class GrimoireOfflineTransitionJournalStoreTests : IDisposable
 {
     private static readonly Guid Installation =
         Guid.Parse("11111111-1111-4111-8111-111111111111");

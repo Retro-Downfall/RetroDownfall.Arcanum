@@ -25,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 /// </remarks>
 public sealed partial class DataRetentionServiceTests
 {
-
     private static readonly Guid AnnalsCampaignA = new("A0000000-0000-4000-8000-00000000AA11");
 
     private static readonly Guid AnnalsCampaignB = new("B0000000-0000-4000-8000-00000000BB22");
@@ -33,7 +32,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_Saga_ClearsSagaClaimsAndLeavesLexiconClaimsStanding()
     {
-
         RequireSqlCipher();
 
         string memory = await SeedGlobalSagaMemoryAsync();
@@ -55,7 +53,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
-
     }
 
     /// <summary>
@@ -72,7 +69,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_Lexicon_ClearsEveryEntryAndItsIndex()
     {
-
         RequireSqlCipher();
 
         await SeedScopedLexiconEntryAsync("config", string.Empty);
@@ -88,7 +84,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountLexiconFtsMatchesAsync("config"));
 
         Assert.Equal(0, await CountLexiconFtsMatchesAsync("other"));
-
     }
 
     /// <summary>
@@ -113,7 +108,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task ApplyAsync_ResetMemory_Saga_ReportsEveryVersionItRemoved(bool forOneCampaign)
     {
-
         RequireSqlCipher();
 
         Guid? campaign = forOneCampaign ? AnnalsCampaignA : null;
@@ -122,12 +116,10 @@ public sealed partial class DataRetentionServiceTests
 
         if (campaign is { } owned)
         {
-
             await SeedCampaignRowAsync(owned);
 
             session = await SessionBindingWriters.BoundByTheRepositoryAsync(
                 _db!, owned, CancellationToken.None);
-
         }
 
         _ = await WriteAndRetireSagaMemoryAsync(session, "the operator prefers tabs");
@@ -152,7 +144,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(plan.DerivedRecords, applied.Value.DerivedRecordsDeleted);
 
         Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
-
     }
 
     /// <summary>
@@ -173,7 +164,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_FactoryReset_ClearsAClaimThatCarriesMoreThanOneRevision()
     {
-
         RequireSqlCipher();
 
         _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
@@ -196,7 +186,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountTableRowsAsync("annal_claims"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
-
     }
 
     /// <summary>
@@ -211,7 +200,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_Lexicon_LeavesSagaRetirementEvidenceStanding()
     {
-
         RequireSqlCipher();
 
         await SeedScopedLexiconEntryAsync("config", string.Empty);
@@ -233,13 +221,11 @@ public sealed partial class DataRetentionServiceTests
             await CreateSagaMemoryStore().InsertAsync(
                 Guid.NewGuid().ToString(), retired, DateTimeOffset.UtcNow, sessionId: null,
                 tags: null, source: "test", SagaEmbedding(), CancellationToken.None));
-
     }
 
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_Lexicon_ClearsLexiconClaimsAndLeavesSagaClaimsStanding()
     {
-
         RequireSqlCipher();
 
         string memory = await SeedGlobalSagaMemoryAsync();
@@ -257,7 +243,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(0, await CountTableRowsAsync("lexicon_annal_fact_provenance"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
-
     }
 
     /// <summary>
@@ -267,7 +252,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_ResetMemory_ForOneCampaign_ClearsOnlyThatCampaignsClaims()
     {
-
         RequireSqlCipher();
 
         string ownedByA = await SeedScopedSagaMemoryAsync(AnnalsCampaignA);
@@ -291,7 +275,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(1, await CountAnnalClaimsAsync(1, installationScoped));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
-
     }
 
     /// <summary>
@@ -306,7 +289,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public async Task ApplyAsync_Prune_RemovesAnAgedMemorysClaimAndCountsItFirst()
     {
-
         RequireSqlCipher();
 
         string memory = await SeedGlobalSagaMemoryAsync();
@@ -315,16 +297,12 @@ public sealed partial class DataRetentionServiceTests
 
         ArcanumSettings settings = new()
         {
-
             Retention = new RetentionSettings
             {
-
                 AutomaticSweepsEnabled = false,
 
                 SagaMemories = new RetentionRuleSettings { Enabled = true, Days = 1 },
-
             },
-
         };
 
         IDataRetentionService service = CreateService(settings);
@@ -337,8 +315,10 @@ public sealed partial class DataRetentionServiceTests
             .Where(static item => item.DataClass == RetentionDataClass.SagaMemories)
             .Sum(static item => item.DerivedRecords);
 
-        // The embedding plus the claim. Without the claim in the count this is 1.
-        Assert.Equal(2, sagaDerived);
+        Assert.Equal(1, await CountTableRowsAsync("long_rest_sources"));
+
+        // The embedding, claim, and source identity.
+        Assert.Equal(3, sagaDerived);
 
         Core.Primitives.Result<DataRetentionApplyResult> applied = await service.ApplyAsync(
             new DataRetentionApplyRequest(request, plan.PlanId),
@@ -350,17 +330,19 @@ public sealed partial class DataRetentionServiceTests
 
         Assert.Equal(0, await CountAnnalClaimsAsync(1, memory));
 
+        Assert.Equal(plan.DerivedRecords, applied.Value.DerivedRecordsDeleted);
+
+        Assert.Equal(0, await CountTableRowsAsync("long_rest_sources"));
+
         Assert.Equal(0, await CountTableRowsAsync("annal_versions"));
 
         Assert.Equal(0, await CountTableRowsAsync("annal_heads"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(_db!.Database.GetDbConnection());
-
     }
 
     private async Task ApplyUntargetedResetAsync(MemoryResetScope scope)
     {
-
         IDataRetentionService service = CreateService();
 
         DataRetentionRequest request = new(DataRetentionOperation.ResetMemory, null, scope);
@@ -374,13 +356,11 @@ public sealed partial class DataRetentionServiceTests
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
         Assert.True(applied.Value.Reconciled);
-
     }
 
     /// <summary>Seeds one claim, one version, and one head over an existing durable row.</summary>
     private async Task SeedClaimAsync(int subjectStoreCode, string subjectId)
     {
-
         string claimId = Guid.NewGuid().ToString();
 
         string versionId = Guid.NewGuid().ToString();
@@ -432,7 +412,6 @@ public sealed partial class DataRetentionServiceTests
                 ("@attachment", Guid.NewGuid().ToString()),
                 ("@at", OldTimestamp));
         }
-
     }
 
     [SkippableFact]
@@ -517,7 +496,6 @@ public sealed partial class DataRetentionServiceTests
 
     private async Task<string> SeedClaimedLexiconEntryAsync(string nameNormalized, string scopeCampaignId)
     {
-
         string id = Guid.NewGuid().ToString("N");
 
         await ExecuteAsync(
@@ -534,7 +512,6 @@ public sealed partial class DataRetentionServiceTests
         await SeedClaimAsync(2, id);
 
         return id;
-
     }
 
     private async Task SeedLexiconReviewStateAsync(
@@ -542,7 +519,6 @@ public sealed partial class DataRetentionServiceTests
         int scopeKindCode,
         string? campaignId)
     {
-
         await ExecuteAsync(
             """
             INSERT INTO annal_review_decision_receipts
@@ -562,7 +538,6 @@ public sealed partial class DataRetentionServiceTests
             """,
             ("@scopeKindCode", scopeKindCode),
             ("@campaignId", campaignId is null ? DBNull.Value : campaignId));
-
     }
 
     [SkippableFact]
@@ -609,7 +584,6 @@ public sealed partial class DataRetentionServiceTests
 
     private async Task<int> ScalarCountAsync(string sql, params (string Name, object Value)[] parameters)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         await using SqliteCommand command = connection.CreateCommand();
@@ -618,15 +592,11 @@ public sealed partial class DataRetentionServiceTests
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             CultureInfo.InvariantCulture);
-
     }
-
 }

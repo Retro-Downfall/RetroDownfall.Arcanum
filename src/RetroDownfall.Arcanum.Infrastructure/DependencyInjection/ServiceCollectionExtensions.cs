@@ -59,6 +59,7 @@ using RetroDownfall.Arcanum.Infrastructure.Logging;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Memory;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Pattern;
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -424,6 +425,82 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
+    /// The pre-bootstrap recovery chain: reads the reset record and the offline-transition journal as
+    /// one pair, and finishes an interrupted transition before any database is opened for ordinary use.
+    /// </summary>
+    /// <remarks>
+    /// Registered from one place because two processes run it. The serving host runs it before its
+    /// bootstrap, and a resumed stopped-host global reset runs it before it opens the Grimoire for
+    /// anything else: the host refuses to start while that reset is active, so the reset's own resume
+    /// is the only actor that can finish the transition it launched. Two copies of the chain would be
+    /// two answers to the rule against opening a database over an active transition.
+    ///
+    /// <para>All try-add. The two compositions share most of what the chain is made of, and a second
+    /// registration of any link would give a process two authorities for the same step.</para>
+    /// </remarks>
+    private static IServiceCollection AddInstallationResetPreBootstrapRecovery(
+        this IServiceCollection services)
+    {
+        services.TryAddSingleton<IInstallationResetStartupRecovery>(
+            static sp => new InstallationResetStartupRecovery(
+                ArcanumPaths.GrimoireDirectory,
+                new InstallationResetActiveStore(
+                    ArcanumPaths.GrimoireDirectory,
+                    sp.GetRequiredService<IOsCredentialStore>()),
+                new GrimoireOfflineTransitionLifecycleStore(
+                    new GrimoireOfflineTransitionJournalStore(
+                        sp.GetRequiredService<IOsCredentialStore>()),
+                    GrimoireOfflineTransitionHandlerRegistry.Production)));
+
+        services.TryAddSingleton<IGrimoireRecoveryOnlyUnlock>(
+            static sp => new GrimoireRecoveryOnlyUnlock(
+                sp.GetRequiredService<ISecretStore>(),
+                sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
+
+        services.TryAddSingleton<IHostProcessToolsRecoveryStartupClassifier>(
+            static sp => new HostProcessToolsRecoveryStartupClassifier(
+                sp.GetRequiredService<IHostProcessToolsMarkerStore>(),
+                sp.GetRequiredService<IHostProcessToolsEnvironmentProbe>(),
+                sp.GetRequiredService<IHostProcessToolsMarkerPairJoiner>()));
+
+        services.TryAddSingleton<ICovenantRecoveryAuthorityBootstrapper>(
+            static sp => new CovenantRecoveryAuthorityBootstrapper(
+                sp.GetRequiredService<CovenantOperationGate>(),
+                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
+                sp.GetRequiredService<CovenantAvailability>(),
+                sp.GetRequiredService<IHostProcessToolsRuntimePolicy>(),
+                sp.GetRequiredService<ISecretStore>(),
+                // Built here from the same closed Declared list rather than resolved, because this
+                // pass runs before any request scope exists and the scoped registration below would
+                // be a captive dependency. The decision that registration records — a handler must
+                // not capture a scope it outlives — is preserved: what is shared is the declaration,
+                // not an instance, and the closure suite compares both tables against Declared.
+                GrimoireOfflineTransitionEffectHandlerRegistry
+                    .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
+                    .Value));
+
+        services.AddGrimoireOfflineTransitionHandlerDispatch();
+
+        services.TryAddSingleton<IGrimoireOfflineTransitionTerminalSuffixFinisher>(
+            static sp => new GrimoireOfflineTransitionTerminalSuffixFinisher(
+                sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<CovenantOperationGate>(),
+                sp.GetRequiredService<GrimoireConnectionAdmissionGate>()));
+
+        services.TryAddSingleton<IGrimoireOfflineTransitionStartupRecovery>(
+            static sp => new GrimoireOfflineTransitionStartupRecovery(
+                sp.GetRequiredService<IGrimoireRecoveryOnlyUnlock>(),
+                sp.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionTerminalSuffixFinisher>(),
+                sp.GetRequiredService<ICovenantRecoveryAuthorityBootstrapper>(),
+                sp.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()));
+
+        return services;
+    }
+
+    /// <summary>
     /// Registers the OS keychain–backed master API key store with Data Protection fallback/mirror,
     /// plus the concrete <see cref="DataProtectionSecretStore"/> used for Grimoire encryption secrets.
     /// </summary>
@@ -507,7 +584,8 @@ public static class ServiceCollectionExtensions
                     ?? LoggerFactory.Create(static _ => { }),
                 provider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 provider.GetRequiredService<IGrimoireDbPassphraseSource>(),
-                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>()));
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>(),
+                provider.GetRequiredService<ICovenantOperationGate>()));
 
         services.TryAddScoped<IInstallationResetDataService>(provider =>
             provider.GetRequiredService<InstallationResetExistingGrimoire>());
@@ -667,6 +745,69 @@ public static class ServiceCollectionExtensions
 
         services.TryAddScoped<IInstallationResetStoppedHostPlanner>(provider =>
             provider.GetRequiredService<InstallationResetService>());
+
+        // The guarded repair of a damaged pre-database installation identity. It takes the installation
+        // lock itself, so it is registered over the stopped-host data service and the credential store
+        // and nothing that opens a Grimoire.
+        services.TryAddScoped(static provider =>
+            new InstallationIdentityRepair(
+                provider.GetRequiredService<IOsCredentialStore>(),
+                provider.GetRequiredService<IInstallationStartupProbe>(),
+                provider.GetRequiredService<IInstallationResetStoppedHostDataService>(),
+                ArcanumPaths.GrimoireDirectory,
+                ArcanumPaths.GrimoireDatabaseFile));
+
+        // The recovery chain a resumed global reset runs before it opens the Grimoire for anything
+        // else, shared with the serving host so there is one rule against opening a database over an
+        // active offline transition.
+        services.AddInstallationResetPreBootstrapRecovery();
+
+        // Resolved lazily by the stopped-host data service, for the global and all scopes only. The
+        // workspace scope never constructs either of the two below and never reads the master key.
+        services.TryAddScoped(static provider =>
+            new StoppedHostCovenantAuthority(
+                provider.GetRequiredService<CovenantRuntimeGenerationProvider>(),
+                provider.GetRequiredService<CovenantAvailability>(),
+                provider.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
+                provider.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
+                provider.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
+                provider.GetRequiredService<ISecretStore>()));
+
+        // Lends the held installation lock to the transition journal's phase authority for one call, so
+        // the reset service receives the exact held lock explicitly and never looks one up.
+        services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
+
+        services.TryAddScoped(static provider =>
+            new StoppedHostLockLender(
+                provider.GetRequiredService<InstallationResetMaintenanceLockAccessor>(),
+                ArcanumPaths.GrimoireDatabaseFile));
+
+        // The reset-only protected erasure. Never registered as IDataRetentionService: the CLI
+        // container still has none, and this type refuses every operation but a factory reset, and
+        // acts only on an operation an authenticated reset record claimed.
+        services.TryAddScoped(static provider =>
+            new StoppedHostFactoryErasure(
+                provider.GetRequiredService<ArcanumDbContext>(),
+                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                provider.GetRequiredService<ILongRunningOperationStore>(),
+                provider.GetRequiredService<TimeProvider>(),
+                provider.GetRequiredService<ILogger<DataRetentionService>>(),
+                provider.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>(),
+                provider.GetRequiredService<ICovenantOperationGate>(),
+                provider.GetRequiredService<CovenantErasureCoordinator>(),
+                provider.GetRequiredService<CovenantRequestedOperationStarter>(),
+                provider.GetRequiredService<LongRunningOperationOwnership>(),
+                provider.GetRequiredService<CovenantResetCheckpointInitiator>(),
+                provider.GetRequiredService<ICovenantFactoryErasureApplyRequestDigestCalculator>(),
+                provider.GetRequiredService<ICovenantErasureEffectDigestCalculator>(),
+                provider.GetRequiredService<IInstallationResetActiveStore>(),
+                provider.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
+                provider.GetRequiredService<InstallationResetMaintenanceLockAccessor>(),
+                provider.GetRequiredService<StoppedHostCovenantAuthority>(),
+                provider.GetRequiredService<IStoppedHostGrimoireConnectionFactory>(),
+                provider.GetRequiredService<CovenantErasureStartupRecoveryOwnerAdopter>(),
+                provider.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>(),
+                provider.GetRequiredService<ICovenantConnectionDrain>()));
 
         return services;
     }
@@ -1134,61 +1275,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IInstallationResetHostHandoffCoordinator,
             InstallationResetHostHandoffCoordinator>();
 
-        services.AddSingleton<IInstallationResetStartupRecovery>(
-            static sp => new InstallationResetStartupRecovery(
-                ArcanumPaths.GrimoireDirectory,
-                new InstallationResetActiveStore(
-                    ArcanumPaths.GrimoireDirectory,
-                    sp.GetRequiredService<IOsCredentialStore>()),
-                new GrimoireOfflineTransitionLifecycleStore(
-                    new GrimoireOfflineTransitionJournalStore(
-                        sp.GetRequiredService<IOsCredentialStore>()),
-                    GrimoireOfflineTransitionHandlerRegistry.Production)));
-
-        services.AddSingleton<IGrimoireRecoveryOnlyUnlock>(
-            static sp => new GrimoireRecoveryOnlyUnlock(
-                sp.GetRequiredService<ISecretStore>(),
-                sp.GetRequiredService<IGrimoireDbPassphraseSource>()));
-
-        services.AddSingleton<IHostProcessToolsRecoveryStartupClassifier>(
-            static sp => new HostProcessToolsRecoveryStartupClassifier(
-                sp.GetRequiredService<IHostProcessToolsMarkerStore>(),
-                sp.GetRequiredService<IHostProcessToolsEnvironmentProbe>(),
-                sp.GetRequiredService<IHostProcessToolsMarkerPairJoiner>()));
-
-        services.AddSingleton<ICovenantRecoveryAuthorityBootstrapper>(
-            static sp => new CovenantRecoveryAuthorityBootstrapper(
-                sp.GetRequiredService<CovenantOperationGate>(),
-                sp.GetRequiredService<CovenantRuntimeGenerationProvider>(),
-                sp.GetRequiredService<CovenantEnvelopeMasterKeyProvider>(),
-                sp.GetRequiredService<CovenantAvailability>(),
-                sp.GetRequiredService<IHostProcessToolsRuntimePolicy>(),
-                sp.GetRequiredService<ISecretStore>(),
-                // Built here from the same closed Declared list rather than resolved, because this
-                // pass runs before any request scope exists and the scoped registration below would
-                // be a captive dependency. The decision that registration records — a handler must
-                // not capture a scope it outlives — is preserved: what is shared is the declaration,
-                // not an instance, and the closure suite compares both tables against Declared.
-                GrimoireOfflineTransitionEffectHandlerRegistry
-                    .Create(GrimoireOfflineTransitionEffectHandlerRegistry.Declared)
-                    .Value));
-
-        services.AddGrimoireOfflineTransitionHandlerDispatch();
-
-        services.AddSingleton<IGrimoireOfflineTransitionTerminalSuffixFinisher>(
-            static sp => new GrimoireOfflineTransitionTerminalSuffixFinisher(
-                sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
-                sp.GetRequiredService<IServiceScopeFactory>(),
-                sp.GetRequiredService<CovenantOperationGate>(),
-                sp.GetRequiredService<GrimoireConnectionAdmissionGate>()));
-
-        services.AddSingleton<IGrimoireOfflineTransitionStartupRecovery>(
-            static sp => new GrimoireOfflineTransitionStartupRecovery(
-                sp.GetRequiredService<IGrimoireRecoveryOnlyUnlock>(),
-                sp.GetRequiredService<IHostProcessToolsRecoveryStartupClassifier>(),
-                sp.GetRequiredService<IGrimoireOfflineTransitionTerminalSuffixFinisher>(),
-                sp.GetRequiredService<ICovenantRecoveryAuthorityBootstrapper>(),
-                sp.GetRequiredService<IGrimoireOfflineTransitionHandlerDispatch>()));
+        services.AddInstallationResetPreBootstrapRecovery();
 
         services.AddSingleton(
             static sp => new GrimoireDatabaseHostedService(
@@ -1364,18 +1451,6 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuthenticatedCovenantErasureRecoveryHandler>(static sp =>
             sp.GetRequiredService<DataRetentionFactoryResetRecoveryHandler>());
 
-        // One host-only producer of a Covenant erasure's effect digest, and one seam that makes
-        // exclusive-gate acquisition unreachable before the InventoryPrepared checkpoint commits.
-        // The shared production coordinator consumes the resulting checkpoint on both the direct
-        // reset route and durable recovery.
-        services.AddSingleton<ICovenantErasureEffectDigestCalculator, CovenantErasureEffectDigestCalculator>();
-
-        services.AddSingleton<
-            ICovenantFactoryErasureApplyRequestDigestCalculator,
-            CovenantFactoryErasureApplyRequestDigestCalculator>();
-
-        services.AddScoped<CovenantResetCheckpointInitiator>();
-
         services.AddInstallationResetRecoveryAwareHostedService<DataRetentionSweepHostedService>();
 
         services.AddScoped(static sp => new LongRunningOperationReconciler(
@@ -1428,6 +1503,27 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISagaCurationService, SagaCurationService>();
 
         services.AddScoped<ILongRestService, SagaLongRestService>();
+
+        services.AddSingleton<LongRestSweepQueue>();
+        services.AddSingleton<ILongRestSweepWake>(static sp => sp.GetRequiredService<LongRestSweepQueue>());
+
+        services.AddScoped<LongRestLiveFenceReader>();
+
+        services.AddScoped<LongRestDiscoveryStore>();
+
+        services.AddScoped<ILongRestDiscoveryStore>(static sp => sp.GetRequiredService<LongRestDiscoveryStore>());
+
+        services.AddScoped<ILongRestSweepStore, LongRestSweepStore>();
+
+        services.AddScoped<ILongRestAttemptStore, LongRestAttemptStore>();
+
+        services.AddScoped<LongRestSweepCoordinator>();
+
+        services.AddScoped<ILongRestSweepCoordinator>(static sp => sp.GetRequiredService<LongRestSweepCoordinator>());
+
+        services.AddScoped<ILongRestAdmittedSweep>(static sp => sp.GetRequiredService<LongRestSweepCoordinator>());
+
+        services.AddScoped<ILongRunningOperationRecoveryHandler, LongRestSweepRecoveryHandler>();
 
         services.AddScoped<ISagaMemoryReviewService, SagaMemoryReviewService>();
 
@@ -1593,6 +1689,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<CampaignLoggerQueue>();
         services.AddSingleton<ICampaignLoggerQueue>(sp => sp.GetRequiredService<CampaignLoggerQueue>());
         services.AddInstallationResetRecoveryAwareHostedService<Loremaster>();
+
+        services.AddInstallationResetRecoveryAwareHostedService<LongRestSweepHostedService>();
         services.AddSingleton<ChronicleHub>();
         services.AddSingleton<ApprenticeService>();
         services.AddSingleton<IApprenticeRuntime>(static sp => sp.GetRequiredService<ApprenticeService>());
@@ -1650,33 +1748,6 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IMcpWorkspaceTrustPreviewer, McpWorkspaceTrustPreviewer>();
 
-        services.AddHttpClient(
-            McpConnectionManager.McpHttpClientName,
-            static client => client.Timeout = Timeout.InfiniteTimeSpan)
-            // Hosted MCP endpoints commonly embed their bearer token in a path segment, which
-            // .NET's URI redaction does not strip. Default IHttpClientFactory logging would copy
-            // that token into the rolling log and the ring buffer behind GET /api/logs.
-            .RemoveAllLoggers()
-            // The SDK transport parses a response body or SSE event whole, so a hostile remote server
-            // could otherwise stream an unbounded message into memory; bound each one at the same
-            // frame cap the in-process transport enforces.
-            .AddHttpMessageHandler(static () => new McpHttpResponseBoundHandler(
-                McpSecurityLimits.MaxJsonRpcLineBytes))
-            .ConfigurePrimaryHttpMessageHandler(sp =>
-            {
-                IOptionsMonitor<ArcanumSettings> opts = sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>();
-
-                int connectTimeoutSeconds = ArcanumSettingClamps.McpHttpConnectTimeoutSeconds(
-                    opts.CurrentValue.ResolveMcp().HttpConnectTimeoutSeconds);
-
-                SocketsHttpHandler handler =
-                    OutboundUrlGuard.CreateUntrustedEgressHandler();
-
-                handler.ConnectTimeout = TimeSpan.FromSeconds(connectTimeoutSeconds);
-
-                return handler;
-            });
-
         services.AddSingleton(static sp =>
         {
             McpConnectionManager manager = new(
@@ -1686,7 +1757,6 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IUnseenServantPacer>(),
                 sp.GetRequiredService<IEventBus>(),
                 sp.GetRequiredService<ITrustedMcpWorkspaceStore>(),
-                sp.GetRequiredService<IHttpClientFactory>(),
                 sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
                 sp.GetRequiredService<ILoggerFactory>());
 
@@ -2403,10 +2473,12 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<TimeProvider>()));
 
         // The CLI graph composes the erasure coordinator without the host services around it, so the
-        // accessor may not exist yet. It is added rather than assumed because a CLI holds no
-        // installation lock and must therefore refuse to open a journal — which is the correct answer
-        // for a process that cannot run an offline transition, and a clearer one than a missing
-        // registration.
+        // accessor may not exist yet. It is added rather than assumed. A CLI attaches no lock to it of
+        // its own accord, and so refuses to open a journal, which is the right answer for a process
+        // that is not running an offline transition. The one thing that attaches a lock in that
+        // process is the issuer-minted loan of a stopped-host reset (the held lock, for the length of
+        // one nested erasure or one journal-first recovery, and detached again in a finally), so no
+        // ambient lookup of a held lock ever creates stopped-host authority.
         services.TryAddSingleton<InstallationResetMaintenanceLockAccessor>();
 
         services.TryAddSingleton<IInstallationResetMaintenanceLockAccessor>(
@@ -2448,8 +2520,11 @@ public static class ServiceCollectionExtensions
             static sp => new GrimoireOfflineTransitionPhaseAuthority(
                 sp.GetRequiredService<GrimoireOfflineTransitionLifecycleStore>(),
                 sp.GetRequiredService<IInstallationResetMaintenanceLockAccessor>(),
-                sp.GetService<IInstallationResetDatabaseIdentityReader>()
-                    ?? sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
+                // The concrete reader, always. In the host the interface maps to this same type, so
+                // nothing changes there; in the CLI the installation-reset graph maps the interface to
+                // the stopped-host data service, whose issuer-free read answers Unavailable by design,
+                // and a journal that cannot learn the installation's identity cannot be opened at all.
+                sp.GetRequiredService<InstallationResetDatabaseIdentityReader>(),
                 sp.GetRequiredService<ILongRunningOperationStore>(),
                 sp.GetRequiredService<IOsCredentialStore>(),
                 sp.GetRequiredService<IGrimoireOfflineTransitionParentReceiptResolver>(),
@@ -2510,6 +2585,27 @@ public static class ServiceCollectionExtensions
         services.AddScoped(
             static sp => new CovenantRequestedOperationStarter(
                 sp.GetRequiredService<ILongRunningOperationCoordinator>()));
+
+        // One producer of a Covenant erasure's effect digest, and one seam that makes exclusive-gate
+        // acquisition unreachable before the InventoryPrepared checkpoint commits. The shared
+        // production coordinator consumes the resulting checkpoint on both the direct reset route and
+        // durable recovery. Composed wherever the coordinator is: the serving host runs the route for
+        // an online factory reset, and the stopped-host CLI runs it, through the reset-only facade, for
+        // the nested erasure of a global installation reset.
+        services.TryAddSingleton<ICovenantErasureEffectDigestCalculator, CovenantErasureEffectDigestCalculator>();
+
+        services.TryAddSingleton<
+            ICovenantFactoryErasureApplyRequestDigestCalculator,
+            CovenantFactoryErasureApplyRequestDigestCalculator>();
+
+        services.TryAddScoped(
+            static sp => new CovenantResetCheckpointInitiator(
+                sp.GetRequiredService<ILongRunningOperationStore>(),
+                sp.GetRequiredService<ICovenantErasureEffectDigestCalculator>(),
+                sp.GetRequiredService<CovenantHealthyCatalogErasureGuard>(),
+                sp.GetRequiredService<ICovenantOperationGate>(),
+                sp.GetRequiredService<ICovenantErasureInventorySource>(),
+                sp.GetRequiredService<TimeProvider>()));
 
         // The three maintenance sweeps and their drivers. Each was registered and exercised by its own
         // suite for the whole of this feature's life with nothing under src calling it, which meant

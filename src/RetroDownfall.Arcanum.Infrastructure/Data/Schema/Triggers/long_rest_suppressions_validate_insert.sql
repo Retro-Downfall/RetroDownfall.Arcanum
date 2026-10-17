@@ -25,7 +25,6 @@ WHEN NOT EXISTS (
       AND source_memory.CampaignId IS source.CampaignId
       AND survivor_memory.ScopeKindCode = survivor.ScopeKindCode
       AND survivor_memory.CampaignId IS survivor.CampaignId
-      AND source.SensitivityCode = 0 AND survivor.SensitivityCode = 0
       AND EXISTS (SELECT 1 FROM saga_memory_embeddings embedding WHERE embedding.MemoryId = survivor_memory.Id)
       AND source_memory.PinnedAtUtc IS NULL AND survivor_memory.PinnedAtUtc IS NULL
       AND source_memory.RetiredAtUtc IS NULL AND survivor_memory.RetiredAtUtc IS NULL
@@ -40,10 +39,34 @@ WHEN NOT EXISTS (
       AND EXISTS (SELECT 1 FROM long_rest_receipt_inputs input
           WHERE input.ReceiptId = receipt.ReceiptId
             AND input.VersionId = survivor.VersionId AND input.MemoryId = survivor_claim.SubjectId)
-      AND NOT EXISTS (SELECT 1 FROM artifact_sensitivity label
+      AND ((source.SensitivityCode = 0 AND survivor.SensitivityCode = 0 AND NOT EXISTS (SELECT 1 FROM artifact_sensitivity label
           WHERE label.ArtifactKindCode = 6
             AND lower(replace(label.ArtifactId, '-', '')) IN (
-                lower(replace(source_memory.Id, '-', '')), lower(replace(survivor_memory.Id, '-', ''))))
+                lower(replace(source_memory.Id, '-', '')), lower(replace(survivor_memory.Id, '-', ''))))) OR (receipt.PolicyVersion = 2 AND EXISTS (
+          SELECT 1 FROM long_rest_protected_receipt_evidence evidence
+          WHERE evidence.ReceiptId = receipt.ReceiptId
+            AND (SELECT count(*) FROM long_rest_protected_receipt_inputs p WHERE p.ReceiptId = receipt.ReceiptId)
+                = (SELECT count(*) FROM long_rest_receipt_inputs i WHERE i.ReceiptId = receipt.ReceiptId)
+            AND NOT EXISTS (
+                SELECT 1 FROM long_rest_receipt_inputs input
+                LEFT JOIN long_rest_protected_receipt_inputs proof ON proof.ReceiptId = input.ReceiptId AND proof.Ordinal = input.Ordinal
+                LEFT JOIN annal_versions version ON version.VersionId = input.VersionId
+                LEFT JOIN saga_memories memory ON memory.Id = input.MemoryId
+                LEFT JOIN artifact_sensitivity label ON label.LabelId = proof.LabelId AND label.ArtifactKindCode = 6
+                WHERE input.ReceiptId = receipt.ReceiptId AND (
+                    proof.LabelId IS NULL OR label.LabelId IS NULL OR version.VersionId IS NULL OR memory.Id IS NULL
+                    OR proof.MemoryId <> input.MemoryId OR proof.VersionId <> input.VersionId OR proof.ClaimId <> version.ClaimId
+                    OR lower(replace(label.ArtifactId, '-', '')) <> lower(replace(input.MemoryId, '-', ''))
+                    OR label.ArtifactRevision <> proof.SagaRevision OR label.ArtifactContentDigest <> proof.SagaContentDigest
+                    OR label.ArtifactLabelDigest <> proof.LabelDigest OR label.SensitivityDigest <> proof.SensitivityDigest
+                    OR proof.SensitivityDigest <> evidence.PartitionDigest OR label.SensitivityCode <> 1
+                    OR lower(replace(label.CampaignId, '-', '')) IS NOT lower(replace(memory.CampaignId, '-', '')) OR lower(replace(label.SessionId, '-', '')) IS NOT lower(replace(memory.SessionId, '-', ''))
+                    OR lower(replace(label.CampaignId, '-', '')) IS NOT lower(replace(version.CampaignId, '-', '')) OR lower(replace(label.SessionId, '-', '')) IS NOT lower(replace(version.SourceSessionId, '-', ''))
+                    OR label.ProvenanceModeCode <> evidence.ProvenanceModeCode
+                    OR label.ExactGenerationIds IS NOT evidence.ExactGenerationIds OR label.GenerationBloom IS NOT evidence.GenerationBloom
+                    OR (SELECT count(*) FROM artifact_sensitivity aliases WHERE aliases.ArtifactKindCode = 6
+                        AND lower(replace(aliases.ArtifactId, '-', '')) = lower(replace(input.MemoryId, '-', ''))) <> 1))
+      )))
 )
 OR EXISTS (SELECT 1 FROM long_rest_suppressions WHERE SourceVersionId = NEW.SurvivorVersionId)
 OR EXISTS (SELECT 1 FROM long_rest_receipts

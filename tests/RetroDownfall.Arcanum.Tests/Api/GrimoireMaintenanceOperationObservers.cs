@@ -148,6 +148,10 @@ internal sealed class ObservingMaintenanceJournal : IGrimoireOfflineTransitionJo
         string guardedDirectory, CancellationToken cancellationToken) =>
         _inner.RecoverAsync(heldInstallationLock, guardedDirectory, cancellationToken);
 
+    public Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> InspectAsync(
+        string guardedDirectory, CancellationToken cancellationToken) =>
+        _inner.InspectAsync(guardedDirectory, cancellationToken);
+
     public Task<Result> RetireAsync(ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionJournalPublication terminal, CancellationToken cancellationToken) =>
         _inner.RetireAsync(heldInstallationLock, terminal, cancellationToken);

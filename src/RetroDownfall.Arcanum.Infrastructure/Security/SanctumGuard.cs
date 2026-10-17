@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Platform;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
@@ -32,6 +33,7 @@ public sealed class SanctumGuard(
     ICampaignRepository campaignRepository,
     ISanctumBreachRepository breachRepository,
     ILogger<SanctumGuard> logger,
+    ICampaignPathIdentityReader pathIdentities,
     IDnsResolver? dnsResolver = null) : ISanctumGuard
 {
     /// <summary>
@@ -226,14 +228,9 @@ public sealed class SanctumGuard(
                 "DisabledTool",
                 $"Tool '{toolName}' is disabled in this Sanctum.");
 
-            await RecordBreachAsync(breach, config.MaxBreachCount, ct).ConfigureAwait(false);
+            bool recorded = await RecordBreachAsync(breach, config.MaxBreachCount, ct).ConfigureAwait(false);
 
-            return new SanctumResult
-            {
-                Allowed = false,
-                DenyReason = breach.Detail,
-                Breach = breach,
-            };
+            return Denied(breach, breach.Detail, recorded);
         }
 
         return AllowedResult();
@@ -248,9 +245,7 @@ public sealed class SanctumGuard(
             return ClampResourceLimits(new ResourceLimits());
         }
 
-        Campaign? campaign = await campaignRepository
-            .GetByPathAsync(workspaceRoot.Trim(), ct)
-            .ConfigureAwait(false);
+        Campaign? campaign = await FindWorkspaceCampaignAsync(workspaceRoot, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
@@ -282,9 +277,7 @@ public sealed class SanctumGuard(
             return null;
         }
 
-        Campaign? campaign = await campaignRepository
-            .GetByPathAsync(normalizedRoot, ct)
-            .ConfigureAwait(false);
+        Campaign? campaign = await FindWorkspaceCampaignAsync(normalizedRoot, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
@@ -323,9 +316,7 @@ public sealed class SanctumGuard(
             return;
         }
 
-        Campaign? campaign = await campaignRepository
-            .GetByPathAsync(workspaceRoot.Trim(), ct)
-            .ConfigureAwait(false);
+        Campaign? campaign = await FindWorkspaceCampaignAsync(workspaceRoot, ct).ConfigureAwait(false);
 
         if (campaign is null)
         {
@@ -380,6 +371,51 @@ public sealed class SanctumGuard(
                 "Failed to persist Sanctum ResourceLimit breach for campaign {CampaignId}.",
                 breach.CampaignId);
         }
+    }
+
+    /// <summary>
+    /// The Campaign a workspace directory belongs to, found the way a turn finds it: by the physical identity of the directory and its
+    /// ancestors when a root is registered, and by the registered root that contains the directory. A directory below a Campaign's root,
+    /// or the root spelled differently, is that Campaign's workspace, so its resource limits and path boundary apply to it.
+    /// </summary>
+    /// <remarks>
+    /// The two answers can name different Campaigns (a Campaign with a registered identity, and a Campaign registered by path only inside
+    /// it), and neither is better evidence of where the directory belongs. The stricter Sanctum governs, because applying too much
+    /// containment is the safe error; on equal strictness the identity answer wins, since it is the one that does not depend on a spelling.
+    /// </remarks>
+    private async Task<Campaign?> FindWorkspaceCampaignAsync(string workspaceRoot, CancellationToken ct)
+    {
+        string trimmed = workspaceRoot.Trim();
+
+        Result<RegisteredCampaignIdentity?> identity = await pathIdentities
+            .ResolveMostSpecificAsync(trimmed, ct)
+            .ConfigureAwait(false);
+
+        Campaign? byIdentity = null;
+
+        if (identity.IsSuccess && identity.Value is { } registered)
+        {
+            byIdentity = await campaignRepository
+                .GetByIdAsync(registered.CampaignId, ct)
+                .ConfigureAwait(false);
+        }
+        else if (identity.IsFailure)
+        {
+            logger.LogWarning(
+                "The registered Campaign root identity of a workspace could not be read ({ErrorCode}); using the registered root that contains it.",
+                identity.Error.Code);
+        }
+
+        Campaign? byPath = await campaignRepository.GetByContainedPathAsync(trimmed, ct).ConfigureAwait(false);
+
+        if (byIdentity is null || byPath is null || byIdentity.Id == byPath.Id)
+        {
+            return byIdentity ?? byPath;
+        }
+
+        return CampaignRepository.GetSanctumStrictness(byPath) > CampaignRepository.GetSanctumStrictness(byIdentity)
+            ? byPath
+            : byIdentity;
     }
 
     private static string DescribeResource(ResourceLimitKind resource) => resource switch
@@ -443,7 +479,7 @@ public sealed class SanctumGuard(
 
     private static bool IsUnderAllowedRoots(string workspaceRoot, string candidateFull, IReadOnlyList<string> allowedPaths)
     {
-        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, candidateFull, out _))
+        if (IsUnderRoot(workspaceRoot, candidateFull))
         {
             return true;
         }
@@ -466,13 +502,35 @@ public sealed class SanctumGuard(
                 continue;
             }
 
-            if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(allowedFull, candidateFull, out _))
+            if (IsUnderRoot(allowedFull, candidateFull))
             {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether a path is inside a root, whatever spelling reaches it. The ordinary containment rule (lexical prefix, then the canonical
+    /// candidate under the canonical root, so an in-root link that leads out stays refused) is the verdict; it compares the root and the
+    /// path as text first, which is wrong for a path the operating system reports under another spelling than the root was registered
+    /// with (<c>/private/var</c> for <c>/var</c>, another case or Unicode normalisation form where the volume folds them, a symbolic link
+    /// into the root). Such a path is re-expressed under the root's own spelling by the physical identity of the directories above it
+    /// (<see cref="CampaignRootContainment.RebaseOntoRoot"/>) and then judged by that same rule, so a spelling only changes how the path
+    /// reaches the root, never what the root contains.
+    /// </summary>
+    private static bool IsUnderRoot(string rootFull, string candidateFull)
+    {
+        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(rootFull, candidateFull, out _))
+        {
+            return true;
+        }
+
+        string? rebased = CampaignRootContainment.RebaseOntoRoot(rootFull, candidateFull);
+
+        return rebased is not null
+            && WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(rootFull, rebased, out _);
     }
 
     private SanctumResult? DenyIfInvalidCampaignId(string campaignId, string toolName, string breachType) =>
@@ -534,6 +592,7 @@ public sealed class SanctumGuard(
             Allowed = false,
             DenyReason = breach.Detail,
             Breach = RedactBreachForApi(breach),
+            DenialKind = SanctumDenialKind.PolicyUnavailable,
         };
     }
 
@@ -671,14 +730,9 @@ public sealed class SanctumGuard(
             resolvedPath,
             workspaceRoot);
 
-        await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
+        bool recorded = await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
 
-        return new SanctumResult
-        {
-            Allowed = false,
-            DenyReason = detail,
-            Breach = breach,
-        };
+        return Denied(breach, detail, recorded);
     }
 
     private async Task<SanctumResult> DenyNetworkAsync(
@@ -696,17 +750,31 @@ public sealed class SanctumGuard(
             detail,
             requestedUrl: url);
 
-        await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
+        bool recorded = await RecordBreachAsync(breach, maxBreachCount, ct).ConfigureAwait(false);
 
-        return new SanctumResult
-        {
-            Allowed = false,
-            DenyReason = detail,
-            Breach = breach,
-        };
+        return Denied(breach, detail, recorded);
     }
 
-    private async Task RecordBreachAsync(SanctumBreach breach, int maxBreachCount, CancellationToken ct)
+    /// <summary>
+    /// The refusal for a policy breach. The breach row is the audit control an audit-only Sanctum relies on, so a breach that could not be
+    /// written is not a breach an audit-only Sanctum may wave through: the verdict says so and every mode refuses it.
+    /// </summary>
+    private static SanctumResult Denied(SanctumBreach breach, string detail, bool recorded) =>
+        new()
+        {
+            Allowed = false,
+            DenyReason = recorded
+                ? detail
+                : $"{detail} The breach could not be recorded, so the operation is refused in every Sanctum mode.",
+            Breach = breach,
+            DenialKind = recorded ? SanctumDenialKind.Policy : SanctumDenialKind.AuditRecordFailed,
+        };
+
+    /// <summary>
+    /// Logs the breach and writes its audit row. Returns whether the row was written; a failed write is logged and reported to the caller,
+    /// which fails the operation closed, because for an audit-only Sanctum the row is the only control.
+    /// </summary>
+    private async Task<bool> RecordBreachAsync(SanctumBreach breach, int maxBreachCount, CancellationToken ct)
     {
         LogBreach(breach);
 
@@ -722,16 +790,20 @@ public sealed class SanctumGuard(
         try
         {
             await breachRepository.RecordAsync(record, maxBreachCount, ct).ConfigureAwait(false);
+
+            return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Persistence failure must not break tool-invocation enforcement: the synthetic
-            // denial has already been decided and is returned regardless of write outcome.
+            // A persistence failure must not become an unhandled exception inside tool enforcement, so it is logged and reported to the
+            // caller as an unrecorded breach instead of surfacing to the model.
             logger.LogError(
                 ex,
                 "Failed to persist Sanctum breach {BreachType} for campaign {CampaignId}.",
                 breach.BreachType,
                 breach.CampaignId);
+
+            return false;
         }
     }
 

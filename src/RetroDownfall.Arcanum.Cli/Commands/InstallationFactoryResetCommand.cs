@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Cli.UX;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -39,6 +41,21 @@ internal interface IInstallationResetApplyBoundary
         InstallationResetApplyRequest request,
         InstallationResetHostHandoff? hostHandoff,
         bool onlineCompletionDurable,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Resumes the unfinished reset whose authenticated record names <paramref name="resumedOperationId"/>.
+    /// </summary>
+    /// <remarks>
+    /// The identity is what lets a resume adopt the durable client-mutation blocker an earlier process
+    /// published for the same reset: a blocker is adopted by the operation that owns the record, and a
+    /// reset the stopped host began has no host handoff to name it.
+    /// </remarks>
+    Task<Result<InstallationResetResult>> ApplyAsync(
+        InstallationResetApplyRequest request,
+        InstallationResetHostHandoff? hostHandoff,
+        bool onlineCompletionDurable,
+        Guid resumedOperationId,
         CancellationToken cancellationToken);
 
     Task<Result<InstallationResetResult>> ApplyFreshAsync(
@@ -234,6 +251,7 @@ internal sealed class InstallationFactoryResetCommand(
                         applyRequest,
                         active.HostHandoff,
                         active.OnlineDataCompletionDurable,
+                        active.OperationId,
                         cancellationToken)
                     .ConfigureAwait(false)
                 : await applyBoundary
@@ -339,6 +357,17 @@ internal sealed class InstallationFactoryResetCommand(
 
         if (dryRun)
         {
+            // The disclosure an apply writes before its question, written here too, so a dry-run shows
+            // the operator what exactly they would be asked to confirm. To diagnostics, as the apply
+            // does: under --json a payload write would land ahead of the one document a script parses.
+            // A plan with no inventory (a pair needing external remediation lists its blocker instead)
+            // has no disclosure to give.
+            if (plan.Scope is InstallationResetScope.Global or InstallationResetScope.All)
+            {
+                disclosureWriter.Write(
+                    stoppedHostPlan?.CovenantDisclosure ?? onlinePlan?.Covenant);
+            }
+
             WritePlan(plan);
 
             return (int)CliExitCode.Success;
@@ -533,6 +562,20 @@ internal sealed class InstallationFactoryResetCommand(
         dispatcher.WritePayload(
             $"Data inventory available: {FormatBoolean(plan.DataInventoryAvailable)}; "
             + $"credential inventory available: {FormatBoolean(plan.CredentialInventoryAvailable)}");
+
+        if (plan.CovenantInventory is { } covenant)
+        {
+            dispatcher.WritePayload(
+                $"Covenant inventory: {FormatCount(covenant.Rows)} rows, "
+                + $"{FormatCount(covenant.ManagedFiles)} managed files, "
+                + $"{FormatCount(covenant.LocalArtifacts)} local erasure artifacts, "
+                + $"{FormatCount(covenant.AffectedSessions)} affected sessions; "
+                + "nonrevocable disclosures: "
+                + (covenant.DisclosureCountKind is CovenantDisclosureCountKind.LowerBound
+                    ? "at least "
+                    : "exactly ")
+                + FormatCount(covenant.PossibleDisclosures));
+        }
 
         foreach (InstallationResetTargetDescriptor target in plan.Targets)
         {

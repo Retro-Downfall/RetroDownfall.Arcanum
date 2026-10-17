@@ -2,7 +2,10 @@ using System.Diagnostics;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
@@ -110,7 +113,9 @@ internal static class LongRunningOperationEndpoints
         apiGroup.MapPost("/operations/{id:guid}/retry", async (
             Guid id,
             ILongRunningOperationStore store,
+            LongRunningOperationReconciler reconciler,
             TimeProvider timeProvider,
+            ILoggerFactory loggerFactory,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
@@ -152,6 +157,13 @@ internal static class LongRunningOperationEndpoints
                     ArcanumJsonContext.Default.ApiResponseLongRunningOperationDto);
             }
 
+            await WakeAfterRetryAsync(
+                operation,
+                reconciler,
+                httpContext.RequestServices.GetService<ILongRestSweepWake>(),
+                loggerFactory.CreateLogger(typeof(LongRunningOperationEndpoints)),
+                cancellationToken).ConfigureAwait(false);
+
             LongRunningOperation updated = (await store.GetAsync(id, cancellationToken).ConfigureAwait(false))!;
             return Success(
                 httpContext,
@@ -183,6 +195,42 @@ internal static class LongRunningOperationEndpoints
         .WithName("ReconcileLongRunningOperations");
 
         return apiGroup;
+    }
+
+    /// <summary>
+    /// An operator retry returns a Long Rest sweep to <c>Pending</c>, and two timers would otherwise stand between that and the sweep running: the
+    /// reconciler parks a retried row as <c>long_rest.readmit_requested</c> on its minute, and the Long Rest worker scans for parked sweeps on its own.
+    /// The retry is an explicit decision, so neither is waited out: the reconciler is run now, and the worker is woken to readmit the row. The pass
+    /// is the reconciler's ordinary one: it settles every operation that is eligible for recovery at that moment, of any kind, as the manual
+    /// reconcile does, not only the retried row. The retry itself is already durable when this runs, and both steps are only hints (the worker
+    /// proves everything again from the durable rows, and the reconciler parks the row on its own cadence otherwise), so a failure of the pass is
+    /// logged and does not turn the retry that was recorded into an error response. A cancellation still propagates. Any other kind of operation is
+    /// left to the reconciler's own cadence, and no worker is woken for it.
+    /// </summary>
+    internal static async Task WakeAfterRetryAsync(
+        LongRunningOperation retried,
+        LongRunningOperationReconciler reconciler,
+        ILongRestSweepWake? wake,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (retried.Kind != LongRunningOperationKinds.LongRestSweep)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = await reconciler
+                .ReconcileNowAsync($"operator-retry-{Environment.ProcessId}-{retried.Id:N}", maxOperations: 100, maxConcurrency: 1, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "The reconciliation that settles an operator retry failed; the retry stands and the reconciler parks the row on its own cadence.");
+        }
+
+        wake?.Wake(retried.Id);
     }
 
     private static bool TryParseState(string? value, out LongRunningOperationState? state)

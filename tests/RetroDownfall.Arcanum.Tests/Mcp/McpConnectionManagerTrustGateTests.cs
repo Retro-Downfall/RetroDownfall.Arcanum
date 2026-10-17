@@ -35,6 +35,11 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 [Collection("ProcessEnvironment")]
 public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private TempWorkspace _workspace = null!;
 
     private string? _originalDotnetEnvironment;
@@ -480,7 +485,7 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             scopeWorkingDirectory: null,
             CancellationToken.None);
 
-        await registration.WaitAsync(TimeSpan.FromSeconds(1));
+        await registration.WaitAsync(HangGuard);
 
         client.AllowDispose.TrySetResult();
 
@@ -1278,7 +1283,6 @@ public sealed class McpConnectionManagerTrustGateTests : IAsyncLifetime
             pacer,
             new FakeEventBus(),
             trustStore,
-            new FakeHttpClientFactory(),
             new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()),
             NullLoggerFactory.Instance);
 

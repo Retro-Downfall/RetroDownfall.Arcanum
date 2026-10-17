@@ -14,10 +14,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Security;
+using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Serialization;
+using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Workspaces;
 using Xunit;
 using DiagnosticsProcess = System.Diagnostics.Process;
 
@@ -245,6 +248,11 @@ public sealed class PublishedArcanumSessionSmokeTests
             Assert.Equal(ExpectedPrompt, userEntry.GetProperty("content").GetString());
             Assert.Equal(ExpectedReply, assistantEntry.GetProperty("content").GetString());
 
+            await AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
+                client,
+                testHome,
+                deadline.Token);
+
             using HttpResponseMessage quitResponse = await client.PostAsync(
                 "api/server/quit",
                 content: null,
@@ -416,6 +424,76 @@ public sealed class PublishedArcanumSessionSmokeTests
                 receiptPath,
                 SuccessReceipt + global::System.Environment.NewLine);
         }
+    }
+
+    /// <summary>
+    /// The published executable runs with invariant globalization, where <see cref="string.Normalize()"/> hands a non-ASCII string back
+    /// unchanged and says nothing, so the equivalence of two spellings of an accented directory name has to come from the product's own
+    /// Unicode tables. A directory whose name is written composed and decomposed is one directory on a volume that folds normalization
+    /// and two on a volume that does not, so only on the first is the second registration a duplicate. The spellings are scalar values
+    /// and never the output of <see cref="string.Normalize()"/>, which would agree with the product whatever either did.
+    /// </summary>
+    private static async Task AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
+        HttpClient client,
+        string testHome,
+        CancellationToken cancellationToken)
+    {
+        string composed = Path.Combine(testHome, "café");
+        string decomposed = Path.Combine(testHome, "café");
+
+        _ = Directory.CreateDirectory(composed);
+
+        if (!Directory.Exists(decomposed))
+        {
+            return;
+        }
+
+        using HttpResponseMessage registered = await PostCampaignAsync(
+            client,
+            "published-smoke-composed",
+            composed,
+            cancellationToken);
+        string registeredJson = await registered.Content.ReadAsStringAsync(cancellationToken);
+
+        Assert.True(
+            registered.StatusCode == HttpStatusCode.Created,
+            $"Published campaign registration returned {(int)registered.StatusCode}: {registeredJson}");
+
+        using HttpResponseMessage duplicate = await PostCampaignAsync(
+            client,
+            "published-smoke-decomposed",
+            decomposed,
+            cancellationToken);
+        string duplicateJson = await duplicate.Content.ReadAsStringAsync(cancellationToken);
+
+        Assert.True(
+            duplicate.StatusCode == HttpStatusCode.BadRequest
+                && duplicateJson.Contains("Campaign.DuplicatePath", StringComparison.Ordinal),
+            $"The decomposed spelling of a registered directory was not a duplicate path ({(int)duplicate.StatusCode}): {duplicateJson}");
+
+        using HttpResponseMessage found = await client.GetAsync(
+            "api/campaigns/by-path?path=" + Uri.EscapeDataString(decomposed),
+            cancellationToken);
+        string foundJson = await found.Content.ReadAsStringAsync(cancellationToken);
+
+        Assert.True(
+            found.IsSuccessStatusCode,
+            $"The registration was not found by the decomposed spelling ({(int)found.StatusCode}): {foundJson}");
+    }
+
+    private static async Task<HttpResponseMessage> PostCampaignAsync(
+        HttpClient client,
+        string name,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        string body = JsonSerializer.Serialize(
+            new RegisterCampaignRequest(name, path, WorkspaceType.Campaign, null),
+            ArcanumJsonContext.Default.RegisterCampaignRequest);
+
+        using StringContent content = new(body, Encoding.UTF8, "application/json");
+
+        return await client.PostAsync("api/campaigns", content, cancellationToken);
     }
 
     private static async Task<CliResult> RunPublishedCliAsync(
@@ -649,6 +727,10 @@ public sealed class PublishedArcanumSessionSmokeTests
                 Workspaces = new WorkspaceSettings
                 {
                     DefaultRoot = testHome,
+                },
+                Security = new SecuritySettings
+                {
+                    CampaignRoots = [testHome],
                 },
             },
         };

@@ -73,6 +73,14 @@ internal interface IGrimoireOfflineTransitionJournalStore
         string guardedDirectory,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// What <see cref="RecoverAsync"/> would answer for the slot as it stands, reading and
+    /// authenticating the same evidence and writing nothing.
+    /// </summary>
+    Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> InspectAsync(
+        string guardedDirectory,
+        CancellationToken cancellationToken);
+
     Task<Result> RetireAsync(
         ArcanumMaintenanceLock heldInstallationLock,
         GrimoireOfflineTransitionJournalPublication terminal,
@@ -1063,6 +1071,294 @@ internal sealed class GrimoireOfflineTransitionJournalStore : IGrimoireOfflineTr
         return written.IsSuccess
             ? Authenticated(oneAhead.Value)
             : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+    }
+
+    /// <summary>
+    /// Reports what <see cref="RecoverAsync"/> would answer for the slot as it stands, and changes
+    /// nothing.
+    /// </summary>
+    /// <remarks>
+    /// It reads the anchor, the file evidence and the key exactly as the recovery pass does, and
+    /// authenticates the same files against the same anchor, but wherever the pass would write it
+    /// answers with the outcome that write converges to. A closed anchor with a leftover canonical or
+    /// retiring file is <see cref="GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal"/>.
+    /// An active anchor with a working, previous or retiring sibling, or with a canonical file one
+    /// revision ahead, is <see cref="GrimoireOfflineTransitionJournalRecoveryOutcome.Authenticated"/>
+    /// at the revision the pass would leave the slot at. Every other shape is the refusal the pass
+    /// would give. A read that must not move the slot, such as a dry run, asks this instead of
+    /// recovering, because recovery renames and deletes journal files and advances the anchor.
+    ///
+    /// <para>It takes no lock, because it writes nothing; a caller that wants the answer to hold while
+    /// it uses it holds the lock itself. Its answer is pinned equal to the recovery pass's on every
+    /// publication and retirement boundary of the crash matrix.</para>
+    /// </remarks>
+    public async Task<Result<GrimoireOfflineTransitionJournalRecoveryState>> InspectAsync(
+        string guardedDirectory,
+        CancellationToken cancellationToken)
+    {
+        Result<GrimoireOfflineTransitionJournalLocation> resolved =
+            _files.ResolveLocation(guardedDirectory);
+
+        if (resolved.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(resolved.Error);
+        }
+
+        GrimoireOfflineTransitionJournalLocation location = resolved.Value;
+
+        Result<GrimoireOfflineTransitionAnchorV1?> anchorResult = _anchors.Read(location);
+
+        if (anchorResult.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(anchorResult.Error);
+        }
+
+        Result<GrimoireOfflineTransitionJournalEvidence> inspected =
+            await _files.InspectEvidenceAsync(location, cancellationToken).ConfigureAwait(false);
+
+        if (inspected.IsFailure)
+        {
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+        }
+
+        using GrimoireOfflineTransitionJournalEvidence evidence = inspected.Value;
+
+        if (anchorResult.Value is null)
+        {
+            if (!AllAbsent(evidence))
+            {
+                return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+            }
+
+            Result<bool> keyPresentWithoutAnchor = _keys.IsPresent(location.ProfileNamespace);
+
+            if (keyPresentWithoutAnchor.IsFailure)
+            {
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(
+                    keyPresentWithoutAnchor.Error);
+            }
+
+            return keyPresentWithoutAnchor.Value
+                ? RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>()
+                : new GrimoireOfflineTransitionJournalRecoveryState(
+                    GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+                    Publication: null);
+        }
+
+        GrimoireOfflineTransitionAnchorV1 anchor = anchorResult.Value;
+
+        Result identity = _identities.RequireMatchesDatabase(
+            location.ProfileNamespace,
+            anchor.InstallationId);
+
+        if (identity.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(identity.Error);
+        }
+
+        Result<GrimoireOfflineTransitionJournalKeyLease> key = _keys.OpenExisting(
+            location.ProfileNamespace);
+
+        if (key.IsFailure)
+        {
+            return key.Error.Code == ErrorCodes.Covenant.NotFound
+                && IsUnsealedGenesis(anchor)
+                && AllAbsent(evidence)
+                    ? InspectClosed(location, anchor, evidence)
+                    : KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(key.Error);
+        }
+
+        using (key.Value)
+        {
+        }
+
+        return anchor.State is GrimoireOfflineTransitionAnchorState.Closed
+            ? InspectClosed(location, anchor, evidence)
+            : InspectActive(location, anchor, evidence);
+    }
+
+    /// <summary>The answer <see cref="RecoverClosedAsync"/> converges to, reached without converging.</summary>
+    private Result<GrimoireOfflineTransitionJournalRecoveryState> InspectClosed(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionAnchorV1 anchor,
+        GrimoireOfflineTransitionJournalEvidence evidence)
+    {
+        // Exactly one leftover of a retirement the anchor already closed: the canonical file alone, or
+        // the retiring file alone. Any other shape is evidence the pass would refuse.
+        bool canonicalOnly = evidence.Canonical is not null
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is null;
+
+        bool retiringOnly = evidence.Canonical is null
+            && evidence.Working is null
+            && evidence.Previous is null
+            && evidence.Retiring is not null;
+
+        if (!AllAbsent(evidence) && !canonicalOnly && !retiringOnly)
+        {
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+        }
+
+        GrimoireOfflineTransitionJournalFileRead? leftover = evidence.Canonical ?? evidence.Retiring;
+
+        if (leftover is not null)
+        {
+            Result<GrimoireOfflineTransitionJournalPublication> authenticated =
+                AuthenticateEvidence(location, leftover, anchor);
+
+            if (authenticated.IsFailure)
+            {
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(authenticated.Error);
+            }
+        }
+
+        return new GrimoireOfflineTransitionJournalRecoveryState(
+            GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal,
+            Publication: null,
+            anchor.OperationId);
+    }
+
+    /// <summary>The answer the active-anchor arms of <see cref="RecoverPassAsync"/> converge to.</summary>
+    private Result<GrimoireOfflineTransitionJournalRecoveryState> InspectActive(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionAnchorV1 anchor,
+        GrimoireOfflineTransitionJournalEvidence evidence)
+    {
+        if (evidence.Canonical is null && evidence.Previous is not null && evidence.Retiring is null)
+        {
+            // An exchange interrupted between its two renames: the predecessor goes back to the
+            // canonical name, and a working file that authenticates as one ahead is then resumed.
+            Result<GrimoireOfflineTransitionJournalPublication> restored =
+                AuthenticateEvidence(location, evidence.Previous, anchor);
+
+            if (restored.IsFailure)
+            {
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(restored.Error);
+            }
+
+            if (evidence.Working is null)
+            {
+                return Authenticated(restored.Value);
+            }
+
+            Result<GrimoireOfflineTransitionJournalPublication> resumed =
+                AuthenticateOneAhead(location, evidence.Working, anchor);
+
+            return resumed.IsFailure
+                ? KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(resumed.Error)
+                : Authenticated(resumed.Value);
+        }
+
+        if (evidence.Canonical is null)
+        {
+            return RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+        }
+
+        if (evidence.Working is not null)
+        {
+            return InspectWithWorking(location, anchor, evidence);
+        }
+
+        Result<GrimoireOfflineTransitionJournalPublication> canonical =
+            AuthenticateEvidence(location, evidence.Canonical, anchor);
+
+        if (canonical.IsFailure && canonical.Error.Code == ErrorCodes.Covenant.Unavailable)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(canonical.Error);
+        }
+
+        GrimoireOfflineTransitionJournalFileRead? sibling = evidence.Previous ?? evidence.Retiring;
+
+        if (canonical.IsSuccess)
+        {
+            if (sibling is null)
+            {
+                return Authenticated(canonical.Value);
+            }
+
+            Result<bool> exactPredecessor = IsExactPredecessor(location, sibling, canonical.Value);
+
+            if (exactPredecessor.IsFailure)
+            {
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(exactPredecessor.Error);
+            }
+
+            return exactPredecessor.Value
+                ? Authenticated(canonical.Value)
+                : RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>();
+        }
+
+        Result<GrimoireOfflineTransitionJournalPublication> oneAhead =
+            AuthenticateOneAhead(location, evidence.Canonical, anchor);
+
+        if (oneAhead.IsFailure)
+        {
+            return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(oneAhead.Error);
+        }
+
+        if (sibling is not null)
+        {
+            Result<GrimoireOfflineTransitionJournalPublication> anchoredPredecessor =
+                AuthenticateEvidence(location, sibling, anchor);
+
+            if (anchoredPredecessor.IsFailure)
+            {
+                return KeyFailure<GrimoireOfflineTransitionJournalRecoveryState>(anchoredPredecessor.Error);
+            }
+        }
+
+        return Authenticated(oneAhead.Value);
+    }
+
+    /// <summary>The two ways a working file beside the canonical one converges, without converging.</summary>
+    private Result<GrimoireOfflineTransitionJournalRecoveryState> InspectWithWorking(
+        GrimoireOfflineTransitionJournalLocation location,
+        GrimoireOfflineTransitionAnchorV1 anchor,
+        GrimoireOfflineTransitionJournalEvidence evidence)
+    {
+        Result<GrimoireOfflineTransitionJournalPublication> current =
+            AuthenticateEvidence(location, evidence.Canonical!, anchor);
+
+        Result<GrimoireOfflineTransitionJournalPublication> next =
+            AuthenticateOneAhead(location, evidence.Working!, anchor);
+
+        if (current.IsFailure && current.Error.Code == ErrorCodes.Covenant.Unavailable)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(current.Error);
+        }
+
+        if (next.IsFailure && next.Error.Code == ErrorCodes.Covenant.Unavailable)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(next.Error);
+        }
+
+        if (current.IsSuccess && next.IsSuccess
+            && evidence.Previous is null && evidence.Retiring is null)
+        {
+            return Authenticated(next.Value);
+        }
+
+        Result<GrimoireOfflineTransitionJournalPublication> workingOneAhead =
+            AuthenticateOneAhead(location, evidence.Canonical!, anchor);
+
+        Result<GrimoireOfflineTransitionJournalPublication> predecessor =
+            AuthenticateEvidence(location, evidence.Working!, anchor);
+
+        if (workingOneAhead.IsFailure && workingOneAhead.Error.Code == ErrorCodes.Covenant.Unavailable)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(workingOneAhead.Error);
+        }
+
+        if (predecessor.IsFailure && predecessor.Error.Code == ErrorCodes.Covenant.Unavailable)
+        {
+            return Result<GrimoireOfflineTransitionJournalRecoveryState>.Failure(predecessor.Error);
+        }
+
+        return workingOneAhead.IsFailure || predecessor.IsFailure
+            || evidence.Previous is not null || evidence.Retiring is not null
+                ? RecoveryRequired<GrimoireOfflineTransitionJournalRecoveryState>()
+                : Authenticated(workingOneAhead.Value);
     }
 
     public async Task<Result> RetireAsync(

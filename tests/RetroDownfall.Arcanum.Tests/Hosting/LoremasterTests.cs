@@ -42,7 +42,6 @@ namespace RetroDownfall.Arcanum.Tests.Hosting;
 [Collection(HostedServiceLifetimeCollection.Name)]
 public sealed class LoremasterTests
 {
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -257,6 +256,7 @@ public sealed class LoremasterTests
 
         public Task<Result<CampaignRollupStatus>> ReadStatusAsync(Guid campaignId, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
+
     [Fact]
     public async Task WinningSweepDrainsThroughScopeAndLeaseDisposal()
     {
@@ -1496,6 +1496,8 @@ public sealed class LoremasterTests
         internal RecordingGrimoireWorkAdmissionGate Recording { get; }
 
         public long CurrentGeneration => Recording.CurrentGeneration;
+
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         internal Task<GrimoireWorkKind> NextAcquireAsync() =>
             _acquisitions.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));

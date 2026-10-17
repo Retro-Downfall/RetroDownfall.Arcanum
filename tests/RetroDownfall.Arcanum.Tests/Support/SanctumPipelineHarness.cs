@@ -81,6 +81,7 @@ internal sealed class SanctumPipelineHarness
                 new SingleCampaignRepository(campaign),
                 breaches,
                 NullLogger<SanctumGuard>.Instance,
+                UnregisteredCampaignRoots.Instance,
                 new FakeDnsResolver()));
 
         return new SanctumPipelineHarness(workspaceRoot, campaign, guard, breaches);
@@ -212,11 +213,19 @@ internal sealed class InMemorySanctumBreachRepository : ISanctumBreachRepository
 {
     public List<SanctumBreachRecord> Records { get; } = [];
 
+    /// <summary>When set, every write fails with it and nothing is recorded: the audit row an audit-only Sanctum relies on cannot be kept.</summary>
+    public Exception? RecordFailure { get; set; }
+
     public Task RecordAsync(
         SanctumBreachRecord breach,
         int maxBreachCount,
         CancellationToken ct = default)
     {
+        if (RecordFailure is { } failure)
+        {
+            return Task.FromException(failure);
+        }
+
         Records.Add(breach);
 
         return Task.CompletedTask;
@@ -245,6 +254,14 @@ internal sealed class SingleCampaignRepository(Campaign campaign) : ICampaignRep
 
     public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
         Task.FromResult<Campaign?>(null);
+
+    // This double answers by identifier only. Its Campaign governs its root and every directory below it, so answering "no Campaign"
+    // to a containment lookup would leave that directory ungoverned without a word; a lookup by containing path is refused instead.
+    public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+        GetByContainedPathAsync(path, cancellationToken);
 
     public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
         Task.FromResult<Campaign?>(null);

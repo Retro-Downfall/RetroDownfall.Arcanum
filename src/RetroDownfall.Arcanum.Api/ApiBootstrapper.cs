@@ -54,6 +54,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Telemetry;
 using RetroDownfall.Arcanum.Infrastructure.Tower;
 using Scalar.AspNetCore;
 
@@ -555,9 +556,20 @@ public static class ApiBootstrapper
 
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 
-        services.AddHttpClient(CampaignRollupProviderClientFactory.HttpClientName,
-            static client => client.Timeout = Timeout.InfiniteTimeSpan)
-            .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler());
+        services.AddSingleton(sp => new LongRestConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));
+
+        services.AddSingleton<RetroDownfall.Arcanum.Core.LongRest.ILongRestConfigurationProvider>(sp => sp.GetRequiredService<LongRestConfigurationEpoch>());
+
+        services.AddScoped<LongRestProviderClientFactory>();
+
+        services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestProvider, LongRestProvider>();
+
+        services.AddScoped<LongRestMaintenance>();
+
+        services.AddScoped<RetroDownfall.Arcanum.Core.LongRest.ILongRestMaintenance>(static sp => sp.GetRequiredService<LongRestMaintenance>());
+
+        services.AddScoped<RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.ILongRestAdmittedMaintenance>(static sp => sp.GetRequiredService<LongRestMaintenance>());
 
         services.AddScoped<ICampaignRollupProviderClientFactory, CampaignRollupProviderClientFactory>();
 
@@ -645,6 +657,11 @@ public static class ApiBootstrapper
             sp.GetRequiredService<ISessionCampaignBindingReader>(),
             sp.GetRequiredService<ICampaignPathIdentityReader>(),
             sp.GetRequiredService<ICampaignAvailabilityReader>()));
+
+        // Long Rest-scoped enrichment of that answer: the registered root, added only while Long Rest is on, at its request and fence paths.
+        services.AddScoped<ICanonicalCampaignRootEnricher>(static sp => new CanonicalCampaignRootEnricher(
+            sp.GetRequiredService<ICampaignPathIdentityReader>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
 
         services.AddScoped<WebResearchWorkflowService>();
 
@@ -789,6 +806,12 @@ public static class ApiBootstrapper
     /// </summary>
     public static void UseArcanumMetrics(this WebApplication app)
     {
+        // The exporter's MeterListener observes only what is recorded after it starts, and the exporter is a lazy singleton that nothing but the
+        // /metrics endpoint resolves. Left to that, every measurement recorded before the first scrape (the Long Rest sweeps parked and readmitted by
+        // the worker among them) is lost, against the exporter's own contract. Host composition resolves it, before any hosted service starts. A host
+        // composed without the exporter (a probe host) simply has none to start.
+        _ = app.Services.GetService<PrometheusMetricsExporter>();
+
         app.Use(async (HttpContext context, Func<Task> next) =>
         {
             if (context.Request.Path.StartsWithSegments("/metrics"))

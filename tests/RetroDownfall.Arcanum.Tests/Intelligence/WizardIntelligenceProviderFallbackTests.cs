@@ -1446,6 +1446,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
             ordinaryProvider,
+            RefusingCampaignResolver.Instance,
             withHealthTracker ? healthTracker : null,
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities);
@@ -2164,11 +2165,32 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
     private sealed class FakeCampaignRepository : ICampaignRepository
     {
+        /// <summary>
+        /// The canonical context these tests invoke with names a placeholder Campaign that no scenario registers. A turn bound to a Campaign
+        /// reads that Campaign's row, so every identifier stands for an ordinary Campaign with its Sanctum off.
+        /// </summary>
         public Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
-            Task.FromResult<Campaign?>(null);
+            Task.FromResult<Campaign?>(
+                new Campaign
+                {
+                    Id = id,
+                    Name = "plain-campaign",
+                    NameLower = "plain-campaign",
+                    Path = string.Empty,
+                    Type = Core.Workspaces.WorkspaceType.Custom,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    UpdatedAt = DateTimeOffset.UtcNow,
+                });
 
         public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);
+
+        // No root is registered in these scenarios, so the exact match, which finds none, is the whole answer.
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            GetByContainedPathAsync(path, cancellationToken);
 
         public Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default) =>
             Task.FromResult<Campaign?>(null);

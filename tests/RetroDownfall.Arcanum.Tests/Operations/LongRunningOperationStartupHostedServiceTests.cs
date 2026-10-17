@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Reflection;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,6 +15,11 @@ namespace RetroDownfall.Arcanum.Tests.Operations;
 
 public sealed class LongRunningOperationStartupHostedServiceTests
 {
+    /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to
+    /// finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not
+    /// enough on a loaded CI runner.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     [Fact]
     public async Task Expired_host_shutdown_budget_cannot_release_the_background_owner_early()
     {
@@ -41,7 +47,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         release.TrySetResult();
 
-        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        await stop.WaitAsync(HangGuard);
     }
 
     [Fact]
@@ -61,19 +67,23 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         SetBackgroundTask(host, release.Task);
 
-        using CancellationTokenSource expiringBudget = new(
-            TimeSpan.FromMilliseconds(25));
+        // The budget expires after the stop has started and is joining the background owner. It is
+        // cancelled explicitly rather than by a timer: two timers racing on a loaded runner fire in either
+        // order, and the order is not what this test is about.
+        using CancellationTokenSource expiringBudget = new();
 
         Task stop = host.StopAsync(expiringBudget.Token);
 
-        await Task.Delay(TimeSpan.FromMilliseconds(75));
+        await expiringBudget.CancelAsync();
+
+        await Task.Delay(TimeSpan.FromMilliseconds(50));
 
         Assert.True(expiringBudget.IsCancellationRequested);
         Assert.False(stop.IsCompleted);
 
         release.TrySetResult();
 
-        await stop.WaitAsync(TimeSpan.FromSeconds(2));
+        await stop.WaitAsync(HangGuard);
     }
 
     [Fact]
@@ -106,7 +116,7 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         release.TrySetResult();
 
         Exception failure = await Assert.ThrowsAnyAsync<Exception>(
-            () => stop.WaitAsync(TimeSpan.FromSeconds(2)));
+            () => stop.WaitAsync(HangGuard));
 
         Assert.Contains(
             "shutdown callback failed",
@@ -354,6 +364,92 @@ public sealed class LongRunningOperationStartupHostedServiceTests
         Assert.True(order.IndexOf("handler") < order.LastIndexOf("scope-dispose"));
         Assert.True(order.LastIndexOf("scope-dispose") < order.IndexOf("group-dispose"));
         Assert.True(order.IndexOf("group-dispose") < order.LastIndexOf("work-dispose"));
+    }
+
+    [Fact]
+    public async Task An_external_effect_handler_with_an_active_group_can_open_a_connection_after_the_real_gate_enters_Closing()
+    {
+        // The Finisher Ambient Fix: the startup service acquires its recovery lease inline, so the lifetime the gate keeps in
+        // the caller's execution context survives into the scope and the handler it settles. An async acquisition helper
+        // would have restored the caller's context on return and lost it.
+        FakeTimeProvider time = new();
+        FakeLongRunningOperationStore store = new(time);
+        LongRunningOperation seeded = store.Seed(
+            LongRunningOperationKinds.BlobEncryptionMigration,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+        IGrimoireClosingOwner? closing = null;
+        Exception? finisherOpen = new InvalidOperationException("The handler never ran.");
+        Exception? unrelatedOpen = null;
+        RecordingRecoveryHandler handler = new(
+            LongRunningOperationKinds.BlobEncryptionMigration,
+            supportedCheckpointVersion: 0,
+            _ =>
+            {
+                closing = gate.BeginOrResumeExclusive(new(
+                    Guid.NewGuid(),
+                    CovenantExclusiveOperation.CovenantReset,
+                    new CovenantDigest(new byte[32]))).Value;
+
+                using SqliteConnection finisher = new();
+
+                finisherOpen = Record.Exception(() =>
+                {
+                    using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(finisher);
+
+                    ticket.MarkFailed();
+                });
+
+                // Control: a connection opened outside this execution context is refused while the gate is Closing. A dedicated
+                // thread started with the flow suppressed cannot inherit any ambient lifetime, unlike a pooled one.
+                Exception? refused = null;
+
+                using (ExecutionContext.SuppressFlow())
+                {
+                    Thread unrelated = new(() => refused = Record.Exception(() =>
+                    {
+                        using IGrimoireConnectionOpenTicket ticket = gate.AcquireOrdinaryOpen(new SqliteConnection());
+
+                        ticket.MarkFailed();
+                    }));
+
+                    unrelated.Start();
+
+                    unrelated.Join();
+                }
+
+                unrelatedOpen = refused;
+
+                return LongRunningOperationRecoveryResult.Completed();
+            });
+        RecoveryScopeFactory scopes = new(
+            store,
+            Reconciler(store, time, handler),
+            [],
+            () => true);
+        LongRunningOperationStartupHostedService host = Host(scopes, time, gate);
+
+        try
+        {
+            LongRunningOperationReconciliationSummary summary = await host.RunBackgroundPassAsync(
+                time.GetUtcNow(),
+                "background-owner",
+                CancellationToken.None);
+
+            Assert.Equal(1, summary.Completed);
+
+            Assert.Equal(LongRunningOperationState.Completed, Assert.Single(store.Operations, operation => operation.Id == seeded.Id).State);
+
+            Assert.NotNull(closing);
+
+            Assert.Null(finisherOpen);
+
+            Assert.IsType<GrimoireMaintenanceUnavailableException>(unrelatedOpen);
+        }
+        finally
+        {
+            if (closing is not null) await closing.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -804,6 +900,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
 
         public long CurrentGeneration => Volatile.Read(ref _generation);
 
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
+
         public bool TryAcquireWorkLease(GrimoireWorkKind kind, out IGrimoireWorkLease? lease)
         {
             Assert.Equal(GrimoireWorkKind.LongRunningOperationRecovery, kind);
@@ -877,6 +975,8 @@ public sealed class LongRunningOperationStartupHostedServiceTests
             public long Generation => generation;
 
             public CancellationToken MaintenanceRevocation => CancellationToken.None;
+
+            public bool MaintenanceRevocationPending => MaintenanceRevocation.IsCancellationRequested;
 
             public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
             {

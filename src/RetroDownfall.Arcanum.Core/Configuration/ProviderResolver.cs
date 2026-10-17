@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public static class ProviderResolver
 {
-
     /// <summary>
     /// Case-insensitive exact match between a configured model id and a requested id. The requested
     /// model name must exactly match (case-insensitive) a configured model id — there is no bare-name
@@ -21,12 +20,11 @@ public static class ProviderResolver
     /// </summary>
     public static IEnumerable<string> EnumerateAdvertisedModels(ProviderSettings provider)
     {
-
         HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
 
-        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+        ModelEntry[] models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Count; i++)
+        for (int i = 0; i < models.Length; i++)
         {
             string model = models[i].Name;
 
@@ -35,7 +33,6 @@ public static class ProviderResolver
                 yield return model;
             }
         }
-
     }
 
     /// <summary>
@@ -49,7 +46,6 @@ public static class ProviderResolver
     /// </remarks>
     public static IEnumerable<string> EnumerateVisibleModels(ProviderSettings provider)
     {
-
         ArgumentNullException.ThrowIfNull(provider);
 
         foreach (string model in EnumerateAdvertisedModels(provider))
@@ -59,7 +55,6 @@ public static class ProviderResolver
                 yield return model;
             }
         }
-
     }
 
     /// <summary>
@@ -69,7 +64,6 @@ public static class ProviderResolver
     /// </summary>
     public static bool SupportsVision(ArcanumSettings settings, string? modelName)
     {
-
         if (string.IsNullOrWhiteSpace(modelName))
         {
             return false;
@@ -86,7 +80,6 @@ public static class ProviderResolver
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -96,14 +89,12 @@ public static class ProviderResolver
     /// </summary>
     public static bool SupportsVision(ProviderSettings provider, string? modelName)
     {
-
         if (string.IsNullOrWhiteSpace(modelName))
         {
             return false;
         }
 
         return TryResolveModelEntry(provider, modelName, out ModelEntry? entry) && entry!.SupportsVision;
-
     }
 
     /// <summary>
@@ -124,7 +115,6 @@ public static class ProviderResolver
         string? modelName,
         out ModelEntry? entry)
     {
-
         if (string.IsNullOrWhiteSpace(modelName))
         {
             entry = null;
@@ -132,9 +122,9 @@ public static class ProviderResolver
             return false;
         }
 
-        IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+        ModelEntry[] models = provider.Models ?? [];
 
-        for (int i = 0; i < models.Count; i++)
+        for (int i = 0; i < models.Length; i++)
         {
             if (ModelNameMatches(models[i].Name, modelName))
             {
@@ -147,7 +137,6 @@ public static class ProviderResolver
         entry = null;
 
         return false;
-
     }
 
     /// <summary>
@@ -160,7 +149,6 @@ public static class ProviderResolver
         out ProviderSettings? provider,
         out string resolvedModel)
     {
-
         provider = null;
 
         resolvedModel = string.Empty;
@@ -177,7 +165,6 @@ public static class ProviderResolver
             }
 
             return TryPassThroughToFamiliar(providers, needle, out provider, out resolvedModel);
-
         }
 
         if (!string.IsNullOrWhiteSpace(settings.DefaultModel))
@@ -190,7 +177,6 @@ public static class ProviderResolver
             }
 
             return TryPassThroughToFamiliar(providers, needle, out provider, out resolvedModel);
-
         }
 
         // Nothing was named anywhere, so fall back to the first advertised model in configured
@@ -207,11 +193,9 @@ public static class ProviderResolver
 
                 return true;
             }
-
         }
 
         return false;
-
     }
 
     /// <summary>
@@ -230,7 +214,6 @@ public static class ProviderResolver
         string? model,
         IProviderHealthTracker? health = null)
     {
-
         ProviderSettings[] providers = settings.Providers ?? [];
 
         string? needle = !string.IsNullOrWhiteSpace(model)
@@ -268,18 +251,15 @@ public static class ProviderResolver
             {
                 healthyMatches.Add(candidate);
             }
-
         }
 
         return healthyMatches.Count > 0 ? healthyMatches : matches;
-
     }
 
     private static List<(ProviderSettings Provider, string CanonicalModelId)> CollectAllMatchingProviders(
         ProviderSettings[] providers,
         string needle)
     {
-
         List<(ProviderSettings Provider, string CanonicalModelId)> matches = [];
 
         for (int pi = 0; pi < providers.Length; pi++)
@@ -293,15 +273,11 @@ public static class ProviderResolver
                     matches.Add((p, configured));
 
                     break;
-
                 }
-
             }
-
         }
 
         return matches;
-
     }
 
     /// <summary>
@@ -323,7 +299,6 @@ public static class ProviderResolver
         out ProviderSettings? provider,
         out string resolvedModel)
     {
-
         for (int i = 0; i < providers.Length; i++)
         {
             if (FamiliarProviders.IsFamiliar(providers[i]))
@@ -341,13 +316,11 @@ public static class ProviderResolver
         resolvedModel = string.Empty;
 
         return false;
-
     }
 
     private static List<(ProviderSettings Provider, string CanonicalModelId)> CollectFirstProviderDefaultModel(
         ProviderSettings[] providers)
     {
-
         List<(ProviderSettings Provider, string CanonicalModelId)> matches = [];
 
         // First advertised model in configured order — scanning past providers that advertise
@@ -359,13 +332,10 @@ public static class ProviderResolver
                 matches.Add((providers[i], model));
 
                 return matches;
-
             }
-
         }
 
         return matches;
-
     }
 
     /// <summary>
@@ -380,7 +350,6 @@ public static class ProviderResolver
         string providerName,
         out ProviderSettings? provider)
     {
-
         provider = null;
 
         ProviderSettings[] providers = settings.Providers ?? [];
@@ -392,13 +361,10 @@ public static class ProviderResolver
                 provider = providers[i];
 
                 return true;
-
             }
-
         }
 
         return false;
-
     }
 
     private static bool TryFindModelInProviders(
@@ -407,7 +373,6 @@ public static class ProviderResolver
         out ProviderSettings? provider,
         out string resolvedModel)
     {
-
         provider = null;
 
         resolvedModel = string.Empty;
@@ -425,15 +390,10 @@ public static class ProviderResolver
                     resolvedModel = configured;
 
                     return true;
-
                 }
-
             }
-
         }
 
         return false;
-
     }
-
 }

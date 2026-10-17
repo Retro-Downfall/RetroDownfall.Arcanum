@@ -41,7 +41,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantErasureCoordinatorTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     private static readonly TimeSpan BoundedWait = TimeSpan.FromSeconds(10);
@@ -104,7 +103,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task Factory_continuation_runs_after_its_durable_boundary_and_before_handle_proof()
     {
-
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -119,7 +117,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(
             harness.Steps.IndexOf("apply-ordinary-factory-reset")
             < harness.Steps.IndexOf("close-handles"));
-
     }
 
     /// <summary>
@@ -143,7 +140,6 @@ public sealed class CovenantErasureCoordinatorTests
         bool? continuationRecorded,
         int expectedCalls)
     {
-
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
         {
             ContinuationRecorded = continuationRecorded,
@@ -156,20 +152,16 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
 
         Assert.Equal(expectedCalls, harness.FactoryContinuationCalls);
-
     }
 
     [Fact]
     public async Task Factory_continuation_failure_keeps_admission_closed_and_the_launch_intact()
     {
-
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
         {
-
             FactoryContinuationFailure = new Error(
                 ErrorCodes.Data.ReconciliationFailed,
                 "Ordinary factory deletion did not reconcile."),
-
         };
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -201,13 +193,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(CandidateGeneration, launch.TargetDatasetGeneration);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task Four_argument_reset_overload_refuses_a_factory_checkpoint_before_gate_effects()
     {
-
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
 
         Result<CovenantErasureCompletion> completion = await harness.RunWithoutFactoryContinuationAsync(
@@ -220,7 +210,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(0, harness.Gate.ResumeOrAcquireCount);
 
         Assert.Empty(harness.Steps);
-
     }
 
     [Theory]
@@ -229,7 +218,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_clean_run_erases_through_both_kernels_then_proves_storage_then_publishes(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
@@ -255,7 +243,6 @@ public sealed class CovenantErasureCoordinatorTests
             harness.Inventory.ObservedDatasetGeneration);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Theory]
@@ -264,7 +251,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Both_kernels_borrow_the_coordinators_own_lease_and_never_acquire_one(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         _ = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
@@ -280,13 +266,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Same(harness.Artifacts.LastAuthority, harness.ManagedFiles.LastAuthority);
 
         Assert.Equal(CovenantLeaseCoverage.Installation, harness.Artifacts.LastAuthority.Snapshot.Coverage);
-
     }
 
     [Fact]
     public async Task Caller_cancellation_after_storage_proof_cannot_cancel_checkpoint_publication_or_reopen()
     {
-
         CoordinatorHarness harness = new();
 
         using CancellationTokenSource caller = new();
@@ -308,13 +292,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(harness.Transition.PublicationToken.IsCancellationRequested);
 
         Assert.False(harness.DisclosureWriter.ReopenToken.IsCancellationRequested);
-
     }
 
     [Fact]
     public async Task A_database_kernel_blocker_keeps_admission_closed_and_never_applies_the_canonical_erasure()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Artifacts.Blocker = CovenantErasureBlocker.ManualOwnershipMismatch;
@@ -332,13 +314,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(completion.Value.CanonicalResetApplied);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task A_managed_file_blocker_keeps_admission_closed_after_the_canonical_erasure_committed()
     {
-
         CoordinatorHarness harness = new();
 
         harness.ManagedFiles.Blocker = CovenantErasureBlocker.ManualOwnershipMismatch;
@@ -361,7 +341,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(completion.Value.LocalSecureErasureComplete);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
-
     }
 
     /// <summary>
@@ -383,7 +362,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task Every_closed_period_ledger_window_opens_under_the_installation_connection_policy()
     {
-
         CoordinatorHarness harness = new();
 
         await harness.CloseAndAdoptAsync();
@@ -400,7 +378,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(
             harness.Ledger.EveryOpenCarriedThePolicy,
             "A ledger window was opened without the pragmas an erasure's own deletions depend on.");
-
     }
 
     [Theory]
@@ -409,7 +386,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_refused_closed_period_ledger_window_never_runs_the_work(
         bool refuseAfterAcquisition)
     {
-
         Error refusal = new(
             ErrorCodes.Covenant.MaintenanceFailed,
             refuseAfterAcquisition
@@ -454,7 +430,6 @@ public sealed class CovenantErasureCoordinatorTests
                     new Func<CancellationToken, Task<int>>(
                         _ =>
                         {
-
                             workCalls++;
 
                             storeCalls++;
@@ -464,7 +439,6 @@ public sealed class CovenantErasureCoordinatorTests
                             mutationCalls++;
 
                             return Task.FromResult(1);
-
                         }),
                     Token,
                 ]));
@@ -487,7 +461,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(refuseAfterAcquisition ? 1 : 0, permit.Handle.OpenStartedCalls);
 
         Assert.Equal(refuseAfterAcquisition ? 1 : 0, permit.Handle.NotOpenedCalls);
-
     }
 
     [Theory]
@@ -496,7 +469,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_successful_closed_period_ledger_window_refuses_an_unproven_cleanup(
         LedgerCleanupFailure cleanupFailure)
     {
-
         CovenantExclusiveRecoveryOwner owner = new(
             OperationId,
             CovenantExclusiveOperation.CovenantReset,
@@ -533,13 +505,11 @@ public sealed class CovenantErasureCoordinatorTests
                     new Func<CancellationToken, Task<Result>>(
                         _ =>
                         {
-
                             workCalls++;
 
                             steps.Add("work-succeeded");
 
                             return Task.FromResult(Result.Success());
-
                         }),
                     Token,
                 ]));
@@ -560,13 +530,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(
             ["open", "work-succeeded", "clear-pool", "report-physical-close", "dispose-handle"],
             steps);
-
     }
 
     [Fact]
     public async Task A_failed_ledger_close_never_reports_a_physical_close()
     {
-
         CovenantExclusiveRecoveryOwner owner = new(
             OperationId,
             CovenantExclusiveOperation.CovenantReset,
@@ -600,11 +568,9 @@ public sealed class CovenantErasureCoordinatorTests
                     new Func<CancellationToken, Task<Result>>(
                         _ =>
                         {
-
                             steps.Add("work-succeeded");
 
                             return Task.FromResult(Result.Success());
-
                         }),
                     Token,
                 ]));
@@ -625,7 +591,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(
             ["open", "work-succeeded", "close-failed", "clear-pool", "dispose-handle"],
             steps);
-
     }
 
     [Theory]
@@ -634,7 +599,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_cleanup_refusal_does_not_replace_in_flight_ledger_control_flow(
         LedgerWorkControlFlow controlFlow)
     {
-
         CovenantExclusiveRecoveryOwner owner = new(
             OperationId,
             CovenantExclusiveOperation.CovenantReset,
@@ -662,9 +626,7 @@ public sealed class CovenantErasureCoordinatorTests
 
         if (controlFlow is LedgerWorkControlFlow.Cancellation)
         {
-
             cancellation.Cancel();
-
         }
 
         Exception original = controlFlow is LedgerWorkControlFlow.LeaseLost
@@ -699,7 +661,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(1, permit.Handle.PhysicalCloseReportCalls);
 
         Assert.Equal(1, permit.Handle.DisposalCalls);
-
     }
 
     [Fact]
@@ -747,7 +708,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task Lease_loss_with_a_cleanup_refusal_still_keeps_both_gates_closed()
     {
-
         CleanupRefusingLedgerDrain drain = new(LedgerCleanupFailure.ExactPoolClear);
 
         CoordinatorHarness harness = new(drain: drain);
@@ -772,7 +732,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     [Theory]
@@ -782,7 +741,6 @@ public sealed class CovenantErasureCoordinatorTests
         int refusedClearCall,
         int expectedClearCalls)
     {
-
         CleanupRefusingLedgerDrain drain = new(
             LedgerCleanupFailure.ExactPoolClear,
             failOnClearCall: refusedClearCall);
@@ -805,7 +763,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     /// <summary>
@@ -822,7 +779,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task A_compaction_that_cannot_prove_itself_stages_and_proves_before_its_phase_begins()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.ReplacementNeeded = true;
@@ -848,7 +804,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(
             [(RecordingErasureTransition.StagedIdentity, RecordingErasureTransition.StagedContent)],
             harness.Transition.Installed);
-
     }
 
     /// <summary>
@@ -863,7 +818,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task A_resumed_replacement_that_was_already_proven_only_installs()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.ReplacementNeeded = true;
@@ -878,7 +832,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(completion.IsSuccess, completion.IsFailure ? completion.Error.Message : null);
 
         Assert.Equal(["install-replacement"], harness.Steps.Where(Compaction.Contains).ToArray());
-
     }
 
     /// <summary>
@@ -888,7 +841,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task A_resumed_replacement_that_reached_only_its_plan_stages_without_replanning()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.ReplacementNeeded = true;
@@ -905,7 +857,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(
             ["stage-candidate", "prove-candidate", "install-replacement"],
             harness.Steps.Where(Compaction.Contains).ToArray());
-
     }
 
     /// <summary>
@@ -921,7 +872,6 @@ public sealed class CovenantErasureCoordinatorTests
     [Fact]
     public async Task A_replacement_planned_against_a_different_database_parks_rather_than_continuing()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.ReplacementNeeded = true;
@@ -946,7 +896,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.DoesNotContain("install-replacement", harness.Steps);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
-
     }
 
     /// <summary>The four steps a compaction replacement is made of, in the order they must happen.</summary>
@@ -971,7 +920,6 @@ public sealed class CovenantErasureCoordinatorTests
         CovenantResetPhase resumeFrom,
         string skippedStep)
     {
-
         CoordinatorHarness harness = new();
 
         await harness.CloseAndAdoptAsync();
@@ -981,7 +929,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(completion.IsSuccess);
 
         Assert.DoesNotContain(skippedStep, harness.Steps);
-
     }
 
     [Theory]
@@ -998,14 +945,11 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Recovery_from_every_declared_phase_reaches_the_same_committed_reopen(
         CovenantResetPhase resumeFrom)
     {
-
         CoordinatorHarness harness = new();
 
         if (resumeFrom != CovenantResetPhase.InventoryPrepared)
         {
-
             await harness.CloseAndAdoptAsync();
-
         }
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(resumeFrom);
@@ -1021,13 +965,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Contains("reopen-writer", harness.Steps);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task A_fresh_run_acquires_the_gate_and_a_resumed_run_resumes_it()
     {
-
         CoordinatorHarness fresh = new();
 
         _ = await fresh.RunAsync(CovenantResetPhase.InventoryPrepared);
@@ -1054,13 +996,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(0, resumed.Gate.ResumeOrAcquireCount);
 
         Assert.Equal(1, resumed.Gate.ResumeCount);
-
     }
 
     [Fact]
     public async Task Resume_from_ReopenedVerified_reverifies_immutably_and_publishes_that_exact_candidate()
     {
-
         CoordinatorHarness harness = new();
 
         await harness.CloseAndAdoptAsync();
@@ -1075,13 +1015,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Same(harness.Transition.VerifiedCandidate, harness.Transition.PublishedCandidate);
 
         Assert.Equal(0, harness.Operations.CheckpointCalls);
-
     }
 
     [Fact]
     public async Task A_fresh_pass_checkpoints_one_live_verified_candidate_and_publishes_that_exact_object()
     {
-
         CoordinatorHarness harness = new();
 
         _ = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
@@ -1091,26 +1029,22 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Same(harness.Transition.VerifiedCandidate, harness.Transition.PublishedCandidate);
 
         Assert.Equal(CandidateGeneration, harness.Transition.PublishedGeneration);
-
     }
 
     [Fact]
     public void The_transition_seam_has_no_ordinary_candidate_generation_read()
     {
-
         Assert.DoesNotContain(
             typeof(ICovenantErasureTransition).GetMethods(),
             static method => string.Equals(
                 method.Name,
                 "ReadCandidateDatasetGenerationAsync",
                 StringComparison.Ordinal));
-
     }
 
     [Fact]
     public async Task A_failed_publication_keeps_admission_closed_after_a_durable_mutation()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.FailingStep = "publish";
@@ -1130,13 +1064,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(completion.Value.LocalSecureErasureComplete);
 
         Assert.False(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task A_KeepClosed_completion_proves_its_attention_row_before_the_disposition()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Transition.FailingStep = "publish";
@@ -1145,7 +1077,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         harness.Gate.OnDispositionAttempt = () =>
         {
-
             observedAtDisposition = true;
 
             LongRunningOperation row = Assert.Single(harness.Store.Operations);
@@ -1157,7 +1088,6 @@ public sealed class CovenantErasureCoordinatorTests
             Assert.Null(row.CompletedAt);
 
             Assert.True(File.Exists(harness.Phases.JournalPath));
-
         };
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -1170,13 +1100,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(observedAtDisposition);
 
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task A_failed_disclosure_writer_restart_selects_keep_closed_before_any_disposition()
     {
-
         CoordinatorHarness harness = new();
 
         harness.DisclosureWriter.ReopenFails = true;
@@ -1194,13 +1122,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     [Fact]
     public async Task An_unspent_Grimoire_closure_stays_closed_when_the_run_unwinds_without_a_disposition()
     {
-
         CoordinatorHarness harness = new(
             faultSeam: static (boundary, phase, _) =>
                 boundary is CovenantErasureFaultBoundary.BeforePhaseBegin
@@ -1213,13 +1139,11 @@ public sealed class CovenantErasureCoordinatorTests
             () => harness.RunAsync(CovenantResetPhase.InventoryPrepared));
 
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task A_resumed_in_flight_phase_faulting_before_replay_stays_closed()
     {
-
         CoordinatorHarness harness = new(
             faultSeam: static (boundary, phase, _) =>
                 boundary is CovenantErasureFaultBoundary.BeforePhaseBegin
@@ -1247,7 +1171,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     [Theory]
@@ -1257,7 +1180,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_failed_one_shot_commit_retains_its_journal_without_a_fallback_disposition(
         DispositionFailureMode failureMode)
     {
-
         // The real gate refuses to hand a second live registration to a scope that already has one,
         // so a disposition can only fail underneath the lease rather than beside it. The registration
         // is faked and the lease is not: the one-shot claim under test is the real one.
@@ -1294,7 +1216,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         // The journal is retained rather than retired, which is what keeps the operation adoptable.
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     [Theory]
@@ -1302,7 +1223,6 @@ public sealed class CovenantErasureCoordinatorTests
     [InlineData(true)]
     public async Task Commit_and_proven_rollback_hold_Grimoire_until_after_retirement(bool rollback)
     {
-
         CoordinatorHarness harness = new();
 
         harness.Inventory.Fails = rollback;
@@ -1313,7 +1233,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         harness.Gate.OnDispositionAttempt = () =>
         {
-
             Assert.False(harness.Admission.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out var work));
 
             Assert.Null(work);
@@ -1323,23 +1242,18 @@ public sealed class CovenantErasureCoordinatorTests
             Assert.True(File.Exists(harness.Phases.JournalPath));
 
             dispositionChecks++;
-
         };
 
         harness.Phases.AfterJournalStep = step =>
         {
-
             if (step is "file:retiring-moved" or "file:retiring-unlinked" or "file:absence-proved")
             {
-
                 Assert.False(harness.Admission.TryAcquireWorkLease(GrimoireWorkKind.LongRunningOperationRecovery, out var work));
 
                 Assert.Null(work);
 
                 retirementChecks++;
-
             }
-
         };
 
         var result = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
@@ -1357,29 +1271,23 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task Retirement_failure_keeps_Grimoire_closed_after_the_Covenant_disposition()
     {
-
         CoordinatorHarness harness = new();
 
         bool interrupted = false;
 
         harness.Phases.AfterJournalStep = step =>
         {
-
             if (step == "anchor:closed-readback")
             {
-
                 interrupted = true;
 
                 throw new IOException("controlled retirement interruption");
-
             }
-
         };
 
         await Assert.ThrowsAsync<IOException>(() => harness.RunAsync(CovenantResetPhase.InventoryPrepared));
@@ -1395,12 +1303,10 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(File.Exists(harness.Phases.JournalPath));
 
         Assert.Equal(LongRunningOperationState.Completed, (await harness.Store.GetAsync(OperationId))!.State);
-
     }
 
     public enum DispositionFailureMode
     {
-
         None,
 
         ReturnedFailure,
@@ -1408,7 +1314,6 @@ public sealed class CovenantErasureCoordinatorTests
         Cancelled,
 
         Thrown,
-
     }
 
     [Theory]
@@ -1417,7 +1322,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_quiesce_failure_before_any_erasure_rolls_back_and_reopens(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         harness.DisclosureWriter.QuiesceFails = true;
@@ -1451,7 +1355,6 @@ public sealed class CovenantErasureCoordinatorTests
             settled.TerminalErrorCode);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Theory]
@@ -1460,7 +1363,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_pre_journal_terminal_write_refusal_keeps_admission_closed(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         harness.DisclosureWriter.QuiesceFails = true;
@@ -1480,7 +1382,6 @@ public sealed class CovenantErasureCoordinatorTests
             await harness.Store.GetAsync(OperationId));
 
         Assert.Equal(LongRunningOperationState.Running, unsettled.State);
-
     }
 
     [Theory]
@@ -1489,14 +1390,12 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_lost_pre_journal_terminal_write_does_not_trust_a_matching_reread(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         harness.DisclosureWriter.QuiesceFails = true;
 
         harness.Store.TryTransitionOverride = observed =>
         {
-
             harness.Store.GetOverride = current => current is null
                 ? null
                 : current with
@@ -1511,7 +1410,6 @@ public sealed class CovenantErasureCoordinatorTests
                 };
 
             return false;
-
         };
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -1526,7 +1424,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(
             LongRunningOperationState.Running,
             Assert.Single(harness.Store.Operations).State);
-
     }
 
     [Theory]
@@ -1535,7 +1432,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_quiesce_throw_or_cancellation_restores_the_old_writer_before_rollback(
         bool cancellation)
     {
-
         CoordinatorHarness harness = new();
 
         harness.DisclosureWriter.QuiesceException = cancellation
@@ -1552,13 +1448,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task An_inventory_failure_before_any_erasure_rolls_back_and_reopens()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Inventory.Fails = true;
@@ -1574,13 +1468,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task A_factory_catalog_refusal_restores_the_old_writer_before_rollback()
     {
-
         CoordinatorHarness harness = new(CovenantExclusiveOperation.HealthyCatalogFactoryErasure);
 
         harness.Inventory.Fails = true;
@@ -1593,7 +1485,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
 
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
-
     }
 
     [Theory]
@@ -1602,7 +1493,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_pre_effect_throw_or_cancellation_restores_the_old_writer_before_rollback(
         bool cancellation)
     {
-
         CoordinatorHarness harness = new();
 
         harness.Inventory.Exception = cancellation
@@ -1617,7 +1507,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, completion.Value.Disposition);
 
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
-
     }
 
     [Theory]
@@ -1626,7 +1515,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Cancellation_during_occupied_Grimoire_stage_one_reopens_both_gates_before_retiring_evidence(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         Assert.True(harness.Admission.TryAcquireWorkLease(
@@ -1637,7 +1525,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         try
         {
-
             Task<Result<CovenantErasureCompletion>> run = harness.RunAsync(
                 CovenantResetPhase.InventoryPrepared,
                 cancellation.Token);
@@ -1651,15 +1538,11 @@ public sealed class CovenantErasureCoordinatorTests
             Result<CovenantErasureCompletion> completion = await run.WaitAsync(BoundedWait);
 
             await AssertProvenClosingCancellationRollbackAsync(harness, completion);
-
         }
         finally
         {
-
             await occupied!.DisposeAsync();
-
         }
-
     }
 
     [Theory]
@@ -1668,7 +1551,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Cancellation_immediately_before_Grimoire_stage_two_reopens_both_gates_before_retiring_evidence(
         CovenantExclusiveOperation operation)
     {
-
         using CancellationTokenSource cancellation = new();
 
         CoordinatorHarness harness = new(
@@ -1680,7 +1562,6 @@ public sealed class CovenantErasureCoordinatorTests
             cancellation.Token).WaitAsync(BoundedWait);
 
         await AssertProvenClosingCancellationRollbackAsync(harness, completion);
-
     }
 
     [Theory]
@@ -1689,7 +1570,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Cancellation_before_Grimoire_stage_two_with_failed_writer_restore_retains_both_gates_and_evidence(
         CovenantExclusiveOperation operation)
     {
-
         using CancellationTokenSource cancellation = new();
 
         CoordinatorHarness harness = new(
@@ -1733,7 +1613,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(
             LongRunningOperationState.ReconciliationRequired,
             Assert.Single(harness.Store.Operations).State);
-
     }
 
     [Theory]
@@ -1742,7 +1621,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Proven_rollback_keeps_Grimoire_requests_and_work_refused_until_final_disposition(
         CovenantExclusiveOperation operation)
     {
-
         using CancellationTokenSource cancellation = new();
 
         TaskCompletionSource suffixReached =
@@ -1756,12 +1634,9 @@ public sealed class CovenantErasureCoordinatorTests
             beforeGrimoireStageTwo: cancellation.Cancel,
             terminalSuffixFaultSeam: async (boundary, token) =>
             {
-
                 if (boundary is not GrimoireOfflineTransitionTerminalSuffixBoundary.Retired)
                 {
-
                     return Result.Success();
-
                 }
 
                 _ = suffixReached.TrySetResult();
@@ -1769,7 +1644,6 @@ public sealed class CovenantErasureCoordinatorTests
                 await releaseSuffix.Task.WaitAsync(token);
 
                 return Result.Success();
-
             });
 
         Task<Result<CovenantErasureCompletion>> run = harness.RunAsync(
@@ -1790,16 +1664,12 @@ public sealed class CovenantErasureCoordinatorTests
 
         if (request is not null)
         {
-
             await request.DisposeAsync();
-
         }
 
         if (work is not null)
         {
-
             await work.DisposeAsync();
-
         }
 
         bool exactOwnerRetained = !requestAdmitted
@@ -1837,7 +1707,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(await harness.AdmissionIsOpenAsync());
 
         Assert.True(await harness.GrimoireAdmissionIsOpenAsync());
-
     }
 
     [Theory]
@@ -1846,7 +1715,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_pending_Grimoire_owner_survives_a_terminal_rollback_suffix_failure(
         CovenantExclusiveOperation operation)
     {
-
         using CancellationTokenSource cancellation = new();
 
         CoordinatorHarness harness = new(
@@ -1879,7 +1747,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(harness.ExactGrimoireClosingOwnerIsRetained());
 
         Assert.Equal(0, harness.GrimoireBoundaries.AbortClosingCalls);
-
     }
 
     [Theory]
@@ -1899,7 +1766,6 @@ public sealed class CovenantErasureCoordinatorTests
         CovenantExclusiveOperation operation,
         GrimoireClosureSetupFailure setupFailure)
     {
-
         CoordinatorHarness harness = new(
             operation,
             grimoireClosureSetupFailure: setupFailure);
@@ -1943,7 +1809,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(1, closed.DisposeCalls);
 
         Assert.Equal(LongRunningOperationState.Running, Assert.Single(harness.Store.Operations).State);
-
     }
 
     [Theory]
@@ -1952,7 +1817,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_returned_Grimoire_stage_one_timeout_reopens_only_after_proven_rollback(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(
             operation,
             grimoireDrainTimeout: TimeSpan.FromMilliseconds(100));
@@ -1963,20 +1827,15 @@ public sealed class CovenantErasureCoordinatorTests
 
         try
         {
-
             Result<CovenantErasureCompletion> completion = await harness.RunAsync(
                 CovenantResetPhase.InventoryPrepared).WaitAsync(BoundedWait);
 
             await AssertProvenClosingCancellationRollbackAsync(harness, completion);
-
         }
         finally
         {
-
             await occupied!.DisposeAsync();
-
         }
-
     }
 
     [Theory]
@@ -1985,7 +1844,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task An_exception_before_Grimoire_stage_two_reopens_only_after_proven_rollback(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(
             operation,
             beforeGrimoireStageTwo: static () =>
@@ -1995,7 +1853,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantResetPhase.InventoryPrepared).WaitAsync(BoundedWait);
 
         await AssertProvenClosingCancellationRollbackAsync(harness, completion);
-
     }
 
     [Theory]
@@ -2004,18 +1861,15 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Cancellation_after_Grimoire_stage_two_commit_keeps_both_gates_closed_with_active_evidence(
         CovenantExclusiveOperation operation)
     {
-
         using CancellationTokenSource cancellation = new();
 
         CoordinatorHarness harness = new(
             operation,
             afterGrimoireStageTwoDrain: _ =>
             {
-
                 cancellation.Cancel();
 
                 return ValueTask.CompletedTask;
-
             });
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -2049,7 +1903,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(harness.ExactGrimoireClosingOwnerIsRetained());
 
         Assert.Equal(LongRunningOperationState.Running, Assert.Single(harness.Store.Operations).State);
-
     }
 
     [Theory]
@@ -2058,7 +1911,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_Grimoire_stage_two_drain_refusal_keeps_both_gates_closed_with_active_evidence(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation, drain: new RefusingStageTwoDrain());
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -2091,14 +1943,12 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(harness.ExactGrimoireClosingOwnerIsRetained());
 
         Assert.Equal(LongRunningOperationState.Running, Assert.Single(harness.Store.Operations).State);
-
     }
 
     private static async Task AssertProvenClosingCancellationRollbackAsync(
         CoordinatorHarness harness,
         Result<CovenantErasureCompletion> completion)
     {
-
         Assert.True(
             completion.IsSuccess,
             completion.IsFailure ? completion.Error.Code + ": " + completion.Error.Message : null);
@@ -2126,7 +1976,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.True(await harness.AdmissionIsOpenAsync());
 
         Assert.True(await harness.GrimoireAdmissionIsOpenAsync());
-
     }
 
     [Theory]
@@ -2136,22 +1985,17 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task A_database_replay_read_failure_after_its_phase_began_parks_with_its_journal(
         int failureKind)
     {
-
         CoordinatorHarness harness = new();
 
         if (failureKind == 0)
         {
-
             harness.Inventory.DatabaseBatchFails = true;
-
         }
         else
         {
-
             harness.Inventory.DatabaseBatchException = failureKind == 1
                 ? new InvalidOperationException("private page detail")
                 : new OperationCanceledException();
-
         }
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -2174,7 +2018,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     [Theory]
@@ -2183,7 +2026,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task Malformed_nonempty_managed_evidence_in_real_inventory_restores_then_rolls_back_before_any_kernel(
         bool corruptDurableLocation)
     {
-
         await using CovenantErasureInventorySourceTests.InventoryFixture fixture =
             await CovenantErasureInventorySourceTests.InventoryFixture.CreateAsync(healthyCatalog: false);
 
@@ -2216,13 +2058,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.DoesNotContain("apply-canonical", harness.Steps);
 
         Assert.Equal(["quiesce-writer", "reopen-writer"], harness.Steps);
-
     }
 
     [Fact]
     public async Task A_failed_old_writer_restoration_selects_one_keep_closed_disposition()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Inventory.Fails = true;
@@ -2245,13 +2085,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.False(await harness.GrimoireAdmissionIsOpenAsync());
 
         Assert.True(File.Exists(harness.Phases.JournalPath));
-
     }
 
     [Fact]
     public async Task A_lease_that_cannot_drain_calls_no_kernel_and_changes_nothing()
     {
-
         CoordinatorHarness harness = new(drainTimeout: TimeSpan.FromMilliseconds(150));
 
         // A live installation read lease that never releases is exactly what a reset has to wait for,
@@ -2261,7 +2099,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         try
         {
-
             Result<CovenantErasureCompletion> completion =
                 await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
 
@@ -2272,21 +2109,16 @@ public sealed class CovenantErasureCoordinatorTests
             Assert.Equal(0, harness.ManagedFiles.Calls);
 
             Assert.Empty(harness.Steps);
-
         }
         finally
         {
-
             await reader.DisposeAsync();
-
         }
-
     }
 
     [Fact]
     public async Task An_empty_lease_dataset_is_refused_before_inventory()
     {
-
         CoordinatorHarness harness = new(emptyLeaseDataset: true);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -2299,13 +2131,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Null(harness.Inventory.ObservedDatasetGeneration);
 
         Assert.Empty(harness.Steps);
-
     }
 
     [Fact]
     public async Task The_disposition_runs_on_its_own_lifecycle_token_after_the_caller_token_is_cancelled()
     {
-
         CoordinatorHarness harness = new();
 
         using CancellationTokenSource caller = new();
@@ -2316,14 +2146,10 @@ public sealed class CovenantErasureCoordinatorTests
         // owns.
         harness.Transition.OnStep = step =>
         {
-
             if (string.Equals(step, "verify-reopen", StringComparison.Ordinal))
             {
-
                 caller.Cancel();
-
             }
-
         };
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -2335,13 +2161,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, completion.Value.Disposition);
 
         Assert.True(await harness.AdmissionIsOpenAsync());
-
     }
 
     [Fact]
     public async Task The_three_status_facts_are_reported_independently()
     {
-
         CoordinatorHarness canonicalOnly = new();
 
         canonicalOnly.Transition.FailingStep = "compact";
@@ -2372,7 +2196,6 @@ public sealed class CovenantErasureCoordinatorTests
         // two. A completed erasure with no receipt-backed disclosure reports false while both local
         // facts are true.
         Assert.False(finished.Value.ExternalDisclosuresNotRevocable);
-
     }
 
     [Theory]
@@ -2387,14 +2210,11 @@ public sealed class CovenantErasureCoordinatorTests
         int managedBatchCalls,
         int exposureCalls)
     {
-
         CoordinatorHarness harness = new();
 
         if (resumeFrom != CovenantResetPhase.InventoryPrepared)
         {
-
             await harness.CloseAndAdoptAsync();
-
         }
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(resumeFrom);
@@ -2410,13 +2230,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(managedBatchCalls, harness.Inventory.ManagedBatchCalls);
 
         Assert.Equal(exposureCalls, harness.Inventory.ExposureCalls);
-
     }
 
     [Fact]
     public async Task Resumed_completion_rereads_and_preserves_the_exact_disclosure_exposure()
     {
-
         CoordinatorHarness harness = new();
 
         harness.Inventory.Exposure = new CovenantDisclosureExposure(
@@ -2439,13 +2257,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(1, harness.Inventory.ExposureCalls);
 
         Assert.Equal(0, harness.Inventory.RemainingManagedPreflightCalls);
-
     }
 
     [Fact]
     public async Task A_checkpoint_whose_owner_disagrees_with_the_operation_row_refuses()
     {
-
         CoordinatorHarness harness = new();
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(
@@ -2459,7 +2275,6 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(0, harness.Gate.AcquireCount);
 
         Assert.Equal(0, harness.Gate.ResumeCount);
-
     }
 
     [Theory]
@@ -2470,7 +2285,6 @@ public sealed class CovenantErasureCoordinatorTests
     public async Task An_operation_outside_the_two_erasure_kinds_never_reaches_the_gate(
         CovenantExclusiveOperation operation)
     {
-
         CoordinatorHarness harness = new(operation);
 
         Result<CovenantErasureCompletion> completion = await harness.RunAsync(CovenantResetPhase.InventoryPrepared);
@@ -2483,13 +2297,11 @@ public sealed class CovenantErasureCoordinatorTests
         Assert.Equal(0, harness.Gate.AcquireCount);
 
         Assert.Equal(0, harness.Gate.ResumeCount);
-
     }
 
     [Fact]
     public void The_coordinator_holds_no_managed_file_capability_opener_or_ownership_verifier()
     {
-
         ConstructorInfo constructor = Assert.Single(typeof(CovenantErasureCoordinator).GetConstructors(
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic));
 
@@ -2512,14 +2324,12 @@ public sealed class CovenantErasureCoordinatorTests
             fields,
             static field =>
                 field.FieldType.Name is "IManagedFileCapabilityOpener" or "IManagedFileOwnershipVerifier");
-
     }
 
     private sealed class RefusingLedgerPermit(
         Error refusal,
         bool refuseAfterAcquisition) : IGrimoireScopedConnectionPermit
     {
-
         internal RefusingLedgerHandle Handle { get; } = new(refusal);
 
         public Result<IGrimoireTrackedMaintenanceHandle> AcquireOpen(
@@ -2532,58 +2342,47 @@ public sealed class CovenantErasureCoordinatorTests
                 : Result<IGrimoireTrackedMaintenanceHandle>.Failure(refusal);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class RefusingLedgerHandle(Error refusal) : IGrimoireTrackedMaintenanceHandle
     {
-
         internal int OpenStartedCalls { get; private set; }
 
         internal int NotOpenedCalls { get; private set; }
 
         public Result ReportOpenStarted()
         {
-
             OpenStartedCalls++;
 
             return Result.Failure(refusal);
-
         }
 
         public Result ReportNotOpened()
         {
-
             NotOpenedCalls++;
 
             return Result.Success();
-
         }
 
         public Result ReportPhysicallyClosed() => Result.Success();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     public enum LedgerCleanupFailure
     {
-
         None,
 
         ExactPoolClear,
 
         PhysicalCloseReport,
-
     }
 
     public enum LedgerWorkControlFlow
     {
-
         LeaseLost,
 
         Cancellation,
-
     }
 
     private sealed class ThrowingDataCancellation : OperationCanceledException
@@ -2605,7 +2404,6 @@ public sealed class CovenantErasureCoordinatorTests
         LedgerCleanupFailure cleanupFailure,
         List<string> steps) : IGrimoireScopedConnectionPermit
     {
-
         internal CleanupRefusingLedgerHandle Handle { get; } = new(cleanupFailure, steps);
 
         public Result<IGrimoireTrackedMaintenanceHandle> AcquireOpen(
@@ -2616,14 +2414,12 @@ public sealed class CovenantErasureCoordinatorTests
             Result<IGrimoireTrackedMaintenanceHandle>.Success(Handle);
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class CleanupRefusingLedgerHandle(
         LedgerCleanupFailure cleanupFailure,
         List<string> steps) : IGrimoireTrackedMaintenanceHandle
     {
-
         internal int PhysicalCloseReportCalls { get; private set; }
 
         internal int DisposalCalls { get; private set; }
@@ -2634,7 +2430,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         public Result ReportPhysicallyClosed()
         {
-
             PhysicalCloseReportCalls++;
 
             steps.Add("report-physical-close");
@@ -2642,20 +2437,16 @@ public sealed class CovenantErasureCoordinatorTests
             return cleanupFailure is LedgerCleanupFailure.PhysicalCloseReport
                 ? Result.Failure(CleanupFailure())
                 : Result.Success();
-
         }
 
         public ValueTask DisposeAsync()
         {
-
             DisposalCalls++;
 
             steps.Add("dispose-handle");
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class CleanupRefusingLedgerDrain(
@@ -2663,7 +2454,6 @@ public sealed class CovenantErasureCoordinatorTests
         List<string>? steps = null,
         int failOnClearCall = 1) : ICovenantConnectionDrain
     {
-
         private readonly CovenantConnectionDrain _inner = new();
 
         internal int ClearCalls { get; private set; }
@@ -2676,7 +2466,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection)
         {
-
             ClearCalls++;
 
             steps?.Add("clear-pool");
@@ -2685,17 +2474,14 @@ public sealed class CovenantErasureCoordinatorTests
                 && (failOnClearCall == 0 || ClearCalls == failOnClearCall)
                 ? Result.Failure(CleanupFailure())
                 : _inner.ClearExactPoolAfterClose(connection);
-
         }
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
             _inner.DrainAsync(cancellationToken);
-
     }
 
     private sealed class RefusingStageTwoDrain : ICovenantConnectionDrain
     {
-
         private readonly CovenantConnectionDrain _inner = new();
 
         public IDisposable Register(SqliteConnection connection) => _inner.Register(connection);
@@ -2713,18 +2499,15 @@ public sealed class CovenantErasureCoordinatorTests
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
                         "The injected stage-two drain was refused.")));
-
     }
 
     public enum GrimoireClosureSetupFailure : byte
     {
-
         None = 0,
 
         Lane = 1,
 
         Permit = 2,
-
     }
 
     private static Error CleanupFailure() =>
@@ -2741,7 +2524,6 @@ public sealed class CovenantErasureCoordinatorTests
     private sealed class LedgerClosedLease(CovenantExclusiveRecoveryOwner owner)
         : IGrimoireExclusiveClosedLease
     {
-
         public CovenantExclusiveRecoveryOwner Owner => owner;
 
         public long Generation => 1;
@@ -2766,13 +2548,11 @@ public sealed class CovenantErasureCoordinatorTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class LedgerLane(CovenantExclusiveRecoveryOwner owner)
         : IGrimoireMaintenanceIoLane
     {
-
         public CovenantExclusiveRecoveryOwner Owner => owner;
 
         public long Generation => 1;
@@ -2783,25 +2563,20 @@ public sealed class CovenantErasureCoordinatorTests
             CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class CloseFailingSqliteConnection(List<string> steps) : SqliteConnection
     {
-
         internal int CloseCalls { get; private set; }
 
         public override Task CloseAsync()
         {
-
             CloseCalls++;
 
             steps.Add("close-failed");
 
             return Task.FromException(new IOException("The ledger close failed."));
-
         }
-
     }
 
     private sealed class RecordingClosedPeriodLedger(
@@ -2809,7 +2584,6 @@ public sealed class CovenantErasureCoordinatorTests
         SqliteConnection? connection = null)
         : ICovenantClosedPeriodLedgerConnection
     {
-
         private readonly SqliteConnection _connection =
             connection ?? new SqliteConnection("Data Source=:memory:");
 
@@ -2819,15 +2593,12 @@ public sealed class CovenantErasureCoordinatorTests
 
         public Task OpenAsync(CancellationToken cancellationToken)
         {
-
             Opens++;
 
             steps?.Add("open");
 
             return Task.CompletedTask;
-
         }
-
     }
 
     /// <summary>
@@ -2839,7 +2610,6 @@ public sealed class CovenantErasureCoordinatorTests
         Action? beforeStageTwo,
         GrimoireClosureSetupFailure closureSetupFailure) : IGrimoireConnectionAdmissionGate
     {
-
         private readonly TaskCompletionSource _stageOneEntered =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -2854,6 +2624,8 @@ public sealed class CovenantErasureCoordinatorTests
         internal int AbortClosingCalls { get; private set; }
 
         public long CurrentGeneration => inner.CurrentGeneration;
+
+        public bool AttestDrainedMaintenance(IGrimoireWorkLease lease, long previousGeneration, long currentGeneration) => false;
 
         public bool TryAcquireRequestLease(
             GrimoireRequestKind kind,
@@ -2871,7 +2643,6 @@ public sealed class CovenantErasureCoordinatorTests
             IGrimoireRequestLease? initiatingRequest = null,
             DbConnection? scopedConnection = null)
         {
-
             Result<IGrimoireClosingOwner> acquired = inner.BeginOrResumeExclusive(
                 owner,
                 initiatingRequest,
@@ -2879,31 +2650,25 @@ public sealed class CovenantErasureCoordinatorTests
 
             if (acquired.IsSuccess)
             {
-
                 ObservedClosingOwner = acquired.Value;
-
             }
 
             return acquired;
-
         }
 
         public ValueTask<Result> DrainRequestAndWorkAsync(
             IGrimoireClosingOwner closingOwner,
             CancellationToken cancellationToken)
         {
-
             _ = _stageOneEntered.TrySetResult();
 
             return inner.DrainRequestAndWorkAsync(closingOwner, cancellationToken);
-
         }
 
         public async ValueTask<Result<IGrimoireExclusiveClosedLease>> CloseConnectionAdmissionAsync(
             IGrimoireClosingOwner closingOwner,
             CancellationToken cancellationToken)
         {
-
             Interlocked.Exchange(ref _beforeStageTwo, null)?.Invoke();
 
             Result<IGrimoireExclusiveClosedLease> closed = await inner
@@ -2911,9 +2676,7 @@ public sealed class CovenantErasureCoordinatorTests
 
             if (closed.IsFailure || closureSetupFailure is GrimoireClosureSetupFailure.None)
             {
-
                 return closed;
-
             }
 
             InjectedClosedLease = new RefusingClosureSetupClosedLease(
@@ -2921,7 +2684,6 @@ public sealed class CovenantErasureCoordinatorTests
                 closureSetupFailure);
 
             return Result<IGrimoireExclusiveClosedLease>.Success(InjectedClosedLease);
-
         }
 
         public ValueTask<Result> AbortClosingAsync(
@@ -2929,14 +2691,12 @@ public sealed class CovenantErasureCoordinatorTests
             Func<CancellationToken, ValueTask<bool>> proveNoDestructiveEffectAsync,
             CancellationToken cancellationToken)
         {
-
             AbortClosingCalls++;
 
             return inner.AbortClosingAsync(
                 closingOwner,
                 proveNoDestructiveEffectAsync,
                 cancellationToken);
-
         }
 
         public Task<long> WaitForNextOpenGenerationAsync(
@@ -2954,14 +2714,12 @@ public sealed class CovenantErasureCoordinatorTests
                 candidateOwner,
                 revalidateDurableOwnerAsync,
                 cancellationToken);
-
     }
 
     private sealed class RefusingClosureSetupClosedLease(
         IGrimoireExclusiveClosedLease inner,
         GrimoireClosureSetupFailure failure) : IGrimoireExclusiveClosedLease
     {
-
         internal int CompleteCalls { get; private set; }
 
         internal CovenantExclusiveLeaseDisposition? LastDisposition { get; private set; }
@@ -3007,29 +2765,23 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantExclusiveLeaseDisposition disposition,
             CancellationToken cancellationToken)
         {
-
             CompleteCalls++;
 
             LastDisposition = disposition;
 
             return inner.CompleteAsync(disposition, cancellationToken);
-
         }
 
         public ValueTask DisposeAsync()
         {
-
             DisposeCalls++;
 
             return inner.DisposeAsync();
-
         }
-
     }
 
     private sealed class CoordinatorHarness
     {
-
         /// <summary>
         /// The maintenance factory the coordinator hands to its closed-period authority.
         /// </summary>
@@ -3169,7 +2921,6 @@ public sealed class CovenantErasureCoordinatorTests
             GrimoireClosureSetupFailure grimoireClosureSetupFailure =
                 GrimoireClosureSetupFailure.None)
         {
-
             _operation = operation;
 
             _faultSeam = faultSeam;
@@ -3217,7 +2968,6 @@ public sealed class CovenantErasureCoordinatorTests
 
             if (datasetGeneration is { } generation)
             {
-
                 availability = new FakeCovenantAvailability();
 
                 availability.Mutate(
@@ -3226,7 +2976,6 @@ public sealed class CovenantErasureCoordinatorTests
                         DatasetGeneration = generation,
                         AppliedDatasetGeneration = generation,
                     });
-
             }
 
             Gate = new RecordingGate(
@@ -3247,7 +2996,6 @@ public sealed class CovenantErasureCoordinatorTests
             Inventory = new StubInventorySource();
 
             _inventory = inventory ?? Inventory;
-
         }
 
         /// <summary>
@@ -3256,67 +3004,53 @@ public sealed class CovenantErasureCoordinatorTests
         /// </summary>
         internal async Task<bool> AdmissionIsOpenAsync()
         {
-
             Result<CovenantInstallationReadLease> read =
                 await Gate.Inner.AcquireInstallationReadAsync(Token);
 
             if (read.IsFailure)
             {
-
                 return false;
-
             }
 
             await read.Value.DisposeAsync();
 
             return true;
-
         }
 
         internal async Task<bool> GrimoireAdmissionIsOpenAsync()
         {
-
             bool admitted = Admission.TryAcquireWorkLease(
                 GrimoireWorkKind.LongRunningOperationRecovery,
                 out IGrimoireWorkLease? lease);
 
             if (lease is not null)
             {
-
                 await lease.DisposeAsync();
-
             }
 
             return admitted;
-
         }
 
         internal bool ExactGrimoireClosingOwnerIsRetained()
         {
-
             Result<IGrimoireClosingOwner> resumed = Admission.BeginOrResumeExclusive(Owner);
 
             return resumed.IsSuccess
                 && ReferenceEquals(resumed.Value, GrimoireBoundaries.ObservedClosingOwner);
-
         }
 
         internal async Task<bool> GrimoireClosingCanResumeAsync()
         {
-
             Result<IGrimoireClosingOwner> resumed = Admission.BeginOrResumeExclusive(Owner);
 
             if (resumed.IsFailure)
             {
-
                 return false;
-
             }
 
             await resumed.Value.DisposeAsync();
 
             return true;
-
         }
 
         /// <summary>
@@ -3325,13 +3059,11 @@ public sealed class CovenantErasureCoordinatorTests
         /// </summary>
         internal async Task CloseAndAdoptAsync()
         {
-
             CovenantExclusiveLease lease = (await Gate.Inner.AcquireExclusiveAsync(Owner, Token)).Value;
 
             _ = await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.KeepClosed, Token);
 
             await lease.DisposeAsync();
-
         }
 
         /// <summary>The candidate leaf this harness's operation owns, as the coordinator derives it.</summary>
@@ -3379,7 +3111,6 @@ public sealed class CovenantErasureCoordinatorTests
             CancellationToken? cancellationToken = null,
             Guid? checkpointOperationId = null)
         {
-
             LongRunningOperation operation = Operation();
 
             Store.Add(operation);
@@ -3431,14 +3162,12 @@ public sealed class CovenantErasureCoordinatorTests
 
             if (_operation == CovenantExclusiveOperation.HealthyCatalogFactoryErasure)
             {
-
                 return await coordinator.RunAsync(
                     operation,
                     checkpoint,
                     "owner",
                     RunFactoryContinuationAsync,
                     cancellationToken ?? Token);
-
             }
 
             return await coordinator.RunAsync(
@@ -3446,13 +3175,11 @@ public sealed class CovenantErasureCoordinatorTests
                 checkpoint,
                 "owner",
                 cancellationToken ?? Token);
-
         }
 
         internal async Task<Result<CovenantErasureCompletion>> RunWithoutFactoryContinuationAsync(
             CovenantResetPhase phase)
         {
-
             LongRunningOperation operation = Operation();
 
             Store.Add(operation);
@@ -3491,12 +3218,10 @@ public sealed class CovenantErasureCoordinatorTests
                     PreselectedDataset),
                 "owner",
                 Token);
-
         }
 
         private Task<Result> RunFactoryContinuationAsync(CancellationToken cancellationToken)
         {
-
             _ = cancellationToken;
 
             FactoryContinuationCalls++;
@@ -3507,7 +3232,6 @@ public sealed class CovenantErasureCoordinatorTests
                 FactoryContinuationFailure is { } failure
                     ? Result.Failure(failure)
                     : Result.Success());
-
         }
 
         private CovenantExclusiveRecoveryOwner Owner =>
@@ -3527,7 +3251,6 @@ public sealed class CovenantErasureCoordinatorTests
         /// </remarks>
         private LongRunningOperation Operation()
         {
-
             string effectDigest = CovenantRecoveryCheckpointCodec.EncodeEffectDigest(
                 CovenantOperationGateFixture.Digest(7));
 
@@ -3593,9 +3316,7 @@ public sealed class CovenantErasureCoordinatorTests
                 "Erasing the Covenant.",
                 null,
                 1);
-
         }
-
     }
 
     /// <summary>
@@ -3610,7 +3331,6 @@ public sealed class CovenantErasureCoordinatorTests
         DispositionFailureMode dispositionFailure,
         bool emptyLeaseDataset) : ICovenantOperationGate
     {
-
         private int _dispositionAttempts;
 
         private int _disposalCount;
@@ -3641,33 +3361,27 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken)
         {
-
             AcquireCount++;
 
             return Observe(await Inner.AcquireExclusiveAsync(owner, cancellationToken));
-
         }
 
         public async ValueTask<Result<CovenantExclusiveLease>> ResumeOrAcquireExclusiveAsync(
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken)
         {
-
             ResumeOrAcquireCount++;
 
             return Observe(await Inner.ResumeOrAcquireExclusiveAsync(owner, cancellationToken));
-
         }
 
         public async ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken)
         {
-
             ResumeCount++;
 
             return Observe(await Inner.ResumeExclusiveAsync(owner, cancellationToken));
-
         }
 
         /// <summary>
@@ -3682,7 +3396,6 @@ public sealed class CovenantErasureCoordinatorTests
 
         private Result Record(CovenantExclusiveLeaseDisposition disposition)
         {
-
             _ = Interlocked.Increment(ref _dispositionAttempts);
 
             LastDisposition = disposition;
@@ -3691,9 +3404,7 @@ public sealed class CovenantErasureCoordinatorTests
 
             if (disposition == CovenantExclusiveLeaseDisposition.KeepClosed)
             {
-
                 KeepClosedAttempts++;
-
             }
 
             return _dispositionFailure == DispositionFailureMode.ReturnedFailure
@@ -3702,13 +3413,11 @@ public sealed class CovenantErasureCoordinatorTests
                         ErrorCodes.Covenant.MaintenanceFailed,
                         "The gate could not record this reopening decision."))
                 : Result.Success();
-
         }
 
         private sealed class ObservingRegistration(RecordingGate gate, CovenantExclusiveLease real)
             : ICovenantExclusiveLeaseRegistration
         {
-
             public CovenantOperationLeaseSnapshot Snapshot => gate._emptyLeaseDataset
                 ? real.Snapshot with { DatasetGeneration = Guid.Empty }
                 : real.Snapshot;
@@ -3722,34 +3431,27 @@ public sealed class CovenantErasureCoordinatorTests
 
             public async ValueTask ReleaseAsync()
             {
-
                 _ = Interlocked.Increment(ref gate._disposalCount);
 
                 await real.DisposeAsync();
-
             }
 
             public async ValueTask<Result> CompleteAsync(
                 CovenantExclusiveLeaseDisposition disposition,
                 CancellationToken cancellationToken)
             {
-
                 if (gate._dispositionFailure == DispositionFailureMode.Cancelled)
                 {
-
                     _ = gate.Record(disposition);
 
                     throw new OperationCanceledException(cancellationToken);
-
                 }
 
                 if (gate._dispositionFailure == DispositionFailureMode.Thrown)
                 {
-
                     _ = gate.Record(disposition);
 
                     throw new InvalidOperationException("private gate detail");
-
                 }
 
                 Result recorded = gate.Record(disposition);
@@ -3759,9 +3461,7 @@ public sealed class CovenantErasureCoordinatorTests
                 return recorded.IsFailure
                     ? recorded
                     : await real.CompleteAsync(disposition, cancellationToken);
-
             }
-
         }
 
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
@@ -3820,12 +3520,10 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantExclusiveRecoveryOwner owner,
             CancellationToken cancellationToken) =>
             Inner.ResumeProtectedTransferAsync(scope, owner, cancellationToken);
-
     }
 
     private sealed class RecordingErasureTransition(List<string> steps) : ICovenantErasureTransition
     {
-
         internal string? FailingStep { get; set; }
 
         internal Action<string>? OnStep { get; set; }
@@ -3848,13 +3546,11 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             Result stepped = await Step("apply-canonical").ConfigureAwait(false);
 
             return stepped.IsFailure
                 ? Result<Guid>.Failure(stepped.Error)
                 : Result<Guid>.Success(CandidateGeneration);
-
         }
 
         public Task<Result> CloseHandlesAsync(
@@ -3865,13 +3561,11 @@ public sealed class CovenantErasureCoordinatorTests
 
         public async Task<Result<bool>> CompactAsync(CovenantClosedPeriodAuthority authority, CancellationToken cancellationToken)
         {
-
             Result stepped = await Step("compact");
 
             return stepped.IsFailure
                 ? Result<bool>.Failure(stepped.Error)
                 : Result<bool>.Success(ReplacementNeeded);
-
         }
 
         public Task<Result<CovenantDigest>> ReadCanonicalIdentityAsync(
@@ -3883,13 +3577,11 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             Result stepped = await Step("stage-candidate");
 
             return stepped.IsFailure
                 ? Result<CovenantDigest>.Failure(stepped.Error)
                 : Result<CovenantDigest>.Success(StagedIdentity);
-
         }
 
         public async Task<Result<CovenantDigest>> ProveStagedCandidateAsync(
@@ -3897,7 +3589,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantDigest stagingIdentity,
             CancellationToken cancellationToken)
         {
-
             ProvenIdentities.Add(stagingIdentity);
 
             Result stepped = await Step("prove-candidate");
@@ -3905,7 +3596,6 @@ public sealed class CovenantErasureCoordinatorTests
             return stepped.IsFailure
                 ? Result<CovenantDigest>.Failure(stepped.Error)
                 : Result<CovenantDigest>.Success(StagedContent);
-
         }
 
         public Task<Result> InstallCompactionReplacementAsync(
@@ -3915,11 +3605,9 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantDigest destinationIdentity,
             CancellationToken cancellationToken)
         {
-
             Installed.Add((stagingIdentity, stagedContent));
 
             return Step("install-replacement");
-
         }
 
         /// <summary>
@@ -3965,7 +3653,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             VerifyReopenCalls++;
 
             Result stepped = await Step("verify-reopen").ConfigureAwait(false);
@@ -3975,7 +3662,6 @@ public sealed class CovenantErasureCoordinatorTests
             return stepped.IsFailure
                 ? Result<CovenantVerifiedCandidateState>.Failure(stepped.Error)
                 : Result<CovenantVerifiedCandidateState>.Success(VerifiedCandidate);
-
         }
 
         public Task<Result> PublishCommittedAsync(
@@ -3983,7 +3669,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantVerifiedCandidateState candidate,
             CancellationToken cancellationToken)
         {
-
             PublishedCandidate = candidate;
 
             PublishedGeneration = candidate.Dataset.DatasetGeneration;
@@ -3991,12 +3676,10 @@ public sealed class CovenantErasureCoordinatorTests
             PublicationToken = cancellationToken;
 
             return Step("publish");
-
         }
 
         private Task<Result> Step(string name)
         {
-
             steps.Add(name);
 
             OnStep?.Invoke(name);
@@ -4005,7 +3688,6 @@ public sealed class CovenantErasureCoordinatorTests
                 string.Equals(FailingStep, name, StringComparison.Ordinal)
                     ? Result.Failure(new Error(ErrorCodes.Covenant.ErasureIncomplete, name))
                     : Result.Success());
-
         }
 
         private static CovenantVerifiedCandidateState CreateCandidate() =>
@@ -4036,12 +3718,10 @@ public sealed class CovenantErasureCoordinatorTests
                     AppliedCampaignSequence: 0,
                     AppliedSessionSequence: 0,
                     FullSweepRequired: false));
-
     }
 
     private sealed class RecordingDisclosureWriterLifecycle(List<string> steps) : ICovenantDisclosureWriterLifecycle
     {
-
         internal bool QuiesceFails { get; set; }
 
         internal Exception? QuiesceException { get; set; }
@@ -4052,14 +3732,11 @@ public sealed class CovenantErasureCoordinatorTests
 
         public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken)
         {
-
             steps.Add("quiesce-writer");
 
             if (QuiesceException is { } exception)
             {
-
                 throw exception;
-
             }
 
             return ValueTask.FromResult(
@@ -4067,12 +3744,10 @@ public sealed class CovenantErasureCoordinatorTests
                     ? Result.Failure(
                         new Error(ErrorCodes.Covenant.MaintenanceFailed, "The disclosure writer did not quiesce."))
                     : Result.Success());
-
         }
 
         public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken)
         {
-
             steps.Add("reopen-writer");
 
             ReopenToken = cancellationToken;
@@ -4082,14 +3757,11 @@ public sealed class CovenantErasureCoordinatorTests
                     ? Result.Failure(
                         new Error(ErrorCodes.Covenant.MaintenanceFailed, "The disclosure writer did not reopen."))
                     : Result.Success());
-
         }
-
     }
 
     private sealed class RecordingErasureKernel(List<string> steps) : ICovenantProtectedArtifactErasureKernel
     {
-
         internal int Calls { get; private set; }
 
         internal CovenantArtifactErasureAuthority? LastAuthority { get; private set; }
@@ -4101,7 +3773,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantArtifactErasureAuthority authority,
             CancellationToken cancellationToken = default)
         {
-
             Calls++;
 
             LastAuthority = authority;
@@ -4111,14 +3782,11 @@ public sealed class CovenantErasureCoordinatorTests
             return ValueTask.FromResult(
                 Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(1, 1, 0, Blocker)));
-
         }
-
     }
 
     private sealed class RecordingManagedFileKernel(List<string> steps) : ICovenantManagedFileErasureKernel
     {
-
         internal int Calls { get; private set; }
 
         internal CovenantArtifactErasureAuthority? LastAuthority { get; private set; }
@@ -4130,7 +3798,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantArtifactErasureAuthority authority,
             CancellationToken cancellationToken = default)
         {
-
             Calls++;
 
             LastAuthority = authority;
@@ -4140,14 +3807,11 @@ public sealed class CovenantErasureCoordinatorTests
             return ValueTask.FromResult(
                 Result<CovenantArtifactErasureProgress>.Success(
                     new CovenantArtifactErasureProgress(1, 1, 0, Blocker)));
-
         }
-
     }
 
     private sealed class StubInventorySource : ICovenantErasureInventorySource
     {
-
         internal bool Fails { get; set; }
 
         internal Exception? Exception { get; set; }
@@ -4179,16 +3843,13 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             FirstPreflightCalls++;
 
             ObservedDatasetGeneration = datasetGeneration;
 
             if (Exception is { } exception)
             {
-
                 throw exception;
-
             }
 
             return Task.FromResult(
@@ -4202,18 +3863,15 @@ public sealed class CovenantErasureCoordinatorTests
                             1,
                             1,
                             CurrentExposure())));
-
         }
 
         public Task<Result> PreflightRemainingManagedAsync(
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             RemainingManagedPreflightCalls++;
 
             return Task.FromResult(Result.Success());
-
         }
 
         public Task<Result<CovenantDatabaseErasureBatch>> ReadNextDatabaseBatchAsync(
@@ -4222,25 +3880,20 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             DatabaseBatchCalls++;
 
             if (DatabaseBatchException is { } exception)
             {
-
                 throw exception;
-
             }
 
             if (DatabaseBatchFails)
             {
-
                 return Task.FromResult(
                     Result<CovenantDatabaseErasureBatch>.Failure(
                         new Error(
                             ErrorCodes.Covenant.IntegrityFailure,
                             "The bounded database inventory page could not be read.")));
-
             }
 
             return Task.FromResult(
@@ -4251,7 +3904,6 @@ public sealed class CovenantErasureCoordinatorTests
                         new CovenantProtectedArtifactErasurePage(
                             datasetGeneration,
                             [CovenantErasureAuthorityFixture.Item(Guid.NewGuid(), Guid.NewGuid())]))));
-
         }
 
         public Task<Result<CovenantManagedFileErasureBatch>> ReadNextManagedFileBatchAsync(
@@ -4260,7 +3912,6 @@ public sealed class CovenantErasureCoordinatorTests
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             ManagedBatchCalls++;
 
             return Task.FromResult(
@@ -4277,18 +3928,15 @@ public sealed class CovenantErasureCoordinatorTests
                                 Guid.NewGuid(),
                                 1),
                         ])));
-
         }
 
         public Task<Result<CovenantDisclosureExposure>> ReadDisclosureExposureAsync(
             CovenantClosedPeriodAuthority authority,
             CancellationToken cancellationToken)
         {
-
             ExposureCalls++;
 
             return Task.FromResult(Result<CovenantDisclosureExposure>.Success(CurrentExposure()));
-
         }
 
         /// <summary>
@@ -4315,13 +3963,11 @@ public sealed class CovenantErasureCoordinatorTests
             ExternalDisclosuresNotRevocable
                 ? Exposure
                 : new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact);
-
     }
 
     private sealed class RecordingOperationCoordinator(FakeLongRunningOperationStore store)
         : ILongRunningOperationCoordinator
     {
-
         private readonly FakeLongRunningOperationStore _store = store;
 
         internal int CheckpointCalls { get; private set; }
@@ -4361,16 +4007,13 @@ public sealed class CovenantErasureCoordinatorTests
             string publicSummary,
             CancellationToken cancellationToken = default)
         {
-
             CheckpointCalls++;
 
             LastCheckpointToken = cancellationToken;
 
             if (HonorCancellation)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
-
             }
 
             return _store.SaveCheckpointAsync(
@@ -4383,7 +4026,6 @@ public sealed class CovenantErasureCoordinatorTests
                 publicSummary,
                 TimeProvider.System.GetUtcNow(),
                 cancellationToken);
-
         }
 
         public Task<bool> CompleteAsync(
@@ -4398,7 +4040,5 @@ public sealed class CovenantErasureCoordinatorTests
             long expectedRevision,
             string errorCode,
             CancellationToken cancellationToken = default) => Task.FromResult(true);
-
     }
-
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
@@ -9,6 +10,16 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public interface IModelCallExecutor
 {
+    Task<Result<LongRestProviderResult>> ExecuteLongRestChatAsync(IChatClient chatClient, LongRestProviderPayload payload,
+        ITurnBudget budget, Func<CancellationToken, Task> beforeSend, Func<LongRestProviderUsage, Task> recordPaidUsage,
+        LongRestProviderAdmission admission, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This executor does not support closed Long Rest chat calls.");
+
+    Task<Result<LongRestProviderResult>> ExecuteLongRestEmbeddingAsync(IEmbeddingGenerator<string, Embedding<float>> embeddingClient,
+        LongRestProviderPayload payload, ITurnBudget budget, Func<CancellationToken, Task> beforeSend,
+        Func<LongRestProviderUsage, Task> recordPaidUsage, LongRestProviderAdmission admission, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This executor does not support closed Long Rest embedding calls.");
+
     /// <summary>Fixed plaintext Campaign maintenance lane with the physical-send authority fence.</summary>
     Task<Result<CampaignMaintenanceCallResult>> ExecuteCampaignMaintenanceAsync(
         IChatClient chatClient,
@@ -45,5 +56,4 @@ public interface IModelCallExecutor
         ModelCallPurpose purpose,
         CancellationToken cancellationToken,
         ModelCallContext? context);
-
 }

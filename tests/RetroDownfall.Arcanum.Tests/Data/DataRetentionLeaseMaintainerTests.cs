@@ -4,6 +4,13 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class DataRetentionLeaseMaintainerTests
 {
+    /// <summary>
+    /// How long a wait that is only there to stop a hang may take. Each of these waits expects its task to
+    /// finish, so the bound decides nothing but how long a broken build hangs; a second was too short for a
+    /// loaded CI runner, where the heartbeat timer's first tick alone can arrive later than that.
+    /// </summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     [Fact]
 
     public async Task RunAsync_RenewsLeaseUntilSlowCandidateCompletes()
@@ -82,7 +89,7 @@ public sealed class DataRetentionLeaseMaintainerTests
             "The retention operation lost its durable lease while applying a candidate.",
             error.Message);
 
-        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cancellationObserved.Task.WaitAsync(HangGuard);
     }
 
     [Fact]
@@ -127,7 +134,7 @@ public sealed class DataRetentionLeaseMaintainerTests
 
         try
         {
-            await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            await callbackEntered.Task.WaitAsync(HangGuard);
 
             Task earlyWinner = await Task.WhenAny(
                 running,
@@ -141,7 +148,7 @@ public sealed class DataRetentionLeaseMaintainerTests
         }
 
         Exception? observed = await Record.ExceptionAsync(
-            async () => _ = await running.WaitAsync(TimeSpan.FromSeconds(1)));
+            async () => _ = await running.WaitAsync(HangGuard));
 
         Assert.False(completedBeforeActionRelease);
 
@@ -199,13 +206,13 @@ public sealed class DataRetentionLeaseMaintainerTests
             _ => terminalResult.Task,
             CancellationToken.None);
 
-        await renewalStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await renewalStarted.Task.WaitAsync(HangGuard);
 
         terminalResult.TrySetResult(42);
 
         allowRenewal.TrySetResult();
 
-        Assert.Equal(42, await running.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(42, await running.WaitAsync(HangGuard));
     }
 
     [Fact]
@@ -236,13 +243,13 @@ public sealed class DataRetentionLeaseMaintainerTests
             _ => actionCompletion.Task,
             CancellationToken.None);
 
-        await timeProvider.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await timeProvider.TimerCreated.Task.WaitAsync(HangGuard);
 
         Assert.True(actionCompletion.TrySetResult(42));
 
-        Assert.Equal(42, await running.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(42, await running.WaitAsync(HangGuard));
 
-        await timeProvider.TimerDisposed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await timeProvider.TimerDisposed.Task.WaitAsync(HangGuard);
 
         Assert.Equal(1, timeProvider.Disposals);
 
@@ -297,12 +304,12 @@ public sealed class DataRetentionLeaseMaintainerTests
             },
             CancellationToken.None);
 
-        await timeProvider.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await timeProvider.TimerCreated.Task.WaitAsync(HangGuard);
 
         timeProvider.FireLatest();
 
         Exception? observed = await Record.ExceptionAsync(
-            async () => _ = await running.WaitAsync(TimeSpan.FromSeconds(5)));
+            async () => _ = await running.WaitAsync(HangGuard));
 
         Assert.Same(renewalFailure, observed);
 

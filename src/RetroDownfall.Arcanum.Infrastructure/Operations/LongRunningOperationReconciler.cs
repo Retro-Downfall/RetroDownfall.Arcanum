@@ -601,6 +601,11 @@ public sealed class LongRunningOperationReconciler
             CancellationToken.None).ConfigureAwait(false)
             ?? leased;
 
+        if (latest.Kind == LongRunningOperationKinds.LongRestSweep && latest.State == LongRunningOperationState.Cancelling)
+        {
+            result = LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled");
+        }
+
         bool transitioned = await operationStore.TryTransitionAsync(
             leased.Id,
             latest.Revision,

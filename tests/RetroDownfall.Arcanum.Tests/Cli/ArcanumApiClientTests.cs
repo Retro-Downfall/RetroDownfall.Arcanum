@@ -1073,7 +1073,8 @@ public sealed class ArcanumApiClientTests
     }
 
     /// <summary>
-    /// A model turn, a tool execution, a diagnostic MCP tool call and an operations sweep all answer
+    /// A model turn, a tool execution, a diagnostic MCP tool call, an operations sweep and an operations
+    /// retry (which for a Long Rest sweep runs the same recovery pass before it answers) all answer
     /// only when their work is done, and none of that work has an Arcanum-owned duration. A call that
     /// took longer than the short-call deadline used to fail as <c>Connection.Timeout</c> (exit 3)
     /// while the host kept working on it. A session attachment upload is held back the same way: its
@@ -1122,6 +1123,9 @@ public sealed class ArcanumApiClientTests
                 nameof(ArcanumApiClient.ReconcileOperationsAsync),
                 async () => (await client.ReconcileOperationsAsync(CancellationToken.None)).Error),
             (
+                nameof(ArcanumApiClient.RetryOperationAsync),
+                async () => (await client.RetryOperationAsync(Guid.NewGuid(), CancellationToken.None)).Error),
+            (
                 nameof(ArcanumApiClient.UploadSessionAttachmentAsync),
                 async () => (await client.UploadSessionAttachmentAsync(
                     Guid.NewGuid(),
@@ -1146,30 +1150,6 @@ public sealed class ArcanumApiClientTests
         Assert.Empty(timedOut);
 
         Assert.Equal(calls.Length, handler.Requests.Count);
-    }
-
-    /// <summary>
-    /// The state flip behind <c>operations retry</c> only resets one row; it is a short call and
-    /// stays behind the deadline, so a hung host still fails it instead of wedging the command.
-    /// </summary>
-    [Fact]
-    public async Task Resetting_one_operation_for_retry_stays_bounded_by_the_headers_deadline()
-    {
-        TaskCompletionSource<HttpResponseMessage> never = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        RecordingHandler handler = new((_, cancellationToken) =>
-            never.Task.WaitAsync(cancellationToken));
-
-        ArcanumApiClient client = CreateClientWithHeadersDeadline(
-            handler,
-            TimeSpan.FromMilliseconds(100));
-
-        Result<LongRunningOperationDto> result = await client
-            .RetryOperationAsync(Guid.NewGuid(), CancellationToken.None)
-            .WaitAsync(TimeSpan.FromSeconds(10));
-
-        Assert.Equal(ErrorCodes.Connection.Timeout, result.Error.Code);
     }
 
     [Fact]

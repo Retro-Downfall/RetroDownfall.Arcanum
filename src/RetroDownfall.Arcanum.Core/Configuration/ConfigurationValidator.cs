@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Environment;
 using RetroDownfall.Arcanum.Core.Intelligence.WebResearch;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -993,7 +994,7 @@ public sealed class ConfigurationValidator(
 
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
 
-            IReadOnlyList<ModelEntry> models = provider.Models ?? [];
+            ModelEntry[] models = provider.Models ?? [];
 
             if (isFamiliar)
             {
@@ -1014,7 +1015,7 @@ public sealed class ConfigurationValidator(
 
                 // A Familiar's catalogue belongs to the vendor, not to arcanum.json — requiring a
                 // models array here would defeat the automatic availability the kind exists for.
-                if (models.Count == 0)
+                if (models.Length == 0)
                 {
                     errors.Add(new ConfigurationValidationError(
                         providerPointer,
@@ -1022,7 +1023,7 @@ public sealed class ConfigurationValidator(
                 }
             }
 
-            for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+            for (int modelIndex = 0; modelIndex < models.Length; modelIndex++)
             {
                 ModelEntry model = models[modelIndex];
 
@@ -1160,6 +1161,13 @@ public sealed class ConfigurationValidator(
         ValidateHttps(settings.Host ?? new HostSettings(), errors);
 
         ValidateEventBus(settings);
+
+        // A warning, never an error: Long Rest simply cannot run until its recipe resolves, and neither startup nor an ordinary turn is
+        // refused for it. A turn that must finish protected Long Rest maintenance first still ends (the detail says so).
+        foreach (ConfigurationValidationError warning in ValidateLongRest(settings))
+        {
+            logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
+        }
 
         ValidateEmbeddings(settings, errors);
 
@@ -1677,6 +1685,28 @@ public sealed class ConfigurationValidator(
                 pointer,
                 $"Pricing rate ({value}) must be between 0 and 1,000,000 USD per 1M tokens."));
         }
+    }
+
+    /// <summary>
+    /// Long Rest consolidation warning. When <c>Features:LongRest</c> is on but the recipe (the fast-or-default chat model and the
+    /// embedding model, each on a supported provider) cannot be resolved, the sweep cannot run. It returns the warning, naming
+    /// configuration keys and models only, and never refuses startup or validation. The predicates are
+    /// <see cref="LongRestRecipeResolver"/>'s, the same ones the runtime epoch resolves its recipe with.
+    /// </summary>
+    public IReadOnlyList<ConfigurationValidationError> ValidateLongRest(ArcanumSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (settings.Features?.LongRest is not true)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> problems = LongRestRecipeResolver.Problems(settings);
+
+        return problems.Count == 0
+            ? []
+            : [new ConfigurationValidationError("features.longRest", LongRestRecipeResolver.Describe(problems))];
     }
 
     private void ValidateEventBus(ArcanumSettings settings)

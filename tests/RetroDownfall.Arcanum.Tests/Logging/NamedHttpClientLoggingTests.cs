@@ -5,7 +5,6 @@ using RetroDownfall.Arcanum.Infrastructure.CommLink;
 using RetroDownfall.Arcanum.Infrastructure.DependencyInjection;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence.WebResearch;
-using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Resilience;
 
 namespace RetroDownfall.Arcanum.Tests.Logging;
@@ -15,11 +14,12 @@ namespace RetroDownfall.Arcanum.Tests.Logging;
 /// at Information, and .NET only redacts the query — scheme, authority, and path survive verbatim.
 /// Hosted MCP and A2A endpoints routinely carry their bearer token in a path segment, so every named
 /// client Arcanum registers must suppress that logging; otherwise the token lands in the rolling JSON
-/// log and in the ring buffer that backs <c>GET /api/logs</c>.
+/// log and in the ring buffer that backs <c>GET /api/logs</c>. The MCP Streamable HTTP transport is not a
+/// named client: it builds an owned client whose chain has no logging handler, pinned by
+/// <c>McpHttpResponseBoundHandlerTests</c>.
 /// </summary>
 public sealed class NamedHttpClientLoggingTests
 {
-
     public static TheoryData<string> NamedClients() =>
     [
         WebResearchConstants.PerplexityHttpClientName,
@@ -27,7 +27,6 @@ public sealed class NamedHttpClientLoggingTests
         WebhookCommLinkDispatcher.HttpClientName,
         ArcanumBrowseWebConstants.HttpClientName,
         A2AClientService.OutboundHttpClientName,
-        McpConnectionManager.McpHttpClientName,
         ProviderHealthProbe.HttpClientName,
     ];
 
@@ -35,7 +34,6 @@ public sealed class NamedHttpClientLoggingTests
     [MemberData(nameof(NamedClients))]
     public void Every_named_http_client_suppresses_default_uri_logging(string clientName)
     {
-
         ServiceCollection services = [];
 
         services.AddArcanumInfrastructure(new ConfigurationBuilder().Build());
@@ -51,13 +49,9 @@ public sealed class NamedHttpClientLoggingTests
             current is DelegatingHandler delegating;
             current = delegating.InnerHandler)
         {
-
             pipeline.Add(delegating.GetType().Name);
-
         }
 
         Assert.DoesNotContain(pipeline, static name => name.Contains("Logging", StringComparison.Ordinal));
-
     }
-
 }

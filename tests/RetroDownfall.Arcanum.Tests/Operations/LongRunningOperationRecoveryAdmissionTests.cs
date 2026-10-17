@@ -7,6 +7,8 @@ public sealed class LongRunningOperationRecoveryAdmissionTests
 {
     public static TheoryData<string, int, object> CompleteMatrix => new()
     {
+        { LongRunningOperationKinds.LongRestSweep, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
+        { LongRunningOperationKinds.LongRestSweep, 1, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.Subagent, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.BlobEncryptionMigration, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
         { LongRunningOperationKinds.BlobEncryptionMigration, 1, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },

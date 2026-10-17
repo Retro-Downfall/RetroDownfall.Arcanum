@@ -98,6 +98,41 @@ public sealed record CliFailure(
     string SafeMessage);
 
 /// <summary>
+/// What <c>arcanum data repair-installation-identity</c> found or did.
+/// </summary>
+/// <param name="Outcome">
+/// <c>absent</c> when the profile carries no such item, <c>damaged</c> for a dry run that found one it
+/// would put right, <c>removed</c> when it was removed, <c>restored</c> when it was replaced by the
+/// identity a closed anchor names, and <c>reseeded</c> when it was replaced by the identity the
+/// Grimoire's authority row carries.
+/// </param>
+/// <param name="DryRun">Whether the run was a preview.</param>
+/// <param name="Removed">Whether the item was removed.</param>
+/// <param name="Restored">Whether the item was replaced by the identity a closed anchor names.</param>
+/// <param name="Reseeded">
+/// Whether the item was replaced by the identity the Grimoire's authority row carries.
+/// </param>
+/// <param name="Action">
+/// How the item is, or was, put right: <c>reseed</c> when the Grimoire holds its authority row,
+/// otherwise <c>remove</c> when no anchor names an installation and <c>restore</c> when a closed anchor
+/// does, and <c>none</c> when there was nothing to put right.
+/// </param>
+/// <param name="CredentialService">The credential service the item is stored under.</param>
+/// <param name="CredentialAccount">
+/// The account the item is stored under: a fixed prefix and this profile root's namespace digest. The
+/// stored value is never reported.
+/// </param>
+public sealed record InstallationIdentityRepairPayload(
+    string Outcome,
+    bool DryRun,
+    bool Removed,
+    bool Restored,
+    bool Reseeded,
+    string Action,
+    string CredentialService,
+    string CredentialAccount);
+
+/// <summary>
 /// One Covenant entry as <c>arcanum memory covenant list</c> and <c>show</c> render it.
 /// </summary>
 /// <remarks>
@@ -967,6 +1002,8 @@ internal static class CliFailureMapper
 [JsonSerializable(typeof(InstallationResetPlan))]
 
 [JsonSerializable(typeof(InstallationResetResult))]
+
+[JsonSerializable(typeof(InstallationIdentityRepairPayload))]
 
 [JsonSerializable(typeof(FullInstallationResetExternalRemediationAttestation))]
 

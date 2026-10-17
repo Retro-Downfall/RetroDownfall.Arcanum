@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Opt-in, local-only real-model qualification for an already-published Native AOT apphost.
+# Opt-in real-model qualification for an already-published Native AOT apphost.
 
 set -euo pipefail
 
@@ -11,24 +11,28 @@ EXECUTABLE=""
 IMAGE=""
 MODEL="gemma4:e4b"
 ENDPOINT="http://127.0.0.1:11434/v1/"
+PERPLEXITY=0
+PERPLEXITY_KEY_VARIABLE="ARCANUM_PERPLEXITY_API_KEY"
 EXPECTED_IMAGE_SHA256="88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0"
 
 usage() {
   cat <<'EOF'
 Usage: verify-local-ollama-aot.sh --executable <published-apphost> --image <jpeg> [options]
 
-Local-only options:
+Local qualification options:
   --executable <path>    Existing Native AOT Arcanum apphost. This wrapper never publishes it.
   --image <path>         The qualified stop-sign JPEG (exact SHA-256 is checked).
-  --model <tag>          Installed Ollama vision model (default: gemma4:e4b).
+  --model <tag>          Installed Ollama vision model (tools required with --perplexity; default: gemma4:e4b).
   --endpoint <uri>       Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
+  --perplexity          Also require a live Perplexity search and parsed citation recall (paid network).
+  --perplexity-key-variable <name> Credential environment-variable name, never a key value.
   --configuration <name> Managed test-harness configuration (default: Release).
 
 The test creates and removes an isolated temporary Arcanum home. It never reads or writes the
 operator's Arcanum configuration, never starts or stops Ollama, and never publishes a product.
-It refuses GitHub Actions, proves three persisted turns, attachment v1/v2 replacement across an
-Arcanum host restart, latest-version selection, and the fixed JPEG vision fixture. It does not claim
-in-place transcript or memory editing.
+It refuses GitHub Actions and proves three persisted turns (four with --perplexity), attachment
+v1/v2 replacement across an Arcanum host restart, latest-version selection, and the fixed JPEG
+vision fixture. It does not claim in-place transcript or memory editing.
 EOF
 }
 
@@ -50,6 +54,14 @@ while [[ $# -gt 0 ]]; do
       ENDPOINT="${2:?--endpoint requires a URI}"
       shift 2
       ;;
+    --perplexity)
+      PERPLEXITY=1
+      shift
+      ;;
+    --perplexity-key-variable)
+      PERPLEXITY_KEY_VARIABLE="${2:?--perplexity-key-variable requires a variable name}"
+      shift 2
+      ;;
     --configuration)
       CONFIGURATION="${2:?--configuration requires a name}"
       shift 2
@@ -68,6 +80,16 @@ done
 
 if [[ "${GITHUB_ACTIONS:-}" =~ ^([Tt][Rr][Uu][Ee]|1)$ ]]; then
   echo "error: real-model qualification is local-only and cannot run in GitHub Actions" >&2
+  exit 2
+fi
+
+if [[ ! "$PERPLEXITY_KEY_VARIABLE" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+  echo "error: --perplexity-key-variable requires an environment variable name" >&2
+  exit 2
+fi
+
+if [[ "$PERPLEXITY" -eq 1 && ! "${!PERPLEXITY_KEY_VARIABLE:-}" =~ [^[:space:]] ]]; then
+  echo "error: enhanced qualification requires a nonblank credential environment variable" >&2
   exit 2
 fi
 
@@ -193,6 +215,10 @@ BUILD_LOG="$WORK/test-build.log"
 TEST_LOG="$WORK/test.log"
 QUALIFICATION_RECEIPT="$WORK/local-ollama-aot-qualification.receipt"
 EXPECTED_QUALIFICATION_RECEIPT="local-ollama-aot-qualification:v1"
+
+if [[ "$PERPLEXITY" -eq 1 ]]; then
+  EXPECTED_QUALIFICATION_RECEIPT="local-ollama-aot-perplexity-qualification:v1"
+fi
 QUALIFICATION_RECEIPT_FOR_TEST="$QUALIFICATION_RECEIPT"
 EXECUTABLE_FOR_TEST="$EXECUTABLE_PATH"
 IMAGE_FOR_TEST="$IMAGE_PATH"
@@ -221,7 +247,7 @@ reject_warnings() {
 }
 
 echo "==> Building the managed local-qualification harness without warnings"
-dotnet build "$TEST_PROJECT" \
+env -u "$PERPLEXITY_KEY_VARIABLE" dotnet build "$TEST_PROJECT" \
   -c "$CONFIGURATION" \
   --artifacts-path "$WORK/test-artifacts" \
   --disable-build-servers \
@@ -233,10 +259,12 @@ reject_warnings "$BUILD_LOG"
 rm -f "$QUALIFICATION_RECEIPT"
 
 echo "==> Running isolated Native AOT + Ollama qualification (cold turns may take up to 3 minutes)"
-# The one selected test spends up to two 3-minute host starts and three 3-minute cold model turns
+# The one selected test spends up to two 3-minute host starts and up to four 3-minute cold model turns
 # plus its own 45-second steps, so the suite-wide 15 minute hang bound would kill a slow but live
 # local model. Thirty minutes still names and kills a test host that has stopped making progress.
 ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION=1 \
+ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY="$PERPLEXITY" \
+ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE="$PERPLEXITY_KEY_VARIABLE" \
 ARCANUM_PUBLISHED_EXECUTABLE="$EXECUTABLE_FOR_TEST" \
 ARCANUM_OLLAMA_QUALIFICATION_IMAGE="$IMAGE_FOR_TEST" \
 ARCANUM_OLLAMA_QUALIFICATION_MODEL="$MODEL" \
@@ -277,3 +305,7 @@ if [[ "$actual_qualification_receipt" != "$EXPECTED_QUALIFICATION_RECEIPT" \
 fi
 
 echo "==> Native AOT first-session, durable correction, attachment history, restart, and vision are healthy"
+
+if [[ "$PERPLEXITY" -eq 1 ]]; then
+  echo "==> Live Perplexity search, parsed citation recall, and durable tool exchange are healthy"
+fi

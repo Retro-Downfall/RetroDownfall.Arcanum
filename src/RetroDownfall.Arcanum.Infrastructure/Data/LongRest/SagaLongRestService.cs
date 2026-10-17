@@ -36,71 +36,19 @@ internal sealed partial class SagaLongRestService(ArcanumDbContext db, TimeProvi
 
                 await using SqliteTransaction transaction = ((SqliteConnection)connection).BeginTransaction(deferred: false);
 
+                LongRestVerificationCounters.Transaction(deferred: false);
+
                 if (await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < 17)
                 {
                     return Refuse(ErrorCodes.LongRest.Unavailable, "The Long Rest schema is not ready.");
                 }
 
-                List<LoadedSnapshot> loaded = [];
-
-                foreach (LongRestTarget target in request.Targets)
-                {
-                    Result<LoadedSnapshot> snapshot = await ReadSnapshotAsync(connection, transaction, target, cancellationToken).ConfigureAwait(false);
-
-                    if (snapshot.IsFailure)
-                    {
-                        return Result<LongRestReceipt>.Failure(snapshot.Error);
-                    }
-
-                    loaded.Add(snapshot.Value);
-                }
-
-                LongRestSnapshot[] snapshots = loaded.Select(item => item.Snapshot).ToArray();
-
-                // A successor can add new incoming dependency edges to an old exact input.
-                // That changes today's context, but cannot invalidate the already applied decision.
-                Result<LongRestReceipt>? historical = await ReadHistoricalAppliedReceiptAsync(
-                    connection, transaction, request, snapshots, cancellationToken).ConfigureAwait(false);
-
-                if (historical is not null)
-                {
-                    return historical;
-                }
-
-                Result<string> identity = LongRestPolicy.Identify(request, snapshots);
-
-                if (identity.IsFailure)
-                {
-                    return Result<LongRestReceipt>.Failure(identity.Error);
-                }
-
-                // Replay is historical evidence, even after an input's head changes. No receipt,
-                // projection or memory write takes place on this path.
-                Result<LongRestReceipt>? replay = await ReadReceiptAsync(connection, transaction, identity.Value, cancellationToken).ConfigureAwait(false);
-
-                if (replay is not null)
-                {
-                    return replay;
-                }
-
-                foreach (LoadedSnapshot input in loaded)
-                {
-                    if (input.Content is { } content
-                        && !CryptographicOperations.FixedTimeEquals(
-                            AnnalContentDigest.ForSagaMemory(content), Convert.FromHexString(input.Snapshot.ContentHash)))
-                    {
-                        return Refuse(ErrorCodes.LongRest.StaleInput, "The stored content no longer matches its exact observed version.");
-                    }
-                }
-
-                Result<LongRestReceipt> decision = LongRestPolicy.Evaluate(request, snapshots);
+                Result<LongRestReceipt> decision = await ApplyInTransactionAsync((SqliteConnection)connection, transaction, request, null, cancellationToken).ConfigureAwait(false);
 
                 if (decision.IsFailure)
                 {
                     return decision;
                 }
-
-                await WriteReceiptAsync(connection, transaction, request, decision.Value, snapshots, cancellationToken).ConfigureAwait(false);
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
@@ -131,7 +79,11 @@ internal sealed partial class SagaLongRestService(ArcanumDbContext db, TimeProvi
             {
                 DbConnection connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
-                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                // Inspecting a receipt only reads, so it begins deferred and takes no writer lock; the provider's own BeginTransactionAsync would
+                // have begun BEGIN IMMEDIATE.
+                await using SqliteTransaction transaction = ((SqliteConnection)connection).BeginTransaction(deferred: true);
+
+                LongRestVerificationCounters.Transaction(deferred: true);
 
                 if (await GrimoireCoreSchemaVersion.ReadAsync(connection, cancellationToken, transaction).ConfigureAwait(false) < 17)
                 {
@@ -191,5 +143,5 @@ internal sealed partial class SagaLongRestService(ArcanumDbContext db, TimeProvi
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private sealed record LoadedSnapshot(LongRestSnapshot Snapshot, string? Content);
+    internal sealed record LoadedSnapshot(LongRestSnapshot Snapshot, string? Content);
 }

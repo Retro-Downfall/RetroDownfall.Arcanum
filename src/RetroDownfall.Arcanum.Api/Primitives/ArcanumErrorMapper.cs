@@ -58,12 +58,21 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status404NotFound,
 
             ErrorCodes.LongRest.StaleInput
-                or ErrorCodes.LongRest.MissingClaim =>
+                or ErrorCodes.LongRest.MissingClaim
+                or ErrorCodes.LongRest.SweepParked
+                or ErrorCodes.LongRest.OperationBusy
+                or ErrorCodes.LongRest.ModelContextTooSmall =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.LongRest.Unavailable
-                or ErrorCodes.LongRest.IntegrityFailure =>
+                or ErrorCodes.LongRest.IntegrityFailure
+                or ErrorCodes.LongRest.ProviderUnavailable
+                or ErrorCodes.LongRest.ProviderUnreachable =>
                 StatusCodes.Status503ServiceUnavailable,
+
+            ErrorCodes.LongRest.ProviderRejected
+                or ErrorCodes.LongRest.TransportUnknown =>
+                StatusCodes.Status502BadGateway,
 
             // Selective erasure. A token that cannot be read is the request's fault. A lost key and a
             // plan that moved are states the operator re-reads and decides on again. An erased

@@ -158,7 +158,10 @@ public sealed class SessionKeyIndexSchemaEvolutionTests
         GrimoireSchemaInstallResult result = await installer.InstallAsync(
             connection, 1536, context, CancellationToken.None);
 
-        if (result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete)
+        GrimoireSchemaVersionChain core = chains.ForTier(GrimoireSchemaTransactionTier.Core);
+
+        for (int step = 0; result.Core.Health is GrimoireSchemaTierHealth.TransitionIncomplete
+            && step < core.Steps.Count; step++)
         {
             // Later steps can require a sweep even though version 14 only builds indexes. Drive the
             // installed chain to completion before comparing its catalog with a fresh head.
@@ -170,7 +173,7 @@ public sealed class SessionKeyIndexSchemaEvolutionTests
 
             _ = await runner.AdvanceAsync(
                 connection,
-                chains.ForTier(GrimoireSchemaTransactionTier.Core),
+                core,
                 journal,
                 context,
                 maxBatches: 128,

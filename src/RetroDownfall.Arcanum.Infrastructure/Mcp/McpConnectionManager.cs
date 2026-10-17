@@ -43,7 +43,7 @@ public sealed partial class McpConnectionManager :
 
     /// <summary>
     /// Used only to create the in-process internal tool server's logger. It is deliberately never handed
-    /// to the Streamable HTTP or stdio SDK clients: the named <c>McpHttp</c> client strips every logger
+    /// to the Streamable HTTP or stdio SDK clients: the owned HTTP client carries no logging handler
     /// because hosted MCP endpoints embed bearer tokens in the URL path, and SDK client logs could copy
     /// that endpoint into the rolling log and <c>GET /api/logs</c>.
     /// </summary>
@@ -59,12 +59,11 @@ public sealed partial class McpConnectionManager :
 
     private readonly ITrustedMcpWorkspaceStore trustedMcpWorkspaces;
 
-    private readonly IHttpClientFactory httpClientFactory;
-
     private readonly IOptionsMonitor<ArcanumSettings> settings;
 
-    /// <summary>Named <see cref="HttpClient"/> for the Streamable HTTP MCP transport (SSRF-guarded egress).</summary>
-    public const string McpHttpClientName = "McpHttp";
+    // The one client every Streamable HTTP transport sends through, built from an explicit handler chain in
+    // the constructor (never resolved from a named factory) and disposed with the manager.
+    private HttpClient httpClient;
 
     private const string GlobalPartitionKey = "__arcanum_mcp_global__";
 
@@ -166,7 +165,6 @@ public sealed partial class McpConnectionManager :
         IUnseenServantPacer pacer,
         IEventBus eventBus,
         ITrustedMcpWorkspaceStore trustedMcpWorkspaces,
-        IHttpClientFactory httpClientFactory,
         IOptionsMonitor<ArcanumSettings> settings,
         ILoggerFactory loggerFactory)
     {
@@ -186,8 +184,6 @@ public sealed partial class McpConnectionManager :
 
         this.trustedMcpWorkspaces = trustedMcpWorkspaces;
 
-        this.httpClientFactory = httpClientFactory;
-
         this.settings = settings;
 
         _elicitationBridge = new McpElicitationBridge(humanPromptRegistry);
@@ -197,6 +193,37 @@ public sealed partial class McpConnectionManager :
                 settings.CurrentValue.ResolveCodingTools());
 
         _lifecycleAdmission = new McpLifecycleAdmission(_globalInitializationLifetime);
+
+        // Last, so no later statement can fail while this client is undisposed. The overall timeout is infinite
+        // because a Streamable HTTP session is long-lived: the connect bound and the per-message response
+        // bound are the limits.
+        httpClient = new HttpClient(
+            CreateOwnedHttpPipeline(GetClampedMcpHttpConnectTimeout()),
+            disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+    }
+
+    /// <summary>
+    /// Test seam: replaces the SSRF-guarded primary handler of the owned HTTP client with a scripted one so a
+    /// scenario can drive the Streamable HTTP transport. The response bound still wraps it. Call it before any
+    /// server starts. Never called in production.
+    /// </summary>
+    internal void UseHttpPrimaryHandlerForTests(HttpMessageHandler primaryHttpHandler)
+    {
+        ArgumentNullException.ThrowIfNull(primaryHttpHandler);
+
+        HttpClient previous = httpClient;
+
+        httpClient = new HttpClient(
+            CreateOwnedHttpPipeline(GetClampedMcpHttpConnectTimeout(), primaryHttpHandler),
+            disposeHandler: true)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
+
+        previous.Dispose();
     }
 
     /// <inheritdoc />
@@ -1788,6 +1815,8 @@ public sealed partial class McpConnectionManager :
             _lifecycleAdmission.Dispose();
 
             _globalInitializationLifetime.Dispose();
+
+            httpClient.Dispose();
 
             _disposeCompleted.TrySetResult();
         }

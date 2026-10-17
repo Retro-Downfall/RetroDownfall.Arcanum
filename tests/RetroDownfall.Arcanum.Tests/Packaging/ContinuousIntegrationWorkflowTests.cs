@@ -20,20 +20,35 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// </summary>
     private sealed record WorkflowJob(string Id, string RunsOn, bool IsConditional, string Body);
 
+    // The closed list of source analysis partitions: the CI job that runs each, the name it shows, the worker slots it asks the runner for and
+    // the partition it passes. The two production partitions keep two slots (production reserves up to three and the runner gives it the two). A
+    // fixture partition asks for one slot and so for one fixture process: the process keeps the bound production compilations in memory, and a
+    // standard macos-26 runner has about 7 GB.
+    private static readonly (string JobId, string Name, string Partition, int Jobs)[] SourceAnalysisPartitions =
+    [
+        ("hosted-producer-primary-analysis", "Hosted producer primary analysis", "primary", 2),
+        ("hosted-producer-additional-analysis", "Hosted producer additional analysis", "additional", 2),
+        ("hosted-producer-fixture-analysis", "Hosted producer fixture analysis", "fixtures", 1),
+        ("hosted-producer-fixture-build-analysis", "Hosted producer fixture build analysis", "fixtures-build", 1),
+        ("hosted-producer-serve-host-analysis", "Hosted producer serve host analysis", "serve-host", 1),
+    ];
+
+    private static WorkflowJob[] SourceAnalysisWorkers(string repositoryRoot) =>
+        [.. ContinuousIntegrationJobs(repositoryRoot).Where(static job => job.Id.StartsWith("hosted-producer-", StringComparison.Ordinal) && job.Id != "hosted-producer-analysis")];
+
     [Fact]
     public void Macos_source_analysis_partitions_each_keep_the_existing_worker_and_deadline_bounds()
     {
-        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
-            .Where(static job => job.Id is
-                "hosted-producer-primary-analysis"
-                    or "hosted-producer-additional-analysis")
-            .OrderBy(static job => job.Id, StringComparer.Ordinal)
-            .ToArray();
+        WorkflowJob[] lanes = SourceAnalysisWorkers(FindRepositoryRoot());
 
-        Assert.Equal(2, lanes.Length);
+        Assert.Equal(
+            SourceAnalysisPartitions.Select(static entry => entry.JobId).Order(StringComparer.Ordinal),
+            lanes.Select(static lane => lane.Id).Order(StringComparer.Ordinal));
 
-        foreach (WorkflowJob lane in lanes)
+        foreach ((string jobId, string name, string partition, int jobs) in SourceAnalysisPartitions)
         {
+            WorkflowJob lane = Assert.Single(lanes, job => job.Id == jobId);
+
             Assert.Equal("macos-26", lane.RunsOn);
 
             Assert.False(lane.IsConditional);
@@ -42,7 +57,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
 
-            Assert.Contains("--jobs 2", lane.Body, StringComparison.Ordinal);
+            Assert.Contains("--jobs " + jobs + " ", lane.Body, StringComparison.Ordinal);
 
             Assert.Contains("--timeout-seconds 1740", lane.Body, StringComparison.Ordinal);
 
@@ -53,19 +68,45 @@ public sealed class ContinuousIntegrationWorkflowTests
             Assert.DoesNotContain("continue-on-error:", lane.Body, StringComparison.Ordinal);
 
             Assert.DoesNotContain("--collect", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("name: " + name, lane.Body, StringComparison.Ordinal);
+
+            Assert.Single(Regex.Matches(lane.Body, @"--partition (\S+)"));
+
+            Assert.Contains("--partition " + partition + " ", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("name: " + jobId, lane.Body, StringComparison.Ordinal);
         }
 
-        Assert.Contains("name: Hosted producer primary analysis", lanes[1].Body, StringComparison.Ordinal);
-
-        Assert.Contains("--partition primary", lanes[1].Body, StringComparison.Ordinal);
-
-        Assert.Contains("name: Hosted producer additional analysis and fixtures", lanes[0].Body, StringComparison.Ordinal);
-
-        Assert.Contains("--partition additional", lanes[0].Body, StringComparison.Ordinal);
+        // Each worker uploads evidence under its own name, so no two partitions can overwrite one another's receipt.
+        Assert.Equal(
+            lanes.Length,
+            lanes.Select(static lane => Regex.Match(lane.Body, @"upload-artifact@[^\n]*\n\s+with:\n\s+name: (\S+)").Groups[1].Value).Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
-    public void Source_analysis_authority_requires_both_workers_and_reconciles_their_artifacts()
+    public void A_fixture_partition_is_one_process_on_one_slot_and_never_runs_production()
+    {
+        foreach ((string jobId, _, string partition, _) in SourceAnalysisPartitions.Where(static entry => entry.Partition is "fixtures" or "fixtures-build" or "serve-host"))
+        {
+            WorkflowJob lane = Assert.Single(SourceAnalysisWorkers(FindRepositoryRoot()), job => job.Id == jobId);
+
+            Assert.Contains("--jobs 1 ", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--jobs 2", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--partition primary", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("--partition additional", lane.Body, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("ARCANUM_HOSTED_ANALYSIS_ROOT_WORKERS", lane.Body, StringComparison.Ordinal);
+
+            Assert.Contains("--partition " + partition + " ", lane.Body, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Source_analysis_authority_requires_every_worker_and_reconciles_their_artifacts()
     {
         WorkflowJob lane = Assert.Single(
             ContinuousIntegrationJobs(FindRepositoryRoot()),
@@ -79,19 +120,23 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("name: Hosted producer source analysis", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("hosted-producer-primary-analysis", lane.Body, StringComparison.Ordinal);
-
-        Assert.Contains("hosted-producer-additional-analysis", lane.Body, StringComparison.Ordinal);
-
         Assert.Contains("if: always()", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("needs.hosted-producer-primary-analysis.result", lane.Body, StringComparison.Ordinal);
+        // The authority needs exactly the workers, so a partition added to the list without a worker, or a worker without a partition, fails here.
+        string[] needs = [.. Regex.Matches(lane.Body, @"^      - (hosted-producer-\S+)$", RegexOptions.Multiline).Select(static match => match.Groups[1].Value)];
 
-        Assert.Contains("needs.hosted-producer-additional-analysis.result", lane.Body, StringComparison.Ordinal);
+        Assert.Equal(
+            SourceAnalysisPartitions.Select(static entry => entry.JobId).Order(StringComparer.Ordinal),
+            needs.Order(StringComparer.Ordinal));
 
-        Assert.Contains("--aggregate-primary-results .tmp/coverage/analysis-primary", lane.Body, StringComparison.Ordinal);
+        foreach ((string jobId, _, string partition, _) in SourceAnalysisPartitions)
+        {
+            Assert.Contains("needs." + jobId + ".result", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains("--aggregate-additional-results .tmp/coverage/analysis-additional", lane.Body, StringComparison.Ordinal);
+            Assert.Contains("name: " + jobId + "\n          path: .tmp/coverage/analysis-" + partition, lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal), StringComparison.Ordinal);
+
+            Assert.Contains("--aggregate-" + partition + "-results .tmp/coverage/analysis-" + partition, lane.Body, StringComparison.Ordinal);
+        }
 
         Assert.Contains("--source-sha \"$GITHUB_SHA\"", lane.Body, StringComparison.Ordinal);
 
@@ -107,13 +152,9 @@ public sealed class ContinuousIntegrationWorkflowTests
     [Fact]
     public void Source_analysis_workers_retain_progress_and_receipt_artifacts_even_on_failure()
     {
-        WorkflowJob[] lanes = ContinuousIntegrationJobs(FindRepositoryRoot())
-            .Where(static job => job.Id is
-                "hosted-producer-primary-analysis"
-                    or "hosted-producer-additional-analysis")
-            .ToArray();
+        WorkflowJob[] lanes = SourceAnalysisWorkers(FindRepositoryRoot());
 
-        Assert.Equal(2, lanes.Length);
+        Assert.Equal(SourceAnalysisPartitions.Length, lanes.Length);
 
         foreach (WorkflowJob lane in lanes)
         {
@@ -138,6 +179,52 @@ public sealed class ContinuousIntegrationWorkflowTests
             Assert.Contains("path: .tmp/coverage/analysis/", artifact, StringComparison.Ordinal);
 
             Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, analysis));
+        }
+    }
+
+    // The memory the lanes were measured to need (DESIGN, Verification Memory) is the memory of the test host alone, on a runner of about 7 GB. The build
+    // that runs right before the analysis leaves the Roslyn compiler server and the MSBuild nodes resident by default, several GB between them on a
+    // build of this size, and they are not part of that measurement. Each worker therefore builds without build servers and then shuts down any that
+    // exist, before the analysis starts.
+    [Fact]
+    public void Source_analysis_workers_leave_no_build_server_resident_while_the_analysis_runs()
+    {
+        WorkflowJob[] lanes = SourceAnalysisWorkers(FindRepositoryRoot());
+
+        Assert.Equal(SourceAnalysisPartitions.Length, lanes.Length);
+
+        foreach (WorkflowJob lane in lanes)
+        {
+            string[] steps = lane.Body
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split("      - name:", StringSplitOptions.None);
+
+            string build = Assert.Single(
+                steps,
+                static step => step.Contains("dotnet build tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", StringComparison.Ordinal));
+
+            Assert.Contains("--configuration Release", build, StringComparison.Ordinal);
+
+            Assert.Contains("--disable-build-servers", build, StringComparison.Ordinal);
+
+            string shutdown = Assert.Single(
+                steps,
+                static step => step.Contains("dotnet build-server shutdown", StringComparison.Ordinal));
+
+            string analysis = Assert.Single(
+                steps,
+                static step => step.Contains("python3 scripts/hosted_producer_analysis_runner.py", StringComparison.Ordinal)
+                    && step.Contains("--partition ", StringComparison.Ordinal));
+
+            int buildAt = Array.IndexOf(steps, build);
+
+            int shutdownAt = Array.IndexOf(steps, shutdown);
+
+            int analysisAt = Array.IndexOf(steps, analysis);
+
+            Assert.True(buildAt < shutdownAt, lane.Id + " must shut the build servers down after it builds.");
+
+            Assert.True(shutdownAt < analysisAt, lane.Id + " must shut the build servers down before the analysis starts.");
         }
     }
 
@@ -334,6 +421,128 @@ public sealed class ContinuousIntegrationWorkflowTests
             TimeSpan.FromSeconds(5));
     }
 
+    [Theory]
+    [InlineData("windows-suite", "win-x64")]
+    [InlineData("windows-arm64-suite", "win-arm64")]
+    public void Both_windows_lanes_execute_the_long_rest_contracts_with_retained_trx(string jobId, string rid)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        string[] steps = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
+
+        string execution = Assert.Single(steps, static step => step.Contains("Test Long Rest", StringComparison.Ordinal));
+
+        Assert.Contains("dotnet test tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj", execution, StringComparison.Ordinal);
+
+        Assert.Contains("-c Release --no-build --no-restore", execution, StringComparison.Ordinal);
+
+        Assert.Contains("--blame-hang-timeout 15m --blame-hang-dump-type none", execution, StringComparison.Ordinal);
+
+        Assert.Contains("Category!=Perf", execution, StringComparison.Ordinal);
+
+        Assert.Contains("Category!=HostedProducerAnalysis", execution, StringComparison.Ordinal);
+
+        Assert.Contains("Category!=LongRestScaleProbe", execution, StringComparison.Ordinal);
+
+        (string Operator, string Name)[] entries = TestFilterEntry.Matches(execution)
+            .Select(static match => (match.Groups["operator"].Value, match.Groups["name"].Value))
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                ("~", "RetroDownfall.Arcanum.Tests.LongRest."),
+                ("~", "RetroDownfall.Arcanum.Tests.Intelligence.LongRest"),
+                ("=", "RetroDownfall.Arcanum.Tests.Platform.WindowsCiSurfaceTests.Windows_ci_lane_uses_the_expected_native_runtime_identifier"),
+            }.OrderBy(static entry => entry.Item2, StringComparer.Ordinal),
+            entries.OrderBy(static entry => entry.Name, StringComparer.Ordinal));
+
+        // Resolve the selection against the compiled tests, so an empty renamed pattern cannot
+        // produce a green lane that has stopped exercising discovery, recovery or provider contracts.
+        IReadOnlyList<TestMethodIdentity> methods = ArcanumTestMethods();
+
+        foreach ((string filterOperator, string name) in entries)
+        {
+            Assert.Contains(methods, method => filterOperator == "="
+                ? string.Equals(method.FullName, name, StringComparison.Ordinal)
+                : method.FullName.Contains(name, StringComparison.Ordinal));
+        }
+
+        // The step fails on any skipped result, so a selected test of an opt-in category (one that skips unless a variable is set) has to be
+        // excluded by name. Every category a selected test carries is either excluded by this filter or one the lane is meant to run, so the next
+        // opt-in category fails here and not in the lane.
+        HashSet<string> excludedCategories = ExcludedCategory.Matches(execution)
+            .Select(static match => match.Groups["category"].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach ((string fullName, string[] categories) in ArcanumTestMethodCategories())
+        {
+            bool selected = entries.Any(entry => entry.Operator == "="
+                ? string.Equals(fullName, entry.Name, StringComparison.Ordinal)
+                : fullName.Contains(entry.Name, StringComparison.Ordinal));
+
+            if (!selected)
+            {
+                continue;
+            }
+
+            foreach (string category in categories)
+            {
+                Assert.True(
+                    excludedCategories.Contains(category) || CategoriesTheWindowsLongRestStepRuns.Contains(category),
+                    $"{fullName} carries the category {category}, which the Test Long Rest step neither excludes nor is meant to run.");
+            }
+        }
+
+        Assert.Contains("--logger \"trx;LogFileName=long-rest-" + rid + ".trx\"", execution, StringComparison.Ordinal);
+
+        Assert.Contains("--results-directory .tmp/windows-long-rest-" + rid, execution, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("continue-on-error:", execution, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("        if:", execution, StringComparison.Ordinal);
+
+        string artifact = Assert.Single(steps, step => step.Contains("name: windows-long-rest-" + rid, StringComparison.Ordinal));
+
+        Assert.Contains("uses: actions/upload-artifact@", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("if: always()", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("path: .tmp/windows-long-rest-" + rid + "/", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("if-no-files-found: error", artifact, StringComparison.Ordinal);
+
+        Assert.Contains("retention-days: 14", artifact, StringComparison.Ordinal);
+
+        Assert.True(Array.IndexOf(steps, artifact) > Array.IndexOf(steps, execution));
+    }
+
+    [Theory]
+    [InlineData("windows-suite", "win-x64")]
+    [InlineData("windows-arm64-suite", "win-arm64")]
+    public void Both_windows_lanes_require_the_sdk_and_test_process_to_be_native(string jobId, string rid)
+    {
+        WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), job => job.Id == jobId);
+
+        Assert.Contains("ARCANUM_EXPECTED_WINDOWS_RID: " + rid, lane.Body, StringComparison.Ordinal);
+
+        string[] steps = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split("      - name:", StringSplitOptions.None);
+
+        string sdk = Assert.Single(steps, step => step.Contains("Assert the SDK is native to " + rid, StringComparison.Ordinal));
+
+        Assert.Contains("dotnet --info", sdk, StringComparison.Ordinal);
+
+        Assert.Contains("$match.Groups['rid'].Value -ne '" + rid + "'", sdk, StringComparison.Ordinal);
+
+        Assert.Contains(".tmp/windows-long-rest-" + rid + "/sdk-info.txt", sdk, StringComparison.Ordinal);
+
+        string build = Assert.Single(steps, static step => step.Contains("Restore and build Arcanum + Compendium", StringComparison.Ordinal));
+
+        Assert.True(Array.IndexOf(steps, sdk) < Array.IndexOf(steps, build));
+    }
+
     private const string ArcanumTestNamespacePrefix = "RetroDownfall.Arcanum.Tests.";
 
     private const string CompendiumTestNamespacePrefix = "RetroDownfall.Compendium.Ux.Tests.";
@@ -342,6 +551,17 @@ public sealed class ContinuousIntegrationWorkflowTests
         @"FullyQualifiedName(?<operator>[=~])(?<name>[A-Za-z0-9_.]+)",
         RegexOptions.CultureInvariant,
         TimeSpan.FromSeconds(5));
+
+    private static readonly Regex ExcludedCategory = new(
+        @"Category!=(?<category>[A-Za-z0-9_]+)",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromSeconds(5));
+
+    /// <summary>
+    /// The only category a test in the Windows Long Rest selection carries without being excluded. It runs, and it never skips for want of an
+    /// opt-in variable.
+    /// </summary>
+    private static readonly string[] CategoriesTheWindowsLongRestStepRuns = ["Integration"];
 
     /// <summary>
     /// A <c>dotnet test --filter</c> alternative that matches nothing is not an error, so renaming a
@@ -661,6 +881,27 @@ public sealed class ContinuousIntegrationWorkflowTests
                 .Where(static method => method.IsDefined(typeof(FactAttribute), inherit: true))
                 .Select(method => new TestMethodIdentity($"{type.FullName}.{method.Name}")))
             .ToArray();
+
+    /// <summary>
+    /// Every test method of the Arcanum assembly with the <c>Category</c> traits its class and the method itself carry.
+    /// </summary>
+    private static IReadOnlyList<(string FullName, string[] Categories)> ArcanumTestMethodCategories() =>
+        typeof(ContinuousIntegrationWorkflowTests).Assembly
+            .GetTypes()
+            .Where(static type => type.FullName is not null)
+            .SelectMany(static type => type
+                .GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+                .Where(static method => method.IsDefined(typeof(FactAttribute), inherit: true))
+                .Select(method => (
+                    FullName: $"{type.FullName}.{method.Name}",
+                    Categories: TraitCategories(type).Concat(TraitCategories(method)).Distinct(StringComparer.Ordinal).ToArray())))
+            .ToArray();
+
+    private static IEnumerable<string> TraitCategories(MemberInfo member) =>
+        member.GetCustomAttributesData()
+            .Where(static attribute => attribute.AttributeType == typeof(TraitAttribute)
+                && attribute.ConstructorArguments is [{ Value: "Category" }, { Value: string }])
+            .Select(static attribute => (string)attribute.ConstructorArguments[1].Value!);
 
     /// <summary>
     /// The Compendium suite is a separate assembly this project does not reference, so its test

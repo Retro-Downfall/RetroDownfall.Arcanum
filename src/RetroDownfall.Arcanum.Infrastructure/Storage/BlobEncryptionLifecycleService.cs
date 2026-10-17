@@ -529,10 +529,10 @@ internal sealed class BlobEncryptionMigrationRecoveryHandler(
 
     public int SupportedCheckpointVersion => 1;
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
-        lifecycleService.RecoverAsync(operation, cancellationToken);
+        await lifecycleService.RecoverAsync(operation, cancellationToken).ConfigureAwait(false);
 }
 
 internal sealed class BlobEncryptionKeyRotationRecoveryHandler(
@@ -542,8 +542,8 @@ internal sealed class BlobEncryptionKeyRotationRecoveryHandler(
 
     public int SupportedCheckpointVersion => 1;
 
-    public Task<LongRunningOperationRecoveryResult> RecoverAsync(
+    public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
         CancellationToken cancellationToken) =>
-        lifecycleService.RecoverAsync(operation, cancellationToken);
+        await lifecycleService.RecoverAsync(operation, cancellationToken).ConfigureAwait(false);
 }

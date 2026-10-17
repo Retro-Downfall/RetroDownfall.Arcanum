@@ -38,8 +38,11 @@ public sealed class WebResearchWorkflowService(
     ISessionRepository sessions,
     ISessionAttachmentStore attachments,
     ICampaignRepository campaigns,
-    ISanctumGuard sanctum)
+    ISanctumGuard sanctum,
+    ICanonicalCampaignContextResolver campaignResolver)
 {
+    private readonly ICanonicalCampaignContextResolver _campaignResolver = campaignResolver;
+
     private const int MaximumResearchPromptCharacters = 120_000;
 
     /// <summary>
@@ -427,12 +430,47 @@ public sealed class WebResearchWorkflowService(
 
         int retainedContentBudget = ResolveRetainedContentBudget(searches);
 
-        Func<Uri, CancellationToken, ValueTask<bool>>? egressWard =
-            BuildCampaignEgressWard(synthesisEnvelope.CampaignId);
+        // The Campaign whose Sanctum gates the citations is the one the run is bound to, by the same resolution a chat turn uses: its Session,
+        // its explicit identifier, or the registered root that contains its working directory, and when those name different Campaigns the
+        // stricter Sanctum governs. A run that names no Campaign but stands in a contained one is as contained as a turn that does, and a
+        // run whose sources the canonical seam would refuse is no less contained for it.
+        SanctumCampaignResolution.Resolved governing = await SanctumCampaignResolution
+            .ResolveAsync(
+                request.ContinueSessionId,
+                synthesisEnvelope.CampaignId,
+                synthesisEnvelope.WorkingDirectory,
+                known: null,
+                _campaignResolver,
+                campaigns,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        // A Campaign whose Sanctum cannot be read is not one whose Sanctum is off: no citation of the run can be judged against it, so every
+        // citation is refused rather than fetched ungated.
+        Func<Uri, CancellationToken, ValueTask<bool>>? egressWard = governing.PolicyUnreadable
+            ? static (Uri _, CancellationToken _) => ValueTask.FromResult(false)
+            : BuildCampaignEgressWard(governing.CampaignId);
+
+        // Whether the Sanctum, rather than the outbound address guard, is what refused the citation being fetched: a refused redirect hop and
+        // a refused address both come back from the reader as SsrfBlocked, and the run tells the operator which control said no.
+        bool sanctumRefused = false;
+
+        Func<Uri, CancellationToken, ValueTask<bool>>? fetchWard = egressWard is null
+            ? null
+            : async (Uri target, CancellationToken token) =>
+            {
+                bool allowed = await egressWard(target, token).ConfigureAwait(false);
+
+                sanctumRefused |= !allowed;
+
+                return allowed;
+            };
 
         for (int index = 0; index < selectedCitations.Length; index++)
         {
             WebCitation citation = selectedCitations[index];
+
+            sanctumRefused = false;
 
             // Everything past the synthesis prompt's character budget is fetched, held, and then
             // discarded unread, so the phase stops here rather than paying for pages the model will
@@ -471,9 +509,23 @@ public sealed class WebResearchWorkflowService(
                 Result<WebReadResult> read = await readProvider
                     .ReadUrlAsync(
                         citation.Url,
-                        BuildReadOptions(egressWard),
+                        BuildReadOptions(fetchWard),
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                // A citation a control refused (the Sanctum at a redirect hop, or the outbound address guard at any hop) is reported as
+                // denied and dropped, exactly as one the Sanctum refuses up front is. Keeping it with an empty body would hand the
+                // synthesis a source nobody read.
+                if (read.IsFailure && read.Error.Code == ErrorCodes.WebResearch.SsrfBlocked)
+                {
+                    yield return Progress(
+                        "source_denied",
+                        sanctumRefused
+                            ? $"Source {index + 1} of {selectedCitations.Length} was denied by the Campaign Sanctum network policy."
+                            : $"Source {index + 1} of {selectedCitations.Length} was refused by the outbound network policy.");
+
+                    continue;
+                }
 
                 if (read.IsSuccess)
                 {
@@ -753,10 +805,13 @@ public sealed class WebResearchWorkflowService(
     /// <c>ToolExecutionPipeline.BeginSanctumEgressWard</c> publishes for the <c>read_url</c> tool.
     /// Citation URLs are chosen by the search provider, so the campaign's network policy has to gate
     /// them and every redirect they follow — otherwise one <c>302</c> off an allowed host turns a
-    /// contained campaign into arbitrary outbound egress. <c>null</c> for an uncontained run, which
-    /// leaves redirects bounded by the SSRF guard alone exactly as before.
+    /// contained campaign into arbitrary outbound egress. A target outside the allowed domains is recorded as a breach by the guard and
+    /// refused in every Sanctum mode: a citation and the redirects it follows are destinations the search provider and the remote server
+    /// chose, not ones the model named, so an audit-only Sanctum does not wave them through
+    /// (<see cref="SanctumEnforcement.AllowsContinuation"/> answers for the initial target of a <c>read_url</c> call, not for these).
+    /// <c>null</c> for an uncontained run, which leaves redirects bounded by the SSRF guard alone exactly as before.
     /// </summary>
-    private Func<Uri, CancellationToken, ValueTask<bool>>? BuildCampaignEgressWard(Guid? campaignId)
+    internal Func<Uri, CancellationToken, ValueTask<bool>>? BuildCampaignEgressWard(Guid? campaignId)
     {
         if (campaignId is not Guid resolved)
         {
