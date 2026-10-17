@@ -251,21 +251,32 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
     }
 
     /// <summary>
-    /// A new-profile journal whose staged tree remains proves rollback, while a committed journal
-    /// without a target path retains its evidence without inspecting the default installation.
+    /// A new-profile journal at <c>Commit</c> is resolved from its own staging alone, whatever the
+    /// default installation it names as its live root looks like.
     /// </summary>
+    /// <remarks>
+    /// A new-profile commit renames <c>staged/</c> to a root the journal does not name and never touches
+    /// the live root it does name. Read as a replacement, a finished new-profile commit on a machine with
+    /// no default installation — staged gone, live absent, nothing displaced — matched no commit shape and
+    /// stopped startup with ReconciliationRequired; and a staged tree that never left staging, beside no
+    /// default installation, did the same. Staged gone is a completed commit and staged present is one
+    /// that never began, both only needing their staging removed. The journal is indexed under the default
+    /// installation, so its start is what resolves it: an outcome that demanded reconciliation here would
+    /// stop that start on every start, over evidence about a root that is not its own, and the staged
+    /// generation was sanitized before the commit published it, so the committed tree needs nothing more.
+    /// </remarks>
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
     [InlineData(true, true)]
     [InlineData(false, true)]
-    public void A_new_profile_commit_journal_never_uses_the_default_installation_as_missing_target_proof(
+    public void A_new_profile_commit_journal_is_resolved_without_reference_to_the_default_installation(
         bool defaultInstallationPresent,
         bool staged)
     {
         BackupRestoreRecoveryOutcome expected = staged
             ? BackupRestoreRecoveryOutcome.RolledBack
-            : BackupRestoreRecoveryOutcome.ReconciliationRequired;
+            : BackupRestoreRecoveryOutcome.CommitCompleted;
 
         string elsewhere = Path.Combine(_root, "another-volume");
 
@@ -283,9 +294,11 @@ public sealed class BackupRestoreRecoveryTests : IDisposable
 
         Assert.Equal(expected, report.Outcome);
 
-        Assert.Equal(!staged, Directory.Exists(interrupted.StagingRoot));
+        Assert.False(Directory.Exists(interrupted.StagingRoot));
 
-        Assert.Equal(!staged, File.Exists(Path.Combine(interrupted.StagingRoot, BackupRestoreJournal.FileName)));
+        Assert.False(File.Exists(Path.Combine(interrupted.StagingRoot, BackupRestoreJournal.FileName)));
+
+        Assert.Empty(BackupRestoreStagingIndex.Read(_live));
 
         Assert.Equal(defaultInstallationPresent, Directory.Exists(_live));
     }
