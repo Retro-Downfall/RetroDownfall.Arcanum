@@ -398,9 +398,10 @@ public sealed class CampaignRepositoryContainedPathTests : IClassFixture<Grimoir
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
+        // Written out as scalar values: string.Normalize answers through the globalization library, which the shipping executable runs without.
         string composed = "café";
 
-        string decomposed = composed.Normalize(System.Text.NormalizationForm.FormD);
+        string decomposed = "café";
 
         Assert.NotEqual(composed, decomposed);
 
@@ -590,6 +591,75 @@ public sealed class CampaignRepositoryContainedPathTests : IClassFixture<Grimoir
         Assert.True(duplicate.IsFailure);
 
         Assert.Equal(ErrorCodes.Campaign.DuplicatePath, duplicate.Error.Code);
+    }
+
+    // The two spellings are written out as scalar values (string.Normalize answers through the globalization library, which the shipping
+    // executable runs without). Nothing is created on disk, so no file system is asked and the text decides on every platform.
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_registration_that_differs_only_by_the_unicode_normalization_form_is_a_duplicate_path(bool composedFirst)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string composed = Path.Combine(_parent, "café-registered");
+
+        string decomposed = Path.Combine(_parent, "café-registered");
+
+        ICampaignRepository repository = CreateRepository();
+
+        string first = composedFirst ? composed : decomposed;
+
+        string second = composedFirst ? decomposed : composed;
+
+        Campaign registered = await AddAsync(repository, "nfc-one", first);
+
+        Result<Campaign> duplicate = await repository.AddAsync(NewCampaign("nfc-two", second), CancellationToken.None);
+
+        Assert.True(duplicate.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.DuplicatePath, duplicate.Error.Code);
+
+        // The registration pre-checks ask for the Campaign at a path: the other spelling is the same registration, and only one row exists.
+        Assert.Equal(registered.Id, (await repository.GetByPathAsync(second))?.Id);
+
+        Assert.Equal(1, await repository.CountAsync());
+    }
+
+    // An attachment spelled through a link that leaves the root belongs to the Campaign by its spelling: here the root was registered under
+    // the other normalization form of its name, and the spelling is judged against it by the text, because the root's canonical spelling
+    // is the spelling it was registered under.
+    [SkippableFact]
+    public async Task A_link_leaving_a_root_registered_under_another_normalization_form_is_still_spelled_inside_it()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows test host does not have.");
+
+        string composed = "café";
+
+        string decomposed = "café";
+
+        string canonicalParent = PhysicalTestPaths.Resolve(_parent);
+
+        string root = Directory.CreateDirectory(Path.Combine(canonicalParent, composed)).FullName;
+
+        string outside = Directory.CreateDirectory(Path.Combine(canonicalParent, "outside")).FullName;
+
+        Skip.IfNot(Directory.Exists(Path.Combine(canonicalParent, decomposed)), "This volume tells the two spellings apart.");
+
+        Directory.CreateSymbolicLink(Path.Combine(root, "linkdir"), outside);
+
+        ICampaignRepository repository = CreateRepository();
+
+        Campaign registered = await AddAsync(repository, "nfc-spelled", Path.Combine(canonicalParent, decomposed));
+
+        // Spelled with the composed name, the attachment is inside the root registered with the decomposed one, whatever linkdir leads to.
+        Assert.Equal(registered.Id, (await repository.GetBySpelledPathAsync(Path.Combine(canonicalParent, composed, "linkdir", "f")))?.Id);
+
+        Assert.Equal(registered.Id, (await repository.GetBySpelledPathAsync(Path.Combine(canonicalParent, decomposed, "linkdir", "f")))?.Id);
+
+        Assert.Null(await repository.GetBySpelledPathAsync(Path.Combine(canonicalParent, "outside", "f")));
     }
 
     [SkippableFact]

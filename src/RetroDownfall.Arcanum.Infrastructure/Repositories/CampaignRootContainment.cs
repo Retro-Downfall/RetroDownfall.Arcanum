@@ -1,4 +1,4 @@
-using System.Text;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
@@ -156,6 +156,12 @@ internal sealed class CampaignRootContainment
     /// A path as a key for comparing it with another path: trailing separators dropped and the Unicode normalisation form fixed. Case is
     /// left to the comparison, which knows the platform.
     /// </summary>
+    /// <remarks>
+    /// The form is fixed by the product's own Unicode 17 tables (<see cref="UnicodeNfc"/>), never by <see cref="string.Normalize()"/>: the
+    /// shipping executable runs with invariant globalization, where that method hands a non-ASCII string back unchanged and says nothing,
+    /// so two spellings of one directory would stay two keys and a Campaign would be registered twice or its Sanctum would not apply. A
+    /// name that is not well formed UTF-16 has no normal form and is compared as it is spelled.
+    /// </remarks>
     internal static string TextKey(string path)
     {
         string trimmed = ExactKey(path);
@@ -167,9 +173,9 @@ internal sealed class CampaignRootContainment
 
         try
         {
-            return trimmed.Normalize(NormalizationForm.FormC);
+            return UnicodeNfc.Normalize(trimmed);
         }
-        catch (Exception exception) when (exception is ArgumentException or PlatformNotSupportedException)
+        catch (ArgumentException)
         {
             return trimmed;
         }
