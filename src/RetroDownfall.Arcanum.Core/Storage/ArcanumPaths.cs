@@ -33,10 +33,15 @@ public static class ArcanumPaths
     public static string LogDirectory => Path.Combine(SecretStoreDirectory, "logs");
 
     /// <summary>
-    /// Directory holding the Data Protection secret store files: <c>~/.config/arcanum/</c> on Unix,
-    /// <c>%APPDATA%/arcanum/</c> on Windows. Distinct from <see cref="GrimoireDirectory"/> (which
-    /// lives under <c>~/.config/arcanum/</c> on every platform, including Windows, where it resolves
-    /// under <c>%USERPROFILE%</c> rather than <c>%APPDATA%</c>).
+    /// Directory holding the Data Protection secret store files: the platform's per-user application
+    /// data folder plus <c>arcanum</c> — <c>~/Library/Application Support/arcanum/</c> on macOS,
+    /// <c>%APPDATA%\arcanum\</c> on Windows, and <c>$XDG_CONFIG_HOME/arcanum/</c> (default
+    /// <c>~/.config/arcanum/</c>) on Linux. It is the same directory as
+    /// <see cref="GrimoireDirectory"/> only on Linux with no <c>XDG_CONFIG_HOME</c> override; on
+    /// macOS and Windows the two are different roots, because <see cref="GrimoireDirectory"/> is
+    /// <c>~/.config/arcanum/</c> on every platform (under <c>%USERPROFILE%</c> rather than
+    /// <c>%APPDATA%</c> on Windows). The Data Protection key ring that wraps these files lives under
+    /// <see cref="GrimoireDirectory"/>, not here.
     /// </summary>
     public static string SecretStoreDirectory
     {

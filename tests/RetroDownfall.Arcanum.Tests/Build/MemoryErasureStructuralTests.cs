@@ -86,6 +86,7 @@ public sealed class MemoryErasureStructuralTests
         "Data/CovenantLabeledArtifactGuard.cs",
         "Memory/SagaMemoryReviewService.cs",
         "Covenant/CovenantMemoryReviewService.cs",
+        "InstallationReset/StoppedHostFactoryErasure.cs",
     ];
 
     /// <summary>

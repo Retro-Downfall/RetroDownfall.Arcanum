@@ -20,11 +20,9 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 public sealed class InstallationResetHostProcessToolsPairReaderTests
 {
-
     [Fact]
     public async Task ReadAsync_reads_operating_system_marker_before_database_and_uses_the_joiner()
     {
-
         List<string> events = [];
 
         HostProcessToolsDatabaseMarkerEvidence database = CleanDatabaseEvidence();
@@ -50,13 +48,11 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.Same(expected, result.Value);
 
         Assert.Equal(["os", "database", "join"], events);
-
     }
 
     [Fact]
     public async Task Host_safe_local_read_returns_external_remediation_without_database_acquisition()
     {
-
         RecordingStoppedHostDataService database = new(CleanDatabaseEvidence());
 
         InstallationResetHostProcessToolsPairReader reader = new(
@@ -84,13 +80,11 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.Equal(0, database.StoppedHostReads);
 
         Assert.Equal(0, database.ProviderConstructions);
-
     }
 
     [Fact]
     public async Task Stopped_host_read_uses_one_fresh_evidence_capability_after_os_evidence()
     {
-
         List<string> events = [];
 
         RecordingStoppedHostDataService database = new(
@@ -128,7 +122,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.Equal(1, database.ProviderConstructions);
 
         Assert.Equal(["os", "database", "join"], events);
-
     }
 
     [Theory]
@@ -137,7 +130,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
     public async Task Stopped_host_read_rejects_malformed_os_evidence_before_issuance(
         byte statusValue)
     {
-
         RecordingStoppedHostDataService database = new(CleanDatabaseEvidence());
 
         RecordingStoppedHostIssuer issuer = new();
@@ -163,7 +155,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.Equal(0, database.StoppedHostReads);
 
         Assert.Equal(0, database.ProviderConstructions);
-
     }
 
     [Theory]
@@ -172,7 +163,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
     public async Task Stopped_host_read_rejects_wrong_or_disposed_issuer_before_provider_construction(
         bool disposed)
     {
-
         RecordingStoppedHostDataService database = new(CleanDatabaseEvidence());
 
         RecordingStoppedHostIssuer issuer = new(
@@ -180,9 +170,7 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
 
         if (disposed)
         {
-
             issuer.Dispose();
-
         }
 
         InstallationResetHostProcessToolsPairReader reader = new(
@@ -204,7 +192,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.Equal(1, issuer.EvidenceAuthoritiesIssued);
 
         Assert.Equal(0, database.ProviderConstructions);
-
     }
 
     [Theory]
@@ -213,7 +200,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
     public async Task ReadAsync_fails_content_free_before_database_for_untrusted_marker_reads(
         byte statusValue)
     {
-
         const string secret = "marker-secret-that-must-not-escape";
 
         HostProcessToolsMarkerReadStatus status =
@@ -238,7 +224,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.DoesNotContain(secret, result.Error.Message, StringComparison.Ordinal);
 
         Assert.Equal(["os"], events);
-
     }
 
     [Theory]
@@ -247,7 +232,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
     public async Task ReadAsync_normalizes_database_failure_or_exception_without_joining(
         bool throws)
     {
-
         const string secret = "database-evidence-that-must-not-escape";
 
         List<string> events = [];
@@ -271,13 +255,11 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         Assert.DoesNotContain(secret, result.Error.Message, StringComparison.Ordinal);
 
         Assert.Equal(["os", "database"], events);
-
     }
 
     [Fact]
     public void Reset_composition_registers_one_pair_reader_and_database_evidence_reader()
     {
-
         ServiceCollection services = new();
 
         services.AddLogging();
@@ -329,7 +311,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
 
         Assert.IsType<InstallationResetService>(
             scope.ServiceProvider.GetRequiredService<IInstallationResetLockedService>());
-
     }
 
     private static HostProcessToolsDatabaseMarkerEvidence CleanDatabaseEvidence() =>
@@ -345,14 +326,11 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         HostProcessToolsMarkerReadResult result)
         : IHostProcessToolsMarkerStore
     {
-
         public HostProcessToolsMarkerReadResult Read()
         {
-
             events.Add("os");
 
             return result;
-
         }
 
         public HostProcessToolsMarkerWriteStatus Write(
@@ -364,7 +342,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
 
         public bool CompareDelete(HostProcessToolsOsMarkerEvidence expected) =>
             throw new InvalidOperationException("The pair reader must not delete a marker.");
-
     }
 
     private sealed class RecordingDatabaseEvidenceReader(
@@ -372,30 +349,24 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         HostProcessToolsDatabaseMarkerEvidence evidence)
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
-
         public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             events.Add("database");
 
             return Task.FromResult(
                 Result<HostProcessToolsDatabaseMarkerEvidence>.Success(evidence));
-
         }
-
     }
 
     private sealed class ThrowingDatabaseEvidenceReader(string secret)
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
-
         public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException(secret);
-
     }
 
     private sealed class FailingDatabaseEvidenceReader(
@@ -404,27 +375,21 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         bool throws)
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader
     {
-
         public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken = default)
         {
-
             events.Add("database");
 
             if (throws)
             {
-
                 throw new InvalidDataException(secret);
-
             }
 
             return Task.FromResult(
                 Result<HostProcessToolsDatabaseMarkerEvidence>.Failure(new Error(
                     ErrorCodes.Data.InventoryUnavailable,
                     secret)));
-
         }
-
     }
 
     private sealed class RecordingStoppedHostDataService(
@@ -433,7 +398,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         : IInstallationResetHostProcessToolsDatabaseEvidenceReader,
           IInstallationResetStoppedHostDataService
     {
-
         internal int ProviderConstructions { get; private set; }
 
         internal int PublicReads { get; private set; }
@@ -444,14 +408,12 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
             ReadMarkerEvidenceAsync(
                 CancellationToken cancellationToken = default)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             PublicReads++;
 
             throw new InvalidOperationException(
                 "The host-safe route must not acquire the local Grimoire.");
-
         }
 
         public async Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
@@ -459,7 +421,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
                 IStoppedHostGrimoireAuthorityIssuer issuer,
                 CancellationToken cancellationToken)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             StoppedHostReads++;
@@ -469,10 +430,8 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
 
             if (issued.IsFailure)
             {
-
                 return Result<HostProcessToolsDatabaseMarkerEvidence>.Failure(
                     issued.Error);
-
             }
 
             await using IStoppedHostGrimoireConnectionAuthority authority =
@@ -483,7 +442,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
             events?.Add("database");
 
             return Result<HostProcessToolsDatabaseMarkerEvidence>.Success(evidence);
-
         }
 
         public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
@@ -510,7 +468,6 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
                 IStoppedHostGrimoireAuthorityIssuer issuer,
                 CancellationToken cancellationToken) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RecordingStoppedHostIssuer(
@@ -518,29 +475,24 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         : IStoppedHostGrimoireAuthorityIssuer,
           IDisposable
     {
-
         private bool _disposed;
 
         internal int EvidenceAuthoritiesIssued { get; private set; }
 
         public void Dispose()
         {
-
             _disposed = true;
-
         }
 
         public Result<IStoppedHostGrimoireConnectionAuthority>
             IssueStoppedHostInstallationResetHostToolsEvidenceReadAuthority()
         {
-
             EvidenceAuthoritiesIssued++;
 
             return rejectEvidenceAuthority || _disposed
                 ? UnavailableAuthority()
                 : Result<IStoppedHostGrimoireConnectionAuthority>.Success(
                     new TestStoppedHostAuthority());
-
         }
 
         public Result<IStoppedHostGrimoireConnectionAuthority>
@@ -563,20 +515,21 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
             IssueStoppedHostMarkerPairResetAuthority() =>
             UnavailableAuthority();
 
+        public Result<IStoppedHostGrimoireConnectionAuthority>
+            IssueStoppedHostFactoryErasureLockLoan() =>
+            UnavailableAuthority();
+
         private static Result<IStoppedHostGrimoireConnectionAuthority>
             UnavailableAuthority() =>
             Result<IStoppedHostGrimoireConnectionAuthority>.Failure(new Error(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "The stopped-host authority is unavailable."));
-
     }
 
     private sealed class TestStoppedHostAuthority
         : IStoppedHostGrimoireConnectionAuthority
     {
-
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class RecordingJoiner(
@@ -584,29 +537,22 @@ public sealed class InstallationResetHostProcessToolsPairReaderTests
         HostProcessToolsMarkerPairJoinResult result)
         : IHostProcessToolsMarkerPairJoiner
     {
-
         public HostProcessToolsMarkerPairJoinResult Join(
             HostProcessToolsDatabaseMarkerEvidence database,
             HostProcessToolsOsMarkerEvidence? osMarker)
         {
-
             events.Add("join");
 
             return result;
-
         }
-
     }
 
     private sealed class ThrowingJoiner(string secret)
         : IHostProcessToolsMarkerPairJoiner
     {
-
         public HostProcessToolsMarkerPairJoinResult Join(
             HostProcessToolsDatabaseMarkerEvidence database,
             HostProcessToolsOsMarkerEvidence? osMarker) =>
             throw new InvalidOperationException(secret);
-
     }
-
 }

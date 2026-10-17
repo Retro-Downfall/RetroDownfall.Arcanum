@@ -634,14 +634,21 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             Assert.IsType<LongRunningOperation>(await ReadOperationAsync(secondId)));
     }
 
+    /// <summary>
+    /// A completed row whose summary names the plan is not a claim. The stopped-host data service used
+    /// to treat it as one, matching rows by summary text and reporting them done, which is also how it
+    /// restarted an unlaunched row with the ordinary deletes and none of the protected lifecycle. A
+    /// global apply now acts only on the operation an authenticated reset record claimed, by exact
+    /// requested identity, so a row that merely looks like it is nothing to act on.
+    /// </summary>
     [SkippableFact]
-    public async Task Global_apply_recognizes_the_exact_completed_factory_reset_plan()
+    public async Task Global_apply_does_not_recognize_a_completed_factory_reset_row_by_its_summary()
     {
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
             GrimoireFixture.SqlCipherUnavailableReason);
 
-        using ServiceProvider provider = CreateProvider();
+        await using ServiceProvider provider = CreateProvider();
 
         await InstallExistingGrimoireAsync(provider);
 
@@ -653,10 +660,21 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
             CancellationToken.None);
 
-        Assert.True(plan.IsSuccess, plan.Error.Message);
+        // The measured plan needs the master key the envelope keys are derived from; without it the
+        // plan is refused with its own typed code and there is no apply to look at.
+        Assert.True(plan.IsFailure);
 
-        Guid completedOperationId = await InsertCompletedFactoryResetAsync(
-            plan.Value.PlanId);
+        Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, plan.Error.Code);
+
+        await provider.GetRequiredService<ISecretStore>().SaveApiKeyAsync("existing-grimoire-test-master-key");
+
+        plan = await dataService.PlanAsync(
+            new InstallationResetDataPlanRequest(InstallationResetDataScope.Global),
+            CancellationToken.None);
+
+        Assert.True(plan.IsSuccess, plan.IsFailure ? plan.Error.Message : string.Empty);
+
+        _ = await InsertCompletedFactoryResetAsync(plan.Value.PlanId);
 
         Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
             new DataRetentionApplyRequest(
@@ -664,11 +682,9 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 plan.Value.PlanId),
             CancellationToken.None);
 
-        Assert.True(applied.IsSuccess, applied.Error.Message);
+        Assert.True(applied.IsFailure, "A completed row was taken for a claim.");
 
-        Assert.Equal(completedOperationId, applied.Value.OperationId);
-
-        Assert.True(applied.Value.Reconciled);
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, applied.Error.Code);
     }
 
     [SkippableFact]
@@ -778,10 +794,37 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
     }
 
     [Fact]
-    public async Task Apply_without_a_database_reports_inventory_unavailable_because_nothing_ran()
+    public async Task A_workspace_apply_without_a_database_reports_inventory_unavailable_because_nothing_ran()
     {
         // The other half of the split: a failure before the canonical action starts has changed
         // nothing, so it keeps the code the service's closed set of pre-effect refusals names.
+        using ServiceProvider provider = CreateProvider();
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetDataService dataService = StoppedHostDataService(scope);
+
+        DataRetentionWorkspaceBinding binding = new(Guid.NewGuid(), "/workspace");
+
+        Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
+            new DataRetentionApplyRequest(
+                new DataRetentionRequest(
+                    DataRetentionOperation.ResetWorkspace,
+                    Workspace: binding),
+                "plan"),
+            CancellationToken.None);
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.InventoryUnavailable, applied.Error.Code);
+    }
+
+    [Fact]
+    public async Task A_global_apply_without_a_database_is_recovery_required_because_the_erasure_may_have_committed()
+    {
+        // The protected erasure runs only on a record that claimed it and is past its point of no
+        // return, so a Grimoire that is not there to be keyed is not a refusal made before any effect:
+        // the reset service retires its record on that code, and the erasure may already have committed.
         using ServiceProvider provider = CreateProvider();
 
         using IServiceScope scope = provider.CreateScope();
@@ -796,7 +839,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
 
         Assert.True(applied.IsFailure);
 
-        Assert.Equal(ErrorCodes.Data.InventoryUnavailable, applied.Error.Code);
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
     }
 
     private ServiceProvider CreateProvider(
@@ -1106,85 +1149,11 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(1, await CountRowsAsync("artifact_sensitivity", "ArtifactId", memoryId));
     }
 
-    private async Task SeedLabeledSagaMemoryAsync(Guid memoryId)
-    {
-        await using ArcanumDbContext context = _fixture.CreateContext(
-            ArcanumPaths.GrimoireDatabaseFile);
+    private Task SeedLabeledSagaMemoryAsync(Guid memoryId) =>
+        LabeledSagaMemorySeed.SeedAsync(_fixture, memoryId);
 
-        SqliteConnection connection = (SqliteConnection)context.Database.GetDbConnection();
-
-        if (connection.State is not System.Data.ConnectionState.Open)
-        {
-            await connection.OpenAsync(CancellationToken.None);
-        }
-
-        await using (SqliteCommand memory = connection.CreateCommand())
-        {
-            memory.CommandText = """
-                INSERT INTO saga_memories (Id, Content, CreatedAt, ScopeKindCode)
-                VALUES ($id, 'labelled saga fact', $created, 1);
-                """;
-
-            _ = memory.Parameters.AddWithValue("$id", memoryId.ToString("D").ToUpperInvariant());
-
-            _ = memory.Parameters.AddWithValue("$created", "2026-01-01T00:00:00.0000000Z");
-
-            _ = await memory.ExecuteNonQueryAsync(CancellationToken.None);
-        }
-
-        // Written through the ledger the serving host writes labels with, so the row this test
-        // protects is shaped by production rather than by the test's idea of a label.
-        CovenantConnectionSource connections = new(
-            context,
-            FixtureOrdinaryConnectionFactory.For(context));
-
-        try
-        {
-            ArtifactSensitivityLedger ledger = new(connections);
-
-            Result<LabeledArtifactWriteReceipt> receipt = await ledger.LabelAsync(
-                new DerivedArtifactWrite(
-                    SensitiveArtifactKind.Saga,
-                    memoryId,
-                    null,
-                    null,
-                    null,
-                    1,
-                    CovenantTask6Fixture.D(11),
-                    ContentSensitivity.CovenantDerived,
-                    GenerationProvenance.CreateExact([Guid.Parse("5E6F7081-92A3-4B5C-8D9E-0F1A2B3C4D5E")])),
-                CancellationToken.None);
-
-            Assert.True(receipt.IsSuccess, receipt.IsFailure ? receipt.Error.Message : string.Empty);
-        }
-        finally
-        {
-            connections.Dispose();
-        }
-    }
-
-    private async Task<int> CountRowsAsync(string table, string column, Guid id)
-    {
-        await using ArcanumDbContext context = _fixture.CreateContext(
-            ArcanumPaths.GrimoireDatabaseFile);
-
-        SqliteConnection connection = (SqliteConnection)context.Database.GetDbConnection();
-
-        if (connection.State is not System.Data.ConnectionState.Open)
-        {
-            await connection.OpenAsync(CancellationToken.None);
-        }
-
-        await using SqliteCommand command = connection.CreateCommand();
-
-        command.CommandText = $"SELECT COUNT(*) FROM {table} WHERE {column} = $id;";
-
-        _ = command.Parameters.AddWithValue("$id", id.ToString("D").ToUpperInvariant());
-
-        return Convert.ToInt32(
-            await command.ExecuteScalarAsync(CancellationToken.None),
-            global::System.Globalization.CultureInfo.InvariantCulture);
-    }
+    private Task<int> CountRowsAsync(string table, string column, Guid id) =>
+        LabeledSagaMemorySeed.CountRowsAsync(_fixture, table, column, id);
 
     private async Task AddWorkspaceDataAsync(Guid campaignId, string workspaceRoot)
     {

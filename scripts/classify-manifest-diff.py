@@ -27,6 +27,8 @@ share their site.
 
 Classes (the first that applies; the order is the order below)
   b-format  the added and the removed row are equal once the "@lease:<origin>" marker an Effect id carries is normalised away
+  n         the row belongs to a root the committed manifest did not have and NEW_ROOTS names: every row of a reviewed new root
+            is that root's, whichever source it comes from, so the root is what is reviewed and not its rows one by one
   a         the row's own site is in an edited source
   b         its Work or Effect capsule resolves to an acquisition, group or Root Lease Formal site in an edited source (in the
             manifest that carries the row, or in the one that carries the row it is paired with)
@@ -62,7 +64,7 @@ Invariants of a regeneration, checked whatever the labels are: no ProviderCall r
 the ProviderCall rows that have neither are the reviewed set (each under a root whose authority needs no Work, see
 UNFRAMED_PROVIDER_CALL_ROOTS), and the Long Rest roots hold none; no ProviderCall row is removed unless its own file was edited,
 a rule explains it or a ProviderCall row with both frames replaces it at the same site; a root the committed manifest did not have
-is a Long Rest root; every root of the committed manifest still has rows; the Long Rest roots admit the Long Rest kind and only
+is a Long Rest root or one NEW_ROOTS names; every root of the committed manifest still has rows; the Long Rest roots admit the Long Rest kind and only
 the handoff root reaches a provider; every Root Lease Formal row names a root that a Lease-Handoff binding row ties to its caller.
 
 Exit status: 0 when no row is unexplained, 1 otherwise, 2 for an unreadable input.
@@ -565,6 +567,60 @@ class Reach:
         )
 
 
+ATTESTED_APPLY_ROOT_TYPE = "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService"
+
+ATTESTED_APPLY_ROOT = ATTESTED_APPLY_ROOT_TYPE + ".ApplyFullUnderMaintenanceLockAsync"
+
+EXISTING_GRIMOIRE_SOURCE = "src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/InstallationResetExistingGrimoire.cs"
+
+
+@dataclasses.dataclass(frozen=True)
+class ReachCause:
+    """Why the attested apply's closure gained or lost the sites of one cause: the edited call and what it reaches."""
+
+    marker: str
+    reason: str
+
+
+# The attested full reset applies through the shared data step its three arms invoke. The checker resolves that invocation to every
+# step an arm passes (it keeps no per-caller context), so the closure of the attested apply is the union of the three arms' steps. The
+# stopped-host data step lives in InstallationResetExistingGrimoire, and these are the three causes of the rows it moved.
+AUTHORITY_MEASURED = ReachCause(
+    "PlanGlobalWithMeasuredInventoryAsync(",
+    "the stopped-host data service measures the Covenant family: the global plan and the erasure's authority step run "
+    "StoppedHostCovenantAuthority.EnsureAsync, which reads the persisted availability, the authority and envelope state, the "
+    "host-process-tools state and the master key, and the shared data step the attested apply invokes reaches both",
+)
+
+ERASURE_FACADE = ReachCause(
+    "ApplyFactoryErasureAsync(",
+    "the stopped-host apply of a factory reset is the reset-only erasure facade, which classifies the claimed operation from the "
+    "operation ledger, adopts a launch owner and runs the protected route, and the shared data step the attested apply invokes "
+    "reaches it",
+)
+
+ORDINARY_RECOVERY_GONE = ReachCause(
+    "RecoverFactoryResetAsync(",
+    "the stopped-host apply of a factory reset no longer recovers an unfinished row by summary match and restarts a version-zero "
+    "row with the ordinary deletes (DataRetentionService.RecoverFactoryResetAsync), so the shared data step the attested apply "
+    "invokes no longer reaches the ordinary factory body",
+)
+
+
+def _attested_apply_reach(source_path: str, member: str, callee: str, side: str, cause: ReachCause) -> "Reach":
+    return Reach(
+        ATTESTED_APPLY_ROOT_TYPE,
+        ATTESTED_APPLY_ROOT,
+        source_path,
+        member,
+        callee,
+        side,
+        EXISTING_GRIMOIRE_SOURCE,
+        cause.marker,
+        cause.reason,
+    )
+
+
 REACHED_THROUGH = (
     Reach(
         "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService",
@@ -577,6 +633,287 @@ REACHED_THROUGH = (
         "BackupRestorePhysicalTopology.Reconcile(",
         "the Covenant coordinator's restore now reconciles the physical topology (two calls), and Reconcile proves each node "
         "absent with ProveAbsent",
+    ),
+
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEnvelopeStateStore.cs",
+        "ReadAsync",
+        "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantEnvelopeStateStore.cs",
+        "ReadAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureStartupRecoveryOwnerAdopter.cs",
+        "AdoptCandidateBeforeReadinessAsync",
+        "System.Data.Common.DbCommand.ExecuteReaderAsync",
+        "+",
+        ERASURE_FACADE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantErasureStartupRecoveryOwnerAdopter.cs",
+        "AdoptCandidateBeforeReadinessAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "+",
+        ERASURE_FACADE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantPersistedAvailabilityPublisher.cs",
+        "TryReadAsync",
+        "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantPersistedAvailabilityPublisher.cs",
+        "TryReadAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantErasureCoordinator.cs",
+        "WithRequiredLedgerAsync",
+        "System.Data.Common.DbConnection.CloseAsync",
+        "+",
+        ERASURE_FACADE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs",
+        "",
+        "System.Data.Common.DbCommand.ExecuteReaderAsync",
+        "+",
+        ERASURE_FACADE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs",
+        "",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "+",
+        ERASURE_FACADE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/GrimoireTransitions/GrimoireOfflineTransitionStartupRecovery.cs",
+        "DispatchAsync",
+        "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateAsyncScope",
+        "+",
+        ERASURE_FACADE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantAuthorityStartupReconciler.cs",
+        "ReadAuthorityAsync",
+        "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/CovenantAuthorityStartupReconciler.cs",
+        "ReadAuthorityAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsAuthorityStore.cs",
+        "TableExistsAsync",
+        "System.Data.Common.DbCommand.ExecuteScalarAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsAuthorityStore.cs",
+        "TryReadAsync",
+        "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/HostProcessToolsAuthorityStore.cs",
+        "TryReadAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/MirroredOsCredential.cs",
+        "IsMirrorMarkedStale",
+        "System.IO.File.Exists",
+        "+",
+        AUTHORITY_MEASURED,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryActivation.cs",
+        "CloseFactoryServiceConnectionAsync",
+        "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.CloseConnectionAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "ApplyFactoryResetAsync",
+        "Microsoft.Data.Sqlite.SqliteConnection.BeginTransaction",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "ApplyFactoryResetAsync",
+        "System.Data.Common.DbTransaction.CommitAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "ApplyFactoryResetAsync",
+        "System.Data.Common.DbTransaction.RollbackAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "CaptureFactoryLogFiles",
+        "System.IO.Directory.EnumerateDirectories",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "CaptureFactoryLogFiles",
+        "System.IO.Directory.EnumerateFiles",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "CaptureFactoryQuarantinedLogFiles",
+        "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryCapturePath",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "CaptureFactoryQuarantinedLogFiles",
+        "System.IO.Directory.EnumerateDirectories",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "CaptureFactoryQuarantinedLogFiles",
+        "System.IO.Directory.EnumerateFiles",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "DeleteFactoryDirectories",
+        "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDelete",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "DeleteFactoryDirectories",
+        "System.IO.Directory.EnumerateFileSystemEntries",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "DeleteFactoryDirectories",
+        "System.IO.Directory.Exists",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "DeleteQuarantinedFactoryFiles",
+        "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryDeleteQuarantined",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "FactoryLaunchRowSurvivesAsync",
+        "System.Data.Common.DbCommand.ExecuteScalarAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "FactoryTableExistsAsync",
+        "System.Data.Common.DbCommand.ExecuteScalarAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "QuarantineFactoryFiles",
+        "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryQuarantine",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "ReadFactoryConflictRowsAsync",
+        "System.Data.Common.DbCommand.ExecuteReaderAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "ReadFactoryConflictRowsAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "RestoreQuarantinedFactoryFiles",
+        "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryRestoreQuarantined",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.FactoryReset.cs",
+        "ValidateFactoryFileSystemSnapshot",
+        "RetroDownfall.Arcanum.Infrastructure.Security.IdentityOwnedFileSystemCleanup.TryCapturePath",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs",
+        "CountInTransactionAsync",
+        "System.Data.Common.DbCommand.ExecuteScalarAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs",
+        "ExecuteAsync",
+        "System.Data.Common.DbCommand.ExecuteNonQueryAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs",
+        "",
+        "RetroDownfall.Arcanum.Infrastructure.Data.GrimoireOrdinaryConnectionFactory.OpenFreshAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
+    ),
+    _attested_apply_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs",
+        "",
+        "System.Data.Common.DbCommand.ExecuteNonQueryAsync",
+        "-",
+        ORDINARY_RECOVERY_GONE,
     ),
 )
 
@@ -614,10 +951,11 @@ def prove_reach(row: Row, side: str, edited: frozenset[str], sources: SourceText
 
 # --- Classification -------------------------------------------------------------------------------------------------------------
 
-CLASS_ORDER = ("b-format", "a", "b", "r", "c", "d")
+CLASS_ORDER = ("b-format", "n", "a", "b", "r", "c", "d")
 
 CLASS_TITLES = {
     "b-format": "the Effect id differs only by its @lease: marker",
+    "n": "row of a root the reviewed catalog added (NEW_ROOTS)",
     "a": "own site in an edited source",
     "b": "Work or Effect capsule names an edited acquisition, group or formal site",
     "r": "unedited site and frames reached through a reviewed edited call (parity)",
@@ -680,6 +1018,10 @@ def classify(
 
     context = Context(committed, regenerated, parity, sources)
 
+    committed_roots = {row.root for row in committed.rows}
+
+    reviewed_new_roots = {(entry.root_type, entry.operation) for entry in NEW_ROOTS}
+
     for side, row in delta:
         manifest = regenerated if side == "+" else committed
         other_manifest = committed if side == "+" else regenerated
@@ -705,6 +1047,11 @@ def classify(
 
         if unresolved:
             labelled.append(Labelled(side, row, "d", stage=stage, detail="unresolved frontier capsule " + unresolved[0][:12]))
+            continue
+
+        # A row of a reviewed new root is the root's: the committed manifest has no row of it to compare with.
+        if side == "+" and row.root not in committed_roots and selection_root(row) in reviewed_new_roots:
+            labelled.append(Labelled(side, row, "n", stage=stage))
             continue
 
         own_edit = row.source_path in edited
@@ -775,6 +1122,39 @@ class UnframedRoot:
     reason: str
 
 
+@dataclasses.dataclass(frozen=True)
+class NewRoot:
+    """A root the reviewed catalog added to the checker, whose rows are all new with it."""
+
+    root_type: str
+    operation: str  # the authority operation id without the digest a selection root carries
+    reason: str
+
+
+# The roots a regeneration may add besides the Long Rest roots. Each is a Chain entry of the checker's non-hosted catalog, declared
+# with an authority, and a reason that names the code it covers. A row under one of them is class n.
+NEW_ROOTS = (
+    NewRoot(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync",
+        "the stopped-host reset's fresh apply: the data step is the ExistingGrimoire plan or the claimed factory erasure, under the "
+        "generation-bound maintenance lock and an authenticated reset owner",
+    ),
+    NewRoot(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync",
+        "the stopped-host reset's resume: it recovers the transition journal first, then continues the claimed data step, under the "
+        "generation-bound maintenance lock and an authenticated reset owner",
+    ),
+    NewRoot(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync",
+        "the reset-only protected erasure a stopped-host global reset runs for the one operation its authenticated record claimed, "
+        "under the installation-reset maintenance lock lent by the stopped-host issuer",
+    ),
+)
+
+
 # The ProviderCall rows of the committed manifest that have no Work, an Effect or neither, are all under these roots. They are not
 # Long Rest roots, this delivery does not touch them, and the regeneration leaves them byte for byte as they were. Each root is
 # declared in the checker with an authority that needs no Work from a lease the root holds; the reason is that declaration's.
@@ -812,6 +1192,20 @@ UNFRAMED_PROVIDER_CALL_ROOTS = (
         "the reset spawns and stops the daemon process under the generation-bound maintenance lock and an authenticated reset owner",
     ),
     UnframedRoot(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync",
+        "OwnerBoundMaintenance",
+        "the fresh stopped-host reset spawns and stops the daemon process under the generation-bound maintenance lock and an "
+        "authenticated reset owner",
+    ),
+    UnframedRoot(
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService",
+        "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync",
+        "OwnerBoundMaintenance",
+        "the resumed stopped-host reset spawns and stops the daemon process under the generation-bound maintenance lock and an "
+        "authenticated reset owner",
+    ),
+    UnframedRoot(
         "WorkspaceIndexingService",
         "RetroDownfall.Arcanum.Infrastructure.Hosting.WorkspaceIndexingService.QueueIndexNow",
         "FiniteRequest",
@@ -842,7 +1236,11 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
     # A lifecycle, maintenance or request root is judged without a Work frontier by design, so the committed manifest already holds
     # unframed ProviderCall rows. They sit under the reviewed roots, the regeneration must not add one, and the Long Rest roots,
     # which are ordinary hosted work, must hold none.
-    added_unframed = sorted(unframed(regenerated) - unframed(committed))
+    # A reviewed new root has no rows in the committed manifest, so every row it holds is added; its unframed ProviderCall rows are
+    # held to the reviewed list below instead of to the committed manifest.
+    new_root_keys = {(entry.root_type, entry.operation) for entry in NEW_ROOTS}
+
+    added_unframed = sorted(row for row in unframed(regenerated) - unframed(committed) if selection_root(row) not in new_root_keys)
 
     long_rest_unframed = [row for row in unframed(regenerated) if is_long_rest_root(row.root)]
 
@@ -866,7 +1264,11 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
     old_roots = {row.root for row in committed.rows}
     new_roots = {row.root for row in regenerated.rows}
 
-    foreign_new_roots = sorted(root for root in new_roots - old_roots if not is_long_rest_root(root))
+    foreign_new_roots = sorted(
+        root
+        for root in new_roots - old_roots
+        if not is_long_rest_root(root) and (root[0], root[1].split("~")[0]) not in new_root_keys
+    )
 
     lost_roots = sorted(old_roots - new_roots)
 
@@ -912,7 +1314,7 @@ def check_invariants(committed: Manifest, regenerated: Manifest, labelled: list[
         ),
         Invariant(
             "new-roots",
-            "a root the committed manifest did not have is a Long Rest root",
+            "a root the committed manifest did not have is a Long Rest root or one NEW_ROOTS names",
             [f"{root[0]}|{root[1]}" for root in foreign_new_roots],
         ),
         Invariant(

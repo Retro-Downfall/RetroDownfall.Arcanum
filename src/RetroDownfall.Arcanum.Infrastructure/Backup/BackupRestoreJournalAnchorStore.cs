@@ -1286,6 +1286,14 @@ internal sealed partial class BackupRestoreJournalAnchorStore(
         return BackupRestoreJournalAuthenticator.ValidatePayload(payload);
     }
 
+    /// <summary>Whether this profile's restore-journal anchor exists, by metadata alone.</summary>
+    internal OsCredentialStoreStatus ProbeAnchorPresence(BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        return CredentialPresenceProbe.Probe(_credentials, AnchorAccount(profileNamespace));
+    }
+
     private static string AnchorAccount(BackupRestoreProfileNamespace profileNamespace) =>
         ArcanumCredentialIdentity.BackupRestoreJournalAnchorAccount(profileNamespace.AccountSuffix);
 }

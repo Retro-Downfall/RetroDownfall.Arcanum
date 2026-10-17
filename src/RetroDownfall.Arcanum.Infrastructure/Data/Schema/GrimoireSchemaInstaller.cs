@@ -943,8 +943,10 @@ internal sealed class GrimoireSchemaRefusedException(
         + "database that disagrees with it in any other way is repaired deliberately rather than "
         + "guessed at, because nothing records what its shape was or what would have to be rewritten. "
         + "Restore a .arcbackup generation taken by this build with 'arcanum backup restore', or start "
-        + "fresh by moving arcanum.db and arcanum.db.kdf aside under ~/.config/arcanum/ — session data "
-        + "in the old file is not readable by this build either way.")
+        + "fresh by moving the Grimoire's whole binding set aside (the database and its sidecars, the .kdf "
+        + "salt, attachments/, files/, the CLI state files, and grimoire-key.dat in the secret-store "
+        + "directory) as the \"Local Grimoire reinstall\" section of docs/Arcanum.Engineering.md describes "
+        + "— session data in the old file is not readable by this build either way.")
 {
     public GrimoireSchemaTransactionTier Tier { get; } = tier;
 

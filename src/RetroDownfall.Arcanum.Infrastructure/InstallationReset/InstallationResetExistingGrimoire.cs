@@ -12,6 +12,8 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Operations;
@@ -33,6 +35,11 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 
+/// <param name="covenantOperationGate">
+/// The process gate the global plan leases its installation read from. Injected rather than looked up,
+/// so that the origin of the gate is the container's own registration and not a provider this service
+/// holds. Only the global plan passes it on; every other path builds its retention service with none.
+/// </param>
 /// <param name="secretStoreProvider">
 /// Resolved at first use on purpose. Creating the secret store creates the Data Protection key
 /// ring, and the planning and lockless-refusal paths have to work on an installation that has no
@@ -46,19 +53,14 @@ internal sealed class InstallationResetExistingGrimoire(
     ILoggerFactory loggerFactory,
     IGrimoireOrdinaryConnectionFactory ordinaryConnections,
     IGrimoireDbPassphraseSource passphraseSource,
-    IStoppedHostGrimoireConnectionFactory stoppedHostConnections)
+    IStoppedHostGrimoireConnectionFactory stoppedHostConnections,
+    ICovenantOperationGate covenantOperationGate)
     : IInstallationResetDataService,
       IInstallationResetStoppedHostDataService,
       IInstallationResetWorkspaceResolver,
       IInstallationResetDatabaseIdentityReader,
       IInstallationResetHostProcessToolsDatabaseEvidenceReader
 {
-    private static readonly LongRunningOperationState[] RecoverableFactoryStates =
-    [
-        LongRunningOperationState.Running,
-        LongRunningOperationState.ReconciliationRequired,
-    ];
-
     private static readonly LongRunningOperationState[] RecoverableMutationStates =
     [
         LongRunningOperationState.Running,
@@ -96,6 +98,14 @@ internal sealed class InstallationResetExistingGrimoire(
             return Task.FromResult(InvalidDataPlan());
         }
 
+        if (dataRequest.Operation is DataRetentionOperation.FactoryReset)
+        {
+            return PlanGlobalWithMeasuredInventoryAsync(
+                dataRequest,
+                issuer,
+                cancellationToken);
+        }
+
         return ExecuteUnderStoppedHostAuthorityAsync(
             issuer,
             static authorityIssuer => authorityIssuer
@@ -111,6 +121,82 @@ internal sealed class InstallationResetExistingGrimoire(
                 return Result<DataRetentionPlan>.Success(plan);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// The global plan, with the Covenant family measured through the real gate and no fallback.
+    /// </summary>
+    /// <remarks>
+    /// The plan stays on the query-only plan-read lease. What is added to it is the process's Covenant
+    /// runtime (<see cref="StoppedHostCovenantAuthority"/>), which lets the gate grant the installation
+    /// read the inventory is taken under, and the admission form of the plan, which returns the
+    /// refusal the gate gave instead of quietly planning without a family. The ordinary plan builder's
+    /// fallback for an unavailable capability is the thing this path exists not to take: a destructive
+    /// plan that never measured the family would let a reset be confirmed for data it had not counted.
+    ///
+    /// <para>The read lease the admission holds is released before this returns, exactly as the ordinary
+    /// plan does, so the apply that follows takes its own.</para>
+    /// </remarks>
+    private async Task<Result<DataRetentionPlan>> PlanGlobalWithMeasuredInventoryAsync(
+        DataRetentionRequest dataRequest,
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+        StoppedHostCovenantAuthority covenantAuthority = secretStoreProvider
+            .GetRequiredService<StoppedHostCovenantAuthority>();
+
+        Result<HostProcessToolsRecoveryMarkerSnapshot> marker = covenantAuthority.CaptureMarker();
+
+        if (marker.IsFailure)
+        {
+            return Result<DataRetentionPlan>.Failure(marker.Error);
+        }
+
+        return await ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetPlanReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetPlanReadAsync(authority, token),
+            async (retention, _, context, token) =>
+            {
+                Result ensured = await covenantAuthority
+                    .EnsureAsync(
+                        (SqliteConnection)context.Database.GetDbConnection(),
+                        marker.Value,
+                        token)
+                    .ConfigureAwait(false);
+
+                if (ensured.IsFailure)
+                {
+                    return Result<DataRetentionPlan>.Failure(ensured.Error);
+                }
+
+                Result<DataRetentionPlanAdmission> admitted = await retention
+                    .PlanAdmissionAsync(
+                        dataRequest,
+                        token,
+                        DataRetentionPlanAdmissionCapability.Installation)
+                    .ConfigureAwait(false);
+
+                if (admitted.IsFailure)
+                {
+                    return Result<DataRetentionPlan>.Failure(admitted.Error);
+                }
+
+                if (admitted.Value.ReadLease is { } lease)
+                {
+                    await using (lease.ConfigureAwait(false))
+                    {
+                        return Result<DataRetentionPlan>.Success(admitted.Value.Plan);
+                    }
+                }
+
+                return Result<DataRetentionPlan>.Success(admitted.Value.Plan);
+            },
+            cancellationToken,
+            measureCovenant: true)
+            .ConfigureAwait(false);
     }
 
     public Task<Result<DataRetentionApplyResult>> ApplyAsync(
@@ -130,6 +216,13 @@ internal sealed class InstallationResetExistingGrimoire(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        ArgumentNullException.ThrowIfNull(issuer);
+
+        if (request.Request.Operation is DataRetentionOperation.FactoryReset)
+        {
+            return ApplyFactoryErasureAsync(request, issuer, cancellationToken);
+        }
 
         return ExecuteUnderStoppedHostAuthorityAsync(
             issuer,
@@ -160,32 +253,114 @@ internal sealed class InstallationResetExistingGrimoire(
                     }
                 }
 
-                if (request.Request.Operation is DataRetentionOperation.FactoryReset)
-                {
-                    Result<DataRetentionApplyResult?> recovered =
-                        await RecoverFactoryResetAsync(
-                            retention,
-                            operations,
-                            request,
-                            token).ConfigureAwait(false);
-
-                    if (recovered.IsFailure)
-                    {
-                        return Result<DataRetentionApplyResult>.Failure(
-                            recovered.Error);
-                    }
-
-                    if (recovered.Value is { } completed)
-                    {
-                        return Result<DataRetentionApplyResult>.Success(completed);
-                    }
-                }
-
                 return await retention.ApplyAsync(request, token)
                     .ConfigureAwait(false);
             },
             cancellationToken,
             actionMayChangeState: true);
+    }
+
+    /// <summary>
+    /// The global data step: the protected erasure, run over this process's own composition.
+    /// </summary>
+    /// <remarks>
+    /// It opens no stopped-host lease and holds none while the erasure runs. A lease is invisible to
+    /// the drain the erasure's closed period waits on, and the context composed over one does not close
+    /// it, so the period cannot run over a lease. What this method does is key the database the
+    /// ordinary composition is about to open, exactly as the leased path does, and hand the request to
+    /// <see cref="StoppedHostFactoryErasure"/>, which acts only on a claim the authenticated reset
+    /// record made. The legacy summary-matching recovery the leased path used to run for a factory
+    /// reset is gone for this scope: a row it found at version zero was restarted with the ordinary
+    /// deletes and none of the protected lifecycle.
+    ///
+    /// <para>This runs only on a claimed record that is past its point of no return, so a database or a
+    /// key that is not there to be prepared is not "inventory unavailable": the erasure may already
+    /// have committed, and the reset service must keep its record (<c>Data.RecoveryRequired</c>). A
+    /// key whose preparation throws, before the erasure is entered, is the one case that is still the
+    /// honest "nothing ran", which the service then settles by reading the position of the claim.</para>
+    /// </remarks>
+    private async Task<Result<DataRetentionApplyResult>> ApplyFactoryErasureAsync(
+        DataRetentionApplyRequest request,
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Set the moment the erasure is about to be entered. Everything before it - reading the sidecar
+        // and the secret - has changed nothing.
+        bool erasureEntered = false;
+
+        try
+        {
+            if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile)
+                || !await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
+            {
+                return OutcomeUnconfirmed<DataRetentionApplyResult>();
+            }
+
+            erasureEntered = true;
+
+            return await secretStoreProvider
+                .GetRequiredService<StoppedHostFactoryErasure>()
+                .ApplyAsync(request, issuer, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or NotSupportedException
+                or FormatException
+                or SqliteException
+                or CryptographicException)
+        {
+            // Once the erasure was entered it started before it failed, so this is not "nothing ran".
+            return erasureEntered
+                ? OutcomeUnconfirmed<DataRetentionApplyResult>()
+                : Unavailable<DataRetentionApplyResult>();
+        }
+    }
+
+    public async Task<Result<StoppedHostNestedLaunchState>>
+        ReadNestedLaunchStateUnderStoppedHostAuthorityAsync(
+            Guid nestedOperationId,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile)
+                || !await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
+            {
+                return Unavailable<StoppedHostNestedLaunchState>();
+            }
+
+            return await secretStoreProvider
+                .GetRequiredService<StoppedHostFactoryErasure>()
+                .ReadLaunchStateAsync(nestedOperationId, issuer, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (
+            exception is IOException
+                or UnauthorizedAccessException
+                or InvalidDataException
+                or NotSupportedException
+                or FormatException
+                or SqliteException
+                or CryptographicException)
+        {
+            return Unavailable<StoppedHostNestedLaunchState>();
+        }
     }
 
     public Task<Result<InstallationResetWorkspaceResolution>> ResolveAsync(
@@ -274,6 +449,47 @@ internal sealed class InstallationResetExistingGrimoire(
                     .ConfigureAwait(false),
             cancellationToken);
 
+    /// <summary>
+    /// Whether the Grimoire has its authority row, on the read-only identity lane.
+    /// </summary>
+    /// <remarks>
+    /// No file is the same answer as no row, and so is a file that never finished its first install: the
+    /// start that creates a Grimoire asks the same question of the same table with the same rule
+    /// (<see cref="Hosting.GrimoireDatabaseBootstrapper.AuthorityRowExistsAsync"/>). A database that
+    /// exists and cannot be opened and read is not "no row": it is an unprovable position, reported as an
+    /// unavailable inventory, so a caller whose action depends on whether there is a row (the
+    /// installation-identity repair removes or writes back an item for no row, and seeds it again from
+    /// the row for one) never acts on a guess.
+    /// </remarks>
+    public Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
+        IStoppedHostGrimoireAuthorityIssuer issuer,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(issuer);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!File.Exists(ArcanumPaths.GrimoireDatabaseFile))
+        {
+            return Task.FromResult(Result<bool>.Success(false));
+        }
+
+        return ExecuteUnderStoppedHostAuthorityAsync(
+            issuer,
+            static authorityIssuer => authorityIssuer
+                .IssueStoppedHostInstallationResetIdentityReadAuthority(),
+            static (factory, authority, token) => factory
+                .OpenStoppedHostInstallationResetIdentityReadAsync(authority, token),
+            static async (_, _, context, token) =>
+                Result<bool>.Success(
+                    await Hosting.GrimoireDatabaseBootstrapper
+                        .AuthorityRowExistsAsync(
+                            (SqliteConnection)context.Database.GetDbConnection(),
+                            token)
+                        .ConfigureAwait(false)),
+            cancellationToken);
+    }
+
     Task<Result<HostProcessToolsDatabaseMarkerEvidence>>
         IInstallationResetHostProcessToolsDatabaseEvidenceReader.ReadMarkerEvidenceAsync(
             CancellationToken cancellationToken)
@@ -327,7 +543,8 @@ internal sealed class InstallationResetExistingGrimoire(
             CancellationToken,
             Task<Result<T>>> action,
         CancellationToken cancellationToken,
-        bool actionMayChangeState = false)
+        bool actionMayChangeState = false,
+        bool measureCovenant = false)
     {
         ArgumentNullException.ThrowIfNull(issuer);
 
@@ -347,26 +564,10 @@ internal sealed class InstallationResetExistingGrimoire(
 
         try
         {
-            GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(
-                databasePath);
-
-            SecretStoreReadResult secret = await secretStoreProvider
-                .GetRequiredService<DataProtectionSecretStore>()
-                .GetGrimoireEncryptionSecretReadResultAsync()
-                .ConfigureAwait(false);
-
-            if (secret.Status is not SecretStoreReadStatus.Ok
-                || string.IsNullOrEmpty(secret.Value))
+            if (!await TryPrepareDatabaseKeyAsync().ConfigureAwait(false))
             {
                 return Unavailable<T>();
             }
-
-            string passphrase = GrimoireKeyDerivation
-                .DerivePassphraseFromEncryptionSecret(
-                    secret.Value,
-                    sidecar.GetSaltBytes());
-
-            passphraseSource.SetPassphrase(passphrase);
 
             Result<IStoppedHostGrimoireConnectionAuthority> issued = issue(issuer);
 
@@ -421,7 +622,8 @@ internal sealed class InstallationResetExistingGrimoire(
                 loggerFactory.CreateLogger<DataRetentionService>(),
                 new CovenantLabeledArtifactGuard(
                     new ArtifactSensitivityLedger(covenantConnections),
-                    loggerFactory.CreateLogger<CovenantLabeledArtifactGuard>()));
+                    loggerFactory.CreateLogger<CovenantLabeledArtifactGuard>()),
+                covenantGate: measureCovenant ? covenantOperationGate : null);
 
             actionStarted = true;
 
@@ -454,204 +656,35 @@ internal sealed class InstallationResetExistingGrimoire(
         }
     }
 
-    private async Task<Result<DataRetentionApplyResult?>> RecoverFactoryResetAsync(
-        DataRetentionService retention,
-        LongRunningOperationStore operations,
-        DataRetentionApplyRequest request,
-        CancellationToken cancellationToken)
+    /// <summary>
+    /// Keys the database the ordinary composition is about to open, from the sidecar's salt and the
+    /// dedicated Grimoire secret. Reports false, having changed nothing, when either is not there.
+    /// </summary>
+    private async Task<bool> TryPrepareDatabaseKeyAsync()
     {
-        string expectedSummary = FactoryResetSummary(
-            request.ExpectedPlanId ?? string.Empty);
+        GrimoireKdfSidecar sidecar = GrimoireKdfSidecarFile.Read(
+            ArcanumPaths.GrimoireDatabaseFile);
 
-        List<LongRunningOperation> recoverable = [];
+        SecretStoreReadResult secret = await secretStoreProvider
+            .GetRequiredService<DataProtectionSecretStore>()
+            .GetGrimoireEncryptionSecretReadResultAsync()
+            .ConfigureAwait(false);
 
-        foreach (LongRunningOperationState state in RecoverableFactoryStates)
+        if (secret.Status is not SecretStoreReadStatus.Ok
+            || string.IsNullOrEmpty(secret.Value))
         {
-            IReadOnlyList<LongRunningOperation> rows = await operations.ListAsync(
-                new LongRunningOperationQuery(
-                    LongRunningOperationKinds.DataRetentionFactoryReset,
-                    state,
-                    Limit: 2),
-                cancellationToken).ConfigureAwait(false);
-
-            recoverable.AddRange(rows);
+            return false;
         }
 
-        if (recoverable.Count == 0)
-        {
-            return await FindCompletedFactoryResetAsync(
-                operations,
-                request,
-                expectedSummary,
-                cancellationToken).ConfigureAwait(false);
-        }
+        string passphrase = GrimoireKeyDerivation
+            .DerivePassphraseFromEncryptionSecret(
+                secret.Value,
+                sidecar.GetSaltBytes());
 
-        if (recoverable.Count != 1
-            || !MatchesFactoryResetOperation(
-                recoverable[0],
-                expectedSummary))
-        {
-            return RecoveryFailure();
-        }
+        passphraseSource.SetPassphrase(passphrase);
 
-        LongRunningOperation operation = recoverable[0];
-
-        DateTimeOffset now = timeProvider.GetUtcNow();
-
-        if (operation.State is LongRunningOperationState.Running)
-        {
-            bool released = await operations.TryTransitionAsync(
-                operation.Id,
-                operation.Revision,
-                ownerId: null,
-                LongRunningOperationState.ReconciliationRequired,
-                now,
-                ErrorCodes.Data.ReconciliationFailed,
-                cancellationToken).ConfigureAwait(false);
-
-            if (!released)
-            {
-                return RecoveryFailure();
-            }
-
-            operation = await operations.GetAsync(
-                operation.Id,
-                cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidDataException(
-                    "The factory-reset operation disappeared during recovery.");
-        }
-
-        if (operation.TerminalErrorCode != ErrorCodes.Data.ReconciliationFailed)
-        {
-            return RecoveryFailure();
-        }
-
-        string ownerId = "installation-reset-recovery:"
-            + Guid.NewGuid().ToString("N");
-
-        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
-            operation.Id,
-            ownerId,
-            now,
-            now.AddMinutes(5),
-            cancellationToken).ConfigureAwait(false);
-
-        if (!lease.Acquired)
-        {
-            return RecoveryFailure();
-        }
-
-        LongRunningOperationRecoveryResult outcome = await retention
-            .RecoverFactoryResetAsync(
-                lease.Operation,
-                cancellationToken).ConfigureAwait(false);
-
-        LongRunningOperation latest = await operations.GetAsync(
-            operation.Id,
-            cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidDataException(
-                "The factory-reset operation disappeared during recovery.");
-
-        bool transitioned = await operations.TryTransitionAsync(
-            latest.Id,
-            latest.Revision,
-            ownerId,
-            outcome.State,
-            timeProvider.GetUtcNow(),
-            outcome.ErrorCode,
-            cancellationToken).ConfigureAwait(false);
-
-        if (!transitioned
-            || outcome.State is not LongRunningOperationState.Completed)
-        {
-            return RecoveryFailure();
-        }
-
-        return Result<DataRetentionApplyResult?>.Success(
-            new DataRetentionApplyResult(
-                operation.Id,
-                request.ExpectedPlanId ?? string.Empty,
-                RowsDeleted: 0,
-                FilesDeleted: 0,
-                EstimatedBytesDeleted: 0,
-                DerivedRecordsDeleted: 0,
-                Reconciled: true,
-                Blockers: [],
-                Conflicts: []));
+        return true;
     }
-
-    private static async Task<Result<DataRetentionApplyResult?>>
-        FindCompletedFactoryResetAsync(
-            LongRunningOperationStore operations,
-            DataRetentionApplyRequest request,
-            string expectedSummary,
-            CancellationToken cancellationToken)
-    {
-        const int pageSize = 500;
-
-        LongRunningOperation? match = null;
-
-        for (int offset = 0; ; offset += pageSize)
-        {
-            IReadOnlyList<LongRunningOperation> rows = await operations.ListAsync(
-                new LongRunningOperationQuery(
-                    LongRunningOperationKinds.DataRetentionFactoryReset,
-                    LongRunningOperationState.Completed,
-                    Limit: pageSize,
-                    Offset: offset),
-                cancellationToken).ConfigureAwait(false);
-
-            foreach (LongRunningOperation row in rows)
-            {
-                if (!MatchesFactoryResetOperation(row, expectedSummary))
-                {
-                    continue;
-                }
-
-                if (match is not null)
-                {
-                    return RecoveryFailure();
-                }
-
-                match = row;
-            }
-
-            if (rows.Count < pageSize)
-            {
-                break;
-            }
-        }
-
-        if (match is null)
-        {
-            return Result<DataRetentionApplyResult?>.Success(null);
-        }
-
-        return Result<DataRetentionApplyResult?>.Success(
-            new DataRetentionApplyResult(
-                match.Id,
-                request.ExpectedPlanId ?? string.Empty,
-                RowsDeleted: 0,
-                FilesDeleted: 0,
-                EstimatedBytesDeleted: 0,
-                DerivedRecordsDeleted: 0,
-                Reconciled: true,
-                Blockers: [],
-                Conflicts: []));
-    }
-
-    private static bool MatchesFactoryResetOperation(
-        LongRunningOperation operation,
-        string expectedSummary) =>
-        operation.RecoveryPolicy
-            is LongRunningOperationRecoveryPolicy.RestartIdempotently
-        && string.Equals(
-            operation.PublicSummary,
-            expectedSummary,
-            StringComparison.Ordinal);
-
-    private static string FactoryResetSummary(string planId) =>
-        $"Applying FactoryReset data-retention plan {planId}.";
 
     private async Task<Result<DataRetentionApplyResult?>> RecoverWorkspaceResetAsync(
         DataRetentionService retention,

@@ -157,6 +157,16 @@ public sealed record InstallationResetAcceptedBinding(
     [property: JsonRequired] string[] CredentialAccounts,
     [property: JsonRequired] string[] DataPlanIds);
 
+/// <summary>
+/// What an installation reset would remove, and what an operator confirms by applying it.
+/// </summary>
+/// <remarks>
+/// <paramref name="CovenantInventory"/> is the Covenant family as the stopped-host planner measured it
+/// for the global and all scopes, and is absent everywhere else: a workspace plan, a plan a serving
+/// host produced, and the placeholder a resumed reset reproduces. It is a report, not a second
+/// identity. The five numbers are already bound into the data plan that this plan's identifier
+/// derives from, so the installation plan identifier does not read this member.
+/// </remarks>
 public sealed record InstallationResetPlan(
     [property: JsonRequired] string PlanId,
     [property: JsonRequired] InstallationResetScope Scope,
@@ -172,7 +182,9 @@ public sealed record InstallationResetPlan(
     long? Rows,
     long Files,
     long EstimatedBytes,
-    [property: JsonRequired] InstallationResetAcceptedBinding AcceptedBinding);
+    [property: JsonRequired] InstallationResetAcceptedBinding AcceptedBinding,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    DataRetentionCovenantInventory? CovenantInventory = null);
 
 public sealed record InstallationResetVerification(
     bool Succeeded,

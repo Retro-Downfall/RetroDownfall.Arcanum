@@ -2,6 +2,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
@@ -306,6 +308,16 @@ internal sealed partial class GrimoireOfflineTransitionJournalAnchorStore
         GrimoireOfflineTransitionAnchorV1 anchor) =>
         anchor.ProfileNamespaceDigest == location.ProfileNamespace.Digest
         && anchor.JournalLocationDigest == location.JournalLocationDigest;
+
+    /// <summary>Whether this profile's offline-transition journal anchor exists, by metadata alone.</summary>
+    internal OsCredentialStoreStatus ProbeAnchorPresence(BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        return CredentialPresenceProbe.Probe(
+            _credentials,
+            ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(profileNamespace.AccountSuffix));
+    }
 
     private static string Account(GrimoireOfflineTransitionJournalLocation location) =>
         ArcanumCredentialIdentity.GrimoireTransitionJournalAnchorAccount(

@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Build;
@@ -1350,6 +1351,423 @@ public sealed class DocumentationCodeContradictionTests
         {
             Assert.DoesNotContain(stale, ReadDocument(document), StringComparison.Ordinal);
         }
+    }
+
+    /// <summary>
+    /// A global or all reset in the stopped-host process measures the Covenant family and runs the
+    /// protected erasure itself, so no document may still say that such a reset is refused for want of
+    /// an inventory, and each document that describes the planning says what measures it and which
+    /// refusals are typed.
+    /// </summary>
+    [Fact]
+    public void A_stopped_host_global_reset_is_documented_as_measuring_and_erasing_the_Covenant_family()
+    {
+        string[] documents =
+        [
+            "Arcanum.DESIGN.md",
+            "Arcanum.Command.Reference.md",
+            "Arcanum.Engineering.md",
+            "Arcanum.OATH.md",
+            "Arcanum.Design.Human.md",
+            "Arcanum.CHAT-LOOP.md",
+            "Arcanum.API.md",
+        ];
+
+        foreach (string document in documents)
+        {
+            string text = ReadDocument(document);
+
+            foreach (string stale in (string[])[
+                "currently refused at planning",
+                "Today every global or all invocation is refused",
+                "The all scope is refused whole",
+                "`--all` is refused entirely before any effect",
+                "has no Covenant gate to inventory the family",
+                "is an open owner decision and is not what ships",
+                "is the supported way to start over meanwhile",
+            ])
+            {
+                Assert.DoesNotContain(stale, text, StringComparison.Ordinal);
+            }
+        }
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        foreach (string token in (string[])[
+            "`StoppedHostCovenantAuthority`",
+            "`StoppedHostFactoryErasure`",
+            "`PlanAdmissionAsync(Installation)`",
+            "`IssueStoppedHostFactoryErasureLockLoan`",
+            "`StoppedHostLockLender`",
+            "`Covenant.OperatorAuthorityUnavailable`",
+            "`Covenant.HostToolsTransitionRequired`",
+            "**Resuming a reset the stopped host began.**",
+        ])
+        {
+            Assert.Contains(token, design, StringComparison.Ordinal);
+        }
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        foreach (string token in (string[])[
+            "`Covenant.OperatorAuthorityUnavailable` for a master key that is missing",
+            "\"The local Covenant inventory is unavailable.\" is reserved for a plan that succeeded without any inventory",
+            "leaves a write-ahead-logged Grimoire without new `-wal` or `-shm` files",
+            "`arcanum daemon install` restores it",
+            "which no ordinary spelling can reset",
+            "is not yet a complete route",
+        ])
+        {
+            Assert.Contains(token, reference, StringComparison.Ordinal);
+        }
+
+        // The attested arm cannot get past the first checkpoint after its claim while the store holds a
+        // claim-bearing record in the exact Prepared pre-effect shape, so the reference may not promise
+        // the terminal credential cleanup for it.
+        Assert.DoesNotContain("and terminal credential cleanup described above", reference, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Only once that inventory is verified does the locked service continue", reference, StringComparison.Ordinal);
+
+        // The five typed causes the documents name are the five the authority returns.
+        string authority = ReadSource("Infrastructure", "InstallationReset", "StoppedHostCovenantAuthority.cs");
+
+        foreach (string code in (string[])[
+            "ErrorCodes.Covenant.OperatorAuthorityUnavailable",
+            "ErrorCodes.Covenant.IntegrityFailure",
+            "ErrorCodes.Covenant.Unavailable",
+            "ErrorCodes.Covenant.HostToolsTransitionRequired",
+            "ErrorCodes.Data.InventoryUnavailable",
+        ])
+        {
+            Assert.Contains(code, authority, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// The damaged installation identity is cleared by a command, not by hand, and every place that
+    /// sends an operator to the credential store says so: the startup refusal names the command, the
+    /// reference lists it, the design and the Engineering guide describe the conditions, and the
+    /// guide no longer carries credential-store commands for a value that must not be removed by hand.
+    /// </summary>
+    [Fact]
+    public void The_damaged_installation_identity_is_documented_as_cleared_by_the_repair_command()
+    {
+        string bootstrapper = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs");
+
+        Assert.Contains("arcanum data repair-installation-identity", bootstrapper, StringComparison.Ordinal);
+
+        string engineering = ReadDocument("Arcanum.Engineering.md");
+
+        Assert.Contains("arcanum data repair-installation-identity --dry-run", engineering, StringComparison.Ordinal);
+
+        foreach (string stale in (string[])[
+            "security delete-generic-password",
+            "security find-generic-password",
+            "delete the generic credential `arcanum/<account>`",
+            "so the one credential-store item is removed by the operator, by hand",
+            "The operator removes the one item instead, by hand",
+        ])
+        {
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, ReadDocument("Arcanum.DESIGN.md"), StringComparison.Ordinal);
+        }
+
+        Assert.Contains("`arcanum data repair-installation-identity`", ReadDocument("Arcanum.DESIGN.md"), StringComparison.Ordinal);
+
+        Assert.Contains(
+            "| `arcanum data repair-installation-identity [--dry-run]` |",
+            ReadDocument("Arcanum.Command.Reference.md"),
+            StringComparison.Ordinal);
+
+        Assert.Contains("data repair-installation-identity", File.ReadAllText(
+            Path.Combine(TestRepositoryPaths.RepositoryRoot(), "AGENTS.md")), StringComparison.Ordinal);
+
+        // The only credential the repair removes is the identity item, and the removal is the identity
+        // provider's own: one delete, of the account it derives, refused for a valid identity.
+        string provider = ReadSource("Infrastructure", "Backup", "BackupRestoreJournalInstallationIdentityProvider.cs");
+
+        Assert.Equal(1, Regex.Count(provider, @"_credentials\.Delete\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+
+        Assert.Contains(
+            "_credentials.Delete(ArcanumCredentialIdentity.Service, Account(profileNamespace))",
+            provider,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A start refuses a damaged installation identity in the same words from both places that read it
+    /// (the pair recovery, whether or not a Grimoire exists, and the bootstrap), and the words have one owner: the host maps the pair's failure to the
+    /// bootstrapper's refusal and does not carry a second copy of the command it names.
+    /// </summary>
+    [Fact]
+    public void The_damaged_installation_identity_refusal_has_one_owner_that_the_host_and_the_bootstrap_both_use()
+    {
+        string bootstrapper = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs");
+
+        string host = ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseHostedService.cs");
+
+        string provider = ReadSource("Infrastructure", "Backup", "BackupRestoreJournalInstallationIdentityProvider.cs");
+
+        // The words are in the one method, and nowhere else in the bootstrapper or in the host.
+        int refusal = bootstrapper.IndexOf("internal static GrimoireDatabaseUnavailableException DamagedInstallationIdentityRefusal(", StringComparison.Ordinal);
+
+        Assert.True(refusal > 0, "The bootstrapper does not own the damaged installation identity refusal.");
+
+        int refusalEnd = bootstrapper.IndexOf("\n    /// <summary>", refusal, StringComparison.Ordinal);
+
+        string owner = bootstrapper[refusal..refusalEnd];
+
+        Assert.Contains("arcanum data repair-installation-identity", owner, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("repair-installation-identity", bootstrapper.Remove(refusal, refusalEnd - refusal), StringComparison.Ordinal);
+
+        Assert.Equal(
+            2,
+            Regex.Count(bootstrapper, @"DamagedInstallationIdentityRefusal\(", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+
+        Assert.Contains("throw GrimoireDatabaseBootstrapper.DamagedInstallationIdentityRefusal(", host, StringComparison.Ordinal);
+
+        Assert.Contains("BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity(", host, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("repair-installation-identity", host, StringComparison.Ordinal);
+
+        // The recognizer reads the probe's own words, and the words are written in one place.
+        Assert.Equal(
+            1,
+            Regex.Count(provider, @"is not one canonical uppercase UUID", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5)));
+
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        Assert.Contains("`GrimoireDatabaseBootstrapper.DamagedInstallationIdentityRefusal`", design, StringComparison.Ordinal);
+
+        Assert.Contains("`BackupRestoreJournalInstallationIdentityProvider.IsDamagedIdentity`", design, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A completion receipt in the reset record is the nested transition's terminal verdict, committed
+    /// or rolled back, and not a statement that the erasure committed; no document, and no comment in
+    /// the service that acts on it, says so, and each says where the verdict is.
+    /// </summary>
+    [Fact]
+    public void The_nested_completion_receipt_is_documented_as_a_terminal_verdict_and_not_as_a_commit()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        string service = ReadSource("Infrastructure", "InstallationReset", "InstallationResetService.cs");
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference), ("InstallationResetService", service) })
+        {
+            foreach (string stale in (string[])[
+                "that says the erasure happened",
+                "stored receipt says the erasure committed",
+                "A stored completion receipt means the erasure committed",
+            ])
+            {
+                Assert.False(text.Contains(stale, StringComparison.Ordinal), name + " still says: " + stale);
+            }
+        }
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference) })
+        {
+            Assert.True(
+                text.Contains("`data-retention-factory-reset` operation's terminal row", StringComparison.Ordinal),
+                name + " does not say where the verdict of a nested erasure is recorded.");
+
+            Assert.True(
+                text.Contains("`arcanum operation show`", StringComparison.Ordinal),
+                name + " does not say where the operator reads it.");
+
+            Assert.True(
+                text.Contains("grimoire.offline_transition_not_applied", StringComparison.Ordinal),
+                name + " does not name the terminal code of a transition that rolled back.");
+        }
+
+        Assert.Contains(
+            "it is published for a transition that rolled back before any effect as well as for one that committed",
+            design,
+            StringComparison.Ordinal);
+
+        // The code the documents name is the one the reconciler records.
+        Assert.Equal(
+            "grimoire.offline_transition_not_applied",
+            RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode);
+    }
+
+    /// <summary>
+    /// What the documents say about the stopped-host reset and the identity repair is what the code
+    /// does: the codes they name, the conditions they list, and the places they send an operator.
+    /// </summary>
+    [Fact]
+    public void The_stopped_host_reset_and_the_identity_repair_are_documented_as_they_behave()
+    {
+        string design = ReadDocument("Arcanum.DESIGN.md");
+
+        string reference = ReadDocument("Arcanum.Command.Reference.md");
+
+        string engineering = ReadDocument("Arcanum.Engineering.md");
+
+        string chatLoop = ReadDocument("Arcanum.CHAT-LOOP.md");
+
+        string oath = ReadDocument("Arcanum.OATH.md");
+
+        // The all scope outside a registered Campaign fails with the resolver's own code, and the two
+        // documents that state it state the same one.
+        Assert.Contains(
+            "workspace-resolution error (`Data.InventoryUnavailable`, message `No registered Campaign contains the current directory.`)",
+            design,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("workspace-resolution message and the same code", design, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "workspace-resolution error (`Data.InventoryUnavailable`, message \"No registered Campaign contains the current directory.\")",
+            reference,
+            StringComparison.Ordinal);
+
+        // A chat turn whose host was killed leaves a run no host start settles. The reinstall procedure
+        // is the only way on, and every document that names it says what it costs.
+        string exception = "`Data.InferenceRunActive` or `Data.BudgetReservationOutstanding` left by a host that was killed mid-turn, which a host start does not settle";
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference), ("Engineering guide", engineering) })
+        {
+            Assert.True(text.Contains(exception, StringComparison.Ordinal), name + " does not name the one global reset the reinstall procedure is for.");
+
+            Assert.True(text.Contains("without the protected erasure", StringComparison.Ordinal), name + " does not say what the reinstall procedure costs.");
+        }
+
+        Assert.Contains("without the protected erasure", InstallationResetService.InterruptedWorkRemedy, StringComparison.Ordinal);
+
+        // The daemon note says what the uninstall knows: it removed any registration, not necessarily one.
+        Assert.Contains("any background daemon registration", InstallationResetService.ClaimRetiredNote, StringComparison.Ordinal);
+
+        Assert.Contains("if one was installed", InstallationResetService.ClaimRetiredNote, StringComparison.Ordinal);
+
+        foreach (string text in new[] { design, reference })
+        {
+            Assert.Contains("removed any background daemon registration and that, if one was installed, `arcanum daemon install` restores it", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("had already removed the background daemon's registration", text, StringComparison.Ordinal);
+        }
+
+        // Only an attested full reset removes a valid identity; the repair changes a damaged one.
+        foreach (string stale in (string[])[
+            "Only an externally attested full installation reset removes it",
+            "and only the external-remediation spelling below removes the identity,",
+        ])
+        {
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain("only an attested full installation reset may remove them.", oath, StringComparison.Ordinal);
+
+        Assert.Contains("apart from `arcanum data repair-installation-identity`", oath, StringComparison.Ordinal);
+
+        // Startup resumes an active journal; it does not refuse it, and no guide says it does.
+        foreach (string stale in (string[])[
+            "rather than resuming the transition",
+            "keeps readiness closed and reports that manual recovery is required, because an active journal",
+            "an active journal keeps readiness closed and reports that manual recovery is required",
+        ])
+        {
+            Assert.DoesNotContain(stale, chatLoop, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+        }
+
+        // The data section names the local operations that do open the Grimoire in the CLI process.
+        Assert.DoesNotContain("the CLI never opens or mutates the Grimoire directly", reference, StringComparison.Ordinal);
+
+        Assert.Contains("The local operator operations described below are the exceptions", reference, StringComparison.Ordinal);
+
+        // The repair writes back what a closed anchor names, and only unfinished work blocks it.
+        foreach (string stale in (string[])[
+            "Finish or close the restore, offline transition, or installation reset",
+            "none of the profile's restore-journal or offline-transition-journal key and anchor credentials exists",
+            "none of the four credentials that authenticate",
+        ])
+        {
+            Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(
+            "Finish or close the restore, offline transition, or installation reset",
+            ReadSource("Infrastructure", "InstallationReset", "InstallationIdentityRepair.cs"),
+            StringComparison.Ordinal);
+
+        Assert.Contains("`BackupRestoreJournalInstallationIdentityProvider.ReplaceDamagedFromClosedEvidence`", design, StringComparison.Ordinal);
+
+        Assert.Contains("`BackupRestoreJournalInstallationIdentityProvider.ReseedDamagedFromDatabase`", design, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "\"outcome\": \"absent\"\\|\"damaged\"\\|\"removed\"\\|\"restored\"\\|\"reseeded\", \"dryRun\", \"removed\", \"restored\", \"reseeded\", \"action\": \"none\"\\|\"remove\"\\|\"restore\"\\|\"reseed\"",
+            reference,
+            StringComparison.Ordinal);
+
+        // A Grimoire that holds its authority row is seeded again from the row: no document says the
+        // repair applies only before a Grimoire exists, that the value is read before one exists at two
+        // points only, or that the row blocks it, and the startup refusal does not say it creates a
+        // Grimoire when one may already exist.
+        foreach (string stale in (string[])[
+            "The repair applies only before a Grimoire exists",
+            "the Grimoire has no database file or no authority row (`Data.Blocked` when it holds the row",
+            "`Data.Blocked` for unfinished work or a Grimoire that holds its authority row",
+            "The value is read at two points before a Grimoire exists",
+            "will not create a Grimoire that would replace it",
+        ])
+        {
+            Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs"), StringComparison.Ordinal);
+        }
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference), ("Engineering guide", engineering) })
+        {
+            Assert.True(
+                text.Contains("seeds the item again from", StringComparison.Ordinal),
+                name + " does not say that a Grimoire that holds its authority row has the item seeded again from it.");
+
+            Assert.True(
+                text.Contains("does not choose between the anchor and the database", StringComparison.Ordinal),
+                name + " does not say that a closed anchor naming another installation than the row is not settled by the repair.");
+        }
+
+        // A closed restore anchor is not compared with the identity before the bootstrap; reset and
+        // transition anchors are, by the pair recovery. No document says otherwise.
+        foreach (string stale in (string[])[
+            "or kept the closed anchor of a finished reset, restore, or offline transition",
+            "the closed anchor of a finished reset, restore, or offline transition: a start compares",
+        ])
+        {
+            Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("A closed restore anchor is not compared before the bootstrap", reference, StringComparison.Ordinal);
+
+        Assert.Contains("A closed restore anchor is not compared there", engineering, StringComparison.Ordinal);
+
+        Assert.Contains("a closed restore anchor is not compared before the bootstrap", design, StringComparison.Ordinal);
+
+        Assert.Contains("`Data.ConfirmationRequired`", reference, StringComparison.Ordinal);
+
+        // A dry run inspects the journal and never recovers it.
+        Assert.Contains("`IInstallationResetStartupRecovery.InspectPairAsync`", design, StringComparison.Ordinal);
+
+        Assert.Contains("the offline-transition journal is inspected and never recovered", reference, StringComparison.Ordinal);
     }
 
     /// <summary>

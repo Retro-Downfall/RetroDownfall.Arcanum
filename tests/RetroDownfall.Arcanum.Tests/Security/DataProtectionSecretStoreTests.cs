@@ -119,6 +119,18 @@ public sealed class DataProtectionSecretStoreTests : IDisposable
             SecretStoreReadResult result = await store.GetApiKeyReadResultAsync();
 
             Assert.Equal(SecretStoreReadStatus.Corrupted, result.Status);
+
+            // The recovery names the directory security.dat is in (which on macOS and Windows is not the
+            // one holding the database) and the whole binding set, as the reinstall section does.
+            Assert.Contains("secret-store directory", result.Message, StringComparison.Ordinal);
+
+            Assert.Contains("Library/Application Support/arcanum", result.Message, StringComparison.Ordinal);
+
+            Assert.Contains("whole binding set", result.Message, StringComparison.Ordinal);
+
+            Assert.Contains("Local Grimoire reinstall", result.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("Grimoire .db under ~/.config/arcanum", result.Message, StringComparison.Ordinal);
         }
         finally
         {

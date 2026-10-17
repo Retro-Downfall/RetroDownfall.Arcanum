@@ -13,11 +13,9 @@ internal sealed record GrimoireOfflineTransitionTypedPublication(
 
 internal enum GrimoireOfflineTransitionTypedRecoveryOutcome : byte
 {
-
     NoActiveJournal = 1,
 
     Authenticated = 2,
-
 }
 
 internal sealed record GrimoireOfflineTransitionTypedRecoveryState(
@@ -28,7 +26,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
     IGrimoireOfflineTransitionJournalStore journal,
     GrimoireOfflineTransitionHandlerRegistry registry)
 {
-
     private readonly IGrimoireOfflineTransitionJournalStore _journal =
         journal ?? throw new ArgumentNullException(nameof(journal));
 
@@ -42,7 +39,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         IGrimoireOfflineTransitionPayload payload,
         CancellationToken cancellationToken)
     {
-
         if (payload is null
             || !GrimoireOfflineTransitionLifecycleValidator.ValidPayload(payload)
             || payload.Lifecycle.State is not GrimoireOfflineTransitionState.Prepared
@@ -50,9 +46,7 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 is not GrimoireOfflineTransitionTerminalIntent.Undecided
             || payload.Lifecycle.Blocker is not null)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
         }
 
         Result<GrimoireOfflineTransitionJournalPublication> begun = await _journal.BeginBoundAsync(
@@ -69,7 +63,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         return begun.IsFailure
             ? Result<GrimoireOfflineTransitionTypedPublication>.Failure(begun.Error)
             : Decode(begun.Value);
-
     }
 
     /// <summary>
@@ -97,12 +90,9 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         Func<ulong, Result<IGrimoireOfflineTransitionPayload>> payloadFactory,
         CancellationToken cancellationToken)
     {
-
         if (payloadFactory is null)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
         }
 
         Result<GrimoireOfflineTransitionJournalPublication> begun = await _journal.BeginBoundAsync(
@@ -119,7 +109,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         return begun.IsFailure
             ? Result<GrimoireOfflineTransitionTypedPublication>.Failure(begun.Error)
             : Decode(begun.Value);
-
     }
 
     /// <summary>
@@ -139,14 +128,11 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         Func<ulong, Result<IGrimoireOfflineTransitionPayload>> payloadFactory,
         ulong allocatedSlotEpoch)
     {
-
         Result<IGrimoireOfflineTransitionPayload> built = payloadFactory(allocatedSlotEpoch);
 
         if (built.IsFailure)
         {
-
             return RecoveryRequired<ReadOnlyMemory<byte>>();
-
         }
 
         IGrimoireOfflineTransitionPayload payload = built.Value;
@@ -158,13 +144,10 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 is not GrimoireOfflineTransitionTerminalIntent.Undecided
             || payload.Lifecycle.Blocker is not null)
         {
-
             return RecoveryRequired<ReadOnlyMemory<byte>>();
-
         }
 
         return EncodeBoundPayload(payload, allocatedSlotEpoch);
-
     }
 
     internal async Task<Result<GrimoireOfflineTransitionTypedPublication>> AdvanceAsync(
@@ -173,12 +156,9 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         IGrimoireOfflineTransitionPayload next,
         CancellationToken cancellationToken)
     {
-
         if (current is null || next is null)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
         }
 
         Result<GrimoireOfflineTransitionDecodedPayload> decodedCurrent = DecodePayload(current.Raw);
@@ -188,9 +168,7 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
             || decodedCurrent.Value.Handler.Kind != current.Payload.Binding.Kind
             || decodedCurrent.Value.Handler.PayloadVersion != current.Payload.Binding.PayloadVersion)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
         }
 
         // The refusal is passed through rather than replaced. A handler that refuses an edge and a
@@ -202,18 +180,14 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
 
         if (valid.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionTypedPublication>.Failure(valid.Error);
-
         }
 
         Result<byte[]> encoded = _registry.Encode(next);
 
         if (encoded.IsFailure)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
         }
 
         Result<GrimoireOfflineTransitionJournalPublication> advanced =
@@ -227,7 +201,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         return advanced.IsFailure
             ? Result<GrimoireOfflineTransitionTypedPublication>.Failure(advanced.Error)
             : Decode(advanced.Value);
-
     }
 
     internal async Task<Result<GrimoireOfflineTransitionTypedRecoveryState>> RecoverAsync(
@@ -235,7 +208,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         string guardedDirectory,
         CancellationToken cancellationToken)
     {
-
         Result<GrimoireOfflineTransitionJournalRecoveryState> recovered =
             await _journal.RecoverAsync(
                     heldInstallationLock,
@@ -245,26 +217,20 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
 
         if (recovered.IsFailure)
         {
-
             return Result<GrimoireOfflineTransitionTypedRecoveryState>.Failure(recovered.Error);
-
         }
 
         if (recovered.Value.Outcome
             is GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal)
         {
-
             return new GrimoireOfflineTransitionTypedRecoveryState(
                 GrimoireOfflineTransitionTypedRecoveryOutcome.NoActiveJournal,
                 Publication: null);
-
         }
 
         if (recovered.Value.Publication is null)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionTypedRecoveryState>();
-
         }
 
         Result<GrimoireOfflineTransitionTypedPublication> decoded =
@@ -275,7 +241,46 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 GrimoireOfflineTransitionTypedRecoveryOutcome.Authenticated,
                 decoded.Value)
             : RecoveryRequired<GrimoireOfflineTransitionTypedRecoveryState>();
+    }
 
+    /// <summary>
+    /// What <see cref="RecoverAsync"/> would answer for the slot as it stands, decoded the same way,
+    /// reached without moving the slot.
+    /// </summary>
+    internal async Task<Result<GrimoireOfflineTransitionTypedRecoveryState>> InspectAsync(
+        string guardedDirectory,
+        CancellationToken cancellationToken)
+    {
+        Result<GrimoireOfflineTransitionJournalRecoveryState> inspected =
+            await _journal.InspectAsync(guardedDirectory, cancellationToken)
+                .ConfigureAwait(false);
+
+        if (inspected.IsFailure)
+        {
+            return Result<GrimoireOfflineTransitionTypedRecoveryState>.Failure(inspected.Error);
+        }
+
+        if (inspected.Value.Outcome
+            is GrimoireOfflineTransitionJournalRecoveryOutcome.NoActiveJournal)
+        {
+            return new GrimoireOfflineTransitionTypedRecoveryState(
+                GrimoireOfflineTransitionTypedRecoveryOutcome.NoActiveJournal,
+                Publication: null);
+        }
+
+        if (inspected.Value.Publication is null)
+        {
+            return RecoveryRequired<GrimoireOfflineTransitionTypedRecoveryState>();
+        }
+
+        Result<GrimoireOfflineTransitionTypedPublication> decoded =
+            Decode(inspected.Value.Publication);
+
+        return decoded.IsSuccess
+            ? new GrimoireOfflineTransitionTypedRecoveryState(
+                GrimoireOfflineTransitionTypedRecoveryOutcome.Authenticated,
+                decoded.Value)
+            : RecoveryRequired<GrimoireOfflineTransitionTypedRecoveryState>();
     }
 
     internal async Task<Result> RetireAsync(
@@ -283,7 +288,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         GrimoireOfflineTransitionTypedPublication terminal,
         CancellationToken cancellationToken)
     {
-
         if (terminal is null
             || terminal.Payload.Lifecycle.State
                 is not GrimoireOfflineTransitionState.RetirementPending
@@ -291,18 +295,14 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 is GrimoireOfflineTransitionTerminalIntent.Undecided
             || !GrimoireOfflineTransitionLifecycleValidator.RetirementReady(terminal.Payload))
         {
-
             return RecoveryRequired();
-
         }
 
         Result<GrimoireOfflineTransitionTypedPublication> decoded = Decode(terminal.Raw);
 
         if (decoded.IsFailure || !Equals(decoded.Value.Payload, terminal.Payload))
         {
-
             return RecoveryRequired();
-
         }
 
         return await _journal.RetireAsync(
@@ -310,13 +310,11 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 terminal.Raw,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private Result<GrimoireOfflineTransitionTypedPublication> Decode(
         GrimoireOfflineTransitionJournalPublication publication)
     {
-
         Result<GrimoireOfflineTransitionDecodedPayload> decoded = DecodePayload(publication);
 
         return decoded.IsSuccess
@@ -325,21 +323,17 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 decoded.Value.Payload,
                 decoded.Value.Outcome)
             : RecoveryRequired<GrimoireOfflineTransitionTypedPublication>();
-
     }
 
     private Result<GrimoireOfflineTransitionDecodedPayload> DecodePayload(
         GrimoireOfflineTransitionJournalPublication publication)
     {
-
         if (publication is null
             || publication.Envelope.OperationId == Guid.Empty
             || publication.Envelope.SlotEpoch == 0
             || publication.PayloadBytes is null)
         {
-
             return RecoveryRequired<GrimoireOfflineTransitionDecodedPayload>();
-
         }
 
         return _registry.DecodeAuthenticated(
@@ -348,19 +342,15 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
                 publication.PayloadBytes,
                 publication.Envelope.OperationId,
                 publication.Envelope.SlotEpoch);
-
     }
 
     private Result<ReadOnlyMemory<byte>> EncodeBoundPayload(
         IGrimoireOfflineTransitionPayload payload,
         ulong allocatedSlotEpoch)
     {
-
         if (payload.Binding.SlotEpoch != allocatedSlotEpoch)
         {
-
             return RecoveryRequired<ReadOnlyMemory<byte>>();
-
         }
 
         Result<byte[]> encoded = _registry.Encode(payload);
@@ -368,7 +358,6 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
         return encoded.IsSuccess
             ? Result<ReadOnlyMemory<byte>>.Success(encoded.Value)
             : RecoveryRequired<ReadOnlyMemory<byte>>();
-
     }
 
     private static Result RecoveryRequired() => new Error(
@@ -377,5 +366,4 @@ internal sealed class GrimoireOfflineTransitionLifecycleStore(
 
     private static Result<T> RecoveryRequired<T>() => Result<T>.Failure(
         RecoveryRequired().Error);
-
 }

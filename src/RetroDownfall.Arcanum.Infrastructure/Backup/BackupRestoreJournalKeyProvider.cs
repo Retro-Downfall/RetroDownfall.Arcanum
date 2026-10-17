@@ -6,6 +6,8 @@ using System.Security.Cryptography;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 using RetroDownfall.Arcanum.Secrets.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -192,6 +194,14 @@ internal sealed class BackupRestoreJournalKeyProvider(IOsCredentialStore credent
             : new Error(
                 ErrorCodes.Covenant.NotFound,
                 "This profile has no restore journal key.");
+    }
+
+    /// <summary>Whether this profile's restore-journal key exists, by metadata alone.</summary>
+    internal OsCredentialStoreStatus ProbePresence(BackupRestoreProfileNamespace profileNamespace)
+    {
+        ArgumentNullException.ThrowIfNull(profileNamespace);
+
+        return CredentialPresenceProbe.Probe(_credentials, Account(profileNamespace));
     }
 
     private static string Account(BackupRestoreProfileNamespace profileNamespace) =>

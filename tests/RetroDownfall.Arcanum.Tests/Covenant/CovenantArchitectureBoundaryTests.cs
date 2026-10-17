@@ -1003,17 +1003,20 @@ public sealed class CovenantArchitectureBoundaryTests
 
         services.AddArcanumCliClientStack();
 
-        Assert.DoesNotContain(
-            services,
-            static descriptor => descriptor.ServiceType == typeof(CovenantResetCheckpointInitiator));
+        // The reset-only protected erasure a stopped-host global reset runs in its own process needs the
+        // checkpoint initiator and the effect digests, so the command line composes them, once each. What
+        // it still never composes is the general retention service or a registration of one.
+        AssertSingleRegistration<CovenantResetCheckpointInitiator>(services, ServiceLifetime.Scoped);
 
-        Assert.DoesNotContain(
-            services,
-            static descriptor => descriptor.ServiceType == typeof(ICovenantErasureEffectDigestCalculator));
+        AssertSingleRegistration<ICovenantErasureEffectDigestCalculator>(services, ServiceLifetime.Singleton);
 
         Assert.DoesNotContain(
             services,
             static descriptor => descriptor.ServiceType == typeof(DataRetentionService));
+
+        Assert.DoesNotContain(
+            services,
+            static descriptor => descriptor.ServiceType == typeof(IDataRetentionService));
 
         await AssertCompleteCovenantGraphAsync(services, isHost: false);
     }
@@ -1459,9 +1462,14 @@ public sealed class CovenantArchitectureBoundaryTests
         }
         else
         {
-            Assert.Null(firstScope.ServiceProvider.GetService<CovenantResetCheckpointInitiator>());
+            // The reset-only protected erasure of a stopped-host global reset runs in this process, so the
+            // command line resolves the checkpoint initiator and the effect digests it is built from. It
+            // resolves neither a general retention service nor the generic recovery discovery (above).
+            Assert.NotNull(firstScope.ServiceProvider.GetService<CovenantResetCheckpointInitiator>());
 
-            Assert.Null(provider.GetService<ICovenantErasureEffectDigestCalculator>());
+            Assert.NotNull(provider.GetService<ICovenantErasureEffectDigestCalculator>());
+
+            Assert.Null(firstScope.ServiceProvider.GetService<IDataRetentionService>());
         }
     }
 

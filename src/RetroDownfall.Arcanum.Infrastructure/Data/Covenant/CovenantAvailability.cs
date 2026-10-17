@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantAvailability : ICovenantAvailability
 {
-
     private readonly CovenantRuntimeGenerationProvider _runtime;
 
     internal CovenantAvailability()
@@ -37,7 +36,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         CovenantCommittedCapabilityTransition transition,
         CovenantHealthTransition healthTransition)
     {
-
         ArgumentNullException.ThrowIfNull(expected);
 
         ArgumentNullException.ThrowIfNull(transition);
@@ -79,7 +77,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
                 healthTransition,
                 transition.CanonicalDiagnosticCode,
                 transition.AcceleratorDiagnosticCode));
-
     }
 
     /// <summary>
@@ -90,43 +87,89 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         GrimoireSchemaInstallResult result,
         CovenantHealthTransition transition)
     {
-
         ArgumentNullException.ThrowIfNull(result);
 
-        return Publish(current => current with
+        return PublishTiers(result.CovenantCanonical, result.CovenantAccelerator, transition);
+    }
+
+    /// <summary>
+    /// Publishes the tiers a read-only catalog proof inspected, in the stead of an installation
+    /// result that no process in this posture can produce.
+    /// </summary>
+    /// <remarks>
+    /// A stopped-host reset never installs a schema, so it has no <see cref="GrimoireSchemaInstallResult"/>
+    /// to hand <see cref="PublishSchema"/>. What it has is the healthy-catalog proof that the erasure
+    /// itself relies on, and the facts that proof inspected. They are mapped through the same
+    /// <see cref="ToCapabilityState"/> and the same tier publication the installation result goes
+    /// through, so the two cannot disagree about what a healthy tier looks like.
+    ///
+    /// <para>The accelerator is reported as not healthy whatever the catalog holds. Nothing in this
+    /// posture reads or writes the search projection, and publishing it synchronized would let a later
+    /// reader trust a projection that no one in this process checked. The canonical tier is the only
+    /// capability the erasure's gate leases against.</para>
+    /// </remarks>
+    internal CovenantAvailabilitySnapshot PublishInspectedSchema(
+        CovenantInspectedCatalog inspected,
+        CovenantHealthTransition transition)
+    {
+        ArgumentNullException.ThrowIfNull(inspected);
+
+        GrimoireSchemaManifest canonical = GrimoireSchemaManifests.CovenantCanonical;
+
+        GrimoireSchemaManifest accelerator = GrimoireSchemaManifests.CovenantAccelerator;
+
+        return PublishTiers(
+            new GrimoireSchemaTierInstallResult(
+                GrimoireSchemaTransactionTier.CovenantCanonical,
+                inspected.CanonicalSchemaVersion,
+                GrimoireSchemaTierHealth.Healthy,
+                canonical.SourceDefinitionFingerprint,
+                inspected.CanonicalInstalledFingerprint,
+                DiagnosticCode: null),
+            new GrimoireSchemaTierInstallResult(
+                GrimoireSchemaTransactionTier.CovenantAccelerator,
+                inspected.AcceleratorSchemaVersion ?? accelerator.Version,
+                GrimoireSchemaTierHealth.Unavailable,
+                accelerator.SourceDefinitionFingerprint,
+                InstalledCatalogFingerprint: null,
+                ErrorCodes.Covenant.Unavailable),
+            transition);
+    }
+
+    private CovenantAvailabilitySnapshot PublishTiers(
+        GrimoireSchemaTierInstallResult canonicalTier,
+        GrimoireSchemaTierInstallResult acceleratorTier,
+        CovenantHealthTransition transition) =>
+        Publish(current => current with
         {
+            Canonical = ToCapabilityState(canonicalTier, degradeOnFailure: false),
 
-            Canonical = ToCapabilityState(result.CovenantCanonical, degradeOnFailure: false),
-
-            CanonicalSchemaVersion = result.CovenantCanonical.IsHealthy
-                ? result.CovenantCanonical.SchemaVersion
+            CanonicalSchemaVersion = canonicalTier.IsHealthy
+                ? canonicalTier.SchemaVersion
                 : null,
 
-            CanonicalInstalledFingerprint = result.CovenantCanonical.InstalledCatalogFingerprint,
+            CanonicalInstalledFingerprint = canonicalTier.InstalledCatalogFingerprint,
 
             // Accelerator failure degrades rather than disables: the canonical fallback still
             // answers every inspection query, only more slowly.
-            Accelerator = ToCapabilityState(result.CovenantAccelerator, degradeOnFailure: true),
+            Accelerator = ToCapabilityState(acceleratorTier, degradeOnFailure: true),
 
-            AcceleratorSchemaVersion = result.CovenantAccelerator.IsHealthy
-                ? result.CovenantAccelerator.SchemaVersion
+            AcceleratorSchemaVersion = acceleratorTier.IsHealthy
+                ? acceleratorTier.SchemaVersion
                 : null,
 
-            AcceleratorInstalledFingerprint = result.CovenantAccelerator.InstalledCatalogFingerprint,
+            AcceleratorInstalledFingerprint = acceleratorTier.InstalledCatalogFingerprint,
 
-            FtsSynchronization = result.CovenantAccelerator.IsHealthy
+            FtsSynchronization = acceleratorTier.IsHealthy
                 ? CovenantFtsSynchronizationState.Dirty
                 : CovenantFtsSynchronizationState.Unavailable,
 
-            CanonicalDiagnosticCode = result.CovenantCanonical.DiagnosticCode,
+            CanonicalDiagnosticCode = canonicalTier.DiagnosticCode,
 
-            AcceleratorDiagnosticCode = result.CovenantAccelerator.DiagnosticCode,
+            AcceleratorDiagnosticCode = acceleratorTier.DiagnosticCode,
 
             LastHealthTransition = transition,
-
         });
-
-    }
 
     /// <summary>
     /// Publishes committed canonical facts: the dataset generation every turn snapshot binds, the
@@ -140,7 +183,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         CovenantHealthTransition transition) =>
         Publish(current => current with
         {
-
             DatasetGeneration = datasetGeneration,
 
             CanonicalSequence = canonicalSequence,
@@ -150,7 +192,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
             RebuildRequired = rebuildRequired,
 
             LastHealthTransition = transition,
-
         });
 
     /// <summary>
@@ -167,7 +208,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         CovenantHealthTransition transition) =>
         Publish(current => current with
         {
-
             AppliedDatasetGeneration = appliedDatasetGeneration,
 
             AppliedSequence = appliedSequence,
@@ -181,7 +221,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
             RebuildRequired = rebuildRequired,
 
             LastHealthTransition = transition,
-
         });
 
     internal CovenantAvailabilitySnapshot PublishPersistedState(
@@ -197,7 +236,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         CovenantHealthTransition transition) =>
         Publish(current => current with
         {
-
             DatasetGeneration = datasetGeneration,
 
             CanonicalSequence = canonicalSequence,
@@ -217,7 +255,6 @@ internal sealed class CovenantAvailability : ICovenantAvailability
             RebuildRequired = rebuildRequired,
 
             LastHealthTransition = transition,
-
         });
 
     /// <summary>
@@ -227,11 +264,9 @@ internal sealed class CovenantAvailability : ICovenantAvailability
     internal CovenantAvailabilitySnapshot PublishFeatureEnabled(bool featureEnabled) =>
         Publish(current => current with
         {
-
             FeatureEnabled = featureEnabled,
 
             LastHealthTransition = CovenantHealthTransition.FeatureConfiguration,
-
         });
 
     /// <summary>
@@ -241,28 +276,21 @@ internal sealed class CovenantAvailability : ICovenantAvailability
         GrimoireSchemaTierInstallResult result,
         bool degradeOnFailure)
     {
-
         ArgumentNullException.ThrowIfNull(result);
 
         if (result.IsHealthy)
         {
-
             return CovenantCapabilityState.Healthy;
-
         }
 
         return degradeOnFailure
             ? CovenantCapabilityState.Degraded
             : CovenantCapabilityState.Unavailable;
-
     }
 
     private CovenantAvailabilitySnapshot Publish(
         Func<CovenantAvailabilitySnapshot, CovenantAvailabilitySnapshot> mutate)
     {
-
         return _runtime.PublishAvailability(mutate);
-
     }
-
 }
