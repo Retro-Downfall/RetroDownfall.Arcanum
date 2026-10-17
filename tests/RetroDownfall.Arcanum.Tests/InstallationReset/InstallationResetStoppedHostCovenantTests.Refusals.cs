@@ -60,6 +60,15 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
         IdempotencyLease = 4,
 
         Batch = 5,
+
+        /// <summary>A parked Long Rest sweep: a host start leaves it parked, because it waits for an operator.</summary>
+        ParkedLongRestSweep = 6,
+
+        /// <summary>A Long Rest sweep request that was queued and never started: no host start drains it.</summary>
+        QueuedLongRestSweep = 7,
+
+        /// <summary>A retention operation whose attention a host start does recover.</summary>
+        RecoveredAttention = 8,
     }
 
     public static TheoryData<bool, UnmeasurableInventory, bool> UnmeasurableInventoryCases()
@@ -230,6 +239,9 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
             UndrainableWork.BudgetReservation => ("Data.BudgetReservationOutstanding", InstallationResetService.InterruptedWorkRemedy),
             UndrainableWork.InferenceRun => ("Data.InferenceRunActive", InstallationResetService.InterruptedWorkRemedy),
             UndrainableWork.IdempotencyLease => ("Data.IdempotencyLeaseActive", InstallationResetService.LeaseExpiryRemedy),
+            UndrainableWork.ParkedLongRestSweep or UndrainableWork.QueuedLongRestSweep =>
+                (ErrorCodes.Data.OperationNeedsAttention, InstallationResetService.OperatorSettlesRemedy),
+            UndrainableWork.RecoveredAttention => ("Data.ActiveOperation", InstallationResetService.StartHostOnceRemedy),
             _ => ("Data.BatchInProgress", InstallationResetService.StartHostOnceRemedy),
         };
 
@@ -240,6 +252,30 @@ public sealed partial class InstallationResetStoppedHostCovenantTests
                 INSERT INTO "LongRunningOperations"
                     ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary", "AttemptCount", "CheckpointVersion", "Revision")
                 VALUES ($id, 'subagent', 1, 3, $now, 'left running', 0, 0, 0);
+                """,
+                ("$id", id),
+                ("$now", Now)),
+            UndrainableWork.ParkedLongRestSweep => await StoppedHostResetTestSupport.ExecuteAsync(
+                """
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary", "AttemptCount", "CheckpointVersion", "Revision", "TerminalErrorCode")
+                VALUES ($id, 'long-rest-sweep', 7, 0, $now, 'parked after a restart', 1, 1, 0, 'long_rest.interrupted');
+                """,
+                ("$id", id),
+                ("$now", Now)),
+            UndrainableWork.QueuedLongRestSweep => await StoppedHostResetTestSupport.ExecuteAsync(
+                """
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary", "AttemptCount", "CheckpointVersion", "Revision")
+                VALUES ($id, 'long-rest-sweep', 0, 0, $now, 'queued, never started', 0, 0, 0);
+                """,
+                ("$id", id),
+                ("$now", Now)),
+            UndrainableWork.RecoveredAttention => await StoppedHostResetTestSupport.ExecuteAsync(
+                """
+                INSERT INTO "LongRunningOperations"
+                    ("Id", "Kind", "State", "RecoveryPolicy", "CreatedAt", "PublicSummary", "AttemptCount", "CheckpointVersion", "Revision", "TerminalErrorCode")
+                VALUES ($id, 'data-retention-prune', 7, 1, $now, 'prune awaiting recovery', 1, 0, 0, 'Data.ReconciliationFailed');
                 """,
                 ("$id", id),
                 ("$now", Now)),

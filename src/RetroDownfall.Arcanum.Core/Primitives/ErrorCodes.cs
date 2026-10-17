@@ -591,6 +591,17 @@ public static class ErrorCodes
 
         public const string ConfirmationRequired = "Data.ConfirmationRequired";
 
+        /// <summary>
+        /// A durable operation is waiting for an operator, and that conflicts with a global reset.
+        /// </summary>
+        /// <remarks>
+        /// Reported as a global-reset conflict, never as the failure of a request. An operation that
+        /// waits for an operator stays exactly as it is across any number of host starts, so starting
+        /// the host does not clear it; cancelling it or retrying it against a started host does. The
+        /// conflict whose operation a host start does settle is <c>Data.ActiveOperation</c>.
+        /// </remarks>
+        public const string OperationNeedsAttention = "Data.OperationNeedsAttention";
+
         /// <summary>The operation failed and its durable history requires operator review.</summary>
         /// <remarks>
         /// Deliberately no longer the single answer for every unhappy retention ending. It kept

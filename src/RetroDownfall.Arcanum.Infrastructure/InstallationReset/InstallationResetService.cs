@@ -553,9 +553,11 @@ internal sealed class InstallationResetService(
         // What a stopped host cannot drain becomes a blocker, here, before any effect. Without this
         // they would surface only in the nested erasure, after the daemon is uninstalled and the claim
         // is durable, where every refusal keeps the record and the host then refuses to start. Each
-        // carries the remedy that is true for its kind: a host start recovers durable operations and
-        // stranded batches, settles what an interrupted batch or subagent left, and nothing else, and
-        // an idempotency lease is time-bounded.
+        // carries the remedy that is true for its kind: a host start runs the recovery of the durable
+        // operations that have one and of stranded batches, and settles what an interrupted batch or
+        // subagent left; a durable operation that waits for an operator stays as it is across any
+        // number of starts and is cleared by cancelling or retrying it against a started host; and an
+        // idempotency lease is time-bounded.
         InstallationResetIssueSummary[] undrainable = stoppedHostGlobal && canonical is not null
             ?
             [
@@ -671,10 +673,15 @@ internal sealed class InstallationResetService(
     internal const string LeaseExpiryRemedy =
         "The lease is time-bounded and starting the host does not shorten it. Retry once it has expired.";
 
+    internal const string OperatorSettlesRemedy =
+        "Start the host with `arcanum serve`, run `arcanum operation cancel <id>` (or "
+        + "`arcanum operation retry <id>` and let it finish), stop it with `arcanum serve quit`, and retry.";
+
     /// <summary>The remedy that is true for a conflict kind a stopped host cannot drain.</summary>
     internal static string RemedyFor(string conflictCode) => conflictCode switch
     {
         "Data.IdempotencyLeaseActive" => LeaseExpiryRemedy,
+        ErrorCodes.Data.OperationNeedsAttention => OperatorSettlesRemedy,
         "Data.InferenceRunActive" or "Data.BudgetReservationOutstanding" => InterruptedWorkRemedy,
         _ => StartHostOnceRemedy,
     };
