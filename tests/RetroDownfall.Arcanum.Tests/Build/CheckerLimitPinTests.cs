@@ -46,6 +46,7 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
         new("runtime-observers", "arbitrary third-party runtime observers are unproved limits", nameof(Runtime_observers_are_exactly_the_reviewed_registrations)),
         new("carrier-hoisting", "A compiler-generated state machine hoists the locals", nameof(No_iterator_async_void_or_non_task_async_member_declares_an_authority_handle)),
         new("carrier-reflection", "says what a reflective access does", nameof(Reflective_invocations_are_exactly_the_reviewed_ones_and_carry_no_authority_handle)),
+        new("default-slot-lifetime", "walks lifetime on a default interface body", nameof(No_interface_slot_that_takes_an_authority_handle_has_a_default_body)),
         new("constant-guard", "any other enumeration of a member's value-binding sources that does not skip a constant", "EveryEnumerationOfAMembersValueBindingsIsGuardedAgainstAConstant"),
     ];
 
@@ -251,6 +252,32 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
                 public static async ValueTask AwaitedValueWithALease(IGrimoireWorkLease lease) { await Task.Yield(); }
 
                 public static IEnumerable<int> IteratesWithoutALease(int count) { yield return count; }
+            }
+
+            // Interface slots that take or return a handle: the ones with a body of their own are the finding, and the abstract, static and
+            // handle-free slots are the controls.
+            public interface IDefaultSlots
+            {
+                void TakesALease(IGrimoireWorkLease lease) { }
+
+                Task TakesAGroupInATask(Task<IGrimoireExternalEffectGroup> group) => Task.CompletedTask;
+
+                IGrimoireWorkLease ReturnsALease() => null;
+
+                IGrimoireWorkLease Held { get => null; }
+
+                void TakesNoHandle(int value) { }
+            }
+
+            public interface IAbstractSlots
+            {
+                void TakesALease(IGrimoireWorkLease lease);
+
+                IGrimoireWorkLease Held { get; }
+
+                static void TakesALeaseStatically(IGrimoireWorkLease lease) { }
+
+                void TakesNoHandle(int value) { }
             }
 
             public static class Reflective
@@ -697,6 +724,36 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
         Assert.Contains(findings, static finding => finding.StartsWith("async void ", StringComparison.Ordinal) && finding.Contains("Fixture.Machines.FiresAndForgets declares", StringComparison.Ordinal));
 
         Assert.DoesNotContain(findings, static finding => finding.Contains("AwaitedWithALease", StringComparison.Ordinal) || finding.Contains("AwaitedValueWithALease", StringComparison.Ordinal) || finding.Contains("IteratesWithoutALease", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void No_interface_slot_that_takes_an_authority_handle_has_a_default_body()
+    {
+        string[] findings = Production(CheckerLimitScans.DefaultBodiedAuthoritySlots);
+
+        Show(nameof(CheckerLimitScans.DefaultBodiedAuthoritySlots), findings);
+
+        // The lifetime walk resolves a call to the body it finds on the slot, and looks for the DI-bound override only when the slot has none.
+        // A default body on a slot that is handed a lease or a group would be walked in place of the override, so an override that disposes the
+        // lease would go unseen, and the Formal Preservation of a Lease-Handoff root behind such a slot would never be consulted. The product
+        // has no such slot: reflection pins the gate and lease contracts, and this holds every other interface, the Long Rest seams and the
+        // data-retention sweep among them.
+        Assert.Empty(findings);
+    }
+
+    [Fact]
+    public void The_default_slot_scan_finds_a_body_that_takes_or_returns_a_handle_and_leaves_abstract_static_and_handle_free_slots_alone()
+    {
+        string[] findings = CheckerLimitScans.DefaultBodiedAuthoritySlots(SyntheticCompilations());
+
+        Assert.Equal(
+            [
+                "Fixture.IDefaultSlots.ReturnsALease has a body and holds IGrimoireWorkLease",
+                "Fixture.IDefaultSlots.TakesAGroupInATask has a body and holds IGrimoireExternalEffectGroup",
+                "Fixture.IDefaultSlots.TakesALease has a body and holds IGrimoireWorkLease",
+                "Fixture.IDefaultSlots.get_Held has a body and holds IGrimoireWorkLease",
+            ],
+            findings);
     }
 
     [Fact]
