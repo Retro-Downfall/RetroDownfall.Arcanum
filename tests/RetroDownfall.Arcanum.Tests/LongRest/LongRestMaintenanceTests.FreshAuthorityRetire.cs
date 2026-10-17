@@ -3,12 +3,17 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -433,6 +438,180 @@ public sealed partial class LongRestMaintenanceTests
         }
 
         await AssertTheNextAuthorizedTurnRetiresTheParkAsync(f, f.Authority, receipts, effects);
+    }
+
+    // An upgrade that moves a version the stored generation was captured under, or a fixed bound, leaves every generation stored before it
+    // unreadable whole, and retiring a generation does not need it whole: retirement reads only the columns of the generation's row, which
+    // every statement that retires it is guarded by. So a sweep stored before such an upgrade is replaced by whichever request finds it,
+    // by every route that ends it, and never strands the scope it holds. The two changes below are the ones a stored recipe cannot be
+    // parsed under at all.
+
+    /// <summary>Rewrites the stored recipe to one the code in force does not read: another pairing version, or another fixed bound.</summary>
+    private static Task RewriteStoredRecipeToAnUnreadableOneAsync(MaintenanceFixture f, string change) => RewriteStoredRecipeAsync(f, recipe => change switch
+    {
+        "pairing-version" => recipe with { PairingRecipeVersion = recipe.PairingRecipeVersion - 1 },
+        "fixed-bound" => recipe with { SourcePageSize = recipe.SourcePageSize + 1 },
+        _ => throw new ArgumentOutOfRangeException(nameof(change)),
+    });
+
+    /// <summary>Moves the configuration value digest, the way an edit to a price does.</summary>
+    private static void EditPricing(MaintenanceFixture f)
+    {
+        ArcanumSettings changed = LongRestConfigurationEpochTests.Settings();
+
+        changed.Cost.Pricing.DefaultPricing!.InputPer1M = 13m;
+
+        f.Options.Set(changed);
+    }
+
+    /// <summary>The generation is stored, and the code in force cannot read it: the question every resume entry asks of it is refused.</summary>
+    private static async Task AssertTheStoredGenerationCannotBeReadAsync(MaintenanceFixture f)
+    {
+        Assert.Equal(1L, await f.H.ScalarAsync($"SELECT count(*) FROM long_rest_discovery_generations WHERE OperationId = '{f.Operation:N}';"));
+
+        Result<LongRestDiscoveryGeneration?> read = await f.H.Store.ReadGenerationMetadataAsync(f.Operation, CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(ErrorCodes.LongRest.StaleInput, read.Error.Code);
+    }
+
+    /// <summary>The operation is terminal under the given code, its sweep and its generation are retired, and one new sweep owns the scope.</summary>
+    private static async Task AssertTheSweepWasReplacedAsync(MaintenanceFixture f, Guid retiredOperation, string code, LongRunningOperationDto replacement)
+    {
+        Assert.NotEqual(retiredOperation, replacement.Id);
+
+        Assert.Equal(LongRunningOperationState.Pending, replacement.State);
+
+        LongRunningOperation retired = (await f.Operations.GetAsync(retiredOperation))!;
+
+        Assert.Equal(LongRunningOperationState.Abandoned, retired.State);
+
+        Assert.Equal(code, retired.TerminalErrorCode);
+
+        Assert.Null(retired.LeaseOwner);
+
+        Assert.NotNull(retired.CompletedAt);
+
+        Assert.Equal((long)LongRestSweepPhase.Retired, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{retiredOperation:N}';"));
+
+        Assert.Equal((long)LongRestSweepPhase.Retired, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_discovery_generations WHERE OperationId = '{retiredOperation:N}';"));
+
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_sweeps WHERE PhaseCode NOT IN (6, 7, 9);"));
+
+        Assert.Equal((long)LongRestSweepPhase.Capture, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{replacement.Id:N}';"));
+
+        Assert.False(f.Ownership.IsClaimed(retiredOperation));
+    }
+
+    // The clean twin: the worker readmits the sweep in a later boot, cannot read its generation, and abandons it as stale input. The sweep
+    // row stays active until a request replaces it, and the request must be able to, or Long Rest for the scope would never run again.
+    [Theory]
+    [InlineData("pairing-version")]
+    [InlineData("fixed-bound")]
+    public async Task A_clean_sweep_the_worker_abandoned_because_its_generation_is_no_longer_readable_is_replaced_by_the_next_request(string change)
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(protectedSources: false);
+
+        Guid stale = f.Operation;
+
+        await f.RebootAsync();
+
+        await RewriteStoredRecipeToAnUnreadableOneAsync(f, change);
+
+        await AssertTheStoredGenerationCannotBeReadAsync(f);
+
+        RecoveredSweep recovered = await RecoverThenReadmitAsync(f, "unreadable-clean-recovery");
+
+        Assert.Null(recovered.Fault);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, recovered.State);
+
+        Assert.Equal(ErrorCodes.LongRest.StaleInput, (await f.Operations.GetAsync(stale))!.TerminalErrorCode);
+
+        // The worker left the sweep row active under the scope, with nothing it can ever do about it.
+        Assert.Equal(1L, await f.H.ScalarAsync($"SELECT count(*) FROM long_rest_sweeps WHERE OperationId = '{stale:N}' AND PhaseCode NOT IN (6, 7, 9);"));
+
+        Result<LongRunningOperationDto> replaced = await f.Coordinator.RequestAsync(f.Scope, f.Partition, CancellationToken.None);
+
+        Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Code : null);
+
+        await AssertTheSweepWasReplacedAsync(f, stale, ErrorCodes.LongRest.StaleInput, replaced.Value);
+    }
+
+    // A protected park whose generation the code in force cannot read, in an installation whose configuration value has also moved: it can
+    // never resume, so the next request that carries live authority retires it as a stale configuration. Retiring it does not ask the
+    // generation for anything but its row.
+    [Theory]
+    [InlineData("pairing-version")]
+    [InlineData("fixed-bound")]
+    public async Task A_protected_park_whose_generation_is_no_longer_readable_is_retired_as_a_stale_configuration_by_the_next_authorized_turn(string change)
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        (long receipts, EffectRow[] effects) = await ParkProtectedAcrossABootAsync(f);
+
+        await RewriteStoredRecipeToAnUnreadableOneAsync(f, change);
+
+        EditPricing(f);
+
+        await AssertTheStoredGenerationCannotBeReadAsync(f);
+
+        Result<LongRunningOperationDto> replaced = await f.Coordinator.RequestAsync(f.Scope, f.Partition, f.Authority, CancellationToken.None);
+
+        Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Code : null);
+
+        await AssertTheSweepWasReplacedAsync(f, f.Operation, LongRestParkCodes.StaleConfiguration, replaced.Value);
+
+        // Evidence is preserved: the receipt, the settled effect row and the generation are all still there.
+        Assert.Equal(receipts, await f.H.ScalarAsync("SELECT count(*) FROM external_disclosure_receipts;"));
+
+        Assert.Equal(effects, await EffectRowsAsync(f));
+
+        Assert.Equal(1L, await f.H.ScalarAsync($"SELECT count(*) FROM long_rest_discovery_generations WHERE OperationId = '{f.Operation:N}';"));
+    }
+
+    // The documented remedy for a park is the operator's cancel. It settles the operation (Cancelling, then the reconciler abandons it), and
+    // the sweep row stays active until a request replaces it: the same retirement, over a generation the code in force cannot read.
+    [Theory]
+    [InlineData("pairing-version")]
+    [InlineData("fixed-bound")]
+    public async Task A_protected_park_an_operator_cancelled_whose_generation_is_no_longer_readable_is_replaced_by_the_next_authorized_turn(string change)
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        (long receipts, EffectRow[] effects) = await ParkProtectedAcrossABootAsync(f);
+
+        await RewriteStoredRecipeToAnUnreadableOneAsync(f, change);
+
+        EditPricing(f);
+
+        await AssertTheStoredGenerationCannotBeReadAsync(f);
+
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.True(await f.Operations.RequestCancellationAsync(f.Operation, parked.Revision, DateTimeOffset.UtcNow));
+
+        Assert.Equal(LongRunningOperationState.Cancelling, (await f.Operations.GetAsync(f.Operation))!.State);
+
+        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler()], f.Clock,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        Assert.Equal(1, (await reconciler.ReconcileNowAsync("operator-cancelled-park")).Abandoned);
+
+        Assert.Equal(LongRestParkCodes.Cancelled, (await f.Operations.GetAsync(f.Operation))!.TerminalErrorCode);
+
+        Assert.Equal(1L, await f.H.ScalarAsync($"SELECT count(*) FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}' AND PhaseCode NOT IN (6, 7, 9);"));
+
+        Result<LongRunningOperationDto> replaced = await f.Coordinator.RequestAsync(f.Scope, f.Partition, f.Authority, CancellationToken.None);
+
+        Assert.True(replaced.IsSuccess, replaced.IsFailure ? replaced.Error.Code : null);
+
+        await AssertTheSweepWasReplacedAsync(f, f.Operation, LongRestParkCodes.Cancelled, replaced.Value);
+
+        Assert.Equal(receipts, await f.H.ScalarAsync("SELECT count(*) FROM external_disclosure_receipts;"));
+
+        Assert.Equal(effects, await EffectRowsAsync(f));
     }
 
     // The suppressed source of an earlier consolidation is erased. It is no leaf, so no trigger invalidates the generation that froze its

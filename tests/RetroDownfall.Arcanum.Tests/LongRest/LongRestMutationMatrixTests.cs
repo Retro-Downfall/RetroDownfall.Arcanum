@@ -588,12 +588,29 @@ public sealed partial class LongRestMutationMatrixTests
         if (bypass == "schema-rebuild")
         {
             // The resume entry is the seam that caught it. A clean sweep whose generation can no longer hold is retired for a fresh request to
-            // replace; a protected one is refused by the first unit under its capability and stays parked until the next request that carries
-            // live authority, which finds that its frozen sources can no longer be proved and retires it as stale input (see
-            // LongRestMaintenanceTests.FreshAuthorityRetire).
+            // replace; a protected one is refused at the resume entry under its capability and stays parked: the rebuild changed content only,
+            // so its metadata still proves, and the next authorized request, which asks metadata only, is handed the same park and meets the
+            // same refusal until an operator cancels it.
             Assert.Equal(isProtected ? LongRunningOperationState.ReconciliationRequired : LongRunningOperationState.Abandoned, operation!.State);
 
             Assert.Equal(isProtected ? LongRestParkCodes.AuthorizedRequestRequired : ErrorCodes.LongRest.StaleInput, operation.TerminalErrorCode);
+
+            if (isProtected)
+            {
+                Task<object?> ParkAsync() => s.F.H.ScalarAsync($"SELECT json_array(Id, State, Revision, AttemptCount, LeaseOwner, LeaseExpiresAt, TerminalErrorCode) FROM LongRunningOperations WHERE Id = '{s.F.Operation:N}';");
+
+                object? parked = await ParkAsync();
+
+                Result<LongRunningOperationDto> again = await s.F.Coordinator.RequestAsync(s.F.Scope, s.F.Partition, s.F.Authority, CancellationToken.None);
+
+                Assert.True(again.IsSuccess, again.IsFailure ? again.Error.Code : null);
+
+                Assert.Equal(s.F.Operation, again.Value.Id);
+
+                Assert.Equal(LongRunningOperationState.ReconciliationRequired, again.Value.State);
+
+                Assert.Equal(parked, await ParkAsync());
+            }
         }
     }
 
