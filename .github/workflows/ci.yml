@@ -65,8 +65,9 @@ jobs:
     # per RID, and Linux is not a shipping RID. A Linux runner has no native asset, so the build
     # fails by design (ARCSQLC002) rather than falling back to an unverified SQLite.
     runs-on: macos-26
-    # The whole runtime suite under coverage took about 120 minutes on the hosted runner. The limit
-    # is about twice that, so a runner slower than the one measured still finishes.
+    # This lane took about 120 minutes on the hosted runner (the runtime suite under coverage alone
+    # 1 h 45 m). The limit is about twice that, so a runner slower than the one measured still
+    # finishes.
     timeout-minutes: 270
     env:
       DOTNET_NOLOGO: true

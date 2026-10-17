@@ -1333,6 +1333,7 @@ public sealed class ContinuousIntegrationWorkflowTests
     public void The_macos_build_test_lane_installs_ripgrep_before_it_runs_the_runtime_suite()
     {
         const string requirement = "brew install ripgrep";
+
         const string suite = "./scripts/coverage.sh";
 
         WorkflowJob lane = Assert.Single(ContinuousIntegrationJobs(FindRepositoryRoot()), static job => job.Id == "build-test");
