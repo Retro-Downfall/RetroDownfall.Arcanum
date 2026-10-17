@@ -11,6 +11,21 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 
 public sealed partial class LongRestHierarchyTests
 {
+    /// <summary>
+    /// The corpus is built so that the folds the test reads cannot depend on the clustering seed. A page of leaves is clustered from a seed
+    /// hashed out of its leaves' membership digests, and those bind the claim and version identifiers drawn afresh for every memory, so the
+    /// same corpus is clustered from a different seed in every run (and always from the same one within a generation). Memories whose
+    /// vectors lie near one another leave that clustering nothing to separate: which clusters the seed draws, and so which folds come
+    /// first and how many leaves they hold, then changes from run to run (one cluster of 114 leaves beside seven of two was the commonest
+    /// shape it produced), and a lane filled from folds of two leaves is short of 32. Here the memories come in groups of sixteen, the width of
+    /// a fold; the members of a group are one point, and every group lies along an axis of its own. A page of 128 leaves holds eight
+    /// groups on eight different axes, so its layer asks for eight clusters from eight distinct points. An axis is its own normalization,
+    /// so a point's dot product with a copy of itself is exactly 1 and with another axis exactly 0. K-means++ weights a point by its
+    /// distance to the nearest centroid, which is exactly zero for a copy of a centroid, so it seeds one centroid in every group whatever
+    /// the seed, and each point is then exactly as near its own centroid as a point can be and exactly as far from the others. The
+    /// fold at position <c>n</c> is therefore group <c>n</c> in every run, which the test states before it relies on it. The recall tests
+    /// build their groups the same way.
+    /// </summary>
     [SkippableTheory]
     [InlineData(8, false)]
     [InlineData(9, false)]
@@ -20,11 +35,18 @@ public sealed partial class LongRestHierarchyTests
     {
         await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
 
-        int[] sources = [.. Enumerable.Range(0, summaries * 16)];
+        const int groupSize = LongRestDiscoveryLimits.HierarchyChildren;
+
+        int[] sources = [.. Enumerable.Range(0, summaries * groupSize)];
 
         foreach (int index in reverse ? sources.Reverse() : sources)
         {
-            await h.SeedAsync($"rank-{index:D5}", $"unique ranked observation {index:D5}");
+            string memory = $"rank-{index:D5}";
+
+            await h.SeedAsync(memory, $"unique ranked observation {index:D5}");
+
+            // Group 64 comes back to the first axis, but the groups of one page are eight consecutive numbers and none of them repeats.
+            await h.SetEmbeddingAsync(memory, Axis(LongRestClusters.Width, index / groupSize % LongRestClusters.Width));
         }
 
         LongRestDiscoveryGeneration generation = await h.CaptureAsync();
@@ -40,6 +62,13 @@ public sealed partial class LongRestHierarchyTests
             LongRestHierarchyWork work = LongRestSweepHarness.Require(await h.Store.ReadNextFoldAsync(generation.GenerationId, null, CancellationToken.None))!;
 
             Assert.Equal(1, work.Fold.Layer);
+
+            // The shape everything below rests on, stated where it is read: fold n is exactly group n, all sixteen of its leaves in memory id
+            // order. The groups together are the whole corpus, so no other layer-1 fold exists, and a clustering that no longer parts the
+            // groups this way fails here instead of handing the selection a lucky or an unlucky corpus.
+            Assert.Equal(groupSize, work.Fold.Children.Length);
+
+            Assert.Equal([.. Enumerable.Range(index * groupSize, groupSize).Select(static number => $"rank-{number:D5}")], LongRestSweepHarness.MemoriesOf(work));
 
             // Both canonical Guid halves exercise unsigned high-bit transitions. Reversing
             // assignment changes insertion versus persisted Guid page order without changing SQL.
