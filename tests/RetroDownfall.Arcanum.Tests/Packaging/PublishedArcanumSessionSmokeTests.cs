@@ -728,6 +728,10 @@ public sealed class PublishedArcanumSessionSmokeTests
                 {
                     DefaultRoot = testHome,
                 },
+                Security = new SecuritySettings
+                {
+                    CampaignRoots = [testHome],
+                },
             },
         };
 
