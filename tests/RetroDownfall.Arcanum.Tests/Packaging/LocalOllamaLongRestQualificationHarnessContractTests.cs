@@ -894,15 +894,16 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
     [Fact]
     public void The_embedding_models_vector_size_must_equal_the_configured_dimensions_and_the_finding_names_the_flag()
     {
-        Assert.Null(LongRestQualificationChecks.EmbeddingDimensionsFinding("embeddinggemma", 768, 768));
+        Assert.Null(LongRestQualificationChecks.EmbeddingDimensionsFinding("qwen3-embedding:8b", 4096, 4096));
 
-        string? finding = LongRestQualificationChecks.EmbeddingDimensionsFinding("qwen3-embedding:8b", 768, 4096);
+        // The default size configured for a second, smaller model: embeddinggemma returns 768.
+        string? finding = LongRestQualificationChecks.EmbeddingDimensionsFinding("embeddinggemma", 4096, 768);
 
         Assert.NotNull(finding);
-        Assert.Contains("qwen3-embedding:8b", finding, StringComparison.Ordinal);
-        Assert.Contains("4096", finding, StringComparison.Ordinal);
+        Assert.Contains("embeddinggemma", finding, StringComparison.Ordinal);
         Assert.Contains("768", finding, StringComparison.Ordinal);
-        Assert.Contains("--embedding-dimensions 4096", finding, StringComparison.Ordinal);
+        Assert.Contains("4096", finding, StringComparison.Ordinal);
+        Assert.Contains("--embedding-dimensions 768", finding, StringComparison.Ordinal);
     }
 
     [Fact]

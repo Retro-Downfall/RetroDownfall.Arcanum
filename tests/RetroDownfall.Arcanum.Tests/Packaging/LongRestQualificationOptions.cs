@@ -48,12 +48,13 @@ internal sealed record LongRestQualificationOptions(
 
     public const string DefaultDefaultModel = "qwen3.8:27b";
 
-    public const string DefaultEmbeddingModel = "embeddinggemma";
+    public const string DefaultEmbeddingModel = "qwen3-embedding:8b";
 
-    public const int DefaultEmbeddingWindow = 2048;
+    /// <summary>The context length Ollama reports for the default embedding model.</summary>
+    public const int DefaultEmbeddingWindow = 40960;
 
-    /// <summary>The vector size of the default embedding model; Compendium allows 64 to 4,096.</summary>
-    public const int DefaultEmbeddingDimensions = 768;
+    /// <summary>The vector size of the default embedding model, which is also the most Compendium allows (64 to 4,096).</summary>
+    public const int DefaultEmbeddingDimensions = 4096;
 
     public const int MinimumEmbeddingDimensions = 64;
 

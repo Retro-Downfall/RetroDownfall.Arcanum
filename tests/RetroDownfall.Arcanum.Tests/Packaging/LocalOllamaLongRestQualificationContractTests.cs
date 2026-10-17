@@ -23,6 +23,11 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         "FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaLongRestQualificationTests."
         + "Published_native_aot_long_rest_sweeps_recovers_a_killed_host_and_leaves_turns_unharmed";
 
+    /// <summary>
+    /// A deliberately small-window second model (<c>embeddinggemma</c> reports 2,048 tokens and 768 dimensions), not the harness default: its
+    /// summary bound (1,766 bytes) is one the 131,072-token chat window would not give, so the contracts that tell the two provider entries
+    /// apart have something to find. The defaults themselves are pinned by <see cref="Options_default_to_the_documented_models_window_and_endpoint_and_reject_unsafe_values"/>.
+    /// </summary>
     private static readonly LongRestQualificationOptions Options = new(
         "/published/RetroDownfall.Arcanum.Cli",
         "gemma4:e4b",
@@ -290,7 +295,7 @@ public sealed class LocalOllamaLongRestQualificationContractTests
 
         using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(receiptKind: "ollama-long-rest");
 
-        fixture.EmitTestWarningOutputForEmbeddingModel("embeddinggemma");
+        fixture.EmitTestWarningOutputForEmbeddingModel(LongRestQualificationOptions.DefaultEmbeddingModel);
 
         PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
             Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
@@ -339,6 +344,68 @@ public sealed class LocalOllamaLongRestQualificationContractTests
 
         // Each run prints its calibration report, the run that warned included.
         Assert.Equal(2, result.StandardOutput.Split("CALIBRATION-REPORT-FIXTURE").Length - 1);
+    }
+
+    [SkippableFact]
+    public async Task All_embedding_models_runs_exactly_the_installed_models_and_has_no_fixed_list()
+    {
+        RequirePosixScriptFixture();
+
+        Skip.IfNot(IsOnPath("jq"), "The embedding-model discovery filters its answers with jq.");
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(receiptKind: "ollama-long-rest");
+
+        fixture.ServeOllamaEmbeddingModels(LongRestQualificationOptions.DefaultEmbeddingModel);
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable,
+            "--all-embedding-models");
+
+        Assert.Equal(0, result.ExitCode);
+
+        string[] runs = File.ReadAllLines(fixture.DotnetLog)
+            .Where(static line => line.StartsWith("long-rest-embedding-model=", StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Equal(["long-rest-embedding-model=" + LongRestQualificationOptions.DefaultEmbeddingModel], runs);
+        Assert.DoesNotContain("embeddinggemma", File.ReadAllText(fixture.DotnetLog), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task All_embedding_models_names_an_installed_model_it_cannot_describe_and_fails_after_running_the_others()
+    {
+        RequirePosixScriptFixture();
+
+        Skip.IfNot(IsOnPath("jq"), "The embedding-model discovery filters its answers with jq.");
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(receiptKind: "ollama-long-rest");
+
+        fixture.ServeOllamaEmbeddingModels("embed-a", "mystery-b");
+
+        fixture.FailOllamaShowFor("mystery-b");
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable,
+            "--all-embedding-models");
+
+        Assert.Equal(1, result.ExitCode);
+
+        string dotnetLog = File.ReadAllText(fixture.DotnetLog);
+
+        Assert.Contains("long-rest-embedding-model=embed-a", dotnetLog, StringComparison.Ordinal);
+        Assert.DoesNotContain("long-rest-embedding-model=mystery-b", dotnetLog, StringComparison.Ordinal);
+        Assert.Contains("Ollama lists mystery-b but would not describe it", result.StandardError, StringComparison.Ordinal);
+
+        string summary = result.StandardError
+            .Split('\n')
+            .Single(static line => line.Contains("the qualification failed for embedding model(s):", StringComparison.Ordinal))
+            .TrimEnd('\r');
+
+        Assert.EndsWith(": mystery-b", summary, StringComparison.Ordinal);
     }
 
     private static bool IsOnPath(string command) =>
@@ -545,9 +612,9 @@ public sealed class LocalOllamaLongRestQualificationContractTests
 
         Assert.Equal("gemma4:e4b", options.ChatModel);
         Assert.Equal("qwen3.8:27b", options.DefaultModel);
-        Assert.Equal("embeddinggemma", options.EmbeddingModel);
-        Assert.Equal(2048, options.EmbeddingWindow);
-        Assert.Equal(768, options.EmbeddingDimensions);
+        Assert.Equal("qwen3-embedding:8b", options.EmbeddingModel);
+        Assert.Equal(40960, options.EmbeddingWindow);
+        Assert.Equal(4096, options.EmbeddingDimensions);
         Assert.Equal("http://127.0.0.1:11434/v1/", options.Endpoint.AbsoluteUri);
         Assert.Null(options.ResultsDirectory);
         Assert.Null(options.ReceiptPath);
@@ -588,6 +655,51 @@ public sealed class LocalOllamaLongRestQualificationContractTests
         try
         {
             AssertConfiguration(workspace.FullName);
+        }
+        finally
+        {
+            workspace.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Configuration_for_the_default_embedding_model_carries_its_own_window_and_vector_size()
+    {
+        Dictionary<string, string> environment = new(StringComparer.Ordinal)
+        {
+            [LongRestQualificationOptions.ExecutableVariable] = "/published/arcanum",
+        };
+
+        LongRestQualificationOptions defaults = LongRestQualificationOptions.Read(name => environment.GetValueOrDefault(name));
+
+        // The validator requires the workspace to exist.
+        DirectoryInfo workspace = Directory.CreateTempSubdirectory("arcanum-long-rest-config-");
+
+        try
+        {
+            ArcanumSettings settings = LongRestQualificationConfiguration.Create(
+                defaults,
+                hostPort: 51234,
+                new Uri("http://127.0.0.1:50001/v1/"),
+                workspace.FullName,
+                sagaExtraction: false,
+                longRest: true).Arcanum;
+
+            ProviderSettings embeddings = Assert.Single(settings.Providers, static provider => provider.Name == "Ollama Embeddings");
+
+            Assert.Equal(40_960, embeddings.ContextWindowLimit);
+            Assert.Equal(["qwen3-embedding:8b"], embeddings.Models.Select(static model => model.Name));
+            Assert.Equal("qwen3-embedding:8b", settings.Integrations.Embeddings.Model);
+            Assert.Equal(4096, settings.Integrations.Embeddings.Dimensions);
+            Assert.True(new ConfigurationValidator().Validate(settings).IsSuccess);
+            Assert.Empty(new ConfigurationValidator().ValidateLongRest(settings));
+
+            // 40,960 tokens is more than a summary of the most the product allows needs, so the recipe carries that most.
+            Result<LongRestRecipeIdentity> recipe = LongRestRecipeResolver.Resolve(settings);
+
+            Assert.True(recipe.IsSuccess);
+            Assert.Equal("Ollama Embeddings", recipe.Value.EmbeddingProvider);
+            Assert.Equal(LongRestDiscoveryLimits.SummaryUtf8Bytes, recipe.Value.SummaryUtf8Bytes);
         }
         finally
         {

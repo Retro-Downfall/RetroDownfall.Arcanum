@@ -1088,6 +1088,7 @@ public sealed class PublishedApphostVerificationScriptTests
         /// <summary>
         /// Answers the two Ollama routes the Long Rest qualification wrapper asks for (the installed models, and one model's
         /// capabilities and shape) as though each named model were an installed embedding model of a 2,048-token window and 768 dimensions.
+        /// A model named by <see cref="FailOllamaShowFor"/> is listed but cannot be described.
         /// </summary>
         public void ServeOllamaEmbeddingModels(params string[] names)
         {
@@ -1099,6 +1100,8 @@ public sealed class PublishedApphostVerificationScriptTests
                 """
                 #!/usr/bin/env bash
                 url=''
+                body=''
+                previous=''
 
                 for argument in "$@"; do
                   case "$argument" in
@@ -1106,6 +1109,12 @@ public sealed class PublishedApphostVerificationScriptTests
                       url="$argument"
                       ;;
                   esac
+
+                  if [[ "$previous" == '-d' ]]; then
+                    body="$argument"
+                  fi
+
+                  previous="$argument"
                 done
 
                 case "$url" in
@@ -1113,6 +1122,10 @@ public sealed class PublishedApphostVerificationScriptTests
                     printf '%s\n' "${FAKE_OLLAMA_TAGS:?}"
                     ;;
                   */api/show)
+                    if [[ -n "${FAKE_OLLAMA_SHOW_FAILS:-}" && "$body" == *"${FAKE_OLLAMA_SHOW_FAILS}"* ]]; then
+                      exit 22
+                    fi
+
                     printf '%s\n' '{"capabilities":["embedding"],"model_info":{"bert.context_length":2048,"bert.embedding_length":768}}'
                     ;;
                   *)
@@ -1121,6 +1134,10 @@ public sealed class PublishedApphostVerificationScriptTests
                 esac
                 """);
         }
+
+        /// <summary>Makes the fake Ollama list the named model but refuse to describe it, as an Ollama that failed on one model would.</summary>
+        public void FailOllamaShowFor(string name) =>
+            EnvironmentOverrides["FAKE_OLLAMA_SHOW_FAILS"] = name;
 
         public void FailSearches()
         {

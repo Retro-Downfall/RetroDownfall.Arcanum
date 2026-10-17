@@ -10,9 +10,9 @@ CONFIGURATION=Release
 EXECUTABLE=""
 CHAT_MODEL="gemma4:e4b"
 DEFAULT_MODEL="qwen3.8:27b"
-EMBEDDING_MODEL="embeddinggemma"
-EMBEDDING_WINDOW="2048"
-EMBEDDING_DIMENSIONS="768"
+EMBEDDING_MODEL="qwen3-embedding:8b"
+EMBEDDING_WINDOW="40960"
+EMBEDDING_DIMENSIONS="4096"
 ENDPOINT="http://127.0.0.1:11434/v1/"
 REPORT_DIR=""
 MUTINY="1"
@@ -28,18 +28,20 @@ Local qualification options:
                              chat call (default: gemma4:e4b).
   --default-model <tag>      Installed Ollama chat model used as the DefaultModel, so it serves the ordinary
                              Session turn (default: qwen3.8:27b).
-  --embedding-model <tag>    Installed Ollama embedding model (default: embeddinggemma).
+  --embedding-model <tag>    Installed Ollama embedding model (default: qwen3-embedding:8b).
   --embedding-window <n>     Context window, in tokens, configured on the separate embedding provider entry
-                             (default: 2048, the context length embeddinggemma reports).
+                             (default: 40960, the context length qwen3-embedding:8b reports).
   --embedding-dimensions <n> Vector size configured for the embedding model, 64 to 4096. It must equal the model's
-                             own size, which the test measures before it starts anything (default: 768, the size of
-                             embeddinggemma; qwen3-embedding:8b returns 4096).
+                             own size, which the test measures before it starts anything (default: 4096, the size of
+                             qwen3-embedding:8b; embeddinggemma returns 768 with a 2048-token window).
   --endpoint <uri>           Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
   --all-embedding-models     Run the qualification once for each embedding model installed in Ollama, instead of
                              once for --embedding-model. Each model's window and vector size are read from Ollama
                              itself (`/api/show`), so --embedding-window and --embedding-dimensions are ignored. The
                              report of each run goes to its own sub-directory of --report-dir named for the model.
-                             Needs curl and jq. The wrapper fails if any run does, after all of them have run.
+                             There is no fixed list: an installed model that Ollama will not describe is named and
+                             fails the wrapper, never skipped silently. Needs curl and jq. The wrapper fails if any
+                             run does, after all of them have run.
   --no-mutiny                Skip the Mutiny Scenario (a second sweep over a freshly seeded corpus in which the
                              forwarder rewrites every adjudication answer into "all of these are the same fact").
   --report-dir <directory>   Existing directory that receives the progress log, the summary and the calibration
@@ -310,18 +312,25 @@ ollama_origin() {
   printf '%s\n' "${origin%/v1}"
 }
 
+# One line for each model Ollama lists that is an embedding model ("embedding <name>"), and one for each that it lists but will not
+# describe ("unreadable <name>"), so that a model that might need a run is never dropped without being named.
 installed_embedding_models() {
   local origin
   local name
+  local description
   local capabilities
 
   origin="$(ollama_origin)"
 
   while IFS= read -r name; do
-    capabilities="$(curl -fsS --max-time 30 -X POST "$origin/api/show" -d "$(jq -cn --arg model "$name" '{model: $model}')" 2>/dev/null | jq -r '.capabilities // [] | join(",")' 2>/dev/null || true)"
+    if ! description="$(curl -fsS --max-time 30 -X POST "$origin/api/show" -d "$(jq -cn --arg model "$name" '{model: $model}')" 2>/dev/null)" \
+      || ! capabilities="$(printf '%s' "$description" | jq -r '.capabilities // [] | join(",")' 2>/dev/null)"; then
+      printf 'unreadable %s\n' "$name"
+      continue
+    fi
 
     if [[ ",$capabilities," == *",embedding,"* ]]; then
-      printf '%s\n' "$name"
+      printf 'embedding %s\n' "$name"
     fi
   done < <(curl -fsS --max-time 30 "$origin/api/tags" | jq -r '.models[].name')
 }
@@ -410,10 +419,16 @@ if [[ "$ALL_EMBEDDING_MODELS" -eq 1 ]]; then
   # A while loop rather than mapfile, which macOS's bash 3.2 does not have.
   MODELS_TO_RUN=()
 
-  while IFS= read -r installed; do
-    if [[ -n "$installed" ]]; then
-      MODELS_TO_RUN+=("$installed")
-    fi
+  while read -r installed_kind installed; do
+    case "$installed_kind" in
+      embedding)
+        MODELS_TO_RUN+=("$installed")
+        ;;
+      unreadable)
+        echo "error: Ollama lists $installed but would not describe it, so it cannot be told whether it needs a run" >&2
+        FAILED_EMBEDDING_MODELS+=("$installed")
+        ;;
+    esac
   done < <(installed_embedding_models)
 
   if [[ "${#MODELS_TO_RUN[@]}" -eq 0 ]]; then

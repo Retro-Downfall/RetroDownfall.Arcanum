@@ -7,8 +7,9 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// <summary>
 /// The isolated installation's configuration. The chat models and the embedding model live in two separate
 /// provider entries at the same endpoint, because a provider entry carries one <c>contextWindowLimit</c> and the
-/// embedding model's window (2,048 tokens for <c>embeddinggemma</c>) is smaller than the chat models': Long Rest
-/// derives its summary bound from the entry <c>integrations.embeddings.provider</c> names.
+/// embedding model's window (40,960 tokens for the default <c>qwen3-embedding:8b</c>, 2,048 for <c>embeddinggemma</c>) is
+/// smaller than the chat models' (131,072): Long Rest derives its summary bound from the entry
+/// <c>integrations.embeddings.provider</c> names, so the embedding model's own window belongs on an entry of its own.
 /// </summary>
 internal static class LongRestQualificationConfiguration
 {
