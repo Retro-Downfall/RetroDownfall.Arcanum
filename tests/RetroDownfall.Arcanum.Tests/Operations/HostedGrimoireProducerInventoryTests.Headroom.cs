@@ -97,19 +97,15 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // a family lands on is decided by timing. So the serial count is the largest, and it is the one a table row must hold. A selection
     // root is named without the digest after its tilde. A row whose comment names a count per arrangement is held at the largest.
     //
-    // Measured on 2026-10-16 at 77cec11f, once under each of one, two and three root workers (the primary discovery reported the
-    // committed 6,729 manifest rows and no diagnostic under all three), every one of the sixty-nine primary roots equals its maximum plus
-    // the margin to the state. The three arrangements agree on every root but the handoff roots named above and the startup service's
-    // background continuation (3,476 states under one and two workers, 1,738 under three), and the largest ceiling
-    // is 7,200 of the 7,372 the cap allows (the pre-bootstrap transition recovery, at 6,856 states). It was measured again once under
-    // each after the durable-operation conflict reads and the new-profile restore recovery changed: five roots reach them (that
-    // recovery, the startup service's continuation and its first pass, and the two factory-reset recovery handlers) and each stands a
-    // few states higher, the manifest unchanged. The plan of a global or all reset
-    // inspects the offline-transition journal and does not recover it, so the two stopped-host apply roots and the attested apply stand
-    // at 5,008, 5,861 and 6,263 states; the attested apply is the larger because its shared data step reaches the stopped-host fresh and
-    // resume arms' steps as well. The startup root stands at 5,620 states, which includes the outage clause of the healthy-catalog
-    // inspection it reaches. The additional partition was measured under each too and stands the same under all three, since none of
-    // its roots is re-rooted into.
+    // Measured on 2026-10-17, once under each of one, two and three root workers (the primary discovery reported the committed 6,729
+    // manifest rows and no diagnostic under all three), every one of the sixty-nine primary roots equals its maximum plus the margin to
+    // the state. The three arrangements agree on every root but the two handoff roots named above, and the largest ceiling is 7,200 of
+    // the 7,372 the cap allows (the pre-bootstrap transition recovery, at 6,856 states). The plan of a global or all reset inspects the
+    // offline-transition journal and does not recover it, so the two stopped-host apply roots and the attested apply stand at 5,011,
+    // 5,864 and 6,266 states; the attested apply is the larger because its shared data step reaches the stopped-host fresh and resume
+    // arms' steps as well. The startup root stands at 5,620 states, which includes the outage clause of the healthy-catalog inspection
+    // it reaches. The additional partition was measured under each too and stands the same under all three, since none of its roots is
+    // re-rooted into.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -136,7 +132,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("CovenantFeatureConfigurationPublisher", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFeatureConfigurationPublisher.StartAsync", 24), // measured 10
         new("CovenantFeatureConfigurationPublisher", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFeatureConfigurationPublisher.StopAsync", 16), // measured 2
         new("CovenantMaintenanceHostedService", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantMaintenanceHostedService.ExecuteAsync", 664), // measured 628
-        new("DataRetentionSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionSweepHostedService.ExecuteAsync", 2752), // measured 2614
+        new("DataRetentionSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionSweepHostedService.ExecuteAsync", 2752), // measured 2620
         new("EntryWeavingService", "RetroDownfall.Arcanum.Infrastructure.Hosting.EntryWeavingService.ExecuteAsync", 776), // measured 736
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StartAsync", 296), // measured 278
         new("FileEncryptionKeyBootstrapHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.FileEncryptionKeyBootstrapHostedService.StopAsync", 16), // measured 1
@@ -152,7 +148,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // plus five percent rounded up to a multiple of eight (5493 + 275 = 5768 and 3654 + 183 = 3837), and no more.
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5768), // measured 5493 under one, two and three workers
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3840), // measured 3654 under one, two and three workers
-        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3656), // measured 3476 under one and two workers, 1738 under three
+        new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3656), // measured 3476 under one, two and three workers (an earlier discovery reported 1738 under three, so the row follows the larger)
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync::call:RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.RunStartupPassAsync#0", 1416), // measured 1344
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StopAsync", 16), // measured 5
@@ -167,9 +163,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("RetroDownfall.Arcanum.Cli.Commands.BackupCommands", "RetroDownfall.Arcanum.Cli.Commands.BackupCommands.Create", 1320), // measured 1251
         new("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync", 3040), // measured 2889
         new("RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery", "RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions.GrimoireOfflineTransitionStartupRecovery.RecoverBeforeBootstrapAsync", 7200), // measured 6856
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync", 5264), // measured 5008
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync", 6584), // measured 6263
-        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync", 6160), // measured 5861
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFreshUnderMaintenanceLockAsync", 5264), // measured 5011
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyFullUnderMaintenanceLockAsync", 6584), // measured 6266
+        new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.InstallationResetService.ApplyUnderMaintenanceLockAsync", 6160), // measured 5864
         new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync", 1440), // measured 1369
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.EnqueueExtraction", 32), // measured 21
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync", 1384), // measured 1318
@@ -218,9 +214,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex", "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreStagingIndex.Add", 40), // measured 25
         new("RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFamilyReinitializeRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantFamilyReinitializeRecoveryHandler.RecoverAsync", 32), // measured 18
         new("RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantIndexRebuildRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Covenant.CovenantIndexRebuildRecoveryHandler.RecoverAsync", 32), // measured 18
-        new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler.RecoverAsync", 3248), // measured 3087
+        new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapFactoryResetRecoveryHandler.RecoverAsync", 3248), // measured 3088
         new("RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.CovenantLaunchGapMutationRecoveryHandler.RecoverAsync", 3072), // measured 2922
-        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler.RecoverAsync", 3248), // measured 3088
+        new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionFactoryResetRecoveryHandler.RecoverAsync", 3248), // measured 3087
         new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionMutationRecoveryHandler.RecoverAsync", 3072), // measured 2921
         new("RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler", "RetroDownfall.Arcanum.Infrastructure.Data.DataRetentionRecoveryHandler.RecoverAsync", 840), // measured 797
         new("RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog", "RetroDownfall.Arcanum.Infrastructure.Data.Schema.GrimoireSchemaCatalog.get_AllObjects", 16), // measured 1
