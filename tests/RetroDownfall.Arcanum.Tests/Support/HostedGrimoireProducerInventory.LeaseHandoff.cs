@@ -31,8 +31,8 @@ internal static partial class HostedGrimoireProducerInventory
     // disposed, stored, returned, captured or escaped anywhere in its closure (Formal Preservation); otherwise the lifetime
     // ends at the call. Every syntactic reference to the root's method in analysed production source must be a cut call that some
     // root proved (the Handoff Caller Census), and the manifest ties the root's formal capsule to each caller's acquisition capsule
-    // with one handoff-binding row per call site. Captures of the lease in an ancestor of the caller are not judged here: they rest on
-    // the Authority Carrier Ban of the admitted entry census until that lands.
+    // with one handoff-binding row per call site. Captures of the lease in an ancestor of the caller are not judged at this edge: the
+    // Authority Carrier Ban (AuthorityCarrierScanner, AuthorityCarrierBanTests) refuses a closure over a work lease wherever it is.
     internal const string RootLeaseFormalCallee = "RetroDownfall.Arcanum.Infrastructure.Data.IGrimoireWorkLease.RootLeaseFormal";
 
     internal const string LeaseHandoffUnprovenCode = "HOSTED_LEASE_HANDOFF_UNPROVEN";
