@@ -282,14 +282,14 @@ reject_warnings() {
 
   if rg --no-config -n -i '(^|[[:space:]:])warning([[:space:]:]|$)' "$log"; then
     echo "error: local qualification found warning output in $log" >&2
-    exit 1
+    return 1
   else
     scan_status=$?
   fi
 
   if [[ "$scan_status" -ne 1 ]]; then
     echo "error: local qualification warning scan failed with exit code $scan_status for $log" >&2
-    exit 1
+    return 1
   fi
 }
 
@@ -301,7 +301,7 @@ dotnet build "$TEST_PROJECT" \
   -m:1 \
   2>&1 | tee "$BUILD_LOG"
 
-reject_warnings "$BUILD_LOG"
+reject_warnings "$BUILD_LOG" || exit 1
 
 # Ollama's own API (the native one beside /v1) says which installed models are embedding models and what their window and vector size are.
 ollama_origin() {
@@ -373,12 +373,13 @@ run_qualification() {
     --no-restore \
     2>&1 | tee "$TEST_LOG" || true
 
-  reject_warnings "$TEST_LOG"
-
   if [[ -f "$RESULTS_DIR/long-rest-calibration.txt" ]]; then
     echo "==> Calibration report ($EMBEDDING_MODEL)"
     cat "$RESULTS_DIR/long-rest-calibration.txt"
   fi
+
+  # A return, not an exit: under --all-embedding-models the caller records this model as failed and goes on to the next one.
+  reject_warnings "$TEST_LOG" || return 1
 
   if [[ ! -f "$QUALIFICATION_RECEIPT" ]]; then
     echo "error: selected local qualification test did not execute successfully with embedding model $EMBEDDING_MODEL (success receipt was not created)" >&2
