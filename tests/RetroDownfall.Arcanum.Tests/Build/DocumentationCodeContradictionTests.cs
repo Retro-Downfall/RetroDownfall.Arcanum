@@ -1703,7 +1703,64 @@ public sealed class DocumentationCodeContradictionTests
 
         Assert.Contains("`BackupRestoreJournalInstallationIdentityProvider.ReplaceDamagedFromClosedEvidence`", design, StringComparison.Ordinal);
 
-        Assert.Contains("\"outcome\": \"absent\"\\|\"damaged\"\\|\"removed\"\\|\"restored\"", reference, StringComparison.Ordinal);
+        Assert.Contains("`BackupRestoreJournalInstallationIdentityProvider.ReseedDamagedFromDatabase`", design, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "\"outcome\": \"absent\"\\|\"damaged\"\\|\"removed\"\\|\"restored\"\\|\"reseeded\", \"dryRun\", \"removed\", \"restored\", \"reseeded\", \"action\": \"none\"\\|\"remove\"\\|\"restore\"\\|\"reseed\"",
+            reference,
+            StringComparison.Ordinal);
+
+        // A Grimoire that holds its authority row is seeded again from the row: no document says the
+        // repair applies only before a Grimoire exists, that the value is read before one exists at two
+        // points only, or that the row blocks it, and the startup refusal does not say it creates a
+        // Grimoire when one may already exist.
+        foreach (string stale in (string[])[
+            "The repair applies only before a Grimoire exists",
+            "the Grimoire has no database file or no authority row (`Data.Blocked` when it holds the row",
+            "`Data.Blocked` for unfinished work or a Grimoire that holds its authority row",
+            "The value is read at two points before a Grimoire exists",
+            "will not create a Grimoire that would replace it",
+        ])
+        {
+            Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, ReadSource("Infrastructure", "Hosting", "GrimoireDatabaseBootstrapper.cs"), StringComparison.Ordinal);
+        }
+
+        foreach ((string name, string text) in new[] { ("DESIGN", design), ("Command Reference", reference), ("Engineering guide", engineering) })
+        {
+            Assert.True(
+                text.Contains("seeds the item again from", StringComparison.Ordinal),
+                name + " does not say that a Grimoire that holds its authority row has the item seeded again from it.");
+
+            Assert.True(
+                text.Contains("does not choose between the anchor and the database", StringComparison.Ordinal),
+                name + " does not say that a closed anchor naming another installation than the row is not settled by the repair.");
+        }
+
+        // A closed restore anchor is not compared with the identity before the bootstrap; reset and
+        // transition anchors are, by the pair recovery. No document says otherwise.
+        foreach (string stale in (string[])[
+            "or kept the closed anchor of a finished reset, restore, or offline transition",
+            "the closed anchor of a finished reset, restore, or offline transition: a start compares",
+        ])
+        {
+            Assert.DoesNotContain(stale, reference, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, engineering, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(stale, design, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("A closed restore anchor is not compared before the bootstrap", reference, StringComparison.Ordinal);
+
+        Assert.Contains("A closed restore anchor is not compared there", engineering, StringComparison.Ordinal);
+
+        Assert.Contains("a closed restore anchor is not compared before the bootstrap", design, StringComparison.Ordinal);
 
         Assert.Contains("`Data.ConfirmationRequired`", reference, StringComparison.Ordinal);
 
