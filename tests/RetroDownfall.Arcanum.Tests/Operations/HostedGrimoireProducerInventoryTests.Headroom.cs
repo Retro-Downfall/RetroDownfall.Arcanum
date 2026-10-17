@@ -144,9 +144,9 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         // a label from a joined row (SnapshotFrom, Materialize and the digests a label constructor reaches, analysed in each of the fifty
         // or so contexts that reach VerifyFrozenMetadataAsync) beside the per-leaf read a step makes, and the Lease-Handoff chain, the
         // receiver proof, the capability and fence currency rules, the Pairing Gate, the clique packs and the Fold Check add their own
-        // members to the two roots. Under one, two and three workers they analyse 5490 and 3654 states, so each row is the rule's maximum
-        // plus five percent rounded up to a multiple of eight (5490 + 275 = 5765 and 3654 + 183 = 3837), and no more.
-        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5768), // measured 5490 under one, two and three workers
+        // members to the two roots. Under one, two and three workers they analyse 5493 and 3654 states, so each row is the rule's maximum
+        // plus five percent rounded up to a multiple of eight (5493 + 275 = 5768 and 3654 + 183 = 3837), and no more.
+        new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance.ProcessAdmittedAsync", 5768), // measured 5493 under one, two and three workers
         new("LongRestSweepHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.LongRestSweepHostedService.ExecuteAsync", 3840), // measured 3654 under one, two and three workers
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.ContinueInBackgroundAsync", 3640), // measured 3466
         new("LongRunningOperationStartupHostedService", "RetroDownfall.Arcanum.Infrastructure.Operations.LongRunningOperationStartupHostedService.StartAsync", 16), // measured 3
