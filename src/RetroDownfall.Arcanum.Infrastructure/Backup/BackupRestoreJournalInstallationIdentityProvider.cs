@@ -40,10 +40,11 @@ internal sealed record BackupRestoreJournalIdentityProbe(
 /// (<see cref="ReadForNewDatabase"/>). Only an attested full installation reset may remove a valid
 /// identity, and only after proving no active restore owner remains. A value that is not one canonical
 /// identity is the one other thing changed, and only by the installation-identity repair, which has
-/// proved under the held lock that no evidence is active and no database row exists: it puts back the
-/// identity a closed restore or offline-transition anchor names
-/// (<see cref="ReplaceDamagedFromClosedEvidence"/>), and where no anchor exists it removes the value
-/// (<see cref="RemoveDamaged"/>).</para>
+/// proved under the held lock that no restore, offline transition or installation reset is
+/// unfinished. Where the Grimoire holds its authority row it seeds the value again from that row
+/// (<see cref="ReseedDamagedFromDatabase"/>); where it does not, it puts back the identity a closed
+/// restore or offline-transition anchor names (<see cref="ReplaceDamagedFromClosedEvidence"/>), and
+/// where no anchor exists either it removes the value (<see cref="RemoveDamaged"/>).</para>
 /// </remarks>
 internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCredentialStore credentials)
 {
@@ -126,7 +127,9 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
     /// reset included). It never runs on an ordinary bootstrap, which reads the binding and writes
     /// nothing (<see cref="ReadForNewDatabase"/>). Seeding a value that disagrees with the row would let
     /// the external binding drift from the installation it names, which is the one thing it exists to
-    /// pin.
+    /// pin. The seed of a damaged value again (<see cref="ReseedDamagedFromDatabase"/>) calls it once
+    /// more after its write, as the comparison: the item is then present and agrees, so it creates
+    /// nothing.
     /// </remarks>
     internal Result<Guid> SeedFromDatabase(
         ArcanumMaintenanceLock heldInstallationLock,
@@ -384,7 +387,8 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
     /// back as the anchor holds it.
     ///
     /// <para>Called only by the installation-identity repair, which has proved under the held lock that
-    /// no evidence is active and that no database authority row exists. It does not trust that proof
+    /// no evidence is active and that the Grimoire holds no authority row (a Grimoire that does is
+    /// seeded again from the row, <see cref="ReseedDamagedFromDatabase"/>). It does not trust that proof
     /// for the one thing it can check itself: a valid identity is never replaced, and a store that does
     /// not answer is not a damaged value. The result is true when this call wrote the identity and
     /// false when the item was already gone, or already held exactly this identity.</para>
@@ -393,7 +397,69 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
         ArcanumMaintenanceLock heldInstallationLock,
         string guardedDirectory,
         BackupRestoreProfileNamespace profileNamespace,
-        Guid closedEvidenceInstallationId)
+        Guid closedEvidenceInstallationId) =>
+        ReplaceDamaged(
+            heldInstallationLock,
+            guardedDirectory,
+            profileNamespace,
+            closedEvidenceInstallationId,
+            "A profile's external installation identity cannot be restored from an empty installation.");
+
+    /// <summary>
+    /// Seeds a stored value that is present and is not one canonical identity again, from the
+    /// installation the Grimoire's authority row carries, and reads it back.
+    /// </summary>
+    /// <remarks>
+    /// The way out of a damaged value for a profile whose Grimoire exists. The row is what the
+    /// binding was seeded from by the three authenticated publications (<see cref="SeedFromDatabase"/>),
+    /// and the damaged value is no longer the binding of anything, so it is replaced by the identity the
+    /// row carries, written through the write that seeds an absent one, and then held to the rule the
+    /// seed applies to a present one: it has to agree with the row. The identity is the row's and is
+    /// never invented, and an empty one is refused.
+    ///
+    /// <para>Called only by the installation-identity repair, which has proved under the held lock that
+    /// no restore, offline transition or installation reset is unfinished, and that every closed
+    /// anchor of this profile names this installation. It does not trust that proof for the one thing it
+    /// can check itself: a valid identity is never replaced, and a store that does not answer is not a
+    /// damaged value. The result is true when this call wrote the identity and false when the item was
+    /// already gone, or already held exactly this identity.</para>
+    /// </remarks>
+    internal Result<bool> ReseedDamagedFromDatabase(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        BackupRestoreProfileNamespace profileNamespace,
+        Guid databaseInstallationId)
+    {
+        Result<bool> replaced = ReplaceDamaged(
+            heldInstallationLock,
+            guardedDirectory,
+            profileNamespace,
+            databaseInstallationId,
+            "A profile's external installation identity cannot be seeded from an empty row.");
+
+        if (replaced.IsFailure || !replaced.Value)
+        {
+            return replaced;
+        }
+
+        // The rule every restore, reset and offline transition applies to the item: it has to name the row.
+        Result<Guid> compared = SeedFromDatabase(
+            heldInstallationLock,
+            guardedDirectory,
+            profileNamespace,
+            databaseInstallationId);
+
+        return compared.IsSuccess
+            ? replaced
+            : Result<bool>.Failure(compared.Error);
+    }
+
+    private Result<bool> ReplaceDamaged(
+        ArcanumMaintenanceLock heldInstallationLock,
+        string guardedDirectory,
+        BackupRestoreProfileNamespace profileNamespace,
+        Guid installationId,
+        string emptyMessage)
     {
         ArgumentNullException.ThrowIfNull(heldInstallationLock);
 
@@ -404,11 +470,9 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
         // Identity, not liveness, and deliberately no acquisition.
         heldInstallationLock.AssertHeldFor(guardedDirectory);
 
-        if (closedEvidenceInstallationId == Guid.Empty)
+        if (installationId == Guid.Empty)
         {
-            return new Error(
-                ErrorCodes.Covenant.IntegrityFailure,
-                "A profile's external installation identity cannot be restored from an empty installation.");
+            return new Error(ErrorCodes.Covenant.IntegrityFailure, emptyMessage);
         }
 
         Result<BackupRestoreJournalIdentityProbe> probe = Probe(profileNamespace);
@@ -416,7 +480,7 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
         if (probe.IsSuccess)
         {
             if (probe.Value.Presence is BackupRestoreJournalIdentityPresence.Absent
-                || probe.Value.InstallationId == closedEvidenceInstallationId)
+                || probe.Value.InstallationId == installationId)
             {
                 return Result<bool>.Success(false);
             }
@@ -432,7 +496,7 @@ internal sealed class BackupRestoreJournalInstallationIdentityProvider(IOsCreden
             return Result<bool>.Failure(probe.Error);
         }
 
-        Result<Guid> written = Write(profileNamespace, closedEvidenceInstallationId);
+        Result<Guid> written = Write(profileNamespace, installationId);
 
         return written.IsSuccess
             ? Result<bool>.Success(true)

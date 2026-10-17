@@ -131,8 +131,10 @@ internal interface IInstallationResetStoppedHostDataService
     /// The same question, answered by the same rule, the Grimoire's own start asks before it decides a
     /// database is not yet born (<see cref="Hosting.GrimoireDatabaseBootstrapper"/>). A default member,
     /// answering that the position cannot be proved, so an implementation that does not read the
-    /// database keeps the conservative behavior: the installation-identity repair refuses unless this
-    /// read proves the row absent.
+    /// database keeps the conservative behavior: the installation-identity repair refuses, because what
+    /// it puts a damaged identity right to depends on this answer (a row present is seeded again from
+    /// the row, <see cref="ReadIdentityUnderStoppedHostAuthorityAsync"/>; a row absent is put right from
+    /// the closed anchors).
     /// </remarks>
     Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
         IStoppedHostGrimoireAuthorityIssuer issuer,

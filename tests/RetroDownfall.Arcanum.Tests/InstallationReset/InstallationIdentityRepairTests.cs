@@ -361,15 +361,74 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_database_file_that_holds_its_authority_row_blocks_the_repair()
+    public async Task A_Grimoire_that_holds_its_authority_row_has_the_damaged_identity_seeded_again_from_that_row()
     {
         SetIdentity(DamagedValue);
 
         File.WriteAllText(_database, "database");
 
-        RowProbe rows = new(Result<bool>.Success(true));
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
 
         InstallationIdentityRepair repair = Create(data: rows);
+
+        int setsBefore = _credentials.SetCount;
+
+        Result<InstallationIdentityRepairReport> planned = await repair.PlanAsync();
+
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairState.Damaged, planned.Value.State);
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, planned.Value.Action);
+
+        // The plan asks both questions of the Grimoire and changes nothing.
+        Assert.Equal(1, rows.Reads);
+
+        Assert.Equal(1, rows.IdentityReads);
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairState.Reseeded, applied.Value.State);
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, applied.Value.Action);
+
+        Assert.Equal(IdentityAccount(), applied.Value.CredentialAccount);
+
+        // One write of the item, no delete, and the item now holds the row's identity in its one
+        // canonical spelling, which is what every later restore, reset and transition compares with.
+        Assert.Equal(setsBefore + 1, _credentials.SetCount);
+
+        Assert.Equal(0, _credentials.DeleteCount);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
+
+        Assert.DoesNotContain(Named.ToString("D"), applied.Value.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        // A valid identity is never changed, so the second run is refused.
+        AssertRefused(await repair.ApplyAsync(), ErrorCodes.Data.Conflict, "valid canonical identity");
+    }
+
+    [Fact]
+    public async Task A_Grimoire_whose_authority_row_cannot_be_read_as_an_identity_leaves_nothing_to_seed_from()
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        RowProbe rows = new(
+            Result<bool>.Success(true),
+            Result<Guid>.Failure(
+                new Error(ErrorCodes.Data.RecoveryRequired, "The authority row did not authenticate.")));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        int setsBefore = _credentials.SetCount;
 
         foreach (Result<InstallationIdentityRepairReport> result in new[]
                  {
@@ -377,12 +436,77 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
                      await repair.ApplyAsync(),
                  })
         {
-            AssertRefused(result, ErrorCodes.Data.Blocked, "holds its authority row");
+            AssertRefused(
+                result,
+                ErrorCodes.Data.InventoryUnavailable,
+                "installation identity of the Grimoire's authority row could not be read");
+
+            Assert.Contains("The authority row did not authenticate.", result.Error.Message, StringComparison.Ordinal);
         }
 
-        Assert.Equal(2, rows.Reads);
+        Assert.Equal(setsBefore, _credentials.SetCount);
 
         AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task An_authority_row_with_no_identity_to_name_is_never_given_an_invented_one()
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Guid.Empty));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        int setsBefore = _credentials.SetCount;
+
+        foreach (Result<InstallationIdentityRepairReport> result in new[]
+                 {
+                     await repair.PlanAsync(),
+                     await repair.ApplyAsync(),
+                 })
+        {
+            AssertRefused(
+                result,
+                ErrorCodes.Data.InventoryUnavailable,
+                "installation identity of the Grimoire's authority row could not be read");
+        }
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task An_item_that_vanishes_between_the_plan_and_the_apply_is_not_seeded_again()
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, (await repair.PlanAsync()).Value.Action);
+
+        _ = _inner.Delete(ArcanumCredentialIdentity.Service, IdentityAccount());
+
+        int setsBefore = _credentials.SetCount;
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairState.Absent, applied.Value.State);
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        Assert.Equal(
+            OsCredentialStoreStatus.NotFound,
+            _inner.TryGet(ArcanumCredentialIdentity.Service, IdentityAccount()).Status);
     }
 
     [Fact]
@@ -664,10 +788,12 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
             Task.FromResult(active);
     }
 
-    private sealed class RowProbe(Result<bool> answer)
+    private sealed class RowProbe(Result<bool> answer, Result<Guid>? identity = null)
         : DefaultMemberData, IInstallationResetStoppedHostDataService
     {
         public int Reads { get; private set; }
+
+        public int IdentityReads { get; private set; }
 
         public Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
             IStoppedHostGrimoireAuthorityIssuer issuer,
@@ -678,6 +804,19 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
             Reads++;
 
             return Task.FromResult(answer);
+        }
+
+        public override Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken)
+        {
+            Assert.NotNull(issuer);
+
+            IdentityReads++;
+
+            return identity is { } known
+                ? Task.FromResult(known)
+                : throw new NotSupportedException("This case does not expect the row's identity to be read.");
         }
     }
 
@@ -699,7 +838,7 @@ public sealed partial class InstallationIdentityRepairTests : IAsyncLifetime
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
-        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+        public virtual Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
             IStoppedHostGrimoireAuthorityIssuer issuer,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException();

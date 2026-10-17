@@ -30,6 +30,9 @@ internal enum InstallationIdentityRepairState : byte
 
     /// <summary>The damaged item was replaced by the identity a closed anchor names, and read back.</summary>
     Restored = 4,
+
+    /// <summary>The damaged item was replaced by the identity the Grimoire's authority row carries, and read back.</summary>
+    Reseeded = 5,
 }
 
 /// <summary>How the repair puts a damaged identity right.</summary>
@@ -38,11 +41,14 @@ internal enum InstallationIdentityRepairAction : byte
     /// <summary>There is nothing to put right.</summary>
     None = 0,
 
-    /// <summary>No anchor names an installation, so the damaged item is removed.</summary>
+    /// <summary>The Grimoire has no authority row and no anchor names an installation, so the item is removed.</summary>
     Remove = 1,
 
-    /// <summary>A closed anchor names the installation, so it is written back from that anchor.</summary>
+    /// <summary>The Grimoire has no authority row and a closed anchor names the installation, so it is written back from that anchor.</summary>
     Restore = 2,
+
+    /// <summary>The Grimoire holds its authority row, so the item is seeded again from that row.</summary>
+    Reseed = 3,
 }
 
 /// <summary>
@@ -67,15 +73,23 @@ internal sealed record InstallationIdentityRepairReport(
 /// <remarks>
 /// The identity item outlives every Grimoire (§10.19.13), and a Grimoire is never created over a value
 /// that is present and not one canonical identity: minting over it would silently replace what it
-/// exists to pin. That refusal has one way out, which is to put the item right, and this is the only
-/// code that does so. How depends on what else the profile still names.
+/// exists to pin, and a start of one that already exists is refused beside it whenever a closed anchor
+/// is compared with it. That refusal has one way out, which is to put the item right, and this is the
+/// only code that does so. How depends on what else the profile still names.
 ///
-/// <para>The restore journal and the offline-transition journal each keep their anchor after the work
-/// closes, as a tombstone that still names its installation (§10.19.6), and every later transition and
-/// reset compares that name with the identity. So an identity that a closed anchor names is written
-/// back from the anchor, never removed: removing it would let the next start mint another, and the
-/// transition journal would then refuse every later opening beside the anchor that names the old one,
-/// for good. An identity that no anchor names is removed, and the next Grimoire takes a fresh one.</para>
+/// <para>A Grimoire that holds its authority row carries the installation the item exists to pin, so
+/// the item is seeded again from that row: the same identity the restores, resets and offline
+/// transitions seed an absent one with, never one invented here. Every closed anchor that remains has
+/// to name that installation; one that names another is a conflict between two records of the
+/// installation, which no automatic remedy settles, and the repair refuses.</para>
+///
+/// <para>With no Grimoire row the closed anchors are the only record. The restore journal and the
+/// offline-transition journal each keep their anchor after the work closes, as a tombstone that still
+/// names its installation (§10.19.6), and every later transition and reset compares that name with the
+/// identity. So an identity that a closed anchor names is written back from the anchor, never removed:
+/// removing it would let the next start mint another, and the transition journal would then refuse
+/// every later opening beside the anchor that names the old one, for good. An identity that no anchor
+/// names is removed, and the next Grimoire takes a fresh one.</para>
 ///
 /// <para>It changes that one item (the identity account of this profile's namespace, under the Arcanum
 /// credential service) and nothing else, and only when every one of these holds, each proved under the
@@ -84,8 +98,8 @@ internal sealed record InstallationIdentityRepairReport(
 /// value); no installation reset record is active, which the startup probe proves by the record and by
 /// the key and anchor credentials that authenticate it; no restore or offline transition is
 /// unfinished, which is to say that no anchor of either is active and no restore journal is in flight;
-/// the closed anchors that remain agree on one installation; and the Grimoire has no database file or
-/// no authority row, so no installation exists that the item could be named for. Any of those that
+/// the closed anchors that remain agree on one installation, and on the Grimoire's when its row
+/// exists; and the Grimoire's row, when there is a database file, can be read. Any of those that
 /// cannot be proved is a refusal, never a guess. The lock is what proves no host is running: a running
 /// host, a restore and a reset all hold it.</para>
 ///
@@ -228,72 +242,74 @@ internal sealed class InstallationIdentityRepair(
                 + "changed. Unlock or repair the store and run the repair again.");
         }
 
-        Result<Guid?> named = await ProveNothingIsActiveAsync(
+        Result<PutRight> chosen = await ProveNothingIsActiveAsync(
             held,
             profile.Value,
             cancellationToken).ConfigureAwait(false);
 
-        if (named.IsFailure)
+        if (chosen.IsFailure)
         {
-            return Result<InstallationIdentityRepairReport>.Failure(named.Error);
+            return Result<InstallationIdentityRepairReport>.Failure(chosen.Error);
         }
 
-        InstallationIdentityRepairAction action = named.Value is null
-            ? InstallationIdentityRepairAction.Remove
-            : InstallationIdentityRepairAction.Restore;
+        InstallationIdentityRepairAction action = chosen.Value.Action;
 
         if (!apply)
         {
             return Report(InstallationIdentityRepairState.Damaged, account, action);
         }
 
-        if (named.Value is not { } installation)
+        Result<bool> changed = action switch
         {
-            Result<bool> removed = _identities.RemoveDamaged(held, _guardedRoot, profile.Value);
+            InstallationIdentityRepairAction.Reseed => _identities.ReseedDamagedFromDatabase(
+                held,
+                _guardedRoot,
+                profile.Value,
+                chosen.Value.Installation),
+            InstallationIdentityRepairAction.Restore => _identities.ReplaceDamagedFromClosedEvidence(
+                held,
+                _guardedRoot,
+                profile.Value,
+                chosen.Value.Installation),
+            _ => _identities.RemoveDamaged(held, _guardedRoot, profile.Value),
+        };
 
-            if (removed.IsFailure)
-            {
-                return Result<InstallationIdentityRepairReport>.Failure(removed.Error);
-            }
-
-            return Report(
-                removed.Value
-                    ? InstallationIdentityRepairState.Removed
-                    : InstallationIdentityRepairState.Absent,
-                account,
-                action);
-        }
-
-        Result<bool> restored = _identities.ReplaceDamagedFromClosedEvidence(
-            held,
-            _guardedRoot,
-            profile.Value,
-            installation);
-
-        if (restored.IsFailure)
+        if (changed.IsFailure)
         {
-            return Result<InstallationIdentityRepairReport>.Failure(restored.Error);
+            return Result<InstallationIdentityRepairReport>.Failure(changed.Error);
         }
 
         return Report(
-            restored.Value
-                ? InstallationIdentityRepairState.Restored
+            changed.Value
+                ? action switch
+                {
+                    InstallationIdentityRepairAction.Reseed => InstallationIdentityRepairState.Reseeded,
+                    InstallationIdentityRepairAction.Restore => InstallationIdentityRepairState.Restored,
+                    _ => InstallationIdentityRepairState.Removed,
+                }
                 : InstallationIdentityRepairState.Absent,
             account,
             action);
     }
 
     /// <summary>
-    /// Proves that nothing is active that the identity is bound to, and reports the installation the
-    /// closed evidence names, or none.
+    /// Proves that nothing is active that the identity is bound to, and chooses how the damaged item is
+    /// put right.
     /// </summary>
     /// <remarks>
     /// Active evidence is unfinished work and blocks the repair: an installation reset record, a
     /// restore, an offline transition. Closed evidence is the kept tombstone of work that finished, and
     /// it does not block: it names the installation the identity has to go on naming. A key with no
     /// anchor names nothing and is not evidence of anything in flight (§10.19.6).
+    ///
+    /// <para>What the item is put right to depends on the Grimoire. One that holds its authority row
+    /// carries the installation the binding exists to pin, so the item is seeded again from that row,
+    /// and a closed anchor that names another installation is a conflict between two records of the
+    /// installation that the repair does not settle. One that does not (no file, or a file that never
+    /// finished its first install) leaves the closed anchors as the only record of the installation:
+    /// the item is written back from the one they name, or removed where there is none.</para>
     /// </remarks>
-    private async Task<Result<Guid?>> ProveNothingIsActiveAsync(
+    private async Task<Result<PutRight>> ProveNothingIsActiveAsync(
         ArcanumMaintenanceLock held,
         BackupRestoreProfileNamespace profile,
         CancellationToken cancellationToken)
@@ -304,7 +320,7 @@ internal sealed class InstallationIdentityRepair(
 
         if (reset.IsFailure)
         {
-            return RefuseNaming(
+            return RefuseChoice(
                 ErrorCodes.Data.ControlPathUnavailable,
                 "Whether an installation reset is active could not be proved, so nothing was changed. "
                 + reset.Error.Message);
@@ -312,7 +328,7 @@ internal sealed class InstallationIdentityRepair(
 
         if (reset.Value is not null)
         {
-            return RefuseNaming(
+            return RefuseChoice(
                 ErrorCodes.Data.ResetInProgress,
                 "An installation reset is active. Resume it with 'arcanum data factory-reset' and the "
                 + "scope it names, and run the repair again afterwards. Nothing was changed.");
@@ -322,21 +338,21 @@ internal sealed class InstallationIdentityRepair(
 
         if (restore.IsFailure)
         {
-            return restore;
+            return Result<PutRight>.Failure(restore.Error);
         }
 
         Result<Guid?> transition = ReadTransitionSlot();
 
         if (transition.IsFailure)
         {
-            return transition;
+            return Result<PutRight>.Failure(transition.Error);
         }
 
         if (restore.Value is { } fromRestore
             && transition.Value is { } fromTransition
             && fromRestore != fromTransition)
         {
-            return RefuseNaming(
+            return RefuseChoice(
                 ErrorCodes.Covenant.ManualRecoveryRequired,
                 "The closed restore anchor and the closed offline-transition anchor of this profile name "
                 + "different installations, so there is no one identity to put back. Nothing was changed.");
@@ -344,38 +360,74 @@ internal sealed class InstallationIdentityRepair(
 
         Guid? named = restore.Value ?? transition.Value;
 
-        if (File.Exists(_canonicalDatabasePath))
+        if (!File.Exists(_canonicalDatabasePath))
         {
-            Result<bool> row = await _stoppedHostData
-                .ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
-                    new StoppedHostGrimoireAuthorityIssuer(
-                        held,
-                        _guardedRoot,
-                        _canonicalDatabasePath),
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (row.IsFailure)
-            {
-                return RefuseNaming(
-                    ErrorCodes.Data.InventoryUnavailable,
-                    "Whether the Grimoire holds its authority row could not be proved, so nothing was "
-                    + "changed. The repair changes the identity only for a Grimoire that has no database "
-                    + "or no authority row.");
-            }
-
-            if (row.Value)
-            {
-                return RefuseNaming(
-                    ErrorCodes.Data.Blocked,
-                    "The Grimoire holds its authority row, so an installation exists that this identity "
-                    + "is the external binding of. The repair applies only before a Grimoire exists, so "
-                    + "nothing was changed.");
-            }
+            return PutRightFromAnchors(named);
         }
 
-        return Result<Guid?>.Success(named);
+        StoppedHostGrimoireAuthorityIssuer issuer = new(held, _guardedRoot, _canonicalDatabasePath);
+
+        Result<bool> row = await _stoppedHostData
+            .ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(issuer, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (row.IsFailure)
+        {
+            return RefuseChoice(
+                ErrorCodes.Data.InventoryUnavailable,
+                "Whether the Grimoire holds its authority row could not be proved, so nothing was "
+                + "changed. What the repair puts the item right to depends on that row, and a position "
+                + "that cannot be proved is never guessed.");
+        }
+
+        if (!row.Value)
+        {
+            return PutRightFromAnchors(named);
+        }
+
+        Result<Guid> authority = await _stoppedHostData
+            .ReadIdentityUnderStoppedHostAuthorityAsync(issuer, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (authority.IsFailure || authority.Value == Guid.Empty)
+        {
+            return RefuseChoice(
+                ErrorCodes.Data.InventoryUnavailable,
+                "The installation identity of the Grimoire's authority row could not be read as one "
+                + "canonical identity, so there is nothing to seed the item again from and nothing was "
+                + "changed. " + (authority.IsFailure ? authority.Error.Message : string.Empty));
+        }
+
+        if (named is { } anchored && anchored != authority.Value)
+        {
+            // Both anchors, when both exist, name one installation (checked above), so they differ from
+            // the row together.
+            string subject = restore.Value is not null && transition.Value is not null
+                ? "The closed restore anchor and the closed offline-transition anchor of this profile name"
+                : restore.Value is not null
+                    ? "The closed restore anchor of this profile names"
+                    : "The closed offline-transition anchor of this profile names";
+
+            return RefuseChoice(
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                subject
+                + " a different installation than the Grimoire's authority row carries, so there is no one "
+                + "identity to put back, and the repair does not choose between the anchor and the "
+                + "database. Nothing was changed.");
+        }
+
+        return Result<PutRight>.Success(new PutRight(InstallationIdentityRepairAction.Reseed, authority.Value));
     }
+
+    /// <summary>
+    /// The choice for a profile whose Grimoire has no authority row: the installation a closed anchor
+    /// names is written back, and with none the item is removed.
+    /// </summary>
+    private static Result<PutRight> PutRightFromAnchors(Guid? named) =>
+        Result<PutRight>.Success(
+            named is { } installation
+                ? new PutRight(InstallationIdentityRepairAction.Restore, installation)
+                : new PutRight(InstallationIdentityRepairAction.Remove, Guid.Empty));
 
     /// <summary>
     /// The installation a closed restore anchor names, or none when no restore left an anchor.
@@ -495,6 +547,18 @@ internal sealed class InstallationIdentityRepair(
 
     private static Result<Guid?> RefuseNaming(string code, string message) =>
         Result<Guid?>.Failure(new Error(code, message));
+
+    private static Result<PutRight> RefuseChoice(string code, string message) =>
+        Result<PutRight>.Failure(new Error(code, message));
+
+    /// <summary>How a damaged item is put right, and the installation it is put right to.</summary>
+    /// <param name="Action">The way the item is put right.</param>
+    /// <param name="Installation">
+    /// The installation the item is written to for <see cref="InstallationIdentityRepairAction.Restore"/>
+    /// (a closed anchor's) and <see cref="InstallationIdentityRepairAction.Reseed"/> (the authority
+    /// row's); empty for a removal.
+    /// </param>
+    private sealed record PutRight(InstallationIdentityRepairAction Action, Guid Installation);
 
     private static Result<InstallationIdentityRepairReport> Refuse(string code, string message) =>
         Result<InstallationIdentityRepairReport>.Failure(new Error(code, message));

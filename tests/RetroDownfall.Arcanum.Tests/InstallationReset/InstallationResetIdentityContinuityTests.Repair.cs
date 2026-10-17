@@ -136,7 +136,9 @@ public sealed partial class InstallationResetIdentityContinuityTests
         Assert.Equal(tombstone.InstallationId, Guid.Parse(RetainedIdentity()!));
     }
 
-    private async Task<InstallationIdentityRepairReport> RepairAsync(ServiceProvider provider)
+    private async Task<InstallationIdentityRepairReport> RepairAsync(
+        ServiceProvider provider,
+        InstallationIdentityRepairAction expected = InstallationIdentityRepairAction.Restore)
     {
         using IServiceScope scope = provider.CreateScope();
 
@@ -148,13 +150,25 @@ public sealed partial class InstallationResetIdentityContinuityTests
 
         Assert.Equal(InstallationIdentityRepairState.Damaged, planned.Value.State);
 
-        Assert.Equal(InstallationIdentityRepairAction.Restore, planned.Value.Action);
+        Assert.Equal(expected, planned.Value.Action);
 
         Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
 
         return applied.Value;
+    }
+
+    /// <summary>One plan or one apply of the repair, whatever it answered.</summary>
+    private static async Task<Result<InstallationIdentityRepairReport>> RepairResultAsync(
+        ServiceProvider provider,
+        bool apply)
+    {
+        using IServiceScope scope = provider.CreateScope();
+
+        InstallationIdentityRepair repair = scope.ServiceProvider.GetRequiredService<InstallationIdentityRepair>();
+
+        return apply ? await repair.ApplyAsync() : await repair.PlanAsync();
     }
 
     private void DamageTheIdentity()

@@ -210,6 +210,17 @@ public sealed class GrimoireDatabaseBootstrapperInstallationIdentityTests : IDis
 
         Assert.Contains("Local Grimoire reinstall", refused.Message, StringComparison.Ordinal);
 
+        // The words are the ones the host's pair recovery uses for a profile that already has a
+        // Grimoire, so they are true of both: neither created nor opened beside the item.
+        Assert.Contains(
+            "so Arcanum will not start over it. It creates no Grimoire beside it, which would replace the "
+            + "binding it holds, and it opens no existing Grimoire whose installation that binding pins. "
+            + "Nothing was created, and the item is left as it is.",
+            refused.Message,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("will not create a Grimoire that would replace it", refused.Message, StringComparison.Ordinal);
+
         // The way out is a command, not a hand edit of the credential store: the refusal names it, says
         // what it does, and says when it will not.
         Assert.Contains(

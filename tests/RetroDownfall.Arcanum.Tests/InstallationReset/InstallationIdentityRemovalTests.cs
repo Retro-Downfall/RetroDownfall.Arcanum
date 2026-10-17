@@ -11,13 +11,15 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 
 /// <summary>
-/// The two pieces of the identity repair that live with the owners of the accounts: the identity
-/// provider's removal of a damaged value, and the metadata-only presence lookups of the four stores
-/// that own the restore and offline-transition credentials.
+/// The pieces of the identity repair that live with the owners of the accounts: the identity
+/// provider's removal of a damaged value and its seeding of one again from the Grimoire's authority
+/// row, and the metadata-only presence lookups of the four stores that own the restore and
+/// offline-transition credentials.
 /// </summary>
 /// <remarks>
 /// The repair names no account of its own, because an account name has one owner, so what it may
-/// remove and what it may ask about is decided here, in the owners, and these cases pin it.
+/// remove, what it may write and what it may ask about is decided here, in the owners, and these cases
+/// pin it.
 /// </remarks>
 public sealed class InstallationIdentityRemovalTests : IAsyncLifetime
 {
@@ -29,6 +31,10 @@ public sealed class InstallationIdentityRemovalTests : IAsyncLifetime
 
     private const string ProviderPath =
         "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreJournalInstallationIdentityProvider.cs";
+
+    private static readonly Guid Row = Guid.Parse("0a0b0c0d-1111-4222-8333-444455556666");
+
+    private static readonly Guid OtherRow = Guid.Parse("f0f1f2f3-aaaa-4bbb-8ccc-ddddeeeeffff");
 
     private readonly TempWorkspace _workspace = new();
 
@@ -192,6 +198,207 @@ public sealed class InstallationIdentityRemovalTests : IAsyncLifetime
     }
 
     [Fact]
+    public void A_damaged_value_is_seeded_again_from_the_database_row_and_nothing_else_changes()
+    {
+        Seed(Account(), DamagedValue);
+
+        Seed("master-api-key", "master");
+
+        Seed(ArcanumCredentialIdentity.BackupRestoreJournalKeyAccount(_profile.AccountSuffix), "key");
+
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner);
+
+        BackupRestoreJournalInstallationIdentityProvider provider = Provider(store);
+
+        Result<bool> reseeded = provider.ReseedDamagedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(reseeded.IsSuccess, reseeded.IsFailure ? reseeded.Error.Message : string.Empty);
+
+        Assert.True(reseeded.Value);
+
+        Assert.Equal([Account()], store.Sets);
+
+        Assert.Empty(store.Deletes);
+
+        Assert.Equal(Row.ToString("D").ToUpperInvariant(), _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Value);
+
+        Assert.Equal("master", _inner.TryGet(ArcanumCredentialIdentity.Service, "master-api-key").Value);
+
+        // The item now satisfies the one rule every restore, reset and offline transition applies: the
+        // seed-or-compare of the identity with the row agrees, and a different row does not.
+        Result<Guid> compared = provider.SeedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(compared.IsSuccess, compared.IsFailure ? compared.Error.Message : string.Empty);
+
+        Assert.Equal(Row, compared.Value);
+
+        Result<Guid> other = provider.SeedFromDatabase(held, _root, _profile, OtherRow);
+
+        Assert.True(other.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, other.Error.Code);
+    }
+
+    [Fact]
+    public void A_valid_identity_is_never_replaced_by_a_reseed()
+    {
+        Seed(Account(), CanonicalValue);
+
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner);
+
+        Result<bool> reseeded = Provider(store).ReseedDamagedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(reseeded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.Conflict, reseeded.Error.Code);
+
+        Assert.Contains("A valid identity is never replaced", reseeded.Error.Message, StringComparison.Ordinal);
+
+        Assert.Empty(store.Sets);
+
+        Assert.Equal(CanonicalValue, _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Value);
+    }
+
+    [Fact]
+    public void A_valid_identity_that_already_names_the_row_is_reported_as_unchanged()
+    {
+        Seed(Account(), Row.ToString("D").ToUpperInvariant());
+
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner);
+
+        Result<bool> reseeded = Provider(store).ReseedDamagedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(reseeded.IsSuccess);
+
+        Assert.False(reseeded.Value);
+
+        Assert.Empty(store.Sets);
+    }
+
+    [Fact]
+    public void An_absent_item_is_not_created_by_a_reseed()
+    {
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner);
+
+        Result<bool> reseeded = Provider(store).ReseedDamagedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(reseeded.IsSuccess);
+
+        Assert.False(reseeded.Value);
+
+        Assert.Empty(store.Sets);
+
+        Assert.Equal(OsCredentialStoreStatus.NotFound, _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Status);
+    }
+
+    [Fact]
+    public void A_store_that_does_not_answer_is_not_a_damaged_value_to_seed_over()
+    {
+        Seed(Account(), DamagedValue);
+
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner) { ReadsFail = true };
+
+        Result<bool> reseeded = Provider(store).ReseedDamagedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(reseeded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, reseeded.Error.Code);
+
+        Assert.Empty(store.Sets);
+
+        Assert.Equal(DamagedValue, _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Value);
+    }
+
+    [Fact]
+    public void An_empty_row_identity_is_never_written()
+    {
+        Seed(Account(), DamagedValue);
+
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner);
+
+        Result<bool> reseeded = Provider(store).ReseedDamagedFromDatabase(held, _root, _profile, Guid.Empty);
+
+        Assert.True(reseeded.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, reseeded.Error.Code);
+
+        Assert.Empty(store.Sets);
+
+        Assert.Equal(DamagedValue, _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Value);
+    }
+
+    [Theory]
+    [InlineData("throws", ErrorCodes.Covenant.Unavailable)]
+    [InlineData("fails", ErrorCodes.Covenant.Unavailable)]
+    [InlineData("ignored", ErrorCodes.Covenant.IntegrityFailure)]
+    public void A_write_the_store_refuses_or_does_not_keep_is_reported_and_the_item_is_not_taken_for_seeded(
+        string mode,
+        string code)
+    {
+        Seed(Account(), DamagedValue);
+
+        using ArcanumMaintenanceLock held = Held();
+
+        Recording store = new(_inner) { SetMode = mode };
+
+        Result<bool> reseeded = Provider(store).ReseedDamagedFromDatabase(held, _root, _profile, Row);
+
+        Assert.True(reseeded.IsFailure);
+
+        Assert.Equal(code, reseeded.Error.Code);
+
+        Assert.Equal(DamagedValue, _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Value);
+    }
+
+    [Fact]
+    public void The_reseed_requires_the_installation_lock_of_the_root_it_names()
+    {
+        Seed(Account(), DamagedValue);
+
+        string other = _workspace.CreateSubdir("other");
+
+        using ArcanumMaintenanceLock heldForOther = Assert.IsType<ArcanumMaintenanceLock>(
+            ArcanumMaintenanceLock.TryAcquire(other));
+
+        _ = Assert.ThrowsAny<Exception>(
+            () => Provider(_inner).ReseedDamagedFromDatabase(heldForOther, _root, _profile, Row));
+
+        Assert.Equal(DamagedValue, _inner.TryGet(ArcanumCredentialIdentity.Service, Account()).Value);
+    }
+
+    /// <summary>
+    /// The identity provider holds the one write and only the repair asks it to seed a damaged value
+    /// again: no other source names the call, and the repair writes nothing itself.
+    /// </summary>
+    [Fact]
+    public void Only_the_repair_asks_the_identity_provider_to_seed_a_damaged_value_again()
+    {
+        IReadOnlyList<ProductionSource> sources = ProductionSourceInventory.Sources();
+
+        string[] callers =
+        [
+            .. sources
+                .Where(static source => source.Names(".ReseedDamagedFromDatabase("))
+                .Select(static source => source.RelativePath.Replace('\\', '/'))
+                .Order(StringComparer.Ordinal),
+        ];
+
+        Assert.Equal([RepairPath], callers);
+    }
+
+    [Fact]
     public void The_four_owners_report_their_own_account_present_or_absent_by_metadata_alone()
     {
         BackupRestoreJournalKeyProvider restoreKey = new(_inner);
@@ -340,9 +547,13 @@ public sealed class InstallationIdentityRemovalTests : IAsyncLifetime
 
         public string DeleteMode { get; set; } = string.Empty;
 
+        public string SetMode { get; set; } = string.Empty;
+
         public bool LookupThrows { get; set; }
 
         public List<string> Deletes { get; } = [];
+
+        public List<string> Sets { get; } = [];
 
         public List<string> Reads { get; } = [];
 
@@ -360,7 +571,18 @@ public sealed class InstallationIdentityRemovalTests : IAsyncLifetime
             return ReadsFail ? OsCredentialStoreResult.Failed("The store did not answer.") : inner.TryGet(service, account);
         }
 
-        public OsCredentialStoreResult Set(string service, string account, string secret) => inner.Set(service, account, secret);
+        public OsCredentialStoreResult Set(string service, string account, string secret)
+        {
+            Sets.Add(account);
+
+            return SetMode switch
+            {
+                "throws" => throw new IOException("The write failed."),
+                "fails" => OsCredentialStoreResult.Failed("The store refused the write."),
+                "ignored" => OsCredentialStoreResult.Ok(string.Empty),
+                _ => inner.Set(service, account, secret),
+            };
+        }
 
         public OsCredentialStoreResult Delete(string service, string account)
         {

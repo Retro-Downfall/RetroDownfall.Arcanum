@@ -51,7 +51,7 @@ internal sealed class InstallationIdentityRepairCommand(
                 "This profile carries no installation identity credential item. There is nothing to repair.");
         }
 
-        bool restores = plan.Action is InstallationIdentityRepairAction.Restore;
+        string item = $"(service {plan.CredentialService}, account {plan.CredentialAccount})";
 
         if (dryRun)
         {
@@ -61,14 +61,21 @@ internal sealed class InstallationIdentityRepairCommand(
                 dryRun,
                 changed: false,
                 "Dry run. This profile's installation identity credential item "
-                + $"(service {plan.CredentialService}, account {plan.CredentialAccount}) is present and is "
+                + $"{item} is present and is "
                 + "not one canonical identity, and no unfinished work is bound to it. "
-                + (restores
-                    ? "A closed restore or offline-transition anchor of this profile names the installation, "
+                + plan.Action switch
+                {
+                    InstallationIdentityRepairAction.Reseed =>
+                        "The Grimoire holds its authority row, so applying the repair writes that row's "
+                        + "installation identity into the one item and changes nothing else.",
+                    InstallationIdentityRepairAction.Restore =>
+                        "A closed restore or offline-transition anchor of this profile names the installation, "
                         + "so applying the repair writes that identity back into the one item and changes "
-                        + "nothing else."
-                    : "No anchor names an installation, so applying the repair removes that one item and "
-                        + "nothing else.")
+                        + "nothing else.",
+                    _ =>
+                        "No anchor names an installation, so applying the repair removes that one item and "
+                        + "nothing else.",
+                }
                 + " Nothing was changed.");
         }
 
@@ -78,11 +85,19 @@ internal sealed class InstallationIdentityRepairCommand(
         {
             confirmed = await confirmationPrompt
                 .PromptForConfirmationAsync(
-                    (restores
-                        ? "Write back into this profile's damaged installation identity credential item "
-                        : "Remove this profile's damaged installation identity credential item ")
-                    + $"(service {plan.CredentialService}, account {plan.CredentialAccount})"
-                    + (restores ? " the identity a closed anchor names, and change nothing else?" : ", and nothing else?"),
+                    plan.Action switch
+                    {
+                        InstallationIdentityRepairAction.Reseed =>
+                            "Seed this profile's damaged installation identity credential item "
+                            + $"{item} again from the installation the Grimoire's authority row carries, "
+                            + "and change nothing else?",
+                        InstallationIdentityRepairAction.Restore =>
+                            "Write back into this profile's damaged installation identity credential item "
+                            + $"{item} the identity a closed anchor names, and change nothing else?",
+                        _ =>
+                            "Remove this profile's damaged installation identity credential item "
+                            + $"{item}, and nothing else?",
+                    },
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -134,6 +149,14 @@ internal sealed class InstallationIdentityRepairCommand(
                 "Wrote the identity a closed anchor names back into this profile's installation identity "
                 + $"credential item (service {result.CredentialService}, account {result.CredentialAccount}). "
                 + "The next start creates its Grimoire under that identity."),
+            InstallationIdentityRepairState.Reseeded => WriteOutcome(
+                "reseeded",
+                result,
+                dryRun,
+                changed: true,
+                "Seeded this profile's installation identity credential item "
+                + $"(service {result.CredentialService}, account {result.CredentialAccount}) again from the "
+                + "installation the Grimoire's authority row carries. The next start runs under that identity."),
             _ => WriteOutcome(
                 "absent",
                 result,
@@ -158,10 +181,12 @@ internal sealed class InstallationIdentityRepairCommand(
                     dryRun,
                     Removed: changed && report.State is InstallationIdentityRepairState.Removed,
                     Restored: changed && report.State is InstallationIdentityRepairState.Restored,
+                    Reseeded: changed && report.State is InstallationIdentityRepairState.Reseeded,
                     Action: report.Action switch
                     {
                         InstallationIdentityRepairAction.Remove => "remove",
                         InstallationIdentityRepairAction.Restore => "restore",
+                        InstallationIdentityRepairAction.Reseed => "reseed",
                         _ => "none",
                     },
                     report.CredentialService,

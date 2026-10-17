@@ -457,8 +457,9 @@ internal sealed class InstallationResetExistingGrimoire(
     /// start that creates a Grimoire asks the same question of the same table with the same rule
     /// (<see cref="Hosting.GrimoireDatabaseBootstrapper.AuthorityRowExistsAsync"/>). A database that
     /// exists and cannot be opened and read is not "no row": it is an unprovable position, reported as an
-    /// unavailable inventory, so a caller that removes something only when there is no row never removes
-    /// it on a guess.
+    /// unavailable inventory, so a caller whose action depends on whether there is a row (the
+    /// installation-identity repair removes or writes back an item for no row, and seeds it again from
+    /// the row for one) never acts on a guess.
     /// </remarks>
     public Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
         IStoppedHostGrimoireAuthorityIssuer issuer,

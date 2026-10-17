@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Core.DataLifecycle;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Security;
+
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
@@ -86,6 +88,8 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
         Assert.False(root.GetProperty("removed").GetBoolean());
 
         Assert.False(root.GetProperty("restored").GetBoolean());
+
+        Assert.False(root.GetProperty("reseeded").GetBoolean());
 
         Assert.Equal("remove", root.GetProperty("action").GetString());
 
@@ -412,11 +416,123 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
 
         Assert.False(document.RootElement.GetProperty("removed").GetBoolean());
 
+        Assert.False(document.RootElement.GetProperty("reseeded").GetBoolean());
+
         Assert.Equal("restore", document.RootElement.GetProperty("action").GetString());
 
         Assert.DoesNotContain(Named.ToString("D"), json.Output + json.Error, StringComparison.OrdinalIgnoreCase);
 
         AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
+    }
+
+    [Fact]
+    public async Task A_dry_run_beside_a_Grimoire_that_holds_its_row_says_the_identity_is_seeded_again_from_the_row_and_changes_nothing()
+    {
+        SetIdentity(DamagedValue);
+
+        AuthorityRowData grimoire = HoldTheGrimoireRow(Named);
+
+        CliTestResult text = await RunAsync(["data", "repair-installation-identity", "--dry-run"], grimoire);
+
+        Assert.Equal((int)CliExitCode.Success, text.ExitCode);
+
+        Assert.Contains("The Grimoire holds its authority row", text.Output, StringComparison.Ordinal);
+
+        Assert.Contains("writes that row's installation identity into the one item", text.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("removes that one item", text.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("closed restore or offline-transition anchor", text.Output, StringComparison.Ordinal);
+
+        CliTestResult json = await RunAsync(["--json", "data", "repair-installation-identity", "--dry-run"], grimoire);
+
+        using JsonDocument document = JsonDocument.Parse(json.Output);
+
+        Assert.Equal("damaged", document.RootElement.GetProperty("outcome").GetString());
+
+        Assert.Equal("reseed", document.RootElement.GetProperty("action").GetString());
+
+        Assert.False(document.RootElement.GetProperty("removed").GetBoolean());
+
+        Assert.False(document.RootElement.GetProperty("restored").GetBoolean());
+
+        Assert.False(document.RootElement.GetProperty("reseeded").GetBoolean());
+
+        Assert.DoesNotContain(Named.ToString("D"), text.Output + json.Output + text.Error + json.Error, StringComparison.OrdinalIgnoreCase);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task An_acknowledged_repair_beside_a_Grimoire_that_holds_its_row_seeds_the_identity_again_and_says_so()
+    {
+        SetIdentity(DamagedValue);
+
+        AuthorityRowData grimoire = HoldTheGrimoireRow(Named);
+
+        RecordingPrompt prompt = new(answer: true);
+
+        CliTestResult text = await RunAsync(["data", "repair-installation-identity"], prompt, grimoire);
+
+        Assert.Equal((int)CliExitCode.Success, text.ExitCode);
+
+        Assert.Equal(
+            "Seed this profile's damaged installation identity credential item "
+            + $"(service {ArcanumCredentialIdentity.Service}, account {IdentityAccount()}) again from the "
+            + "installation the Grimoire's authority row carries, and change nothing else?",
+            Assert.Single(prompt.Questions));
+
+        Assert.Contains("Seeded this profile's installation identity credential item", text.Output, StringComparison.Ordinal);
+
+        Assert.Contains("again from the installation the Grimoire's authority row carries", text.Output, StringComparison.Ordinal);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
+
+        // Again, as a script reads it.
+        SetIdentity(DamagedValue);
+
+        CliTestResult json = await RunAsync(["--json", "--yes", "data", "repair-installation-identity"], grimoire);
+
+        using JsonDocument document = JsonDocument.Parse(json.Output);
+
+        Assert.Equal("reseeded", document.RootElement.GetProperty("outcome").GetString());
+
+        Assert.True(document.RootElement.GetProperty("reseeded").GetBoolean());
+
+        Assert.False(document.RootElement.GetProperty("restored").GetBoolean());
+
+        Assert.False(document.RootElement.GetProperty("removed").GetBoolean());
+
+        Assert.Equal("reseed", document.RootElement.GetProperty("action").GetString());
+
+        Assert.DoesNotContain(Named.ToString("D"), text.Output + json.Output + text.Error + json.Error, StringComparison.OrdinalIgnoreCase);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
+    }
+
+    [Fact]
+    public async Task A_closed_anchor_naming_another_installation_than_the_Grimoire_is_refused_by_code_and_the_item_stays()
+    {
+        SetIdentity(DamagedValue);
+
+        AuthorityRowData grimoire = HoldTheGrimoireRow(Named);
+
+        SetRestoreAnchor(Guid.Parse("f0f1f2f3-aaaa-4bbb-8ccc-ddddeeeeffff"), BackupRestoreJournalAnchorState.Closed);
+
+        CliTestResult result = await RunAsync(["--yes", "data", "repair-installation-identity"], grimoire);
+
+        Assert.Equal((int)CliExitCode.GenericError, result.ExitCode);
+
+        Assert.Contains(
+            ErrorCodes.Covenant.ManualRecoveryRequired
+            + ": The closed restore anchor of this profile names a different installation than the "
+            + "Grimoire's authority row carries",
+            result.Error,
+            StringComparison.Ordinal);
+
+        Assert.Contains("does not choose between", result.Error, StringComparison.Ordinal);
+
+        AssertIdentityIs(DamagedValue);
     }
 
     [Fact]
@@ -505,7 +621,13 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
     private Task<CliTestResult> RunAsync(string[] args, RecordingPrompt prompt) =>
         CliTestHarness.RunAsync(Compose(prompt), args);
 
-    private ServiceCollection Compose(RecordingPrompt? prompt)
+    private Task<CliTestResult> RunAsync(string[] args, AuthorityRowData grimoire) =>
+        CliTestHarness.RunAsync(Compose(prompt: null, grimoire), args);
+
+    private Task<CliTestResult> RunAsync(string[] args, RecordingPrompt prompt, AuthorityRowData grimoire) =>
+        CliTestHarness.RunAsync(Compose(prompt, grimoire), args);
+
+    private ServiceCollection Compose(RecordingPrompt? prompt, AuthorityRowData? grimoire = null)
     {
         ServiceCollection services = new();
 
@@ -526,7 +648,27 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
             services.AddSingleton<IConfirmationPrompt>(prompt);
         }
 
+        if (grimoire is not null)
+        {
+            services.RemoveAll<IInstallationResetStoppedHostDataService>();
+
+            services.AddSingleton<IInstallationResetStoppedHostDataService>(grimoire);
+        }
+
         return services;
+    }
+
+    /// <summary>
+    /// A database file that exists, so the repair asks the Grimoire, and a data service that answers
+    /// that it holds its authority row for the installation given.
+    /// </summary>
+    private static AuthorityRowData HoldTheGrimoireRow(Guid installation)
+    {
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        File.WriteAllText(ArcanumPaths.GrimoireDatabaseFile, "database");
+
+        return new AuthorityRowData(installation);
     }
 
     private string ProfileSuffix() =>
@@ -584,6 +726,46 @@ public sealed class InstallationIdentityRepairCommandTests : IDisposable
         Assert.Equal(OsCredentialStoreStatus.Ok, stored.Status);
 
         Assert.Equal(expected, stored.Value);
+    }
+
+    /// <summary>
+    /// A stopped-host data service for a Grimoire that holds its authority row for one installation. It
+    /// answers the two questions the repair asks and nothing else.
+    /// </summary>
+    private sealed class AuthorityRowData(Guid installation) : IInstallationResetStoppedHostDataService
+    {
+        public Task<Result<bool>> ReadAuthorityRowPresenceUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<bool>.Success(true));
+
+        public Task<Result<Guid>> ReadIdentityUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(Result<Guid>.Success(installation));
+
+        public Task<Result<DataRetentionPlan>> PlanUnderStoppedHostAuthorityAsync(
+            InstallationResetDataPlanRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<Result<InstallationResetWorkspaceResolution>> ResolveWorkspaceUnderStoppedHostAuthorityAsync(
+            string invocationDirectory,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<Result<HostProcessToolsDatabaseMarkerEvidence>> ReadHostToolsEvidenceUnderStoppedHostAuthorityAsync(
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<Result<DataRetentionApplyResult>> ApplyUnderStoppedHostAuthorityAsync(
+            DataRetentionApplyRequest request,
+            IStoppedHostGrimoireAuthorityIssuer issuer,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class RecordingPrompt(bool answer) : IConfirmationPrompt

@@ -268,6 +268,195 @@ public sealed partial class InstallationIdentityRepairTests
             _inner.TryGet(ArcanumCredentialIdentity.Service, IdentityAccount()).Status);
     }
 
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("offline transition")]
+    [InlineData("both")]
+    public async Task Closed_anchors_that_name_the_installation_the_Grimoire_carries_agree_with_its_row_and_the_item_is_seeded_again(
+        string slots)
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        if (slots is "restore" or "both")
+        {
+            SetAnchor("restore", Named, closed: true);
+        }
+
+        if (slots is "offline transition" or "both")
+        {
+            SetAnchor("offline transition", Named, closed: true);
+        }
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        Result<InstallationIdentityRepairReport> planned = await repair.PlanAsync();
+
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, planned.Value.Action);
+
+        AssertIdentityIs(DamagedValue);
+
+        int setsBefore = _credentials.SetCount;
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairState.Reseeded, applied.Value.State);
+
+        Assert.Equal(setsBefore + 1, _credentials.SetCount);
+
+        Assert.Equal(0, _credentials.DeleteCount);
+
+        AssertIdentityIs(Named.ToString("D").ToUpperInvariant());
+    }
+
+    [Theory]
+    [InlineData("restore", "The closed restore anchor of this profile names")]
+    [InlineData("offline transition", "The closed offline-transition anchor of this profile names")]
+    [InlineData("both", "The closed restore anchor and the closed offline-transition anchor of this profile name")]
+    public async Task A_closed_anchor_that_names_another_installation_than_the_Grimoire_carries_is_a_conflict_with_no_automatic_remedy(
+        string slots,
+        string subject)
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        if (slots is "restore" or "both")
+        {
+            SetAnchor("restore", OtherNamed, closed: true);
+        }
+
+        if (slots is "offline transition" or "both")
+        {
+            SetAnchor("offline transition", OtherNamed, closed: true);
+        }
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        int setsBefore = _credentials.SetCount;
+
+        foreach (Result<InstallationIdentityRepairReport> result in new[]
+                 {
+                     await repair.PlanAsync(),
+                     await repair.ApplyAsync(),
+                 })
+        {
+            AssertRefused(
+                result,
+                ErrorCodes.Covenant.ManualRecoveryRequired,
+                subject);
+
+            Assert.Contains(
+                "a different installation than the Grimoire's authority row carries",
+                result.Error.Message,
+                StringComparison.Ordinal);
+
+            Assert.Contains("does not choose between", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.Contains("Nothing was changed.", result.Error.Message, StringComparison.Ordinal);
+
+            // Neither installation is spelled in the refusal.
+            Assert.DoesNotContain(Named.ToString("D"), result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain(OtherNamed.ToString("D"), result.Error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        Assert.Equal(0, _credentials.DeleteCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Theory]
+    [InlineData("restore")]
+    [InlineData("offline transition")]
+    public async Task Unfinished_work_still_blocks_the_repair_beside_a_Grimoire_that_holds_its_row_and_the_Grimoire_is_not_asked(
+        string slot)
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        SetAnchor(slot, Named, closed: false);
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        foreach (Result<InstallationIdentityRepairReport> result in new[]
+                 {
+                     await repair.PlanAsync(),
+                     await repair.ApplyAsync(),
+                 })
+        {
+            AssertRefused(result, ErrorCodes.Data.Blocked, "is unfinished");
+        }
+
+        Assert.Equal(0, rows.Reads);
+
+        Assert.Equal(0, rows.IdentityReads);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_closed_anchor_that_appears_after_the_plan_and_names_another_installation_refuses_the_apply()
+    {
+        SetIdentity(DamagedValue);
+
+        File.WriteAllText(_database, "database");
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        InstallationIdentityRepair repair = Create(data: rows);
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, (await repair.PlanAsync()).Value.Action);
+
+        SetAnchor("offline transition", OtherNamed, closed: true);
+
+        int setsBefore = _credentials.SetCount;
+
+        AssertRefused(
+            await repair.ApplyAsync(),
+            ErrorCodes.Covenant.ManualRecoveryRequired,
+            "a different installation than the Grimoire's authority row carries");
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(DamagedValue);
+    }
+
+    [Fact]
+    public async Task A_valid_identity_is_never_replaced_by_the_one_the_Grimoire_carries()
+    {
+        SetIdentity(CanonicalValue);
+
+        File.WriteAllText(_database, "database");
+
+        RowProbe rows = new(Result<bool>.Success(true), Result<Guid>.Success(Named));
+
+        int setsBefore = _credentials.SetCount;
+
+        AssertRefused(
+            await Create(data: rows).ApplyAsync(),
+            ErrorCodes.Data.Conflict,
+            "valid canonical identity");
+
+        Assert.Equal(setsBefore, _credentials.SetCount);
+
+        AssertIdentityIs(CanonicalValue);
+    }
+
     private void SetAnchor(string slot, Guid installation, bool closed)
     {
         if (slot is "restore")

@@ -256,8 +256,230 @@ public sealed partial class InstallationResetIdentityContinuityTests
         Assert.IsNotType<GrimoireDatabaseUnavailableException>(refused);
     }
 
-    private async Task AssertEveryStartIsRefusedNamingTheRepairAsync(ServiceProvider provider)
+    /// <summary>
+    /// The profile keeps its Grimoire, with its authority row, and the closed anchor of a standalone
+    /// Covenant reset over it. A damaged identity stops every start at the pair recovery with the refusal
+    /// that names the repair, in words that are true of a Grimoire that exists; the repair seeds the
+    /// identity again from the Grimoire's own row, the next start runs, and the work that compares the
+    /// identity with that row (a replacement restore, a Covenant reset) is admitted afterwards.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_damaged_identity_beside_an_existing_Grimoire_and_a_closed_Covenant_reset_anchor_refuses_every_host_start_and_the_repair_seeds_it_again_from_the_row()
     {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        ServiceProvider provider = CreateProvider();
+
+        _providers.Add(provider);
+
+        await InstallPriorGrimoireAsync(provider);
+
+        Guid installation = await ReadDatabaseIdentityAsync(provider);
+
+        // A standalone Covenant reset over the Grimoire keeps the database and its row, and leaves the
+        // closed anchor of its transition journal naming the row's installation, with the profile
+        // identity seeded from that same row.
+        await OpenAndRetireACovenantResetAsync(installation);
+
+        GrimoireOfflineTransitionAnchorV1 tombstone = TransitionAnchor();
+
+        Assert.Equal(GrimoireOfflineTransitionAnchorState.Closed, tombstone.State);
+
+        Assert.Equal(installation, tombstone.InstallationId);
+
+        Assert.Equal(installation, Guid.Parse(RetainedIdentity()!));
+
+        Assert.True(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
+
+        DamageTheIdentity();
+
+        await AssertEveryStartIsRefusedNamingTheRepairAsync(provider, grimoireExists: true);
+
+        InstallationIdentityRepairReport repaired = await RepairAsync(
+            provider,
+            InstallationIdentityRepairAction.Reseed);
+
+        Assert.Equal(InstallationIdentityRepairState.Reseeded, repaired.State);
+
+        Assert.Equal(installation, Guid.Parse(RetainedIdentity()!));
+
+        await StartAndStopTheHostAsync(provider);
+
+        // The start ran over the Grimoire it has always had, under the identity it always carried.
+        Assert.Equal(installation, await ReadDatabaseIdentityAsync(provider));
+
+        // A later replacement restore compares the identity with the row and is admitted, and so is the
+        // opening of a later Covenant reset's transition journal beside the kept anchors.
+        await ReplacementRestoreAsync(new Rebirth(provider, installation, installation, installation));
+
+        await AssertATransitionOpensAsync(installation);
+    }
+
+    /// <summary>
+    /// A closed anchor that names another installation than the Grimoire's row is a genuine conflict:
+    /// the repair refuses with the mismatch, changes nothing, and the start keeps refusing.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_closed_transition_anchor_naming_another_installation_than_the_Grimoire_refuses_the_repair_and_changes_nothing()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        ServiceProvider provider = CreateProvider();
+
+        _providers.Add(provider);
+
+        await InstallPriorGrimoireAsync(provider);
+
+        Guid installation = await ReadDatabaseIdentityAsync(provider);
+
+        Guid other = Guid.Parse("8d3f2e4a-9f74-4b2c-9c65-4e5f6a7b8c9d");
+
+        Assert.NotEqual(installation, other);
+
+        await OpenAndRetireACovenantResetAsync(other);
+
+        Assert.Equal(other, TransitionAnchor().InstallationId);
+
+        DamageTheIdentity();
+
+        string database = DatabaseDigest();
+
+        await AssertEveryStartIsRefusedNamingTheRepairAsync(provider, grimoireExists: true);
+
+        await AssertTheRepairRefusesTheMismatchAsync(
+            provider,
+            "The closed offline-transition anchor of this profile names");
+
+        // The anchor, the Grimoire and the item are as they were, and the start is refused still.
+        GrimoireOfflineTransitionAnchorV1 anchor = TransitionAnchor();
+
+        Assert.Equal(GrimoireOfflineTransitionAnchorState.Closed, anchor.State);
+
+        Assert.Equal(other, anchor.InstallationId);
+
+        Assert.Equal(database, DatabaseDigest());
+
+        await AssertEveryStartIsRefusedNamingTheRepairAsync(provider, grimoireExists: true);
+    }
+
+    /// <summary>
+    /// The same conflict through the restore journal's anchor. No start reads the identity beside a
+    /// closed restore anchor once the Grimoire has its row, so the repair is the only thing that
+    /// speaks, and it refuses.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_closed_restore_anchor_naming_another_installation_than_the_Grimoire_refuses_the_repair_and_changes_nothing()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        ServiceProvider provider = CreateProvider();
+
+        _providers.Add(provider);
+
+        await InstallPriorGrimoireAsync(provider);
+
+        Guid installation = await ReadDatabaseIdentityAsync(provider);
+
+        Guid other = Guid.Parse("9e4a3f5b-8e63-4a1b-8b54-5f6a7b8c9d0e");
+
+        Assert.NotEqual(installation, other);
+
+        WriteAClosedRestoreAnchor(other);
+
+        DamageTheIdentity();
+
+        string database = DatabaseDigest();
+
+        await AssertTheRepairRefusesTheMismatchAsync(
+            provider,
+            "The closed restore anchor of this profile names");
+
+        Assert.Equal(database, DatabaseDigest());
+
+        // The start of a Grimoire that holds its row reads the item at neither point, so it runs, and it
+        // leaves the damaged item as it found it.
+        await StartAndStopTheHostAsync(provider);
+
+        Assert.Equal(DamagedIdentity, RetainedIdentity());
+    }
+
+    /// <summary>
+    /// A profile with no Grimoire and no evidence of finished work is still put right by removing the
+    /// item: every start is refused naming the command, the command removes it, and the next start
+    /// creates a Grimoire that mints its own identity and writes none.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_damaged_identity_with_no_Grimoire_and_no_anchor_refuses_every_host_start_and_the_repair_removes_it()
+    {
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        ServiceProvider provider = CreateProvider();
+
+        _providers.Add(provider);
+
+        Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
+
+        DamageTheIdentity();
+
+        await AssertEveryStartIsRefusedNamingTheRepairAsync(provider);
+
+        InstallationIdentityRepairReport repaired = await RepairAsync(
+            provider,
+            InstallationIdentityRepairAction.Remove);
+
+        Assert.Equal(InstallationIdentityRepairState.Removed, repaired.State);
+
+        Assert.Null(RetainedIdentity());
+
+        await StartAndStopTheHostAsync(provider);
+
+        // A start never writes the binding: the new Grimoire minted its own identity and left the
+        // profile's item absent.
+        Assert.Null(RetainedIdentity());
+    }
+
+    private async Task AssertTheRepairRefusesTheMismatchAsync(ServiceProvider provider, string subject)
+    {
+        foreach (bool apply in new[] { false, true })
+        {
+            Result<InstallationIdentityRepairReport> refused = await RepairResultAsync(provider, apply);
+
+            Assert.True(refused.IsFailure, "The repair should have been refused.");
+
+            Assert.Equal(ErrorCodes.Covenant.ManualRecoveryRequired, refused.Error.Code);
+
+            Assert.Contains(subject, refused.Error.Message, StringComparison.Ordinal);
+
+            Assert.Contains(
+                "a different installation than the Grimoire's authority row carries",
+                refused.Error.Message,
+                StringComparison.Ordinal);
+
+            Assert.Contains("Nothing was changed.", refused.Error.Message, StringComparison.Ordinal);
+
+            Assert.Equal(DamagedIdentity, RetainedIdentity());
+        }
+    }
+
+    private static string DatabaseDigest() =>
+        Convert.ToHexString(
+            global::System.Security.Cryptography.SHA256.HashData(
+                File.ReadAllBytes(ArcanumPaths.GrimoireDatabaseFile)));
+
+    private async Task AssertEveryStartIsRefusedNamingTheRepairAsync(
+        ServiceProvider provider,
+        bool grimoireExists = false)
+    {
+        string? database = grimoireExists ? DatabaseDigest() : null;
+
         // More than once: the refusal is repeated by every start and changes nothing.
         for (int attempt = 0; attempt < 2; attempt++)
         {
@@ -265,9 +487,14 @@ public sealed partial class InstallationResetIdentityContinuityTests
 
             AssertNamesTheRepair(refused);
 
-            Assert.False(File.Exists(ArcanumPaths.GrimoireDatabaseFile));
+            Assert.Equal(grimoireExists, File.Exists(ArcanumPaths.GrimoireDatabaseFile));
 
             Assert.Equal(DamagedIdentity, RetainedIdentity());
+
+            if (database is not null)
+            {
+                Assert.Equal(database, DatabaseDigest());
+            }
         }
     }
 
@@ -286,6 +513,16 @@ public sealed partial class InstallationResetIdentityContinuityTests
     private static void AssertNamesTheRepair(Exception refused)
     {
         Assert.Contains("not one canonical identity", refused.Message, StringComparison.Ordinal);
+
+        // True whether the profile has a Grimoire or not: neither created nor opened beside the item.
+        Assert.Contains(
+            "so Arcanum will not start over it. It creates no Grimoire beside it, which would replace the "
+            + "binding it holds, and it opens no existing Grimoire whose installation that binding pins. "
+            + "Nothing was created, and the item is left as it is.",
+            refused.Message,
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("will not create a Grimoire that would replace it", refused.Message, StringComparison.Ordinal);
 
         Assert.Contains(
             "Run 'arcanum data repair-installation-identity' to put the damaged item right, which it does only "

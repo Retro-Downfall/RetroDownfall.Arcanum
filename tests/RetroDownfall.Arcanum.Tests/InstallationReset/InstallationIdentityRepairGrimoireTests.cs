@@ -72,7 +72,7 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task A_Grimoire_that_holds_its_authority_row_blocks_the_repair_and_is_left_exactly_as_it_was()
+    public async Task A_Grimoire_that_holds_its_authority_row_has_the_damaged_identity_seeded_again_from_that_row_and_is_left_exactly_as_it_was()
     {
         Skip.IfNot(
             GrimoireFixture.SqlCipherAvailable,
@@ -86,22 +86,29 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
 
         string before = Digest(ArcanumPaths.GrimoireDatabaseFile);
 
+        Guid row = await ReadRowIdentityAsync();
+
         InstallationIdentityRepair repair = Resolve();
 
-        foreach (Result<InstallationIdentityRepairReport> result in new[]
-                 {
-                     await repair.PlanAsync(),
-                     await repair.ApplyAsync(),
-                 })
-        {
-            Assert.True(result.IsFailure);
+        Result<InstallationIdentityRepairReport> planned = await repair.PlanAsync();
 
-            Assert.Equal(ErrorCodes.Data.Blocked, result.Error.Code);
+        Assert.True(planned.IsSuccess, planned.IsFailure ? planned.Error.Message : string.Empty);
 
-            Assert.Contains("holds its authority row", result.Error.Message, StringComparison.Ordinal);
-        }
+        Assert.Equal(InstallationIdentityRepairState.Damaged, planned.Value.State);
+
+        Assert.Equal(InstallationIdentityRepairAction.Reseed, planned.Value.Action);
 
         AssertIdentityIs(DamagedValue);
+
+        Result<InstallationIdentityRepairReport> applied = await repair.ApplyAsync();
+
+        Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : string.Empty);
+
+        Assert.Equal(InstallationIdentityRepairState.Reseeded, applied.Value.State);
+
+        // The item now names the installation the Grimoire's own authority row carries, which is the
+        // value every restore, reset and offline transition compares the row with.
+        AssertIdentityIs(row.ToString("D").ToUpperInvariant());
 
         Assert.Equal(before, Digest(ArcanumPaths.GrimoireDatabaseFile));
 
@@ -213,6 +220,38 @@ public sealed class InstallationIdentityRepairGrimoireTests : IAsyncLifetime
         Assert.True(again.IsSuccess);
 
         Assert.Equal(InstallationIdentityRepairState.Absent, again.Value.State);
+    }
+
+    /// <summary>
+    /// The installation the Grimoire's own authority row carries, read the way the repair reads it: on
+    /// the read-only identity lane under the installation lock.
+    /// </summary>
+    private async Task<Guid> ReadRowIdentityAsync()
+    {
+        ServiceProvider provider = CreateProvider();
+
+        _providers.Add(provider);
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetStoppedHostDataService data = scope.ServiceProvider
+            .GetRequiredService<IInstallationResetStoppedHostDataService>();
+
+        ArcanumMaintenanceLockAcquisitionResult acquired =
+            ArcanumMaintenanceLock.AcquireDetailed(ArcanumPaths.GrimoireDirectory);
+
+        using ArcanumMaintenanceLock held = acquired.BorrowAcquiredLock();
+
+        Result<Guid> identity = await data.ReadIdentityUnderStoppedHostAuthorityAsync(
+            new StoppedHostGrimoireAuthorityIssuer(
+                held,
+                ArcanumPaths.GrimoireDirectory,
+                ArcanumPaths.GrimoireDatabaseFile),
+            CancellationToken.None);
+
+        Assert.True(identity.IsSuccess, identity.IsFailure ? identity.Error.Message : string.Empty);
+
+        return identity.Value;
     }
 
     private InstallationIdentityRepair Resolve()

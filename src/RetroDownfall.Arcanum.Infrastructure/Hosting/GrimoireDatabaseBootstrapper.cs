@@ -1479,26 +1479,32 @@ public static class GrimoireDatabaseBootstrapper
     /// logged, and ready to throw.
     /// </summary>
     /// <remarks>
-    /// The one owner of these words. Two places refuse a start for this one cause, because the value
-    /// is read in two places before a Grimoire exists: the bootstrap that is about to give a new
-    /// database its authority row (<see cref="ReadAdoptableInstallationIdentityAsync"/>), and the pair
-    /// recovery that runs before the bootstrap on a profile that keeps a closed reset or transition
-    /// anchor, whose tombstone is compared with the identity on every start. Both name the command that
-    /// puts the item right, and both throw this type, because the console shows the message of this
-    /// one only. The refusal changes nothing, and every start repeats it (§10.19.13).
+    /// The one owner of these words. Two places refuse a start for this one cause: the bootstrap that
+    /// is about to give a new database its authority row (<see cref="ReadAdoptableInstallationIdentityAsync"/>),
+    /// where no Grimoire exists yet, and the pair recovery that runs before the bootstrap on a profile
+    /// that keeps a closed reset or transition anchor, whose tombstone is compared with the identity on
+    /// every start, whether or not a Grimoire exists beside it (a standalone Covenant reset leaves the
+    /// database, with its authority row, and the anchor). The words are therefore true of both: the
+    /// start creates no Grimoire beside the item and opens no existing one that it binds, and they say
+    /// nothing about whether one exists. Both name the command that puts the item right, and both throw
+    /// this type, because the console shows the message of this one only. The refusal changes nothing,
+    /// and every start repeats it (§10.19.13).
     /// </remarks>
     internal static GrimoireDatabaseUnavailableException DamagedInstallationIdentityRefusal(Error error)
     {
         Log.Fatal(
             "Grimoire startup aborted: this profile's installation identity is present in the "
             + "operating-system credential store but is not one canonical identity. Arcanum "
-            + "will not create a Grimoire that would replace it. Run 'arcanum data "
-            + "repair-installation-identity' to put the damaged item right. {Code}",
+            + "will not start over it: it creates no Grimoire beside it and opens no existing "
+            + "Grimoire that it binds. Run 'arcanum data repair-installation-identity' to put "
+            + "the damaged item right. {Code}",
             error.Code);
 
         return new GrimoireDatabaseUnavailableException(
             "This profile's installation identity is not one canonical identity, so Arcanum "
-            + "will not create a Grimoire that would replace it. Nothing was created. The "
+            + "will not start over it. It creates no Grimoire beside it, which would replace the "
+            + "binding it holds, and it opens no existing Grimoire whose installation that binding "
+            + "pins. Nothing was created, and the item is left as it is. The "
             + "operating-system credential store answered, so unlocking or repairing it will "
             + "not help. Run 'arcanum data repair-installation-identity' to put the damaged "
             + "item right, which it does only when no restore, offline transition or "
