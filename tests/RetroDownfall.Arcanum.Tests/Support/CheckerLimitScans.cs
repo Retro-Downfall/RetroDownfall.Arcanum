@@ -349,6 +349,45 @@ internal static class CheckerLimitScans
         return Ordered(findings);
     }
 
+    /// <summary>
+    /// The instance slots of an interface that have a body of their own (a default interface member, an accessor of a property or an
+    /// event included) and take or return a lease, a group or a type that holds one. The lifetime walk resolves a call to the body it
+    /// finds on the slot and looks for the DI-bound override only when the slot has none, so a default body on such a slot would have
+    /// the lifetime of an acquired Work judged on that body while a disposing override behind it went unseen, and a Lease-Handoff slot
+    /// with one would never have its declared root's Formal Preservation consulted. Abstractness is the guard, and this is what holds it
+    /// for every interface of the product and not for the gate and lease contracts alone.
+    /// </summary>
+    internal static string[] DefaultBodiedAuthoritySlots(IReadOnlyList<Compilation> compilations)
+    {
+        HashSet<string> findings = new(StringComparer.Ordinal);
+
+        foreach ((SemanticModel model, SyntaxNode node) in Nodes(compilations))
+        {
+            if (node is not InterfaceDeclarationSyntax declaration || model.GetDeclaredSymbol(declaration) is not INamedTypeSymbol contract)
+            {
+                continue;
+            }
+
+            foreach (IMethodSymbol slot in contract.GetMembers().OfType<IMethodSymbol>())
+            {
+                if (slot.IsAbstract || slot.IsStatic)
+                {
+                    continue;
+                }
+
+                string? held = slot.Parameters.Select(static parameter => AuthorityCarrierScanner.Holds(parameter.Type)).FirstOrDefault(static name => name is not null)
+                    ?? AuthorityCarrierScanner.Holds(slot.ReturnType);
+
+                if (held is not null)
+                {
+                    findings.Add($"{AuthorityCarrierScanner.Qualified(slot)} has a body and holds {held}");
+                }
+            }
+        }
+
+        return Ordered(findings);
+    }
+
     private static bool IsTaskLike(ITypeSymbol type) => type is INamedTypeSymbol named
         && Key(named.OriginalDefinition) is "System.Threading.Tasks.Task" or "System.Threading.Tasks.Task`1" or "System.Threading.Tasks.ValueTask" or "System.Threading.Tasks.ValueTask`1";
 

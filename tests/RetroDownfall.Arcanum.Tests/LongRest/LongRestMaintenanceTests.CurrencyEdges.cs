@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -6,7 +7,9 @@ using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Operations;
 using RetroDownfall.Arcanum.Infrastructure.Operations.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -426,6 +429,248 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(2L, await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"));
     }
 
+    // A run completes the generation and, in later writes, settles the operation (the checkpoint, then the transition). A request that
+    // arrives in between finds a sweep whose generation is complete and whose operation is still running: it is the sweep that describes the
+    // installation, and the request joins it instead of paying for a generation that would only supersede it.
+
+    /// <summary>A coordinator whose run is hooked at the moment its sweep's Completed checkpoint is durable, which is before it settles the operation.</summary>
+    private static LongRestSweepCoordinator CompletingCoordinator(MaintenanceFixture f, Func<Task> atCompletion) =>
+        new(new HookedLongRunningOperationStore(f.Operations)
+        {
+            AfterCheckpointSaved = async (id, payload) =>
+            {
+                if (payload is not null && LongRestSweepCheckpointCodec.Decode(id, payload) is { IsSuccess: true } decoded
+                    && decoded.Value.Phase == LongRestSweepPhase.Completed)
+                {
+                    await atCompletion();
+                }
+            },
+        }, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, f.Facts, f.Maintenance, f.Gate, new LongRunningOperationOwnership(),
+        new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+
+    [Fact]
+    public async Task A_request_that_arrives_between_a_generation_completing_and_its_operation_settling_joins_the_sweep()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        Result<LongRunningOperationDto>? raced = null;
+
+        long sweeps = 0;
+
+        LongRestSweepCoordinator running = CompletingCoordinator(f, async () =>
+        {
+            // The generation and the sweep are Completed; the operation has not left Running.
+            Assert.Equal((long)LongRestSweepPhase.Completed, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+
+            Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+
+            sweeps = (long)(await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"))!;
+
+            raced = await f.Coordinator.RequestAsync(f.Scope, CancellationToken.None);
+        });
+
+        SummaryOrDecision(f);
+
+        Assert.True(f.RecordedAdmission.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted));
+
+        await using (IGrimoireWorkLease lease = admitted!)
+        {
+            Assert.Equal(LongRestSweepPhase.Completed, LongRestSweepHarness.Require(await running.ResumeAdmittedAsync(f.Operation, lease, CancellationToken.None)).Phase);
+        }
+
+        Assert.NotNull(raced);
+
+        Result<LongRunningOperationDto> answer = raced;
+
+        Assert.True(answer.IsSuccess, answer.IsFailure ? answer.Error.Code : null);
+
+        // The sweep that was finishing, and no third generation beside it.
+        Assert.Equal(f.Operation, answer.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Running, answer.Value.State);
+
+        Assert.Equal(sweeps, await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"));
+
+        Assert.Equal(1L, await f.H.ScalarAsync("SELECT count(*) FROM long_rest_discovery_generations;"));
+
+        Assert.Equal(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
+
+        // Once it has settled it is the replay, with no write.
+        long writes = (long)(await f.H.ScalarAsync("SELECT total_changes();"))!;
+
+        Result<LongRunningOperationDto> later = await f.Coordinator.RequestAsync(f.Scope, CancellationToken.None);
+
+        Assert.True(later.IsSuccess, later.IsFailure ? later.Error.Code : null);
+
+        Assert.Equal(f.Operation, later.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Completed, later.Value.State);
+
+        Assert.Equal(writes, await f.H.ScalarAsync("SELECT total_changes();"));
+    }
+
+    /// <summary>A protected sweep whose generation completed and whose host died before its operation settled, left parked by recovery.</summary>
+    private static async Task<LongRestMaintenanceCapability> ParkProtectedAfterCompletingAsync(MaintenanceFixture f)
+    {
+        SummaryOrDecision(f);
+
+        LongRestMaintenanceCapability capability = await FreshAsync(f);
+
+        LongRestSweepCoordinator dying = CompletingCoordinator(f, () => throw new IOException("The host died before the operation settled."));
+
+        IOException died = await Assert.ThrowsAsync<IOException>(() => dying.ResumeAsync(f.Operation, capability, CancellationToken.None));
+
+        Assert.Equal("The host died before the operation settled.", died.Message);
+
+        Assert.Equal((long)LongRestSweepPhase.Completed, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+
+        Assert.Equal((long)LongRestSweepPhase.Completed, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_discovery_generations WHERE OperationId = '{f.Operation:N}';"));
+
+        Assert.Equal(LongRunningOperationState.Running, (await f.Operations.GetAsync(f.Operation))!.State);
+
+        // The lease lapses and recovery parks the operation: nobody has the sweep, and it is a protected one.
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z' WHERE Id = $operation AND LeaseOwner IS NOT NULL;",
+            ("$operation", f.Operation.ToString("N")));
+
+        LongRunningOperationReconciler reconciler = new(f.Operations, [new LongRestSweepRecoveryHandler()], f.Clock,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        Assert.Equal(1, (await reconciler.ReconcileNowAsync("completion-crash-recovery")).RequiresAttention);
+
+        LongRunningOperation parked = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, parked.State);
+
+        Assert.Equal(LongRestParkCodes.AuthorizedRequestRequired, parked.TerminalErrorCode);
+
+        return capability;
+    }
+
+    [Fact]
+    public async Task A_protected_sweep_parked_after_its_generation_completed_is_joined_by_the_next_turn_and_completed_without_a_third_operation()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        _ = await ParkProtectedAfterCompletingAsync(f);
+
+        long sweeps = (long)(await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"))!;
+
+        // No request returned it before: the replay wants a Completed operation and the active sweep excludes a completed generation.
+        await using CovenantTurnLease turn = LongRestSweepHarness.Require(await f.Gate.AcquireTurnAsync(f.Scope, CancellationToken.None));
+
+        Result<LongRunningOperationDto> joined = await f.Coordinator.RequestAsync(f.Scope, f.Partition, turn, CancellationToken.None);
+
+        Assert.True(joined.IsSuccess, joined.IsFailure ? joined.Error.Code : null);
+
+        Assert.Equal(f.Operation, joined.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, joined.Value.State);
+
+        Assert.Equal(sweeps, await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"));
+
+        LongRestMaintenanceCapability capability = LongRestSweepHarness.Require(
+            await f.Maintenance.CreateCapabilityAsync(f.Operation, f.Invocation, f.Claim, f.Scope, turn, CancellationToken.None));
+
+        LongRestSweepProgress done = LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, capability, CancellationToken.None));
+
+        Assert.Equal(LongRestSweepPhase.Completed, done.Phase);
+
+        Assert.Equal(LongRunningOperationState.Completed, (await f.Operations.GetAsync(f.Operation))!.State);
+
+        Assert.Equal(sweeps, await f.H.ScalarAsync("SELECT count(*) FROM LongRunningOperations WHERE Kind = 'long-rest-sweep';"));
+
+        // And it is the replay from then on.
+        Result<LongRunningOperationDto> later = await f.Coordinator.RequestAsync(f.Scope, f.Partition, turn, CancellationToken.None);
+
+        Assert.True(later.IsSuccess, later.IsFailure ? later.Error.Code : null);
+
+        Assert.Equal(f.Operation, later.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Completed, later.Value.State);
+    }
+
+    [Fact]
+    public async Task A_protected_sweep_parked_after_its_generation_completed_is_settled_when_it_no_longer_describes_the_installation()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        _ = await ParkProtectedAfterCompletingAsync(f);
+
+        // A setting the configuration value digest covers moves: the completed generation describes an installation that is gone, so nothing
+        // can readmit the park, and it would hold its operation parked for ever if it were left.
+        ArcanumSettings edited = LongRestConfigurationEpochTests.Settings();
+
+        edited.Cost.Pricing.DefaultPricing = new() { InputPer1M = 9m, OutputPer1M = 3m };
+
+        f.Options.Set(edited);
+
+        await using CovenantTurnLease turn = LongRestSweepHarness.Require(await f.Gate.AcquireTurnAsync(f.Scope, CancellationToken.None));
+
+        Result<LongRunningOperationDto> replacement = await f.Coordinator.RequestAsync(f.Scope, f.Partition, turn, CancellationToken.None);
+
+        Assert.True(replacement.IsSuccess, replacement.IsFailure ? replacement.Error.Code : null);
+
+        Assert.NotEqual(f.Operation, replacement.Value.Id);
+
+        Assert.Equal(LongRunningOperationState.Pending, replacement.Value.State);
+
+        LongRunningOperation settled = (await f.Operations.GetAsync(f.Operation))!;
+
+        Assert.Equal(LongRunningOperationState.Abandoned, settled.State);
+
+        Assert.Equal(LongRestParkCodes.StaleConfiguration, settled.TerminalErrorCode);
+
+        Assert.Null(settled.LeaseOwner);
+
+        Assert.NotNull(settled.CompletedAt);
+
+        // Its sweep and generation stay as the history they are, until the generation that replaces them completes.
+        Assert.Equal((long)LongRestSweepPhase.Completed, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+
+        Assert.Equal((long)LongRestSweepPhase.Completed, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_discovery_generations WHERE OperationId = '{f.Operation:N}';"));
+
+        Assert.False(f.Ownership.IsClaimed(f.Operation));
+
+        SummaryOrDecision(f);
+
+        LongRestMaintenanceCapability capability = LongRestSweepHarness.Require(
+            await f.Maintenance.CreateCapabilityAsync(replacement.Value.Id, f.Invocation, f.Claim, f.Scope, turn, CancellationToken.None));
+
+        Assert.Equal(LongRestSweepPhase.Completed,
+            LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(replacement.Value.Id, capability, CancellationToken.None)).Phase);
+
+        Assert.Equal((long)LongRestSweepPhase.Invalidated, await f.H.ScalarAsync($"SELECT PhaseCode FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+    }
+
+    [Fact]
+    public async Task A_park_only_an_operator_can_clear_is_neither_joined_nor_settled_by_a_request()
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: true);
+
+        _ = await ParkProtectedAfterCompletingAsync(f);
+
+        await f.H.ExecuteAsync("UPDATE LongRunningOperations SET TerminalErrorCode = 'LongRest.ProviderRejected' WHERE Id = $operation;", ("$operation", f.Operation.ToString("N")));
+
+        async Task<string> OperatorsParkAsync() => string.Join('\n',
+            await f.H.ScalarAsync($"SELECT json_array(Id, State, Revision, AttemptCount, LeaseOwner, LeaseExpiresAt, TerminalErrorCode, hex(CheckpointPayload)) FROM LongRunningOperations WHERE Id = '{f.Operation:N}';"),
+            await f.H.ScalarAsync($"SELECT json_array(OperationId, GenerationId, PhaseCode, Revision, ConfigurationJson, ReadmitCount, ParkedAt, UpdatedAtUtc) FROM long_rest_sweeps WHERE OperationId = '{f.Operation:N}';"));
+
+        string before = await OperatorsParkAsync();
+
+        await using CovenantTurnLease turn = LongRestSweepHarness.Require(await f.Gate.AcquireTurnAsync(f.Scope, CancellationToken.None));
+
+        Result<LongRunningOperationDto> request = await f.Coordinator.RequestAsync(f.Scope, f.Partition, turn, CancellationToken.None);
+
+        Assert.True(request.IsSuccess, request.IsFailure ? request.Error.Code : null);
+
+        // The operator's park is untouched, and the request is answered by a generation of its own, as it was before a sweep could be joined.
+        Assert.NotEqual(f.Operation, request.Value.Id);
+
+        Assert.Equal(before, await OperatorsParkAsync());
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, (await f.Operations.GetAsync(f.Operation))!.State);
+    }
+
     [Fact]
     public async Task A_candidate_invalidated_after_the_lookup_is_not_replayed()
     {
@@ -465,8 +710,9 @@ public sealed partial class LongRestMaintenanceTests
             LongRestRecipeIdentity recipe, CancellationToken ct) => Task.FromResult(Result<Guid?>.Success(candidate));
 
         public Task<Result<LongRunningOperation>> AdmitRequestAsync(LongRestSweepScope scope, LongRestSweepFence fence, LongRestLiveFenceReader facts,
-            LongRunningOperationOwnership ownership, CancellationToken ct, Func<CancellationToken, ValueTask<Result>>? proveAuthority = null,
-            LongRestRecipeIdentity? replayRecipe = null) => inner.AdmitRequestAsync(scope, fence, facts, ownership, ct, proveAuthority, replayRecipe);
+            LongRunningOperationOwnership ownership, LongRestRecipeIdentity currentRecipe, CancellationToken ct,
+            Func<CancellationToken, ValueTask<Result>>? proveAuthority = null, LongRestRecipeIdentity? replayRecipe = null) =>
+            inner.AdmitRequestAsync(scope, fence, facts, ownership, currentRecipe, ct, proveAuthority, replayRecipe);
 
         public Task<Result<LongRestRunnableSweep>> FindNextRunnableCleanAsync(LongRestConfigurationStamp configuration, Guid? afterOperationId, CancellationToken ct) =>
             inner.FindNextRunnableCleanAsync(configuration, afterOperationId, ct);

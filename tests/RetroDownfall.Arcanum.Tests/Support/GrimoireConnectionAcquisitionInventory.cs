@@ -1117,7 +1117,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.RequestAdmission.cs", "LongRestSweepStore", "AdmitOnceAsync(7)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.RequestAdmission.cs", "LongRestSweepStore", "AdmitOnceAsync(8)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(ct)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,

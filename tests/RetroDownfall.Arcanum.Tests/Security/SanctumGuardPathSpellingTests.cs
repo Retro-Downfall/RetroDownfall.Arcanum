@@ -1,4 +1,3 @@
-using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -23,7 +22,10 @@ namespace RetroDownfall.Arcanum.Tests.Security;
 [Collection("Grimoire")]
 public sealed class SanctumGuardPathSpellingTests : IAsyncLifetime
 {
-    private const string RootName = "Café";
+    // Written out as scalar values: string.Normalize answers through the globalization library, which the shipping executable runs without.
+    private const string RootName = "Caf\u00e9";
+
+    private const string DecomposedRootName = "Cafe\u0301";
 
     private readonly GrimoireFixture _fixture;
 
@@ -250,7 +252,7 @@ public sealed class SanctumGuardPathSpellingTests : IAsyncLifetime
                 break;
 
             case "decomposed":
-                spelled = Path.Combine(_parent, RootName.Normalize(NormalizationForm.FormD));
+                spelled = Path.Combine(_parent, DecomposedRootName);
 
                 break;
 

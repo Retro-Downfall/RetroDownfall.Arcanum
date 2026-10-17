@@ -588,8 +588,9 @@ public sealed partial class LongRestMutationMatrixTests
         if (bypass == "schema-rebuild")
         {
             // The resume entry is the seam that caught it. A clean sweep whose generation can no longer hold is retired for a fresh request to
-            // replace; a protected one is refused by the first unit under its capability and stays parked for its own authority class, which
-            // the next authorized request will meet with the same refusal.
+            // replace; a protected one is refused by the first unit under its capability and stays parked until the next request that carries
+            // live authority, which finds that its frozen sources can no longer be proved and retires it as stale input (see
+            // LongRestMaintenanceTests.FreshAuthorityRetire).
             Assert.Equal(isProtected ? LongRunningOperationState.ReconciliationRequired : LongRunningOperationState.Abandoned, operation!.State);
 
             Assert.Equal(isProtected ? LongRestParkCodes.AuthorizedRequestRequired : ErrorCodes.LongRest.StaleInput, operation.TerminalErrorCode);
@@ -701,8 +702,12 @@ public sealed partial class LongRestMutationMatrixTests
         }
     }
 
-    /// <summary>The Covenant erasure kernel removes one protected leaf's artifact, its source and every generation that froze it.</summary>
-    private static async Task ErasureKernelAsync(Scenario s, string memory)
+    /// <summary>
+    /// The Covenant erasure kernel removes one protected leaf's artifact, its source and every generation that froze it. Its exclusive
+    /// lease leaves the scope closed unless it is given a disposition, so a caller that takes a turn lease afterwards asks for the scope to be
+    /// reopened without a commit, which moves no dataset generation.
+    /// </summary>
+    internal static async Task ErasureKernelAsync(Scenario s, string memory, bool reopenScope = false)
     {
         using CovenantConnectionSource connections = new(s.F.H.Saga.Context, FixtureOrdinaryConnectionFactory.For(s.F.H.Saga.Context));
 
@@ -727,6 +732,13 @@ public sealed partial class LongRestMutationMatrixTests
         Assert.True(erased.IsSuccess, erased.IsFailure ? erased.Error.Message : "");
 
         Assert.Equal(1UL, erased.Value.ErasedCount);
+
+        if (reopenScope)
+        {
+            Result reopened = await lease.CompleteAsync(CovenantExclusiveLeaseDisposition.RollbackAndReopen, CancellationToken.None);
+
+            Assert.True(reopened.IsSuccess, reopened.IsFailure ? reopened.Error.Message : "");
+        }
     }
 
     /// <summary>

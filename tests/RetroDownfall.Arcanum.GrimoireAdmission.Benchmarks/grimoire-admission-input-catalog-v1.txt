@@ -420,6 +420,7 @@ R	src/RetroDownfall.Arcanum.Core/Primitives/JsonSchemaHelper.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/ListPageResult.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/Result.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/StrictUtf8.cs
+R	src/RetroDownfall.Arcanum.Core/Primitives/UnicodeNfc.cs
 R	src/RetroDownfall.Arcanum.Core/Primitives/Utf8Truncation.cs
 R	src/RetroDownfall.Arcanum.Core/ProvingGrounds/IProvingGroundsArbiter.cs
 R	src/RetroDownfall.Arcanum.Core/ProvingGrounds/Inquisitor.cs

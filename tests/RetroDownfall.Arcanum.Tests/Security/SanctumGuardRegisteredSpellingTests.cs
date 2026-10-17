@@ -102,9 +102,10 @@ public sealed class SanctumGuardRegisteredSpellingTests : IClassFixture<Grimoire
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        string composed = "café";
+        // Written out as scalar values: string.Normalize answers through the globalization library, which the shipping executable runs without.
+        string composed = "caf\u00e9";
 
-        string decomposed = composed.Normalize(System.Text.NormalizationForm.FormD);
+        string decomposed = "cafe\u0301";
 
         string root = Directory.CreateDirectory(Path.Combine(_parent, composed)).FullName;
 

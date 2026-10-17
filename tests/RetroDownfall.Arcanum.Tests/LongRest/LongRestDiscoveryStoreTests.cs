@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.LongRest;
@@ -237,5 +238,105 @@ public sealed class LongRestDiscoveryStoreTests
         Assert.Equal(["b-twin"], evidence.Select(static candidate => candidate.Target.MemoryId));
 
         Assert.DoesNotContain(evidence, static candidate => candidate.Lane == LongRestDiscoveryLane.Vector);
+    }
+
+    private static async Task<LongRestCandidateGroup[]> DiscoverWithinAsync(LongRestSweepHarness h, Guid generation, LongRestTarget anchor, LongRestSpreadCache? spreads)
+    {
+        await using Microsoft.Data.Sqlite.SqliteTransaction transaction = h.Connection.BeginTransaction(deferred: true);
+
+        return LongRestSweepHarness.Require(await LongRestDiscoveryStore.DiscoverWithinAsync(h.Connection, transaction, generation, anchor, null, CancellationToken.None, spreads));
+    }
+
+    private static string[] Shown(LongRestCandidateGroup[] groups) =>
+        [.. groups.Select(static group => $"{group.PairingFloorPermille}: " + string.Join(", ", group.Evidence.Select(static candidate => $"{candidate.Target.MemoryId}/{candidate.Lane}/{candidate.Score:R}")))];
+
+    // The sweep reads one anchor to a transaction. The spread of the generation's sample is the same for each of them, so the first one reads it
+    // from the leaves and the next are handed it: they read the floor they would have read, and what they are handed is what they read it from.
+    [SkippableFact]
+    public async Task The_anchors_of_a_generation_share_the_spread_the_first_of_them_read_and_a_remembered_spread_is_what_the_floor_comes_from()
+    {
+        await using LongRestSweepHarness h = await LongRestSweepHarness.CreateAsync();
+
+        // A cluster of three among forty memories that each have a vector of their own, and no word in common.
+        for (int index = 0; index < 43; index++)
+        {
+            await h.SeedAsync($"m-{index:D2}", $"unrelated{index} filler{index}");
+
+            await h.SetEmbeddingAsync($"m-{index:D2}", LongRestClusters.Vector([3], index + 1));
+        }
+
+        LongRestDiscoveryGeneration generation = await h.CaptureAsync();
+
+        await h.ExecuteAsync("UPDATE long_rest_discovery_generations SET PhaseCode = 4, Published = 1;");
+
+        LongRestTarget first = await h.TargetAsync("m-00");
+
+        LongRestTarget second = await h.TargetAsync("m-01");
+
+        LongRestSpreadCache cache = new();
+
+        Assert.Null(cache.Share(generation.GenerationId, LongRestClusters.Width, null));
+
+        string[] firstAlone = Shown(await DiscoverWithinAsync(h, generation.GenerationId, first, null));
+
+        string[] firstRemembering = Shown(await DiscoverWithinAsync(h, generation.GenerationId, first, cache));
+
+        Assert.Equal(firstAlone, firstRemembering);
+
+        // The first anchor of the width left what it read.
+        double spread = cache.Share(generation.GenerationId, LongRestClusters.Width, null)!.Value;
+
+        Assert.True(double.IsFinite(spread) && spread > 0);
+
+        string[] secondAlone = Shown(await DiscoverWithinAsync(h, generation.GenerationId, second, null));
+
+        Assert.Equal(secondAlone, Shown(await DiscoverWithinAsync(h, generation.GenerationId, second, cache)));
+
+        // The cluster is what the vector lane nominates for the second anchor, so the comparison above says something.
+        Assert.Contains(secondAlone, static line => line.Contains("m-00/Vector", StringComparison.Ordinal) && line.Contains("m-02/Vector", StringComparison.Ordinal));
+
+        // Another generation, or another width, has not been read: nothing is taken from this one.
+        Assert.Null(cache.Share(Guid.NewGuid(), LongRestClusters.Width, null));
+
+        Assert.Null(cache.Share(generation.GenerationId, LongRestClusters.Width + 1, null));
+
+        // What is remembered is what a hit reads the floor from: a spread that is no number gives the highest floor, and the vector lane then
+        // nominates nothing, where the spread this generation really has nominates the cluster.
+        LongRestSpreadCache unreadable = new();
+
+        Assert.True(double.IsNaN(unreadable.Share(generation.GenerationId, LongRestClusters.Width, double.NaN)!.Value));
+
+        LongRestCandidateGroup[] refused = await DiscoverWithinAsync(h, generation.GenerationId, second, unreadable);
+
+        Assert.All(refused, static group => Assert.Equal(1000, group.PairingFloorPermille));
+
+        Assert.DoesNotContain(refused.SelectMany(static group => group.Evidence), static candidate => candidate.Lane == LongRestDiscoveryLane.Vector);
+    }
+
+    [Fact]
+    public void The_spread_cache_keeps_a_spread_for_each_generation_and_width_and_drops_the_oldest_past_its_capacity()
+    {
+        LongRestSpreadCache cache = new();
+
+        Guid generation = Guid.NewGuid();
+
+        Assert.Equal(0.125, cache.Share(generation, 64, 0.125));
+
+        // The first reading stands: the cache never replaces what an anchor already read.
+        Assert.Equal(0.125, cache.Share(generation, 64, 0.5));
+
+        Assert.Equal(0.25, cache.Share(generation, 32, 0.25));
+
+        Assert.Equal(0.125, cache.Share(generation, 64, null));
+
+        Assert.Equal(0.25, cache.Share(generation, 32, null));
+
+        Assert.Null(cache.Share(Guid.NewGuid(), 64, null));
+
+        for (int index = 0; index < 8; index++) _ = cache.Share(Guid.NewGuid(), 64, index);
+
+        Assert.Null(cache.Share(generation, 64, null));
+
+        Assert.Null(cache.Share(generation, 32, null));
     }
 }

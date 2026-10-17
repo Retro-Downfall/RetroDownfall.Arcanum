@@ -47,7 +47,8 @@ public sealed class GrimoireConnectionAdmissionContractShapeTests
 
     // The gate contract has exactly one default body: a pure forward to the abstract WaitForNextOpenGenerationAsync. It
     // takes no lease and has no lifetime or effect of its own, so it cannot stand in for an attestation. The set is
-    // pinned exactly: a new default slot fails here, and so does dropping this one without updating the pin.
+    // pinned exactly: a new default slot fails here, and so does dropping this one without updating the pin. The other interfaces of the
+    // product are held by CheckerLimitPinTests.No_interface_slot_that_takes_an_authority_handle_has_a_default_body.
     [Fact]
     public void Gate_contract_default_members_are_exactly_the_pure_generation_wait() =>
         AssertDefaultInstanceMembers(typeof(IGrimoireConnectionAdmissionGate), nameof(IGrimoireConnectionAdmissionGate.WaitForOpenGenerationAfterRefusalAsync));
