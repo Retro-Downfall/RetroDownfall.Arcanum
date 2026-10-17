@@ -152,7 +152,7 @@ jobs:
   hosted-producer-primary-analysis:
     name: Hosted producer primary analysis
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 80
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -183,11 +183,11 @@ jobs:
         run: python3 -m unittest scripts/hosted_producer_analysis_runner_test.py
 
       - name: Test hosted-producer primary analysis
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
-            --configuration Release --jobs 2 --timeout-seconds 1740 \
+            --configuration Release --jobs 2 --timeout-seconds 3540 \
             --partition primary --source-sha "$GITHUB_SHA" \
             --results-directory .tmp/coverage/analysis
 
@@ -202,7 +202,7 @@ jobs:
   hosted-producer-additional-analysis:
     name: Hosted producer additional analysis
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 80
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -230,11 +230,11 @@ jobs:
         run: dotnet build-server shutdown
 
       - name: Test hosted-producer additional analysis
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
-            --configuration Release --jobs 2 --timeout-seconds 1740 \
+            --configuration Release --jobs 2 --timeout-seconds 3540 \
             --partition additional --source-sha "$GITHUB_SHA" \
             --results-directory .tmp/coverage/analysis
 
@@ -251,7 +251,7 @@ jobs:
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 80
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -279,11 +279,11 @@ jobs:
         run: dotnet build-server shutdown
 
       - name: Test hosted-producer fixture analysis
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
-            --configuration Release --jobs 1 --timeout-seconds 1740 \
+            --configuration Release --jobs 1 --timeout-seconds 3540 \
             --partition fixtures --source-sha "$GITHUB_SHA" \
             --results-directory .tmp/coverage/analysis
 
@@ -302,7 +302,7 @@ jobs:
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 80
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -330,11 +330,11 @@ jobs:
         run: dotnet build-server shutdown
 
       - name: Test hosted-producer fixture build analysis
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
-            --configuration Release --jobs 1 --timeout-seconds 1740 \
+            --configuration Release --jobs 1 --timeout-seconds 3540 \
             --partition fixtures-build --source-sha "$GITHUB_SHA" \
             --results-directory .tmp/coverage/analysis
 
@@ -351,7 +351,7 @@ jobs:
     # One fixture process per job, whatever the slot count: the process keeps the bound production compilations in memory and a
     # standard macos-26 runner has about 7 GB, so --jobs 1 and the runner's own one-process plan agree.
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 80
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -379,11 +379,11 @@ jobs:
         run: dotnet build-server shutdown
 
       - name: Test hosted-producer serve host analysis
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           python3 scripts/hosted_producer_analysis_runner.py \
             --project tests/RetroDownfall.Arcanum.Tests/RetroDownfall.Arcanum.Tests.csproj \
-            --configuration Release --jobs 1 --timeout-seconds 1740 \
+            --configuration Release --jobs 1 --timeout-seconds 3540 \
             --partition serve-host --source-sha "$GITHUB_SHA" \
             --results-directory .tmp/coverage/analysis
 

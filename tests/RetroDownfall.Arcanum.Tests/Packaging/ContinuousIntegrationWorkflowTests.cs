@@ -59,9 +59,30 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.Contains("--jobs " + jobs + " ", lane.Body, StringComparison.Ordinal);
 
-            Assert.Contains("--timeout-seconds 1740", lane.Body, StringComparison.Ordinal);
+            // The deadline is sized against the macos-26 hosted runner (3 CPUs, about 7 GB), not against the faster machine the lanes were first measured on: the
+            // primary lane's one shared discovery took about 22 minutes there. The analysis step may run a minute past the deadline for the runner to report it,
+            // and the job covers the checkout and the build before the step.
+            Assert.Contains("--timeout-seconds 3540", lane.Body, StringComparison.Ordinal);
 
-            Assert.Contains("timeout-minutes: 30", lane.Body, StringComparison.Ordinal);
+            string[] laneLines = lane.Body.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+
+            int jobMinutes = Assert.Single(
+                laneLines
+                    .Where(static line => WorkflowIndentOf(line) == 4 && line.Trim().StartsWith("timeout-minutes:", StringComparison.Ordinal))
+                    .Select(static line => int.Parse(line.Trim()["timeout-minutes:".Length..].Trim(), System.Globalization.CultureInfo.InvariantCulture)));
+
+            int stepMinutes = Assert.Single(
+                laneLines
+                    .Where(static line => WorkflowIndentOf(line) == 8 && line.Trim().StartsWith("timeout-minutes:", StringComparison.Ordinal))
+                    .Select(static line => int.Parse(line.Trim()["timeout-minutes:".Length..].Trim(), System.Globalization.CultureInfo.InvariantCulture)));
+
+            Assert.Equal(60, stepMinutes);
+
+            Assert.Equal(80, jobMinutes);
+
+            Assert.True(3540 < stepMinutes * 60, "The step must outlast the runner's own deadline so the runner reports it instead of the step being cancelled.");
+
+            Assert.True(stepMinutes < jobMinutes, "The job must cover the checkout and the build as well as the analysis step.");
 
             Assert.Contains("--source-sha \"$GITHUB_SHA\"", lane.Body, StringComparison.Ordinal);
 

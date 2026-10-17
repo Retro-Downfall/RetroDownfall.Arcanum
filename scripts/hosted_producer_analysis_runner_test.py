@@ -1412,7 +1412,7 @@ The following Tests are available:
             [call.args[4] for call in discover.call_args_list],
         )
 
-    def test_main_accepts_a_thirty_minute_deadline(self):
+    def test_main_accepts_a_sixty_minute_deadline(self):
         production = [
             RUNNER.DiscoveredMethod("Tests.Production", 1),
             RUNNER.DiscoveredMethod("Tests.Additional", 1),
@@ -1455,7 +1455,7 @@ The following Tests are available:
                         "--results-directory",
                         temp,
                         "--timeout-seconds",
-                        "1800",
+                        "3600",
                     ]
                 )
 
@@ -1464,6 +1464,81 @@ The following Tests are available:
         self.assertEqual(5, discover.call_count)
 
         run.assert_called_once()
+
+    def test_main_accepts_the_ci_deadline_and_derives_every_budget_from_it(self):
+        production = [
+            RUNNER.DiscoveredMethod("Tests.Production", 1),
+            RUNNER.DiscoveredMethod("Tests.Additional", 1),
+        ]
+
+        additional = [RUNNER.DiscoveredMethod("Tests.Additional", 1)]
+
+        fixtures = [
+            RUNNER.DiscoveredMethod("Tests.Fixture", 1),
+            RUNNER.DiscoveredMethod("Tests.ServeHost", 1),
+            RUNNER.DiscoveredMethod("Tests.BuildScans", 1),
+        ]
+
+        serve_host = [RUNNER.DiscoveredMethod("Tests.ServeHost", 1)]
+
+        build = [RUNNER.DiscoveredMethod("Tests.BuildScans", 1)]
+
+        for label, arguments, expected_total in (
+            ("ci-flag", ["--timeout-seconds", "3540"], 3540.0),
+            ("default", [], float(RUNNER.MAX_ANALYSIS_SECONDS)),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as temp:
+                result = RUNNER.AnalysisRunResult(
+                    exit_codes=(0,),
+                    completed_count=4,
+                    passed_count=4,
+                    expected_count=4,
+                    log_path=Path(temp) / "analysis.log",
+                )
+
+                with mock.patch.dict(os.environ) as environment, mock.patch.object(
+                    RUNNER,
+                    "_discover",
+                    side_effect=[production, additional, fixtures, serve_host, build],
+                ) as discover, mock.patch.object(
+                    RUNNER,
+                    "run_shards",
+                    return_value=result,
+                ) as run, mock.patch.object(
+                    RUNNER.time,
+                    "monotonic",
+                    side_effect=[100.0, 101.0, 108.0, 112.0, 113.0, 114.0, 115.0],
+                ):
+                    environment.pop("ARCANUM_ANALYSIS_TIMEOUT_SECONDS", None)
+
+                    exit_code = RUNNER.main(
+                        [
+                            "--project",
+                            str(Path(temp) / "tests.csproj"),
+                            "--results-directory",
+                            temp,
+                            *arguments,
+                        ]
+                    )
+
+                self.assertEqual(0, exit_code)
+
+                # The deadline is one point on the monotonic clock; every discovery and the run spend what is left of it, so the run's
+                # budget is the configured total minus what the discoveries consumed (115 - 100 = 15 s).
+                self.assertEqual(100.0 + expected_total, run.call_args.kwargs["deadline"])
+
+                self.assertEqual(expected_total - 15.0, run.call_args.kwargs["timeout_seconds"])
+
+                self.assertEqual(
+                    [
+                        min(RUNNER.DISCOVERY_TIMEOUT_SECONDS, expected_total - elapsed)
+                        for elapsed in (1.0, 8.0, 12.0, 13.0, 14.0)
+                    ],
+                    [call.args[4] for call in discover.call_args_list],
+                )
+
+    def test_the_largest_accepted_deadline_is_one_hour(self):
+        self.assertEqual(3600, RUNNER.MAX_ANALYSIS_SECONDS)
 
     def test_main_plans_every_partition_from_the_same_five_discoveries(self):
         production = [
@@ -1619,7 +1694,7 @@ The following Tests are available:
 
                     self.assertEqual(1, len(receipt["shards"]))
 
-    def test_main_rejects_a_deadline_above_thirty_minutes(self):
+    def test_main_rejects_a_deadline_above_sixty_minutes(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.object(
             RUNNER,
             "_discover",
@@ -1631,7 +1706,7 @@ The following Tests are available:
                     "--results-directory",
                     temp,
                     "--timeout-seconds",
-                    "1801",
+                    "3601",
                 ]
             )
 
