@@ -727,6 +727,11 @@ public sealed class LocalOllamaLongRestQualificationHarnessContractTests
         Assert.Contains("SetBeforeDeliveryHook", run, StringComparison.Ordinal);
         Assert.Contains("LongRestQualificationChecks.BilledButUndelivered", run, StringComparison.Ordinal);
 
+        // The worker counts the crash park where it readmits the sweep, so the restarted host owes the park as well as the readmission.
+        Assert.Contains("SumMetric(metrics, \"long_rest_sweep_parked\", \"resume_later\")", run, StringComparison.Ordinal);
+        Assert.Contains("Check(parkedCount >= 1,", run, StringComparison.Ordinal);
+        Assert.DoesNotContain("which the park counter does not cover", run, StringComparison.Ordinal);
+
         // The metrics exporter starts with the host, so a restart's first scrape must already carry what the host recorded: a late start is a
         // finding, and the run keeps no workaround scrape to hide it.
         Assert.Contains("LongRestQualificationChecks.ExporterStartFinding", run, StringComparison.Ordinal);
