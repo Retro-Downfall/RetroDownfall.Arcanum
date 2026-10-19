@@ -9559,7 +9559,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         IGrimoireTurnCommitter? turnCommitter = null,
         ISessionTurnClaimBeginStore? claimedBeginStore = null,
         ISessionTurnClaimCoordinator? claims = null,
-        ICanonicalCampaignContextResolver? campaignResolver = null)
+        ICanonicalCampaignContextResolver? campaignResolver = null,
+        RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker? healthTracker = null)
     {
         settings ??= DefaultSettings();
 
@@ -9664,7 +9665,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             budgetMonitor,
             sessionAttachmentStore,
             humanPrompts ?? new HumanPromptRegistry(),
-            healthTracker: null,
+            healthTracker: healthTracker,
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
             budgetReservationService: budgetReservationService,

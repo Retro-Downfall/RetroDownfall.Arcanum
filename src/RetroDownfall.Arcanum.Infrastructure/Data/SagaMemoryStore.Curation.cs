@@ -22,6 +22,9 @@ internal sealed partial class SagaMemoryStore
         return await ReadLongRestSnapshotAsync<SagaMemoryCurationRow?>(
             async (connection, longRest) =>
             {
+                SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand cmd = connection.CreateCommand();
 
                 // One LEFT JOIN against saga_memory_embeddings rather than a second round trip: the row,
@@ -40,9 +43,11 @@ internal sealed partial class SagaMemoryStore
                            m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc",
                            e."MemoryId" IS NOT NULL
                            {LongRestRecallSql.Projection("m", longRest)}
+                           {SagaRankingReader.Projection(longRest)}
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     LEFT JOIN "saga_memory_embeddings" e ON e."MemoryId" = m."Id"
+                    {SagaRankingReader.Join(longRest)}
                     WHERE m."Id" = @id
                     """;
 
@@ -55,7 +60,7 @@ internal sealed partial class SagaMemoryStore
                     return null;
                 }
 
-                SagaMemoryDto memory = ReadMemory(reader);
+                SagaMemoryDto memory = ReadMemory(reader, ranking);
 
                 bool hasEmbedding = reader.GetInt32(18) == 1;
 

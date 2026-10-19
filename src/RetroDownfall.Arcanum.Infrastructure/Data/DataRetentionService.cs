@@ -295,6 +295,7 @@ internal sealed partial class DataRetentionService(
                 "saga_extraction_watermarks",
                 "saga_retirement_suppressions",
                 "saga_suppression_key",
+                "saga_committed_uses",
             ],
             "Saga facts and the companion rows the store keeps beside them remain independent from source attachment availability.",
             retention,
@@ -2433,7 +2434,7 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 0,
-                snapshot.SagaExtractionWatermarkCount + snapshot.LongRestDiscoveryCount),
+                snapshot.SagaExtractionWatermarkCount + snapshot.LongRestDiscoveryCount + snapshot.SagaCommittedUseCount),
             new(RetentionDataClass.Annals, 0, 0, 0, snapshot.MemoryEvaluationCount),
             new(
                 RetentionDataClass.SessionEntryEmbeddings,
@@ -3143,6 +3144,13 @@ internal sealed partial class DataRetentionService(
             using (CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)connection, CovenantSqliteAuthorizationKind.SessionRetention))
             {
+                if (snapshot.SagaCommittedUseCount > 0)
+                {
+                    derivedDeleted += await ExecuteAsync(connection, transaction,
+                        "DELETE FROM saga_committed_uses WHERE AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @sagaUseSession)",
+                        cancellationToken, ("@sagaUseSession", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false);
+                }
+
                 derivedDeleted += await MemoryEvaluationErasurePlan.ClearSessionAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
                 derivedDeleted += await LongRestLifecycle.ClearSessionAsync(
@@ -3892,7 +3900,8 @@ internal sealed partial class DataRetentionService(
             campaignContinuity,
             summaries,
             longRestDiscovery,
-            await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, null, sessionId, cancellationToken).ConfigureAwait(false));
+            await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, null, sessionId, cancellationToken).ConfigureAwait(false),
+            await CountTableAsync("saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4154,7 +4163,8 @@ internal sealed partial class DataRetentionService(
             campaignContinuity,
             summaries,
             longRestDiscovery,
-            await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false));
+            await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false),
+            await CountInTransactionAsync(connection, transaction, "saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotInTransactionAsync(
@@ -4408,7 +4418,8 @@ internal sealed partial class DataRetentionService(
             + snapshot.CampaignContinuity.Rows
             + snapshot.Summaries.Rows
             + snapshot.LongRestDiscoveryCount
-            + snapshot.MemoryEvaluationCount;
+            + snapshot.MemoryEvaluationCount
+            + snapshot.SagaCommittedUseCount;
 
         if (rows != plan.Rows
             || files != plan.Files
@@ -4431,6 +4442,7 @@ internal sealed partial class DataRetentionService(
             && snapshot.Summaries == expectedSnapshot.Summaries
             && snapshot.LongRestDiscoveryCount == expectedSnapshot.LongRestDiscoveryCount
             && snapshot.MemoryEvaluationCount == expectedSnapshot.MemoryEvaluationCount
+            && snapshot.SagaCommittedUseCount == expectedSnapshot.SagaCommittedUseCount
             && snapshot.EntryIds
                 .Order()
                 .SequenceEqual(expectedSnapshot.EntryIds.Order())
@@ -8014,7 +8026,8 @@ internal sealed partial class DataRetentionService(
         CampaignSummaryClosureSnapshot CampaignContinuity,
         SessionSummaryClosureSnapshot Summaries,
         long LongRestDiscoveryCount,
-        long MemoryEvaluationCount);
+        long MemoryEvaluationCount,
+        long SagaCommittedUseCount);
 
     private readonly record struct IdSetBatch(
         string Predicate,

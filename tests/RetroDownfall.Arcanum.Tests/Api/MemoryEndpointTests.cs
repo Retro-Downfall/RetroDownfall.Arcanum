@@ -62,6 +62,47 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed class MemoryEndpointTests
 {
+    [SkippableFact]
+    public async Task Explain_reports_content_free_Saga_score_components_and_the_reference_similarity()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory(longRest: true);
+        await SeedSagaMemoryAsync(factory, "ranking-clean", "SECRET-MEMORY-TEXT-ONLY-IN-CONTENT", null);
+        using HttpClient client = factory.CreateAuthenticatedClient();
+        using HttpResponseMessage response = await client.GetAsync("/api/memory/explain?sagaId=ranking-clean&similarity=0.8");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string json = await response.Content.ReadAsStringAsync();
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement data = document.RootElement.GetProperty("data");
+        Assert.True(data.TryGetProperty("sagaRanking", out JsonElement ranking));
+        Assert.Equal(1, ranking.GetProperty("policyVersion").GetInt32());
+        Assert.True(ranking.GetProperty("enabled").GetBoolean());
+        Assert.Equal(0.8f, ranking.GetProperty("referenceSimilarity").GetSingle());
+        JsonElement item = Assert.Single(ranking.GetProperty("memories").EnumerateArray());
+        Assert.Equal("ranking-clean", item.GetProperty("memoryId").GetString());
+        JsonElement components = item.GetProperty("components");
+        Assert.Equal(0.8f, components.GetProperty("similarity").GetSingle());
+        Assert.Equal(0, components.GetProperty("usefulnessModifier").GetSingle());
+        Assert.Equal("none", components.GetProperty("evidenceClass").GetString());
+        Assert.DoesNotContain("SECRET-MEMORY-TEXT", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("contentDigest", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(JsonValueKind.Null, components.GetProperty("versionId").ValueKind);
+    }
+
+    [SkippableTheory]
+    [InlineData("NaN")]
+    [InlineData("1.1")]
+    [InlineData("-1.1")]
+    [InlineData("infinity")]
+    public async Task Explain_refuses_invalid_reference_similarity(string similarity)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        await using ArcanumWebApplicationFactory factory = CreateSagaEnabledFactory(longRest: true);
+        using HttpClient client = factory.CreateAuthenticatedClient();
+        using HttpResponseMessage response = await client.GetAsync("/api/memory/explain?similarity=" + similarity);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1897,7 +1938,7 @@ public sealed class MemoryEndpointTests
     private const int SagaTestDimensions = 64;
 
     /// <summary>A host with Saga and embeddings on, answering one fixed vector for every text.</summary>
-    private static ArcanumWebApplicationFactory CreateSagaEnabledFactory(bool campaignScopedMemory = false) =>
+    private static ArcanumWebApplicationFactory CreateSagaEnabledFactory(bool campaignScopedMemory = false, bool longRest = false) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -1907,6 +1948,8 @@ public sealed class MemoryEndpointTests
                     Embeddings = true,
                     Saga = true,
                     CampaignScopedMemory = campaignScopedMemory,
+                    LongRest = longRest,
+                    Annals = longRest,
                 },
                 Integrations = settings.Integrations with
                 {

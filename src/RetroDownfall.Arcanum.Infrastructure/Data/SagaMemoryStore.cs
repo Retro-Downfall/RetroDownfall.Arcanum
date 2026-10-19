@@ -34,7 +34,8 @@ internal sealed partial class SagaMemoryStore(
     IOptionsMonitor<ArcanumSettings> options,
     IMemoryErasureKeyProvider erasureKeys,
     ICovenantLabeledArtifactTransactionGuard? labeledArtifactGuard = null,
-    IOperatorAuthorityContextIssuer? releaseAuthority = null) : ISagaMemoryStore
+    IOperatorAuthorityContextIssuer? releaseAuthority = null,
+    TimeProvider? timeProvider = null) : ISagaMemoryStore
 {
     public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
@@ -376,6 +377,9 @@ internal sealed partial class SagaMemoryStore(
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
             {
+                SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand cmd = connection.CreateCommand();
 
                 BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: false, longRest);
@@ -386,7 +390,7 @@ internal sealed partial class SagaMemoryStore(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    results.Add(ReadMemory(reader));
+                    results.Add(ReadMemory(reader, ranking));
                 }
 
                 return results.ToArray();
@@ -405,6 +409,9 @@ internal sealed partial class SagaMemoryStore(
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
             {
+                SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand cmd = connection.CreateCommand();
 
                 BuildListCommand(cmd, query, sessionId, scope, limit, offset, includeEmbeddingProbe: true, longRest);
@@ -415,7 +422,7 @@ internal sealed partial class SagaMemoryStore(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    SagaMemoryDto memory = ReadMemory(reader);
+                    SagaMemoryDto memory = ReadMemory(reader, ranking);
 
                     bool hasEmbedding = reader.GetInt32(18) == 1;
 
@@ -502,7 +509,15 @@ internal sealed partial class SagaMemoryStore(
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
             {
+                SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand cmd = connection.CreateCommand();
+
+                if (ranking.Enabled)
+                {
+                    return await AnyRankedRetrievableAsync(connection, scope, ranking, longRest, cancellationToken).ConfigureAwait(false);
+                }
 
                 // Retrieval's own choice, read the other way round: a turn ranks only embedded rows, so an
                 // inner join through the embeddings is what "a turn could reach it" means. Unscoped when the
@@ -587,13 +602,18 @@ internal sealed partial class SagaMemoryStore(
 
         sql.Append(LongRestRecallSql.Projection("m", longRest));
 
+        sql.Append(SagaRankingReader.Projection(longRest));
+
         sql.Append(
             """
 
             FROM "saga_memories" m
             LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
-            WHERE 1 = 1
             """);
+
+        sql.Append(SagaRankingReader.Join(longRest));
+
+        sql.Append("\nWHERE 1 = 1");
 
         if (!string.IsNullOrWhiteSpace(query))
         {
@@ -664,6 +684,9 @@ internal sealed partial class SagaMemoryStore(
         return await ReadLongRestSnapshotAsync(
             async (connection, longRest) =>
             {
+                SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                    (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
                 await using DbCommand cmd = connection.CreateCommand();
 
                 string[] parameterNames = new string[ids.Count];
@@ -688,8 +711,10 @@ internal sealed partial class SagaMemoryStore(
                            ),
                            m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
                            {LongRestRecallSql.Projection("m", longRest)}
+                           {SagaRankingReader.Projection(longRest)}
                     FROM "saga_memories" m
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
+                    {SagaRankingReader.Join(longRest)}
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
                         AND {LongRestRecallSql.Eligible("m", longRest)}
                     """;
@@ -700,9 +725,13 @@ internal sealed partial class SagaMemoryStore(
 
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    SagaMemoryDto memory = ReadMemory(reader);
+                    SagaMemoryDto memory = ReadMemory(reader, ranking);
 
-                    results[memory.Id] = memory;
+                    if (memory.Ranking is not { Dormant: true } && memory.Ranking is not { TemporallyValid: false }
+                        && (!ranking.Enabled || memory.RetiredAtUtc is null))
+                    {
+                        results[memory.Id] = memory;
+                    }
                 }
 
                 return (IReadOnlyDictionary<string, SagaMemoryDto>)results;
@@ -1110,7 +1139,7 @@ internal sealed partial class SagaMemoryStore(
             }, cancellationToken).ConfigureAwait(false);
         }, cancellationToken);
 
-    private static SagaMemoryDto ReadMemory(DbDataReader reader)
+    private static SagaMemoryDto ReadMemory(DbDataReader reader, SagaRankingReader ranking)
     {
         string id = reader.GetString(0);
 
@@ -1146,7 +1175,7 @@ internal sealed partial class SagaMemoryStore(
             ? null
             : UtcInstantText.Parse(reader.GetString(17));
 
-        return new SagaMemoryDto(
+        SagaMemoryDto memory = new(
             id,
             content,
             createdAt,
@@ -1161,6 +1190,8 @@ internal sealed partial class SagaMemoryStore(
             NullableString(reader, "ConsolidatedIntoMemoryId"),
             NullableString(reader, "ConsolidatedIntoVersionId"),
             NullableString(reader, "LongRestReceiptId"));
+
+        return ranking.Enrich(memory, reader);
     }
 
     private static string? NullableString(DbDataReader reader, string column)

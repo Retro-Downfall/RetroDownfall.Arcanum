@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
@@ -31,8 +32,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 internal sealed class DivinationService(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
-    ILogger<DivinationService> logger) : IDivinationService
+    ILogger<DivinationService> logger,
+    Microsoft.Extensions.Options.IOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>? options = null,
+    TimeProvider? timeProvider = null) : IDivinationService
 {
+    private bool RankingEnabled => options?.CurrentValue.Features.LongRest == true;
+
+    private DateTimeOffset RankingInstant => (timeProvider ?? TimeProvider.System).GetUtcNow();
+
     private const string VecTableSuffix = "_vec";
 
     private static readonly IReadOnlyDictionary<string, string> EmptyMetadata =
@@ -262,7 +269,9 @@ internal sealed class DivinationService(
 
         bool longRest = saga && await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
 
-        string sagaJoin = saga ? $"INNER JOIN saga_memories m ON m.\"Id\" = e.\"{primaryKeyColumn}\"" : "";
+        string sagaJoin = saga ? $"INNER JOIN saga_memories m ON m.\"Id\" = e.\"{primaryKeyColumn}\" {SagaRankingReader.Join(longRest)}" : "";
+
+        SagaRankingReader? ranking = saga ? await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false) : null;
 
         string eligible = saga ? LongRestRecallSql.Eligible("m", longRest) : "1 = 1";
 
@@ -277,6 +286,7 @@ internal sealed class DivinationService(
         cmd.CommandText =
             $"""
             SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
+            {(saga ? SagaRankingReader.Projection(longRest) : "")}
             FROM "{blobTableName}" e
             INNER JOIN "{scope.OwnerTableName}" o ON e."{primaryKeyColumn}" = o."{scope.OwnerJoinColumn}"
             {sagaJoin}
@@ -305,7 +315,7 @@ internal sealed class DivinationService(
             queryVector,
             maxResults,
             similarityThreshold,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, ranking).ConfigureAwait(false);
     }
 
     private async Task<Result<DivinationResult[]>> SearchManagedScopedAsync(
@@ -328,7 +338,9 @@ internal sealed class DivinationService(
 
         bool longRest = saga && await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
 
-        string sagaJoin = saga ? $"INNER JOIN saga_memories m ON m.\"Id\" = e.\"{primaryKeyColumn}\"" : "";
+        string sagaJoin = saga ? $"INNER JOIN saga_memories m ON m.\"Id\" = e.\"{primaryKeyColumn}\" {SagaRankingReader.Join(longRest)}" : "";
+
+        SagaRankingReader? ranking = saga ? await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false) : null;
 
         string eligible = saga ? LongRestRecallSql.Eligible("m", longRest) : "1 = 1";
 
@@ -337,6 +349,7 @@ internal sealed class DivinationService(
         cmd.CommandText =
             $"""
             SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
+            {(saga ? SagaRankingReader.Projection(longRest) : "")}
             FROM "{blobTableName}" e
             INNER JOIN "{scopeTableName}" s ON e."{primaryKeyColumn}" = s."{scopeJoinColumn}"
             {sagaJoin}
@@ -350,7 +363,7 @@ internal sealed class DivinationService(
             queryVector,
             maxResults,
             similarityThreshold,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken, ranking).ConfigureAwait(false);
     }
 
     private async Task<Result<DivinationResult[]>> SearchManagedSagaAsync(
@@ -364,17 +377,21 @@ internal sealed class DivinationService(
     {
         bool longRest = await LongRestRecallSql.AvailableAsync(connection, cancellationToken).ConfigureAwait(false);
 
+        SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false);
+
         await using DbCommand cmd = connection.CreateCommand();
 
         cmd.CommandText =
             $"""
             SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"
+            {SagaRankingReader.Projection(longRest)}
             FROM saga_memory_embeddings e
             INNER JOIN saga_memories m ON m."Id" = e."{primaryKeyColumn}"
+            {SagaRankingReader.Join(longRest)}
             WHERE {LongRestRecallSql.Eligible("m", longRest)}
             """;
 
-        return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken).ConfigureAwait(false);
+        return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken, ranking).ConfigureAwait(false);
     }
 
     private static bool IsSaga(string blobTableName) =>
@@ -478,7 +495,8 @@ internal sealed class DivinationService(
         float[] queryVector,
         int maxResults,
         float similarityThreshold,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SagaRankingReader? ranking = null)
     {
         int take = Math.Max(0, maxResults);
 
@@ -535,7 +553,14 @@ internal sealed class DivinationService(
                 continue;
             }
 
-            RankedHit hit = new(similarity, id);
+            SagaRankingComponents? components = ranking?.Enabled == true ? ranking.Evaluate(reader, similarity) : null;
+
+            if (ranking?.Enabled == true && !ranking.Eligible(reader, components!))
+            {
+                continue;
+            }
+
+            RankedHit hit = new(similarity, id, components?.Score, components is null ? null : components with { VersionId = null });
 
             if (topK.Count < take)
             {
@@ -583,7 +608,7 @@ internal sealed class DivinationService(
                 break;
             }
 
-            results[i] = new DivinationResult(id, ranked.Similarity, EmptyMetadata);
+            results[i] = new DivinationResult(id, ranked.Similarity, EmptyMetadata, ranked.Ranking);
         }
 
         return Result<DivinationResult[]>.Success(results);
@@ -636,7 +661,7 @@ internal sealed class DivinationService(
             : RowScore.NoSignal;
     }
 
-    private readonly record struct RankedHit(float Similarity, string Id);
+    private readonly record struct RankedHit(float Similarity, string Id, float? Score = null, SagaRankingComponents? Ranking = null);
 
     /// <summary>
     /// Orders the weakest hit first: lower similarity, then, for equal similarity, the higher id (so the
@@ -648,7 +673,7 @@ internal sealed class DivinationService(
 
         public int Compare(RankedHit left, RankedHit right)
         {
-            int bySimilarity = left.Similarity.CompareTo(right.Similarity);
+            int bySimilarity = (left.Score ?? left.Similarity).CompareTo(right.Score ?? right.Similarity);
 
             return bySimilarity != 0
                 ? bySimilarity

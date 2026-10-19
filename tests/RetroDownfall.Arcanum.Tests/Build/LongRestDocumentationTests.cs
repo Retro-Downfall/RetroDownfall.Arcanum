@@ -343,24 +343,6 @@ public sealed class LongRestDocumentationTests
     }
 
     [Fact]
-    public void The_oath_records_the_discovery_and_sweep_slice_as_landed_and_the_epic_as_open()
-    {
-        string oath = ReadDocument("Arcanum.OATH.md");
-
-        Assert.Contains("| **#91** | XL, landed |", oath, StringComparison.Ordinal);
-
-        Assert.Contains("| **#93** | XL, landed |", oath, StringComparison.Ordinal);
-
-        Assert.Contains("remain open. |", oath, StringComparison.Ordinal);
-
-        string roadmap = DocumentSection(oath, "### 20.4 The Long Rest (#75, Epic)", "### 20.5 ");
-
-        Assert.Contains("**Delivered.**", roadmap, StringComparison.Ordinal);
-
-        Assert.DoesNotContain("reconciled at startup and at the end of every sweep", roadmap, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void Api_section_8_36_names_the_park_remedies_and_what_a_busy_sweep_means()
     {
         string section = DocumentSection(

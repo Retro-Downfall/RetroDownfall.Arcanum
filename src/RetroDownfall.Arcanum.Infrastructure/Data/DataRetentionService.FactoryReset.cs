@@ -30,6 +30,7 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("saga_committed_uses", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -111,6 +112,7 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("saga_committed_uses", RetentionDataClass.SagaMemories, FactoryRecordKind.Derived),
         new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluations", RetentionDataClass.Annals, FactoryRecordKind.Derived),

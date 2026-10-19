@@ -1,0 +1,13 @@
+# Saga ranking and decay (#95)
+
+Implement the approved #75/#95/OATH §20.4 contract within the existing Saga retrieval and Long Rest feature gate. Retain raw semantic similarity and its threshold. Score eligible candidates before top-K, with ordinal memory identity breaking score ties. Gate-off recall retains its prior bytes and ordering.
+
+Policy v1 derives usefulness from retained, validated, completed counterfactual reports with exactly one intervention, a Saga exact version, and a successful native committed use of that exact content/version. Multi-intervention, dependency-only, insufficient, cancelled, interrupted, damaged, incompatible-format, stale-source, and erased evidence earns no positive credit. Successful exposure alone earns zero credit. Reports describe their declared workload; this bounded transfer is not proof of usefulness on every workload.
+
+Usefulness is 0.01 per net benefit/harm report, capped at +/-0.04. Age contributes 0 to -0.05 over 180 days, then remains capped. An inferred exact version becomes dormant at 365 days since its version/creation instant or its latest corroborated benefit. Future evidence cannot refresh age. Pins and operator-stated origin are exempt from age and dormancy. Operator origin contributes +0.09, so even a harmed operator statement outranks a maximally reinforced inferred statement at equal raw similarity. Total additive modifier is bounded [-0.09,+0.13]. Claimless legacy rows remain neutral and recallable. Current validity is inclusive-from/exclusive-to; retirement and exact-source consolidation retain their existing authority, including pin release of consolidation.
+
+Preserve exact Saga coordinates through ledger admission into a compact final-turn use receipt, atomically published by the existing finalizer. Partial/interrupted, discarded, imported/forked and replayed branches cannot invent success. Receipts retain no content and disappear with their source, owning finalization, erasure/reset, or restore authority. No per-attempt history or new public tuning settings.
+
+One metadata reader supplies retrieval, hydration, eligibility, search/detail and explanation. Explanations contain policy, raw similarity when supplied, each modifier, final score, evidence class/counts, dormancy and exemptions without memory text or protected coordinates. Existing content inspection remains under its owning protection rules. Only Arcanum:Features:LongRest gates ranking/decay; default false.
+
+Verification includes real SQLite recall before top-K, threshold/gate/accelerator/scope parity, exact-version and deletion behavior, policy boundaries/exemptions, atomic successful-use receipts, API/CLI metadata safety, schema evolution, all required CI lanes and Native AOT before delivery.

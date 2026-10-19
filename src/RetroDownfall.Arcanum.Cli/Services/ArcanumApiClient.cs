@@ -3989,13 +3989,22 @@ public sealed partial class ArcanumApiClient(
 
     public Task<Result<MemoryExplainDto>> ExplainMemoryAsync(
         Guid? sessionId,
-        CancellationToken cancellationToken = default) =>
-        GetApiAsync(
-            sessionId is null
-                ? "api/memory/explain"
-                : $"api/memory/explain/{sessionId.Value:D}",
-            ArcanumJsonContext.Default.ApiResponseMemoryExplainDto,
-            cancellationToken);
+        CancellationToken cancellationToken = default,
+        string? sagaId = null,
+        float? similarity = null)
+    {
+        string path = sessionId is null ? "api/memory/explain" : $"api/memory/explain/{sessionId.Value:D}";
+
+        List<string> query = [];
+
+        if (sagaId is not null) query.Add("sagaId=" + Uri.EscapeDataString(sagaId));
+
+        if (similarity is { } reference) query.Add("similarity=" + Uri.EscapeDataString(reference.ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+
+        if (query.Count > 0) path += "?" + string.Join("&", query);
+
+        return GetApiAsync(path, ArcanumJsonContext.Default.ApiResponseMemoryExplainDto, cancellationToken);
+    }
 
     public Task<Result<MemorySearchResponse>> SearchMemoryAsync(
         MemorySearchRequest request,

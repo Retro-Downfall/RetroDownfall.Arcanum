@@ -2226,7 +2226,7 @@ internal sealed partial class DataRetentionService
     /// <summary>The shared erasure coordinates for the Saga transformation companions a prune owns.</summary>
     private static IEnumerable<AnnalsErasureStep> SagaLongRestPruneSteps(string subjectQuery, bool includeEvaluations = false) =>
         AnnalsErasurePlan.ForSubjectQuery(AnnalSubjectStore.Saga, subjectQuery)
-            .Where(step => step.Table.StartsWith("long_rest_", StringComparison.Ordinal)
+            .Where(step => step.Table == "saga_committed_uses" || step.Table.StartsWith("long_rest_", StringComparison.Ordinal)
                 || includeEvaluations && step.Table.StartsWith("memory_evaluation", StringComparison.Ordinal));
 
     private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesAsync(

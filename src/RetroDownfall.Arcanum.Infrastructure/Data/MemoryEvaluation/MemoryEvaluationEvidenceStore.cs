@@ -178,7 +178,8 @@ internal sealed partial class MemoryEvaluationEvidenceStore(ICovenantConnectionS
         }
     }
 
-    private static async Task<MemoryEvaluationStoredEvidence?> ReadAsync(SqliteConnection connection, SqliteTransaction transaction, Guid evaluationId, CancellationToken ct)
+    /// <summary>Validates retained evidence inside a caller-owned snapshot without acquiring or ending it.</summary>
+    internal static async Task<MemoryEvaluationStoredEvidence?> ReadAsync(SqliteConnection connection, SqliteTransaction? transaction, Guid evaluationId, CancellationToken ct)
     {
         if (evaluationId == Guid.Empty) return null;
 
@@ -239,7 +240,7 @@ internal sealed partial class MemoryEvaluationEvidenceStore(ICovenantConnectionS
 
     private static string Id(Guid id) => id.ToString("N");
 
-    private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql, params (string Name, object? Value)[] parameters)
+    private static SqliteCommand Command(SqliteConnection connection, SqliteTransaction? transaction, string sql, params (string Name, object? Value)[] parameters)
     {
         SqliteCommand command = connection.CreateCommand();
 

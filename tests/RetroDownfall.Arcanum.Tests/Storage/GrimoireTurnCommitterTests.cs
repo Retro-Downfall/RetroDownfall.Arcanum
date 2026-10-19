@@ -7,9 +7,14 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Annals;
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Backup;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -388,6 +393,325 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, conflicting.Error.Code);
         Assert.Equal(string.Empty, await ReadContentAsync(assistantEntryId));
         Assert.Null(await ReadGuardOutcomeAsync(assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_PublishesExactSagaUseBesideSuccessfulReplyAndReplayAddsNothing()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate, coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(1L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).Value.Replayed);
+
+        Assert.Equal(1L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_OmitsStaleSagaUseWithoutLosingSuccessfulReply()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        await SagaStore().CorrectAsync(coordinate.MemoryId, coordinate.ContentDigest.Bytes, "corrected observation", new float[64], DateTimeOffset.UtcNow, CancellationToken.None);
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal("answer", await ReadContentAsync(assistantEntryId));
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_FailedPublicationLeavesNeitherSagaUseNorReply()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        command.CommandText = "CREATE TRIGGER refuse_saga_use BEFORE INSERT ON saga_committed_uses BEGIN SELECT RAISE(ABORT, 'injected publication failure'); END";
+
+        await command.ExecuteNonQueryAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsFailure);
+
+        Assert.Equal(string.Empty, await ReadContentAsync(assistantEntryId));
+
+        Assert.Null(await ReadGuardOutcomeAsync(assistantEntryId));
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_SourceErasureRemovesUseEvenWithForeignKeysDisabled()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(1L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        command.CommandText = "PRAGMA foreign_keys = OFF";
+
+        await command.ExecuteNonQueryAsync();
+
+        Assert.True(await SagaStore().DeleteAsync(coordinate.MemoryId, CancellationToken.None));
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_DiscardedReplyPublishesNoSagaUse()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Discarded,
+            string.Empty, CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task RestoreSanitationRemovesProductionUseAuthority()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(1L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+
+        Assert.True((await BackupRestoreMemoryEvaluationSanitation.SanitizeStagedAsync((SqliteConnection)_db!.Database.GetDbConnection(), CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task ErasingAssistantContentRemovesItsSagaUseWhileReplayGuardSurvives()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(1L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        command.CommandText = "DELETE FROM Entries WHERE Id = $id";
+
+        command.Parameters.AddWithValue("$id", assistantEntryId.ToString("D").ToUpperInvariant());
+
+        await command.ExecuteNonQueryAsync();
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+
+        Assert.Equal(1L, await ReadGuardOutcomeAsync(assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_SourceRelabeledAfterRetrievalEarnsNoCleanUseProof()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        Guid memoryId = Guid.NewGuid();
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync(memoryId.ToString("N"));
+
+        using var connections = new CovenantConnectionSource(_db!, FixtureOrdinaryConnectionFactory.For(_db!));
+
+        var ledger = new ArtifactSensitivityLedger(connections);
+
+        Assert.True((await ledger.LabelAsync(new DerivedArtifactWrite(SensitiveArtifactKind.Saga, memoryId,
+            null, null, null, 1, DerivedArtifactContentDigest.ForText("useful exact observation"), ContentSensitivity.CovenantDerived,
+            GenerationProvenance.CreateExact([Guid.NewGuid()])), CancellationToken.None)).IsSuccess);
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal("answer", await ReadContentAsync(assistantEntryId));
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableTheory]
+    [InlineData(true, 1L)]
+    [InlineData(false, 0L)]
+    public async Task CommitTurnAsync_CampaignUseRequiresTheSameCanonicalCampaign(bool sameCampaign, long expected)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sourceSession, _) = await SeedTurnAsync();
+
+        Guid campaign = Guid.NewGuid();
+
+        await BindCampaignAsync(sourceSession, campaign);
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync(ownerSession: sourceSession, historicalCampaign: campaign.ToString("D").ToLowerInvariant());
+
+        (Guid targetSession, Guid assistantEntryId) = await SeedTurnAsync();
+
+        await BindCampaignAsync(targetSession, sameCampaign ? campaign : Guid.NewGuid());
+
+        var request = new TurnCommitRequest(assistantEntryId, targetSession, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(expected, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    [SkippableFact]
+    public async Task CommitTurnAsync_InconsistentSourceOwnerBindingEarnsNoUseProof()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        (Guid sessionId, Guid assistantEntryId) = await SeedTurnAsync();
+
+        await BindCampaignAsync(sessionId, Guid.NewGuid());
+
+        SagaUseCoordinate coordinate = await SeedSagaUseAsync();
+
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        command.CommandText = "UPDATE saga_memories SET SessionId = $session WHERE Id = $memory";
+
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D"));
+
+        command.Parameters.AddWithValue("$memory", coordinate.MemoryId);
+
+        await command.ExecuteNonQueryAsync();
+
+        var request = new TurnCommitRequest(assistantEntryId, sessionId, AssistantFinalizationOutcome.Committed,
+            "answer", CovenantTask6Fixture.D(43), ContentSensitivity.None, GenerationProvenance.CreateExact([]), sagaUses: [coordinate]);
+
+        Assert.True((await Committer().CommitTurnAsync(request, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(0L, await ScalarAsync("SELECT count(*) FROM saga_committed_uses WHERE AssistantEntryId = $id", assistantEntryId));
+    }
+
+    private async Task BindCampaignAsync(Guid sessionId, Guid campaignId)
+    {
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        command.CommandText = """
+            INSERT OR IGNORE INTO Campaigns(Id,Name,NameLower,Path,Type,Settings,CreatedAt,UpdatedAt)
+            VALUES($campaign,$campaign,$campaign,$path,0,'{}',$now,$now);
+            UPDATE Sessions SET CampaignId = $campaign WHERE Id = $session;
+            """;
+
+        command.Parameters.AddWithValue("$campaign", campaignId.ToString("D").ToUpperInvariant());
+
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D").ToUpperInvariant());
+
+        command.Parameters.AddWithValue("$path", "/campaigns/" + campaignId.ToString("N"));
+
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("o"));
+
+        await command.ExecuteNonQueryAsync();
+
+        using CovenantSqliteAuthorizationScope scope = CovenantSqliteConnectionInitializer.Instance.Authorize(command.Connection!, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        command.CommandText = "INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES($session,2,$campaign,$now)";
+
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private async Task<SagaUseCoordinate> SeedSagaUseAsync(string id = "saga-use", Guid? ownerSession = null, string? historicalCampaign = null)
+    {
+        SagaMemoryStore store = SagaStore(annalsEnabled: historicalCampaign is null);
+
+        await store.InsertAsync(id, "useful exact observation", DateTimeOffset.UtcNow.AddMinutes(-1), ownerSession, null, "extraction", new float[64], CancellationToken.None);
+
+        if (historicalCampaign is not null)
+        {
+            var connection = (SqliteConnection)_db!.Database.GetDbConnection();
+
+            await using SqliteTransaction transaction = connection.BeginTransaction();
+
+            Assert.True(await AnnalsClaimWriter.AppendAssertAsync(connection, transaction, AnnalSubjectStore.Saga, id,
+                AnnalOrigin.AgentExtracted, SagaMemoryScopeKind.Campaign, historicalCampaign, ContentSensitivity.None,
+                AnnalContentDigest.ForSagaMemory("useful exact observation"), DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(-1), ownerSession, CancellationToken.None));
+
+            await transaction.CommitAsync();
+        }
+
+        await using SqliteCommand command = ((SqliteConnection)_db!.Database.GetDbConnection()).CreateCommand();
+
+        command.CommandText = "SELECT c.ClaimId, v.VersionId, v.ContentHashFormatCode, v.ContentHash FROM annal_claims c JOIN annal_heads h ON h.ClaimId = c.ClaimId JOIN annal_versions v ON v.VersionId = h.CurrentVersionId WHERE c.SubjectStoreCode = 1 AND c.SubjectId = $memory";
+
+        command.Parameters.AddWithValue("$memory", id);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+        Assert.True(await reader.ReadAsync());
+
+        return new SagaUseCoordinate(id, reader.GetString(0), reader.GetString(1), reader.GetInt32(2), new CovenantDigest((byte[])reader[3]));
+    }
+
+    private SagaMemoryStore SagaStore(bool annalsEnabled = true)
+    {
+        var options = new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings
+        {
+            Features = new FeatureSettings { Annals = annalsEnabled },
+            Integrations = new IntegrationSettings { Embeddings = new EmbeddingIntegrationSettings { Dimensions = 64 } },
+        });
+
+        return new SagaMemoryStore(_db!, new WeaveIndexAvailability(), options, MemoryErasureTestKeys.Isolated());
+
     }
 
     private async Task<long?> ScalarAsync(string sql, Guid id)

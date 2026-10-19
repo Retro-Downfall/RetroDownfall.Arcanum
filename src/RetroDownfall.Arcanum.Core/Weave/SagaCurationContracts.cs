@@ -57,6 +57,12 @@ public enum SagaRetrievalEligibility
 
     /// <summary>An exact current version was consolidated into another retained claim.</summary>
     Consolidated = 5,
+
+    /// <summary>Read-time Long Rest age policy excludes this retained version.</summary>
+    Dormant = 6,
+
+    /// <summary>The current version is outside its asserted valid-time interval.</summary>
+    OutsideValidity = 7,
 }
 
 /// <summary>One memory's curation timestamps: when it was retired, and when it was pinned.</summary>
@@ -120,6 +126,16 @@ public static class SagaRetrievalEligibilityClassifier
         if (row.Memory.LongRestReceiptId is not null)
         {
             return SagaRetrievalEligibility.Consolidated;
+        }
+
+        if (row.Memory.Ranking is { TemporallyValid: false })
+        {
+            return SagaRetrievalEligibility.OutsideValidity;
+        }
+
+        if (row.Memory.Ranking is { Dormant: true })
+        {
+            return SagaRetrievalEligibility.Dormant;
         }
 
         if (!row.HasEmbedding)

@@ -32,6 +32,28 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class MemoryCommandTests
 {
+    [Fact]
+    public void Explain_renders_Saga_score_evidence_and_forwards_reference_inputs()
+    {
+        string? path = null;
+        var components = new RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents(1, 0.8f, 0.79f, 0, -0.01f, 0,
+            false, true, "exposure-only", 0, 0, 0, false, null);
+        MemoryExplainDto explanation = new(null, null, [], SagaRanking: new(1, true, DateTimeOffset.UtcNow, 0.8f,
+            -0.09f, 0.13f, [new("chosen", true, components)], false));
+        RecordingHandler handler = new(request =>
+        {
+            path = request.RequestUri!.PathAndQuery;
+            return CreateResponse(new ApiResponse<MemoryExplainDto>(explanation, true, null), ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+        });
+        CliTestResult result = RunCommand(handler, ["memory", "explain", "--saga-id", "chosen", "--similarity", "0.8", "--plain"]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("sagaId=chosen", path, StringComparison.Ordinal);
+        Assert.Contains("similarity=0.8", path, StringComparison.Ordinal);
+        Assert.Contains("Saga ranking policy: 1", result.Output, StringComparison.Ordinal);
+        Assert.Contains("exposure-only", result.Output, StringComparison.Ordinal);
+        Assert.Contains("0.79", result.Output, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("list", false)]
     [InlineData("list", true)]

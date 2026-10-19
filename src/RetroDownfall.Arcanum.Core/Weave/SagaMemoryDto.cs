@@ -20,4 +20,6 @@ public sealed record SagaMemoryDto(
     DateTimeOffset? PinnedAtUtc = null,
     string? ConsolidatedIntoMemoryId = null,
     string? ConsolidatedIntoVersionId = null,
-    string? LongRestReceiptId = null);
+    string? LongRestReceiptId = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] SagaUseCoordinate? UseCoordinate = null,
+    RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents? Ranking = null);

@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Tower;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
@@ -62,12 +63,22 @@ public sealed class GrimoireTurnWriter(
 
         public bool IsFinalized { get; internal set; }
 
+        internal ImmutableArray<SagaUseCoordinate> SagaUses { get; set; } = [];
+
         internal void AttachSessionTurnLease(IDisposable lease) =>
             _sessionTurnLease = lease;
 
         internal void ReleaseSessionTurnLease() =>
             Interlocked.Exchange(ref _sessionTurnLease, null)?.Dispose();
 
+    }
+
+    /// <summary>Replaces the exact Saga input set of the branch that may commit this turn.</summary>
+    public void SetSagaUses(TurnHandle handle, ImmutableArray<SagaUseCoordinate> uses)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+
+        handle.SagaUses = uses.IsDefault ? [] : [.. uses.Take(50)];
     }
 
     /// <summary>
@@ -1001,7 +1012,7 @@ public sealed class GrimoireTurnWriter(
         bool owesLabel = sensitivity is { Level: ContentSensitivity.CovenantDerived };
 
         if (turnCommitter is null
-            || (!owesLabel && covenantCommit is null && handle.ClaimLease is null)
+            || (!owesLabel && covenantCommit is null && handle.ClaimLease is null && handle.SagaUses.IsEmpty)
             || handle.SessionId is not { } sessionId)
         {
 
@@ -1066,7 +1077,8 @@ public sealed class GrimoireTurnWriter(
                     mutationBinding,
                     claimInterruption: interruptionOutcome is not null && handle.ClaimLease is { } interruptedLease
                         ? new SessionTurnClaimInterruption(interruptedLease, interruptionOutcome)
-                        : null),
+                        : null,
+                    sagaUses: interruptionOutcome is null ? handle.SagaUses : []),
                 cancellationToken)
             .ConfigureAwait(false);
 

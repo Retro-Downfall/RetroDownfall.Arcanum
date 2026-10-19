@@ -12,4 +12,5 @@ public sealed record SagaMemory(
     string Content,
     float Similarity,
     DateTimeOffset CreatedAt,
-    AttachmentMemoryProvenance? AttachmentProvenance = null);
+    AttachmentMemoryProvenance? AttachmentProvenance = null,
+    [property: System.Text.Json.Serialization.JsonIgnore] SagaUseCoordinate? UseCoordinate = null);

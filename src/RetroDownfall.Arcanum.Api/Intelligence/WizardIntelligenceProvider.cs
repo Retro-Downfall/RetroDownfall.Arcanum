@@ -4373,6 +4373,22 @@ public sealed partial class WizardIntelligenceProvider(
         // which is what the batch's atomicity contract means in practice.
         CovenantTurnCommitBinding? covenantCommit = covenantScope?.StagedCommit();
 
+        if (settings.Value.Features.LongRest)
+        {
+            // Only the surviving branch may publish use: retrieval and ledger acceptance alone
+            // are not success, and context pressure may have removed an initially injected memory.
+            grimoireTurnWriter.SetSagaUses(grimoireTurn,
+            [
+                .. (streamSagaMemories ?? [])
+                    .Where(memory => memory.UseCoordinate is { } coordinate
+                        && streamMaterializationLedger.Entries.Any(entry => entry.Injected
+                            && entry.SourceKind is ContextMaterializationSourceKind.SagaMemory
+                            && string.Equals(entry.Identity.SourceId, coordinate.MemoryId, StringComparison.Ordinal)
+                            && string.Equals(entry.Identity.VersionOrContentHash, coordinate.VersionId, StringComparison.Ordinal)))
+                    .Select(memory => memory.UseCoordinate!),
+            ]);
+        }
+
         bool finalizeOk = streaming
             ? await grimoireTurnWriter
                 .TryFinalizeStreamedAssistantEntryAsync(
@@ -5670,7 +5686,8 @@ public sealed partial class WizardIntelligenceProvider(
                             memory.Content,
                             hit.Similarity,
                             memory.CreatedAt,
-                            memory.AttachmentProvenance));
+                            memory.AttachmentProvenance,
+                            memory.UseCoordinate));
                 }
             }
 
@@ -6245,12 +6262,14 @@ public sealed partial class WizardIntelligenceProvider(
         {
             string hash = ComputeContentHash(memory.Content);
 
+            SagaUseCoordinate? coordinate = settings.Value.Features.LongRest ? memory.UseCoordinate : null;
+
             ContextMaterializationEntry entry = ledger.Accept(
                 new ContextMaterializationCandidate(
                     sessionId,
                     ContextMaterializationSourceKind.SagaMemory,
-                    hash,
-                    hash,
+                    coordinate?.MemoryId ?? hash,
+                    coordinate?.VersionId ?? hash,
                     VersionOrdinal: null,
                     ContextMaterializationRange.Whole,
                     ContextMaterializationOrigin.Semantic,

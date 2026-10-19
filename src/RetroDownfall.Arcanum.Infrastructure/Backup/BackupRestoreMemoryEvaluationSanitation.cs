@@ -14,8 +14,25 @@ internal static class BackupRestoreMemoryEvaluationSanitation
     {
         await using var transaction = connection.BeginTransaction(deferred: false);
 
+        if (await BackupRestoreDatabaseWorker.TableExistsAsync(connection, "saga_committed_uses", ct, transaction).ConfigureAwait(false))
+        {
+            await using var uses = connection.CreateCommand();
+
+            uses.Transaction = transaction;
+
+            uses.CommandText = "DELETE FROM saga_committed_uses";
+
+            await uses.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
         if (!await MemoryEvaluationErasurePlan.IsInstalledAsync(connection, transaction, ct).ConfigureAwait(false))
-            return await VerifyLegacyAsync(connection, transaction, ct).ConfigureAwait(false);
+        {
+            Result legacy = await VerifyLegacyAsync(connection, transaction, ct).ConfigureAwait(false);
+
+            if (legacy.IsSuccess) await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+            return legacy;
+        }
 
         string[] ids = await InvalidIdsAsync(connection, transaction, ct).ConfigureAwait(false);
 
@@ -51,6 +68,17 @@ internal static class BackupRestoreMemoryEvaluationSanitation
 
     private static async Task<Result> VerifyAsync(SqliteConnection connection, SqliteTransaction transaction, CancellationToken ct)
     {
+        if (await BackupRestoreDatabaseWorker.TableExistsAsync(connection, "saga_committed_uses", ct, transaction).ConfigureAwait(false))
+        {
+            await using var uses = connection.CreateCommand();
+
+            uses.Transaction = transaction;
+
+            uses.CommandText = "SELECT EXISTS(SELECT 1 FROM saga_committed_uses)";
+
+            if ((long)(await uses.ExecuteScalarAsync(ct).ConfigureAwait(false))! != 0) return Unknown();
+        }
+
         if (!await MemoryEvaluationErasurePlan.IsInstalledAsync(connection, transaction, ct).ConfigureAwait(false))
             return await VerifyLegacyAsync(connection, transaction, ct).ConfigureAwait(false);
 

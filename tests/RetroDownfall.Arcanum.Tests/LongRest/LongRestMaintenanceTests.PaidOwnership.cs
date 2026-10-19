@@ -234,11 +234,18 @@ public sealed partial class LongRestMaintenanceTests
 
         f.Handler.InsideSendWithCancellation = async token =>
         {
-            using CancellationTokenRegistration observed = token.Register(() => cancelled.TrySetResult());
-
             entered.TrySetResult();
 
-            await release.Task.WaitAsync(token);
+            try
+            {
+                await release.Task.WaitAsync(token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                cancelled.TrySetResult();
+
+                throw;
+            }
         };
 
         Task<Exception?> run = Record.ExceptionAsync(() => host.RunOneAsync(f.Operation, stopping.Token));

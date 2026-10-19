@@ -211,6 +211,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
                 throughEntrySequence,
                 cancellationToken).ConfigureAwait(false);
 
+            await PublishSagaUsesAsync(connection, sqliteTransaction, request, cancellationToken).ConfigureAwait(false);
+
             if (request.ClaimInterruption is { } interruption)
             {
                 Result interrupted = await RecordClaimInterruptionAsync(

@@ -106,7 +106,7 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 | **#77** | XL | Campaign rollup — a genuinely Campaign-scoped summary. |
 | **#93** | XL, landed | One bounded operator-declared Saga consolidation (`ExactDuplicates`, `EquivalentObservations` or `Supersession` over one to sixteen exact targets) with immutable content-free receipts, exact-source suppression, zero-write replay and erasure closure (§20.4; DESIGN §21.16). Similarity discovery is #91. |
 | **#91** | XL, landed | Hybrid FTS5, vector and RAPTOR-style discovery that produces exact candidate groups for the #93 policy; one durable `long-rest-sweep` operation per exact Global or Campaign partition behind the independent default-off `Arcanum:Features:LongRest` opt-in; clean sweeps run and are readmitted only by a background worker under its own work lease, protected sweeps only under a fresh authenticated Session turn's borrowed lease; recovery only parks a sweep and each authority class readmits its own, within a bounded failure budget and cooldown; unknown-usage settlement and cap; per-send accounting and, for protected work, a disclosure receipt before every dispatch (§20.4; DESIGN §10.8.2 and §21.16.1 through §21.16.5; API §8.36). |
-| **#75** | Epic | The Long Rest: bounded deterministic Saga consolidation and receipts in #93 and discovery and resumable sweeps in #91, both landed; usefulness, decay and ranking in #95 remain open. |
+| **#75** | Epic | The Long Rest: bounded deterministic Saga consolidation and receipts in #93 and discovery and resumable sweeps in #91, with exact-version usefulness, decay and explainable ranking in #95 (DESIGN §21.16.6). |
 | **#78** | Epic, landed | Memory curation, via #96, #97, #98, #99, and #100, all landed. Bounded Saga consolidation is the #93 API slice (§20.4); its remaining carve-outs are scoped agent recall in #101 and decay in #95. Covenant `show` is content-free by rule rather than printing full content. |
 | **#101** | M | Scoped read-only agent recall. |
 | **#103** | XL | Dynamic Context Injection v2 — secure provider-cacheable prefix. |
@@ -1217,7 +1217,7 @@ Make Saga get better as it grows instead of only getting bigger.
 - Stable checkpoints advance only after committed work; cancellation or failure leaves every unprocessed item eligible for retry.
 - Sweeps stop before another dispatch when Campaign binding, deletion, reset, restore, feature, or authority generations change.
 
-**Delivered.** #93 and #91 are delivered on the `memory-enhancement` integration branch and reach `main` when that branch merges. #91 ships behind the independent default-off `Arcanum:Features:LongRest` opt-in (API §8.36, DESIGN §21.16). #95 remains open, so #75 stays open.
+**Delivery branch.** #93, #91 and #95 share `memory-enhancement` and reach `main` when that branch merges. Discovery, sweeps and read-time ranking/decay use the independent default-off `Arcanum:Features:LongRest` opt-in (API §8.36, DESIGN §21.16). #75 remains the parent tracker for its inherited epic acceptance criteria.
 
 **#95 — Counterfactual credit, decay, and explainable ranking (XL).**
 

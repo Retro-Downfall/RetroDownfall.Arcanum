@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
 
@@ -48,7 +49,8 @@ public sealed record TurnCommitRequest
         Guid? turnId = null,
         CovenantDigest? producingPlanDigest = null,
         CovenantDigest? producingAdmissionDigest = null,
-        SessionTurnClaimInterruption? claimInterruption = null)
+        SessionTurnClaimInterruption? claimInterruption = null,
+        ImmutableArray<SagaUseCoordinate> sagaUses = default)
     {
 
         ArgumentNullException.ThrowIfNull(finalText);
@@ -139,6 +141,8 @@ public sealed record TurnCommitRequest
 
         ClaimInterruption = claimInterruption;
 
+        SagaUses = sagaUses.IsDefault ? [] : [.. sagaUses.Take(50)];
+
     }
 
     public Guid AssistantEntryId { get; }
@@ -176,6 +180,8 @@ public sealed record TurnCommitRequest
 
     /// <summary>The request failure that must publish atomically with a retained partial reply.</summary>
     public SessionTurnClaimInterruption? ClaimInterruption { get; }
+
+    public ImmutableArray<SagaUseCoordinate> SagaUses { get; }
 
     /// <summary>
     /// The information-flow label this finalization has to persist beside its content.

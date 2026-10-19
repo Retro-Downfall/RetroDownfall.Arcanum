@@ -80,6 +80,11 @@ public interface ISagaMemoryStore
             embedding,
             cancellationToken);
 
+    /// <summary>Bounded content-free scoring metadata; similarity is an explicit reference, not a provider query.</summary>
+    Task<RetroDownfall.Arcanum.Core.Memory.SagaRankingExplanationDto?> ExplainRankingAsync(
+        MemoryScope scope, string? memoryId, float referenceSimilarity, CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.Arcanum.Core.Memory.SagaRankingExplanationDto?>(null);
+
     /// <summary>Total number of Saga memories across all sessions.</summary>
     Task<int> CountAsync(CancellationToken cancellationToken);
 

@@ -11,4 +11,5 @@ namespace RetroDownfall.Arcanum.Core.Weave;
 public sealed record DivinationResult(
     string Id,
     float Similarity,
-    IReadOnlyDictionary<string, string> Metadata);
+    IReadOnlyDictionary<string, string> Metadata,
+    RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents? Ranking = null);

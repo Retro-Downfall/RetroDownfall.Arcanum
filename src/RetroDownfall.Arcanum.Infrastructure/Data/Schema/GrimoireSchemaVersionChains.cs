@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 19 and declares eighteen steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 20 and declares nineteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -134,8 +134,10 @@ internal static class GrimoireSchemaVersionChains
     /// every prior label and maintenance step retains its existing representation.</para>
     /// <para>Version 17 adds immutable, request-bound Long Rest transformation receipts and exact-version
     /// Saga suppression links. Every table starts empty; existing subjects and claims are unchanged.</para>
+    /// <para>Version 20 adds bounded exact Saga-use coordinates beside native successful assistant
+    /// finalizations. Existing replies receive no exposure history or usefulness credit.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 19;
+    internal const int CoreSchemaVersion = 20;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -288,6 +290,10 @@ internal static class GrimoireSchemaVersionChains
             // Captured from the published v18 catalog before any v19 head edits.
             [(GrimoireSchemaTransactionTier.Core, 19)] =
                 "077C7BC1524C581489538ACEDCF7F3BED9C0C076F88B03A2718CF2BAF8EF1FD7",
+
+            // Captured from the published v19 catalog before adding exact committed Saga use.
+            [(GrimoireSchemaTransactionTier.Core, 20)] =
+                "5FB2D2B1187D76CE5900B9A984C00312452E6F0BD45EFC2E69D8BDF20EA2B204",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",

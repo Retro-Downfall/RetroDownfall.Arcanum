@@ -15,6 +15,7 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
@@ -104,6 +105,10 @@ public sealed class GrimoireTurnWriterTests
         GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new("hello", SessionId: claim.Claim.SessionId), InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim)).Value;
 
+        var sagaUse = new SagaUseCoordinate("memory", "claim", "version", 1, new CovenantDigest(new byte[32]));
+
+        writer.SetSagaUses(handle, [sagaUse]);
+
         bool saved = mode == "complete"
             ? await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "answer", "model", CancellationToken.None)
             : await writer.ResolveInterruptedAndMarkFinalizedAsync(handle, mode == "partial" ? "partial answer" : null, CancellationToken.None);
@@ -123,6 +128,8 @@ public sealed class GrimoireTurnWriterTests
             Assert.Single(ports.Commits).Outcome);
 
         Assert.Equal(claim.Claim.RequestDigest, ports.Commits.Single().RequestDigest);
+
+        Assert.Equal(mode == "complete" ? 1 : 0, ports.Commits.Single().SagaUses.Length);
 
         Assert.Equal(claim.FutureAssistantEntryId, ports.Commits.Single().AssistantEntryId);
 

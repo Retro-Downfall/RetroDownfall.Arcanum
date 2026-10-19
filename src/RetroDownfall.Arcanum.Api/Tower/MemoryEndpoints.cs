@@ -315,12 +315,28 @@ internal static class MemoryEndpoints
         Guid? sessionId,
         ArcanumDbContext db,
         IOptionsMonitor<ArcanumSettings> options,
-        HttpContext context) =>
-        RespondToLexiconCountsAsync(
+        HttpContext context)
+    {
+        string? similarityText = context.Request.Query["similarity"].FirstOrDefault();
+        string? sagaId = context.Request.Query["sagaId"].FirstOrDefault();
+        bool invalid = context.Request.Query["similarity"].Count > 1 || context.Request.Query["sagaId"].Count > 1
+            || (similarityText is not null && (!float.TryParse(similarityText, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float similarity) || !float.IsFinite(similarity) || similarity is < -1 or > 1))
+            || (sagaId is not null && (string.IsNullOrWhiteSpace(sagaId) || System.Text.Encoding.UTF8.GetByteCount(sagaId) > 1024 || sagaId.Any(char.IsControl)));
+        if (invalid)
+        {
+            Result<MemoryExplainDto> result = Result<MemoryExplainDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody,
+                "Use one optional Saga identity and a finite reference similarity between -1 and 1."));
+            return Task.FromResult<IResult>(Results.Json(ApiResponse<MemoryExplainDto>.FromResult(result, TraceId(context)),
+                ArcanumJsonContext.Default.ApiResponseMemoryExplainDto, statusCode: StatusCodes.Status400BadRequest));
+        }
+
+        return RespondToLexiconCountsAsync(
             context.RequestServices.GetRequiredService<ILexiconCurationService>(),
             context,
             counts => BuildExplainAsync(sessionId, db, options, context, counts.Eligible),
             ArcanumJsonContext.Default.ApiResponseMemoryExplainDto);
+    }
 
     private static async Task<Result<MemoryExplainDto>> BuildExplainAsync(
         Guid? sessionId,
@@ -424,7 +440,13 @@ internal static class MemoryEndpoints
                     status.Value.SessionTitle,
                     eligibility,
                     MemoryCampaignScopeReport.Describe(scope),
-                    status.Value.CampaignSummary));
+                    status.Value.CampaignSummary,
+                    await context.RequestServices.GetRequiredService<ISagaMemoryStore>().ExplainRankingAsync(
+                        scope,
+                        context.Request.Query["sagaId"].FirstOrDefault(),
+                        context.Request.Query["similarity"].FirstOrDefault() is { } reference
+                            ? float.Parse(reference, System.Globalization.CultureInfo.InvariantCulture) : 0,
+                        context.RequestAborted).ConfigureAwait(false)));
         }
 
         return result;
@@ -1513,7 +1535,8 @@ internal static class MemoryEndpoints
                     MemorySearchActionKind.ShowSagaMemory,
                     Saga: new MemorySagaTargetDto(memory.Id)),
                 SagaLifecycle: row.Lifecycle,
-                SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row, scope.IsEnforced)));
+                SagaEligibility: SagaRetrievalEligibilityClassifier.Classify(row, scope.IsEnforced),
+                        SagaRanking: row.Memory.Ranking));
 
             if (bytes.Charge(memory.Content))
             {

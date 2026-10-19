@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Core.Memory;
 
 public enum MemorySearchScope
 {
-
     Session,
 
     Attachments,
@@ -23,7 +22,6 @@ public enum MemorySearchScope
     Lexicon,
 
     All,
-
 }
 
 public sealed record MemoryStoreStatusDto(
@@ -141,7 +139,8 @@ public sealed record MemorySearchResultDto(
     LexiconRetrievalEligibility? LexiconEligibility = null,
     MemorySearchActionDto? Action = null,
     SagaMemoryLifecycle? SagaLifecycle = null,
-    SagaRetrievalEligibility? SagaEligibility = null);
+    SagaRetrievalEligibility? SagaEligibility = null,
+    RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents? SagaRanking = null);
 
 /// <summary>
 /// What one scope contributed, and whether it had more to give. Scopes are consulted in order against
@@ -173,6 +172,22 @@ public sealed record MemoryExplainDto(
     string? SessionTitle,
     MemoryEligibilityDto[] Sources,
     MemoryCampaignScopeDto? CampaignScope = null,
-    MemoryCampaignSummaryDto? CampaignSummary = null);
+    MemoryCampaignSummaryDto? CampaignSummary = null,
+    SagaRankingExplanationDto? SagaRanking = null);
+
+public sealed record SagaRankingExplanationDto(
+    int PolicyVersion,
+    bool Enabled,
+    DateTimeOffset AsOfUtc,
+    float ReferenceSimilarity,
+    float MinModifier,
+    float MaxModifier,
+    SagaRankingExplanationMemoryDto[] Memories,
+    bool HasMore);
+
+public sealed record SagaRankingExplanationMemoryDto(
+    string MemoryId,
+    bool Eligible,
+    RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents Components);
 
 public sealed record LexiconListDto(LexiconEntryDto[] Entries);

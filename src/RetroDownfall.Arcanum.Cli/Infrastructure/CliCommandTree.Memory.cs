@@ -82,11 +82,21 @@ internal static partial class CliCommandTree
 
         explain.Add(explainSession);
 
+        Option<string?> sagaId = new("--saga-id") { Description = "Optional exact Saga memory identity to explain without its content." };
+
+        Option<float?> similarity = new("--similarity") { Description = "Reference cosine similarity from -1 to 1; default 0. Does not run an embedding query." };
+
+        explain.Add(sagaId);
+
+        explain.Add(similarity);
+
         explain.SetAction(
             async (ParseResult pr, CancellationToken ct) =>
                 await handler.Value.Explain(
                     ActiveSession(sp, pr.GetValue(explainSession)),
-                    ct).ConfigureAwait(false));
+                    ct,
+                    pr.GetValue(sagaId),
+                    pr.GetValue(similarity)).ConfigureAwait(false));
 
         Command lexicon = new("lexicon", "Inspect, curate, or explicitly delete Lexicon entities.");
 

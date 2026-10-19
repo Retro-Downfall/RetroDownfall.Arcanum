@@ -370,7 +370,9 @@ public sealed partial class MemoryCommands(
 
     public async Task<int> Explain(
         string? sessionIdentifier,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? sagaId = null,
+        float? similarity = null)
     {
         SessionResolution resolution = await ResolveOptionalSessionAsync(
                 sessionIdentifier,
@@ -383,7 +385,7 @@ public sealed partial class MemoryCommands(
         }
 
         Result<MemoryExplainDto> result = await apiClient
-            .ExplainMemoryAsync(resolution.Id, cancellationToken)
+            .ExplainMemoryAsync(resolution.Id, cancellationToken, sagaId, similarity)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
@@ -423,7 +425,25 @@ public sealed partial class MemoryCommands(
 
         WriteCampaignScope(result.Value.CampaignScope);
 
+        if (result.Value.SagaRanking is { } ranking)
+        {
+            dispatcher.WritePayload($"Saga ranking policy: {ranking.PolicyVersion} ({(ranking.Enabled ? "enabled" : "disabled")})");
+
+            dispatcher.WritePayload($"Reference similarity: {ranking.ReferenceSimilarity.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)}; additive modifier bounds: [{ranking.MinModifier.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}, {ranking.MaxModifier.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}].");
+
+            foreach (SagaRankingExplanationMemoryDto memory in ranking.Memories)
+            {
+                var component = memory.Components;
+
+                dispatcher.WritePayload($"Saga {memory.MemoryId}: eligible={(memory.Eligible ? "yes" : "no")}; similarity={Number(component.Similarity)}, usefulness={Number(component.UsefulnessModifier)}, recency={Number(component.RecencyModifier)}, origin={Number(component.OriginModifier)}, score={Number(component.Score)}; evidence={component.EvidenceClass}, benefit={component.BenefitCount}, harm={component.HarmCount}, no-effect={component.NoEffectCount}, dormant={component.Dormant}, decay-exempt={component.DecayExempt}.");
+            }
+
+            if (ranking.HasMore) dispatcher.WritePayload("More Saga metadata exists; select --saga-id to inspect one exact memory.");
+        }
+
         return 0;
+
+        static string Number(float value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     public Task<int> LexiconList(CancellationToken cancellationToken) =>

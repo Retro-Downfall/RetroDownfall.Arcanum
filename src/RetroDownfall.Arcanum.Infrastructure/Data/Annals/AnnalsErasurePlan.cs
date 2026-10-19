@@ -130,6 +130,10 @@ internal static class AnnalsErasurePlan
             // The head carries its own store column, so a store-wide erasure needs no join to find it.
             new("annal_heads", headPredicate ?? $"SubjectStoreCode = {subjectStoreCode}"),
 
+            .. subjectStoreCode == (int)AnnalSubjectStore.Saga
+                ? new[] { new AnnalsErasureStep("saga_committed_uses", $"VersionId IN ({versionScope})", RequiredFromCoreVersion: 20) }
+                : [],
+
             new("annal_versions", $"ClaimId IN ({claimScope})"),
 
             new("annal_claims", claimPredicate),
