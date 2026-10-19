@@ -100,10 +100,10 @@
       "path": "runtimes/osx-arm64/native/libe_sqlcipher.dylib",
       "outputFileName": "libe_sqlcipher.dylib",
       "status": "verified",
-      "sha256": "297e27cfd98ecf707b85acf92de247480dc1cd1b3bf033ea8c15e9e4db3e2b54",
-      "compiler": "Apple clang version 15.0.0 (clang-1500.3.9.4)",
-      "linker": "@(#)PROGRAM:ld PROJECT:ld-1053.12",
-      "image": "Darwin 23.6.0 arm64",
+      "sha256": "1731ba1e035b5bcae8b1cfc7f451698abaca314d3d2a47886fdc10cfd170bd49",
+      "compiler": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+      "linker": "@(#)PROGRAM:ld PROJECT:ld-1267",
+      "image": "Darwin 25.6.0 arm64",
       "deploymentTarget": "13.0",
       "dynamicDependencies": [
         "/usr/lib/libSystem.B.dylib"
