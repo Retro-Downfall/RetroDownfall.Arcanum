@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence;
 
@@ -10,6 +11,17 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// </summary>
 public interface IModelCallExecutor
 {
+    Task<Result<MemoryEvaluationArmResult>> ExecuteMemoryEvaluationAsync(
+        IChatClient chatClient,
+        MemoryEvaluationExecutionPlan plan,
+        int pairIndex,
+        MemoryEvaluationArm arm,
+        ITurnBudget budget,
+        Func<MemoryEvaluationSendEvidence, CancellationToken, Task> beforeSend,
+        Func<MemoryEvaluationUsage, Task> recordUsage,
+        ModelCallContext context,
+        CancellationToken ct) => throw new NotSupportedException();
+
     Task<Result<LongRestProviderResult>> ExecuteLongRestChatAsync(IChatClient chatClient, LongRestProviderPayload payload,
         ITurnBudget budget, Func<CancellationToken, Task> beforeSend, Func<LongRestProviderUsage, Task> recordPaidUsage,
         LongRestProviderAdmission admission, CancellationToken cancellationToken) =>

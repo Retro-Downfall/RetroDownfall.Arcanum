@@ -9,6 +9,8 @@ public sealed class LongRunningOperationRecoveryAdmissionTests
     {
         { LongRunningOperationKinds.LongRestSweep, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.LongRestSweep, 1, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
+        { LongRunningOperationKinds.MemoryEvaluation, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
+        { LongRunningOperationKinds.MemoryEvaluation, 1, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.Subagent, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.BlobEncryptionMigration, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
         { LongRunningOperationKinds.BlobEncryptionMigration, 1, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },

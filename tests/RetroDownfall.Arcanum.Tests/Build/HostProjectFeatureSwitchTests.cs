@@ -185,7 +185,7 @@ public sealed class HostProjectFeatureSwitchTests
             .ToArray();
 
         Assert.Equal("$(BundledNETCoreAppPackageVersion)", auditedPackageVersion.Value.Trim());
-        Assert.Equal(3, auditedPackageHashes.Length);
+        Assert.Equal(4, auditedPackageHashes.Length);
         Assert.Contains(
             auditedPackageHashes,
             static element => string.IsNullOrEmpty(element.Value) && element.Attribute("Condition") is null);
@@ -205,6 +205,14 @@ public sealed class HostProjectFeatureSwitchTests
                     StringComparison.Ordinal)
                 && element.Value.Trim()
                     == "Qt7NCMotrQFrpukryPBpKeF/AawvptJv+v+c0Q3L29Y/ptFO8nFor+g8xKasWq4XNLL/hT/x+QBC7gacjeiIUQ==");
+        Assert.Contains(
+            auditedPackageHashes,
+            static element =>
+                ((string?)element.Attribute("Condition") ?? string.Empty).Contains(
+                    "10.0.13",
+                    StringComparison.Ordinal)
+                && element.Value.Trim()
+                    == "w06ziBrKBpaS1G2Z3hM6GDYcBV1O/KRzH//ZS+IgjouMnlJUO2pl1PL3a95UblAywH3DrJHwLy8/yrR6Yu0LFw==");
         Assert.True(IsMacOsNativeAotGated(auditedPackageVersion));
 
         foreach (XElement auditedPackageHash in auditedPackageHashes)

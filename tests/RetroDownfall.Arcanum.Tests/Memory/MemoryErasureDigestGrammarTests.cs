@@ -722,6 +722,9 @@ public sealed class MemoryErasureDigestGrammarTests
             "long_rest_discovery_leaves",
             "long_rest_sweeps",
             "long_rest_sources",
+            "memory_evaluation_reports",
+            "memory_evaluation_sources",
+            "memory_evaluations",
         ];
 
         Assert.Equal(expected, MemoryErasureTableCodes.Tables);

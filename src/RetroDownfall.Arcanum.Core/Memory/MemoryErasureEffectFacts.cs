@@ -114,6 +114,9 @@ public static class MemoryErasureTableCodes
         "long_rest_discovery_leaves",
         "long_rest_sweeps",
         "long_rest_sources",
+        "memory_evaluation_reports",
+        "memory_evaluation_sources",
+        "memory_evaluations",
     ];
 
     /// <summary>The code of one registered table.</summary>

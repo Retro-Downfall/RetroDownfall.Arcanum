@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Globalization;
 using System.Text;
 
@@ -192,6 +193,9 @@ public sealed partial class LongRestMaintenanceTests
     {
         await using MaintenanceFixture f = await CreatePaidLifecycleFixtureAsync(protectedSources: false);
 
+        var evaluationSource = MemoryEvaluationEvidenceStoreTests.Source() with { CanonicalOwnerSessionId = f.SourceSession.ToString("D").ToUpperInvariant() };
+        var evaluation = await MemoryEvaluationLifecycleTests.SeedAsync(f.H.Connection, [evaluationSource], sessionOwner ? null : f.CampaignId);
+
         string unrelated = await SeedUnrelatedLifecycleHistoryAsync(f);
 
         Guid foreignCampaign = Guid.NewGuid();
@@ -239,7 +243,7 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.True(graphRows > 0);
 
-            Assert.Equal(graphRows, plan.DerivedRecords);
+            Assert.Equal(graphRows + 3, plan.DerivedRecords);
 
             Result<DataRetentionApplyResult> applied = await retention.Service.ApplyAsync(new(request, plan.PlanId));
 
@@ -260,6 +264,8 @@ public sealed partial class LongRestMaintenanceTests
 
             Assert.Equal(0L, await CountLifecycleAsync(f, "Campaigns", "Id = $id", ("$id", f.CampaignId!.Value.ToString("D").ToUpperInvariant())));
         }
+
+        await MemoryEvaluationLifecycleTests.AssertAbsentAsync(f.H.Connection, evaluation.EvaluationId);
 
         Assert.Equal(canonicalBefore, await SnapshotNeighborRowsAsync(f, PaidSagaTables.Concat(PaidReceiptTables).Append("long_rest_sources")));
 

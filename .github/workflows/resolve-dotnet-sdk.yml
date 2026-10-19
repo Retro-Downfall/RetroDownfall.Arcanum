@@ -1,0 +1,38 @@
+name: Resolve stable .NET SDK
+on:
+  workflow_call:
+    inputs:
+      sdk-version:
+        description: SDK already resolved by the parent release run; empty resolves from Microsoft
+        required: false
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: Exact stable SDK selected for every compiler lane in this run
+        value: ${{ jobs.resolve.outputs.version }}
+permissions:
+  contents: read
+jobs:
+  resolve:
+    name: Resolve latest supported stable SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.sdk.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Resolve once or validate the parent run's SDK
+        id: sdk
+        env:
+          SDK_VERSION: ${{ inputs.sdk-version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SDK_VERSION" ]]; then
+            version=$(python3 scripts/resolve_dotnet_sdk.py --validate-version "$SDK_VERSION")
+          else
+            version=$(python3 scripts/resolve_dotnet_sdk.py)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Selected stable .NET SDK: $version" >> "$GITHUB_STEP_SUMMARY"

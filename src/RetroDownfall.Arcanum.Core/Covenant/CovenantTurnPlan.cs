@@ -38,6 +38,17 @@ public sealed class CovenantPlanCandidateDecision
 
     public uint ByteCost { get; }
 
+    /// <summary>Renders this eligible occurrence through the ordinary placement renderer.</summary>
+    public byte[] RenderSelectedSection()
+    {
+        if (Decision is not (CovenantPlanDecision.EligibleConfirmed or CovenantPlanDecision.EligibleProposed))
+        {
+            throw new InvalidOperationException("Only an eligible Covenant decision can enter a selected section.");
+        }
+
+        return CovenantSectionRenderer.Render(Placement, [this]);
+    }
+
     public PlanDecisionDigestInput ToDigestInput() =>
         _digestInput;
 

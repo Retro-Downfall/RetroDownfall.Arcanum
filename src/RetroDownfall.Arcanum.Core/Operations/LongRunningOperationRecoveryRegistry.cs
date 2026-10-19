@@ -54,6 +54,12 @@ public static class LongRunningOperationRecoveryRegistry
         new[]
         {
             new LongRunningOperationRecoveryDescriptor(
+                LongRunningOperationKinds.MemoryEvaluation, LongRunningOperationRecoveryPolicy.AbandonSafely,
+                "MemoryEvaluationRunner", 0, 1, LongRunningOperationStartupPriority.Readiness,
+                "Settle metadata and measured accounting without replaying inference.",
+                "Submit a new evaluation identity for a new experiment; retry cannot resume an interrupted request."),
+
+            new LongRunningOperationRecoveryDescriptor(
                 LongRunningOperationKinds.LongRestSweep,
                 LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint,
                 Owner: "LongRestSweepCoordinator",

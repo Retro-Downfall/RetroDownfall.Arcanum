@@ -28,6 +28,27 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </remarks>
 internal static class ArcanumInvocationContexts
 {
+    internal static Result<ArcanumInvocationContext> ForMemoryEvaluation(
+        HttpContext httpContext,
+        CanonicalCampaignContext campaign,
+        IOperatorAuthorityContextIssuer issuer)
+    {
+        CovenantAuthorityFeature? original = CovenantRequestFeatures.Authority(httpContext);
+        if (original is null || original.Requirement != CovenantAuthorityRequirement.ProtectedRead
+            || !original.Context.Satisfies(CovenantAuthorityRequirement.ProtectedRead)
+            || original.AuthorityEpoch != original.Context.AuthorityEpoch
+            || ResolveContextPolicy(httpContext) != CovenantContextPolicy.Default || issuer.Revalidate(original.Context).IsFailure)
+            return new Error(ErrorCodes.MemoryEvaluation.StaleAuthority, "Evaluation requires the original protected read authority.");
+        Result<CovenantReadAuthorityEpoch> epoch = issuer.IssueReadEpoch();
+        if (epoch.IsFailure) return epoch.Error;
+        if (epoch.Value.InstallationIdentity != original.Context.InstallationIdentity
+            || epoch.Value.RuntimeAuthorityGeneration != original.Context.RuntimeAuthorityGeneration
+            || epoch.Value.AuthorityEpoch != original.Context.AuthorityEpoch || issuer.Revalidate(original.Context).IsFailure)
+            return new Error(ErrorCodes.MemoryEvaluation.StaleAuthority, "Authority changed during evaluation admission.");
+        return ArcanumInvocationContext.Create(ArcanumExecutionSurface.StatelessOperatorTurn, campaign,
+            InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools, epoch.Value);
+    }
+
     /// <summary>
     /// The context for a session-backed operator turn: the only surface that may stage a mutation.
     /// </summary>

@@ -32,6 +32,8 @@ public enum LongRunningOperationRecoveryPolicy
 /// </summary>
 public static class LongRunningOperationKinds
 {
+    public const string MemoryEvaluation = "memory-evaluation";
+
     public const string LongRestSweep = "long-rest-sweep";
 
     public const string Subagent = "subagent";

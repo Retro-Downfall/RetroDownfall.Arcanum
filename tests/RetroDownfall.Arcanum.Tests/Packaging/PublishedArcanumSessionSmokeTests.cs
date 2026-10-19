@@ -2,6 +2,14 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Http.Json;
+using System.Text.Json.Serialization.Metadata;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Secrets.Security;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -32,6 +40,7 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// OpenAI-compatible transport exchange. The provider is an in-process deterministic stub; real
 /// model qualification is deliberately local-only.
 /// </summary>
+[Collection("ApiHost")]
 public sealed class PublishedArcanumSessionSmokeTests
 {
     private const string PublishedExecutableVariable = "ARCANUM_PUBLISHED_EXECUTABLE";
@@ -44,14 +53,18 @@ public sealed class PublishedArcanumSessionSmokeTests
 
     private const string TestCredentialOptInVariable = "ARCANUM_TEST_IN_MEMORY_CREDENTIALS";
 
-    private const string ExpectedModel = "published-smoke-model";
+    internal const string ExpectedModel = "published-smoke-model";
 
     private const string ExpectedPrompt =
         "Prove that the published executable can complete its first turn.";
 
     private const string ExpectedReply = "published-pong";
 
-    private const string ProviderKey = "published-smoke-provider-key";
+    internal const string ProviderKey = "published-smoke-provider-key";
+
+    internal const string EvaluationMemory = "published-evaluation-memory-secret";
+
+    internal const string EvaluationAnswer = "memory-known-answer";
 
     private static readonly TimeSpan CliCleanupAttemptBudget = TimeSpan.FromSeconds(5);
 
@@ -247,6 +260,8 @@ public sealed class PublishedArcanumSessionSmokeTests
 
             Assert.Equal(ExpectedPrompt, userEntry.GetProperty("content").GetString());
             Assert.Equal(ExpectedReply, assistantEntry.GetProperty("content").GetString());
+
+            await ExerciseMemoryEvaluationAsync(client, provider, priorCalls: 1, deadline.Token);
 
             await AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
                 client,
@@ -685,6 +700,145 @@ public sealed class PublishedArcanumSessionSmokeTests
                 ? "<prompt>"
                 : argument));
 
+    [Fact]
+    public async Task Loopback_fixture_accepts_original_stream_and_six_bounded_nonstreaming_arms()
+    {
+        await using var provider = await FakeOpenAiProvider.StartAsync();
+        using HttpClient client = new();
+        for (int index = 0; index < 7; index++)
+        {
+            bool streaming = index == 0;
+            string json = "{\"model\":\"published-smoke-model\",\"stream\":" + (streaming ? "true" : "false")
+                + ",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}]}";
+            using var response = await client.PostAsync(new Uri(provider.Endpoint.AbsoluteUri + "/chat/completions"), new StringContent(json, Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            if (!streaming)
+            {
+                using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert.Equal(ExpectedModel, body.RootElement.GetProperty("model").GetString());
+                Assert.Equal("stop", body.RootElement.GetProperty("choices")[0].GetProperty("finish_reason").GetString());
+                Assert.True(body.RootElement.GetProperty("usage").GetProperty("total_tokens").GetInt32() > 0);
+            }
+        }
+        Assert.Equal(7, provider.RequestCount);
+        using var overflow = await client.PostAsync(new Uri(provider.Endpoint.AbsoluteUri + "/chat/completions"), new StringContent("{\"model\":\"published-smoke-model\",\"messages\":[{\"role\":\"user\",\"content\":\"fixture\"}]}", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.TooManyRequests, overflow.StatusCode);
+        Assert.Equal(7, provider.Requests.Length);
+    }
+
+    internal static void ConfigureEvaluationPricing(ArcanumSettings settings)
+    {
+        settings.Cost.Pricing.ModelPricing[ExpectedModel] = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m };
+        settings.Cost.Budget.Enabled = true;
+        settings.Cost.Budget.DailyLimitUsd = 1m;
+    }
+
+    internal static async Task<MemoryEvaluationRequest> SeedEvaluationAsync(HttpClient client, CancellationToken ct)
+    {
+        var driver = new MemoryErasureRouteDriver(client);
+        var committed = await driver.SetCovenantAsync(CovenantScope.Global, null, "published.evaluation", EvaluationMemory, ct);
+        Assert.NotNull(committed.ResultingVersionId);
+        using var explainResponse = await client.PostAsync("api/memory/covenant/explain",
+            JsonContent.Create(new CovenantExplainRequest(null, false), ArcanumJsonContext.Default.CovenantExplainRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, explainResponse.StatusCode);
+        var explain = await ReadDataAsync(explainResponse, ArcanumJsonContext.Default.ApiResponseCovenantExplainDto, ct);
+        Assert.True(explain.Enabled);
+        Assert.True(explain.Available);
+        var selected = Assert.Single(explain.Decisions, decision => decision.EntryId == committed.EntryId && decision.VersionId == committed.ResultingVersionId);
+        Assert.Equal(CovenantLane.Confirmed, selected.Lane);
+        Assert.NotNull(selected.Placement);
+        Assert.Equal(CovenantPlanDecision.EligibleConfirmed, selected.Decision);
+        return new MemoryEvaluationRequest(Guid.NewGuid(), new(MemoryEvaluationScopeKind.Global), "published-smoke", ExpectedModel,
+            new(Temperature: 0, MaxOutputTokens: 32), new("Answer the bounded workload.", "Use the selected memory if present."),
+            new([new(committed.EntryId, committed.ResultingVersionId.Value, new CovenantDigest(Convert.FromHexString(selected.FragmentDigest)))], [], []),
+            [new MemoryEvaluationRegexCheck("^" + EvaluationAnswer + "$")], PairCount: 3);
+    }
+
+    internal static async Task ExerciseMemoryEvaluationAsync(HttpClient client, FakeOpenAiProvider provider, int priorCalls, CancellationToken ct)
+    {
+        var request = await SeedEvaluationAsync(client, ct);
+        var target = request.Memory.Covenant[0];
+        async Task<string> Detail()
+        {
+            using var response = await client.PostAsync("api/memory/covenant/detail",
+                JsonContent.Create(new CovenantDetailRequest(CovenantScope.Global, null, "published.evaluation"), ArcanumJsonContext.Default.CovenantDetailRequest), ct);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return json.RootElement.GetProperty("data").GetRawText();
+        }
+
+        string before = await Detail();
+        using var run = await client.PostAsync("api/proving-grounds/memory-evaluations/run", JsonContent.Create(request, ArcanumJsonContext.Default.MemoryEvaluationRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, run.StatusCode);
+        var result = await ReadDataAsync(run, ArcanumJsonContext.Default.ApiResponseMemoryEvaluationResponse, ct);
+        Assert.Equal(MemoryEvaluationState.Completed, result.State);
+        Assert.NotNull(result.Report);
+        Assert.NotNull(result.ReportDigest);
+        Assert.True(result.Report.Decision.Outcome == MemoryEvaluationOutcome.Benefit, $"Expected Benefit; closed reason={result.Report.Decision.Reason}, calls={provider.RequestCount}, pairs={result.Report.Aggregate.CompletedPairs}.");
+        Assert.Equal(3, result.Report.Aggregate.ValidPairs);
+        Assert.Equal(3, result.Report.Aggregate.ImprovedPairs);
+        Assert.Equal(120, result.Report.InputTokens);
+        Assert.Equal(24, result.Report.OutputTokens);
+        Assert.Equal(0.000168m, result.Report.Cost);
+        Assert.Equal(target.EntryId.ToString("D"), Assert.Single(result.Report.Sources).SubjectId);
+        string report = JsonSerializer.Serialize(result, ArcanumJsonContext.Default.MemoryEvaluationResponse);
+        foreach (string secret in new[] { EvaluationMemory, EvaluationAnswer, request.Workload.SystemPrompt, request.Workload.UserPrompt, ProviderKey })
+            Assert.DoesNotContain(secret, report);
+        Assert.Equal("no-store, private", run.Headers.CacheControl!.ToString());
+        Assert.Equal(priorCalls + 6, provider.RequestCount);
+        bool[] order = [false, true, true, false, false, true];
+        var arms = provider.Requests.Skip(priorCalls).ToArray();
+        for (int index = 0; index < arms.Length; index++)
+        {
+            var arm = arms[index];
+            Assert.False(arm.Streaming);
+            Assert.Equal(ExpectedModel, arm.Model);
+            Assert.Equal("Bearer " + ProviderKey, arm.Authorization);
+            Assert.Equal(request.Workload.UserPrompt, arm.Prompt);
+            Assert.Equal(order[index], arm.Payload.GetProperty("messages").GetRawText().Contains(EvaluationMemory, StringComparison.Ordinal));
+            Assert.False(arm.Payload.TryGetProperty("tools", out _));
+            Assert.False(arm.Payload.TryGetProperty("tool_choice", out _));
+            Assert.Equal(0, arm.Payload.GetProperty("temperature").GetDouble());
+            Assert.Equal(32, arm.Payload.GetProperty("max_completion_tokens").GetInt32());
+        }
+
+        using var replay = await client.PostAsync("api/proving-grounds/memory-evaluations/run", JsonContent.Create(request, ArcanumJsonContext.Default.MemoryEvaluationRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        var replayed = await ReadDataAsync(replay, ArcanumJsonContext.Default.ApiResponseMemoryEvaluationResponse, ct);
+        Assert.Equal(report, JsonSerializer.Serialize(replayed, ArcanumJsonContext.Default.MemoryEvaluationResponse));
+        using var get = await client.PostAsync("api/proving-grounds/memory-evaluations/get", JsonContent.Create(new MemoryEvaluationGetRequest(request.EvaluationId), ArcanumJsonContext.Default.MemoryEvaluationGetRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, get.StatusCode);
+        Assert.Equal(report, JsonSerializer.Serialize(await ReadDataAsync(get, ArcanumJsonContext.Default.ApiResponseMemoryEvaluationResponse, ct), ArcanumJsonContext.Default.MemoryEvaluationResponse));
+        Assert.Equal(before, await Detail());
+        Assert.Equal(priorCalls + 6, provider.RequestCount);
+        var cleanup = new MemoryEvaluationDeleteRequest(request.EvaluationId, result.ReportDigest.Value, true);
+        using var wrongDigest = await client.PostAsync("api/proving-grounds/memory-evaluations/delete", JsonContent.Create(cleanup with { ExpectedReportDigest = new CovenantDigest(new byte[32]) }, ArcanumJsonContext.Default.MemoryEvaluationDeleteRequest), ct);
+        Assert.Equal(HttpStatusCode.Conflict, wrongDigest.StatusCode);
+        using var unconfirmed = await client.PostAsync("api/proving-grounds/memory-evaluations/delete", JsonContent.Create(cleanup with { Confirm = false }, ArcanumJsonContext.Default.MemoryEvaluationDeleteRequest), ct);
+        Assert.Equal(HttpStatusCode.BadRequest, unconfirmed.StatusCode);
+        using var deleted = await client.PostAsync("api/proving-grounds/memory-evaluations/delete", JsonContent.Create(cleanup, ArcanumJsonContext.Default.MemoryEvaluationDeleteRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+        Assert.True((await ReadDataAsync(deleted, ArcanumJsonContext.Default.ApiResponseMemoryEvaluationDeleteResult, ct)).Deleted);
+        using var repeated = await client.PostAsync("api/proving-grounds/memory-evaluations/delete", JsonContent.Create(cleanup, ArcanumJsonContext.Default.MemoryEvaluationDeleteRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, repeated.StatusCode);
+        Assert.False((await ReadDataAsync(repeated, ArcanumJsonContext.Default.ApiResponseMemoryEvaluationDeleteResult, ct)).Deleted);
+        using var gone = await client.PostAsync("api/proving-grounds/memory-evaluations/get", JsonContent.Create(new MemoryEvaluationGetRequest(request.EvaluationId), ArcanumJsonContext.Default.MemoryEvaluationGetRequest), ct);
+        Assert.Equal(HttpStatusCode.Gone, gone.StatusCode);
+        using var erasedReplay = await client.PostAsync("api/proving-grounds/memory-evaluations/run", JsonContent.Create(request, ArcanumJsonContext.Default.MemoryEvaluationRequest), ct);
+        Assert.Equal(HttpStatusCode.Gone, erasedReplay.StatusCode);
+        Assert.Equal(before, await Detail());
+        Assert.Equal(priorCalls + 6, provider.RequestCount);
+    }
+
+    private static async Task<T> ReadDataAsync<T>(HttpResponseMessage response, JsonTypeInfo<ApiResponse<T>> info, CancellationToken ct)
+    {
+        var body = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(ct), info, ct);
+        Assert.NotNull(body);
+        Assert.True(body.IsSuccess, body.Error?.Code);
+        Assert.NotNull(body.Data);
+        return body.Data;
+    }
+
     private static async Task WriteConfigurationAsync(
         string path,
         string testHome,
@@ -723,6 +877,7 @@ public sealed class PublishedArcanumSessionSmokeTests
                     Reasoning = false,
                     WorkspaceChecks = false,
                     Annals = false,
+                    Covenant = true,
                 },
                 Workspaces = new WorkspaceSettings
                 {
@@ -734,6 +889,8 @@ public sealed class PublishedArcanumSessionSmokeTests
                 },
             },
         };
+
+        ConfigureEvaluationPricing(configuration.Arcanum);
 
         await using FileStream stream = new(
             path,
@@ -891,7 +1048,7 @@ public sealed class PublishedArcanumSessionSmokeTests
         string StandardError,
         IReadOnlyList<Exception> Failures);
 
-    private sealed class FakeOpenAiProvider : IAsyncDisposable
+    internal sealed class FakeOpenAiProvider : IAsyncDisposable
     {
         private readonly WebApplication _application;
 
@@ -899,6 +1056,16 @@ public sealed class PublishedArcanumSessionSmokeTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         private int _requestCount;
+
+        private readonly ConcurrentQueue<ProviderRequest> _requests = new();
+
+        internal readonly TaskCompletionSource FirstArm = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource? ResumeArms;
+
+        internal bool InvalidOutput;
+
+        internal ProviderRequest[] Requests => _requests.ToArray();
 
         private FakeOpenAiProvider(
             WebApplication application,
@@ -921,8 +1088,11 @@ public sealed class PublishedArcanumSessionSmokeTests
                 });
 
             builder.Logging.ClearProviders();
-            builder.WebHost.ConfigureKestrel(
-                static options => options.Listen(IPAddress.Loopback, 0));
+            builder.WebHost.ConfigureKestrel(static options =>
+            {
+                options.Listen(IPAddress.Loopback, 0);
+                options.Limits.MaxRequestBodySize = 1024 * 1024;
+            });
 
             WebApplication application = builder.Build();
             FakeOpenAiProvider? provider = null;
@@ -935,20 +1105,31 @@ public sealed class PublishedArcanumSessionSmokeTests
                 string model = request.RootElement.GetProperty("model").GetString() ?? string.Empty;
                 string authorization = context.Request.Headers.Authorization.ToString();
                 string prompt = ReadUserPrompt(request.RootElement);
-                bool streaming = request.RootElement.GetProperty("stream").GetBoolean();
+                bool streaming = request.RootElement.TryGetProperty("stream", out var stream) && stream.GetBoolean();
 
-                _ = Interlocked.Increment(ref provider!._requestCount);
-                _ = provider._request.TrySetResult(
-                    new ProviderRequest(model, authorization, prompt, streaming));
+                int count = Interlocked.Increment(ref provider!._requestCount);
+                if (count > 7)
+                {
+                    context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                    return;
+                }
+
+                var captured = new ProviderRequest(model, authorization, prompt, streaming, request.RootElement.Clone());
+                provider._requests.Enqueue(captured);
+                _ = provider._request.TrySetResult(captured);
 
                 if (!streaming)
                 {
-                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
-
+                    provider.FirstArm.TrySetResult();
+                    if (provider.ResumeArms is { } resume) await resume.Task.WaitAsync(context.RequestAborted);
+                    bool treatment = request.RootElement.GetProperty("messages").GetRawText().Contains(EvaluationMemory, StringComparison.Ordinal);
+                    string answer = treatment ? EvaluationAnswer : "memory-unavailable";
+                    context.Response.ContentType = "application/json";
                     await context.Response.WriteAsync(
-                        "The published CLI must use the provider streaming contract.",
-                        context.RequestAborted);
-
+                        "{\"id\":\"chatcmpl-evaluation\",\"object\":\"chat.completion\",\"created\":0,\"model\":\"published-smoke-model\","
+                        + "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"" + answer
+                        + "\"},\"finish_reason\":\"" + (provider.InvalidOutput ? "length" : "stop") + "\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":4,\"total_tokens\":24,"
+                        + "\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}", context.RequestAborted);
                     return;
                 }
 
@@ -1017,11 +1198,12 @@ public sealed class PublishedArcanumSessionSmokeTests
         }
     }
 
-    private sealed record ProviderRequest(
+    internal sealed record ProviderRequest(
         string Model,
         string Authorization,
         string Prompt,
-        bool Streaming);
+        bool Streaming,
+        JsonElement Payload);
 
     private sealed class ProcessOutputCapture : IAsyncDisposable
     {

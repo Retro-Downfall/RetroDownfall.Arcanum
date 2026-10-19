@@ -32,8 +32,10 @@ CREATE TABLE IF NOT EXISTS external_disclosure_receipts (
     -- GenerationProvenanceMode: Exact = 1, BloomOverflow = 2.
     GenerationProvenanceModeCode INTEGER NOT NULL CHECK (GenerationProvenanceModeCode IN (1, 2)),
     -- One to eight canonically sorted 16-byte generation identities, concatenated.
+    -- A clean control carries an exact empty vector and makes no protected provenance claim.
     ExactGenerationIds BLOB NULL CHECK (
         ExactGenerationIds IS NULL
+        OR (SensitivityCode = 0 AND length(ExactGenerationIds) = 0)
         OR (length(ExactGenerationIds) BETWEEN 16 AND 128 AND length(ExactGenerationIds) % 16 = 0)
     ),
     GenerationBloom BLOB NULL CHECK (GenerationBloom IS NULL OR length(GenerationBloom) = 32),

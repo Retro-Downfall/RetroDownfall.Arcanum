@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
@@ -50,15 +52,15 @@ internal sealed record CovenantEntryErasureSubject(
     bool ReclaimsKey,
     string CreatedAtUtc,
     IReadOnlyList<CovenantLane> HeadLanes,
-    IReadOnlyList<long> SearchRowIds);
+    IReadOnlyList<long> SearchRowIds,
+    IReadOnlyList<string>? EvaluationIds = null);
 
 /// <summary>What one entry-erasure plan run found or removed.</summary>
 /// <param name="Targets">
 /// Every target in the plan's fixed order, each table once, with <c>covenant_key_epochs</c> last and
 /// only when the key is reclaimed. In <see cref="CovenantArtifactPlanMode.Delete"/> mode a directly
-/// deleted table reports the rows its own statement removed, and the two tables the versions' delete
-/// removes by cascade report the rows measured immediately before it, so the two modes report the same
-/// counts for the same entry.
+/// deleted table reports the rows its own statement removed. Review companions and evaluation evidence
+/// report the rows measured before their ordered deletion, so both modes report the same logical counts.
 /// </param>
 /// <param name="VersionIds">
 /// The entry's version ids, captured before anything was deleted, which the absence proof needs once the
@@ -109,10 +111,10 @@ internal sealed record CovenantEntryErasureScopeFacts(bool IsPinned, bool Global
 /// <see cref="CovenantIdentitySql.Keyed"/>, because a staged restore reads somebody else's database
 /// whose identity spellings this build does not control.</para>
 ///
-/// <para><b>The order is the deletion order.</b> Search documents go whenever the accelerator table
+/// <para><b>The order is the deletion order.</b> Complete evaluation evidence goes first. Search documents go whenever the accelerator table
 /// exists, whatever <c>covenant_fts</c> says about secure delete, which only decides the recorded
 /// verdict. Then the entry's pending outbox deltas, then its mutation receipts, then provenance, heads,
-/// versions (their review events and decision receipts cascade) and the entry. Then the subject's
+/// review decision receipts and review events, then versions and the entry. Then the subject's
 /// curation: its heads, versions and receipts in both lanes and every epoch, except that a Campaign's
 /// Confirmed mask at the key's binding epoch, with its chain, is kept while the key itself stays,
 /// because it is the operator's policy about the Global key rather than content of this entry. When no
@@ -132,6 +134,25 @@ internal sealed record CovenantEntryErasureScopeFacts(bool IsPinned, bool Global
 /// </remarks>
 internal static class CovenantEntryErasurePlan
 {
+    private static readonly string EvaluationPredicate = MemoryEvaluationErasurePlan.SubjectPredicate(MemoryEvaluationSource.Covenant, "SELECT $evaluationEntry AS subject");
+
+    private static async Task<IReadOnlyList<string>> ReadEvaluationIdsAsync(SqliteConnection connection, SqliteTransaction transaction, Guid entry, CancellationToken ct)
+    {
+        if (!await MemoryEvaluationErasurePlan.IsInstalledAsync(connection, transaction, ct).ConfigureAwait(false)) return [];
+
+        await using var command = Command(connection, transaction, $"SELECT evaluation.EvaluationId FROM memory_evaluations evaluation WHERE {EvaluationPredicate}");
+
+        command.Parameters.AddWithValue("$evaluationEntry", entry.ToString("D"));
+
+        List<string> ids = [];
+
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(ct).ConfigureAwait(false)) ids.Add(reader.GetString(0));
+
+        return ids;
+    }
+
     private const string SearchDocuments = "covenant_search_documents";
 
     private const string Outbox = "covenant_search_outbox";
@@ -167,6 +188,7 @@ internal static class CovenantEntryErasurePlan
     /// <summary>Every target in the order the plan reports it, before the reclaimed key's epoch row.</summary>
     private static readonly string[] OrderedTargets =
     [
+        .. MemoryEvaluationErasurePlan.Tables,
         SearchDocuments,
         Outbox,
         MutationReceipts,
@@ -252,6 +274,10 @@ internal static class CovenantEntryErasurePlan
 
         Dictionary<string, long> counts = new(StringComparer.Ordinal);
 
+        foreach (var count in await MemoryEvaluationErasurePlan.RunAsync(connection, transaction,
+            EvaluationPredicate, deleting, cancellationToken, ("$evaluationEntry", subject.EntryId.ToString("D"))).ConfigureAwait(false))
+            counts[count.Table] = count.Rows;
+
         // Deleted whenever the table exists. The full-text verdict is read for the record only, so an
         // index whose secure delete cannot be proved still loses the entry's documents.
         counts[SearchDocuments] = hasDocuments
@@ -277,8 +303,8 @@ internal static class CovenantEntryErasurePlan
         counts[Heads] = await StepAsync(connection, transaction, mode, Heads, EntryPredicate("EntryId"), subject, versionIds, cancellationToken)
             .ConfigureAwait(false);
 
-        // The versions' delete removes their review events and decision receipts by cascade, which
-        // SQLite does not count as the statement's change, so both are measured first, in either mode.
+        // Measure both companions before deleting the decision receipts and review events explicitly.
+        // This preserves identical logical counts even when foreign-key cascades are disabled.
         counts[ReviewEvents] = await StepAsync(
             connection, transaction, CovenantArtifactPlanMode.Count, ReviewEvents, ReviewEventPredicate(versionIds), subject, versionIds, cancellationToken)
             .ConfigureAwait(false);
@@ -286,6 +312,13 @@ internal static class CovenantEntryErasurePlan
         counts[DecisionReceipts] = await StepAsync(
             connection, transaction, CovenantArtifactPlanMode.Count, DecisionReceipts, DecisionReceiptPredicate(versionIds), subject, versionIds, cancellationToken)
             .ConfigureAwait(false);
+
+        if (deleting)
+        {
+            _ = await StepAsync(connection, transaction, mode, DecisionReceipts, DecisionReceiptPredicate(versionIds), subject, versionIds, cancellationToken).ConfigureAwait(false);
+
+            _ = await StepAsync(connection, transaction, mode, ReviewEvents, ReviewEventPredicate(versionIds), subject, versionIds, cancellationToken).ConfigureAwait(false);
+        }
 
         counts[Versions] = await StepAsync(connection, transaction, mode, Versions, EntryPredicate("EntryId"), subject, versionIds, cancellationToken)
             .ConfigureAwait(false);
@@ -493,7 +526,8 @@ internal static class CovenantEntryErasurePlan
             reclaims,
             createdAtUtc,
             lanes,
-            searchRows);
+            searchRows,
+            await ReadEvaluationIdsAsync(connection, transaction, entryId, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
@@ -536,6 +570,21 @@ internal static class CovenantEntryErasurePlan
         }
 
         List<MemoryErasureTableCount> remaining = [];
+
+        if (subject.EvaluationIds is { Count: > 0 } ids)
+        {
+            foreach (string table in MemoryEvaluationErasurePlan.Tables)
+            {
+                await using var evidence = Command(connection, transaction,
+                    $"SELECT count(*) FROM {table} WHERE EvaluationId IN (SELECT value FROM json_each($ids))");
+
+                evidence.Parameters.AddWithValue("$ids", System.Text.Json.JsonSerializer.Serialize(ids.ToArray(), RetroDownfall.Arcanum.Core.Serialization.GrimoireJsonContext.Default.StringArray));
+
+                long rows = Convert.ToInt64(await evidence.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+
+                if (rows != 0) remaining.Add(new(table, rows));
+            }
+        }
 
         if (subject.SearchRowIds.Count > 0
             && await ObjectExistsAsync(connection, transaction, FullTextIndex, cancellationToken).ConfigureAwait(false))

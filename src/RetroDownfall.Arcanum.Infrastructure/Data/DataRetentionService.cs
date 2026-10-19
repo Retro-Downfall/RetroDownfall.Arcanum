@@ -1,3 +1,6 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Data;
 
 using System.Data.Common;
@@ -332,8 +335,9 @@ internal sealed partial class DataRetentionService(
                 "long_rest_receipts",
                 "long_rest_receipt_inputs",
                 "long_rest_suppressions",
+                .. MemoryEvaluationErasurePlan.Tables,
             ],
-            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, historical Lexicon source coordinates, content-free exact-review state, and immutable Long Rest transformations. Removed with the memory each claim describes; never aged out on their own.",
+            "Bitemporal claim identities, immutable versions, current pointers, dependency edges, historical Lexicon source coordinates, content-free exact-review state, immutable Long Rest transformations, and complete memory-evaluation evidence. Removed with the memory each claim describes; never aged out on their own.",
             retention,
             cancellationToken).ConfigureAwait(false);
 
@@ -2430,6 +2434,7 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 snapshot.SagaExtractionWatermarkCount + snapshot.LongRestDiscoveryCount),
+            new(RetentionDataClass.Annals, 0, 0, 0, snapshot.MemoryEvaluationCount),
             new(
                 RetentionDataClass.SessionEntryEmbeddings,
                 0,
@@ -2694,6 +2699,8 @@ internal sealed partial class DataRetentionService(
                      request.MemoryScope!.Value,
                      request.TargetId))
         {
+            if (!await MemoryResetSelectionAvailableAsync(selection, cancellationToken).ConfigureAwait(false)) continue;
+
             rows += await CountTableAsync(
                 selection.Table,
                 selection.Predicate,
@@ -2722,7 +2729,8 @@ internal sealed partial class DataRetentionService(
     internal readonly record struct MemoryResetSelection(
         string Table,
         string? Predicate,
-        (string Name, object Value)[] Parameters);
+        (string Name, object Value)[] Parameters,
+        int? RequiredFromCoreVersion = null);
 
     /// <summary>Only these two stores record who owns a memory.</summary>
     private static bool CampaignTargetedResetIsSupported(MemoryResetScope scope) =>
@@ -2962,6 +2970,20 @@ internal sealed partial class DataRetentionService(
         };
 
     /// <summary>A table this reset clears entirely.</summary>
+    private async Task<bool> MemoryResetSelectionAvailableAsync(MemoryResetSelection selection, CancellationToken ct)
+    {
+        if (selection.RequiredFromCoreVersion is { } required)
+        {
+            var connection = await OpenConnectionAsync(ct).ConfigureAwait(false);
+            if (await GrimoireCoreSchemaVersion.ReadAsync(connection, ct).ConfigureAwait(false) < required) return false;
+            if (!await TableExistsAsync(selection.Table, ct).ConfigureAwait(false))
+                throw new InvalidDataException("The committed Core schema is missing a required erasure table.");
+            return true;
+        }
+
+        return await TableExistsAsync(selection.Table, ct).ConfigureAwait(false);
+    }
+
     private static MemoryResetSelection Whole(string table) => new(table, null, []);
 
     /// <summary>
@@ -2975,7 +2997,7 @@ internal sealed partial class DataRetentionService(
             .. (subjectIdQuery is null
                     ? AnnalsErasurePlan.ForStore(subjectStore)
                     : AnnalsErasurePlan.ForSubjectQuery(subjectStore, subjectIdQuery))
-                .Select(step => new MemoryResetSelection(step.Table, step.Predicate, parameters ?? [])),
+                .Select(step => new MemoryResetSelection(step.Table, step.Predicate, parameters ?? [], step.RequiredFromCoreVersion)),
         ];
 
     /// <summary>
@@ -3121,6 +3143,8 @@ internal sealed partial class DataRetentionService(
             using (CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)connection, CovenantSqliteAuthorizationKind.SessionRetention))
             {
+                derivedDeleted += await MemoryEvaluationErasurePlan.ClearSessionAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
+
                 derivedDeleted += await LongRestLifecycle.ClearSessionAsync(
                     connection, transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
@@ -3582,7 +3606,7 @@ internal sealed partial class DataRetentionService(
 
         foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))
         {
-            if (await TableExistsAsync(selection.Table, cancellationToken).ConfigureAwait(false))
+            if (await MemoryResetSelectionAvailableAsync(selection, cancellationToken).ConfigureAwait(false))
             {
                 selections.Add(selection);
             }
@@ -3867,7 +3891,8 @@ internal sealed partial class DataRetentionService(
             attachments.Sum(static attachment => attachment.IndexStateCount),
             campaignContinuity,
             summaries,
-            longRestDiscovery);
+            longRestDiscovery,
+            await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, null, sessionId, cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4128,7 +4153,8 @@ internal sealed partial class DataRetentionService(
             attachmentSnapshots.Sum(static attachment => attachment.IndexStateCount),
             campaignContinuity,
             summaries,
-            longRestDiscovery);
+            longRestDiscovery,
+            await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotInTransactionAsync(
@@ -4381,7 +4407,8 @@ internal sealed partial class DataRetentionService(
             + snapshot.AttachmentIndexStateCount
             + snapshot.CampaignContinuity.Rows
             + snapshot.Summaries.Rows
-            + snapshot.LongRestDiscoveryCount;
+            + snapshot.LongRestDiscoveryCount
+            + snapshot.MemoryEvaluationCount;
 
         if (rows != plan.Rows
             || files != plan.Files
@@ -4403,6 +4430,7 @@ internal sealed partial class DataRetentionService(
             && snapshot.CampaignContinuity == expectedSnapshot.CampaignContinuity
             && snapshot.Summaries == expectedSnapshot.Summaries
             && snapshot.LongRestDiscoveryCount == expectedSnapshot.LongRestDiscoveryCount
+            && snapshot.MemoryEvaluationCount == expectedSnapshot.MemoryEvaluationCount
             && snapshot.EntryIds
                 .Order()
                 .SequenceEqual(expectedSnapshot.EntryIds.Order())
@@ -4599,13 +4627,14 @@ internal sealed partial class DataRetentionService(
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                 WHERE lower(replace(run.SessionId, '-', '')) = @sessionId
-                  AND reservation.Status = @reserved
+                  AND reservation.Status IN (@reserved, @uncertainPaid)
                 """,
                 "Data.BudgetReservationOutstanding",
                 "An outstanding budget reservation protects the accounting chain.",
                 cancellationToken,
                 ("@sessionId", sessionId.ToString("N")),
-                ("@reserved", (int)BudgetReservationStatus.Reserved)).ConfigureAwait(false));
+                ("@reserved", (int)BudgetReservationStatus.Reserved),
+                ("@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid)).ConfigureAwait(false));
 
         return [.. conflicts
             .DistinctBy(static conflict => (conflict.Code, conflict.ResourceId))
@@ -4938,12 +4967,14 @@ internal sealed partial class DataRetentionService(
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                 WHERE lower(replace(run.SessionId, '-', '')) = @sessionId
-                  AND reservation.Status = @reserved
+                  AND reservation.Status IN (@reserved, @uncertainPaid)
                 """;
 
             Add(command, "@sessionId", sessionId.ToString("N"));
 
             Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+            Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
             await using DbDataReader reader = await command
                 .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -5045,9 +5076,11 @@ internal sealed partial class DataRetentionService(
             await using DbCommand command = connection.CreateCommand();
 
             command.CommandText =
-                "SELECT Id FROM BudgetReservations WHERE Status = @reserved";
+                "SELECT Id FROM BudgetReservations WHERE Status IN (@reserved, @uncertainPaid)";
 
             Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+            Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
             await using DbDataReader reader = await command
                 .ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -5488,7 +5521,7 @@ internal sealed partial class DataRetentionService(
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                   WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(session.Id, '-', ''))
-                    AND reservation.Status = @reserved)
+                    AND reservation.Status IN (@reserved, @uncertainPaid))
               {protectedClause}
             ORDER BY session.UpdatedAt, session.Id
             LIMIT @limit
@@ -5501,6 +5534,8 @@ internal sealed partial class DataRetentionService(
         Add(command, "@running", (int)InferenceRunStatus.Running);
 
         Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@limit", limit);
 
@@ -7978,7 +8013,8 @@ internal sealed partial class DataRetentionService(
         long AttachmentIndexStateCount,
         CampaignSummaryClosureSnapshot CampaignContinuity,
         SessionSummaryClosureSnapshot Summaries,
-        long LongRestDiscoveryCount);
+        long LongRestDiscoveryCount,
+        long MemoryEvaluationCount);
 
     private readonly record struct IdSetBatch(
         string Predicate,

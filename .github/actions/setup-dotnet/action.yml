@@ -1,0 +1,46 @@
+name: Setup resolved stable .NET SDK
+description: Install the run's exact stable SDK in isolation and record actual selection.
+inputs:
+  sdk-version:
+    description: Exact stable version selected by resolve-dotnet-sdk.yml
+    required: true
+  cache:
+    description: Enable the NuGet cache
+    default: 'false'
+  cache-dependency-path:
+    description: NuGet cache dependency paths
+    default: |
+      **/packages.lock.json
+      **/*.csproj
+      **/Directory.Packages.props
+      .config/dotnet-tools.json
+runs:
+  using: composite
+  steps:
+    - name: Validate the selected SDK
+      shell: bash
+      env:
+        SDK_VERSION: ${{ inputs.sdk-version }}
+        PYTHON_COMMAND: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+      run: '"$PYTHON_COMMAND" scripts/resolve_dotnet_sdk.py --validate-version "$SDK_VERSION"'
+    - name: Install the selected SDK
+      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+      env:
+        DOTNET_INSTALL_DIR: ${{ runner.temp }}/arcanum-dotnet
+      with:
+        dotnet-version: ${{ inputs.sdk-version }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+    - name: Verify and record actual SDK selection
+      shell: bash
+      env:
+        SDK_VERSION: ${{ inputs.sdk-version }}
+      run: |
+        set -euo pipefail
+        actual=$(dotnet --version)
+        if [[ "$actual" != "$SDK_VERSION" ]]; then
+          echo "error: SDK selection mismatch: resolved $SDK_VERSION, actual $actual" >&2
+          exit 1
+        fi
+        echo "Selected stable .NET SDK: $actual"
+        echo "Selected stable .NET SDK: $actual" >> "$GITHUB_STEP_SUMMARY"

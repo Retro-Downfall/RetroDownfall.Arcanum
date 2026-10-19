@@ -1468,6 +1468,9 @@ public static class ServiceCollectionExtensions
         // operation reaches explicit recovery instead of falling through to "handler missing". A kind is
         // registered only together with the production code that creates its rows.
         services.AddScoped<ILongRunningOperationRecoveryHandler, SubagentRecoveryHandler>();
+        services.AddScoped<ILongRunningOperationRecoveryHandler, MemoryEvaluationRecoveryHandler>();
+        services.AddScoped<RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.IMemoryEvaluationEvidenceStore, RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation.MemoryEvaluationEvidenceStore>();
+        services.AddScoped<RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.IMemoryEvaluationSourceReader, RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation.MemoryEvaluationSourceReader>();
 
         services.AddScoped<IBlobEncryptionMetadataStore, BlobEncryptionMetadataStore>();
         services.AddScoped<BlobEncryptionFileProcessor>();

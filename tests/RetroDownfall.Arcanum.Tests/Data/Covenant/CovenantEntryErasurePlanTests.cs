@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Collections.Immutable;
 using System.Data;
 using System.Globalization;
@@ -39,6 +40,9 @@ public sealed class CovenantEntryErasurePlanTests
 
     private static readonly string[] OrderedTargets =
     [
+        "memory_evaluation_reports",
+        "memory_evaluation_sources",
+        "memory_evaluations",
         "covenant_search_documents",
         "covenant_search_outbox",
         "covenant_mutation_receipts",
@@ -68,6 +72,11 @@ public sealed class CovenantEntryErasurePlanTests
         await using CovenantServiceHarness harness = await StartAsync();
 
         Guid entryId = await SeedFullEntryAsync(harness);
+
+        await MemoryEvaluationLifecycleTests.InstallEvidenceSchemaAsync(harness.Fixture.Connection);
+
+        await MemoryEvaluationLifecycleTests.SeedAsync(
+            harness.Fixture.Connection, [MemoryEvaluationLifecycleTests.CovenantSource(entryId)]);
 
         long decisions = await CountAsync(harness, "SELECT count(*) FROM covenant_review_decision_receipts;");
 
@@ -103,7 +112,7 @@ public sealed class CovenantEntryErasurePlanTests
             counted.Targets,
             static target => Assert.True(target.Rows > 0, $"{target.Table} held none of the entry's rows."));
 
-        // The second level of the versions' cascade: decision receipts go with their review events.
+        // Decision receipts are counted and removed explicitly, including when foreign keys are disabled.
         Assert.Equal(decisions, Rows(counted, "covenant_review_decision_receipts"));
 
         Assert.Equal(1, Rows(counted, "covenant_search_documents"));
@@ -553,7 +562,7 @@ public sealed class CovenantEntryErasurePlanTests
     /// <remarks>
     /// A table that a kept row still references is neutered together with what references it, because
     /// skipping its delete alone fails the referencing delete's foreign key instead. Review events and
-    /// decision receipts go by cascade, so they are reported by the cases that keep the versions. A kept
+    /// decision receipts are deleted explicitly even when versions are kept by a fault. A kept
     /// search document keeps its full-text row, because the document's delete trigger never fires. The
     /// faults are installed inside the transaction and rolled back with it.
     /// </remarks>
@@ -563,13 +572,13 @@ public sealed class CovenantEntryErasurePlanTests
     [InlineData("covenant_mutation_receipts", "covenant_mutation_receipts")]
     [InlineData(
         "covenant_version_attachment_provenance,covenant_versions,covenant_entries",
-        "covenant_version_attachment_provenance,covenant_versions,covenant_review_events,covenant_review_decision_receipts,covenant_entries")]
+        "covenant_version_attachment_provenance,covenant_versions,covenant_entries")]
     [InlineData(
         "covenant_heads,covenant_versions,covenant_entries",
-        "covenant_heads,covenant_versions,covenant_review_events,covenant_review_decision_receipts,covenant_entries")]
+        "covenant_heads,covenant_versions,covenant_entries")]
     [InlineData(
         "covenant_versions,covenant_entries",
-        "covenant_versions,covenant_review_events,covenant_review_decision_receipts,covenant_entries")]
+        "covenant_versions,covenant_entries")]
     [InlineData("covenant_entries", "covenant_entries")]
     [InlineData("covenant_curation_heads,covenant_curation_versions", "covenant_curation_heads,covenant_curation_versions")]
     [InlineData("covenant_curation_versions", "covenant_curation_versions")]

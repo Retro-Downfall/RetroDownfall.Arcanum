@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -117,6 +118,9 @@ public sealed class CovenantOwnerCleanupTests
             "Global.",
             Token);
 
+        await MemoryEvaluationLifecycleTests.InstallEvidenceSchemaAsync(fixture.Connection);
+        var evaluation = await MemoryEvaluationLifecycleTests.SeedAsync(fixture.Connection, [MemoryEvaluationEvidenceStoreTests.Source()], CampaignOne);
+
         long epochBefore = await ScalarAsync(
             fixture,
             "SELECT KeyEpoch FROM covenant_key_epochs WHERE NormalizedKey = 'doomed.key';");
@@ -126,6 +130,7 @@ public sealed class CovenantOwnerCleanupTests
         CovenantCleanupOutcome outcome = await RunAsync(fixture);
 
         Assert.Equal(1, outcome.CampaignsCleaned);
+        await MemoryEvaluationLifecycleTests.AssertAbsentAsync(fixture.Connection, evaluation.EvaluationId);
 
         Assert.Equal(1, outcome.HeadsRemoved);
 

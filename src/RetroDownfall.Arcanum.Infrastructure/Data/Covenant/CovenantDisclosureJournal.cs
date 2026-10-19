@@ -388,9 +388,9 @@ internal sealed class CovenantDisclosureTransactionWriter(Guid bootId)
     /// Packs the canonically ordered generation identities as concatenated raw 16-byte values.
     /// </summary>
     /// <remarks>
-    /// The column refuses an empty vector, so an untainted call has nothing to record here: this is
-    /// only reachable for a Covenant-derived disclosure, which always carries at least one
-    /// generation.
+    /// Covenant-derived exact provenance carries at least one generation. A clean evaluation
+    /// control records the exact empty vector; Core v19 permits that representation only when
+    /// sensitivity is None, without manufacturing a protected source identity.
     /// </remarks>
     private static byte[] PackGenerationIds(GenerationProvenance provenance)
     {

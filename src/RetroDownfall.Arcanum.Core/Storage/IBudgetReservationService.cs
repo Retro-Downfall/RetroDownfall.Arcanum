@@ -62,6 +62,12 @@ public interface IBudgetReservationService
     /// </remarks>
     Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default);
 
+    /// <summary>Idempotently marks the exact owned active reservation as an unexpiring uncertain paid estimate before dispatch.</summary>
+    Task MarkPossiblyDispatchedAsync(Guid reservationId, Guid runId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+    /// <summary>Reconciles an abandoned/terminal one-call evaluation run only from its sole durable Completed bill; leaves unknown or live work outstanding.</summary>
+    Task ReconcileRecordedUsageAsync(Guid runId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
     Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default);
 
     Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default);
@@ -69,7 +75,7 @@ public interface IBudgetReservationService
     /// <summary>Sum of completed billable operation costs for the current UTC day.</summary>
     Task<decimal> GetTodayCommittedSpendAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>Sum of outstanding (Reserved, not reconciled) reservation amounts for the current UTC day.</summary>
+    /// <summary>Sum of current-day Reserved amounts plus unresolved UncertainPaid estimates from every day.</summary>
     Task<decimal> GetTodayOutstandingReservationsAsync(CancellationToken cancellationToken = default);
 
     Task<int> SweepExpiredAsync(DateTimeOffset utcNow, CancellationToken cancellationToken = default);
@@ -100,4 +106,7 @@ public enum BudgetReservationStatus
     Released = 2,
 
     Expired = 3,
+
+    /// <summary>Possibly dispatched: an outstanding estimate, never measured spend. Generic release/expiry cannot erase it.</summary>
+    UncertainPaid = 4,
 }

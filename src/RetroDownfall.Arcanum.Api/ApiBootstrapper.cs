@@ -677,6 +677,18 @@ public static class ApiBootstrapper
 
         services.AddScoped<ProvingGroundsRunner>();
 
+        services.AddSingleton<ProvingGrounds.MemoryEvaluation.MemoryEvaluationExecutionSlot>();
+
+        services.AddSingleton<ProvingGrounds.MemoryEvaluation.MemoryEvaluationProviderEpoch>();
+
+        services.AddScoped<ProvingGrounds.MemoryEvaluation.MemoryEvaluationProviderClientFactory>();
+
+        services.AddScoped<RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation.IMemoryEvaluationProvider, ProvingGrounds.MemoryEvaluation.MemoryEvaluationProvider>();
+
+        services.AddScoped<ProvingGrounds.MemoryEvaluation.MemoryEvaluationRequestScopeFactory>();
+
+        services.AddScoped<ProvingGrounds.MemoryEvaluation.MemoryEvaluationRunner>();
+
         services.AddSingleton<SpellWorkspaceResolver>();
 
         return services;
@@ -863,6 +875,9 @@ public static class ApiBootstrapper
     {
         app.Use(static async (HttpContext context, Func<Task> next) =>
         {
+            if (context.GetEndpoint()?.Metadata.GetMetadata<ProvingGrounds.MemoryEvaluation.MemoryEvaluationRouteMetadata>() is not null)
+                CovenantRequestFeatures.MarkProtectedResponse(context);
+
             if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)
             {
                 if (await HideRecoveryIneligibleAnonymousRouteAsync(context).ConfigureAwait(false))
@@ -1489,6 +1504,7 @@ public static class ApiBootstrapper
         apiGroup.MapProviderTestEndpoints();
 
         apiGroup.MapProvingGroundsEndpoints();
+        ProvingGrounds.MemoryEvaluation.MemoryEvaluationEndpoints.MapMemoryEvaluationEndpoints(apiGroup);
 
         apiGroup.MapWorkspaceEndpoints();
 

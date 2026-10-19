@@ -59,6 +59,7 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
                 "erase-artifacts",
                 "erase-managed-files",
                 "close-handles",
+                "clear-evaluation-evidence",
                 "drop-family",
                 "compact",
                 "install-tiers",
@@ -348,6 +349,8 @@ public sealed class CovenantFamilyReinitializeCoordinatorTests
         internal Action? OnPublish { get; set; }
 
         public Task<Result> CloseHandlesAsync(CancellationToken cancellationToken) => Step("close-handles");
+
+        public Task<Result> ClearEvaluationEvidenceAsync(CancellationToken cancellationToken) => Step("clear-evaluation-evidence");
 
         public Task<Result> DropFamilyAsync(CancellationToken cancellationToken) => Step("drop-family");
 

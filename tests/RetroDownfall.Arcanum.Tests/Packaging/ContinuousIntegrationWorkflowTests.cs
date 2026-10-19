@@ -53,7 +53,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
             Assert.False(lane.IsConditional);
 
-            Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
+            Assert.Contains(ResolvedSdkInput, lane.Body, StringComparison.Ordinal);
 
             Assert.Contains("--configuration Release", lane.Body, StringComparison.Ordinal);
 
@@ -994,7 +994,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("--filter \"Category!=Perf&(" + expected + ")\"", lane.Body, StringComparison.Ordinal);
 
-        Assert.Contains(PinnedSdkInput, lane.Body, StringComparison.Ordinal);
+        Assert.Contains(ResolvedSdkInput, lane.Body, StringComparison.Ordinal);
 
         Assert.Contains("Assert the SDK is native to win-arm64", lane.Body, StringComparison.Ordinal);
     }
@@ -1015,7 +1015,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         const string project = "tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/"
             + "RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj";
 
-        int sdk = lane.Body.IndexOf(PinnedSdkInput, StringComparison.Ordinal);
+        int sdk = lane.Body.IndexOf(ResolvedSdkInput, StringComparison.Ordinal);
 
         int build = lane.Body.IndexOf("dotnet build " + project, StringComparison.Ordinal);
 
@@ -1092,7 +1092,7 @@ public sealed class ContinuousIntegrationWorkflowTests
         {
             foreach (WorkflowJob job in JobsIn(workflow))
             {
-                if (!job.Body.Contains("actions/setup-dotnet", StringComparison.Ordinal))
+                if (!job.Body.Contains("uses: ./.github/actions/setup-dotnet", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -1360,10 +1360,10 @@ public sealed class ContinuousIntegrationWorkflowTests
     /// <summary>
     /// .NET 10.0.12 emits relocation anchors that fix Apple's large-object linker assertion. LLVM
     /// lld rejects those anchors, so every macOS AOT lane must use the serviced SDK's Apple linker
-    /// path instead of silently floating to another SDK or forcing the legacy bridge.
+    /// path with the run-resolved stable SDK rather than forcing the legacy bridge.
     /// </summary>
     [Fact]
-    public void Macos_native_aot_lanes_pin_the_serviced_sdk_and_use_its_apple_linker()
+    public void Macos_native_aot_lanes_use_the_resolved_serviced_sdk_and_its_apple_linker()
     {
         List<string> offenders = [];
         List<string> matching = [];
@@ -1383,7 +1383,7 @@ public sealed class ContinuousIntegrationWorkflowTests
 
                 matching.Add(identity);
 
-                if (!job.Body.Contains(PinnedSdkInput, StringComparison.Ordinal)
+                if (!job.Body.Contains(ResolvedSdkInput, StringComparison.Ordinal)
                     || job.Body.Contains("ld64.lld", StringComparison.Ordinal)
                     || job.Body.Contains("brew install lld", StringComparison.Ordinal))
                 {
@@ -1394,17 +1394,16 @@ public sealed class ContinuousIntegrationWorkflowTests
 
         Assert.Contains("release-macos-arm64.yml: release-macos-arm64", matching);
 
-        // The pin every one of these lanes reads must itself be the serviced SDK that carries the Apple
-        // linker path, not merely some version.
+        // The shared minimum must retain the serviced SDK floor that carries the Apple linker path.
         using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(FindRepositoryRoot(), "global.json")));
 
         Assert.True(
             Version.Parse(globalJson.RootElement.GetProperty("sdk").GetProperty("version").GetString()!) >= new Version(10, 0, 401),
-            "global.json pins an SDK older than the serviced 10.0.401 that the macOS Native AOT lanes require.");
+            "global.json permits an SDK older than the serviced 10.0.401 that the macOS Native AOT lanes require.");
 
         Assert.True(
             offenders.Count == 0,
-            "A macOS Native AOT lane does not read the pinned .NET SDK from global.json with its compatible Apple "
+            "A macOS Native AOT lane does not consume the run-resolved serviced SDK with its compatible Apple "
             + "linker, or still forces LLVM lld:"
             + global::System.Environment.NewLine
             + string.Join(global::System.Environment.NewLine, offenders));
@@ -1566,85 +1565,73 @@ public sealed class ContinuousIntegrationWorkflowTests
             + string.Join(global::System.Environment.NewLine, offenders));
     }
 
-    private const string PinnedSdkInput = "global-json-file: global.json";
+    private const string ResolvedSdkInput = "sdk-version: ${{ needs.sdk.outputs.version }}";
 
     /// <summary>
-    /// One SDK for every workflow. The gating lanes pinned 10.0.401 by hand while the Windows shipping
-    /// builds floated on <c>10.0.x</c>, so a release could be built by an SDK no gate had ever run.
-    /// The repository's <c>global.json</c> is the single statement, and every <c>setup-dotnet</c>
-    /// step reads it, so raising the pin (in lockstep with the macOS portable-pack SHA table in
-    /// <c>Directory.Build.targets</c>) is one edit. The pin is exact (<c>rollForward: disable</c>):
-    /// <c>latestPatch</c> made the version a minimum, and a runner image carrying a newer 10.0.4xx
-    /// beside the one <c>setup-dotnet</c> installed would silently build with that one instead.
+    /// Every compiler lane consumes the run's resolved SDK through the shared installer; the
+    /// repository policy sets only the serviced floor and stable latest-installed selection.
     /// </summary>
     [Fact]
-    public void Every_workflow_pins_the_same_dotnet_sdk_version()
+    public void Every_workflow_uses_the_same_resolved_stable_dotnet_sdk()
     {
         string repositoryRoot = FindRepositoryRoot();
 
-        string globalJsonPath = Path.Combine(repositoryRoot, "global.json");
-
-        Assert.True(File.Exists(globalJsonPath), "The repository has no global.json, so no single SDK version is pinned.");
-
-        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(globalJsonPath));
+        using JsonDocument globalJson = JsonDocument.Parse(File.ReadAllText(Path.Combine(repositoryRoot, "global.json")));
 
         JsonElement sdk = globalJson.RootElement.GetProperty("sdk");
 
-        string version = sdk.GetProperty("version").GetString()!;
+        Assert.True(Version.Parse(sdk.GetProperty("version").GetString()!) >= new Version(10, 0, 401));
 
-        Assert.Matches(@"^10\.0\.\d{3}$", version);
+        Assert.Equal("latestMajor", sdk.GetProperty("rollForward").GetString());
 
-        Assert.Equal("disable", sdk.GetProperty("rollForward").GetString());
-
-        List<string> offenders = [];
+        Assert.False(sdk.GetProperty("allowPrerelease").GetBoolean());
 
         int setups = 0;
 
         foreach (string workflow in WorkflowFiles(repositoryRoot))
         {
-            string[] lines = File.ReadAllLines(workflow);
+            string text = File.ReadAllText(workflow);
 
-            for (int index = 0; index < lines.Length; index++)
+            Assert.DoesNotContain("uses: actions/setup-dotnet@", text, StringComparison.Ordinal);
+
+            foreach (WorkflowJob job in JobsIn(workflow))
             {
-                if (!lines[index].TrimStart().StartsWith("uses: actions/setup-dotnet@", StringComparison.Ordinal))
+                if (!job.Body.Contains("uses: ./.github/actions/setup-dotnet", StringComparison.Ordinal))
                 {
                     continue;
                 }
 
                 setups++;
 
-                int indent = WorkflowIndentOf(lines[index]);
+                Assert.Contains(ResolvedSdkInput, job.Body, StringComparison.Ordinal);
 
-                StringBuilder step = new();
+                Assert.Matches(@"(?m)^    needs:.*\bsdk\b", job.Body);
 
-                for (int next = index + 1; next < lines.Length; next++)
-                {
-                    if (lines[next].Trim().Length > 0 && WorkflowIndentOf(lines[next]) < indent)
-                    {
-                        break;
-                    }
-
-                    step.AppendLine(lines[next]);
-                }
-
-                string body = step.ToString();
-
-                if (!body.Contains(PinnedSdkInput, StringComparison.Ordinal)
-                    || body.Contains("dotnet-version:", StringComparison.Ordinal))
-                {
-                    offenders.Add($"{Path.GetFileName(workflow)}:{index + 1}");
-                }
+                Assert.Contains("uses: ./.github/workflows/resolve-dotnet-sdk.yml", text, StringComparison.Ordinal);
             }
         }
 
-        Assert.True(setups > 0, "No workflow sets .NET up, so there is nothing to pin.");
+        Assert.Equal(12, setups);
 
-        Assert.True(
-            offenders.Count == 0,
-            $"A setup-dotnet step does not read the SDK from `{PinnedSdkInput}` (or still names a "
-            + "literal dotnet-version), so that workflow can build with an SDK no gate ran:"
-            + global::System.Environment.NewLine
-            + string.Join(global::System.Environment.NewLine, offenders));
+        string action = File.ReadAllText(Path.Combine(repositoryRoot, ".github/actions/setup-dotnet/action.yml"));
+
+        Assert.Contains("dotnet-version: ${{ inputs.sdk-version }}", action, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("global-json-file:", action, StringComparison.Ordinal);
+
+        Assert.Contains("DOTNET_INSTALL_DIR: ${{ runner.temp }}/arcanum-dotnet", action, StringComparison.Ordinal);
+
+        Assert.Contains("dotnet --version", action, StringComparison.Ordinal);
+
+        Assert.Contains("GITHUB_STEP_SUMMARY", action, StringComparison.Ordinal);
+
+        string resolver = File.ReadAllText(Path.Combine(repositoryRoot, ".github/workflows/resolve-dotnet-sdk.yml"));
+
+        Assert.Contains("python3 scripts/resolve_dotnet_sdk.py", resolver, StringComparison.Ordinal);
+
+        string release = File.ReadAllText(Path.Combine(repositoryRoot, ".github/workflows/release.yml"));
+
+        Assert.Equal(2, Regex.Matches(release, Regex.Escape(ResolvedSdkInput)).Count);
     }
 
     /// <summary>

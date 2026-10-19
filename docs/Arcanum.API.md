@@ -262,6 +262,9 @@ The established §8 contract numbers are retained in this extracted reference so
 | POST | `/api/tools/invoke` | Diagnostic built-in tool invocation (`ApiResponse<ToolInvokeResponse>`; DESIGN §11.27). |
 | POST | `/api/providers/test` | Read-only provider connectivity probe (`ApiResponse<ProviderTestResult>`; body `endpoint`, optional `apiKey`, `type` = `OpenAICompatible`; does not write `arcanum.json`; DESIGN §19). |
 | POST | `/api/proving-grounds/trials/run` | Run an ephemeral **Trial** through **The Proving Grounds** (`Trial` body → `ApiResponse<TrialResult>`; DESIGN §20). |
+| POST | `/api/proving-grounds/memory-evaluations/run` | Run an exact paired memory comparison (`MemoryEvaluationRequest` → `ApiResponse<MemoryEvaluationResponse>`; §8.21). |
+| POST | `/api/proving-grounds/memory-evaluations/get` | Read retained protected evaluation status/report by body identity (§8.21). |
+| POST | `/api/proving-grounds/memory-evaluations/delete` | Confirm exact terminal report-only cleanup by returned digest (§8.21). |
 | POST | `/v1/chat/completions` | OpenAI-compatible chat (JSON or SSE); **not** wrapped in `ApiResponse<T>`. |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings; **not** wrapped in `ApiResponse<T>`. |
 | POST | `/v1/moderations` | Always **501** `not_supported`; no configuration setting enables it. |
@@ -692,9 +695,65 @@ Global factory apply never treats a missing Covenant lease or inventory as permi
 
 This route family maps `Data.InvalidRequest` and `Data.ConfirmationRequired` to **400**, `Data.NotFound` to **404**, `Data.PlanChanged`, `Data.Blocked`, `Data.Conflict`, and `Data.OperationNotFinalized` to **409**, and `Data.ReconciliationFailed` and `Data.QuarantineRecoveryRequired` to **500**. Other failures delegate to the central `ArcanumErrorMapper`; protected erasure failures therefore keep their frozen statuses, including **503** for `Covenant.ErasureIncomplete`, `Covenant.MaintenanceFailed`, `Covenant.ManualArtifactErasureRequired`, and `Covenant.ManualRecoveryRequired`. An unexpected unclassified apply failure is **500**. The retention rule PUT route returns **400** for `Data.InvalidRequest`; an unexpected policy-store failure is **500**.
 
-### 8.21 The Proving Grounds (`POST /api/proving-grounds/trials/run`)
+### 8.21 The Proving Grounds
 
 Ephemeral Trial + Inquisitors (`regex` / `jsonSchema` / `semantic` FastModel judge). `jsonSchema` delegates to the shared `JsonSchemaHelper` and enforces exactly these keywords: `type` (a string, or a non-empty array of type strings of which any one satisfies the schema, `null` included; an unrecognized type anywhere in it fails the verdict, and a `type` of any other shape is an unreadable schema), `properties`, `required`, `items`, `enum`, and `additionalProperties` (boolean). Every other keyword (for example `minimum`, `pattern`, `oneOf`, `$ref`) is ignored, and an unreadable schema is a failed verdict. Targets: spell / prompt / apprenticeGoal. Terminology strict — industry LLM-test jargon prohibited. Errors §8.23.
+
+
+#### Exact paired memory evaluations
+
+If a live execution is still publishing its initial registration/checkpoint, exact replay, get and delete wait for that boundary and then read current metadata. Get/delete resolve ownership after waiting, including genuine Campaign ownership. Waiting honors request cancellation and performs no hydration, provider call or charge. Erasure during initial publication still yields the retained-identity Gone result; waiting never recreates evidence. If creation crosses an absent ownership read, the retained exact identity triggers one publication wait and ownership re-read. A proven pre-creation NotFound remains 404 under the original request authority even if creation follows; it cannot become a scope conflict from mixing observations.
+
+The three POST routes above require master-key authentication and clean ProtectedRead authority **before the body is read**. IDs, scope and digests travel in JSON bodies only. All replies use the protected `Cache-Control: no-store, private`, `Pragma: no-cache`, `Expires: 0` tuple and no validators. `X-Arcanum-Context-Policy: none` is refused: an explicit selected-memory experiment cannot silently suppress its treatment. No request can supply authority, a lease, execution surface, tools, history, attachments, workspace path, additional option fields or arbitrary check labels.
+
+`run` accepts the following closed source-generated body (identities/digests below are illustrative; obtain exact current target coordinates from their owning store):
+
+```json
+{
+  "evaluationId": "11111111-1111-1111-1111-111111111111",
+  "scope": { "kind": "Global", "campaignId": null },
+  "providerName": "configured-provider",
+  "model": "exact-configured-model",
+  "options": { "temperature": 0, "topP": null, "seed": null, "maxOutputTokens": 512, "reasoningEffort": null },
+  "workload": { "systemPrompt": "Answer the supplied task.", "userPrompt": "The bounded operator workload." },
+  "memory": {
+    "covenant": [{ "entryId": "22222222-2222-2222-2222-222222222222", "versionId": "33333333-3333-3333-3333-333333333333", "fragmentDigest": { "bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" } }],
+    "saga": [],
+    "lexicon": []
+  },
+  "checks": [{ "kind": "regex", "pattern": "expected", "shouldMatch": true, "ignoreCase": false }],
+  "pairCount": 5
+}
+```
+
+Scope is explicitly `Global` with no Campaign ID or `Campaign` with one nonempty `campaignId`; no Session or physical-root proof is inferred. Covenant targets name `entryId`, exact immutable `versionId` and the admitted `fragmentDigest` (available from Covenant explain decisions; authored/rendered hashes are different). Saga targets name `memoryId`, exact Annals `versionId`, `hashFormat` and `contentDigest`; Lexicon targets replace `memoryId` with `entryId`. Every evaluation digest on input and output uses the existing generated `CovenantDigest` object shape: `{"bytes":"<base64 encoding of exactly 32 bytes>"}`. This includes target `fragmentDigest`/`contentDigest`, response `reportDigest`, registration/plan/check/response-evidence digests and cleanup `expectedReportDigest`; a digest is not a hex string on these routes. Missing/null/wrong-length `bytes`, invalid base64, and unknown digest-object members are malformed requests. Covenant explain decisions expose FragmentDigest as hexadecimal: decode that hex to exactly 32 bytes, base64-encode those bytes, then put the base64 text in `bytes`. Do not base64-encode the hexadecimal characters or substitute authored/rendered hashes. The zero-byte digest object in the example illustrates the encoding only; a real target must use the exact retained owning-store digest. The adapter proves current intervention eligibility and retained exact dependencies under the real request Turn lease. Scope and source memory never change as a result of evaluation.
+
+Only Regex and JsonSchema checks are accepted. Regex uses invariant matching, optional ignore-case, `shouldMatch` and a one-second timeout. JsonSchema uses `{"kind":"jsonSchema","schema":{...}}`; supported keywords are `type` (including nonempty supported unions), `properties`, `required`, `items`, `enum` and boolean `additionalProperties`. Unknown keywords, references, unsupported types and malformed schemas are rejected before spending. Supported `integer` means lexical signed Int64: `1.0`, `1e0` and integers outside Int64 fail that check. Numeric assertion keywords such as `minimum` are unsupported and rejected, never ignored. Valid JSON that fails a valid schema, or non-JSON output under that schema, is a valid failed assertion. Evaluator failure/timeout is invalid evidence. These stricter preflight rules apply to this memory capability; the ordinary ephemeral Trial contract above is unchanged.
+
+Policy-v1 bounds are code-owned: raw strict UTF-8 JSON at most **128 KiB** (no charset transcoding; unknown members are rejected throughout the closed DTO tree); system/user prompt **16/32 KiB**; **1–16** distinct targets; **128** manifest coordinates; selected rendered memory **32 KiB**; complete provider prompt **96 KiB**; **1–16** checks with **16 KiB** total specifications, **1 KiB** per regex and schema nesting **16**; **3–16** pairs (default **5**); **1–4,096** output tokens (default **512**). Each provider response is bounded to **1 MiB before SDK parsing** and retained text to **64 KiB**. Complete evidence metadata is bounded to **64 KiB**; installation quota is **1,024** retained registrations, with **one active evaluation**. Stricter context/financial/transport limits still apply. There are no automatic retries, fallback models, tools, retrieval/cache injection, feedback between arms, selective reruns or early success. Even zero-based pairs send Control then Treatment; odd pairs reverse them.
+
+Every success response has `evaluationId`, coordinator `operationId` (which may differ), `state`, `reason`, nullable `report` and exact nullable retained `reportDigest`. The report contains registration/ownership and frozen digests, exact content-free source/dependency coordinates, terminal UTC/state/decision, per-check 2×2 pass/fail counts, pair counts, response-evidence digest, nullable input/output token totals and decimal cost, and elapsed milliseconds. It contains no workload, answers/reasoning, memory, regex/schema/literal/label, URL, credential or raw error. Missing full usage/cost remains null, never a fabricated zero. `reportDigest` is null until terminal; terminal run/get/replay returns the stored digest object unchanged. For example, a terminal digest field has the shape `"reportDigest":{"bytes":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`; its actual bytes depend on the retained report.
+
+**200** means terminal metadata is available, including a terminal execution failure. `Completed` means the request-run terminalized; it can carry `InsufficientEvidence` for controlled source/configuration/authority/provider/output/usage/accounting/evaluator failure. `Outcome`, `Reason` and counts determine validity. Explicit cancellation uses `Cancelled`; crash or abrupt proof loss uses `Interrupted`. Benefit requires every requested valid pair to improve at least one check with no regressions; Harm requires every pair to regress without gains; NoMeasurableEffect requires every check equivalent in every pair. Mixed or incomplete evidence is InsufficientEvidence. A gain never hides another check's regression. These are descriptive results for the selected plan, workload/model/checks and finite samples, with no significance, independence, universal usefulness or per-member causal claim; fixed seeds may correlate samples. Reports grant no mutation/ranking/review authority.
+
+`get` accepts `{"evaluationId":"..."}`. It first reads metadata ownership, canonically resolves that scope and retains a real current read lease through serialization, without source hydration or provider work. Both status get and identical run replay return **202** while in flight and **200** when terminal. Same-ID identical requests have no new hydration, sends or repeat charges; any changed canonical request conflicts. Replay does not assert that historical sources remain current.
+
+`delete` accepts an object-shaped digest, for example `{"evaluationId":"11111111-1111-1111-1111-111111111111","expectedReportDigest":{"bytes":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},"confirm":true}` (illustrative identities/bytes). Copy the complete returned `reportDigest` object unchanged into `expectedReportDigest`; do not convert it to hex, stringify the object or recompute the canonical report hash. It deletes the complete exact terminal report/registration/manifest atomically, releases quota, and leaves source memory and independent disclosure/accounting history intact. Running cleanup or a mismatched digest conflicts; `confirm` must be true. A retained exact evaluation identity prevents re-execution after cleanup: get/run returns **410**. Repeating confirmed cleanup for that retained identity returns `{"evaluationId":"...","deleted":false}`. Unknown or other-kind identities return **404**. Erasure removes old ownership too; absence is classified under genuine current Global read authority without reconstructing any former Campaign/root or revalidating an erased digest. No list/export/UI/CLI/MCP surface or new configuration key is added.
+
+| Refusal | HTTP |
+| --- | --- |
+| Malformed/unknown-member/UTF-8/raw-size/policy/bounds/confirmation/metadata | 400 |
+| Missing master authentication / missing clean read authority | Existing 401 / 403 (unavailable authority uses existing 503) |
+| Unknown or other-kind identity | 404 |
+| Changed request, stale source/authority/scope, busy, exact digest conflict, quota | 409 |
+| Retained exact evaluation identity with erased report | 410 |
+| Required schema/provider capability unavailable | 503 |
+
+Kestrel transport faults retain the existing sanitized 400/408/413/431 mapping. Quota refusal names confirmed report-only cleanup and spends nothing. Controlled failures after registration normally settle terminal **200 InsufficientEvidence**; abort can prevent delivery, after which the report is read separately. Provider configuration A→B→A still invalidates the frozen experiment.
+
+Execution holds request authority only while its synchronous request lives. Operation cancellation is checked independently each second; successful heartbeat renewal cannot override Cancelling. Recovery kind `memory-evaluation` is AbandonSafely, never provider resume/retry. Checkpoint version 0 permits only the empty creation gap (payload/reference null); new version 1 carries exact IDs/digests, bounded PairCount and numeric progress. Only this kind's Pending attempt-zero creations enter recovery discovery after a **two-minute initial-start grace**; normal live-lease/process-ownership CAS still prevents theft. Recovery may preserve terminal evidence or append interrupted insufficient metadata, never recreate erased evidence or acquire source authority.
+
+Accounting records measured usage through normal bills. Unknown/ambiguous usage keeps estimated admission pressure outstanding. The durable UncertainPaid marker precedes final authority/source/disclosure/configuration fences; a later refusal deliberately retains the estimate even if it proves no HTTP began, potentially indefinitely, and creates no numeric bill. Report cleanup does not release those independent holds. No manual release/reconciliation facility is introduced by this API.
 
 ### 8.22 Metrics endpoint (`GET /metrics`)
 
@@ -708,8 +767,15 @@ Wire-stable codes live on `ErrorCodes` (Core). General HTTP mapping authority is
 
 **/api vs /v1:** native `/api` uses `ApiResponse<T>` + codes below. OpenAI `/v1` uses the OpenAI error envelope (`message`/`type`/`code`/`param`); hub failures map similarly (e.g. timeout → **503** `server_error`; unknown model → **404** `model_not_found`); a maintenance refusal is **503** `service_unavailable` with code `grimoire_maintenance` (§8.31). Client-tool forwarding surfaces OpenAI codes `unsupported_parameter` / `too_many_tools` / `invalid_schema` while Core codes remain `ClientTools.*`.
 
+The same Core `ErrorCodes.MemoryEvaluation` family owns internal adapter and ledger codes: `MemoryEvaluation.InvalidAdmission` is an executor refusal consumed by the provider as `MemoryEvaluation.ProviderFailure`; `MemoryEvaluation.AmbiguousAccounting` is a recovery refusal. Closed report/ledger reasons additionally include `MemoryEvaluation.MixedOutcomes`, `MemoryEvaluation.Incomplete`, `MemoryEvaluation.InvalidOutput`, `MemoryEvaluation.ModelMismatch`, `MemoryEvaluation.UsageFailure`, `MemoryEvaluation.AccountingFailure`, and `MemoryEvaluation.Erased`. These are not additional HTTP status mappings. A missing failure reason normalizes to `Interrupted` for both the retained incomplete report and operation ledger; successful reports retain `None`.
+
 | Codes (grouped) | HTTP | Semantics |
 |-----------------|------|-----------|
+| `MemoryEvaluation.InvalidRequest`; `MemoryEvaluation.InvalidScope`; `MemoryEvaluation.InvalidPrompt`; `MemoryEvaluation.InvalidEvaluation`; `MemoryEvaluation.InvalidMetadata` | 400 | Exact evaluation input, policy or bounded metadata refusal (§8.21). |
+| `MemoryEvaluation.NotFound` | 404 | Unknown evaluation evidence/identity, including another operation kind. |
+| `MemoryEvaluation.Gone` | 410 | The exact retained evaluation request identity remains after evidence erasure. |
+| `MemoryEvaluation.Busy`; `MemoryEvaluation.StaleSource`; `MemoryEvaluation.StaleAuthority`; `MemoryEvaluation.ScopeMismatch`; `MemoryEvaluation.QuotaExceeded`; `MemoryEvaluation.StaleConfiguration`; `MemoryEvaluation.Cancelled`; `MemoryEvaluation.Interrupted`; `MemoryEvaluation.NotPrepared`; `MemoryEvaluation.ProviderFailure` | 409 | Admission/state/ownership conflict before a usable terminal response; quota requires confirmed report-only cleanup. Registered controlled execution failures normally return terminal 200 InsufficientEvidence. |
+| `MemoryEvaluation.Unavailable`; `MemoryEvaluation.ProviderUnavailable`; `MemoryEvaluation.InvalidProviderPlan` | 503 | Required metadata/schema or frozen exact provider capability is unavailable. |
 | `Validation.InvalidPrompt`, `Validation.InvalidBody`, `Validation.InvalidQuery`, `Validation.InvalidProviderType`, `Validation.AttachedFiles`, `Validation.InvalidFields` | 400 | Request shape / bounds validation. `Validation.InvalidFields` is the arm for a well-formed body whose field values are not usable — an empty daemon title or body, or an expected content hash that is not a 64-character hexadecimal digest |
 | `Validation.UnsupportedMediaType` | 415 | Missing or non-JSON `Content-Type` on a JSON body route, or a `Content-Type` a bound route does not accept (status set by `ApiRequestJson`, or by the host's exception handler and status-code hook for bound-body routes, not the mapper; §8.1) |
 | `Hub.Model` | 404 | Model not in any provider `models` |

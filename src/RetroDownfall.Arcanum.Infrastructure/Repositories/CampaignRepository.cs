@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Data;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -502,6 +504,8 @@ public sealed class CampaignRepository : ICampaignRepository
 
             using IDisposable ownerCleanup = CovenantSqliteConnectionInitializer.Instance.Authorize(
                 (SqliteConnection)transaction.Connection!, CovenantSqliteAuthorizationKind.OwnerCleanup);
+
+            _ = await MemoryEvaluationErasurePlan.ClearCampaignAsync(transaction.Connection!, transaction, id, cancellationToken).ConfigureAwait(false);
 
             _ = await LongRestLifecycle.ClearCampaignAsync(
                 transaction.Connection!, transaction, id, cancellationToken).ConfigureAwait(false);

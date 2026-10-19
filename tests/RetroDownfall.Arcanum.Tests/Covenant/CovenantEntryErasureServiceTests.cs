@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Globalization;
 
 using Microsoft.AspNetCore.Http;
@@ -99,6 +100,10 @@ public sealed class CovenantEntryErasureServiceTests
 
         Guid entryId = await bed.SetCampaignEntryAsync("Campaign text.");
 
+        await MemoryEvaluationLifecycleTests.InstallEvidenceSchemaAsync(bed.Connection);
+
+        var evaluation = await MemoryEvaluationLifecycleTests.SeedAsync(bed.Connection, [MemoryEvaluationLifecycleTests.CovenantSource(entryId)]);
+
         (CovenantErasePrepareRequest prepare, MemoryErasurePreflightDto preflight) = await bed.PrepareAsync(bed.Service());
 
         Result<MemoryErasureResultDto> applied = await bed.Service().ApplyAsync(Apply(prepare, preflight.PreflightToken), bed.Context, Token);
@@ -120,6 +125,7 @@ public sealed class CovenantEntryErasureServiceTests
         Assert.Equal([MemoryErasureNote.CovenantDrainsInFlightTurns], applied.Value.Notes);
 
         Assert.False(await bed.EntryExistsAsync(entryId));
+        await MemoryEvaluationLifecycleTests.AssertAbsentAsync(bed.Connection, evaluation.EvaluationId);
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(bed.Connection, Token);
     }

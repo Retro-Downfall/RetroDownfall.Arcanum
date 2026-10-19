@@ -530,6 +530,9 @@ internal sealed class BackupRestoreCovenantCoordinator
                 Result sanitized = await BackupRestoreLongRestSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken)
                     .ConfigureAwait(false);
 
+                if (sanitized.IsSuccess)
+                    sanitized = await BackupRestoreMemoryEvaluationSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken).ConfigureAwait(false);
+
                 if (sanitized.IsFailure)
                 {
                     return sanitized;

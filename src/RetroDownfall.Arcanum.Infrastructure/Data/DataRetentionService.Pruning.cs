@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using Microsoft.Data.Sqlite;
@@ -395,6 +397,8 @@ internal sealed partial class DataRetentionService
             items,
             candidates,
             cancellationToken).ConfigureAwait(false);
+
+        await AddEvaluationClosureItemsAsync(selectedSessions, candidates, items, cancellationToken).ConfigureAwait(false);
 
         HashSet<string> coveredCampaignRows = await AddNativeOwnerClosureItemsAsync(
             selectedSessions, selectedEntryOwners, items, cancellationToken).ConfigureAwait(false);
@@ -894,7 +898,7 @@ internal sealed partial class DataRetentionService
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                 WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
-                  AND reservation.Status = @entryDiagnosticReserved)
+                  AND reservation.Status IN (@entryDiagnosticReserved, @uncertainPaid))
             """;
 
         await using DbCommand command = connection.CreateCommand();
@@ -924,6 +928,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@entryDiagnosticRunning", (int)InferenceRunStatus.Running);
 
         Add(command, "@entryDiagnosticReserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@entryDiagnosticLimit", diagnosticLimit);
 
@@ -1048,7 +1054,7 @@ internal sealed partial class DataRetentionService
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                 WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
-                  AND reservation.Status = @attachmentDiagnosticReserved)
+                  AND reservation.Status IN (@attachmentDiagnosticReserved, @uncertainPaid))
             """;
 
         await using DbCommand command = connection.CreateCommand();
@@ -1077,6 +1083,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@attachmentDiagnosticRunning", (int)InferenceRunStatus.Running);
 
         Add(command, "@attachmentDiagnosticReserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@attachmentDiagnosticLimit", diagnosticLimit);
 
@@ -1182,7 +1190,7 @@ internal sealed partial class DataRetentionService
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                 WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
-                  AND reservation.Status = @embeddingDiagnosticReserved)
+                  AND reservation.Status IN (@embeddingDiagnosticReserved, @uncertainPaid))
             """;
 
         await using DbCommand command = connection.CreateCommand();
@@ -1213,6 +1221,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@embeddingDiagnosticRunning", (int)InferenceRunStatus.Running);
 
         Add(command, "@embeddingDiagnosticReserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@embeddingDiagnosticLimit", diagnosticLimit);
 
@@ -1319,7 +1329,7 @@ internal sealed partial class DataRetentionService
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                 WHERE lower(replace(run.SessionId, '-', '')) = @diagnosticSessionId
-                  AND reservation.Status = @diagnosticReserved)
+                  AND reservation.Status IN (@diagnosticReserved, @uncertainPaid))
             ORDER BY ConflictOrder, ResourceId
             LIMIT @diagnosticConflictLimit
             """;
@@ -1329,6 +1339,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@diagnosticRunning", (int)InferenceRunStatus.Running);
 
         Add(command, "@diagnosticReserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@diagnosticConflictLimit", remaining);
 
@@ -1455,7 +1467,7 @@ internal sealed partial class DataRetentionService
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                   WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
-                    AND reservation.Status = @reserved)
+                    AND reservation.Status IN (@reserved, @uncertainPaid))
               {protectedClause}
               {selectedClause}
             ORDER BY entry.CreatedAt, entry.Id
@@ -1469,6 +1481,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@running", (int)InferenceRunStatus.Running);
 
         Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@limit", limit - candidates.Count);
 
@@ -1702,7 +1716,7 @@ internal sealed partial class DataRetentionService
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                   WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
-                    AND reservation.Status = @reserved)
+                    AND reservation.Status IN (@reserved, @uncertainPaid))
             ORDER BY attachment.CreatedAt, attachment.Id
             LIMIT @limit
             """;
@@ -1716,6 +1730,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@running", (int)InferenceRunStatus.Running);
 
         Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         for (int index = 0; index < retention.ProtectedSessionIds.Length; index++)
         {
@@ -1872,7 +1888,7 @@ internal sealed partial class DataRetentionService
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                   WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
-                    AND reservation.Status = @reserved)
+                    AND reservation.Status IN (@reserved, @uncertainPaid))
               {protectedClause}
               {selectedClause}
             ORDER BY entry.CreatedAt, embedding.EntryId
@@ -1886,6 +1902,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@running", (int)InferenceRunStatus.Running);
 
         Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@limit", limit - candidates.Count);
 
@@ -2184,10 +2202,32 @@ internal sealed partial class DataRetentionService
             pinnedRowsExemptFromPlan);
     }
 
+    private async Task AddEvaluationClosureItemsAsync(IReadOnlySet<Guid> sessions, IReadOnlyList<string> candidates, List<DataRetentionPlanItem> items, CancellationToken ct)
+    {
+        // Session previews each include their own closure. Replace those sums with one set across
+        // every selected source and owner, so a mixed report is counted only once.
+        items.RemoveAll(item => item.DataClass == RetentionDataClass.Annals);
+
+        string[] keys = [.. sessions.Select(id => "session:" + id.ToString("N")),
+            .. candidates.Where(candidate => candidate.StartsWith(SagaCandidatePrefix, StringComparison.Ordinal)).Select(candidate => "2:subject:" + candidate[SagaCandidatePrefix.Length..]),
+            .. candidates.Where(candidate => candidate.StartsWith(LexiconCandidatePrefix, StringComparison.Ordinal)).Select(candidate => "3:subject:" + candidate[LexiconCandidatePrefix.Length..])];
+
+        if (keys.Length == 0) return;
+
+        var connection = await OpenConnectionAsync(ct).ConfigureAwait(false);
+
+        long rows = await MemoryEvaluationErasurePlan.MeasureOrClearAsync(connection, null,
+            "EXISTS (SELECT 1 FROM json_each(evaluation.ErasureKeysJson) key WHERE key.value IN (SELECT value FROM json_each($evaluationKeys)))",
+            false, ct, ("$evaluationKeys", JsonSerializer.Serialize(keys, ArcanumCoreJsonContext.Default.StringArray))).ConfigureAwait(false);
+
+        if (rows > 0) items.Add(new(RetentionDataClass.Annals, 0, 0, 0, rows));
+    }
+
     /// <summary>The shared erasure coordinates for the Saga transformation companions a prune owns.</summary>
-    private static IEnumerable<AnnalsErasureStep> SagaLongRestPruneSteps(string subjectQuery) =>
+    private static IEnumerable<AnnalsErasureStep> SagaLongRestPruneSteps(string subjectQuery, bool includeEvaluations = false) =>
         AnnalsErasurePlan.ForSubjectQuery(AnnalSubjectStore.Saga, subjectQuery)
-            .Where(static step => step.Table.StartsWith("long_rest_", StringComparison.Ordinal));
+            .Where(step => step.Table.StartsWith("long_rest_", StringComparison.Ordinal)
+                || includeEvaluations && step.Table.StartsWith("memory_evaluation", StringComparison.Ordinal));
 
     private async Task<DataRetentionLexiconCurationInventory> AddLexiconCandidatesAsync(
         RetentionSettings retention,
@@ -2514,7 +2554,7 @@ internal sealed partial class DataRetentionService
                            SELECT 1
                            FROM BudgetReservations reservation
                            WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                             AND reservation.Status = @reserved)
+                             AND reservation.Status IN (@reserved, @uncertainPaid))
                 FROM InferenceRuns run
                 WHERE julianday(COALESCE(run.CompletedAt, run.StartedAt)) <= julianday(@cutoff)
                   AND (
@@ -2527,7 +2567,7 @@ internal sealed partial class DataRetentionService
                           SELECT 1
                           FROM BudgetReservations reservation
                           WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                            AND reservation.Status = @reserved))
+                            AND reservation.Status IN (@reserved, @uncertainPaid)))
                 ORDER BY COALESCE(run.CompletedAt, run.StartedAt), run.Id
                 LIMIT @limit
                 """;
@@ -2535,6 +2575,8 @@ internal sealed partial class DataRetentionService
             Add(blockedCommand, "@running", (int)InferenceRunStatus.Running);
 
             Add(blockedCommand, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+            Add(blockedCommand, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
             Add(blockedCommand, "@cutoff", FormatTimestamp(cutoff));
 
@@ -2602,7 +2644,7 @@ internal sealed partial class DataRetentionService
                    EXISTS(
                        SELECT 1 FROM BudgetReservations reservation
                        WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                         AND reservation.Status = @reserved)
+                         AND reservation.Status IN (@reserved, @uncertainPaid))
             FROM InferenceRuns run
             WHERE julianday(COALESCE(run.CompletedAt, run.StartedAt)) <= julianday(@cutoff)
               AND run.Status <> @running
@@ -2614,7 +2656,7 @@ internal sealed partial class DataRetentionService
                   SELECT 1
                   FROM BudgetReservations reservation
                   WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                    AND reservation.Status = @reserved)
+                    AND reservation.Status IN (@reserved, @uncertainPaid))
             ORDER BY COALESCE(run.CompletedAt, run.StartedAt), run.Id
             LIMIT @limit
             """;
@@ -2622,6 +2664,8 @@ internal sealed partial class DataRetentionService
         Add(command, "@running", (int)InferenceRunStatus.Running);
 
         Add(command, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+        Add(command, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
         Add(command, "@cutoff", FormatTimestamp(cutoff));
 
@@ -5504,7 +5548,7 @@ internal sealed partial class DataRetentionService
                       JOIN InferenceRuns run
                         ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                       WHERE lower(replace(run.SessionId, '-', '')) = @sessionId
-                        AND reservation.Status = @reserved)
+                        AND reservation.Status IN (@reserved, @uncertainPaid))
                 """,
                 cancellationToken,
                 ("@id", entryId.ToString("N")),
@@ -5512,6 +5556,7 @@ internal sealed partial class DataRetentionService
                 ("@sessionId", sessionId.ToString("N")),
                 ("@running", (int)InferenceRunStatus.Running),
                 ("@reserved", (int)BudgetReservationStatus.Reserved),
+                ("@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid),
                 ("@cutoff", FormatTimestamp(effectiveCutoff))).ConfigureAwait(false);
 
             if (rows == 0)
@@ -5644,7 +5689,7 @@ internal sealed partial class DataRetentionService
                            JOIN InferenceRuns run
                              ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
                            WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
-                             AND reservation.Status = @reserved)
+                             AND reservation.Status IN (@reserved, @uncertainPaid))
                 FROM Entries entry
                 WHERE lower(replace(entry.Id, '-', '')) = @id
                   AND julianday(entry.CreatedAt) <= julianday(@cutoff)
@@ -5655,6 +5700,8 @@ internal sealed partial class DataRetentionService
             Add(protection, "@running", (int)InferenceRunStatus.Running);
 
             Add(protection, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+            Add(protection, "@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid);
 
             Add(protection, "@id", normalizedEntryId);
 
@@ -5954,7 +6001,7 @@ internal sealed partial class DataRetentionService
 
             // Measure before the receipt parent cascades its children. Later candidates sharing
             // this receipt then see zero, matching the preview's one count of the whole manifest.
-            foreach (AnnalsErasureStep step in SagaLongRestPruneSteps("SELECT @id"))
+            foreach (AnnalsErasureStep step in SagaLongRestPruneSteps("SELECT @id", includeEvaluations: true))
             {
                 derived += await CountInTransactionAsync(
                     connection,
@@ -6087,6 +6134,8 @@ internal sealed partial class DataRetentionService
 
         long claims;
 
+        long evaluations;
+
         int provenance;
 
         int rows;
@@ -6134,6 +6183,10 @@ internal sealed partial class DataRetentionService
                 "annal_claims",
                 "SubjectStoreCode = 2 AND SubjectId = @id",
                 cancellationToken,
+                ("@id", entryId)).ConfigureAwait(false);
+
+            evaluations = await MemoryEvaluationErasurePlan.MeasureOrClearAsync(connection, transaction,
+                MemoryEvaluationErasurePlan.SubjectPredicate(MemoryEvaluationSource.Lexicon, "SELECT @id AS subject"), false, cancellationToken,
                 ("@id", entryId)).ConfigureAwait(false);
 
             await AnnalsClaimWriter.DeleteClaimsForSubjectAsync(
@@ -6213,7 +6266,7 @@ internal sealed partial class DataRetentionService
             rows,
             0,
             0,
-            provenance + fts + claims,
+            provenance + fts + claims + evaluations,
             reconciled);
     }
 
@@ -6447,10 +6500,11 @@ internal sealed partial class DataRetentionService
 
         long blockers = await CountTableAsync(
             "BudgetReservations",
-            "lower(replace(RunId, '-', '')) = @id AND Status = @reserved",
+            "lower(replace(RunId, '-', '')) = @id AND Status IN (@reserved, @uncertainPaid)",
             cancellationToken,
             ("@id", runId.ToString("N")),
-            ("@reserved", (int)BudgetReservationStatus.Reserved)).ConfigureAwait(false);
+            ("@reserved", (int)BudgetReservationStatus.Reserved),
+            ("@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid)).ConfigureAwait(false);
 
         await using DbCommand retainedSession = connection.CreateCommand();
 
@@ -6505,10 +6559,11 @@ internal sealed partial class DataRetentionService
             reservations = await ExecuteAsync(
                 connection,
                 transaction,
-                "DELETE FROM BudgetReservations WHERE lower(replace(RunId, '-', '')) = @id AND Status <> @reserved",
+                "DELETE FROM BudgetReservations WHERE lower(replace(RunId, '-', '')) = @id AND Status NOT IN (@reserved, @uncertainPaid)",
                 cancellationToken,
                 ("@id", runId.ToString("N")),
-                ("@reserved", (int)BudgetReservationStatus.Reserved)).ConfigureAwait(false);
+                ("@reserved", (int)BudgetReservationStatus.Reserved),
+                ("@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid)).ConfigureAwait(false);
 
             billable = await ExecuteAsync(
                 connection,
@@ -6533,12 +6588,13 @@ internal sealed partial class DataRetentionService
                       SELECT 1
                       FROM BudgetReservations reservation
                       WHERE lower(replace(reservation.RunId, '-', '')) = @id
-                        AND reservation.Status = @reserved)
+                        AND reservation.Status IN (@reserved, @uncertainPaid))
                 """,
                 cancellationToken,
                 ("@id", runId.ToString("N")),
                 ("@running", (int)InferenceRunStatus.Running),
                 ("@reserved", (int)BudgetReservationStatus.Reserved),
+                ("@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid),
                 ("@cutoff", FormatTimestamp(effectiveCutoff))).ConfigureAwait(false);
 
             if (runs == 0)

@@ -24,6 +24,11 @@ on:
   # second thing to keep in step with the first.
   workflow_call:
     inputs:
+      sdk-version:
+        description: Exact stable SDK inherited from the parent release run
+        required: false
+        type: string
+        default: ''
       version:
         description: "SemVer (e.g. 0.1.0-beta.1). No +build metadata. Tag will be v<version>."
         required: true
@@ -38,7 +43,14 @@ permissions:
   contents: write
 
 jobs:
+  sdk:
+    name: Select stable .NET SDK
+    uses: ./.github/workflows/resolve-dotnet-sdk.yml
+    with:
+      sdk-version: ${{ inputs.sdk-version }}
+
   release-macos-arm64:
+    needs: sdk
     name: Build, sign, notarize (osx-arm64)
     runs-on: macos-26
     timeout-minutes: 150
@@ -166,9 +178,9 @@ jobs:
           fi
 
       - name: Setup .NET 10
-        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        uses: ./.github/actions/setup-dotnet
         with:
-          global-json-file: global.json
+          sdk-version: ${{ needs.sdk.outputs.version }}
 
       - name: Install ripgrep for the warning-free publish gate
         run: command -v rg >/dev/null 2>&1 || brew install ripgrep

@@ -60,6 +60,13 @@ public static class CovenantDerivedOutputInventory
     private static readonly ImmutableArray<CovenantDerivedOutputConsumer> Declared =
     [
         new(
+            "memory-evaluation-evidence",
+            "RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation.MemoryEvaluationEvidenceStore",
+            null,
+            DerivedOutputPolicy.ContentFreeMetadataOnly,
+            "Accepts validated bounded metadata only: opaque source/scope coordinates, canonical owner and nullable author identities, immutable dependency edges and digests for lifecycle erasure and exact replay; never source, workload, evaluator or provider text."),
+
+        new(
             "assistant-entry-finalization",
             "RetroDownfall.Arcanum.Infrastructure.Repositories.GrimoireRepository",
             SensitiveArtifactKind.AssistantEntry,

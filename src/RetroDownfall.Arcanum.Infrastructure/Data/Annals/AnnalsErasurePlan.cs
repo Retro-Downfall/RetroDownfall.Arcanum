@@ -1,5 +1,7 @@
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Annals;
 
@@ -31,7 +33,7 @@ internal static class AnnalsErasurePlan
     /// <summary>Every claim belonging to one store, leaving the other store's untouched.</summary>
     internal static IReadOnlyList<AnnalsErasureStep> ForStore(AnnalSubjectStore subjectStore) =>
         Build($"SubjectStoreCode = {(int)subjectStore}", (int)subjectStore, sourcePredicate: "1 = 1",
-            generationIdQuery: "SELECT GenerationId FROM long_rest_discovery_generations");
+            generationIdQuery: "SELECT GenerationId FROM long_rest_discovery_generations", evaluationPredicate: MemoryEvaluationErasurePlan.StorePredicate(subjectStore == AnnalSubjectStore.Saga ? MemoryEvaluationSource.Saga : MemoryEvaluationSource.Lexicon));
 
     /// <summary>
     /// Every claim over the subject rows one query selects, which is how a Campaign-targeted reset
@@ -49,14 +51,16 @@ internal static class AnnalsErasurePlan
             $"SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery})",
             (int)subjectStore,
             headPredicate: $"ClaimId IN (SELECT ClaimId FROM annal_claims WHERE SubjectStoreCode = {(int)subjectStore} AND SubjectId IN ({subjectIdQuery}))",
-            sourcePredicate: $"MemoryId IN ({subjectIdQuery})");
+            sourcePredicate: $"MemoryId IN ({subjectIdQuery})",
+            evaluationPredicate: MemoryEvaluationErasurePlan.SubjectPredicate(subjectStore == AnnalSubjectStore.Saga ? MemoryEvaluationSource.Saga : MemoryEvaluationSource.Lexicon, $"WITH evaluation_subjects(subject) AS ({subjectIdQuery}) SELECT subject FROM evaluation_subjects"));
 
     private static IReadOnlyList<AnnalsErasureStep> Build(
         string claimPredicate,
         int subjectStoreCode,
         string? headPredicate = null,
         string? sourcePredicate = null,
-        string? generationIdQuery = null)
+        string? generationIdQuery = null,
+        string? evaluationPredicate = null)
     {
         string claimScope = $"SELECT ClaimId FROM annal_claims WHERE {claimPredicate}";
 
@@ -74,6 +78,7 @@ internal static class AnnalsErasurePlan
 
         return
         [
+            .. MemoryEvaluationErasurePlan.Steps(evaluationPredicate!),
             .. subjectStoreCode == (int)AnnalSubjectStore.Saga
                 ? (AnnalsErasureStep[])[.. LongRestLifecycle.GenerationSteps(generationScope),
                     new AnnalsErasureStep("long_rest_sources", sourcePredicate!, RequiredFromCoreVersion: 18)]

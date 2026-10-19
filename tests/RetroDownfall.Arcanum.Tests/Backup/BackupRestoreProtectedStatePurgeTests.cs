@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
@@ -172,11 +173,14 @@ public sealed class BackupRestoreProtectedStatePurgeTests : IAsyncLifetime
         await SeedAuthorityAsync(CovenantHostToolsState.Clean);
 
         await SeedCanonicalFamilyAsync();
+        await MemoryEvaluationLifecycleTests.InstallEvidenceSchemaAsync(_staged.Connection);
+        var evaluation = await MemoryEvaluationLifecycleTests.SeedAsync(_staged.Connection, [MemoryEvaluationLifecycleTests.CovenantSource()]);
 
         Result<BackupCovenantRestoreReconciliationReceipt> receipt =
             await ReconcileAsync(purgeProtectedState: true);
 
         Assert.True(receipt.IsSuccess, Describe(receipt));
+        await MemoryEvaluationLifecycleTests.AssertAbsentAsync(_staged.Connection, evaluation.EvaluationId);
 
         foreach (string table in new[]
                  {

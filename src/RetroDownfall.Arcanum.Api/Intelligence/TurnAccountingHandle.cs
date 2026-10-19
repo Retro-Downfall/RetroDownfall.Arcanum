@@ -114,6 +114,8 @@ internal sealed class TurnAccountingHandle
 
     private bool _accountingFailed;
 
+    private bool _possiblyDispatched;
+
     private bool _hasRecordedOperations;
 
     private bool _completionSnapshotFrozen;
@@ -298,6 +300,19 @@ internal sealed class TurnAccountingHandle
         }
     }
 
+    /// <summary>Durably retains an upper-bound estimate before a physical send, without inventing actual spend.</summary>
+    public async Task MarkPossiblyDispatchedAsync(IBudgetReservationService reservations, CancellationToken cancellationToken)
+    {
+        if (!OwnsLifecycle || RunId is not Guid runId) throw new InvalidOperationException("An owning accounted run is required.");
+
+        if (ReservationActive && ReservationId is Guid reservationId)
+        {
+            await reservations.MarkPossiblyDispatchedAsync(reservationId, runId, cancellationToken).ConfigureAwait(false);
+        }
+
+        lock (_costGate) _possiblyDispatched = true;
+    }
+
     public async Task CompleteAsync(
         ITurnRunWriter? turnRunWriter,
         IBudgetReservationService? budgetReservations,
@@ -320,7 +335,7 @@ internal sealed class TurnAccountingHandle
                 {
                     _completionCostUsd = root._accumulatedCostUsd;
                     _completionHasRecordedOperations = root._hasRecordedOperations;
-                    _completionAccountingFailed = root._accountingFailed;
+                    _completionAccountingFailed = root._accountingFailed || (root._possiblyDispatched && !root._hasRecordedOperations);
                     _completionStatus = _completionAccountingFailed
                         ? InferenceRunStatus.Failed
                         : status;

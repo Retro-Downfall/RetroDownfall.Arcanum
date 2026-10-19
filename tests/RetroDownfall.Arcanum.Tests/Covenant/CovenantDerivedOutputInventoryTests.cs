@@ -1,4 +1,5 @@
 using System.Reflection;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -31,6 +32,7 @@ public sealed class CovenantDerivedOutputInventoryTests
     /// </remarks>
     private static readonly Type[] GovernedContracts =
     [
+        typeof(IMemoryEvaluationEvidenceStore),
         typeof(ILongRestDiscoveryStore),
 
         typeof(ILongRestSweepStore),

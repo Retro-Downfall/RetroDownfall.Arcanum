@@ -30,6 +30,10 @@ internal sealed partial class DataRetentionService
 {
     private static readonly FactoryTablePlan[] FactoryPlanTables =
     [
+        new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("memory_evaluations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+
         new("Sessions", RetentionDataClass.ActiveSessions, FactoryRecordKind.Physical, "lower(Status) <> 'archived'"),
         new("Sessions", RetentionDataClass.ArchivedSessions, FactoryRecordKind.Physical, "lower(Status) = 'archived'"),
         new("Entries", RetentionDataClass.Entries, FactoryRecordKind.Physical),
@@ -107,6 +111,10 @@ internal sealed partial class DataRetentionService
 
     private static readonly FactoryTablePlan[] FactoryDeletionTables =
     [
+        new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("memory_evaluations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+
         new("long_rest_discovery_generations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_clean_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_protected_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -899,11 +907,12 @@ internal sealed partial class DataRetentionService
             await ReadFactoryConflictRowsAsync(
                 connection,
                 transaction,
-                "SELECT Id FROM BudgetReservations WHERE Status = @status",
+                "SELECT Id FROM BudgetReservations WHERE Status IN (@status, @uncertainPaid)",
                 "Data.BudgetReservationOutstanding",
                 "An outstanding budget reservation conflicts with this global reset.",
                 cancellationToken,
-                ("@status", (int)BudgetReservationStatus.Reserved)).ConfigureAwait(false));
+                ("@status", (int)BudgetReservationStatus.Reserved),
+                ("@uncertainPaid", (int)BudgetReservationStatus.UncertainPaid)).ConfigureAwait(false));
 
         conflicts.AddRange(
             await ReadFactoryConflictRowsAsync(

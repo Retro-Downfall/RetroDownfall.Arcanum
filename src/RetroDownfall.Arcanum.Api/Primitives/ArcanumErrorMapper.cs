@@ -350,6 +350,21 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Sending.MaxTasksReached =>
                 StatusCodes.Status429TooManyRequests,
 
+            ErrorCodes.MemoryEvaluation.InvalidRequest or ErrorCodes.MemoryEvaluation.InvalidScope or ErrorCodes.MemoryEvaluation.InvalidPrompt
+                or ErrorCodes.MemoryEvaluation.InvalidEvaluation or ErrorCodes.MemoryEvaluation.InvalidMetadata => StatusCodes.Status400BadRequest,
+
+            ErrorCodes.MemoryEvaluation.NotFound => StatusCodes.Status404NotFound,
+
+            ErrorCodes.MemoryEvaluation.Gone => StatusCodes.Status410Gone,
+
+            ErrorCodes.MemoryEvaluation.Busy or ErrorCodes.MemoryEvaluation.StaleSource or ErrorCodes.MemoryEvaluation.StaleAuthority
+                or ErrorCodes.MemoryEvaluation.ScopeMismatch or ErrorCodes.MemoryEvaluation.QuotaExceeded or ErrorCodes.MemoryEvaluation.StaleConfiguration => StatusCodes.Status409Conflict,
+
+            ErrorCodes.MemoryEvaluation.Unavailable or ErrorCodes.MemoryEvaluation.ProviderUnavailable or ErrorCodes.MemoryEvaluation.InvalidProviderPlan => StatusCodes.Status503ServiceUnavailable,
+
+            ErrorCodes.MemoryEvaluation.Cancelled or ErrorCodes.MemoryEvaluation.Interrupted or ErrorCodes.MemoryEvaluation.NotPrepared
+                or ErrorCodes.MemoryEvaluation.ProviderFailure => StatusCodes.Status409Conflict,
+
             _ =>
                 StatusCodes.Status500InternalServerError,
         };

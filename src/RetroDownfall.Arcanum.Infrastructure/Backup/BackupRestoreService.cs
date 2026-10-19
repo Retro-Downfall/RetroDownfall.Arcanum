@@ -1978,6 +1978,9 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             Result sanitized = await BackupRestoreLongRestSanitation.SanitizeStagedAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
 
+            if (sanitized.IsSuccess)
+                sanitized = await BackupRestoreMemoryEvaluationSanitation.SanitizeStagedAsync(connection, cancellationToken).ConfigureAwait(false);
+
             if (sanitized.IsFailure)
             {
                 return StageResult.Failed(Issue(sanitized.Error));

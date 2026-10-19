@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Globalization;
 using System.Security.Cryptography;
 
@@ -275,6 +277,8 @@ internal sealed class CovenantCanonicalErasureTransaction : ICovenantCanonicalEr
         // so a table this loop stopped naming cannot also be a table the proof stopped counting. The curation
         // tables are on it: a pin or a mask is recorded against a key's epoch row, and this erasure deletes
         // that row, so the curation leaves in the same transaction.
+        _ = await MemoryEvaluationErasurePlan.ClearStoreAsync(connection, transaction, MemoryEvaluationSource.Covenant, cancellationToken).ConfigureAwait(false);
+
         foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
             _ = await ExecuteAsync(

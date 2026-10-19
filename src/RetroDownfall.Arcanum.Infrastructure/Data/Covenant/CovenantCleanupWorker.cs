@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Collections.Immutable;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
@@ -191,6 +193,11 @@ internal sealed class CovenantCleanupWorker(
     {
         string campaign = campaignId.ToString("D");
 
+        _ = await MemoryEvaluationErasurePlan.MeasureOrClearAsync(transaction.Connection, transaction.Transaction,
+            MemoryEvaluationErasurePlan.CampaignPredicate + " OR " + MemoryEvaluationErasurePlan.SubjectPredicate(MemoryEvaluationSource.Covenant,
+                "SELECT lower(EntryId) AS subject FROM covenant_entries WHERE lower(replace(CampaignId, '-', '')) = $evaluationOwner"), true, cancellationToken,
+            ("$evaluationOwner", campaignId.ToString("N"))).ConfigureAwait(false);
+
         ImmutableArray<HeadIdentity> heads = await ReadCampaignHeadsAsync(
                 transaction,
                 campaign,
@@ -312,6 +319,8 @@ internal sealed class CovenantCleanupWorker(
         CancellationToken cancellationToken)
     {
         string session = sessionId.ToString("D");
+
+        _ = await MemoryEvaluationErasurePlan.ClearSessionAsync(transaction.Connection, transaction.Transaction, sessionId, cancellationToken).ConfigureAwait(false);
 
         await ExecuteAsync(
                 transaction,

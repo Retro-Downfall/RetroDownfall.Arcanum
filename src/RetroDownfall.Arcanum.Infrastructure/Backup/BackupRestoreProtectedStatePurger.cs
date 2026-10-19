@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
@@ -99,6 +101,8 @@ internal static class BackupRestoreProtectedStatePurger
             transaction,
             BackupRestoreProtectedStateInspector.AcceleratorContentTables,
             cancellationToken).ConfigureAwait(false);
+
+        _ = await MemoryEvaluationErasurePlan.ClearStoreAsync(staged, transaction, MemoryEvaluationSource.Covenant, cancellationToken).ConfigureAwait(false);
 
         ulong canonical = await DeleteAllAsync(
             staged,

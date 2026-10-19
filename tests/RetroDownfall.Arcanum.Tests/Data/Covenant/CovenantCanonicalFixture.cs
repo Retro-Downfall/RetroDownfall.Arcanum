@@ -24,20 +24,17 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 {
-
     private static readonly DateTimeOffset SeedTime = new(2026, 2, 1, 0, 0, 0, TimeSpan.Zero);
 
     private readonly CovenantSchemaScratchDatabase _database;
 
     private CovenantCanonicalFixture(CovenantSchemaScratchDatabase database)
     {
-
         _database = database;
 
         Credentials = new CountingOsCredentialStore(new InMemoryOsCredentialStore());
 
         ErasureKeys = MemoryErasureTestKeys.Isolated(Credentials);
-
     }
 
     internal SqliteConnection Connection => _database.Connection;
@@ -66,14 +63,12 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         IReadOnlyList<string>? coreObjects = null,
         bool withErasureEvidence = false)
     {
-
         CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase.CreateAsync(cancellationToken);
 
         CovenantCanonicalFixture fixture = new(database);
 
         try
         {
-
             await database.InstallCoreObjectsAsync(
                 [.. (IReadOnlyList<string>)["Campaigns", "campaign_registry_state"], .. coreObjects ?? []],
                 cancellationToken);
@@ -86,22 +81,22 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
             if (withAccelerator)
             {
-
                 await database.InstallAcceleratorAsync(cancellationToken);
-
             }
 
             if (withErasureEvidence)
             {
-
                 await database.InstallCoreObjectsAsync(
-                    ["grimoire_feature_schemas", "memory_erasure_fingerprints"],
+                    ["grimoire_feature_schemas", "memory_erasure_fingerprints",
+                     "memory_evaluation_sources", "memory_evaluations", "memory_evaluation_reports",
+                     "memory_evaluations_validate_insert", "memory_evaluations_guard_update",
+                     "memory_evaluation_sources_validate_insert", "memory_evaluation_sources_guard_update",
+                     "memory_evaluation_reports_validate_insert", "memory_evaluation_reports_guard_update"],
                     cancellationToken);
 
                 await database.RecordCoreSchemaVersionAsync(
                     GrimoireSchemaVersionChains.CoreSchemaVersion,
                     cancellationToken);
-
             }
 
             fixture.Store = new CovenantStore(
@@ -109,19 +104,15 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
                 fixture.ErasureKeys);
 
             return fixture;
-
         }
         catch
         {
-
             fixture.ErasureKeys.Dispose();
 
             await database.DisposeAsync();
 
             throw;
-
         }
-
     }
 
     /// <summary>
@@ -142,7 +133,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         string name,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -165,7 +155,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
 
         await BumpRegistryEpochAsync(cancellationToken);
-
     }
 
     /// <summary>
@@ -187,7 +176,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         ImmutableArray<MaterializationSourceDigestInput>? sources = null,
         string? corruptCompiledContent = null)
     {
-
         CovenantOrigin resolvedOrigin = origin
             ?? (lane == CovenantLane.Proposed ? CovenantOrigin.AgentProposed : CovenantOrigin.Operator);
 
@@ -197,9 +185,7 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
         if (entryId is null)
         {
-
             await InsertEntryAsync(resolvedEntryId, scope, campaignId, key, cancellationToken);
-
         }
 
         CovenantCompiledContent? compiled = operation == CovenantOperation.Set
@@ -234,9 +220,7 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
         for (int ordinal = 0; ordinal < leaves.Length; ordinal++)
         {
-
             await AddProvenanceAsync(versionId, ordinal, leaves[ordinal], cancellationToken);
-
         }
 
         // A projection row ID is allocated once per entry and lane and never moves, so an advance
@@ -261,7 +245,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         await AppendOutboxAsync(searchRowId, resolvedEntryId, lane, versionId, cancellationToken);
 
         return new SeededHead(resolvedEntryId, versionId, searchRowId, compiled);
-
     }
 
     internal async Task AddProvenanceAsync(
@@ -270,7 +253,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         MaterializationSourceDigestInput source,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -303,7 +285,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
             source.SourceEnd is { } end ? end : DBNull.Value);
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     internal static CanonicalCampaignContext CampaignContext(Guid campaignId) =>
@@ -316,7 +297,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
 
     internal async Task<Guid> ReadDatasetGenerationAsync(CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
@@ -324,16 +304,13 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         object? value = await command.ExecuteScalarAsync(cancellationToken);
 
         return new Guid((byte[])value!);
-
     }
 
     public ValueTask DisposeAsync()
     {
-
         ErasureKeys.Dispose();
 
         return _database.DisposeAsync();
-
     }
 
     private static string Iso(DateTimeOffset value) =>
@@ -346,7 +323,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         string key,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -369,7 +345,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$created", Iso(SeedTime));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     private async Task InsertVersionAsync(
@@ -387,7 +362,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         CovenantDigest provenanceDigest,
         CancellationToken cancellationToken)
     {
-
         bool agentAuthored = origin is CovenantOrigin.AgentProposed or CovenantOrigin.AgentApproved;
 
         await using SqliteCommand command = Connection.CreateCommand();
@@ -480,7 +454,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$created", Iso(SeedTime));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     private async Task UpsertHeadAsync(
@@ -497,7 +470,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         long searchRowId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -541,7 +513,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$updated", Iso(SeedTime));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     /// <summary>
@@ -556,7 +527,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         Guid versionId,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -580,7 +550,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         _ = command.Parameters.AddWithValue("$version", versionId.ToString("D"));
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
 
     /// <summary>
@@ -592,7 +561,6 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         CovenantLane lane,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = "SELECT SearchRowId FROM covenant_heads WHERE EntryId = $entry AND LaneCode = $lane;";
@@ -604,12 +572,10 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         object? value = await command.ExecuteScalarAsync(cancellationToken);
 
         return value is null or DBNull ? null : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task<long> AllocateSearchRowIdAsync(CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = """
@@ -620,20 +586,16 @@ internal sealed class CovenantCanonicalFixture : IAsyncDisposable
         object? value = await command.ExecuteScalarAsync(cancellationToken);
 
         return Convert.ToInt64(value, CultureInfo.InvariantCulture);
-
     }
 
     private async Task BumpRegistryEpochAsync(CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = Connection.CreateCommand();
 
         command.CommandText = "UPDATE campaign_registry_state SET RegistryEpoch = RegistryEpoch + 1 WHERE StateKey = 1;";
 
         _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
     }
-
 }
 
 internal readonly record struct SeededHead(
@@ -647,17 +609,13 @@ internal readonly record struct SeededHead(
 /// </summary>
 internal sealed class FixedCovenantConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
 {
-
     public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return ValueTask.FromResult(connection);
-
     }
 
     public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken) =>
         GetOpenConnectionAsync(cancellationToken);
-
 }

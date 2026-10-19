@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Data;
 
 using Microsoft.Data.Sqlite;
@@ -24,7 +25,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantCanonicalErasureTransactionTests
 {
-
     /// <summary>Every canonical table the erasure is responsible for emptying.</summary>
     private static readonly string[] FamilyTables =
     [
@@ -52,16 +52,17 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_reset_deletes_every_canonical_family_table()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
 
+        await MemoryEvaluationLifecycleTests.InstallEvidenceSchemaAsync(fixture.Connection);
+        var evaluation = await MemoryEvaluationLifecycleTests.SeedAsync(fixture.Connection, [MemoryEvaluationLifecycleTests.CovenantSource()]);
+        var unrelated = await MemoryEvaluationLifecycleTests.SeedAsync(fixture.Connection, [MemoryEvaluationEvidenceStoreTests.Source()]);
+
         foreach (string table in FamilyTables)
         {
-
             Assert.Equal(1, await fixture.CountAsync(table, Token));
-
         }
 
         // Asserted before as well as after. An external-content index answers a bare COUNT(*) from its
@@ -82,12 +83,12 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
         await fixture.ReopenAsync(Token);
+        await MemoryEvaluationLifecycleTests.AssertAbsentAsync(fixture.Connection, evaluation.EvaluationId);
+        Assert.True((await MemoryEvaluationLifecycleTests.Store(fixture.Connection).GetAsync(unrelated.EvaluationId, Token)).IsSuccess);
 
         foreach (string table in FamilyTables)
         {
-
             Assert.Equal(0, await fixture.CountAsync(table, Token));
-
         }
 
         // The production list is asserted whole as well as the local one, so a canonical table the
@@ -95,16 +96,13 @@ public sealed class CovenantCanonicalErasureTransactionTests
         // here without this file naming it.
         foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
-
             Assert.Equal(0, await fixture.CountAsync(table, Token));
-
         }
 
         // The projection's tokens leave with it. An external-content FTS5 index keeps its own pages,
         // so a delete that skipped the after-delete trigger would leave every indexed word behind a
         // row that no longer exists.
         Assert.Equal(0, await fixture.ScalarLongAsync(IndexedTokenQuery, Token));
-
     }
 
     /// <summary>
@@ -114,7 +112,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_healthy_catalog_factory_erasure_deletes_every_canonical_content_table()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -138,11 +135,8 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         foreach (string table in CovenantCanonicalContentTables.InDeletionOrder)
         {
-
             Assert.Equal(0, await fixture.CountAsync(table, Token));
-
         }
-
     }
 
     /// <summary>
@@ -153,7 +147,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_pin_does_not_outlive_a_reset_to_bind_the_key_that_recreates_its_name()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -184,13 +177,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
                 Token));
 
         Assert.False(await IsPinnedAsync(fixture, "tone"));
-
     }
 
     /// <summary>Asks the production staging probe whether the Global Confirmed head of a key is pinned.</summary>
     private static async Task<bool> IsPinnedAsync(CovenantCanonicalErasureFixture fixture, string key)
     {
-
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
         command.CommandText = CovenantStoreSql.LaneHeadProbe(campaignScoped: false);
@@ -207,13 +198,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.False(await reader.IsDBNullAsync(1, Token));
 
         return reader.GetInt32(7) == 1;
-
     }
 
     [Fact]
     public async Task A_reset_creates_exactly_one_new_dataset_and_restarts_the_search_state()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -266,7 +255,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             (long)CovenantFtsRebuildState.FullRebuildRequired,
             await fixture.ScalarLongAsync("SELECT RebuildStateCode FROM covenant_state;", Token));
-
     }
 
     /// <summary>
@@ -282,7 +270,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_reset_stamps_the_preselected_target_rather_than_a_generation_of_its_own()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -319,7 +306,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(12, await fixture.ScalarLongAsync("SELECT KeyReclamationEpoch FROM covenant_state;", Token));
 
         Assert.Equal(14, await fixture.ScalarLongAsync("SELECT EnvelopeKeyEpoch FROM covenant_state;", Token));
-
     }
 
     /// <summary>
@@ -343,7 +329,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     public async Task Replaying_the_exact_committed_transition_converges(
         CovenantExclusiveOperation operation)
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -357,7 +342,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         (Result<Guid> first, Result<Guid> replayed) = await fixture.InClosedPeriodAsync(
             async authority =>
             {
-
                 CovenantCanonicalErasureTransaction service = CreateService();
 
                 Result<Guid> once = await service.ApplyAsync(operation, preselected, authority, Token);
@@ -365,7 +349,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
                 Result<Guid> again = await service.ApplyAsync(operation, preselected, authority, Token);
 
                 return (once, again);
-
             });
 
         Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : null);
@@ -389,7 +372,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             (long)preselected.TargetEpochs.EnvelopeKeyEpoch,
             await fixture.ScalarLongAsync("SELECT EnvelopeKeyEpoch FROM covenant_state;", Token));
-
     }
 
     /// <summary>
@@ -408,7 +390,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [InlineData("envelopeKey")]
     public async Task A_canonical_erasure_refuses_a_source_this_database_does_not_carry(string moved)
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -417,7 +398,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         CovenantCanonicalDatasetTransition stale = moved switch
         {
-
             "generation" => preselected with { SourceDatasetGeneration = Guid.NewGuid() },
 
             "accelerator" => preselected with
@@ -455,7 +435,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
                     EnvelopeKeyEpoch = preselected.SourceEpochs.EnvelopeKeyEpoch + 6,
                 },
             },
-
         };
 
         Result<Guid> applied = await fixture.InClosedPeriodAsync(
@@ -475,7 +454,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             preselected.SourceDatasetGeneration,
             await fixture.ReadDatasetGenerationAsync(Token));
-
     }
 
     /// <summary>
@@ -489,7 +467,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_canonical_erasure_refuses_a_transition_whose_targets_are_transposed()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -532,13 +509,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             preselected.SourceDatasetGeneration,
             await fixture.ReadDatasetGenerationAsync(Token));
-
     }
 
     [Fact]
     public async Task A_reset_advances_the_accelerator_and_envelope_epochs_rather_than_restarting_them()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -578,13 +553,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             1,
             await fixture.ScalarLongAsync("SELECT EnvelopeMasterKeyVersion FROM covenant_state;", Token));
-
     }
 
     [Fact]
     public async Task A_reset_moves_both_cleanup_cursors_to_the_core_owner_deletion_sequences()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -631,13 +604,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             2,
             await fixture.ScalarLongAsync("SELECT AppliedSessionDeletionSequence FROM covenant_state;", Token));
-
     }
 
     [Fact]
     public async Task A_reset_preserves_core_nonrevocable_disclosure_receipts_and_joined_disclosure_state()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -678,13 +649,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
             await fixture.ScalarStringAsync(
                 "SELECT hex(DisclosureChainDigest) FROM disclosure_subject_state;",
                 Token));
-
     }
 
     [Fact]
     public async Task A_reset_retains_every_campaign_path_marker_and_both_host_tools_markers()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -705,13 +674,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.ReopenAsync(Token);
 
         await fixture.AssertRetainedAsync(before, Token);
-
     }
 
     [Fact]
     public async Task A_healthy_catalog_factory_erasure_retains_the_same_markers()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -732,7 +699,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.ReopenAsync(Token);
 
         await fixture.AssertRetainedAsync(before, Token);
-
     }
 
     /// <summary>
@@ -745,7 +711,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_healthy_catalog_factory_erasure_preserves_schema_objects_and_their_metadata()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -779,7 +744,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(1, await fixture.CountAsync("covenant_authority_state", Token));
 
         Assert.True(await fixture.ObjectExistsAsync("covenant_schema_repair_intents", "table", Token));
-
     }
 
     /// <summary>
@@ -796,7 +760,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_healthy_catalog_factory_erasure_refuses_a_canonical_singleton_that_is_absent()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -826,7 +789,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(0, await fixture.CountAsync("covenant_state", Token));
 
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
-
     }
 
     /// <summary>
@@ -863,7 +825,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task ApplyAsync_retries_a_racing_exclusive_acquisition_rather_than_failing_on_the_first_busy()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         string holderConnectionString = new SqliteConnectionStringBuilder(fixture.Connection.ConnectionString)
@@ -894,7 +855,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         service.RetryingForTesting = (attempt, exception, retryingToken) =>
         {
-
             _ = Interlocked.Increment(ref retryCount);
 
             // Signalled before the assertions below so that a failing one surfaces as itself rather
@@ -910,7 +870,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
                 $"Expected the retried exception to be SQLITE_BUSY/LOCKED; observed code {busy.SqliteErrorCode}.");
 
             return ValueTask.CompletedTask;
-
         };
 
         CovenantCanonicalDatasetTransition preselected = await fixture.PreselectAsync(Token);
@@ -952,13 +911,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
 
         Assert.True(retryCount >= 1, "Expected at least one retry; the holder may have released before the first attempt ever raced it.");
-
     }
 
     [Fact]
     public async Task A_reset_refuses_when_the_canonical_singleton_is_absent()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -985,13 +942,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.ReopenAsync(Token);
 
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
-
     }
 
     [Fact]
     public async Task A_healthy_catalog_factory_erasure_reseeds_the_accelerator_secure_delete_configuration()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -1018,7 +973,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(
             1,
             await fixture.ScalarLongAsync("SELECT v FROM covenant_fts_config WHERE k = 'secure-delete';", Token));
-
     }
 
     [Theory]
@@ -1028,7 +982,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     public async Task Only_a_reset_or_a_healthy_catalog_factory_erasure_may_enter_the_transaction(
         CovenantExclusiveOperation operation)
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -1053,13 +1006,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         await fixture.ReopenAsync(Token);
 
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
-
     }
 
     [Fact]
     public async Task A_connection_that_cannot_prove_secure_delete_refuses_before_it_deletes_anything()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -1091,7 +1042,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
 
         Assert.Equal(1, await fixture.CountAsync("covenant_versions", Token));
-
     }
 
     /// <summary>
@@ -1113,7 +1063,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task The_family_is_drained_before_the_exclusive_connection_is_opened()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -1139,7 +1088,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(["drain", "open"], steps);
 
         Assert.Equal(ConnectionState.Closed, fixture.Connection.State);
-
     }
 
     /// <summary>
@@ -1160,7 +1108,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
     [Fact]
     public async Task A_drain_that_cannot_close_a_handle_refuses_without_touching_the_family()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -1174,13 +1121,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
         Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, closed.Error.Code);
 
         Assert.Equal(1, await fixture.CountAsync("covenant_entries", Token));
-
     }
 
     [Fact]
     public async Task A_failure_inside_the_transaction_leaves_the_whole_family_standing()
     {
-
         await using CovenantCanonicalErasureFixture fixture = await CovenantCanonicalErasureFixture.CreateAsync(Token);
 
         await fixture.SeedAsync(Token);
@@ -1210,11 +1155,8 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         foreach (string table in FamilyTables)
         {
-
             Assert.Equal(1, await fixture.CountAsync(table, Token));
-
         }
-
     }
 
     private static CovenantCanonicalErasureTransaction CreateService() =>
@@ -1232,19 +1174,16 @@ public sealed class CovenantCanonicalErasureTransactionTests
     /// </remarks>
     private sealed class UnprovenSecureDeleteInitializer : ICovenantSqliteConnectionInitializer
     {
-
         public async ValueTask InitializeAsync(
             SqliteConnection connection,
             CovenantSqliteConnectionMode mode,
             CancellationToken cancellationToken)
         {
-
             await using SqliteCommand command = connection.CreateCommand();
 
             command.CommandText = "PRAGMA secure_delete=OFF;";
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
         }
 
         public CovenantSqliteAuthorizationScope Authorize(
@@ -1257,7 +1196,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
             RestoreStagingManagedAuthoritySanitizationCapability authority,
             RestoreStagingManagedAuthoritySanitizationCapability.RunIdentity runIdentity) =>
             throw new NotSupportedException();
-
     }
 
     /// <summary>
@@ -1273,17 +1211,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
         IGrimoireMaintenanceConnectionFactory inner,
         List<string> steps) : IGrimoireMaintenanceConnectionFactory
     {
-
         public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
             IGrimoireMaintenanceConnectionCapability capability,
             IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken)
         {
-
             steps.Add("open");
 
             return inner.OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken);
-
         }
 
         public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
@@ -1327,13 +1262,11 @@ public sealed class CovenantCanonicalErasureTransactionTests
             IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("The canonical erasure transaction snapshots no inventory.");
-
     }
 
     private sealed class RecordingConnectionDrain(ICovenantConnectionDrain inner, List<string> steps)
         : ICovenantConnectionDrain
     {
-
         public IDisposable Register(SqliteConnection connection) => inner.Register(connection);
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
@@ -1341,18 +1274,14 @@ public sealed class CovenantCanonicalErasureTransactionTests
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken)
         {
-
             steps.Add("drain");
 
             return inner.DrainAsync(cancellationToken);
-
         }
-
     }
 
     private sealed class FailingConnectionDrain : ICovenantConnectionDrain
     {
-
         public IDisposable Register(SqliteConnection connection) => throw new NotSupportedException();
 
         public Result ClearExactPoolAfterClose(SqliteConnection connection) =>
@@ -1364,7 +1293,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
                     new Error(
                         ErrorCodes.Covenant.MaintenanceFailed,
                         "A Covenant connection handle did not close.")));
-
     }
 
     /// <summary>
@@ -1378,22 +1306,18 @@ public sealed class CovenantCanonicalErasureTransactionTests
     private sealed class ThrottledMaintenanceConnectionFactory(IGrimoireMaintenanceConnectionFactory inner)
         : IGrimoireMaintenanceConnectionFactory
     {
-
         public async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
             IGrimoireMaintenanceConnectionCapability capability,
             IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken)
         {
-
             Result<IGrimoireMaintenanceConnectionLease> opened = await inner
                 .OpenJournalCanonicalErasureAsync(capability, lane, cancellationToken)
                 .ConfigureAwait(false);
 
             if (opened.IsFailure)
             {
-
                 return opened;
-
             }
 
             SqliteConnection connection = opened.Value.Connection;
@@ -1407,7 +1331,6 @@ public sealed class CovenantCanonicalErasureTransactionTests
             _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
             return opened;
-
         }
 
         public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalWalTruncationAsync(
@@ -1451,7 +1374,5 @@ public sealed class CovenantCanonicalErasureTransactionTests
             IGrimoireMaintenanceIoLane lane,
             CancellationToken cancellationToken) =>
             inner.OpenJournalInventorySnapshotAsync(capability, lane, cancellationToken);
-
     }
-
 }

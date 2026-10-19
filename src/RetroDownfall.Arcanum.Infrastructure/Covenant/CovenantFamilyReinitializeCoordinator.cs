@@ -24,6 +24,9 @@ internal interface ICovenantFamilyReinitializeTransition
     /// <summary>Quiesces the disclosure writer and drains the central connection owner.</summary>
     Task<Result> CloseHandlesAsync(CancellationToken cancellationToken);
 
+    /// <summary>Idempotently erases Core evaluation evidence depending on the family, before any family object is dropped.</summary>
+    Task<Result> ClearEvaluationEvidenceAsync(CancellationToken cancellationToken);
+
     /// <summary>Securely drops every closed-manifest Covenant-prefixed object.</summary>
     Task<Result> DropFamilyAsync(CancellationToken cancellationToken);
 
@@ -235,7 +238,11 @@ internal sealed class CovenantFamilyReinitializeCoordinator(
                 state,
                 ownerId,
                 CovenantFamilyReinitializePhase.FamilyDropped,
-                (_, token) => _transition.DropFamilyAsync(token),
+                async (_, token) =>
+                {
+                    Result cleared = await _transition.ClearEvaluationEvidenceAsync(token).ConfigureAwait(false);
+                    return cleared.IsFailure ? cleared : await _transition.DropFamilyAsync(token).ConfigureAwait(false);
+                },
                 cancellationToken).ConfigureAwait(false);
 
             durablyMutated = true;

@@ -324,6 +324,8 @@ public sealed record ModelCallContext(
 /// <summary>Resolves profiles and estimates provider-facing context without performing model I/O.</summary>
 public interface IModelTokenEstimator
 {
+    ContextTokenBreakdown EstimateMemoryEvaluation(ProviderSettings provider, string canonicalModel, string systemPrompt, string userPrompt, int maxOutputTokens) => throw new NotSupportedException();
+
     ContextTokenBreakdown EstimateLongRestChat(ProviderSettings provider, string canonicalModel, LongRestProviderPayload payload) =>
         throw new NotSupportedException("This estimator does not support closed Long Rest chat calls.");
 

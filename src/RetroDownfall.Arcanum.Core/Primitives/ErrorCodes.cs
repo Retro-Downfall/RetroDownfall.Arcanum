@@ -6,6 +6,68 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
+    /// <summary>Bounded memory-evaluation route, adapter and recovery/ledger refusals.</summary>
+    public static class MemoryEvaluation
+    {
+        public const string AccountingFailure = "MemoryEvaluation.AccountingFailure";
+
+        public const string AmbiguousAccounting = "MemoryEvaluation.AmbiguousAccounting";
+
+        public const string Busy = "MemoryEvaluation.Busy";
+
+        public const string Cancelled = "MemoryEvaluation.Cancelled";
+
+        public const string Erased = "MemoryEvaluation.Erased";
+
+        public const string Gone = "MemoryEvaluation.Gone";
+
+        public const string Incomplete = "MemoryEvaluation.Incomplete";
+
+        public const string Interrupted = "MemoryEvaluation.Interrupted";
+
+        public const string InvalidAdmission = "MemoryEvaluation.InvalidAdmission";
+
+        public const string InvalidEvaluation = "MemoryEvaluation.InvalidEvaluation";
+
+        public const string InvalidMetadata = "MemoryEvaluation.InvalidMetadata";
+
+        public const string InvalidOutput = "MemoryEvaluation.InvalidOutput";
+
+        public const string InvalidPrompt = "MemoryEvaluation.InvalidPrompt";
+
+        public const string InvalidProviderPlan = "MemoryEvaluation.InvalidProviderPlan";
+
+        public const string InvalidRequest = "MemoryEvaluation.InvalidRequest";
+
+        public const string InvalidScope = "MemoryEvaluation.InvalidScope";
+
+        public const string MixedOutcomes = "MemoryEvaluation.MixedOutcomes";
+
+        public const string ModelMismatch = "MemoryEvaluation.ModelMismatch";
+
+        public const string NotFound = "MemoryEvaluation.NotFound";
+
+        public const string NotPrepared = "MemoryEvaluation.NotPrepared";
+
+        public const string ProviderFailure = "MemoryEvaluation.ProviderFailure";
+
+        public const string ProviderUnavailable = "MemoryEvaluation.ProviderUnavailable";
+
+        public const string QuotaExceeded = "MemoryEvaluation.QuotaExceeded";
+
+        public const string ScopeMismatch = "MemoryEvaluation.ScopeMismatch";
+
+        public const string StaleAuthority = "MemoryEvaluation.StaleAuthority";
+
+        public const string StaleConfiguration = "MemoryEvaluation.StaleConfiguration";
+
+        public const string StaleSource = "MemoryEvaluation.StaleSource";
+
+        public const string Unavailable = "MemoryEvaluation.Unavailable";
+
+        public const string UsageFailure = "MemoryEvaluation.UsageFailure";
+    }
+
     /// <summary>Validation — client input rejected before domain work.</summary>
     public static class Validation
     {

@@ -338,6 +338,9 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
             Result sanitized = await BackupRestoreLongRestSanitation.VerifyCommittedAsync(_committedDatabase, cancellationToken)
                 .ConfigureAwait(false);
 
+            if (sanitized.IsSuccess)
+                sanitized = await BackupRestoreMemoryEvaluationSanitation.VerifyCommittedAsync(_committedDatabase, cancellationToken).ConfigureAwait(false);
+
             if (sanitized.IsFailure)
             {
                 return Kept(sanitized.Error);
@@ -992,6 +995,9 @@ internal sealed class BackupRestoreRecovery : IBackupRestoreStartupRecovery
 
                 Result verified = await BackupRestoreLongRestSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken)
                     .ConfigureAwait(false);
+
+                if (verified.IsSuccess)
+                    verified = await BackupRestoreMemoryEvaluationSanitation.VerifyCommittedAsync(committedDatabase, cancellationToken).ConfigureAwait(false);
 
                 if (verified.IsFailure) return verified;
 

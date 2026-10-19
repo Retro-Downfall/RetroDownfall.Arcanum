@@ -423,6 +423,100 @@ internal sealed class BudgetReservationService(
             cancellationToken);
     }
 
+    public Task MarkPossiblyDispatchedAsync(Guid reservationId, Guid runId, CancellationToken cancellationToken = default)
+    {
+        return SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using DbCommand cmd = connection.CreateCommand();
+
+            cmd.CommandText = """
+                UPDATE "BudgetReservations" SET "Status" = @uncertain, "UpdatedAt" = @updated
+                WHERE "Id" = @id AND "RunId" = @run AND "Status" IN (@reserved, @uncertain)
+                """;
+
+            AddParameter(cmd, "@id", reservationId.ToString("N"));
+
+            AddParameter(cmd, "@run", runId.ToString("N"));
+
+            AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
+
+            AddParameter(cmd, "@uncertain", (int)BudgetReservationStatus.UncertainPaid);
+
+            AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+            if (await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            {
+                throw new InvalidOperationException("The owned reservation is no longer available for dispatch.");
+            }
+        }, cancellationToken);
+    }
+
+    public Task ReconcileRecordedUsageAsync(Guid runId, CancellationToken cancellationToken = default)
+    {
+        return SqliteBusyRetry.ExecuteAsync(async () =>
+        {
+            SqliteConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using SqliteTransaction transaction = connection.BeginTransaction(deferred: false);
+
+            decimal? measured = null;
+
+            await using (DbCommand read = connection.CreateCommand())
+            {
+                read.Transaction = transaction;
+
+                // Evaluation owns exactly one physical call per run. A live or unrelated run is
+                // never settled by this recovery seam, nor is a partial multi-call ledger.
+                read.CommandText = """
+                    SELECT bill.ActualCostUsd
+                    FROM BillableOperations bill JOIN InferenceRuns run ON run.Id = bill.RunId
+                    WHERE run.Id = @run AND run.Surface = 'memory-evaluation'
+                      AND run.Purpose = 'counterfactual-arm' AND run.Status <> @running
+                      AND bill.Status = @completed
+                      AND (SELECT count(*) FROM BillableOperations allBills WHERE allBills.RunId = run.Id) = 1
+                    """;
+
+                AddParameter(read, "@run", runId.ToString("N"));
+
+                AddParameter(read, "@running", (int)InferenceRunStatus.Running);
+
+                AddParameter(read, "@completed", (int)BillableOperationStatus.Completed);
+
+                await using DbDataReader reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) measured = ExactUsdText.Read(reader, 0);
+            }
+
+            if (measured is decimal actual)
+            {
+                await using DbCommand update = connection.CreateCommand();
+
+                update.Transaction = transaction;
+
+                update.CommandText = """
+                    UPDATE BudgetReservations SET Status = @reconciled, ReconciledUsd = @actual, UpdatedAt = @now
+                    WHERE RunId = @run AND Status = @uncertain
+                    """;
+
+                AddParameter(update, "@run", runId.ToString("N"));
+
+                AddParameter(update, "@uncertain", (int)BudgetReservationStatus.UncertainPaid);
+
+                AddParameter(update, "@reconciled", (int)BudgetReservationStatus.Reconciled);
+
+                ExactUsdText.AddParameter(update, "@actual", actual);
+
+                AddParameter(update, "@now", UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+                await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+    }
+
     public Task ReconcileAsync(Guid reservationId, decimal actualCostUsd, CancellationToken cancellationToken = default)
     {
         return SqliteBusyRetry.ExecuteAsync(
@@ -436,13 +530,14 @@ internal sealed class BudgetReservationService(
                     """
                     UPDATE "BudgetReservations"
                     SET "ReconciledUsd" = @actual, "Status" = @status, "UpdatedAt" = @updated
-                    WHERE "Id" = @id AND "Status" = @reserved
+                    WHERE "Id" = @id AND "Status" IN (@reserved, @uncertain)
                     """;
 
                 AddParameter(cmd, "@id", reservationId.ToString("N"));
                 _ = ExactUsdText.AddParameter(cmd, "@actual", Math.Max(0m, actualCostUsd));
                 AddParameter(cmd, "@status", (int)BudgetReservationStatus.Reconciled);
                 AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
+                AddParameter(cmd, "@uncertain", (int)BudgetReservationStatus.UncertainPaid);
                 AddParameter(cmd, "@updated", UtcInstantText.Format(DateTimeOffset.UtcNow));
 
                 _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -655,11 +750,12 @@ internal sealed class BudgetReservationService(
             """
             SELECT "ReservedUsd", "ReconciledUsd"
             FROM "BudgetReservations"
-            WHERE "BudgetPeriod" = @period AND "Status" = @reserved
+            WHERE ("BudgetPeriod" = @period AND "Status" = @reserved) OR "Status" = @uncertain
             """;
 
         AddParameter(cmd, "@period", budgetPeriod);
         AddParameter(cmd, "@reserved", (int)BudgetReservationStatus.Reserved);
+        AddParameter(cmd, "@uncertain", (int)BudgetReservationStatus.UncertainPaid);
 
         decimal total = 0m;
 

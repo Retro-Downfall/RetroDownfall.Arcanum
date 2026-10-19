@@ -51,6 +51,112 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task UncertainPaid_RecoveryPreservesUnknownButSettlesDurableMeasuredBillOnce()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        Guid run = await new TurnRunWriter(_db!).StartRunAsync(new("evaluation:0", null, "memory-evaluation", "counterfactual-arm", null, now));
+
+        var held = (await service.ReserveAsync(new(run, 8m, now.AddHours(1), BudgetReservationService.UtcBudgetPeriod(now)))).Value;
+
+        await service.MarkPossiblyDispatchedAsync(held.Id, run);
+
+        await service.ReconcileRecordedUsageAsync(run);
+
+        Assert.Equal(8m, await service.GetTodayOutstandingReservationsAsync());
+
+        await InsertBillableOperationAsync(run, now, 2m);
+
+        Assert.Equal(8m, await service.GetTodayOutstandingReservationsAsync());
+
+        Assert.Equal(2m, await service.GetTodayCommittedSpendAsync());
+
+        await using ArcanumDbContext recoveredDb = _fixture.CreateContext(_dbPath);
+
+        var recovered = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m }, recoveredDb);
+
+        await recovered.ReconcileRecordedUsageAsync(run);
+
+        Assert.Equal(8m, await recovered.GetTodayOutstandingReservationsAsync());
+
+        Assert.True(await new TurnRunWriter(recoveredDb).TryAbandonRunAsync(run));
+
+        await recovered.ReconcileRecordedUsageAsync(run);
+
+        await recovered.ReconcileRecordedUsageAsync(run);
+
+        Assert.Equal(0m, await recovered.GetTodayOutstandingReservationsAsync());
+
+        Assert.Equal(2m, await recovered.GetTodayCommittedSpendAsync());
+
+        Assert.Equal((BudgetReservationStatus.Reconciled, 2m), await ReadReservationStateAsync(held.Id));
+    }
+
+    [SkippableFact]
+    public async Task UncertainPaid_SurvivesRecoveryExpiryAndUtcRolloverWithoutInventingActualSpend()
+    {
+        RequireSqlCipher();
+
+        BudgetPolicySettings policy = new() { Enabled = true, DailyLimitUsd = 10m };
+
+        BudgetReservationService service = CreateService(policy);
+
+        DateTimeOffset yesterday = DateTimeOffset.UtcNow.AddDays(-1);
+
+        BudgetReservation held = await ReserveAsync(service, 8m, yesterday.AddHours(1), BudgetReservationService.UtcBudgetPeriod(yesterday));
+
+        await service.MarkPossiblyDispatchedAsync(held.Id, held.RunId);
+
+        await service.MarkPossiblyDispatchedAsync(held.Id, held.RunId);
+
+        await using ArcanumDbContext recoveredDb = _fixture.CreateContext(_dbPath);
+
+        BudgetReservationService recovered = CreateService(policy, recoveredDb);
+
+        await recovered.ReleaseAsync(held.Id);
+
+        Assert.Equal(0, await recovered.SweepExpiredAsync(DateTimeOffset.UtcNow.AddDays(3)));
+
+        Assert.Equal(8m, await recovered.GetTodayOutstandingReservationsAsync());
+
+        Assert.Equal(0m, await recovered.GetTodayCommittedSpendAsync());
+
+        Result<BudgetReservation> refused = await recovered.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 3m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow)));
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal((BudgetReservationStatus.UncertainPaid, 0m), await ReadReservationStateAsync(held.Id));
+
+        await recovered.ReconcileAsync(held.Id, 2m);
+
+        await recovered.ReconcileAsync(held.Id, 7m);
+
+        Assert.Equal((BudgetReservationStatus.Reconciled, 2m), await ReadReservationStateAsync(held.Id));
+
+        Assert.Equal(0m, await recovered.GetTodayOutstandingReservationsAsync());
+    }
+
+    [SkippableFact]
+    public async Task UncertainPaid_RefusesWrongOwnerAndInactiveReservation()
+    {
+        RequireSqlCipher();
+
+        BudgetReservationService service = CreateService(new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 10m });
+
+        BudgetReservation held = await ReserveAsync(service, 8m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.MarkPossiblyDispatchedAsync(held.Id, Guid.NewGuid()));
+
+        await service.ReleaseAsync(held.Id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.MarkPossiblyDispatchedAsync(held.Id, held.RunId));
+    }
+
+    [SkippableFact]
     public async Task ReserveAsync_WhenBudgetSettingsAreMissing_ReturnsSyntheticReleasedReservation()
     {
         RequireSqlCipher();

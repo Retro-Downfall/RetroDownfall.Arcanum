@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Globalization;
 using System.Text;
 
@@ -158,6 +159,8 @@ public sealed partial class LongRestMaintenanceTests
     {
         await using MaintenanceFixture f = await CreatePaidLifecycleFixtureAsync(protectedSources: false);
 
+        var evaluation = await MemoryEvaluationLifecycleTests.SeedAsync(f.H.Connection, [MemoryEvaluationEvidenceStoreTests.Source()]);
+
         await using LifecycleRetentionService retention = new(f);
 
         DataRetentionRequest request = new(DataRetentionOperation.FactoryReset);
@@ -168,7 +171,7 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Empty(plan.Conflicts);
 
-        long expected = await ExpectedPaidFactoryDerivedAsync(f);
+        long expected = await ExpectedPaidFactoryDerivedAsync(f) + 3;
 
         DateTimeOffset crashed = DateTimeOffset.UtcNow.AddMinutes(-10);
 
@@ -210,6 +213,8 @@ public sealed partial class LongRestMaintenanceTests
         Assert.Equal(1, after.Rows); // The completed recovery launch is the only remaining planned row.
 
         Assert.Equal(expected, plan.DerivedRecords);
+
+        await MemoryEvaluationLifecycleTests.AssertAbsentAsync(f.H.Connection, evaluation.EvaluationId);
     }
 
     [Fact]

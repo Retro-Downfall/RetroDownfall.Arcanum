@@ -688,7 +688,9 @@ internal static class CoreSchemaVersionSeventeenFixture
     [
         .. GrimoireSchemaCatalog.CoreObjects
             .Where(static definition => PublishedObjects.Contains(definition.Name))
-            .Select(static definition => Frozen.TryGetValue(definition.Name, out string? sql)
+            .Select(static definition => definition.Name == "external_disclosure_receipts"
+                ? definition with { Sql = PublishedDisclosureReceiptSchema.Sql }
+                : Frozen.TryGetValue(definition.Name, out string? sql)
                 ? definition with { Sql = sql }
                 : definition),
     ];

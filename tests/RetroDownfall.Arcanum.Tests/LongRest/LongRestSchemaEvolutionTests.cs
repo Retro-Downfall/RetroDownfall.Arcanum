@@ -27,7 +27,7 @@ public sealed partial class LongRestSchemaEvolutionTests
     }
 
     [Fact]
-    public async Task Version_seventeen_evolves_to_the_same_discovery_catalog_as_fresh()
+    public async Task Version_seventeen_evolves_to_the_current_catalog_as_fresh()
     {
         using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
 
@@ -46,7 +46,7 @@ public sealed partial class LongRestSchemaEvolutionTests
 
         GrimoireSchemaInstallResult evolved = await InstallHeadAsync(connection);
 
-        Assert.Equal(18, evolved.Core.SchemaVersion);
+        Assert.Equal(19, evolved.Core.SchemaVersion);
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, evolved.Core.Health);
 
@@ -192,7 +192,7 @@ public sealed partial class LongRestSchemaEvolutionTests
 
         Assert.Equal(GrimoireSchemaTierHealth.Healthy, upgraded.Core.Health);
 
-        Assert.Equal(18, upgraded.Core.SchemaVersion);
+        Assert.Equal(19, upgraded.Core.SchemaVersion);
 
         Assert.Equal(before, await RowsAsync(connection,
             "SELECT m.Content || '|' || v.VersionId || '|' || v.OriginCode || '|' || hex(v.ContentHash) FROM saga_memories m JOIN annal_claims c ON c.SubjectId = m.Id JOIN annal_versions v ON v.ClaimId = c.ClaimId;"));

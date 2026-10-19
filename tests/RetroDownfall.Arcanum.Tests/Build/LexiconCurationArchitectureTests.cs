@@ -407,18 +407,23 @@ public sealed class LexiconCurationArchitectureTests
         // version writer snapshots evidence, and the historical schema backfill is not retrieval. Restore
         // staging's erasure match fingerprints an archived entry's name to find what this installation
         // erased; it returns ids only and never serves a name. Its purge reads only the matched entries'
-        // content rowids, to prove the full-text index holds none of them afterwards.
+        // content rowids, to prove the full-text index holds none of them afterwards. Evaluation
+        // restore sanitation checks existence only; its reader proves exact metadata eligibility
+        // before hydrating and checking the content hash of explicitly selected versions.
         Assert.Equal(new[]
         {
             "AnnalsClaimWriter.SnapshotLexiconProvenanceAsync",
             "BackupRestoreErasureEvidenceApplier.FindMatchesAsync",
             "BackupRestoreErasureEvidenceApplier.ReadLexiconRowIdsAsync",
+            "BackupRestoreMemoryEvaluationSanitation.InvalidIdsAsync",
             "DataRetentionService.BuildMemoryResetSelections",
             "DataRetentionService.Pruning.AddLexiconCandidatesCoreAsync",
             "DataRetentionService.Pruning.DeleteLexiconCandidateAsync",
             "GrimoireSchemaInstaller.TryRebuildLexiconFtsAsync",
             "MemoryAnnalsBackfill.ReadBatchAsync",
             "MemoryEndpoints.BuildStatusAsync",
+            "MemoryEvaluationSourceReader.Lexicon.ReadLexiconAsync",
+            "MemoryEvaluationSourceReader.Lexicon.HydrateLexiconAsync",
         }.Order(StringComparer.Ordinal), actual.Order(StringComparer.Ordinal));
     }
 

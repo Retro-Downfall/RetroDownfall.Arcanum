@@ -1054,6 +1054,62 @@ internal static class GrimoireConnectionAcquisitionScanner
         BindProofEvidence(
         [
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "MarkPossiblyDispatchedAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/BudgetReservationService.cs", "BudgetReservationService", "ReconcileRecordedUsageAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs", "DataRetentionService", "MemoryResetSelectionAvailableAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DataRetentionService", "AddEvaluationClosureItemsAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(ct)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationEndpoints.cs", "MemoryEvaluationEndpoints", "RunAsync(3)", AcquisitionConstructKind.ProviderOpen, "scopes.OpenAsync", 3, "scopes.OpenAsync(http,read.Body!.Scope,http.RequestAborted)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "MemoryEvaluationEndpoints.RunAsync(3)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationEndpoints.cs", "MemoryEvaluationEndpoints", "RunAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenAsync", 3, "scopes.OpenAsync(http,read.Body!.Scope,http.RequestAborted)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "MemoryEvaluationEndpoints.RunAsync(3)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationEndpoints.cs", "MemoryEvaluationEndpoints", "OpenOwnedAsync(4)", AcquisitionConstructKind.ProviderOpen, "scopes.OpenAsync", 3, "scopes.OpenAsync(http,scope,http.RequestAborted)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "MemoryEvaluationEndpoints.OpenOwnedAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationEndpoints.cs", "MemoryEvaluationEndpoints", "OpenOwnedAsync(4)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenAsync", 3, "scopes.OpenAsync(http,scope,http.RequestAborted)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "MemoryEvaluationEndpoints.OpenOwnedAsync(4)", 0)),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestDiscoveryStore.CompletedCheckpoint.cs", "LongRestDiscoveryStore", "ReconcileCompletedCheckpointAsync(7)", AcquisitionConstructKind.ProviderOpen, "OpenAsync", 1, "OpenAsync(ct)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,

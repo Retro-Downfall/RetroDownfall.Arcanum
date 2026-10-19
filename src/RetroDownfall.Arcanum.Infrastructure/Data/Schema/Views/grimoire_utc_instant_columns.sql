@@ -129,4 +129,7 @@ UNION ALL SELECT 'long_rest_accepted_summaries' AS TableName, 'CreatedAtUtc' AS 
 UNION ALL SELECT 'long_rest_adjudications' AS TableName, 'CreatedAtUtc' AS ColumnName
 UNION ALL SELECT 'long_rest_sweeps' AS TableName, 'ParkedAt' AS ColumnName
 UNION ALL SELECT 'long_rest_sweeps' AS TableName, 'UpdatedAtUtc' AS ColumnName
-UNION ALL SELECT 'long_rest_provider_effects' AS TableName, 'UpdatedAtUtc' AS ColumnName;
+UNION ALL SELECT 'long_rest_provider_effects' AS TableName, 'UpdatedAtUtc' AS ColumnName
+UNION ALL SELECT 'memory_evaluations' AS TableName, 'CreatedAtUtc' AS ColumnName
+UNION ALL SELECT 'memory_evaluations' AS TableName, 'SourceAsOfUtc' AS ColumnName
+UNION ALL SELECT 'memory_evaluation_reports' AS TableName, 'CompletedAtUtc' AS ColumnName;

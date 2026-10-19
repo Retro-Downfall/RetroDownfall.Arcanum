@@ -2,6 +2,8 @@ using System.Reflection;
 using System.Text.RegularExpressions;
 
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
+using RetroDownfall.Arcanum.Api.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Tests.NativeSqlCipher;
 
 namespace RetroDownfall.Arcanum.Tests.Api;
@@ -99,6 +101,26 @@ public sealed class ErrorCodeCatalogContractTests
     /// so a client written against the published catalog had no row to match.
     /// </summary>
     [Theory]
+    [InlineData("MemoryEvaluation.InvalidRequest")]
+    [InlineData("MemoryEvaluation.InvalidScope")]
+    [InlineData("MemoryEvaluation.InvalidPrompt")]
+    [InlineData("MemoryEvaluation.InvalidEvaluation")]
+    [InlineData("MemoryEvaluation.InvalidMetadata")]
+    [InlineData("MemoryEvaluation.NotFound")]
+    [InlineData("MemoryEvaluation.Gone")]
+    [InlineData("MemoryEvaluation.Busy")]
+    [InlineData("MemoryEvaluation.StaleSource")]
+    [InlineData("MemoryEvaluation.StaleAuthority")]
+    [InlineData("MemoryEvaluation.ScopeMismatch")]
+    [InlineData("MemoryEvaluation.QuotaExceeded")]
+    [InlineData("MemoryEvaluation.StaleConfiguration")]
+    [InlineData("MemoryEvaluation.Cancelled")]
+    [InlineData("MemoryEvaluation.Interrupted")]
+    [InlineData("MemoryEvaluation.NotPrepared")]
+    [InlineData("MemoryEvaluation.ProviderFailure")]
+    [InlineData("MemoryEvaluation.Unavailable")]
+    [InlineData("MemoryEvaluation.ProviderUnavailable")]
+    [InlineData("MemoryEvaluation.InvalidProviderPlan")]
     [InlineData("Operation.NotFound")]
     [InlineData("Operation.StateConflict")]
     [InlineData("Operation.InvalidState")]
@@ -182,6 +204,40 @@ public sealed class ErrorCodeCatalogContractTests
         Assert.Contains(
             unauthorizedRows,
             row => row.Contains(ErrorCodes.Auth.Unauthorized, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData(MemoryEvaluationReason.None, "MemoryEvaluation.Interrupted")]
+    [InlineData(MemoryEvaluationReason.MixedOutcomes, "MemoryEvaluation.MixedOutcomes")]
+    [InlineData(MemoryEvaluationReason.NotPrepared, "MemoryEvaluation.NotPrepared")]
+    [InlineData(MemoryEvaluationReason.Interrupted, "MemoryEvaluation.Interrupted")]
+    [InlineData(MemoryEvaluationReason.Cancelled, "MemoryEvaluation.Cancelled")]
+    [InlineData(MemoryEvaluationReason.StaleAuthority, "MemoryEvaluation.StaleAuthority")]
+    [InlineData(MemoryEvaluationReason.StaleSource, "MemoryEvaluation.StaleSource")]
+    [InlineData(MemoryEvaluationReason.StaleConfiguration, "MemoryEvaluation.StaleConfiguration")]
+    [InlineData(MemoryEvaluationReason.InvalidEvaluation, "MemoryEvaluation.InvalidEvaluation")]
+    [InlineData(MemoryEvaluationReason.InvalidOutput, "MemoryEvaluation.InvalidOutput")]
+    [InlineData(MemoryEvaluationReason.ModelMismatch, "MemoryEvaluation.ModelMismatch")]
+    [InlineData(MemoryEvaluationReason.ProviderFailure, "MemoryEvaluation.ProviderFailure")]
+    [InlineData(MemoryEvaluationReason.UsageFailure, "MemoryEvaluation.UsageFailure")]
+    [InlineData(MemoryEvaluationReason.AccountingFailure, "MemoryEvaluation.AccountingFailure")]
+    [InlineData(MemoryEvaluationReason.Erased, "MemoryEvaluation.Erased")]
+    [InlineData(MemoryEvaluationReason.Incomplete, "MemoryEvaluation.Incomplete")]
+    [InlineData((MemoryEvaluationReason)999, "MemoryEvaluation.InvalidEvaluation")]
+    public void Evaluation_failure_codes_are_closed_and_none_normalizes_to_interrupted(MemoryEvaluationReason reason, string expected)
+    {
+        Assert.Equal(expected, MemoryEvaluationRunner.FailureCode(reason));
+        Assert.Contains(expected, DeclaredErrorCodes().Select(declared => declared.Value));
+        Assert.Contains(expected, ReadErrorCatalogSection(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("MemoryEvaluation.InvalidAdmission")]
+    [InlineData("MemoryEvaluation.AmbiguousAccounting")]
+    public void Internal_evaluation_codes_are_declared_and_documented_separately(string code)
+    {
+        Assert.Contains(code, DeclaredErrorCodes().Select(declared => declared.Value));
+        Assert.Contains(code, ReadErrorCatalogSection(), StringComparison.Ordinal);
     }
 
     private static IEnumerable<(string RelativePath, string Source)> EnumerateApiSources()

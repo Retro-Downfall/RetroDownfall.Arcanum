@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Tests.ProvingGrounds;
 using System.Data;
 using System.Net;
 using System.Net.Http.Json;
@@ -92,6 +93,14 @@ public sealed class BackupRestoreErasureApplicationTests
 
         await harness.StopHostAsync();
 
+        Guid evaluationId;
+        Guid preparedId;
+        await using (SqliteConnection before = await BackupRestoreDatabaseWorker.OpenAsync(harness.DatabasePath, GrimoireFixture.TestGrimoireSecret, readOnly: false, Token))
+        {
+            evaluationId = (await MemoryEvaluationLifecycleTests.SeedAsync(before, [MemoryEvaluationEvidenceStoreTests.Source() with { SubjectId = m }])).EvaluationId;
+            preparedId = (await MemoryEvaluationLifecycleTests.SeedAsync(before, [MemoryEvaluationEvidenceStoreTests.Source() with { SubjectId = m2 }], terminal: false)).EvaluationId;
+        }
+
         string archive = await harness.CreateArchiveAsync("saga.arcbackup");
 
         harness.StartHost();
@@ -110,6 +119,8 @@ public sealed class BackupRestoreErasureApplicationTests
 
         await using (SqliteConnection restored = await harness.OpenLiveDatabaseAsync(GrimoireFixture.TestGrimoireSecret))
         {
+            await MemoryEvaluationLifecycleTests.AssertAbsentAsync(restored, evaluationId);
+            await MemoryEvaluationLifecycleTests.AssertAbsentAsync(restored, preparedId);
             Assert.Equal(0L, await CountAsync(restored, "SELECT COUNT(*) FROM saga_memories WHERE Id = $m", ("$m", m)));
 
             Assert.Equal(

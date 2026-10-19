@@ -42,6 +42,7 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, Type> ExpectedHandlers =
         new Dictionary<string, Type>(StringComparer.Ordinal)
         {
+            [LongRunningOperationKinds.MemoryEvaluation] = typeof(MemoryEvaluationRecoveryHandler),
             [LongRunningOperationKinds.LongRestSweep] = typeof(LongRestSweepRecoveryHandler),
             [LongRunningOperationKinds.Subagent] = typeof(SubagentRecoveryHandler),
             [LongRunningOperationKinds.BlobEncryptionMigration] = typeof(BlobEncryptionMigrationRecoveryHandler),
@@ -65,6 +66,8 @@ public sealed class RecoveryHandlerCoverageTests
     private static readonly IReadOnlyDictionary<string, string> ProductionProducers =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            [LongRunningOperationKinds.MemoryEvaluation] =
+                "src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationRunner.cs",
             [LongRunningOperationKinds.LongRestSweep] =
                 "src/RetroDownfall.Arcanum.Infrastructure/Operations/LongRest/LongRestSweepCoordinator.cs",
             [LongRunningOperationKinds.Subagent] =

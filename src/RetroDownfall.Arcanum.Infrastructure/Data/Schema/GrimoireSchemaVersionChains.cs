@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 17 and declares sixteen steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 19 and declares eighteen steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -135,7 +135,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 17 adds immutable, request-bound Long Rest transformation receipts and exact-version
     /// Saga suppression links. Every table starts empty; existing subjects and claims are unchanged.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 18;
+    internal const int CoreSchemaVersion = 19;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -284,6 +284,10 @@ internal static class GrimoireSchemaVersionChains
 
             [(GrimoireSchemaTransactionTier.Core, 18)] =
                 "91088B7AAFED7C79D0D737836E96071D4F7586535BE49596226F33E9ACA08ACA",
+
+            // Captured from the published v18 catalog before any v19 head edits.
+            [(GrimoireSchemaTransactionTier.Core, 19)] =
+                "077C7BC1524C581489538ACEDCF7F3BED9C0C076F88B03A2718CF2BAF8EF1FD7",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",
