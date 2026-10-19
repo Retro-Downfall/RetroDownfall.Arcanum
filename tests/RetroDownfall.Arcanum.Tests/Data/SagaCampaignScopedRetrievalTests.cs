@@ -657,7 +657,8 @@ public sealed class SagaCampaignScopedRetrievalTests : IAsyncLifetime
         DivinationService divination = new(
             _db!,
             _availability!,
-            NullLogger<DivinationService>.Instance);
+            NullLogger<DivinationService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         Result<DivinationResult[]> search = await divination.SearchCampaignScopedAsync(
             "saga_memory_embeddings_vec",

@@ -35,6 +35,13 @@ public sealed class GrimoireRepositorySqlBoundaryTests
                 new("InsertFinalizationGuardAsync", "CreateCommand", 1),
                 new("RecordClaimInterruptionAsync", "CreateCommand", 1),
             ],
+            // Saga-use publication borrows turn commit's already-admitted immediate transaction.
+            // Its source read and evidence insert explicitly attach that same transaction and bind
+            // every value; the recall predicate interpolates only a code-owned eligibility fragment.
+            ["GrimoireRepository.TurnCommit.SagaUses.cs"] =
+            [
+                new("PublishSagaUsesAsync", "CreateCommand", 2),
+            ],
             // Claim input and begin obtain the scoped connection only to acquire its ordinary
             // admission lease. Begin attaches the lease's BEGIN IMMEDIATE transaction to the same
             // EF context; every input/read/write command still goes through the factory.

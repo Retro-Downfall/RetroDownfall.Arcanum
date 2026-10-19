@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
@@ -480,7 +481,8 @@ public sealed class DivinationServiceTests : IAsyncLifetime
 
         availability.SetAvailable(vecAvailable);
 
-        return new DivinationService(_db!, availability, logger ?? NullLogger<DivinationService>.Instance);
+        return new DivinationService(_db!, availability, logger ?? NullLogger<DivinationService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
     }
 
     /// <summary>

@@ -725,6 +725,7 @@ public sealed class MemoryErasureDigestGrammarTests
             "memory_evaluation_reports",
             "memory_evaluation_sources",
             "memory_evaluations",
+            "saga_committed_uses",
         ];
 
         Assert.Equal(expected, MemoryErasureTableCodes.Tables);
@@ -753,6 +754,8 @@ public sealed class MemoryErasureDigestGrammarTests
         Assert.Equal(35, MemoryErasureTableCodes.For("long_rest_clean_fts"));
 
         Assert.Equal(47, MemoryErasureTableCodes.For("long_rest_sources"));
+
+        Assert.Equal(51, MemoryErasureTableCodes.For("saga_committed_uses"));
     }
 
     private static byte[] SagaGlobal(string content) =>

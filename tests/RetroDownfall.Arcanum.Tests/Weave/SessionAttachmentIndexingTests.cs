@@ -1203,7 +1203,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             new DivinationService(
                 _db!,
                 new WeaveIndexAvailability(),
-                NullLogger<DivinationService>.Instance),
+                NullLogger<DivinationService>.Instance,
+                new TestOptionsMonitor<ArcanumSettings>(_settings)),
             _index!,
             NullLogger<SessionAttachmentRetrievalService>.Instance);
 
@@ -1331,7 +1332,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             new DivinationService(
                 _db!,
                 new WeaveIndexAvailability(),
-                NullLogger<DivinationService>.Instance),
+                NullLogger<DivinationService>.Instance,
+                new TestOptionsMonitor<ArcanumSettings>(_settings)),
             _index!,
             NullLogger<SessionAttachmentRetrievalService>.Instance);
 

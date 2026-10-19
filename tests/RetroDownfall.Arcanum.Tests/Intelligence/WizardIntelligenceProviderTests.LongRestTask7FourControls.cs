@@ -77,7 +77,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         settings.Features.CampaignRollups = false;
 
-        DivinationService search = new(saga.Context, saga.VectorAccelerator, NullLogger<DivinationService>.Instance);
+        DivinationService search = new(saga.Context, saga.VectorAccelerator, NullLogger<DivinationService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(settings));
 
         DivinationResult[] expected = LongRestSweepHarness.Require(await search.SearchAsync(
             SagaStorageKeys.VectorTable, SagaStorageKeys.EmbeddingKeyColumn, SagaStorageKeys.EmbeddingColumn,

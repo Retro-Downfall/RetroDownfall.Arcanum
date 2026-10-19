@@ -2707,7 +2707,26 @@
               "completion": "session"
             }
           ],
-          "options": [],
+          "options": [
+            {
+              "name": "--saga-id",
+              "aliases": [],
+              "description": "Optional exact Saga memory identity to explain without its content.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            },
+            {
+              "name": "--similarity",
+              "aliases": [],
+              "description": "Reference cosine similarity from -1 to 1; default 0. Does not run an embedding query.",
+              "recursive": false,
+              "takesValue": true,
+              "repeatable": false,
+              "values": []
+            }
+          ],
           "examples": [
             "arcanum memory explain"
           ],

@@ -267,7 +267,8 @@ public sealed class LongRestRecallTests
 
         Assert.True(await store.AnyRetrievableAsync(MemoryScope.Installation, CancellationToken.None));
 
-        DivinationService service = new(db, availability, NullLogger<DivinationService>.Instance);
+        DivinationService service = new(db, availability, NullLogger<DivinationService>.Instance,
+            new TestOptionsMonitor<ArcanumSettings>(new ArcanumSettings()));
 
         Result<DivinationResult[]> recall = await service.SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
             new Embedding<float>(Vector(1, 0)), 1, 0.5f, CancellationToken.None);
@@ -330,7 +331,7 @@ public sealed class LongRestRecallTests
     }
 
     private static DivinationService Service(SagaStoreHarness h) =>
-        new(h.Context, h.VectorAccelerator, NullLogger<DivinationService>.Instance);
+        new(h.Context, h.VectorAccelerator, NullLogger<DivinationService>.Instance, h.Options);
 
     private static Task<Result<DivinationResult[]>> SearchAsync(SagaStoreHarness h) =>
         Service(h).SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding", new Embedding<float>(Vector(1, 0)),

@@ -208,7 +208,7 @@ public sealed class SagaLongRestServiceTests
 
         _ = await new SagaLongRestService(h.Context, TimeProvider.System).ApplyAsync(request, CancellationToken.None);
 
-        DivinationService divination = new(h.Context, h.VectorAccelerator, NullLogger<DivinationService>.Instance);
+        DivinationService divination = new(h.Context, h.VectorAccelerator, NullLogger<DivinationService>.Instance, h.Options);
 
         foreach (bool accelerated in new[] { false, true })
         {

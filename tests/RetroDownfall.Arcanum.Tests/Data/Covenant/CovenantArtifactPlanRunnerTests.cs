@@ -2,15 +2,21 @@ using System.Data.Common;
 using System.Globalization;
 
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 
+using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
+using RetroDownfall.Arcanum.Infrastructure.Repositories;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
@@ -43,7 +49,7 @@ public sealed class CovenantArtifactPlanRunnerTests
     ];
 
     private const string GatedTablesPresent =
-        "SELECT count(*) FROM sqlite_master WHERE name IN ('annal_review_events', 'annal_review_decision_receipts', 'long_rest_discovery_generations', 'long_rest_provider_effects', 'long_rest_clean_fts', 'long_rest_protected_fts', 'long_rest_sources', 'long_rest_protected_receipt_inputs', 'long_rest_protected_receipt_evidence');";
+        "SELECT count(*) FROM sqlite_master WHERE name IN ('annal_review_events', 'annal_review_decision_receipts', 'long_rest_discovery_generations', 'long_rest_provider_effects', 'long_rest_clean_fts', 'long_rest_protected_fts', 'long_rest_sources', 'long_rest_protected_receipt_inputs', 'long_rest_protected_receipt_evidence', 'saga_committed_uses');";
 
     private static readonly DateTimeOffset CreatedAt = new(2026, 9, 28, 12, 0, 0, TimeSpan.Zero);
 
@@ -78,7 +84,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
-            new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
+            new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 1),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];
@@ -112,6 +118,125 @@ public sealed class CovenantArtifactPlanRunnerTests
         Assert.Equal(1, await harness.CountAsync("saga_memories", "1 = 1"));
 
         Assert.Equal(1, await harness.CountAsync("annal_claims", "1 = 1"));
+    }
+
+    [SkippableFact]
+    public async Task Saga_erasure_counts_and_removes_only_its_native_committed_use_without_foreign_key_cascades()
+    {
+        await using SagaStoreHarness harness = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        Guid target = Guid.NewGuid();
+
+        Guid bystander = Guid.NewGuid();
+
+        await InsertAsync(harness, target, "the target memory");
+
+        await InsertAsync(harness, bystander, "an unrelated memory");
+
+        SagaUseCoordinate targetUse = await CoordinateAsync(harness, target);
+
+        SagaUseCoordinate bystanderUse = await CoordinateAsync(harness, bystander);
+
+        Guid sessionId = Guid.NewGuid();
+
+        Guid assistantEntryId = Guid.NewGuid();
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        _ = harness.Context.Sessions.Add(new Session
+        {
+            Id = sessionId,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Status = "active",
+            Title = "committed-use erasure",
+            UnsummarizedEntryCount = 2,
+        });
+
+        _ = harness.Context.Entries.Add(new Entry
+        {
+            Id = Guid.NewGuid(),
+            SessionId = sessionId,
+            Role = MessageRole.User,
+            Content = "hello",
+            ModelUsed = "test-model",
+            CreatedAt = now,
+            Sequence = 1L,
+        });
+
+        _ = harness.Context.Entries.Add(new Entry
+        {
+            Id = assistantEntryId,
+            SessionId = sessionId,
+            Role = MessageRole.Assistant,
+            Content = string.Empty,
+            ModelUsed = "test-model",
+            CreatedAt = now,
+            Sequence = 2L,
+        });
+
+        _ = await harness.Context.SaveChangesAsync(Token);
+
+        IGrimoireTurnCommitter committer = new GrimoireRepository(
+            harness.Context,
+            new NoOpSessionAttachmentStore(),
+            NullLogger<GrimoireRepository>.Instance,
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
+            covenantKernel: null,
+            availabilityRepublisher: null,
+            FixtureOrdinaryConnectionFactory.For(harness.Context),
+            FixtureLabeledArtifactGuard.For(harness.Context));
+
+        Result<TurnCommitReceipt> committed = await committer.CommitTurnAsync(
+            new TurnCommitRequest(
+                assistantEntryId,
+                sessionId,
+                AssistantFinalizationOutcome.Committed,
+                "answer",
+                new CovenantDigest(new byte[32]),
+                ContentSensitivity.None,
+                GenerationProvenance.CreateExact([]),
+                sagaUses: [targetUse, bystanderUse]),
+            Token);
+
+        Assert.True(committed.IsSuccess, committed.Error.Message);
+
+        Assert.False(committed.Value.Replayed);
+
+        Assert.Equal(2, await harness.CountAsync("saga_committed_uses", "1 = 1"));
+
+        SqliteConnection connection = (SqliteConnection)harness.Connection;
+
+        await using (SqliteCommand disableCascades = connection.CreateCommand())
+        {
+            disableCascades.CommandText = "PRAGMA foreign_keys = OFF";
+
+            _ = await disableCascades.ExecuteNonQueryAsync(Token);
+        }
+
+        Assert.Equal(0L, await ScalarAsync(connection, "PRAGMA foreign_keys"));
+
+        CovenantArtifactPlanTally counted = await RunAsync(connection, SensitiveArtifactKind.Saga, target, CovenantArtifactPlanMode.Count);
+
+        Assert.Equal(1L, Assert.Single(counted.Targets, static row => row.Table == "saga_committed_uses").Rows);
+
+        CovenantArtifactPlanTally deleted = await RunAsync(connection, SensitiveArtifactKind.Saga, target, CovenantArtifactPlanMode.Delete);
+
+        Assert.Equal(counted.Targets, deleted.Targets);
+
+        Assert.All(
+            (await RunAsync(connection, SensitiveArtifactKind.Saga, target, CovenantArtifactPlanMode.Count)).Targets,
+            static remaining => Assert.Equal(0L, remaining.Rows));
+
+        Assert.Equal(0L, await ScalarAsync(connection, "SELECT count(*) FROM saga_committed_uses WHERE MemoryId = $memory", ("$memory", target.ToString())));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM saga_committed_uses WHERE MemoryId = $memory", ("$memory", bystander.ToString())));
+
+        Assert.Equal(1, await harness.CountAsync("saga_committed_uses", "1 = 1"));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM assistant_entry_finalizations WHERE AssistantEntryId = $assistant", ("$assistant", assistantEntryId.ToString("D").ToUpperInvariant())));
+
+        Assert.Equal(1L, await ScalarAsync(connection, "SELECT count(*) FROM Entries WHERE Id = $assistant AND Content = 'answer'", ("$assistant", assistantEntryId.ToString("D").ToUpperInvariant())));
     }
 
     [SkippableFact]
@@ -193,7 +318,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 1), new("annal_dependencies", 0),
-            new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
+            new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];
@@ -262,7 +387,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             new("long_rest_protected_receipt_inputs", 0), new("long_rest_protected_receipt_evidence", 0),
             new("long_rest_receipts", 0), new("long_rest_suppressions", 0), new("long_rest_receipt_inputs", 0),
             new("annal_review_decision_receipts", 0), new("annal_review_events", 0), new("annal_dependencies", 0),
-            new("annal_heads", 1), new("annal_versions", 1), new("annal_claims", 1),
+            new("annal_heads", 1), new("saga_committed_uses", 0), new("annal_versions", 1), new("annal_claims", 1),
             new("saga_memory_embeddings", 1), new("saga_memory_embeddings_vec", 0),
             new("saga_memory_attachment_provenance", 0), new("saga_memories", 1),
         ];
@@ -325,11 +450,27 @@ public sealed class CovenantArtifactPlanRunnerTests
         Assert.Equal(SagaMemoryWriteOutcome.Written, outcome);
     }
 
-    private static async Task<long> ScalarAsync(SqliteConnection connection, string sql)
+    private static async Task<SagaUseCoordinate> CoordinateAsync(SagaStoreHarness harness, Guid id)
+    {
+        AnnalClaimHead claim = Assert.IsType<AnnalClaimHead>(await harness.Annals.GetClaimAsync(AnnalSubjectStore.Saga, id.ToString(), Token));
+
+        AnnalClaimVersion version = Assert.Single(await harness.Annals.GetVersionsAsync(claim.ClaimId, Token));
+
+        Assert.Equal(claim.CurrentVersionId, version.VersionId);
+
+        return new SagaUseCoordinate(id.ToString(), claim.ClaimId, version.VersionId, (int)version.ContentHashFormat, new CovenantDigest(Assert.IsType<byte[]>(version.ContentHash)));
+    }
+
+    private static async Task<long> ScalarAsync(SqliteConnection connection, string sql, params (string Name, object Value)[] parameters)
     {
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
+
+        foreach ((string name, object value) in parameters)
+        {
+            _ = command.Parameters.AddWithValue(name, value);
+        }
 
         return (long)(await command.ExecuteScalarAsync(Token))!;
     }

@@ -3,6 +3,8 @@ using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -33,10 +35,10 @@ internal sealed class DivinationService(
     ArcanumDbContext db,
     WeaveIndexAvailability availability,
     ILogger<DivinationService> logger,
-    Microsoft.Extensions.Options.IOptionsMonitor<RetroDownfall.Arcanum.Core.Configuration.ArcanumSettings>? options = null,
+    IOptionsMonitor<ArcanumSettings> options,
     TimeProvider? timeProvider = null) : IDivinationService
 {
-    private bool RankingEnabled => options?.CurrentValue.Features.LongRest == true;
+    private bool RankingEnabled => options.CurrentValue.Features.LongRest;
 
     private DateTimeOffset RankingInstant => (timeProvider ?? TimeProvider.System).GetUtcNow();
 
