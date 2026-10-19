@@ -372,6 +372,7 @@ R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestSnapshot.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/LongRestSweepContracts.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ProtectedLongRestCanonicalHash.cs
 R	src/RetroDownfall.Arcanum.Core/LongRest/ProtectedLongRestPolicy.cs
+R	src/RetroDownfall.Arcanum.Core/LongRest/SagaRankingPolicy.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/IMcpConnectionManager.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/IMcpWorkspaceTrustPreviewer.cs
 R	src/RetroDownfall.Arcanum.Core/Mcp/ITrustedMcpWorkspaceStore.cs
@@ -579,6 +580,7 @@ R	src/RetroDownfall.Arcanum.Core/Weave/SagaSearchResult.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SagaStats.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SagaStorageKeys.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SagaSuppressionDigest.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/SagaUseCoordinate.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SemanticContextChunk.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/SessionAttachmentRetrievalContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryStore.cs
@@ -918,6 +920,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.Rec
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.Snapshots.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.Sweeps.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaRankingEvidenceReader.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaRankingReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.RequestAdmission.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/MemoryErasureEvidence.cs
@@ -944,6 +948,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaErasureWriteGate.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaExtractionCursorResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryScopeClassifier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Ranking.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaRetirementSuppression.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaSuppressionKeyStore.cs
@@ -1214,6 +1219,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/owner_deletion_ope
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/protected_session_transfer_blobs.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/protected_session_transfer_intents.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/restored_managed_file_authority_tombstones.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_committed_uses.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_extraction_watermarks.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_memories.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/saga_memory_attachment_provenance.sql
@@ -1416,6 +1422,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/030_saga_m
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/040_lexicon_entries_scope.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/050_lexicon_entries_retire_name_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/060_lexicon_entries_scope_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/010_saga_committed_uses.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/020_saga_committed_uses_validate_insert.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/030_saga_committed_uses_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/010_annal_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/011_annal_claims_subject_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/012_annal_claims_store_candidate_index.sql
@@ -1687,6 +1696,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/protected_sessio
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/restored_managed_file_authority_tombstones_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/restored_managed_file_authority_tombstones_guard_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/restored_managed_file_authority_tombstones_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_committed_uses_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_committed_uses_validate_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_extraction_watermarks_validate_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_extraction_watermarks_validate_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/saga_memories_CampaignId_guard_identity_insert.sql
@@ -2093,6 +2104,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireLimits.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnBegin.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnClaimBegin.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.SessionTurnClaimReplay.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.TurnCommit.SagaUses.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.TurnCommit.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Repositories/ImportedSessionSourceLease.cs
