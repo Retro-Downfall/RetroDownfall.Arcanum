@@ -44,8 +44,11 @@ internal sealed partial class SagaMemoryStore
                 {
                     bool consolidated = reader.GetInt32(reader.GetOrdinal("RankingConsolidated")) != 0;
                     SagaRankingComponents components = ranking.Evaluate(reader, referenceSimilarity, consolidated) with { VersionId = null };
-                    bool eligible = !consolidated && reader.GetInt32(reader.GetOrdinal("RankingHasEmbedding")) != 0 && ranking.Eligible(reader, components);
-                    memories.Add(new(reader.GetString(0), eligible, components));
+                    SagaRetrievalEligibility eligibility = SagaRetrievalEligibilityClassifier.Classify(
+                        ranking.Snapshot(reader, consolidated).Retired,
+                        (SagaMemoryScopeKind)reader.GetInt32(reader.GetOrdinal("RankingMemoryScopeKind")),
+                        consolidated, reader.GetInt32(reader.GetOrdinal("RankingHasEmbedding")) != 0, components, scope.IsEnforced);
+                    memories.Add(new(reader.GetString(0), eligibility == SagaRetrievalEligibility.Eligible, components, eligibility));
                 }
             }
 
@@ -55,6 +58,100 @@ internal sealed partial class SagaMemoryStore
                 -0.09f, 0.13f, memories.ToArray(), more);
         }, cancellationToken);
     }
+
+    public Task<SagaRankingStatusDto?> ReadRankingStatusAsync(MemoryScope scope, Guid? sessionId, CancellationToken cancellationToken) =>
+        ReadLongRestSnapshotAsync<SagaRankingStatusDto?>(async (connection, longRest) =>
+        {
+            if (!longRest)
+            {
+                return null;
+            }
+
+            SagaRankingReader ranking = await SagaRankingReader.CreateAsync(connection, options.CurrentValue.Features.LongRest,
+                (timeProvider ?? TimeProvider.System).GetUtcNow(), cancellationToken).ConfigureAwait(false);
+
+            await using DbCommand command = connection.CreateCommand();
+
+            command.CommandText = $"""
+                SELECT m."Id" {SagaRankingReader.Projection(longRest)},
+                    {LongRestRecallSql.Suppressed("m")} AS RankingConsolidated
+                FROM saga_memories m
+                {SagaRankingReader.Join(longRest)}
+                WHERE (@session IS NULL OR m.SessionId = @session COLLATE NOCASE)
+                    AND (@enforced = 0 OR m.ScopeKindCode = 1 OR (m.ScopeKindCode = 2 AND m.CampaignId = @campaign))
+                    AND COALESCE(ranking_version.SensitivityCode, 0) = 0
+                    AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 6
+                        AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(m."Id", '-', '')))
+                """;
+
+            AddParameter(command, "@session", sessionId is { } session ? session.ToString("D") : DBNull.Value);
+
+            AddParameter(command, "@enforced", scope.IsEnforced ? 1 : 0);
+
+            AddParameter(command, "@campaign", scope.CampaignId is { } campaign ? campaign.ToString("D").ToUpperInvariant() : DBNull.Value);
+
+            int memories = 0;
+
+            int versions = 0;
+
+            int consolidatedVersions = 0;
+
+            int dormantVersions = 0;
+
+            int positiveCreditVersions = 0;
+
+            int negativeCreditVersions = 0;
+
+            int uncorroboratedBenefitVersions = 0;
+
+            await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                memories++;
+
+                bool consolidated = reader.GetInt32(reader.GetOrdinal("RankingConsolidated")) != 0;
+
+                SagaRankingSnapshot snapshot = ranking.Snapshot(reader, consolidated);
+
+                if (string.IsNullOrWhiteSpace(snapshot.VersionId))
+                {
+                    continue;
+                }
+
+                versions++;
+
+                if (consolidated)
+                {
+                    consolidatedVersions++;
+                }
+
+                SagaRankingComponents components = ranking.Evaluate(reader, 0, consolidated);
+
+                if (components.Dormant)
+                {
+                    dormantVersions++;
+                }
+
+                if (components.UsefulnessModifier > 0)
+                {
+                    positiveCreditVersions++;
+                }
+                else if (components.UsefulnessModifier < 0)
+                {
+                    negativeCreditVersions++;
+                }
+
+                if (components.EvidenceClass == "counterfactual-uncorroborated")
+                {
+                    uncorroboratedBenefitVersions++;
+                }
+            }
+
+            return new(SagaRankingPolicy.PolicyVersion, ranking.Enabled, ranking.AsOfUtc, true,
+                memories, versions, consolidatedVersions, dormantVersions, positiveCreditVersions,
+                negativeCreditVersions, uncorroboratedBenefitVersions);
+        }, cancellationToken);
 
     private static async Task<bool> AnyRankedRetrievableAsync(DbConnection connection, MemoryScope scope, SagaRankingReader ranking,
         bool longRest, CancellationToken ct)

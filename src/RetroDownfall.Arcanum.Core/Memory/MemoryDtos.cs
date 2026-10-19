@@ -50,7 +50,31 @@ public sealed record MemoryStatusDto(
     MemoryStoreStatusDto[] Stores,
     CovenantStatusDto? Covenant = null,
     MemoryCampaignScopeDto? CampaignScope = null,
-    MemoryCampaignSummaryDto? CampaignSummary = null);
+    MemoryCampaignSummaryDto? CampaignSummary = null,
+    SagaRankingStatusDto? SagaRanking = null);
+
+/// <summary>A complete content-free census of clean Saga rows in the selected Session and resolved memory scope.</summary>
+/// <remarks>
+/// Counts describe one metadata and bounded-evidence snapshot. MemoryCount includes claimless legacy
+/// rows; VersionCount and every classification count refer only to retained current immutable versions.
+/// Classification counts are independent dimensions, not a partition that sums to VersionCount.
+/// ConsolidatedVersionCount includes both equivalent-observation consolidation and explicit supersession.
+/// Protected rows and their classifications are omitted, rather than counted as neutral or missing.
+/// Positive and negative credit describe the bounded usefulness modifier, not admission frequency;
+/// UncorroboratedBenefitVersionCount is a measured benefit without retained successful exact use.
+/// </remarks>
+public sealed record SagaRankingStatusDto(
+    int PolicyVersion,
+    bool Enabled,
+    DateTimeOffset AsOfUtc,
+    bool CleanOnly,
+    int MemoryCount,
+    int VersionCount,
+    int ConsolidatedVersionCount,
+    int DormantVersionCount,
+    int PositiveCreditVersionCount,
+    int NegativeCreditVersionCount,
+    int UncorroboratedBenefitVersionCount);
 
 /// <summary>Current Campaign continuity evidence without summary payload or source transcript bytes.</summary>
 public sealed record MemoryCampaignSummaryDto(
@@ -188,6 +212,7 @@ public sealed record SagaRankingExplanationDto(
 public sealed record SagaRankingExplanationMemoryDto(
     string MemoryId,
     bool Eligible,
-    RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents Components);
+    RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents Components,
+    SagaRetrievalEligibility? Eligibility = null);
 
 public sealed record LexiconListDto(LexiconEntryDto[] Entries);

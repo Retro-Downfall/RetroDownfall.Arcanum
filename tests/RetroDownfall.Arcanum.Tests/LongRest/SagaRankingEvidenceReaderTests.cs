@@ -60,6 +60,79 @@ public sealed class SagaRankingEvidenceReaderTests
     }
 
     [SkippableFact]
+    public async Task Status_counts_measured_credit_by_exact_current_version_without_crediting_uncorroborated_benefit()
+    {
+        await using Harness h = await Harness.CreateAsync();
+
+        h.Saga.Options.CurrentValue.Features.LongRest = true;
+
+        MemoryEvaluationSourceCoordinate useful = await h.InsertAsync();
+
+        await h.ReportAsync([useful]);
+
+        await h.ReportAsync([useful]);
+
+        await h.CommitUseAsync(useful);
+
+        MemoryEvaluationSourceCoordinate harmful = await h.InsertAsync();
+
+        await h.ReportAsync([harmful], MemoryEvaluationOutcome.Harm);
+
+        MemoryEvaluationSourceCoordinate uncorroborated = await h.InsertAsync();
+
+        await h.ReportAsync([uncorroborated]);
+
+        MemoryEvaluationSourceCoordinate noEffect = await h.InsertAsync();
+
+        await h.ReportAsync([noEffect], MemoryEvaluationOutcome.NoMeasurableEffect);
+
+        await h.InsertAsync();
+
+        SagaMemoryStore store = new(h.Saga.Context, h.Saga.VectorAccelerator, h.Saga.Options,
+            MemoryErasureTestKeys.Isolated(), timeProvider: new Instant(h.AsOf));
+
+        var status = (await store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!;
+
+        Assert.Equal(5, status.MemoryCount);
+
+        Assert.Equal(5, status.VersionCount);
+
+        Assert.Equal(1, status.PositiveCreditVersionCount);
+
+        Assert.Equal(1, status.NegativeCreditVersionCount);
+
+        Assert.Equal(1, status.UncorroboratedBenefitVersionCount);
+
+        await h.Saga.LabelSensitiveAsync(Guid.Parse(useful.SubjectId));
+
+        var afterProtection = (await store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!;
+
+        Assert.Equal(4, afterProtection.MemoryCount);
+
+        Assert.Equal(4, afterProtection.VersionCount);
+
+        Assert.Equal(0, afterProtection.PositiveCreditVersionCount);
+
+        Assert.Equal(1, afterProtection.NegativeCreditVersionCount);
+
+        Assert.Equal(1, afterProtection.UncorroboratedBenefitVersionCount);
+
+        h.Saga.Options.CurrentValue.Features.LongRest = false;
+
+        var disabled = (await store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!;
+
+        Assert.False(disabled.Enabled);
+
+        Assert.Equal(4, disabled.VersionCount);
+
+        Assert.Equal(0, disabled.PositiveCreditVersionCount);
+
+        Assert.Equal(0, disabled.NegativeCreditVersionCount);
+
+        Assert.Equal(0, disabled.UncorroboratedBenefitVersionCount);
+    }
+
+    [SkippableFact]
     public async Task Benefit_without_a_retained_native_committed_use_is_diagnostic_without_credit()
     {
         await using Harness h = await Harness.CreateAsync();

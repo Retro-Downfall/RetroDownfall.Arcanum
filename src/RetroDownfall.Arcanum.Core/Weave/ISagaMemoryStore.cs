@@ -85,6 +85,11 @@ public interface ISagaMemoryStore
         MemoryScope scope, string? memoryId, float referenceSimilarity, CancellationToken cancellationToken) =>
         Task.FromResult<RetroDownfall.Arcanum.Core.Memory.SagaRankingExplanationDto?>(null);
 
+    /// <summary>Complete clean-only metadata census, using the resolved memory scope and optional exact owning Session.</summary>
+    Task<RetroDownfall.Arcanum.Core.Memory.SagaRankingStatusDto?> ReadRankingStatusAsync(
+        MemoryScope scope, Guid? sessionId, CancellationToken cancellationToken) =>
+        Task.FromResult<RetroDownfall.Arcanum.Core.Memory.SagaRankingStatusDto?>(null);
+
     /// <summary>Total number of Saga memories across all sessions.</summary>
     Task<int> CountAsync(CancellationToken cancellationToken);
 

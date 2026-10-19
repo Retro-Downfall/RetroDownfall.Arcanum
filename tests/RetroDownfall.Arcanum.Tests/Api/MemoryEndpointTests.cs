@@ -60,7 +60,7 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
 
-public sealed class MemoryEndpointTests
+public sealed partial class MemoryEndpointTests
 {
     [SkippableFact]
     public async Task Explain_reports_content_free_Saga_score_components_and_the_reference_similarity()

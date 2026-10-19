@@ -245,7 +245,12 @@ internal static class MemoryEndpoints
         if (result.IsSuccess)
         {
             result = Result<MemoryStatusDto>.Success(
-                result.Value with { CampaignScope = MemoryCampaignScopeReport.Describe(scope) });
+                result.Value with
+                {
+                    CampaignScope = MemoryCampaignScopeReport.Describe(scope),
+                    SagaRanking = await context.RequestServices.GetRequiredService<ISagaMemoryStore>()
+                        .ReadRankingStatusAsync(scope, sessionId, context.RequestAborted).ConfigureAwait(false),
+                });
         }
 
         string traceId = TraceId(context);

@@ -114,6 +114,39 @@ public sealed class LongRestRecallTests
     }
 
     [SkippableFact]
+    public async Task Explanation_names_consolidation_without_erasing_the_source()
+    {
+        await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        await SeedAsync(h);
+
+        var explanation = (await h.Store.ExplainRankingAsync(MemoryScope.Installation, "source", 0.8f, CancellationToken.None))!;
+
+        Assert.False(Assert.Single(explanation.Memories).Eligible);
+
+        using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(explanation,
+            RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.SagaRankingExplanationDto));
+
+        Assert.True(json.RootElement.GetProperty("memories")[0].TryGetProperty("eligibility", out var eligibility));
+
+        Assert.Equal("Consolidated", eligibility.GetString());
+
+        Assert.NotNull(await h.Store.ReadCurationRowAsync("source", CancellationToken.None));
+
+        var status = (await h.Store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!;
+
+        Assert.Equal(2, status.MemoryCount);
+
+        Assert.Equal(2, status.VersionCount);
+
+        Assert.Equal(1, status.ConsolidatedVersionCount);
+
+        await h.Store.SetPinAsync("source", true, Recorded.AddDays(1), CancellationToken.None);
+
+        Assert.Equal(0, (await h.Store.ReadRankingStatusAsync(MemoryScope.Installation, null, CancellationToken.None))!.ConsolidatedVersionCount);
+    }
+
+    [SkippableFact]
     public async Task A_source_pin_temporarily_releases_its_exact_suppression_without_changing_the_receipt()
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);

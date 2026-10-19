@@ -275,7 +275,7 @@ internal sealed class DivinationService(
 
         SagaRankingReader? ranking = saga ? await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false) : null;
 
-        string eligible = saga ? LongRestRecallSql.Eligible("m", longRest) : "1 = 1";
+        string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}" : "1 = 1";
 
         string ownership = scope.CampaignId is null
             ? $"""o."{scope.OwnerScopeKindColumn}" = @globalScopeKind"""
@@ -344,7 +344,7 @@ internal sealed class DivinationService(
 
         SagaRankingReader? ranking = saga ? await SagaRankingReader.CreateAsync(connection, RankingEnabled, RankingInstant, cancellationToken).ConfigureAwait(false) : null;
 
-        string eligible = saga ? LongRestRecallSql.Eligible("m", longRest) : "1 = 1";
+        string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}" : "1 = 1";
 
         // Table/column names are internal constants owned by the calling feature's retrieval code
         // (never user input); only scopeFilterValue is a bound parameter.
@@ -390,7 +390,7 @@ internal sealed class DivinationService(
             FROM saga_memory_embeddings e
             INNER JOIN saga_memories m ON m."Id" = e."{primaryKeyColumn}"
             {SagaRankingReader.Join(longRest)}
-            WHERE {LongRestRecallSql.Eligible("m", longRest)}
+            WHERE m."RetiredAtUtc" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}
             """;
 
         return await ScoreManagedRowsAsync(cmd, queryVector, maxResults, similarityThreshold, cancellationToken, ranking).ConfigureAwait(false);

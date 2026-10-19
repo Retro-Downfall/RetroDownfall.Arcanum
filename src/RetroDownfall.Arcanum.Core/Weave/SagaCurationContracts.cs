@@ -106,7 +106,20 @@ public static class SagaRetrievalEligibilityClassifier
     {
         ArgumentNullException.ThrowIfNull(row);
 
-        if (row.Lifecycle.RetiredAtUtc is not null)
+        return Classify(row.Lifecycle.RetiredAtUtc is not null, row.Memory.ScopeKind,
+            row.Memory.LongRestReceiptId is not null, row.HasEmbedding, row.Memory.Ranking, campaignScopingEnforced);
+    }
+
+    /// <summary>The same eligibility ladder over content-free metadata, for status and score explanation.</summary>
+    public static SagaRetrievalEligibility Classify(
+        bool retired,
+        SagaMemoryScopeKind scopeKind,
+        bool consolidated,
+        bool hasEmbedding,
+        RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents? ranking,
+        bool campaignScopingEnforced)
+    {
+        if (retired)
         {
             return SagaRetrievalEligibility.Retired;
         }
@@ -118,27 +131,27 @@ public static class SagaRetrievalEligibilityClassifier
         // scoping off a turn ranks every embedded memory whoever owns it, so ownership withholds nothing
         // and the memory falls through to the embedding check like any other.
         if (campaignScopingEnforced
-            && row.Memory.ScopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
+            && scopeKind is SagaMemoryScopeKind.Unclassified or SagaMemoryScopeKind.LegacyUnresolved)
         {
             return SagaRetrievalEligibility.OwnershipUnresolved;
         }
 
-        if (row.Memory.LongRestReceiptId is not null)
+        if (consolidated)
         {
             return SagaRetrievalEligibility.Consolidated;
         }
 
-        if (row.Memory.Ranking is { TemporallyValid: false })
+        if (ranking is { TemporallyValid: false })
         {
             return SagaRetrievalEligibility.OutsideValidity;
         }
 
-        if (row.Memory.Ranking is { Dormant: true })
+        if (ranking is { Dormant: true })
         {
             return SagaRetrievalEligibility.Dormant;
         }
 
-        if (!row.HasEmbedding)
+        if (!hasEmbedding)
         {
             return SagaRetrievalEligibility.EmbeddingMissing;
         }

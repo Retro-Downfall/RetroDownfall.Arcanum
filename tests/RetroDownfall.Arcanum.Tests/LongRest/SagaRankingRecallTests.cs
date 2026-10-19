@@ -67,11 +67,13 @@ public sealed class SagaRankingRecallTests
         Assert.Equal("z-operator", Assert.Single(await Search(h)).Id);
     }
 
-    [SkippableFact]
-    public async Task A_retired_row_cannot_reenter_recall_through_a_leftover_embedding()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Explanation_reports_retirement_even_with_a_leftover_embedding(bool enabled)
     {
         await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
-        h.Options.CurrentValue.Features.LongRest = true;
+        h.Options.CurrentValue.Features.LongRest = enabled;
         await Insert(h, "retired", Now.AddDays(-1), 1, 0);
         await h.Store.RetireAsync("retired", AnnalContentDigest.ForSagaMemory("retired"), Now, CancellationToken.None);
         await using var command = h.Connection.CreateCommand();
@@ -82,6 +84,78 @@ public sealed class SagaRankingRecallTests
         command.Parameters.Add(parameter);
         await command.ExecuteNonQueryAsync();
         Assert.Empty(await Search(h));
+        Assert.Empty(await h.Store.GetByIdsAsync(["retired"], CancellationToken.None));
+        var explanation = (await h.Store.ExplainRankingAsync(MemoryScope.Installation, "retired", 0.8f, CancellationToken.None))!;
+        var row = Assert.Single(explanation.Memories);
+        Assert.False(row.Eligible);
+        using var json = System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(explanation,
+            RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.SagaRankingExplanationDto));
+        Assert.True(json.RootElement.GetProperty("memories")[0].TryGetProperty("eligibility", out var eligibility));
+        Assert.Equal("Retired", eligibility.GetString());
+    }
+
+    [SkippableTheory]
+    [InlineData(false, false, "unscoped")]
+    [InlineData(false, true, "unscoped")]
+    [InlineData(true, false, "unscoped")]
+    [InlineData(true, true, "unscoped")]
+    [InlineData(false, false, "scoped")]
+    [InlineData(false, true, "scoped")]
+    [InlineData(true, false, "scoped")]
+    [InlineData(true, true, "scoped")]
+    [InlineData(false, false, "campaign")]
+    [InlineData(false, true, "campaign")]
+    [InlineData(true, false, "campaign")]
+    [InlineData(true, true, "campaign")]
+    public async Task Canonical_retirement_is_filtered_before_top_k_in_every_Saga_path(bool enabled, bool accelerator, string path)
+    {
+        await using SagaStoreHarness h = await SagaStoreHarness.CreateAsync(annalsEnabled: true);
+
+        h.Options.CurrentValue.Features.LongRest = enabled;
+
+        h.VectorAccelerator.SetAvailable(accelerator);
+
+        await Insert(h, "retired-best-match", Now.AddDays(-1), 1, 0);
+
+        await Insert(h, "live-fallback", Now.AddDays(-1), 0.8f, 0.6f);
+
+        await h.Store.RetireAsync("retired-best-match", AnnalContentDigest.ForSagaMemory("retired-best-match"), Now, CancellationToken.None);
+
+        await using var command = h.Connection.CreateCommand();
+
+        command.CommandText = "INSERT INTO saga_memory_embeddings(MemoryId,Embedding,Dim) VALUES('retired-best-match',@embedding,64)";
+
+        var parameter = command.CreateParameter();
+
+        parameter.ParameterName = "@embedding";
+
+        parameter.Value = EmbeddingBlobCodec.Encode(Vector(1, 0));
+
+        command.Parameters.Add(parameter);
+
+        await command.ExecuteNonQueryAsync();
+
+        var result = path switch
+        {
+            "scoped" => await Service(h).SearchScopedAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+                "saga_memories", "Id", "Source", "extraction", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
+
+            "campaign" => await Service(h).SearchCampaignScopedAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding",
+                new("saga_memories", "Id", "ScopeKindCode", "CampaignId", 1, 2, Guid.NewGuid()),
+                new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
+
+            _ => await Service(h).SearchAsync("saga_memory_embeddings_vec", "MemoryId", "Embedding", new(Vector(1, 0)), 1, 0.5f, CancellationToken.None),
+        };
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        var recalled = Assert.Single(result.Value);
+
+        Assert.Equal("live-fallback", recalled.Id);
+
+        Assert.Equal(0.8f, recalled.Similarity, 5);
+
+        Assert.Equal(["live-fallback"], (await h.Store.GetByIdsAsync(["retired-best-match", "live-fallback"], CancellationToken.None)).Keys);
     }
 
     [SkippableFact]

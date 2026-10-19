@@ -55,6 +55,95 @@ public sealed class MemoryCommandTests
     }
 
     [Theory]
+    [InlineData(SagaRetrievalEligibility.Retired)]
+    [InlineData(SagaRetrievalEligibility.Consolidated)]
+    [InlineData(SagaRetrievalEligibility.Dormant)]
+    public void Explain_reports_the_closed_Saga_exclusion_reason(SagaRetrievalEligibility eligibility)
+    {
+        RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents components = new(
+            1, 0, 0, 0, 0, 0, false, true, "none", 0, 0, 0, false, null);
+
+        MemoryExplainDto payload = new(null, null, [], SagaRanking: new(
+            1, true, new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero), 0, -0.09f, 0.13f,
+            [new("chosen", false, components, eligibility)], false));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemoryExplainDto>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemoryExplainDto));
+
+        CliTestResult result = RunCommand(handler, ["memory", "explain", "--saga-id", "chosen", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("eligible=no", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"retrieval={eligibility}", result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true, "enabled", 2, 2, 1, 3)]
+    [InlineData(false, "disabled", 0, 0, 0, 0)]
+    public void Status_reports_clean_Saga_version_states_and_ranking_gate(
+        bool enabled,
+        string expectedGate,
+        int dormant,
+        int positive,
+        int negative,
+        int uncorroborated)
+    {
+        MemoryStatusDto payload = new(null, null, [], SagaRanking: new(
+            1, enabled, new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero), true,
+            10, 9, 4, dormant, positive, negative, uncorroborated));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemoryStatusDto>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto));
+
+        CliTestResult result = RunCommand(handler, ["memory", "status", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains($"Saga ranking policy: 1 ({expectedGate})", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("clean only", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Memories: 10; versions: 9; consolidated/superseded: 4", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"dormant: {dormant}", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"positive {positive}; negative {negative}; uncorroborated benefit {uncorroborated}",
+            result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Status_json_preserves_the_clean_Saga_census_without_plain_output()
+    {
+        MemoryStatusDto payload = new(null, null, [], SagaRanking: new(
+            1, true, new DateTimeOffset(2026, 10, 19, 12, 0, 0, TimeSpan.Zero), true,
+            10, 9, 4, 2, 2, 1, 3));
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemoryStatusDto>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemoryStatusDto));
+
+        CliTestResult result = RunCommand(handler, ["memory", "status", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument json = JsonDocument.Parse(result.Output);
+
+        JsonElement ranking = json.RootElement.GetProperty("sagaRanking");
+
+        Assert.True(ranking.GetProperty("cleanOnly").GetBoolean());
+
+        Assert.Equal(9, ranking.GetProperty("versionCount").GetInt32());
+
+        Assert.Equal(2, ranking.GetProperty("positiveCreditVersionCount").GetInt32());
+
+        Assert.DoesNotContain("Saga ranking policy:", result.Output, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("list", false)]
     [InlineData("list", true)]
     [InlineData("search", false)]
@@ -151,6 +240,45 @@ public sealed class MemoryCommandTests
 
         Assert.Equal("Visible Saga\n  Saga visible content\n  Provenance: Saga source\n  Retention: Saga retention\n  Retrieval: unknown; retired: unknown; pinned: unknown",
             result.Output.Split("[saga] ", StringSplitOptions.None)[1].Trim().ReplaceLineEndings("\n"));
+    }
+
+    [Theory]
+    [InlineData("counterfactual", 0.02f, 2, 0, "usefulness=0.02")]
+    [InlineData("counterfactual", -0.01f, 0, 1, "usefulness=-0.01")]
+    [InlineData("exposure-only", 0f, 0, 0, "usefulness=0")]
+    public void Generic_plain_search_reports_measured_Saga_credit_without_crediting_exposure(
+        string evidenceClass,
+        float usefulness,
+        int benefits,
+        int harms,
+        string expectedUsefulness)
+    {
+        RetroDownfall.Arcanum.Core.LongRest.SagaRankingComponents components = new(
+            1, 0, usefulness, usefulness, 0, 0, false, true, evidenceClass, benefits, harms, 0, false, null);
+
+        MemorySearchResponse payload = new("visible", MemorySearchScope.Saga,
+        [
+            new(MemorySearchScope.Saga, "Visible Saga", "Visible content", "Saga source", "Saga retention", "saga",
+                SagaRanking: components),
+        ]);
+
+        RecordingHandler handler = new(_ => CreateResponse(
+            new ApiResponse<MemorySearchResponse>(payload, true, null),
+            ArcanumJsonContext.Default.ApiResponseMemorySearchResponse));
+
+        CliTestResult result = RunCommand(handler, ["memory", "search", "visible", "--plain"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        Assert.Contains("Saga ranking policy: 1", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains(expectedUsefulness, result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"evidence={evidenceClass}", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"benefit={benefits}", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains($"harm={harms}", result.Output, StringComparison.Ordinal);
     }
 
     [Theory]

@@ -474,6 +474,7 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(ApiResponse<MemoryReviewBulkResultDto>))]
 [JsonSerializable(typeof(MemoryEligibilityDto))]
 [JsonSerializable(typeof(MemoryEligibilityDto[]))]
+[JsonSerializable(typeof(SagaRankingStatusDto))]
 [JsonSerializable(typeof(SagaRankingComponents))]
 [JsonSerializable(typeof(SagaRankingExplanationDto))]
 [JsonSerializable(typeof(SagaRankingExplanationMemoryDto))]

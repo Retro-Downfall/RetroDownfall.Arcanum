@@ -716,7 +716,7 @@ internal sealed partial class SagaMemoryStore(
                     LEFT JOIN saga_memory_attachment_provenance p ON p.MemoryId = m."Id"
                     {SagaRankingReader.Join(longRest)}
                     WHERE m."Id" IN ({string.Join(", ", parameterNames)})
-                        AND {LongRestRecallSql.Eligible("m", longRest)}
+                        AND m."RetiredAtUtc" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}
                     """;
 
                 Dictionary<string, SagaMemoryDto> results = new(ids.Count, StringComparer.Ordinal);
@@ -727,8 +727,7 @@ internal sealed partial class SagaMemoryStore(
                 {
                     SagaMemoryDto memory = ReadMemory(reader, ranking);
 
-                    if (memory.Ranking is not { Dormant: true } && memory.Ranking is not { TemporallyValid: false }
-                        && (!ranking.Enabled || memory.RetiredAtUtc is null))
+                    if (memory.Ranking is not { Dormant: true } && memory.Ranking is not { TemporallyValid: false })
                     {
                         results[memory.Id] = memory;
                     }

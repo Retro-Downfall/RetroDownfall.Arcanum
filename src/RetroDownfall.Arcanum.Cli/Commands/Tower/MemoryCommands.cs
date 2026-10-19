@@ -94,7 +94,23 @@ public sealed partial class MemoryCommands(
 
         WriteCovenantStatus(result.Value.Covenant);
 
+        WriteSagaRankingStatus(result.Value.SagaRanking);
+
         return 0;
+    }
+
+    private void WriteSagaRankingStatus(SagaRankingStatusDto? status)
+    {
+        if (status is null)
+        {
+            return;
+        }
+
+        dispatcher.WritePayload($"Saga ranking policy: {status.PolicyVersion} ({(status.Enabled ? "enabled" : "disabled")}); {(status.CleanOnly ? "clean only" : "all rows")}; as of {status.AsOfUtc.ToString("u", CultureInfo.InvariantCulture)}.");
+
+        dispatcher.WritePayload($"  Memories: {status.MemoryCount}; versions: {status.VersionCount}; consolidated/superseded: {status.ConsolidatedVersionCount}; dormant: {status.DormantVersionCount}.");
+
+        dispatcher.WritePayload($"  Credit by version: positive {status.PositiveCreditVersionCount}; negative {status.NegativeCreditVersionCount}; uncorroborated benefit {status.UncorroboratedBenefitVersionCount}.");
     }
 
     /// <summary>
@@ -334,6 +350,11 @@ public sealed partial class MemoryCommands(
             {
                 dispatcher.WritePayload(
                     $"  {LifecycleText(match.SagaLifecycle is not null, match.SagaLifecycle?.RetiredAtUtc, match.SagaLifecycle?.PinnedAtUtc, match.SagaEligibility?.ToString())}");
+
+                if (match.SagaRanking is { } ranking)
+                {
+                    dispatcher.WritePayload($"  Saga ranking policy: {ranking.PolicyVersion}; usefulness={ranking.UsefulnessModifier.ToString("0.###", CultureInfo.InvariantCulture)}; evidence={ranking.EvidenceClass}, benefit={ranking.BenefitCount}, harm={ranking.HarmCount}, no-effect={ranking.NoEffectCount}; dormant={ranking.Dormant}, decay-exempt={ranking.DecayExempt}.");
+                }
             }
 
             if (match.Action is { } action)
@@ -435,7 +456,7 @@ public sealed partial class MemoryCommands(
             {
                 var component = memory.Components;
 
-                dispatcher.WritePayload($"Saga {memory.MemoryId}: eligible={(memory.Eligible ? "yes" : "no")}; similarity={Number(component.Similarity)}, usefulness={Number(component.UsefulnessModifier)}, recency={Number(component.RecencyModifier)}, origin={Number(component.OriginModifier)}, score={Number(component.Score)}; evidence={component.EvidenceClass}, benefit={component.BenefitCount}, harm={component.HarmCount}, no-effect={component.NoEffectCount}, dormant={component.Dormant}, decay-exempt={component.DecayExempt}.");
+                dispatcher.WritePayload($"Saga {memory.MemoryId}: eligible={(memory.Eligible ? "yes" : "no")}; retrieval={memory.Eligibility?.ToString() ?? "unknown"}; similarity={Number(component.Similarity)}, usefulness={Number(component.UsefulnessModifier)}, recency={Number(component.RecencyModifier)}, origin={Number(component.OriginModifier)}, score={Number(component.Score)}; evidence={component.EvidenceClass}, benefit={component.BenefitCount}, harm={component.HarmCount}, no-effect={component.NoEffectCount}, dormant={component.Dormant}, decay-exempt={component.DecayExempt}.");
             }
 
             if (ranking.HasMore) dispatcher.WritePayload("More Saga metadata exists; select --saga-id to inspect one exact memory.");
