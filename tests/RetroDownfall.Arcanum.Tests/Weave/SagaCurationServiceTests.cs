@@ -731,6 +731,21 @@ public sealed class SagaCurationServiceTests
             () => JsonSerializer.Deserialize("2", ArcanumJsonContext.Default.SagaRetrievalEligibility));
     }
 
+    [Theory]
+    [InlineData(SagaRetrievalEligibility.Eligible, true)]
+    [InlineData(SagaRetrievalEligibility.Retired, false)]
+    [InlineData(SagaRetrievalEligibility.OwnershipUnresolved, false)]
+    [InlineData(SagaRetrievalEligibility.EmbeddingMissing, false)]
+    [InlineData(SagaRetrievalEligibility.Consolidated, false)]
+    [InlineData(SagaRetrievalEligibility.Dormant, false)]
+    [InlineData(SagaRetrievalEligibility.OutsideValidity, false)]
+    [InlineData((SagaRetrievalEligibility)0, false)]
+    public void The_core_classifier_owns_the_boolean_projection_and_unknown_values_fail_closed(
+        SagaRetrievalEligibility eligibility, bool expected)
+    {
+        Assert.Equal(expected, SagaRetrievalEligibilityClassifier.IsEligible(eligibility));
+    }
+
     /// <summary>
     /// Every production surface that reports a memory's eligibility asks the Core classifier, so the
     /// detail route, the review queue, search, and explain cannot drift apart. A source file outside

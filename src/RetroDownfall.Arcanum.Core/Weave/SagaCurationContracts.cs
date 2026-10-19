@@ -88,6 +88,9 @@ public sealed record SagaMemoryCurationRow(SagaMemoryDto Memory, SagaMemoryLifec
 /// </remarks>
 public static class SagaRetrievalEligibilityClassifier
 {
+    /// <summary>Projects the closed classification to its retrieval Boolean without a second caller-owned decision.</summary>
+    public static bool IsEligible(SagaRetrievalEligibility eligibility) => eligibility == SagaRetrievalEligibility.Eligible;
+
     /// <summary>
     /// Retired first, then ownership, then consolidation, then whether an embedding survives, then
     /// eligible — in that order because a retired memory has no embedding by construction, and reporting that as

@@ -48,7 +48,7 @@ internal sealed partial class SagaMemoryStore
                         ranking.Snapshot(reader, consolidated).Retired,
                         (SagaMemoryScopeKind)reader.GetInt32(reader.GetOrdinal("RankingMemoryScopeKind")),
                         consolidated, reader.GetInt32(reader.GetOrdinal("RankingHasEmbedding")) != 0, components, scope.IsEnforced);
-                    memories.Add(new(reader.GetString(0), eligibility == SagaRetrievalEligibility.Eligible, components, eligibility));
+                    memories.Add(new(reader.GetString(0), SagaRetrievalEligibilityClassifier.IsEligible(eligibility), components, eligibility));
                 }
             }
 
