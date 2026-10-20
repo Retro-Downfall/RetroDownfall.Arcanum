@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -97,9 +99,34 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     /// disclosure — so this is the link that makes taint travel forward rather than stopping at the one
     /// turn that introduced it.
     /// </remarks>
-    public ProviderCallSensitivity? DerivedSensitivity { get; private set; }
+    private ProviderCallSensitivity? _derivedSensitivity;
 
-    internal void RecordDerived(ProviderCallSensitivity sensitivity) => DerivedSensitivity = sensitivity;
+    private Func<MemoryDelegationProtection?>? _protection;
+
+    internal MemoryDelegationProtection? Protection => _protection?.Invoke();
+
+    internal MemoryEvaluationSourceSnapshot? MemorySources { get; private set; }
+
+    internal void BindProtection(Func<MemoryDelegationProtection?> protection) => _protection = protection;
+
+    internal static CovenantTurnScope ForMemoryDelegation(Guid logicalTurnId, MemoryDelegationProtection protection,
+        MemoryEvaluationSourceSnapshot? sources)
+    {
+        var scope = new CovenantTurnScope(CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible), logicalTurnId, null, false);
+
+        scope.BindProtection(() => protection);
+
+        scope.MemorySources = sources;
+
+        scope.RecordDerived(protection.Sensitivity);
+
+        return scope;
+    }
+
+    public ProviderCallSensitivity? DerivedSensitivity => Protection is { } protection
+        ? ProviderCallSensitivities.Merge(_derivedSensitivity, protection.Sensitivity) : _derivedSensitivity;
+
+    internal void RecordDerived(ProviderCallSensitivity sensitivity) => _derivedSensitivity = ProviderCallSensitivities.Merge(DerivedSensitivity, sensitivity);
 
     /// <summary>The last admission this turn minted, which is the branch a seal has to commit.</summary>
     /// <remarks>
@@ -171,6 +198,8 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     {
         try
         {
+            MemorySources = null;
+
             await _context.DisposeAsync().ConfigureAwait(false);
         }
         finally
@@ -422,7 +451,7 @@ public sealed class CovenantDispatchGate(
 
         bool campaignDerived = scope.CampaignArtifact?.Sensitivity is ContentSensitivity.CovenantDerived;
 
-        bool derived = plan.HasAdmittedContent || scope.HistoryTainted || campaignDerived;
+        bool derived = plan.HasAdmittedContent || scope.HistoryTainted || campaignDerived || scope.DerivedSensitivity?.Level is ContentSensitivity.CovenantDerived;
 
         if (!derived)
         {
@@ -454,6 +483,11 @@ public sealed class CovenantDispatchGate(
         if (campaignDerived)
         {
             provenance = provenance.Merge(scope.CampaignArtifact!.Provenance);
+        }
+
+        if (scope.DerivedSensitivity is { } retained)
+        {
+            provenance = provenance.Merge(retained.Provenance);
         }
 
         return new ProviderCallSensitivity(
@@ -496,7 +530,7 @@ public sealed class CovenantDispatchGate(
 
         ProviderCallSensitivity sensitivity = providerCall.Sensitivity;
 
-        if (sensitivity.Level is not ContentSensitivity.CovenantDerived)
+        if (sensitivity.Level is not ContentSensitivity.CovenantDerived && scope.Protection is null)
         {
 
             // Nothing Covenant-derived is leaving, so there is nothing to disclose and the reply this

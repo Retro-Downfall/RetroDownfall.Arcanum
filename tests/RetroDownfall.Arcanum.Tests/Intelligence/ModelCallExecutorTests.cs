@@ -16,6 +16,125 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class ModelCallExecutorTests
 {
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Revoked_capsule_output_guard_refuses_the_physical_provider_send(bool streaming)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        var consumed = await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest);
+        Assert.True(consumed.IsSuccess);
+        var binding = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationRootBinding(
+            new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var protection = binding.CaptureOutputProtection();
+        await using (await h.Coordinator.BeginMutationAsync()) { }
+        var provider = CacheProvider();
+        var executor = CreateAccountedExecutor(provider);
+        ScriptingChatClient chat = new("answer");
+        var context = new ModelCallContext(provider, "gpt-5", 0, 0, ProtectedBinding: protection);
+        if (streaming)
+        {
+            await foreach (var _ in executor.ExecuteStreamingAsync(chat, [new ChatMessage(ChatRole.User, "derived input")],
+                new ChatOptions(), UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, default, context)) { }
+        }
+        else
+        {
+            await executor.ExecuteBufferedAsync(chat, [new ChatMessage(ChatRole.User, "derived input")],
+                new ChatOptions(), UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, default, context);
+        }
+        Assert.Equal(0, chat.CallCount);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Physical_provider_effect_drains_only_after_consumer_teardown(bool streaming)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        Assert.True((await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).IsSuccess);
+        var binding = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationRootBinding(
+            new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var provider = CacheProvider();
+        var executor = CreateAccountedExecutor(provider);
+        var chat = new TeardownChatClient();
+        var context = new ModelCallContext(provider, "gpt-5", 0, 0, ProtectedBinding: binding.CaptureOutputProtection());
+        async Task Call()
+        {
+            if (streaming)
+            {
+                await foreach (var _ in executor.ExecuteStreamingAsync(chat, [new(ChatRole.User, "derived")], new(),
+                    UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, default, context)) { }
+            }
+            else await executor.ExecuteBufferedAsync(chat, [new(ChatRole.User, "derived")], new(),
+                UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, default, context);
+        }
+        var running = Call();
+        await chat.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var mutation = h.Coordinator.BeginMutationAsync().AsTask();
+        try
+        {
+            await chat.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(mutation.IsCompleted);
+            Assert.False(running.IsCompleted);
+        }
+        finally { chat.Teardown.TrySetResult(); }
+        try { await running.WaitAsync(TimeSpan.FromSeconds(10)); } catch (OperationCanceledException) { }
+        await using var writer = await mutation.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(chat.Disposed);
+    }
+
+    private sealed class TeardownChatClient : IChatClient
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Teardown { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal bool Disposed { get; private set; }
+        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            using var registration = cancellationToken.Register(() => Cancelled.TrySetResult());
+            Entered.TrySetResult();
+            await Teardown.Task;
+            Disposed = true;
+            cancellationToken.ThrowIfCancellationRequested();
+            return new(new ChatMessage(ChatRole.Assistant, "answer"));
+        }
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            using var registration = cancellationToken.Register(() => Cancelled.TrySetResult());
+            try
+            {
+                Entered.TrySetResult();
+                await Cancelled.Task;
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return new(ChatRole.Assistant, "answer");
+            }
+            finally { await Teardown.Task; Disposed = true; }
+        }
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    [SkippableFact]
+    public async Task Ordinary_sensitivity_capsule_provider_failure_never_retains_exception_content()
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        Assert.True((await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).IsSuccess);
+        var binding = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationRootBinding(
+            new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var provider = CacheProvider();
+        var executor = CreateAccountedExecutor(provider);
+        var chat = new ScriptingChatClient("answer") { BufferedException = new InvalidOperationException("private source echo") };
+        var outcome = await executor.ExecuteBufferedAsync(chat, [new(ChatRole.User, "derived")], new(), UnrestrictedTurnBudget.Instance,
+            ModelCallPurpose.MainInference, default, new(provider, "gpt-5", 0, 0, ProtectedBinding: binding.CaptureOutputProtection()));
+        Assert.False(outcome.IsSuccess);
+        Assert.Null(outcome.Failure.Cause);
+        Assert.DoesNotContain("private source echo", outcome.Failure.Error.Message);
+    }
+
     [Fact]
     public void ModelCallExecutor_contract_keeps_provider_io_without_counter_gate()
     {

@@ -20,7 +20,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await using var root = await h.PrepareAsync();
 
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true };
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true, StatelessMessages = [new CoreChatMessage("user", "parent")] };
 
         var binding = new MemoryDelegationRootBinding(request, h.Source.Invocation, h.RootId, root, h.Coordinator);
 
@@ -37,7 +37,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         MemoryDelegationCapturingRunner runner = new();
 
-        var wizard = CreateWizard(chat, subagentRunner: runner);
+        var wizard = CreateWizard(chat, subagentRunner: runner, covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate());
 
         using var scope = MemoryDelegationRootBinding.Enter(binding);
 
@@ -66,7 +66,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await using var root = await h.PrepareAsync();
 
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true };
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true, StatelessMessages = [new CoreChatMessage("user", "parent")] };
 
         var first = DelegationProvider("first", firstSupportsTools);
 
@@ -109,7 +109,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await using var root = await h.PrepareAsync();
 
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true };
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true, StatelessMessages = [new CoreChatMessage("user", "parent")] };
 
         var first = DelegationProvider("first", true);
 
@@ -141,7 +141,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         var health = new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance);
 
-        var wizard = CreateWizard(firstChat, settings, factory: factory, healthTracker: health, subagentRunner: runner);
+        var wizard = CreateWizard(firstChat, settings, factory: factory, healthTracker: health, subagentRunner: runner, covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate());
 
         using var scope = bound ? MemoryDelegationRootBinding.Enter(new(request, h.Source.Invocation, h.RootId, root, h.Coordinator)) : null;
 
@@ -167,7 +167,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await using var root = await h.PrepareAsync();
 
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true };
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true, StatelessMessages = [new CoreChatMessage("user", "parent")] };
 
         var first = DelegationProvider("first", true);
 
@@ -211,7 +211,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await using var root = await h.PrepareAsync();
 
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true };
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true, StatelessMessages = [new CoreChatMessage("user", "parent")] };
 
         var provider = DelegationProvider("first", true);
 
@@ -247,7 +247,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         await using var root = await h.PrepareAsync();
 
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true };
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true, StatelessMessages = [new CoreChatMessage("user", "parent")] };
 
         ScriptingChatClient chat = new();
 

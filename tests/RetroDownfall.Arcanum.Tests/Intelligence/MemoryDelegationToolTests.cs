@@ -78,10 +78,83 @@ public sealed class MemoryDelegationToolTests
         Assert.NotEqual(baseline, await Bind(cost: 0.0000000000000000000000000001m));
     }
 
+    [SkippableFact]
+    public async Task Capsule_result_preserves_trusted_metadata_before_stringification()
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        var parent = new PingRequest("parent");
+        var binding = new MemoryDelegationRootBinding(parent, h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var output = await new ArcanumDelegateTaskTool(new CapturingRunner(), "model", binding).InvokeAsync(Arguments("memory"));
+        Assert.NotNull(output);
+        Assert.IsNotType<string>(output);
+        Assert.Equal("summary", output.ToString());
+    }
+
+    [SkippableFact]
+    public async Task Later_ordinary_child_retains_output_guard_without_another_read_grant()
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync(sensitive: true);
+        await using var root = await h.PrepareAsync();
+        var binding = new MemoryDelegationRootBinding(new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var runner = new CapturingRunner();
+        var tool = new ArcanumDelegateTaskTool(runner, "model", binding);
+        await tool.InvokeAsync(Arguments("memory"));
+        await runner.Request!.MemoryDelegation!.Child.DisposeAsync();
+        var args = Arguments(null);
+        args["prompt"] = "derived explicit prompt";
+        var output = await tool.InvokeAsync(args);
+        Assert.Equal("derived explicit prompt", runner.Request!.Prompt);
+        Assert.Null(runner.Request.MemoryDelegation);
+        var protection = Assert.IsType<MemoryDelegationProtection>(runner.Request.InputProtection);
+        Assert.Equal(ContentSensitivity.CovenantDerived, protection.Sensitivity.Level);
+        Assert.Equal(root.Sensitivity.Provenance, protection.Sensitivity.Provenance);
+        Assert.IsType<MemoryDelegationToolResult>(output);
+        await using (await h.Coordinator.BeginMutationAsync()) { }
+        Assert.True((await protection.AdmitAsync(default)).IsFailure);
+    }
+
+    [SkippableFact]
+    public async Task Parallel_ordinary_input_is_frozen_before_later_consumption()
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        var binding = new MemoryDelegationRootBinding(new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var runner = new QueuedRunner();
+        var tool = new ArcanumDelegateTaskTool(runner, "model", binding);
+        var args = Arguments(null);
+        var queued = tool.InvokeAsync(args).AsTask();
+        await runner.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await tool.InvokeAsync(Arguments("memory"));
+        args["prompt"] = "later derived text";
+        runner.Release.TrySetResult();
+        await queued;
+        Assert.Equal("actual task", runner.First!.Prompt);
+        Assert.Null(runner.First.InputProtection);
+        Assert.Null(runner.First.MemoryDelegation);
+    }
+
+    private sealed class QueuedRunner : ISubagentRunner
+    {
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal SubagentRunRequest? First { get; private set; }
+        public async Task<SubagentRunResult> RunAsync(SubagentRunRequest request, CancellationToken cancellationToken)
+        {
+            if (First is null)
+            {
+                First = request;
+                Entered.TrySetResult();
+                await Release.Task.WaitAsync(cancellationToken);
+            }
+            return new(true, "summary", Guid.NewGuid(), new(1, 0m, 1, false), null);
+        }
+    }
+
     [Fact]
     public void Capability_and_internal_execution_state_have_no_generated_wire_path()
     {
-        foreach (var type in new[] { typeof(SubagentRunRequest), typeof(MemoryDelegationExecution), typeof(MemoryDelegationRootBinding), typeof(MemoryDelegationRoot), typeof(MemoryDelegationChild), typeof(MemoryDelegationEffect) })
+        foreach (var type in new[] { typeof(SubagentRunRequest), typeof(MemoryDelegationExecution), typeof(MemoryDelegationRootBinding), typeof(MemoryDelegationRoot), typeof(MemoryDelegationChild), typeof(MemoryDelegationEffect), typeof(MemoryDelegationProtection), typeof(MemoryDelegationPublication), typeof(MemoryDelegationToolResult) })
             Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type));
     }
 

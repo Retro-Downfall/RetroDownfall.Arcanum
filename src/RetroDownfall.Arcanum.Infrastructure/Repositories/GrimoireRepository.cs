@@ -410,53 +410,8 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            string callLine = $"[ToolCall: {toolName}({arguments})]";
-
-            string resultLine = $"[ToolResult: {result}]";
-
-            int entryCount = await _entryPersistence.GetEntryCountAsync(sessionId, cancellationToken).ConfigureAwait(false);
-
-            Error? toolLimitError = SessionEntryPersistence.CheckEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), callLine, resultLine);
-
-            if (toolLimitError is not null)
-            {
-                throw new InvalidOperationException(toolLimitError.Value.Message);
-            }
-
-            long toolSequence = await _entryPersistence
-                .ReserveSequenceRangeAsync(sessionId, count: 2, cancellationToken)
-                .ConfigureAwait(false);
-
-            await _entryPersistence.InsertEntriesAsync(
-                [
-                    new Entry
-                    {
-                        Id = Guid.NewGuid(),
-                        SessionId = sessionId,
-                        Role = MessageRole.Assistant,
-                        Content = callLine,
-                        ModelUsed = modelUsed,
-                        CreatedAt = now,
-                        Sequence = toolSequence,
-                        ToolName = toolName,
-                        ToolArguments = arguments,
-                    },
-                    new Entry
-                    {
-                        Id = Guid.NewGuid(),
-                        SessionId = sessionId,
-                        Role = MessageRole.System,
-                        Content = resultLine,
-                        ModelUsed = modelUsed,
-                        CreatedAt = now,
-                        Sequence = toolSequence + 1L,
-                    },
-                ],
-                cancellationToken).ConfigureAwait(false);
-
-            await _entryPersistence.BumpSessionUpdatedAtAsync(sessionId, now, cancellationToken).ConfigureAwait(false);
-
-            await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
+            await WriteToolPairWithinAsync(sessionId, toolName, arguments, result, modelUsed, now,
+                Guid.NewGuid(), Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
 
             await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -465,6 +420,60 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+    }
+
+    private async Task<long> WriteToolPairWithinAsync(Guid sessionId, string toolName, string arguments, string result,
+        string modelUsed, DateTimeOffset now, Guid callEntryId, Guid resultEntryId, CancellationToken cancellationToken)
+    {
+        string callLine = $"[ToolCall: {toolName}({arguments})]";
+
+        string resultLine = $"[ToolResult: {result}]";
+
+        int entryCount = await _entryPersistence.GetEntryCountAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        Error? toolLimitError = SessionEntryPersistence.CheckEntryLimits(entryCount, entriesToAdd: 2, GetSessionSettings(), callLine, resultLine);
+
+        if (toolLimitError is not null)
+        {
+            throw new InvalidOperationException(toolLimitError.Value.Message);
+        }
+
+        long toolSequence = await _entryPersistence
+            .ReserveSequenceRangeAsync(sessionId, count: 2, cancellationToken)
+            .ConfigureAwait(false);
+
+        await _entryPersistence.InsertEntriesAsync(
+            [
+                new Entry
+                {
+                    Id = callEntryId,
+                    SessionId = sessionId,
+                    Role = MessageRole.Assistant,
+                    Content = callLine,
+                    ModelUsed = modelUsed,
+                    CreatedAt = now,
+                    Sequence = toolSequence,
+                    ToolName = toolName,
+                    ToolArguments = arguments,
+                },
+                new Entry
+                {
+                    Id = resultEntryId,
+                    SessionId = sessionId,
+                    Role = MessageRole.System,
+                    Content = resultLine,
+                    ModelUsed = modelUsed,
+                    CreatedAt = now,
+                    Sequence = toolSequence + 1L,
+                },
+            ],
+            cancellationToken).ConfigureAwait(false);
+
+        await _entryPersistence.BumpSessionUpdatedAtAsync(sessionId, now, cancellationToken).ConfigureAwait(false);
+
+        await _entryPersistence.IncrementUnsummarizedEntryCountIfKnownAsync(sessionId, 2, cancellationToken).ConfigureAwait(false);
+
+        return toolSequence + 1;
     }
 
     public Task<MandatoryToolInteractionProbeResult>

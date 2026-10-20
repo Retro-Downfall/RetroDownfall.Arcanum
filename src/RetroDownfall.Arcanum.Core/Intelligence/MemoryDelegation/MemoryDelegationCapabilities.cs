@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 
 namespace RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
@@ -18,6 +19,8 @@ public sealed class MemoryDelegationRoot : IAsyncDisposable
     internal MemoryDelegationCoordinator.Registration Registration { get; }
 
     public CancellationToken Revocation => Registration.Cancellation.Token;
+
+    public ProviderCallSensitivity Sensitivity => Registration.Sensitivity;
 
     public bool IsConsumed => Volatile.Read(ref Registration.Consumed);
 
@@ -68,6 +71,11 @@ public sealed class MemoryDelegationChild : IAsyncDisposable
     public CovenantDigest TaskDigest { get; }
 
     public CancellationToken Revocation { get; }
+
+    public ProviderCallSensitivity Sensitivity => Root.Sensitivity;
+
+    public Task<Result<MemoryDelegationEffect>> AdmitEffectAsync(CancellationToken cancellationToken = default) =>
+        Root.Owner.AdmitEffectAsync(this, ChildId, TaskDigest, cancellationToken);
 
     public MemoryEvaluationSourceSnapshot Sources => (Volatile.Read(ref Completed) ? null : Root.Registration.Snapshot) ?? throw new InvalidOperationException("The memory delegation source has been released.");
 }

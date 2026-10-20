@@ -209,14 +209,14 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimBeginStore
             new SessionTurnInputPreflight(claimLease.Claim.SessionId, binding.Value, input.HistoryRevision, input.TaintedArtifactCount));
     }
 
-    private async Task<long?> ReadLiveClaimExpectationAsync(SessionTurnClaimLease lease, CancellationToken cancellationToken)
+    private async Task<long?> ReadLiveClaimExpectationAsync(SessionTurnClaimLease lease, CancellationToken cancellationToken, bool begun = false)
     {
         await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(_db,
             """
             SELECT claim.ExpectedCurrentSensitivityRevision
             FROM session_turn_claims claim
             JOIN assistant_finalization_capacity_reservations reservation ON reservation.ReservationId = claim.FinalizationReservationId
-            WHERE claim.ClaimId = $claim AND claim.SessionId = $session AND claim.StateCode = 1
+            WHERE claim.ClaimId = $claim AND claim.SessionId = $session AND claim.StateCode = $state
                 AND claim.OriginInstallationId = $origin AND claim.OriginRestoreEpoch = $epoch
                 AND claim.ClientTurnId = $client AND claim.SurfaceCode = $surface
                 AND claim.RequestDigest = $request AND claim.DependencyDigest = $dependency
@@ -224,8 +224,10 @@ public sealed partial class GrimoireRepository : ISessionTurnClaimBeginStore
                 AND claim.InputSensitivityRevision = $inputSensitivity AND claim.FinalizationReservationId = $reservation
                 AND claim.OwnerBootId = $boot AND claim.ExecutorId = $executor AND claim.LeaseDeadlineUtc > $now
                 AND reservation.SessionId = claim.SessionId AND reservation.ClaimId = claim.ClaimId
-                AND reservation.OriginCode = 1 AND reservation.StateCode = 1 AND reservation.AssistantEntryId = $assistant;
+                AND reservation.OriginCode = 1 AND reservation.StateCode = $state AND reservation.AssistantEntryId = $assistant;
             """, cancellationToken).ConfigureAwait(false);
+
+        _ = command.Parameters.AddWithValue("$state", begun ? 2 : 1);
 
         _ = command.Parameters.AddWithValue("$claim", ClaimGuid(lease.Claim.ClaimId));
 

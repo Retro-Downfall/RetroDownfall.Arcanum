@@ -1,3 +1,6 @@
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
+
 namespace RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
 /// <summary>
@@ -13,14 +16,19 @@ internal static class SubagentExecutionAmbient
 
     internal static RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? MemoryDelegation => Slot.Value?.MemoryDelegation;
 
+    internal static MemoryDelegationProtection? Protection => Slot.Value?.Protection;
+
+    internal static MemoryEvaluationSourceSnapshot? Sources => Slot.Value?.Sources;
+
     public static IDisposable EnterChild(DelegatedManaTracker tracker,
-        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? memoryDelegation = null)
+        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? memoryDelegation = null,
+        MemoryDelegationProtection? protection = null, MemoryEvaluationSourceSnapshot? sources = null)
     {
         ArgumentNullException.ThrowIfNull(tracker);
 
         State? previous = Slot.Value;
 
-        Slot.Value = new State(IsIsolated: true, tracker, memoryDelegation);
+        Slot.Value = new State(IsIsolated: true, tracker, memoryDelegation, protection, sources);
 
         return new Scope(previous, Intelligence.MemoryDelegation.MemoryDelegationRootBinding.Enter(null));
     }
@@ -28,7 +36,8 @@ internal static class SubagentExecutionAmbient
     private sealed record State(
         bool IsIsolated,
         DelegatedManaTracker Tracker,
-        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? MemoryDelegation);
+        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? MemoryDelegation,
+        MemoryDelegationProtection? Protection, MemoryEvaluationSourceSnapshot? Sources);
 
     private sealed class Scope(State? previous, IDisposable rootMask) : IDisposable
     {

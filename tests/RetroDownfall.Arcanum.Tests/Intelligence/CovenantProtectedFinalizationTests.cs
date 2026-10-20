@@ -35,6 +35,64 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class CovenantProtectedFinalizationTests
 {
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Consumed_root_refuses_atomic_staged_finalization_before_the_mutation_writer(bool consumed)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        if (consumed) Assert.True((await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).IsSuccess);
+        var binding = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationRootBinding(
+            new RetroDownfall.Arcanum.Core.Intelligence.PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        RecordingCommitter committer = new();
+        RecordingGrimoire grimoire = new();
+        using var writer = CreateWriter(grimoire, committer);
+        var handle = Handle();
+        handle.OutputProtection = binding.CaptureOutputProtection;
+        var collector = new PendingCollector();
+        var staged = new CovenantTurnCommitBinding(collector, collector.CurrentBranchId, 1, Guid.NewGuid(), 1);
+        var finalized = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "answer", "model", default, Derived(), staged)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(!consumed, finalized);
+        Assert.Equal(consumed ? 0 : 1, committer.Requests.Count);
+        Assert.Empty(grimoire.Finalized);
+    }
+
+    private sealed class PendingCollector : ICovenantMutationCollector
+    {
+        public Guid LogicalTurnId { get; } = Guid.NewGuid();
+        public CovenantDigest BasePlanDigest { get; } = new(new byte[32]);
+        public CovenantCollectorState State => CovenantCollectorState.Open;
+        public Guid CurrentBranchId { get; } = Guid.NewGuid();
+        public int StagedCount => 1;
+        public ImmutableArray<CovenantMutationIntent> PendingIntents() => Seal(CurrentBranchId, 1).Value;
+        public Result<IDisposable> TryAcquireUse() => throw new NotSupportedException();
+        public Result OpenBranch(Guid branchId, ulong sharedPrefixOrdinal) => throw new NotSupportedException();
+        public Result AbandonBranch(Guid branchId) => throw new NotSupportedException();
+        public Result<CovenantStagedMutationReceipt> Stage(CovenantMutationIntent intent, CovenantAdmissionReceipt producingAdmission, CovenantDigest toolInputDigest) => throw new NotSupportedException();
+        public void Discard() { }
+        public Result<ImmutableArray<CovenantMutationIntent>> Seal(Guid committedBranchId, ulong finalBranchOrdinal)
+        {
+            var digest = BasePlanDigest;
+            var intent = new CovenantMutationIntent(Guid.NewGuid(), CovenantMutationKind.AgentPropose, CovenantOperation.Set,
+                CovenantOrigin.AgentProposed, new(CovenantOperationScope.ForCampaign(Guid.NewGuid()), new CovenantKey("test.key"), "test.key", CovenantLane.Proposed, digest),
+                0, false, 0, new("value", "value", digest, digest, 5, 1, CovenantCompiler.CompilerPolicyVersion, CovenantCompiler.RendererPolicyVersion), [],
+                new(digest, digest, digest, digest, CovenantAuthorizationMode.None, null, null), LogicalTurnId, "call", digest, digest);
+            return ImmutableArray.Create(intent);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_protected_committer_refuses_instead_of_persisting_unlabelled_reply()
+    {
+        RecordingGrimoire grimoire = new();
+        using var writer = new GrimoireTurnWriter(grimoire, new FakeSessionTurnBeginStore(),
+            new SessionEventHub(NullLogger<SessionEventHub>.Instance), NullLogger<GrimoireTurnWriter>.Instance);
+        Assert.False(await writer.TryFinalizeBufferedAssistantEntryAsync(Handle(), "protected", "model", default, Derived()));
+        Assert.Empty(grimoire.Finalized);
+    }
+
     [Fact]
     public async Task A_completed_protected_reply_is_committed_with_its_label()
     {

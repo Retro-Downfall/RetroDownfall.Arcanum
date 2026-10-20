@@ -84,6 +84,76 @@ public sealed class SubagentRunnerTests
         Assert.Throws<InvalidOperationException>(() => child.Sources);
     }
 
+    [SkippableFact]
+    public async Task Capsule_materialization_owns_sources_until_child_consumer_teardown()
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        Guid id = Guid.NewGuid();
+        var child = MemoryEvaluationSourceHarness.Require(await h.Coordinator.ConsumeAsync(root, h.RootId, id, h.Digest));
+        bool retainedWhileConsumerActive = false;
+        var facade = new CapturingTurnFacade(new PromptTurnResult("summary", null))
+        {
+            OnExecute = () =>
+            {
+                h.Time.Advance(TimeSpan.FromMinutes(5));
+                retainedWhileConsumerActive = !child.Sources.Fragments.IsEmpty;
+            }
+        };
+        var runner = new SubagentRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        try
+        {
+            await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default);
+        }
+        catch (OperationCanceledException) { }
+        Assert.True(retainedWhileConsumerActive);
+        Assert.Throws<InvalidOperationException>(() => child.Sources);
+    }
+
+    [SkippableTheory]
+    [InlineData("success")]
+    [InlineData("empty")]
+    [InlineData("fault")]
+    [InlineData("complete-refused")]
+    public async Task Protected_child_preserves_immutable_metadata_on_every_result(string outcome)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync(sensitive: true);
+        await using var root = await h.PrepareAsync();
+        Guid id = Guid.NewGuid();
+        var child = MemoryEvaluationSourceHarness.Require(await h.Coordinator.ConsumeAsync(root, h.RootId, id, h.Digest));
+        var facade = new CapturingTurnFacade(new PromptTurnResult(outcome == "empty" ? "" : "summary", null))
+        {
+            Failure = outcome == "fault" ? new InvalidOperationException("private source echo") : null,
+        };
+        var runner = new SubagentRunner(new(() => facade), new FakeOperationCoordinator { RefuseComplete = outcome == "complete-refused" },
+            TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        var result = await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default);
+        Assert.Equal(RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, result.Sensitivity!.Level);
+        Assert.Equal(child.Sensitivity.Provenance, result.Sensitivity!.Provenance);
+        Assert.Throws<InvalidOperationException>(() => child.Sources);
+        Assert.Equal(root.Sensitivity, child.Sensitivity);
+    }
+
+    [SkippableFact]
+    public async Task Expiry_before_first_scope_releases_content_but_retains_minimal_result_metadata()
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync(sensitive: true);
+        await using var root = await h.PrepareAsync();
+        Guid id = Guid.NewGuid();
+        var child = MemoryEvaluationSourceHarness.Require(await h.Coordinator.ConsumeAsync(root, h.RootId, id, h.Digest));
+        var captured = child.Sensitivity;
+        h.Time.Advance(TimeSpan.FromMinutes(5));
+        Assert.Throws<InvalidOperationException>(() => child.Sources);
+        Assert.Equal(captured, child.Sensitivity);
+        Assert.Equal(RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, captured.Level);
+        var operations = new FakeOperationCoordinator();
+        var runner = new SubagentRunner(new(() => new CapturingTurnFacade(new PromptTurnResult("never", null))), operations,
+            TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        try { await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default); }
+        catch (OperationCanceledException) { }
+        Assert.Null(operations.StartRequest);
+    }
+
     [Fact]
     public void SubagentRunRequest_CarriesOnlyFieldsTheRunnerConsumes()
     {

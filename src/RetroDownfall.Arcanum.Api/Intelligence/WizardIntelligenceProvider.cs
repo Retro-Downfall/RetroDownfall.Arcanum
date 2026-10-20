@@ -224,7 +224,10 @@ public sealed partial class WizardIntelligenceProvider(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
         CancellationToken cancellationToken) =>
-        covenantDispatch is null
+        SubagentExecutionAmbient.Protection is { } protection
+            ? ValueTask.FromResult(Result<CovenantTurnScope>.Success(CovenantTurnScope.ForMemoryDelegation(
+                SubagentExecutionAmbient.MemoryDelegation?.ChildId ?? Guid.NewGuid(), protection, SubagentExecutionAmbient.Sources)))
+            : covenantDispatch is null
             ? ValueTask.FromResult(Result<CovenantTurnScope>.Success(CovenantTurnScope.NotEligible()))
             : covenantDispatch.BeginTurnAsync(
                 invocationContext,
@@ -287,6 +290,7 @@ public sealed partial class WizardIntelligenceProvider(
                         StructuredOutputWarning: turn.Warnings.Count > 0)
                     {
                         Reasoning = turn.Reasoning,
+                        Sensitivity = turn.Sensitivity,
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -679,6 +683,8 @@ public sealed partial class WizardIntelligenceProvider(
         }
 
         CovenantTurnScope covenantScope = covenantAcquisition.Value;
+
+        if (memoryDelegation is not null) covenantScope.BindProtection(memoryDelegation.CaptureOutputProtection);
 
         try
         {
@@ -1868,6 +1874,8 @@ public sealed partial class WizardIntelligenceProvider(
         {
             grimoireTurn = seededTurn;
 
+            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
+
             streamTurnBegunEarly = true;
         }
         else if (!streaming)
@@ -1898,6 +1906,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             grimoireTurn = begun.Value;
 
+            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
+
             campaignTurn?.MarkBegun();
 
             streamTurnBegunEarly = true;
@@ -1927,6 +1937,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
 
             grimoireTurn = begun.Value;
+
+            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
 
             campaignTurn?.MarkBegun();
 
@@ -2432,6 +2444,8 @@ public sealed partial class WizardIntelligenceProvider(
                 campaignRollup: campaignTurn?.Artifact?.Content,
                 enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
                 campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
+        baseSystemPromptDocument = MemoryDelegationMaterializer.Append(baseSystemPromptDocument, covenantScope?.MemorySources);
+
         SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
 
         SystemPromptDocument ordinarySystemPromptDocument = baseSystemPromptDocument;
@@ -2478,6 +2492,8 @@ public sealed partial class WizardIntelligenceProvider(
                 campaignRollup: campaignTurn?.Artifact?.Content,
                 enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
                 campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
+
+            streamSystemPromptDocument = MemoryDelegationMaterializer.Append(streamSystemPromptDocument, covenantScope?.MemorySources);
 
             ordinarySystemPromptDocument = streamSystemPromptDocument;
 
@@ -2621,6 +2637,8 @@ public sealed partial class WizardIntelligenceProvider(
             }
 
             grimoireTurn = lateBegun.Value;
+
+            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
 
             campaignTurn?.MarkBegun();
 
@@ -2916,6 +2934,8 @@ public sealed partial class WizardIntelligenceProvider(
                 enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
                 campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
 
+                    admissionSystemPrompt = MemoryDelegationMaterializer.Append(admissionSystemPrompt, covenantScope?.MemorySources);
+
                     if (preparedAdmissionMessages.Count > 0
                         && preparedAdmissionMessages[0].Role == ChatRole.System)
                     {
@@ -3200,7 +3220,8 @@ public sealed partial class WizardIntelligenceProvider(
                         streamMaterializationLedger,
                         RemoveSemanticMaterialization,
                         out ContextTokenBreakdown callBreakdown,
-                        systemPromptAttribution: () => streamCachePrepared?.Build.Attribution);
+                        systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
+                            ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution));
 
                     if (streamContextGate.IsSuccess)
                     {
@@ -3331,7 +3352,8 @@ public sealed partial class WizardIntelligenceProvider(
                                         streamPromptCachePlan,
                                         ResolveCallSensitivity(),
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
-                                        streamCachePrepared?.Build.Attribution))
+                                        streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                        covenantScope?.Protection))
                                 .ConfigureAwait(false);
                         }
 
@@ -3430,7 +3452,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     streamPromptCachePlan,
                                     ResolveCallSensitivity(),
                                     streamCachePrepared?.Bind(chatMessages, streamChatOptions),
-                                    streamCachePrepared?.Build.Attribution))
+                                    streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                        covenantScope?.Protection))
                         .GetAsyncEnumerator(inferenceToken);
 
                 try
@@ -3814,8 +3837,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     toolLoopProgressEntries.Add(
                                         new ToolLoopProgressEntry(
                                             denied.ToolName,
-                                            denied.ArgsSnapshot,
-                                            denied.ResultText));
+                                            covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty,
+                                            covenantScope?.Protection is null ? denied.ResultText : string.Empty));
 
                                     if (!streaming)
                                     {
@@ -3823,7 +3846,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                                         auditContext?.ToolNames.Add(denied.ToolName);
 
-                                        auditContext?.ToolArgumentsJson.Add(denied.ArgsSnapshot);
+                                        auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty);
 
                                         ToolExecutionPipeline.AppendToolExchangeToMessages(
                                             chatMessages,
@@ -3834,8 +3857,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                                         // The model has been told it was denied; recording that
                                         // is bookkeeping and outlives the caller's token.
-                                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                                            grimoireTurn.SessionId,
+                                        await PersistToolInteractionAsync(covenantScope, grimoireTurn,
                                             denied.ToolName,
                                             denied.ArgsSnapshot,
                                             denied.ResultText,
@@ -3854,7 +3876,8 @@ public sealed partial class WizardIntelligenceProvider(
                                                            targetModel,
                                                            auditContext,
                                                            toolCallIndex == 0 ? rawRoundReasoning : null,
-                                                           inferenceToken)
+                                                           inferenceToken,
+                                                           covenantScope)
                                                            .ConfigureAwait(false))
                                         {
                                             yield return denialEvent;
@@ -3956,6 +3979,12 @@ public sealed partial class WizardIntelligenceProvider(
                                 }
                             }
 
+                            if (covenantScope?.DerivedSensitivity is { } inheritedSensitivity)
+                                memoryDelegation?.RecordDerived(inheritedSensitivity);
+
+                            streamTurnContext.ProtectedContent = covenantScope?.Protection is not null
+                                || covenantScope?.DerivedSensitivity?.Level is ContentSensitivity.CovenantDerived;
+
                             processTask = ProcessWithLiveWardsAsync();
 
                             // Pump wards and elicitation/HITL frames concurrently while the tool runs.
@@ -3977,17 +4006,24 @@ public sealed partial class WizardIntelligenceProvider(
 
                             ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
 
+                            if (processed.Sensitivity is { } toolSensitivity)
+                            {
+                                covenantScope?.RecordDerived(toolSensitivity);
+
+                                memoryDelegation?.RecordDerived(toolSensitivity);
+                            }
+
                             toolLoopProgressEntries.Add(
                                 new ToolLoopProgressEntry(
                                     processed.ToolName,
-                                    processed.ArgsSnapshot,
-                                    processed.ResultText));
+                                    covenantScope?.Protection is null ? processed.ArgsSnapshot : string.Empty,
+                                    covenantScope?.Protection is null ? processed.ResultText : string.Empty));
 
                             (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
 
                             auditContext?.ToolNames.Add(processed.ToolName);
 
-                            auditContext?.ToolArgumentsJson.Add(processed.ArgsSnapshot);
+                            auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null ? processed.ArgsSnapshot : string.Empty);
 
                             ToolExecutionPipeline.AppendToolExchangeToMessages(
                                 chatMessages,
@@ -4010,13 +4046,14 @@ public sealed partial class WizardIntelligenceProvider(
                                 streamPendingAttachmentExtras.AddRange(extras);
                             }
 
+                            toolInteractionRecorded = true;
+
                             if (!processed.ReceiptHandled)
                             {
                                 // The tool has returned, so its effect has happened: recording it
                                 // runs on CancellationToken.None, or a client that disconnects now
                                 // leaves an effect with no durable record of the call behind it.
-                                await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                                    grimoireTurn.SessionId,
+                                await PersistToolInteractionAsync(covenantScope, grimoireTurn,
                                     processed.ToolName,
                                     processed.ArgsSnapshot,
                                     processed.ResultText,
@@ -4119,12 +4156,13 @@ public sealed partial class WizardIntelligenceProvider(
                                 // and nothing here may replace the exception unwinding this finally.
                                 ToolExecutionPipeline.ProcessedToolCall late = finishedToolTask.Result;
 
+                                if (late.Sensitivity is { } lateSensitivity) covenantScope?.RecordDerived(lateSensitivity);
+
                                 if (!late.ReceiptHandled)
                                 {
                                     try
                                     {
-                                        await grimoireTurnWriter.TryAppendToolInteractionAsync(
-                                            grimoireTurn.SessionId,
+                                        await PersistToolInteractionAsync(covenantScope, grimoireTurn,
                                             late.ToolName,
                                             late.ArgsSnapshot,
                                             late.ResultText,
@@ -4304,7 +4342,8 @@ public sealed partial class WizardIntelligenceProvider(
                                     streamMaterializationLedger,
                                     RemoveSemanticMaterialization,
                                     out ContextTokenBreakdown retryContextBreakdown,
-                                    systemPromptAttribution: () => streamCachePrepared?.Build.Attribution);
+                                    systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
+                            ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution));
 
                                 if (retryContextGate.IsFailure)
                                 {
@@ -4357,7 +4396,8 @@ public sealed partial class WizardIntelligenceProvider(
                                             retryPromptCachePlan,
                                             ResolveCallSensitivity(),
                                             streamCachePrepared?.Bind(chatMessages, retryOptions),
-                                            streamCachePrepared?.Build.Attribution))
+                                            streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                        covenantScope?.Protection))
                                     .ConfigureAwait(false);
 
                                 if (retryCall.IsFailure)
@@ -4683,6 +4723,7 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     Warnings = streamWarnings,
                     Reasoning = clientReasoningSegments,
+                    Sensitivity = covenantScope?.DerivedSensitivity,
                 });
 
             yield break;
@@ -5144,6 +5185,37 @@ public sealed partial class WizardIntelligenceProvider(
             Failed: true);
     }
 
+    private async Task PersistToolInteractionAsync(CovenantTurnScope? scope, GrimoireTurnWriter.TurnHandle handle,
+        string name, string arguments, string text, string model, CancellationToken ct)
+    {
+        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationEffect? effect = null;
+
+        try
+        {
+            if (scope?.Protection is { } protection)
+            {
+                var admitted = await protection.AdmitAsync(ct).ConfigureAwait(false);
+
+                if (admitted.IsFailure) throw new ModelCallAdmissionException(admitted.Error);
+
+                effect = admitted.Value;
+            }
+
+            using var cancellation = effect is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, effect.Revocation);
+
+            var token = cancellation?.Token ?? ct;
+
+            await grimoireTurnWriter.TryAppendToolInteractionAsync(handle.SessionId, name, arguments, text, model,
+                token, scope?.DerivedSensitivity, handle).ConfigureAwait(false);
+
+            token.ThrowIfCancellationRequested();
+        }
+        finally
+        {
+            if (effect is not null) await effect.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
     private async IAsyncEnumerable<IntelligenceEvent> EmitSyntheticAskHumanDenialAsync(
         FunctionCallContent fcc,
         string message,
@@ -5153,13 +5225,13 @@ public sealed partial class WizardIntelligenceProvider(
         string targetModel,
         InferenceAuditContext? auditContext,
         IReadOnlyList<TextReasoningContent>? reasoningContents,
-        [EnumeratorCancellation] CancellationToken cancellationToken)
+        [EnumeratorCancellation] CancellationToken cancellationToken, CovenantTurnScope? covenantScope = null)
     {
         ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(fcc, message);
 
         auditContext?.ToolNames.Add(denied.ToolName);
 
-        auditContext?.ToolArgumentsJson.Add(denied.ArgsSnapshot);
+        auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty);
 
         ToolExecutionPipeline.AppendToolExchangeToMessages(
             chatMessages,
@@ -5169,8 +5241,7 @@ public sealed partial class WizardIntelligenceProvider(
             reasoningContents);
 
         // Bookkeeping for a denial the model has already been handed: not the caller's to cancel.
-        await grimoireTurnWriter.TryAppendToolInteractionAsync(
-            grimoireTurn.SessionId,
+        await PersistToolInteractionAsync(covenantScope, grimoireTurn,
             denied.ToolName,
             denied.ArgsSnapshot,
             denied.ResultText,
@@ -7593,7 +7664,8 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (covenantDispatch is null || covenantScope is not { } scope)
         {
-            if (covenantScope?.CampaignArtifact?.Sensitivity is ContentSensitivity.CovenantDerived)
+            if (covenantScope?.Protection is not null || covenantScope?.DerivedSensitivity?.Level is ContentSensitivity.CovenantDerived
+                || covenantScope?.CampaignArtifact?.Sensitivity is ContentSensitivity.CovenantDerived)
             {
                 return new Error(ErrorCodes.Covenant.Unavailable, "Protected Campaign context has no disclosure gate.");
             }
@@ -7601,7 +7673,8 @@ public sealed partial class WizardIntelligenceProvider(
             return Result<CovenantDispatchAdmission?>.Success(null);
         }
 
-        if (!dispatch.HasAdmittedContent && !scope.HistoryTainted && !scope.MayStage
+        if (scope.Protection is null && scope.DerivedSensitivity?.Level is not ContentSensitivity.CovenantDerived
+            && !dispatch.HasAdmittedContent && !scope.HistoryTainted && !scope.MayStage
             && scope.CampaignArtifact?.Sensitivity is not ContentSensitivity.CovenantDerived)
         {
             return Result<CovenantDispatchAdmission?>.Success(null);
@@ -7856,7 +7929,8 @@ public sealed partial class WizardIntelligenceProvider(
         PromptCachePlan? promptCachePlan = null,
         ContentSensitivity sensitivity = ContentSensitivity.None,
         IPromptCacheDispatchBinding? promptCacheBinding = null,
-        SystemPromptAttributionMap? systemPromptAttribution = null) =>
+        SystemPromptAttributionMap? systemPromptAttribution = null,
+        IProtectedProviderCallBinding? protectedBinding = null) =>
         new(
             lease.Provider,
             lease.ResolvedModel,
@@ -7870,7 +7944,8 @@ public sealed partial class WizardIntelligenceProvider(
             PromptCachePlan: promptCachePlan,
             Sensitivity: sensitivity,
             PromptCacheBinding: promptCacheBinding,
-            SystemPromptAttribution: systemPromptAttribution);
+            SystemPromptAttribution: systemPromptAttribution,
+            ProtectedBinding: protectedBinding);
 
     private PromptCachePlan BuildPromptCachePlan(
         ChatClientLease lease,

@@ -585,6 +585,18 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
         internal MemoryEvaluationSourceSnapshot? Snapshot = snapshot;
 
+        internal ProviderCallSensitivity Sensitivity { get; } = SourceSensitivity(snapshot);
+
+        private static ProviderCallSensitivity SourceSensitivity(MemoryEvaluationSourceSnapshot source)
+        {
+            ContentSensitivity level = source.Coordinates.Where(c => c.Role is MemoryEvaluationCoordinateRole.Intervention)
+                .Aggregate(ContentSensitivity.None, (current, coordinate) => ContentSensitivityAlgebra.Maximum(current, coordinate.Sensitivity));
+
+            return ProviderCallSensitivities.Create(level, level is ContentSensitivity.None
+                ? GenerationProvenance.CreateExact([])
+                : source.Provenance ?? GenerationProvenance.CreateExact([source.Fence!.DatasetGeneration]));
+        }
+
         internal DateTimeOffset ExpiresAtUtc { get; } = expiresAtUtc;
 
         internal CancellationTokenSource Cancellation { get; } = new();

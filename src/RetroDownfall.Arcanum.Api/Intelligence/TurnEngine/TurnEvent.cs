@@ -127,6 +127,8 @@ internal sealed record RunCompleted(
     TurnTerminationReason Reason = TurnTerminationReason.Completed) : TurnEvent(Correlation)
 {
     public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
+
+    public RetroDownfall.Arcanum.Core.Covenant.ProviderCallSensitivity? Sensitivity { get; init; }
 }
 
 internal sealed record RunFailed(

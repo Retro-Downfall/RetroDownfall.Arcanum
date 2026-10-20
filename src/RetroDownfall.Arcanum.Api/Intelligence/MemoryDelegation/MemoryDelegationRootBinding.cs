@@ -11,6 +11,8 @@ internal sealed class MemoryDelegationRootBinding(PingRequest request, ArcanumIn
 {
     private static readonly AsyncLocal<MemoryDelegationRootBinding?> Slot = new();
 
+    private readonly object _sensitivityLock = new();
+
     private int _captured;
 
     private readonly PingRequest _request = request;
@@ -46,6 +48,36 @@ internal sealed class MemoryDelegationRootBinding(PingRequest request, ArcanumIn
         }
 
         return await coordinator.ConsumeAsync(Root, rootId, childId, digest, ct).ConfigureAwait(false);
+    }
+
+    private ProviderCallSensitivity? _derivedSensitivity;
+
+    internal void RecordDerived(ProviderCallSensitivity sensitivity)
+    {
+        lock (_sensitivityLock) _derivedSensitivity = ProviderCallSensitivities.Merge(_derivedSensitivity, sensitivity);
+    }
+
+    internal MemoryDelegationProtection? CaptureOutputProtection()
+    {
+        if (!Root.IsConsumed) return null;
+
+        ProviderCallSensitivity sensitivity;
+
+        lock (_sensitivityLock) sensitivity = ProviderCallSensitivities.Merge(_derivedSensitivity, Root.Sensitivity);
+
+        return new(sensitivity, Root.Revocation, AdmitOutputAsync);
+    }
+
+    private async Task<Result<MemoryDelegationEffect>> AdmitOutputAsync(CancellationToken ct)
+    {
+        if (revalidate is not null)
+        {
+            Result valid = await revalidate(ct).ConfigureAwait(false);
+
+            if (valid.IsFailure) return valid.Error;
+        }
+
+        return await coordinator.AdmitEffectAsync(Root, ct).ConfigureAwait(false);
     }
 
     private sealed class Scope(MemoryDelegationRootBinding? previous) : IDisposable

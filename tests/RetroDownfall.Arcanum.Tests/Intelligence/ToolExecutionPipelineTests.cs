@@ -21,6 +21,43 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class ToolExecutionPipelineTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Trusted_child_result_preserves_label_before_tool_stringification(bool materialize)
+    {
+        var provenance = RetroDownfall.Arcanum.Core.Covenant.GenerationProvenance.CreateExact([Guid.NewGuid()]);
+        var sensitivity = RetroDownfall.Arcanum.Core.Covenant.ProviderCallSensitivities.Create(
+            RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, provenance);
+        var trusted = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationToolResult("summary", sensitivity);
+        ChatOptions options = new() { Tools = [new TrustedResultFunction(trusted)] };
+        var processed = await CreatePipeline(materializer: materialize ? new CappedMaterializer() : null).ProcessSingleToolCallAsync(
+            new FunctionCallContent("child", "delegate_task", new Dictionary<string, object?>()), new PingRequest("parent"),
+            options, null, null, new ToolExecutionPipeline.TurnContext(), true, default);
+        Assert.Equal(materialize ? "capped" : "summary", processed.ResultText);
+        Assert.Equal(sensitivity, processed.Sensitivity);
+    }
+
+    private sealed class CappedMaterializer : IToolResultMaterializer
+    {
+        public ToolResultMaterialization Materialize(string toolName, string rawText, ToolResultMaterializerOptions? options = null)
+        {
+            Assert.Equal("delegate_task", toolName);
+            Assert.Equal("summary", rawText);
+            return new("capped", true, rawText.Length, 1);
+        }
+        public ToolResultMaterialization MaterializeStructured<T>(string toolName, T result, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> jsonTypeInfo)
+            where T : IStructuredToolResult<T> => throw new NotSupportedException();
+    }
+
+    private sealed class TrustedResultFunction(object result) : AIFunction
+    {
+        private static readonly JsonDocument Schema = JsonDocument.Parse("{}");
+        public override string Name => "delegate_task";
+        public override JsonElement JsonSchema => Schema.RootElement;
+        protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken) => ValueTask.FromResult<object?>(result);
+    }
+
     /// <summary>
     /// R-274: a cancellation that is not the caller's — a tool's own timeout surfaces as a
     /// <see cref="TaskCanceledException"/> while the turn is still live — is a tool failure. Treating
@@ -266,14 +303,15 @@ public sealed class ToolExecutionPipelineTests
 
     private static ToolExecutionPipeline CreatePipeline(
         NoOpSessionAttachmentStore? store = null,
-        IAttachmentSourceResolver? attachmentSourceResolver = null) =>
+        IAttachmentSourceResolver? attachmentSourceResolver = null,
+        IToolResultMaterializer? materializer = null) =>
         new(
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()),
             new FakeWard(),
             new AllowAllSanctumGuard(),
             store ?? new NoOpSessionAttachmentStore(),
             NullLogger<ToolExecutionPipeline>.Instance,
-            attachmentSourceResolver: attachmentSourceResolver);
+            attachmentSourceResolver: attachmentSourceResolver, toolResultMaterializer: materializer);
 
     /// <summary>A Session tool that returns successfully, so its post-processing runs.</summary>
     private static ChatOptions SessionToolOptions(string toolName) =>

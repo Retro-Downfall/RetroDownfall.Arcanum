@@ -323,7 +323,11 @@ public sealed record ModelCallContext(
     PromptCachePlan? PromptCachePlan = null,
     ContentSensitivity Sensitivity = ContentSensitivity.None,
     IPromptCacheDispatchBinding? PromptCacheBinding = null,
-    SystemPromptAttributionMap? SystemPromptAttribution = null);
+    SystemPromptAttributionMap? SystemPromptAttribution = null,
+    IProtectedProviderCallBinding? ProtectedBinding = null);
+
+/// <summary>Opaque host-owned protection interpreted only by the physical provider boundary.</summary>
+public interface IProtectedProviderCallBinding;
 
 /// <summary>Opaque ephemeral dispatch binding. Only the physical API owner interprets it.</summary>
 public interface IPromptCacheDispatchBinding;

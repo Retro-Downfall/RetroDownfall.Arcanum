@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using System.Buffers;
 
 using System.Diagnostics.CodeAnalysis;
@@ -112,6 +113,8 @@ public sealed class ToolExecutionPipeline(
         /// </remarks>
         public ArcanumInvocationContext? Invocation { get; init; }
 
+        public bool ProtectedContent { get; set; }
+
         public bool SanctumEnabled { get; init; }
 
         public SanctumMode SanctumMode { get; init; }
@@ -138,7 +141,10 @@ public sealed class ToolExecutionPipeline(
         string ResultText,
         IReadOnlyList<IntelligenceEvent> WardEvents,
         bool Denied = false,
-        bool Failed = false);
+        bool Failed = false)
+    {
+        public ProviderCallSensitivity? Sensitivity { get; init; }
+    }
 
     public sealed record ProcessedToolCall(
         string CallId,
@@ -150,7 +156,10 @@ public sealed class ToolExecutionPipeline(
         IReadOnlyList<AIContent>? AdditionalContextContents = null,
         bool ReceiptHandled = false,
         bool Denied = false,
-        AttachmentRefreshEvent? AttachmentRefresh = null);
+        AttachmentRefreshEvent? AttachmentRefresh = null)
+    {
+        public ProviderCallSensitivity? Sensitivity { get; init; }
+    }
 
     public static List<FunctionCallContent> CollectActionableFunctionCalls(ChatResponse response)
     {
@@ -609,7 +618,7 @@ public sealed class ToolExecutionPipeline(
             additionalContext,
             applyPatchContext?.ReceiptHandled == true,
             wardedExecution.Denied,
-            attachmentRefresh);
+            attachmentRefresh) { Sensitivity = wardedExecution.Sensitivity };
     }
 
     private sealed record RefreshPostProcess(
@@ -1261,7 +1270,7 @@ public sealed class ToolExecutionPipeline(
 
         await RecordUngatedWardResolutionAsync(
                 toolName,
-                argsSnapshot,
+                turnContext.ProtectedContent ? string.Empty : argsSnapshot,
                 metricToolName,
                 wardEvents,
                 cancellationToken,
@@ -1290,7 +1299,7 @@ public sealed class ToolExecutionPipeline(
                 .ConfigureAwait(false);
         }
 
-        (string directResult, bool directDenied) = await InvokeToolCallWithSanctumAsync(
+        (string directResult, bool directDenied, ProviderCallSensitivity? sensitivity) = await InvokeToolCallWithSanctumAsync(
             fcc,
             activeSpell,
             chatOptions,
@@ -1301,7 +1310,7 @@ public sealed class ToolExecutionPipeline(
         return new WardedToolExecutionResult(
             directResult,
             BufferedWardEventsOrEmpty(wardEvents),
-            directDenied);
+            directDenied) { Sensitivity = sensitivity };
     }
 
     private async Task RecordUngatedWardResolutionAsync(
@@ -1507,7 +1516,7 @@ public sealed class ToolExecutionPipeline(
                         Nonce = nonce,
                     });
 
-                    (string text, bool denied) = await InvokeToolCallWithSanctumAsync(
+                    (string text, bool denied, ProviderCallSensitivity? sensitivity) = await InvokeToolCallWithSanctumAsync(
                             fcc,
                             activeSpell,
                             chatOptions,
@@ -1517,7 +1526,7 @@ public sealed class ToolExecutionPipeline(
                         .ConfigureAwait(false);
 
                     return Result<WardedToolExecutionResult>.Success(
-                        new WardedToolExecutionResult(text, wardEvents, denied));
+                        new WardedToolExecutionResult(text, wardEvents, denied) { Sensitivity = sensitivity });
                 },
                 cancellationToken)
             .ConfigureAwait(false);
@@ -1575,7 +1584,7 @@ public sealed class ToolExecutionPipeline(
         IReadOnlyList<IntelligenceEvent> wardEvents) =>
         new(message, wardEvents, Denied: true);
 
-    private async Task<(string ResultText, bool Denied)> InvokeToolCallWithSanctumAsync(
+    private async Task<(string ResultText, bool Denied, ProviderCallSensitivity? Sensitivity)> InvokeToolCallWithSanctumAsync(
         FunctionCallContent fcc,
         ParsedSpell? activeSpell,
         ChatOptions chatOptions,
@@ -1592,7 +1601,7 @@ public sealed class ToolExecutionPipeline(
 
         if (outcome.Enabled && !SanctumEnforcement.AllowsContinuation(outcome.Result, outcome.Mode))
         {
-            return (SanctumDenialMessage(outcome.Result), true);
+            return (SanctumDenialMessage(outcome.Result), true, null);
         }
 
         // Sanctum cleared the initial URL above; the ward keeps every redirect hop under the same policy.
@@ -1603,6 +1612,14 @@ public sealed class ToolExecutionPipeline(
             chatOptions,
             cancellationToken).ConfigureAwait(false);
 
+        if (rawResult is MemoryDelegationToolResult delegated)
+        {
+            string text = toolResultMaterializer is null ? delegated.Text
+                : MaterializeToolResultForModel(fcc.Name ?? string.Empty, delegated.Text, toolResultMaterializer);
+
+            return (text, false, delegated.Sensitivity);
+        }
+
         if (rawResult is TrustedStructuredToolResult
             {
                 Kind: TrustedStructuredToolResultKind.WorkspacePatch,
@@ -1610,7 +1627,7 @@ public sealed class ToolExecutionPipeline(
             && (exactPatchResult.ReceiptHandled
                 || ApplyPatchInvocationAmbient.Current?.ReceiptHandled == true))
         {
-            return (exactPatchResult.Text, false);
+            return (exactPatchResult.Text, false, null);
         }
 
         if (toolResultMaterializer is not null)
@@ -1621,10 +1638,10 @@ public sealed class ToolExecutionPipeline(
                 rawResult,
                 toolResultMaterializer);
 
-            return (materialized, false);
+            return (materialized, false, null);
         }
 
-        return (rawResult?.ToString() ?? string.Empty, false);
+        return (rawResult?.ToString() ?? string.Empty, false, null);
     }
 
     private sealed class GrimoirePendingReceiptSink(

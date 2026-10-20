@@ -51,6 +51,63 @@ public sealed class SessionTurnClaimBeginTests(GrimoireFixture fixture) : IAsync
     }
 
     [SkippableFact]
+    public async Task Protected_tool_pair_commits_text_labels_and_exact_running_claim_revision_atomically()
+    {
+        RequireSqlCipher();
+        var lease = await AcquireAsync();
+        Assert.True((await BeginAsync(lease)).IsSuccess);
+        var provenance = GenerationProvenance.CreateExact([Guid.NewGuid()]);
+        var sensitivity = ProviderCallSensitivities.Create(ContentSensitivity.CovenantDerived, provenance);
+        var saved = await ((IGrimoireTurnCommitter)_repository).AppendProtectedToolInteractionAsync(
+            new(lease, "delegate_task", "task", "protected summary", "model", sensitivity), default);
+        Assert.True(saved.IsSuccess, saved.Error.Message);
+        Assert.Equal(4, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+        Assert.Equal(2, await ScalarAsync("SELECT TaintedArtifactCount FROM session_sensitivity_state;"));
+        Assert.Equal(await ScalarAsync("SELECT Revision FROM session_sensitivity_state;"),
+            await ScalarAsync("SELECT ExpectedCurrentSensitivityRevision FROM session_turn_claims;"));
+        Assert.Equal(2, await ScalarAsync("SELECT StateCode FROM session_turn_claims;"));
+        var finalized = await _repository.CommitTurnAsync(new TurnCommitRequest(lease.FutureAssistantEntryId,
+            lease.Claim.SessionId, AssistantFinalizationOutcome.Committed, "protected answer", lease.Claim.RequestDigest,
+            sensitivity.Level, sensitivity.Provenance), default);
+        Assert.True(finalized.IsSuccess, finalized.Error.Message);
+        var claims = new SessionTurnClaimStore(new FixedCovenantConnectionSource(Connection), new CovenantQuotaGuard(), lease.OwnerBootId!.Value);
+        Assert.True((await claims.CompleteAsync(lease, SessionTurnClaimOutcome.Committed(), default)).IsSuccess);
+    }
+
+    [SkippableFact]
+    public async Task Failed_second_tool_label_rolls_back_both_entries_labels_projection_and_claim()
+    {
+        RequireSqlCipher();
+        var lease = await AcquireAsync();
+        Assert.True((await BeginAsync(lease)).IsSuccess);
+        await ExecuteAsync("CREATE TRIGGER fail_second_tool_label BEFORE INSERT ON artifact_sensitivity WHEN (SELECT COUNT(*) FROM artifact_sensitivity)=1 BEGIN SELECT RAISE(ABORT,'test label failure'); END;");
+        var sensitivity = ProviderCallSensitivities.Create(ContentSensitivity.CovenantDerived, GenerationProvenance.CreateExact([Guid.NewGuid()]));
+        var saved = await ((IGrimoireTurnCommitter)_repository).AppendProtectedToolInteractionAsync(
+            new(lease, "delegate_task", "task", "protected summary", "model", sensitivity), default);
+        Assert.True(saved.IsFailure);
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+        Assert.Equal(0, await ScalarAsync("SELECT COALESCE(SUM(TaintedArtifactCount),0) FROM session_sensitivity_state;"));
+        Assert.Equal(0, await ScalarAsync("SELECT ExpectedCurrentSensitivityRevision FROM session_turn_claims;"));
+        Assert.Equal(2, await ScalarAsync("SELECT StateCode FROM session_turn_claims;"));
+    }
+
+    [SkippableFact]
+    public async Task Protected_tool_pair_refuses_stale_executor_without_content_or_label_writes()
+    {
+        RequireSqlCipher();
+        var lease = await AcquireAsync();
+        Assert.True((await BeginAsync(lease)).IsSuccess);
+        var sensitivity = ProviderCallSensitivities.Create(ContentSensitivity.CovenantDerived, GenerationProvenance.CreateExact([Guid.NewGuid()]));
+        var saved = await ((IGrimoireTurnCommitter)_repository).AppendProtectedToolInteractionAsync(
+            new(lease with { ExecutorId = Guid.NewGuid() }, "delegate_task", "task", "secret", "model", sensitivity), default);
+        Assert.True(saved.IsFailure);
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+        Assert.Equal(0, await ScalarAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+    }
+
+    [SkippableFact]
     public async Task Claim_input_is_a_content_free_sequence_and_sensitivity_snapshot()
     {
         RequireSqlCipher();

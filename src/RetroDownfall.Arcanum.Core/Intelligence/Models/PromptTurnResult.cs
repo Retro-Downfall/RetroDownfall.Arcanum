@@ -13,6 +13,9 @@ public sealed record PromptTurnResult(
 
     public IReadOnlyList<ReasoningContentSegment> Reasoning { get; init; } = [];
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Core.Covenant.ProviderCallSensitivity? Sensitivity { get; init; }
+
     public bool PreserveProviderToolCallIds { get; init; }
 
 }

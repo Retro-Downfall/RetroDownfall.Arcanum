@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 
@@ -62,6 +63,8 @@ public sealed class GrimoireTurnWriter(
         public SessionTurnClaimLease? ClaimLease { get; internal set; }
 
         public bool IsFinalized { get; internal set; }
+
+        internal Func<MemoryDelegationProtection?>? OutputProtection { get; set; }
 
         internal ImmutableArray<SagaUseCoordinate> SagaUses { get; set; } = [];
 
@@ -201,6 +204,8 @@ public sealed class GrimoireTurnWriter(
         SessionTurnClaimOutcome interrupted = interruptionOutcome
             ?? SessionTurnClaimOutcome.RestoredInterrupted(ErrorCodes.Hub.SessionTurnRestoredInterrupted, 409, []);
 
+        await using var publication = new MemoryDelegationPublication(cancellationToken);
+
         try
         {
 
@@ -218,7 +223,7 @@ public sealed class GrimoireTurnWriter(
                         sensitivity,
                         covenantCommit: null,
                         cancellationToken,
-                        interruptionOutcome: interrupted)
+                        interruptionOutcome: interrupted, publication: publication)
                     .ConfigureAwait(false);
 
                 if (committed.IsFailure)
@@ -263,6 +268,8 @@ public sealed class GrimoireTurnWriter(
 
             }
 
+            publication.Token.ThrowIfCancellationRequested();
+
             if (handle.ClaimLease is not null)
             {
                 handle.IsFinalized = true;
@@ -289,7 +296,7 @@ public sealed class GrimoireTurnWriter(
         {
 
             logger.LogWarning(
-                ex,
+                handle.OutputProtection?.Invoke() is null ? ex : null,
                 "Grimoire could not resolve interrupted assistant entry {AssistantEntryId}.",
                 entryId);
 
@@ -376,7 +383,9 @@ public sealed class GrimoireTurnWriter(
         string arguments,
         string result,
         string modelUsed,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ProviderCallSensitivity? sensitivity = null,
+        TurnHandle? handle = null)
     {
 
         if (!sessionId.HasValue)
@@ -384,6 +393,23 @@ public sealed class GrimoireTurnWriter(
 
             return;
 
+        }
+
+        if (sensitivity is not null)
+        {
+            if (turnCommitter is null || handle?.ClaimLease is not { } claim || claim.Claim.SessionId != sessionId.Value)
+                throw new InvalidOperationException("Protected tool persistence is unavailable.");
+
+            var committed = await turnCommitter.AppendProtectedToolInteractionAsync(
+                new(claim, toolName, arguments, result, modelUsed, sensitivity), cancellationToken).ConfigureAwait(false);
+
+            if (committed.IsFailure) throw new InvalidOperationException("The protected tool interaction could not be committed.");
+
+            await PublishSavedEntryByIdAsync(sessionId.Value, committed.Value.CallEntryId, cancellationToken).ConfigureAwait(false);
+
+            await PublishSavedEntryByIdAsync(sessionId.Value, committed.Value.ResultEntryId, cancellationToken).ConfigureAwait(false);
+
+            return;
         }
 
         try
@@ -1001,7 +1027,8 @@ public sealed class GrimoireTurnWriter(
         ProviderCallSensitivity? sensitivity,
         CovenantTurnCommitBinding? covenantCommit,
         CancellationToken cancellationToken,
-        SessionTurnClaimOutcome? interruptionOutcome = null)
+        SessionTurnClaimOutcome? interruptionOutcome = null,
+        MemoryDelegationPublication? publication = null)
     {
 
         // Two independent reasons to come here, and neither implies the other. A Covenant-derived
@@ -1009,17 +1036,21 @@ public sealed class GrimoireTurnWriter(
         // proposal an agent ever authors has the second without the first — its Covenant was empty,
         // so the call that carried the proposal tool showed the provider no Covenant bytes at all —
         // and selecting the committer on the label alone refused exactly that turn.
+        var protection = handle.OutputProtection?.Invoke();
+
+        if (protection is not null) sensitivity = ProviderCallSensitivities.Merge(sensitivity, protection.Sensitivity);
+
         bool owesLabel = sensitivity is { Level: ContentSensitivity.CovenantDerived };
 
         if (turnCommitter is null
-            || (!owesLabel && covenantCommit is null && handle.ClaimLease is null && handle.SagaUses.IsEmpty)
+            || (!owesLabel && protection is null && covenantCommit is null && handle.ClaimLease is null && handle.SagaUses.IsEmpty)
             || handle.SessionId is not { } sessionId)
         {
 
             // The ordinary reply has nothing to lose on this arm. A turn holding a staged batch does:
             // "not mine" hands it to a finalize path that writes content alone, so a turn that cannot
             // reach the atomic committer refuses rather than publishing half of what it owes.
-            return covenantCommit is null && handle.ClaimLease is null
+            return !owesLabel && protection is null && covenantCommit is null && handle.ClaimLease is null
                 ? Result<bool>.Success(false)
                 : Result<bool>.Failure(new Error(
                     ErrorCodes.Covenant.Unavailable,
@@ -1056,6 +1087,20 @@ public sealed class GrimoireTurnWriter(
                     staged.ExpectedKeyReclamationEpoch,
                     ExpectedCampaignRegistryEpoch: null);
 
+        }
+
+        if (protection is not null)
+        {
+            // A nonempty source mutation revokes every consumed root. Its atomic answer cannot be
+            // published under that root, and holding an effect across its writer would self-drain.
+            if (!mutations.IsEmpty || publication is null)
+                return new Error(ErrorCodes.MemoryDelegation.StaleSource, "Protected publication cannot accompany a source mutation.");
+
+            var admitted = await publication.AdmitAsync(protection).ConfigureAwait(false);
+
+            if (admitted.IsFailure) return admitted.Error;
+
+            cancellationToken = publication.Token;
         }
 
         Result<TurnCommitReceipt> committed = await turnCommitter
@@ -1183,6 +1228,8 @@ public sealed class GrimoireTurnWriter(
 
         }
 
+        await using var publication = new MemoryDelegationPublication(cancellationToken);
+
         try
         {
 
@@ -1192,7 +1239,7 @@ public sealed class GrimoireTurnWriter(
                     finalText,
                     sensitivity,
                     covenantCommit,
-                    cancellationToken)
+                    cancellationToken, publication: publication)
                 .ConfigureAwait(false);
 
             if (committed.IsFailure)
@@ -1225,6 +1272,8 @@ public sealed class GrimoireTurnWriter(
 
             }
 
+            publication.Token.ThrowIfCancellationRequested();
+
             // Persistence succeeded — mark immediately so callers treat the turn as saved even if
             // hub publication fails below.
             handle.IsFinalized = true;
@@ -1243,15 +1292,19 @@ public sealed class GrimoireTurnWriter(
                     await PublishSavedEntryByIdAsync(
                             publishSessionId,
                             finalizeId,
-                            CancellationToken.None)
+                            publication.Token)
                         .ConfigureAwait(false);
 
+                }
+                catch (OperationCanceledException) when (publication.Token.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
 
                     logger.LogWarning(
-                        ex,
+                        handle.OutputProtection?.Invoke() is null ? ex : null,
                         "Session event hub could not publish finalized assistant entry {AssistantEntryId} for model {ModelName}.",
                         finalizeId,
                         targetModel);
@@ -1272,7 +1325,7 @@ public sealed class GrimoireTurnWriter(
         catch (Exception ex)
         {
 
-            logger.LogWarning(ex, finalizeFailureLogMessage, targetModel);
+            logger.LogWarning(handle.OutputProtection?.Invoke() is null ? ex : null, finalizeFailureLogMessage, targetModel);
 
             try
             {
@@ -1296,7 +1349,7 @@ public sealed class GrimoireTurnWriter(
             {
 
                 logger.LogWarning(
-                    cleanupEx,
+                    handle.OutputProtection?.Invoke() is null ? cleanupEx : null,
                     "Grimoire could not resolve interrupted assistant entry {AssistantEntryId} after finalize failure.",
                     finalizeId);
 
@@ -1369,6 +1422,8 @@ public sealed class GrimoireTurnWriter(
         foreach (GrimoireEntryDto dto in entries)
         {
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
 
         }
@@ -1388,6 +1443,8 @@ public sealed class GrimoireTurnWriter(
             return;
 
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
 

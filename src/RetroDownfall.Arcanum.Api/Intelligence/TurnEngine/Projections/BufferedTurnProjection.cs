@@ -51,6 +51,7 @@ internal sealed class BufferedTurnProjection
             {
                 Warnings = _completed.Warnings,
                 Reasoning = _completed.Reasoning,
+                Sensitivity = _completed.Sensitivity,
             };
 
             return Result<PromptTurnResult>.Success(turn);

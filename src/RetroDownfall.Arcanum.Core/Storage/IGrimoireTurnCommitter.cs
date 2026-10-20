@@ -226,6 +226,12 @@ public sealed record TurnCommitReceipt(
     ImmutableArray<CovenantMutationReceipt> MutationReceipts,
     long? ThroughEntrySequence = null);
 
+/// <summary>The exact active claim, pair content, and immutable label committed together.</summary>
+public sealed record ProtectedToolInteraction(SessionTurnClaimLease ClaimLease, string ToolName, string Arguments,
+    string Result, string Model, ProviderCallSensitivity Sensitivity);
+
+public sealed record ProtectedToolInteractionReceipt(Guid CallEntryId, Guid ResultEntryId, long ThroughEntrySequence);
+
 /// <summary>
 /// The single writer of assistant finalization and Covenant publication.
 /// </summary>
@@ -237,6 +243,9 @@ public sealed record TurnCommitReceipt(
 /// </remarks>
 public interface IGrimoireTurnCommitter
 {
+    Task<Result<ProtectedToolInteractionReceipt>> AppendProtectedToolInteractionAsync(ProtectedToolInteraction request,
+        CancellationToken cancellationToken) => Task.FromResult(Result<ProtectedToolInteractionReceipt>.Failure(
+            new Error(ErrorCodes.Covenant.Unavailable, "Protected tool persistence is unavailable.")));
 
     Task<Result<TurnCommitReceipt>> CommitTurnAsync(
         TurnCommitRequest request,

@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
@@ -130,12 +132,26 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
             using PromptCacheDispatchPolicy.Scope? dispatchScope = EnterPromptCacheDispatchScope(chatClient, messages, options, context, cancellationToken);
 
+            var protectedAdmission = await AdmitProtectedAsync(context, cancellationToken).ConfigureAwait(false);
+
+            if (protectedAdmission.IsFailure)
+                return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, protectedAdmission.Error, Cause: null));
+
+            await using MemoryDelegationEffect? effect = protectedAdmission.Value;
+
+            using CancellationTokenSource? protectedCancellation = effect is null ? null
+                : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, effect.Revocation);
+
+            CancellationToken providerToken = protectedCancellation?.Token ?? cancellationToken;
+
+            providerToken.ThrowIfCancellationRequested();
+
             ChatResponse response;
 
             try
             {
                 response = await chatClient.GetResponseAsync(
-                    providerPayload.Messages, providerPayload.Options, cancellationToken).ConfigureAwait(false);
+                    providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
             }
             catch (AggregateException ex) when (dispatchScope?.IsTerminalRefusal(ex) == true)
             {
@@ -153,6 +169,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             breakdown = ReconcileAndRecord(breakdown, response.Usage, context);
             RecordPromptCacheMetrics(context, purpose, response.Usage);
             RecordDelegatedUsage(context, response.Usage);
+
+            providerToken.ThrowIfCancellationRequested();
 
             return ModelCallOutcome.Success(
                 new ModelCallResult(
@@ -185,7 +203,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 new Error(
                     ErrorCodes.Hub.Error,
                     PublicInferenceErrorMessages.NativeGenericFailure),
-                ex));
+                context?.ProtectedBinding is null ? ex : null));
         }
     }
 
@@ -260,14 +278,32 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             yield break;
         }
 
+        var protectedAdmission = await AdmitProtectedAsync(context, cancellationToken).ConfigureAwait(false);
+
+        if (protectedAdmission.IsFailure)
+        {
+            yield return new ModelCallFailureUpdate(purpose, modelCallId, protectedAdmission.Error);
+
+            yield break;
+        }
+
+        await using MemoryDelegationEffect? effect = protectedAdmission.Value;
+
+        using CancellationTokenSource? protectedCancellation = effect is null ? null
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, effect.Revocation);
+
+        CancellationToken providerToken = protectedCancellation?.Token ?? cancellationToken;
+
+        providerToken.ThrowIfCancellationRequested();
+
         try
         {
             await using IAsyncEnumerator<ChatResponseUpdate> stream = chatClient.GetStreamingResponseAsync(
-                providerPayload.Messages, providerPayload.Options, cancellationToken).GetAsyncEnumerator(cancellationToken);
+                providerPayload.Messages, providerPayload.Options, providerToken).GetAsyncEnumerator(providerToken);
 
             while (true)
             {
-                var next = await MoveNextProviderUpdateAsync(stream, chatClient, messages, options, context, cancellationToken).ConfigureAwait(false);
+                var next = await MoveNextProviderUpdateAsync(stream, chatClient, messages, options, context, providerToken).ConfigureAwait(false);
 
                 if (next.Refusal is { } refusal)
                 {
@@ -275,6 +311,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
                     yield break;
                 }
+
+                providerToken.ThrowIfCancellationRequested();
 
                 if (!next.HasUpdate) break;
 
@@ -341,6 +379,21 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             RecordPromptCacheMetrics(context, purpose, finalUsage);
             RecordDelegatedUsage(context, finalUsage);
         }
+    }
+
+    private static Task<Result<MemoryDelegationEffect?>> AdmitProtectedAsync(ModelCallContext? context, CancellationToken ct) =>
+        context?.ProtectedBinding switch
+        {
+            null => Task.FromResult(Result<MemoryDelegationEffect?>.Success(null)),
+            MemoryDelegationProtection protection => AdmitAsync(protection, ct),
+            _ => Task.FromResult(Result<MemoryDelegationEffect?>.Failure(new Error(ErrorCodes.MemoryDelegation.Unavailable, "Protected provider admission is unavailable."))),
+        };
+
+    private static async Task<Result<MemoryDelegationEffect?>> AdmitAsync(MemoryDelegationProtection protection, CancellationToken ct)
+    {
+        var admitted = await protection.AdmitAsync(ct).ConfigureAwait(false);
+
+        return admitted.IsFailure ? admitted.Error : Result<MemoryDelegationEffect?>.Success(admitted.Value);
     }
 
     private PromptCacheDispatchPolicy.Scope? EnterPromptCacheDispatchScope(IChatClient client, IList<ChatMessage> messages,

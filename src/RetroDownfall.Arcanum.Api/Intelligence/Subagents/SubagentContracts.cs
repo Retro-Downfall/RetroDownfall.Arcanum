@@ -1,4 +1,6 @@
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 
@@ -28,6 +30,9 @@ public sealed record SubagentRunRequest(
 {
     [System.Text.Json.Serialization.JsonIgnore]
     internal MemoryDelegationExecution? MemoryDelegation { get; init; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal MemoryDelegationProtection? InputProtection { get; init; }
 }
 
 internal sealed record MemoryDelegationExecution(Guid RunId,
@@ -38,7 +43,11 @@ public sealed record SubagentRunResult(
     string Summary,
     Guid RunId,
     DelegatedManaUsage Usage,
-    string? FailureCode);
+    string? FailureCode)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ProviderCallSensitivity? Sensitivity { get; init; }
+}
 
 public interface ISubagentRunner
 {

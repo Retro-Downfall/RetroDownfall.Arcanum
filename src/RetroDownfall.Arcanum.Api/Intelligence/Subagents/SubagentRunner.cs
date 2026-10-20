@@ -1,4 +1,7 @@
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -35,9 +38,17 @@ internal sealed class SubagentRunner(
 
         Guid childRunId = request.MemoryDelegation?.RunId ?? Guid.NewGuid();
 
-        using CancellationTokenSource? protectedCancellation = request.MemoryDelegation is { } delegated
-            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, delegated.Child.Revocation)
+        ProviderCallSensitivity? sensitivity = request.MemoryDelegation?.Child.Sensitivity ?? request.InputProtection?.Sensitivity;
+
+        MemoryDelegationProtection? protection = request.MemoryDelegation is { } delegated
+            ? new(delegated.Child.Sensitivity, delegated.Child.Revocation, delegated.Child.AdmitEffectAsync)
+            : request.InputProtection;
+
+        using CancellationTokenSource? protectedCancellation = protection is not null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, protection.Revocation)
             : null;
+
+        MemoryDelegationEffect? sourceUse = null;
 
         if (protectedCancellation is not null) cancellationToken = protectedCancellation.Token;
 
@@ -50,6 +61,15 @@ internal sealed class SubagentRunner(
 
         try
         {
+            if (request.MemoryDelegation is { } materialized)
+            {
+                var admitted = await materialized.Child.AdmitEffectAsync(cancellationToken).ConfigureAwait(false);
+
+                if (admitted.IsFailure) return Failure(childRunId, tracker, SubagentFailureCodes.ChildFailed, sensitivity);
+
+                sourceUse = admitted.Value;
+            }
+
             operationLease = await operations
                 .StartAsync(
                     new LongRunningOperationCreateRequest(
@@ -68,12 +88,12 @@ internal sealed class SubagentRunner(
                 return Failure(
                     childRunId,
                     tracker,
-                    SubagentFailureCodes.DurableStartFailed);
+                    SubagentFailureCodes.DurableStartFailed, sensitivity);
             }
 
             operationRevision = operationLease.Operation.Revision;
 
-            using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker, request.MemoryDelegation?.Child);
+            using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker, request.MemoryDelegation?.Child, protection, request.MemoryDelegation?.Child.Sources);
 
             // This runs inside the parent's delegate_task call, where the parent turn's accounting is
             // ambient. The child is billed under its own run and reservation, never the parent's.
@@ -90,7 +110,7 @@ internal sealed class SubagentRunner(
                 operationLease.Operation.Id,
                 ownerId,
                 operationRevision,
-                renewalStop.Token);
+                renewalStop.Token, protection is not null);
 
             Result<PromptTurnResult> result;
 
@@ -110,6 +130,9 @@ internal sealed class SubagentRunner(
                 operationRevision = await renewal.ConfigureAwait(false);
             }
 
+            if (result.IsSuccess && result.Value.Sensitivity is { } outputSensitivity)
+                sensitivity = ProviderCallSensitivities.Merge(sensitivity, outputSensitivity);
+
             if (tracker.GetUsage().Exhausted)
             {
                 await FailOperationAsync(
@@ -122,7 +145,7 @@ internal sealed class SubagentRunner(
                 return Failure(
                     childRunId,
                     tracker,
-                    SubagentFailureCodes.BudgetExhausted);
+                    SubagentFailureCodes.BudgetExhausted, sensitivity);
             }
 
             if (result.IsFailure)
@@ -137,7 +160,7 @@ internal sealed class SubagentRunner(
                 return Failure(
                     childRunId,
                     tracker,
-                    SubagentFailureCodes.ChildFailed);
+                    SubagentFailureCodes.ChildFailed, sensitivity);
             }
 
             bool completed = await operations
@@ -162,7 +185,7 @@ internal sealed class SubagentRunner(
                 return Failure(
                     childRunId,
                     tracker,
-                    SubagentFailureCodes.ChildFailed);
+                    SubagentFailureCodes.ChildFailed, sensitivity);
             }
 
             return new SubagentRunResult(
@@ -170,7 +193,7 @@ internal sealed class SubagentRunner(
                 Summary: result.Value.Text,
                 childRunId,
                 tracker.GetUsage(),
-                FailureCode: null);
+                FailureCode: null) { Sensitivity = sensitivity };
         }
         catch (BudgetExhaustedException)
         {
@@ -187,7 +210,7 @@ internal sealed class SubagentRunner(
             return Failure(
                 childRunId,
                 tracker,
-                SubagentFailureCodes.BudgetExhausted);
+                SubagentFailureCodes.BudgetExhausted, sensitivity);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -226,10 +249,12 @@ internal sealed class SubagentRunner(
             return Failure(
                 childRunId,
                 tracker,
-                SubagentFailureCodes.ChildFailed);
+                SubagentFailureCodes.ChildFailed, sensitivity);
         }
         finally
         {
+            if (sourceUse is not null) await sourceUse.DisposeAsync().ConfigureAwait(false);
+
             if (request.MemoryDelegation is { } memoryDelegation)
                 await memoryDelegation.Child.DisposeAsync().ConfigureAwait(false);
         }
@@ -261,13 +286,13 @@ internal sealed class SubagentRunner(
     private static SubagentRunResult Failure(
         Guid runId,
         DelegatedManaTracker tracker,
-        string failureCode) =>
+        string failureCode, ProviderCallSensitivity? sensitivity = null) =>
         new(
             Success: false,
             Summary: string.Empty,
             runId,
             tracker.GetUsage(),
-            failureCode);
+            failureCode) { Sensitivity = sensitivity };
 
     private async Task FailOperationAsync(
         LongRunningOperationLeaseResult lease,
@@ -299,7 +324,7 @@ internal sealed class SubagentRunner(
         Guid operationId,
         string ownerId,
         long startingRevision,
-        CancellationToken stopToken)
+        CancellationToken stopToken, bool protectedContent)
     {
         long revision = startingRevision;
 
@@ -328,9 +353,10 @@ internal sealed class SubagentRunner(
             // A heartbeat that threw committed nothing, so the last accepted revision still
             // addresses the current row and the caller's terminal transition remains correct.
             logger.LogWarning(
-                ex,
-                "Subagent lease renewal for operation {OperationId} stopped after a failed heartbeat; the child turn continues on revision {Revision}.",
+                protectedContent ? null : ex,
+                "Subagent lease renewal for operation {OperationId} stopped after a failed heartbeat ({ExceptionType}); the child turn continues on revision {Revision}.",
                 operationId,
+                ex.GetType().FullName,
                 revision);
         }
 

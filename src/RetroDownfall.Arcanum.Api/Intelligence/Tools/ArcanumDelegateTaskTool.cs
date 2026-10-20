@@ -139,7 +139,10 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             return "Subagent task failed: Explicit files were invalid or exceeded their bounds.";
         }
 
-        SubagentRunRequest request = new(prompt, inheritedModel, files, maxTokens, maxCostUsd);
+        SubagentRunRequest request = new(prompt, inheritedModel, files, maxTokens, maxCostUsd)
+        {
+            InputProtection = memoryDelegation?.CaptureOutputProtection(),
+        };
 
         if (arguments.TryGetValue("memory_grant", out object? selector))
         {
@@ -176,13 +179,21 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return result.FailureCode switch
+        string text = result.FailureCode switch
         {
             null when result.Success => result.Summary,
             SubagentFailureCodes.BudgetExhausted =>
                 SubagentParentContextInjector.BudgetExhaustedMessage,
             _ => "Subagent task failed.",
         };
+
+        var sensitivity = result.Sensitivity ?? request.MemoryDelegation?.Child.Sensitivity ?? request.InputProtection?.Sensitivity;
+
+        if (sensitivity is null) return text;
+
+        memoryDelegation?.RecordDerived(sensitivity);
+
+        return new MemoryDelegationToolResult(text, sensitivity);
     }
 
     private static FileReadResult TryReadFiles(

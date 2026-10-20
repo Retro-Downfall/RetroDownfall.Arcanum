@@ -608,15 +608,21 @@ public sealed class MemoryDelegationLifecycleTests
 
         internal CovenantDigest Digest { get; } = new(new byte[32]);
 
-        internal static async Task<Harness> CreateAsync()
+        internal string SourceId { get; private init; } = "source";
+
+        internal static async Task<Harness> CreateAsync(bool sensitive = false)
         {
             var source = await MemoryEvaluationSourceHarness.CreateAsync();
 
-            await source.Saga.Store.InsertAsync("source", "fact", DateTimeOffset.UtcNow.AddMinutes(-1), null, null, "extraction", source.Saga.Embedding(), CancellationToken.None);
+            string sourceId = sensitive ? Guid.NewGuid().ToString("D") : "source";
+
+            await source.Saga.Store.InsertAsync(sourceId, "fact", DateTimeOffset.UtcNow.AddMinutes(-1), null, null, "extraction", source.Saga.Embedding(), CancellationToken.None);
+
+            if (sensitive) await source.Saga.LabelSensitiveAsync(Guid.Parse(sourceId));
 
             await source.AdmitAsync();
 
-            var h = new Harness(source);
+            var h = new Harness(source) { SourceId = sourceId };
 
             h.Coordinator = new(h.Time);
 
@@ -625,7 +631,7 @@ public sealed class MemoryDelegationLifecycleTests
 
         internal async Task<Result<MemoryDelegationRoot>> TryPrepareAsync(Guid? id = null, CovenantTurnLease? lease = null, IMemoryDelegationSourceReader? reader = null, CancellationToken ct = default)
         {
-            var request = await Source.RequestAsync("source");
+            var request = await Source.RequestAsync(SourceId);
 
             var parent = MemoryEvaluationSourceHarness.Require(ArcanumInvocationContext.Create(ArcanumExecutionSurface.StatelessOperatorTurn,
                 Source.Invocation.Campaign, InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.AllTools, Source.Invocation.ReadAuthorityEpoch));

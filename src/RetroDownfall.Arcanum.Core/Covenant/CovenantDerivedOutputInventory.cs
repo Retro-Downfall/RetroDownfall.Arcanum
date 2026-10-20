@@ -60,6 +60,41 @@ public static class CovenantDerivedOutputInventory
     private static readonly ImmutableArray<CovenantDerivedOutputConsumer> Declared =
     [
         new(
+            "memory-delegation-provider",
+            "RetroDownfall.Arcanum.Api.Intelligence.ModelCallExecutor",
+            null,
+            DerivedOutputPolicy.ProtectedReadRequired,
+            "Capsule and derived-only calls hold current source proof through actual provider enumeration, disposal and accounting; each attempt follows durable disclosure acknowledgement."),
+
+        new(
+            "memory-delegation-child-result",
+            "RetroDownfall.Arcanum.Api.Intelligence.Subagents.SubagentRunner",
+            null,
+            DerivedOutputPolicy.PropagateLabel,
+            "Every child result carries immutable conservative sensitivity and provenance independently of released source bytes, without granting ordinary child memory authority."),
+
+        new(
+            "memory-delegation-tool-result",
+            "RetroDownfall.Arcanum.Api.Intelligence.ToolExecutionPipeline",
+            null,
+            DerivedOutputPolicy.PropagateLabel,
+            "Trusted child metadata is extracted before arbitrary result stringification and merged into parent disclosure and protected persistence before subsequent effects."),
+
+        new(
+            "memory-delegation-session-tool-pair",
+            "RetroDownfall.Arcanum.Infrastructure.Repositories.GrimoireRepository",
+            SensitiveArtifactKind.AssistantEntry,
+            DerivedOutputPolicy.PropagateLabel,
+            "Both physical tool Entries and their labels commit with the exact Begun claim sensitivity revision in one transaction before entry events or subsequent inference."),
+
+        new(
+            "memory-delegation-http-response",
+            "RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationJsonResult",
+            null,
+            DerivedOutputPolicy.ProtectedReadRequired,
+            "A consumed root remains guarded through complete HTTP response serialization, including cancellation and disposal, after its read-capable child has completed."),
+
+        new(
             "memory-evaluation-evidence",
             "RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation.MemoryEvaluationEvidenceStore",
             null,

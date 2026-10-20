@@ -199,7 +199,10 @@ public sealed partial class WizardIntelligenceProviderCovenantTests : IAsyncLife
             Model: ModelName,
             WorkingDirectory: string.Empty,
             SkipSpellRouting: true,
-            DisableMcpTools: true);
+            DisableMcpTools: true,
+            StatelessMessages: [new CoreChatMessage("user", "hello")]);
+
+    internal static CovenantDispatchGate EmptyDisclosureGate() => Gate(0, 0);
 
     private static CapturingChatClient Scripted()
     {
