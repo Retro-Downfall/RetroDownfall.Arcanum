@@ -412,7 +412,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 _state = GateState.Closing;
 
-                _memoryDelegationDrain = MemoryDelegation?.CloseForMaintenance() ?? Task.CompletedTask;
+                _memoryDelegationDrain = Task.WhenAll(MemoryDelegation?.CloseForMaintenance() ?? []);
 
                 _closure = new Closure(owner, promoted, scopedConnection);
 

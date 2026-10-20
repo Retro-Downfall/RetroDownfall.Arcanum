@@ -81,6 +81,48 @@ public sealed class MemoryDelegationLifecycleTests
     }
 
     [SkippableFact]
+    public async Task Root_completion_joins_an_executing_expiry_callback()
+    {
+        await using var h = await Harness.CreateAsync();
+
+        await using var root = await h.PrepareAsync();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using ManualResetEventSlim release = new();
+
+        using var cancellation = root.Revocation.Register(() =>
+        {
+            entered.TrySetResult();
+
+            release.Wait();
+        });
+
+        Task expiry = Task.Run(() => h.Time.Advance(TimeSpan.FromMinutes(5)));
+
+        Task? completion = null;
+
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            completion = root.DisposeAsync().AsTask();
+
+            Assert.False(completion.IsCompleted);
+        }
+        finally
+        {
+            release.Set();
+
+            await expiry.WaitAsync(TimeSpan.FromSeconds(10));
+
+            if (completion is not null) await completion.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal(0, h.Time.ActiveTimers);
+    }
+
+    [SkippableFact]
     public async Task Unused_expiry_does_not_cap_parent_work()
     {
         await using var h = await Harness.CreateAsync();
@@ -421,7 +463,7 @@ public sealed class MemoryDelegationLifecycleTests
 
         try
         {
-            if (cause == "maintenance") drain = h.Coordinator.CloseForMaintenance();
+            if (cause == "maintenance") drain = Task.WhenAll(h.Coordinator.CloseForMaintenance());
             else if (cause == "parent") await h.Source.Lease.DisposeAsync();
             else if (cause == "caller") caller.Cancel();
             else h.Time.Advance(TimeSpan.FromMinutes(5));
@@ -430,7 +472,7 @@ public sealed class MemoryDelegationLifecycleTests
 
             Assert.False(preparation.IsCompleted);
 
-            drain ??= h.Coordinator.CloseForMaintenance();
+            drain ??= Task.WhenAll(h.Coordinator.CloseForMaintenance());
 
             Assert.False(drain.IsCompleted);
         }
@@ -509,7 +551,7 @@ public sealed class MemoryDelegationLifecycleTests
 
         try
         {
-            if (cause == "maintenance") drain = h.Coordinator.CloseForMaintenance();
+            if (cause == "maintenance") drain = Task.WhenAll(h.Coordinator.CloseForMaintenance());
             else if (cause == "completion") drain = child!.DisposeAsync().AsTask();
             else if (cause == "caller") caller.Cancel();
             else h.Time.Advance(TimeSpan.FromMinutes(5));

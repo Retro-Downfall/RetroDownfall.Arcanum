@@ -120,7 +120,9 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
                 TimeSpan remaining = expires - timeProvider.GetUtcNow();
 
-                registration.Timer = timeProvider.CreateTimer(_ => Revoke(registration), null, remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+                registration.DeadlineCancellation = new CancellationTokenSource(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, timeProvider);
+
+                registration.DeadlineRegistration = registration.DeadlineCancellation.Token.Register(() => Revoke(registration));
             }
             catch (ObjectDisposedException)
             {
@@ -333,7 +335,7 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
         try
         {
-            Task drain = RevokeAll();
+            Task drain = Task.WhenAll(RevokeAll());
 
             await drain.WaitAsync(ct).ConfigureAwait(false);
 
@@ -349,8 +351,8 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
     internal void EndMutation() => _admission.Release();
 
-    /// <summary>Called by the existing global admission spine before its stage-one drain.</summary>
-    public Task CloseForMaintenance()
+    /// <summary>Closes admission synchronously and snapshots the physical lifetimes the global stage-one drain must join.</summary>
+    public Task[] CloseForMaintenance()
     {
         lock (_sync)
         {
@@ -370,7 +372,7 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
         }
     }
 
-    private Task RevokeAll(bool asynchronousCancellation = false)
+    private Task[] RevokeAll(bool asynchronousCancellation = false)
     {
         Registration[] registrations;
 
@@ -425,7 +427,7 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
             }
         }
 
-        return Task.WhenAll(drains);
+        return drains;
     }
 
     private bool IsLive(Registration registration) => !_maintenanceClosed && !registration.Terminal && _live.Contains(registration)
@@ -467,13 +469,9 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
             registration.Lease = null;
 
-            registration.Timer?.Dispose();
-
-            registration.ParentCancellation.Unregister();
-
-            registration.LeaseCancellation.Unregister();
-
-            registration.LeaseCompletion.Unregister();
+            // Stop the deadline without joining a callback under _sync. The root owns
+            // the registrations until CompleteAsync joins them outside the lock.
+            registration.DeadlineCancellation?.Dispose();
         }
     }
 
@@ -556,13 +554,15 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
             }
         }
 
-        registration.Timer?.Dispose();
+        registration.DeadlineCancellation?.Dispose();
 
         await registration.ParentCancellation.DisposeAsync().ConfigureAwait(false);
 
         await registration.LeaseCancellation.DisposeAsync().ConfigureAwait(false);
 
         await registration.LeaseCompletion.DisposeAsync().ConfigureAwait(false);
+
+        await registration.DeadlineRegistration.DisposeAsync().ConfigureAwait(false);
     }
 
     private sealed class Preparation(CancellationTokenSource cancellation)
@@ -607,7 +607,9 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
         internal CancellationTokenRegistration LeaseCompletion;
 
-        internal ITimer? Timer;
+        internal CancellationTokenSource? DeadlineCancellation;
+
+        internal CancellationTokenRegistration DeadlineRegistration;
 
         internal bool Terminal;
 
