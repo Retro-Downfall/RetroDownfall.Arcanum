@@ -1040,7 +1040,8 @@ public sealed class PublishedArcanumSessionSmokeTests
                         Endpoint = providerEndpoint.AbsoluteUri,
                         CredentialEnvironmentVariable = ProviderKeyVariable,
                         Models = [new ModelEntry(ExpectedModel, SupportsTools: true)],
-                        ContextWindowLimit = 8192,
+                        // The tool-capable fake model must fit the real advertised server schemas.
+                        ContextWindowLimit = 16384,
                     },
                 ],
                 Features = new FeatureSettings

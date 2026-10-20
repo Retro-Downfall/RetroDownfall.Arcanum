@@ -959,11 +959,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         string originalWrapper = File.ReadAllText(Path.Combine(repository, wrapperPath));
 
-        Assert.Equal("F7811FDE8403D307FC5A2827A57E033A4CD4AE0163023B18A55FFFF81A8E263B", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
+        Assert.Equal("A5726522632805205611697EF702D6BA33577B3957E12168CFDC5D2E6C983BA2", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
 
         string[] wrapperLines = originalWrapper.Split('\n');
 
-        string originalCode = string.Join("\n", wrapperLines.Skip(1330).Take(12)) + "\n";
+        string originalCode = string.Join("\n", wrapperLines.Skip(1357).Take(12)) + "\n";
 
         string originalHeader = string.Join("\n", wrapperLines.Take(9)) + "\n";
 
@@ -971,7 +971,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         string originalModels = File.ReadAllText(Path.Combine(repository, modelsPath));
 
-        Assert.Equal("E895753C080BE29ECA7BB992DF04913909BE0DB797250762CFBE37E84642E27E", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalModels))));
+        Assert.Equal("FF6B9BA7F8D88C885609DC24F1B3C5FA03F3B6AE43A5027407A415133495F49A", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalModels))));
 
         string[] modelLines = originalModels.Split('\n');
 
@@ -983,7 +983,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         extracted.Add(modelsPath, string.Join("\n", modelLines.Take(5)) + "\n" + selectedRecordDeclaration + "\n");
 
-        Report($"R108_RECORD_EXTRACTION={modelsPath}|inputSha256=E895753C080BE29ECA7BB992DF04913909BE0DB797250762CFBE37E84642E27E|ranges=1-5,61-61|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[modelsPath])))}");
+        Report($"R108_RECORD_EXTRACTION={modelsPath}|inputSha256=FF6B9BA7F8D88C885609DC24F1B3C5FA03F3B6AE43A5027407A415133495F49A|ranges=1-5,61-61|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[modelsPath])))}");
 
         string[] properties = slice == "Level" ? ["Level"] : slice == "ProvenanceMode" ? ["ProvenanceMode"] : ["Level", "ProvenanceMode"];
 
@@ -1030,7 +1030,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         extracted.Add(wrapperPath, originalHeader + originalCode + peerCode + scaffold + "}\n");
 
-        Report($"R108_WRAPPER_EXTRACTION={slice}|ranges=1-9,1331-1342,last-closing-brace|omitted=all-unrelated-members-including-Sensitivity|wrapperUnchanged=true|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
+        Report($"R108_WRAPPER_EXTRACTION={slice}|ranges=1-9,1358-1369,last-closing-brace|omitted=all-unrelated-members-including-Sensitivity|wrapperUnchanged=true|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(
             "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
@@ -2215,11 +2215,11 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         string originalWrapper = File.ReadAllText(Path.Combine(repository, wrapperPath));
 
-        Assert.Equal("F7811FDE8403D307FC5A2827A57E033A4CD4AE0163023B18A55FFFF81A8E263B", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
+        Assert.Equal("A5726522632805205611697EF702D6BA33577B3957E12168CFDC5D2E6C983BA2", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalWrapper))));
 
         string[] wrapperLines = originalWrapper.Split('\n');
 
-        string originalCode = string.Join("\n", wrapperLines.Skip(1330).Take(12)) + "\n";
+        string originalCode = string.Join("\n", wrapperLines.Skip(1357).Take(12)) + "\n";
 
         string originalHeader = string.Join("\n", wrapperLines.Take(9)) + "\n";
 
@@ -2280,7 +2280,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
 
         extracted.Add(wrapperPath, originalHeader + code + scaffold + "}\n");
 
-        output.WriteLine($"R103_WRAPPER_EXTRACTION={receiver}|{shape}|ranges=1-9,1331-1342,last-closing-brace|omitted=all-unrelated-members|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|deltaOld={delta.Old.Replace("\n", "\\n", StringComparison.Ordinal)}|deltaNew={delta.New.Replace("\n", "\\n", StringComparison.Ordinal)}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
+        output.WriteLine($"R103_WRAPPER_EXTRACTION={receiver}|{shape}|ranges=1-9,1358-1369,last-closing-brace|omitted=all-unrelated-members|headerSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalHeader)))}|originalCodeSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(originalCode)))}|deltaOld={delta.Old.Replace("\n", "\\n", StringComparison.Ordinal)}|deltaNew={delta.New.Replace("\n", "\\n", StringComparison.Ordinal)}|scaffoldSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(scaffold)))}|extractedSha256={Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(extracted[wrapperPath])))}");
 
         CSharpCompilation compilation = CompileWithProductionReferencePack(
             "global using System; using RetroDownfall.Arcanum.Core.Covenant; " + RegistrationSource("services.AddHostedService<Worker>();")
