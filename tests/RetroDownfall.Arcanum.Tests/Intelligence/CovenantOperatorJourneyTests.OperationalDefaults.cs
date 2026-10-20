@@ -57,7 +57,7 @@ public sealed partial class CovenantOperatorJourneyTests
                     SessionId: sessionId,
                     DisableMcpTools: true,
                     SkipSpellRouting: true),
-                Invocation(campaignId),
+                await InvocationAsync(campaignId),
                 CancellationToken.None);
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? turn.Error.Message : null);

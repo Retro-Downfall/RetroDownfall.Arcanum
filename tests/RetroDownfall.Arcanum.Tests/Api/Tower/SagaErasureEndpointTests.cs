@@ -39,10 +39,11 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 /// whose preconditions were written by production writers.
 /// </summary>
 /// <remarks>
-/// <para>Campaigns are registered through their route. A route-created Session carries no Campaign
-/// binding until a turn begins, so each Session here is created through the turn-begin store, the
-/// production writer that binds a Session to its Campaign. Memories are written through the store's
-/// own insert and read back through the detail route, which is where the CLI takes its target from.</para>
+/// <para>Campaigns are registered through their route. Campaign-bound Sessions are created through
+/// the turn-begin store, the production writer that binds a Session to its Campaign. The historical
+/// unresolved fixture seeds its legacy binding under the same guarded write scope; live Session
+/// creation produces a canonical global-only binding. Memories are written through the store's own
+/// insert and read back through the detail route, which is where the CLI takes its target from.</para>
 ///
 /// <para>Every test that erases ends by asking the database whether any Annals claim outlived its
 /// row.</para>
@@ -1469,9 +1470,9 @@ public sealed class SagaErasureEndpointTests
 
         (HttpClient client, MemoryErasureRouteDriver driver) = Connect(factory);
 
-        Guid firstSession = await UnboundSessionAsync(client, "first");
+        Guid firstSession = await SeedLegacyUnresolvedSessionAsync(factory, "first");
 
-        Guid secondSession = await UnboundSessionAsync(client, "second");
+        Guid secondSession = await SeedLegacyUnresolvedSessionAsync(factory, "second");
 
         string target = await MemoryErasureRouteDriver.InsertSagaAsync(factory, T, firstSession);
 
@@ -1617,16 +1618,45 @@ public sealed class SagaErasureEndpointTests
                 AfterReceiptProbeForTesting = afterReceiptProbe,
             });
 
-    /// <summary>A Session created through its route, which binds it to no Campaign until a turn begins.</summary>
-    private static async Task<Guid> UnboundSessionAsync(HttpClient client, string suffix)
+    /// <summary>Seeds the historical unresolved state that live Session creation no longer produces.</summary>
+    private static async Task<Guid> SeedLegacyUnresolvedSessionAsync(
+        ArcanumWebApplicationFactory factory,
+        string suffix)
     {
-        using HttpResponseMessage created = await client.PostAsync(
-            "/api/sessions",
-            JsonContent.Create(new CreateSessionRequest(null, $"Unbound {suffix}"), ArcanumJsonContext.Default.CreateSessionRequest));
+        using IServiceScope scope = factory.Services.CreateScope();
 
-        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        SqliteConnection connection = await OpenAsync(scope);
 
-        return (await MemoryErasureRouteDriver.ReadDataAsync(created, ArcanumJsonContext.Default.ApiResponseSessionDetailDto)).Id;
+        Guid sessionId = Guid.NewGuid();
+
+        using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync();
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            INSERT INTO "Sessions" ("Id", "Title", "Status", "CreatedAt", "UpdatedAt")
+            VALUES ($id, $title, 'active', $now, $now);
+
+            INSERT INTO session_campaign_bindings (SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES ($id, 3, NULL, $now);
+            """;
+
+        _ = command.Parameters.AddWithValue("$id", sessionId.ToString("D").ToUpperInvariant());
+
+        _ = command.Parameters.AddWithValue("$title", $"Legacy unresolved {suffix}");
+
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(DateTimeOffset.UtcNow));
+
+        _ = await command.ExecuteNonQueryAsync();
+
+        await transaction.CommitAsync();
+
+        return sessionId;
     }
 
     /// <summary>Confirms one memory's current version through the Saga review routes, which records a decision.</summary>

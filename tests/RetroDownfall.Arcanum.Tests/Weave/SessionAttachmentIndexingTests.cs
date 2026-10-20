@@ -646,7 +646,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!), memoryDelegation: null);
 
     /// <summary>The plain table a build without an accelerator can read, write, and delete from.</summary>
     private Task CreatePlainVectorMirrorAsync() =>

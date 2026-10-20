@@ -286,7 +286,7 @@ public sealed class LongRestTurnPreparationLifetimeTests
 
             GrimoireRepository repository = new(f.H.Saga.Context, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
                 new TestOptionsSnapshot<ArcanumSettings>(f.Options.CurrentValue), null, null,
-                FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), FixtureLabeledArtifactGuard.For(f.H.Saga.Context));
+                FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), FixtureLabeledArtifactGuard.For(f.H.Saga.Context), memoryDelegation: null);
 
             Harness h = new() { Claims = new(native), Maintenance = new(f.Maintenance), Coordinator = new(f), Repository = repository };
 

@@ -42,6 +42,14 @@ public sealed class GrimoireRepositorySqlBoundaryTests
             [
                 new("PublishSagaUsesAsync", "CreateCommand", 2),
             ],
+            // Protected tool publication admits the scoped connection and attaches its immediate
+            // transaction to EF. The parameterized claim/revision advance uses that same transaction,
+            // committing the tool pair, sensitivity labels and expectation fence atomically.
+            ["GrimoireRepository.ProtectedTools.cs"] =
+            [
+                new("AppendProtectedToolInteractionAsync", "GetDbConnection", 1),
+                new("AppendProtectedToolInteractionAsync", "CreateCommand", 1),
+            ],
             // Claim input and begin obtain the scoped connection only to acquire its ordinary
             // admission lease. Begin attaches the lease's BEGIN IMMEDIATE transaction to the same
             // EF context; every input/read/write command still goes through the factory.

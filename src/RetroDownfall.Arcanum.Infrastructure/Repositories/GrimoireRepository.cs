@@ -103,7 +103,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         CovenantAvailabilityRepublisher? availabilityRepublisher,
         IGrimoireOrdinaryConnectionFactory connections,
         ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard,
-        IMemoryDelegationMutationBarrier? memoryDelegation = null)
+        IMemoryDelegationMutationBarrier? memoryDelegation)
     {
         _memoryDelegation = memoryDelegation;
 

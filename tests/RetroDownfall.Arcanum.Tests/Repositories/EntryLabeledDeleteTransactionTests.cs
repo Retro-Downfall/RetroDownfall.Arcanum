@@ -48,7 +48,6 @@ namespace RetroDownfall.Arcanum.Tests.Repositories;
 [Trait("Category", "Integration")]
 public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) : IAsyncLifetime
 {
-
     private static CancellationToken Token => CancellationToken.None;
 
     private string _path = string.Empty;
@@ -59,7 +58,6 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
 
     public async Task InitializeAsync()
     {
-
         _path = fixture.CopyDatabase();
 
         _db = fixture.CreateContext(_path);
@@ -69,18 +67,15 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
         await _db.Database.OpenConnectionAsync(Token);
 
         await _sibling.Database.OpenConnectionAsync(Token);
-
     }
 
     public async Task DisposeAsync()
     {
-
         await _sibling.DisposeAsync();
 
         await _db.DisposeAsync();
 
         File.Delete(_path);
-
     }
 
     [SkippableFact]
@@ -122,7 +117,6 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
     [SkippableFact]
     public async Task A_delete_asks_the_guard_inside_its_transaction_so_no_label_slips_in_before_the_delete()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         LabelIntruder intruder = new(
@@ -149,13 +143,11 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
         Assert.Equal(1, intruder.AskedInsideTransaction);
 
         Assert.Equal(0, intruder.AskedOutsideTransaction);
-
     }
 
     [SkippableFact]
     public async Task A_delete_that_cannot_read_the_label_table_refuses_and_keeps_the_entry()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         GrimoireRepository repository = Repository(FixtureLabeledArtifactGuard.For(_db));
@@ -164,11 +156,9 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
 
         await using (SqliteCommand command = ((SqliteConnection)_db.Database.GetDbConnection()).CreateCommand())
         {
-
             command.CommandText = "CREATE TEMP TABLE artifact_sensitivity (Unreadable INTEGER);";
 
             _ = await command.ExecuteNonQueryAsync(Token);
-
         }
 
         LabeledArtifactRefusalException refused = await Assert.ThrowsAsync<LabeledArtifactRefusalException>(
@@ -177,7 +167,6 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
         Assert.Equal(ErrorCodes.Covenant.Unavailable, refused.Error.Code);
 
         Assert.Equal(1L, await CountEntryAsync(entryId));
-
     }
 
     private GrimoireRepository Repository(ICovenantLabeledArtifactTransactionGuard guard) =>
@@ -189,11 +178,10 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db),
-            guard);
+            guard, memoryDelegation: null);
 
     private static async Task<(Guid SessionId, Guid EntryId)> CreateEntryAsync(GrimoireRepository repository)
     {
-
         (Guid sessionId, Guid entryId) = await repository.BeginAssistantReplyAsync(
             sessionId: null,
             prompt: "delete this entry under a label race",
@@ -203,12 +191,10 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
         await repository.FinalizeAssistantEntryAsync(entryId, "the reply that is deleted", Token);
 
         return (sessionId, entryId);
-
     }
 
     private async Task<long> CountEntryAsync(Guid entryId)
     {
-
         await using SqliteCommand command = ((SqliteConnection)_db.Database.GetDbConnection()).CreateCommand();
 
         command.CommandText = "SELECT COUNT(*) FROM Entries WHERE lower(replace(Id, '-', '')) = $id;";
@@ -216,18 +202,14 @@ public sealed class EntryLabeledDeleteTransactionTests(GrimoireFixture fixture) 
         _ = command.Parameters.AddWithValue("$id", entryId.ToString("N"));
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(Token), System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     private async Task<long> CountAsync(string table)
     {
-
         await using SqliteCommand command = ((SqliteConnection)_db.Database.GetDbConnection()).CreateCommand();
 
         command.CommandText = $"SELECT COUNT(*) FROM {table};";
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(Token), System.Globalization.CultureInfo.InvariantCulture);
-
     }
-
 }

@@ -661,7 +661,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
             h.Repository = new(f.H.Saga.Context, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
                 new TestOptionsSnapshot<ArcanumSettings>(f.Options.CurrentValue), null, null,
-                FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), FixtureLabeledArtifactGuard.For(f.H.Saga.Context));
+                FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), FixtureLabeledArtifactGuard.For(f.H.Saga.Context), memoryDelegation: null);
 
             h.Begin = new(h.Repository);
 

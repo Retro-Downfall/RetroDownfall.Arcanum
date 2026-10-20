@@ -574,7 +574,7 @@ public sealed class SagaRankingEvidenceReaderTests
             await Saga.Context.SaveChangesAsync();
 
             GrimoireRepository committer = new(Saga.Context, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
-                new Snapshot(new ArcanumSettings()), null, null, FixtureOrdinaryConnectionFactory.For(Saga.Context), FixtureLabeledArtifactGuard.For(Saga.Context));
+                new Snapshot(new ArcanumSettings()), null, null, FixtureOrdinaryConnectionFactory.For(Saga.Context), FixtureLabeledArtifactGuard.For(Saga.Context), memoryDelegation: null);
 
             Require(await committer.CommitTurnAsync(new(assistant, session, AssistantFinalizationOutcome.Committed,
                 "answer", Digest, ContentSensitivity.None, GenerationProvenance.CreateExact([]),

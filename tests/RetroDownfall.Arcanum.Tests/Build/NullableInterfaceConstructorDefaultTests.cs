@@ -72,6 +72,38 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// </remarks>
     private static readonly Dictionary<string, string> Allowed = new(StringComparer.Ordinal)
     {
+        ["src/RetroDownfall.Arcanum.Core/Intelligence/ModelTokenizationContracts.cs:ModelCallContext:ProtectedBinding"] = "per-call capsule metadata, not a DI service; ordinary model calls carry no protected binding. Wizard supplies the marker at the protected physical-call boundary, where ModelCallExecutor validates its authority before dispatch",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantEntryErasureService.cs:CovenantEntryErasureService:memoryDelegation"] = "direct erasure fixtures without a delegation runtime need no capsule barrier; the host supplies the shared singleton before entry erasure invalidates delegated sources",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMaintenanceCoordinators.cs:CovenantOwnerCleanupCoordinator:memoryDelegation"] = "offline owner cleanup and direct fixtures own no live delegation runtime; host composition supplies the shared singleton before owner deletion",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMemoryReviewService.cs:CovenantMemoryReviewService:memoryDelegation"] = "direct memory-review fixtures own no live capsules; host composition supplies the shared singleton before protected source review mutations",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantMutationService.cs:CovenantMutationService:memoryDelegation"] = "direct Covenant mutation fixtures have no delegation runtime; the host supplies the shared singleton to revoke affected source capsules before mutation",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantProtectedArtifactErasureKernel.cs:CovenantProtectedArtifactErasureKernel:memoryDelegation"] = "offline protected erasure and direct kernel fixtures have no live capsules; host composition supplies the shared singleton before protected artifact erasure",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/CovenantSensitiveRetentionPurgeCoordinator.cs:CovenantSensitiveRetentionPurgeCoordinator:memoryDelegation"] = "direct retention fixtures without a delegation runtime need no capsule barrier; the host supplies the shared singleton before sensitive source purge",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.cs:DataRetentionService:memoryDelegation"] = "offline retention and direct fixtures have no live capsules; host composition supplies the shared singleton before retention deletes delegated sources",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/LongRestSweepStore.cs:LongRestSweepStore:memoryDelegation"] = "direct sweep-store fixtures have no delegation runtime; host composition supplies the shared singleton before sweep publication changes source versions",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/LongRest/SagaLongRestService.cs:SagaLongRestService:memoryDelegation"] = "direct Long Rest fixtures have no live capsules; host composition supplies the shared singleton before Long Rest source mutations",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs:SagaMemoryStore:memoryDelegation"] = "direct Saga store fixtures have no delegation runtime; the host supplies the shared singleton before source write or deletion",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs:LexiconService:memoryDelegation"] = "offline Lexicon work and direct fixtures have no live capsules; host composition supplies the shared singleton before entry/version mutations",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryErasureService.cs:SagaMemoryErasureService:memoryDelegation"] = "offline Saga erasure and direct fixtures have no delegation runtime; the host supplies the shared singleton before source erasure",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryReviewService.cs:SagaMemoryReviewService:memoryDelegation"] = "direct Saga review fixtures own no live capsules; host composition supplies the shared singleton before reviewed-source mutation",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Repositories/CampaignRepository.cs:CampaignRepository:memoryDelegation"] = "direct Campaign repository fixtures have no delegation runtime; the host supplies the shared singleton before Campaign source mutation",
+
+        ["src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs:EmbeddingsResetService:memoryDelegation"] = "offline embedding reset and direct fixtures have no live capsules; host composition supplies the shared singleton before resetting source embeddings",
+
         ["src/RetroDownfall.Arcanum.Core/Intelligence/ModelTokenizationContracts.cs:ModelCallContext:PromptCacheBinding"] = "opaque per-call metadata, not a DI service; null preserves ordinary/default-off calls and source compatibility. Wizard supplies a binding only for a prepared candidate; the physical executor refuses every nonnull unknown/stale binding or missing validator. Null never grants source or dispatch authority",
 
         ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:fileEncryptionRuntimeStatus"] = "owner is container-activated and IFileEncryptionRuntimeStatus is registered; the container supplies its constant-time snapshot in a composed host",

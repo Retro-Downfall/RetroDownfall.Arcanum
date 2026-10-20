@@ -33,7 +33,6 @@ namespace RetroDownfall.Arcanum.Tests.Fixtures;
 /// </remarks>
 internal static class SessionBindingWriters
 {
-
     /// <summary>
     /// Creates a Session through the turn-begin repository, which writes its binding in the same
     /// transaction.
@@ -43,7 +42,6 @@ internal static class SessionBindingWriters
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(db);
 
         GrimoireRepository repository = new(
@@ -54,7 +52,7 @@ internal static class SessionBindingWriters
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(db),
-            FixtureLabeledArtifactGuard.For(db));
+            FixtureLabeledArtifactGuard.For(db), memoryDelegation: null);
 
         Result<Guid> created = await repository.CreateBoundSessionAsync(
             CanonicalCampaignContext.Create(
@@ -69,7 +67,6 @@ internal static class SessionBindingWriters
         Assert.True(created.IsSuccess, created.IsFailure ? created.Error.Message : string.Empty);
 
         return created.Value;
-
     }
 
     /// <summary>
@@ -82,7 +79,6 @@ internal static class SessionBindingWriters
         Guid campaignId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(db);
 
         Guid sessionId = Guid.NewGuid();
@@ -91,14 +87,11 @@ internal static class SessionBindingWriters
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await connection.OpenAsync(cancellationToken);
-
         }
 
         await using (SqliteCommand command = connection.CreateCommand())
         {
-
             command.CommandText = """
                 INSERT INTO "Sessions" ("Id", "CampaignId", "Status", "CreatedAt", "UpdatedAt")
                 VALUES ($id, $campaignId, 'active', $now, $now);
@@ -113,7 +106,6 @@ internal static class SessionBindingWriters
                 DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture));
 
             _ = await command.ExecuteNonQueryAsync(cancellationToken);
-
         }
 
         await using SqliteTransaction transaction =
@@ -128,10 +120,8 @@ internal static class SessionBindingWriters
         await transaction.CommitAsync(cancellationToken);
 
         return sessionId;
-
     }
 
     /// <summary>The spelling the object-relational writer renders, which both columns above hold.</summary>
     private static string Canonical(Guid identity) => identity.ToString("D").ToUpperInvariant();
-
 }

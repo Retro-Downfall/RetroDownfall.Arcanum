@@ -149,7 +149,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: true);
 
         Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true)
-            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
+            .ExecutePromptAsync(Ping(sessionId), await InvocationAsync(), CancellationToken.None);
 
         Assert.True(turn.IsFailure);
 
@@ -170,6 +170,47 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_missing_atomic_committer_refuses_before_the_provider_or_any_entry_is_written()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync();
+
+        Guid sessionId = await SeedUntaintedSessionAsync();
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
+
+        StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: false);
+
+        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: false)
+            .ExecutePromptAsync(Ping(sessionId), await InvocationAsync(), CancellationToken.None);
+
+        Assert.True(turn.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, turn.Error.Code);
+
+        Assert.Equal(0, chat.ProviderCalls);
+
+        Assert.False(chat.SawStagingCapability);
+
+        Assert.Null(chat.Staged);
+
+        await using SqliteCommand entries = Connection().CreateCommand();
+
+        entries.CommandText = """SELECT count(*) FROM "Entries" WHERE "SessionId" = $session;""";
+
+        entries.Parameters.AddWithValue("$session", sessionId.ToString("D").ToUpperInvariant());
+
+        Assert.Equal(0L, (long)(await entries.ExecuteScalarAsync(CancellationToken.None))!);
+
+        Assert.Null(await ReadLastAssistantContentAsync(sessionId));
+
+        Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task A_turn_whose_batch_cannot_publish_atomically_refuses_rather_than_saving_the_answer_alone()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -184,13 +225,20 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
         StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: false);
 
-        // A host with no batch-aware committer composed. The ordinary reply would fall through to the
-        // plain finalize path; a turn holding a proposal must not, because that path writes the answer
-        // and drops the batch without telling anyone.
-        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: false)
-            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
+        // Real claim ownership and staging finish before the atomic committer refuses publication.
+        // The reply must not fall through to a plain finalize path that loses its staged batch.
+        Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true, refusePublication: true)
+            .ExecutePromptAsync(Ping(sessionId), await InvocationAsync(), CancellationToken.None);
 
         Assert.True(turn.IsFailure);
+
+        Assert.Equal(ErrorCodes.Hub.Error, turn.Error.Code);
+
+        Assert.Equal("The conversation reply could not be saved. Please try again.", turn.Error.Message);
+
+        Assert.Equal(1, chat.PublicationRefusals);
+
+        Assert.Equal(1, chat.ProviderCalls);
 
         Assert.Null(chat.ToolFailure);
 
@@ -228,7 +276,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging: false);
 
         Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true)
-            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
+            .ExecutePromptAsync(Ping(sessionId), await InvocationAsync(), CancellationToken.None);
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : string.Empty);
 
@@ -237,6 +285,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         Assert.NotNull(chat.Staged);
 
         Assert.Equal(AssistantAnswer, await ReadLastAssistantContentAsync(sessionId));
+
+        await WizardIntelligenceProviderFallbackTests.AssertCommittedCovenantTurnClaimAsync(new FixedCovenantConnectionSource(Connection()), sessionId);
 
         Assert.Contains(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
     }
@@ -277,7 +327,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             afterStaging: cancellationToken => SeedFingerprintAsync(ProposedKey, cancellationToken));
 
         Result<PromptTurnResult> turn = await Wizard(chat, Gate(), registry, withCommitter: true)
-            .ExecutePromptAsync(Ping(sessionId), Invocation(), CancellationToken.None);
+            .ExecutePromptAsync(Ping(sessionId), await InvocationAsync(), CancellationToken.None);
 
         Assert.True(turn.IsFailure);
 
@@ -334,7 +384,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     private async Task<string> LaterProposedSectionAsync()
     {
         Result<CovenantTurnScope> acquisition = await Gate().BeginTurnAsync(
-            Invocation(),
+            await InvocationAsync(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
@@ -361,7 +411,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         StagingChatClient chat,
         CovenantDispatchGate gate,
         CovenantToolCapabilityRegistry registry,
-        bool withCommitter)
+        bool withCommitter,
+        bool refusePublication = false)
     {
         ProviderSettings provider = new()
         {
@@ -379,7 +430,11 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             gate,
             registry,
             repository,
-            withCommitter ? repository : null,
+            withCommitter
+                ? refusePublication ? new PublicationRefusingCommitter(repository, chat) : repository
+                : null,
+            WizardIntelligenceProviderFallbackTests.CreateCovenantStagingTurnPorts(
+                new FixedCovenantConnectionSource(Connection()), OperationGate(), _authority),
             provider);
     }
 
@@ -427,15 +482,21 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// degrade every turn here to <see cref="CovenantTurnAbsence.CapabilityUnavailable"/> — a silent
     /// absence under which "no proposal was published" would read as a passing assertion.
     /// </remarks>
-    private ArcanumInvocationContext Invocation()
+    private async Task<ArcanumInvocationContext> InvocationAsync()
     {
         _ = OperationGate();
 
         CovenantAuthoritySnapshot authority = _authority.Current!;
 
+        Result<CanonicalCampaignContext> canonical = await WizardIntelligenceProviderFallbackTests
+            .CreateCovenantStagingResolver(new FixedCovenantConnectionSource(Connection()))
+            .ResolveAsync(new(null, CampaignId, null), CancellationToken.None);
+
+        Assert.True(canonical.IsSuccess, canonical.IsFailure ? canonical.Error.Message : null);
+
         return ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
-            CovenantOperationGateFixture.CampaignContext(CampaignId),
+            canonical.Value,
             InvocationAttendance.Attended,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
@@ -454,7 +515,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             new CovenantMutationKernel(new CovenantQuotaGuard(), _erasureKeys),
             DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!),
+            memoryDelegation: null);
 
     private SqliteConnection Connection()
     {
@@ -604,6 +666,27 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             .Select(entry => entry.Content)
             .FirstOrDefaultAsync(CancellationToken.None);
 
+    private static readonly Error PublicationRefusal = new(ErrorCodes.Grimoire.WriteFailed, "The fixture atomic publisher refused the completed turn.");
+
+    private sealed class PublicationRefusingCommitter(IGrimoireTurnCommitter inner, StagingChatClient chat) : IGrimoireTurnCommitter
+    {
+        public Task<Result<ProtectedToolInteractionReceipt>> AppendProtectedToolInteractionAsync(
+            ProtectedToolInteraction request, CancellationToken cancellationToken) =>
+            inner.AppendProtectedToolInteractionAsync(request, cancellationToken);
+
+        public Task<Result<TurnCommitReceipt>> CommitTurnAsync(TurnCommitRequest request, CancellationToken cancellationToken)
+        {
+            if (request.Outcome is not AssistantFinalizationOutcome.Committed)
+            {
+                return inner.CommitTurnAsync(request, cancellationToken);
+            }
+
+            chat.PublicationRefusals++;
+
+            return Task.FromResult(Result<TurnCommitReceipt>.Failure(PublicationRefusal));
+        }
+    }
+
     /// <summary>
     /// A scripted provider that spends the turn's staging capability and then either answers or dies.
     /// </summary>
@@ -625,6 +708,10 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         bool failAfterStaging,
         Func<CancellationToken, Task>? afterStaging = null) : IChatClient
     {
+        public int ProviderCalls { get; private set; }
+
+        public int PublicationRefusals { get; set; }
+
         public bool SawStagingCapability { get; private set; }
 
         public CovenantMutationFailureResultWire? ToolFailure { get; private set; }
@@ -642,6 +729,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            ProviderCalls++;
+
             SawStagingCapability = CovenantToolStagingAmbient.Current is not null;
 
             McpToolsCallResultWire result = await toolCall.ProposeAsync(key, content).ConfigureAwait(false);

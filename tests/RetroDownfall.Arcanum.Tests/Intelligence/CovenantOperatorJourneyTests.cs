@@ -891,12 +891,17 @@ public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
                     SessionId: sessionId,
                     DisableMcpTools: true,
                     SkipSpellRouting: true),
-                Invocation(campaignId),
+                await InvocationAsync(campaignId),
                 CancellationToken.None);
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : null);
 
         Assert.NotNull(chat.SystemPrompt);
+
+        if (withCovenantArm)
+        {
+            await WizardIntelligenceProviderFallbackTests.AssertCommittedCovenantTurnClaimAsync(new FixedCovenantConnectionSource(Connection()), sessionId);
+        }
 
         return chat.SystemPrompt!;
     }
@@ -924,7 +929,7 @@ public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
                 SessionId: sessionId,
                 DisableMcpTools: true,
                 SkipSpellRouting: true),
-            Invocation(campaignId),
+            await InvocationAsync(campaignId),
             CancellationToken.None);
 
         return new ProposalTurn(sessionId, turn, chat.Failures, chat.SawStagingCapability);
@@ -1191,6 +1196,8 @@ public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
             registry,
             repository,
             repository,
+            WizardIntelligenceProviderFallbackTests.CreateCovenantStagingTurnPorts(
+                new FixedCovenantConnectionSource(Connection()), OperationGate(), _authority),
             provider);
     }
 
@@ -1267,15 +1274,21 @@ public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
     /// degrade every turn here to <see cref="CovenantTurnAbsence.CapabilityUnavailable"/> — a silent
     /// absence under which "nothing was injected" would read as a passing assertion.
     /// </remarks>
-    private ArcanumInvocationContext Invocation(Guid campaignId)
+    private async Task<ArcanumInvocationContext> InvocationAsync(Guid campaignId)
     {
         _ = OperationGate();
 
         CovenantAuthoritySnapshot authority = _authority.Current!;
 
+        Result<CanonicalCampaignContext> canonical = await WizardIntelligenceProviderFallbackTests
+            .CreateCovenantStagingResolver(new FixedCovenantConnectionSource(Connection()))
+            .ResolveAsync(new(null, campaignId, null), CancellationToken.None);
+
+        Assert.True(canonical.IsSuccess, canonical.IsFailure ? canonical.Error.Message : null);
+
         return ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
-            CovenantOperationGateFixture.CampaignContext(campaignId),
+            canonical.Value,
             InvocationAttendance.Attended,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
@@ -1294,7 +1307,8 @@ public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!),
+            memoryDelegation: null);
 
     private SqliteConnection Connection()
     {

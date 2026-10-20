@@ -1882,7 +1882,7 @@ public sealed class MandatoryGrimoireRepositoryTests : IAsyncLifetime
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(db),
-            FixtureLabeledArtifactGuard.For(db));
+            FixtureLabeledArtifactGuard.For(db), memoryDelegation: null);
     }
 
     private static void SkipUnavailable() =>

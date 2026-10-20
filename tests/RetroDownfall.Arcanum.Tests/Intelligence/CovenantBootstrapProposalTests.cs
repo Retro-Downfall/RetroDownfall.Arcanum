@@ -144,7 +144,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 SessionId: sessionId,
                 DisableMcpTools: true,
                 SkipSpellRouting: true),
-            Invocation(),
+            await InvocationAsync(),
             CancellationToken.None);
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : null);
@@ -161,6 +161,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         Assert.Equal("Noted — I will lead with the failing assertion.", await ReadLastAssistantContentAsync(sessionId));
 
+        await WizardIntelligenceProviderFallbackTests.AssertCommittedCovenantTurnClaimAsync(new FixedCovenantConnectionSource(Connection()), sessionId);
+
         // The turn carried no Covenant bytes to the provider, so it owes no disclosure and the reply
         // it produced is not protected. A fix that reached the committer by borrowing the
         // Covenant-derived label would taint this Session and every turn after it.
@@ -171,7 +173,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         // The rendered bytes a second, independent turn is handed. A published head that rendered
         // into nothing would satisfy every intermediate assertion and still show the model nothing.
         Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
-            Invocation(),
+            await InvocationAsync(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
@@ -225,7 +227,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 SessionId: sessionId,
                 DisableMcpTools: true,
                 SkipSpellRouting: true),
-            Invocation(InvocationAttendance.Unattended),
+            await InvocationAsync(InvocationAttendance.Unattended),
             CancellationToken.None);
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : null);
@@ -241,7 +243,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         Assert.Equal(0, _journal.Count);
 
         Result<CovenantTurnScope> acquisition = await Gate().BeginTurnAsync(
-            Invocation(),
+            await InvocationAsync(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
@@ -304,7 +306,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 WorkingDirectory: string.Empty,
                 SessionId: sessionId,
                 SkipSpellRouting: true),
-            Invocation(),
+            await InvocationAsync(),
             CancellationToken.None);
 
         Assert.True(turn.IsSuccess, turn.IsFailure ? $"{turn.Error.Code}: {turn.Error.Message}" : null);
@@ -327,7 +329,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 CancellationToken.None));
 
         Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
-            Invocation(),
+            await InvocationAsync(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
@@ -381,7 +383,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 gate,
                 registry,
                 [proposeTool])
-            .ExecutePromptAsync(TurnRequest(sessionId, "always lead with the failing assertion"), Invocation(), CancellationToken.None);
+            .ExecutePromptAsync(TurnRequest(sessionId, "always lead with the failing assertion"), await InvocationAsync(), CancellationToken.None);
 
         Assert.True(proposed.IsSuccess, proposed.IsFailure ? $"{proposed.Error.Code}: {proposed.Error.Message}" : null);
 
@@ -424,7 +426,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         if (streaming)
         {
-            await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, Invocation(), CancellationToken.None))
+            await foreach (IntelligenceEvent evt in wizard.StreamPromptAsync(request, await InvocationAsync(), CancellationToken.None))
             {
                 events.Add(evt);
             }
@@ -433,7 +435,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
         }
         else
         {
-            Result<PromptTurnResult> retired = await wizard.ExecutePromptAsync(request, Invocation(), CancellationToken.None);
+            Result<PromptTurnResult> retired = await wizard.ExecutePromptAsync(request, await InvocationAsync(), CancellationToken.None);
 
             Assert.True(retired.IsSuccess, retired.IsFailure ? $"{retired.Error.Code}: {retired.Error.Message}" : null);
         }
@@ -465,7 +467,7 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         // Committed with the reply: a later turn's plan no longer carries the retired proposal.
         Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
-            Invocation(),
+            await InvocationAsync(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
@@ -530,6 +532,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             tools,
             new CovenantToolEgressGuard(_journal),
             _authority,
+            WizardIntelligenceProviderFallbackTests.CreateCovenantStagingTurnPorts(
+                new FixedCovenantConnectionSource(Connection()), OperationGate(), _authority),
             provider);
     }
 
@@ -555,6 +559,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             registry,
             repository,
             repository,
+            WizardIntelligenceProviderFallbackTests.CreateCovenantStagingTurnPorts(
+                new FixedCovenantConnectionSource(Connection()), OperationGate(), _authority),
             provider);
     }
 
@@ -602,16 +608,22 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
     /// degrade every turn here to <see cref="CovenantTurnAbsence.CapabilityUnavailable"/> — a silent
     /// absence under which "no staging capability was minted" would read as a passing negative.
     /// </remarks>
-    private ArcanumInvocationContext Invocation(
+    private async Task<ArcanumInvocationContext> InvocationAsync(
         InvocationAttendance attendance = InvocationAttendance.Attended)
     {
         _ = OperationGate();
 
         CovenantAuthoritySnapshot authority = _authority.Current!;
 
+        Result<CanonicalCampaignContext> canonical = await WizardIntelligenceProviderFallbackTests
+            .CreateCovenantStagingResolver(new FixedCovenantConnectionSource(Connection()))
+            .ResolveAsync(new(null, CampaignId, null), CancellationToken.None);
+
+        Assert.True(canonical.IsSuccess, canonical.IsFailure ? canonical.Error.Message : null);
+
         return ArcanumInvocationContext.Create(
             ArcanumExecutionSurface.SessionBackedOperatorTurn,
-            CovenantOperationGateFixture.CampaignContext(CampaignId),
+            canonical.Value,
             attendance,
             CovenantContextPolicy.Default,
             ToolPolicy.AllTools,
@@ -630,7 +642,8 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             DetachedAvailabilityRepublisher.Create(),
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!),
+            memoryDelegation: null);
 
     private SqliteConnection Connection()
     {

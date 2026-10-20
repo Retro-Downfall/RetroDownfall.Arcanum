@@ -38,7 +38,7 @@ public sealed class SessionTurnClaimBeginTests(GrimoireFixture fixture) : IAsync
 
         _repository = new GrimoireRepository(_db, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()), null, null,
-            FixtureOrdinaryConnectionFactory.For(_db), FixtureLabeledArtifactGuard.For(_db));
+            FixtureOrdinaryConnectionFactory.For(_db), FixtureLabeledArtifactGuard.For(_db), memoryDelegation: null);
 
         return Task.CompletedTask;
     }

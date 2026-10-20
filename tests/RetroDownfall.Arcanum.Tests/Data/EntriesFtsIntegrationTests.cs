@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -22,45 +21,34 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
     public EntriesFtsIntegrationTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task Ef_insert_populates_Entries_fts_and_SearchArchivesAsync_finds_it()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -103,18 +91,16 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db),
-            FixtureLabeledArtifactGuard.For(_db));
+            FixtureLabeledArtifactGuard.For(_db), memoryDelegation: null);
 
         string results = await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None);
 
         Assert.Contains("moonstone", results, StringComparison.OrdinalIgnoreCase);
-
     }
 
     [SkippableFact]
     public async Task Ef_insert_populates_Entries_fts_and_SessionRepository_QueryAsync_search_finds_session()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository repository = new(
@@ -140,21 +126,17 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
         HashSet<Guid> ftsSessionIds = await QueryFtsSessionIdsAsync("cobalt", CancellationToken.None);
 
         Assert.Contains(session.Id, ftsSessionIds);
-
     }
 
     private async Task<HashSet<Guid>> QueryFtsSessionIdsAsync(string term, CancellationToken cancellationToken)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         await using System.Data.Common.DbCommand cmd = connection.CreateCommand();
 
         if (cmd.Connection!.State != System.Data.ConnectionState.Open)
         {
-
             await cmd.Connection.OpenAsync(cancellationToken);
-
         }
 
         cmd.CommandText =
@@ -181,27 +163,21 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
 
         while (await reader.ReadAsync(cancellationToken))
         {
-
             _ = sessionIds.Add(reader.GetGuid(0));
-
         }
 
         return sessionIds;
-
     }
 
     private async Task<int> CountFtsRowsMatchingAsync(string term, CancellationToken cancellationToken)
     {
-
         System.Data.Common.DbConnection connection = _db!.Database.GetDbConnection();
 
         await using System.Data.Common.DbCommand cmd = connection.CreateCommand();
 
         if (cmd.Connection!.State != System.Data.ConnectionState.Open)
         {
-
             await cmd.Connection.OpenAsync(cancellationToken);
-
         }
 
         cmd.CommandText = """
@@ -221,7 +197,5 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
         object? scalar = await cmd.ExecuteScalarAsync(cancellationToken);
 
         return Convert.ToInt32(scalar, System.Globalization.CultureInfo.InvariantCulture);
-
     }
-
 }

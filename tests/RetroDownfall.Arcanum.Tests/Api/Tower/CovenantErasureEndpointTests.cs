@@ -841,9 +841,15 @@ public sealed class CovenantErasureEndpointTests
         string key,
         string content)
     {
-        CanonicalCampaignContext campaign = CampaignContext(campaignId);
-
         await using AsyncServiceScope scope = host.Services.CreateAsyncScope();
+
+        Result<CanonicalCampaignContext> resolved = await scope.ServiceProvider
+            .GetRequiredService<ICanonicalCampaignContextResolver>()
+            .ResolveAsync(new(null, campaignId, null), Token);
+
+        Assert.True(resolved.IsSuccess, resolved.IsFailure ? resolved.Error.Message : null);
+
+        CanonicalCampaignContext campaign = resolved.Value;
 
         Result<Guid> session = await scope.ServiceProvider
             .GetRequiredService<ISessionTurnBeginStore>()
@@ -890,6 +896,12 @@ public sealed class CovenantErasureEndpointTests
             registry,
             repository,
             repository,
+            new WizardIntelligenceProviderFallbackTests.CovenantStagingTurnPorts(
+                scope.ServiceProvider.GetRequiredService<ICovenantConnectionSource>(),
+                scope.ServiceProvider.GetRequiredService<ICovenantOperationGate>(),
+                authority,
+                scope.ServiceProvider.GetRequiredService<ICanonicalCampaignContextResolver>(),
+                scope.ServiceProvider.GetRequiredService<ISessionTurnClaimCoordinator>()),
             provider);
 
         CovenantAuthoritySnapshot current = authority.Current!;
@@ -915,6 +927,14 @@ public sealed class CovenantErasureEndpointTests
                 SkipSpellRouting: true),
             invocation,
             Token);
+
+        if (turn.IsSuccess)
+        {
+            Assert.True(chat.SawStagingCapability);
+
+            await WizardIntelligenceProviderFallbackTests.AssertCommittedCovenantTurnClaimAsync(
+                scope.ServiceProvider.GetRequiredService<ICovenantConnectionSource>(), session.Value);
+        }
 
         return new AgentTurnOutcome(session.Value, turn, chat.Failures, chat.SawStagingCapability);
     }

@@ -50,7 +50,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantProtectedArtifactErasureContentTests
 {
-
     /// <summary>
     /// Matches <c>ArcanumSettingClamps.EmbeddingsDimensions</c>'s floor, so the Saga store's own
     /// dimension guard accepts what the fake embedder produces.
@@ -62,7 +61,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
     [SkippableFact]
     public async Task A_saga_memory_written_by_extraction_is_erased_with_its_embedding()
     {
-
         await using ErasureHarness harness = ErasureHarness.Create();
 
         Guid memoryId = await harness.ExtractOneSagaMemoryAsync("The operator prefers dark mode.");
@@ -88,7 +86,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
-
     }
 
     /// <summary>
@@ -105,7 +102,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
     [SkippableFact]
     public async Task The_saga_vector_mirror_is_erased_with_the_memory_whose_embedding_it_holds()
     {
-
         await using ErasureHarness harness = ErasureHarness.Create();
 
         await harness.CreateVectorMirrorAsync("saga_memory_embeddings_vec", "MemoryId");
@@ -131,7 +127,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memory_embeddings_vec;"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
-
     }
 
     /// <summary>
@@ -141,7 +136,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
     [SkippableFact]
     public async Task A_missing_vector_mirror_leaves_the_erasure_unblocked()
     {
-
         await using ErasureHarness harness = ErasureHarness.Create();
 
         Guid memoryId = await harness.ExtractOneSagaMemoryAsync("The operator prefers dark mode.");
@@ -157,13 +151,11 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(1UL, progress.ErasedCount);
 
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM saga_memories;"));
-
     }
 
     [SkippableFact]
     public async Task A_lexicon_entry_written_by_the_lexicon_service_is_erased()
     {
-
         await using ErasureHarness harness = ErasureHarness.Create();
 
         LexiconEntryDto entry = await harness.UpsertLexiconEntryAsync("Nimue", "The lake keeps her counsel.");
@@ -191,7 +183,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(0, await harness.CountAsync("SELECT COUNT(*) FROM annal_claims;"));
 
         await AnnalsOrphanAssertions.AssertNoOrphanClaimsAsync(harness.Connection);
-
     }
 
     /// <summary>
@@ -202,7 +193,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
     [SkippableFact]
     public async Task A_completed_idempotency_claims_cached_body_is_redacted_and_its_row_kept()
     {
-
         await using ErasureHarness harness = ErasureHarness.Create();
 
         Guid claimId = await harness.CompleteOneIdempotencyClaimAsync("""{"answer":"protected"}""");
@@ -226,7 +216,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         Assert.Equal(
             0,
             await harness.CountAsync("""SELECT COUNT(*) FROM "IdempotencyClaims" WHERE "ResponseBody" IS NOT NULL;"""));
-
     }
 
     /// <summary>
@@ -235,7 +224,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
     /// </summary>
     private sealed class ErasureHarness : IAsyncDisposable
     {
-
         private readonly GrimoireFixture _fixture;
 
         private readonly ArcanumDbContext _db;
@@ -244,7 +232,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         private ErasureHarness(GrimoireFixture fixture, ArcanumDbContext db)
         {
-
             _fixture = fixture;
 
             _db = db;
@@ -259,7 +246,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                 new CovenantConnectionSource(db, connections),
                 CovenantSqliteConnectionInitializer.Instance,
                 TimeProvider.System);
-
         }
 
         internal CovenantProtectedArtifactErasureKernel Kernel { get; }
@@ -272,13 +258,11 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         internal static ErasureHarness Create()
         {
-
             Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
             GrimoireFixture fixture = new();
 
             return new ErasureHarness(fixture, fixture.CreateContext(fixture.CopyDatabase()));
-
         }
 
         /// <summary>
@@ -286,7 +270,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
         /// </summary>
         internal async Task<Guid> ExtractOneSagaMemoryAsync(string conclusion)
         {
-
             Guid sessionId = Guid.NewGuid();
 
             _db.Sessions.Add(
@@ -373,7 +356,7 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                     covenantKernel: null,
                     availabilityRepublisher: null,
                     sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                    FixtureLabeledArtifactGuard.For(_db)));
+                    FixtureLabeledArtifactGuard.For(_db), memoryDelegation: null));
 
             await using ServiceProvider provider = services.BuildServiceProvider();
 
@@ -412,12 +395,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             // chose, and a value this method had supplied would prove nothing about the spelling
             // production stores.
             return Guid.Parse(await ScalarStringAsync("SELECT Id FROM saga_memories;"), CultureInfo.InvariantCulture);
-
         }
 
         internal async Task<LexiconEntryDto> UpsertLexiconEntryAsync(string name, string fact)
         {
-
             LexiconService lexicon = new(
                 _db,
                 NullLogger<LexiconService>.Instance,
@@ -434,12 +415,10 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             Assert.True(written.IsSuccess);
 
             return written.Value;
-
         }
 
         internal async Task<Guid> CompleteOneIdempotencyClaimAsync(string responseBody)
         {
-
             IdempotencyClaimStore claims = new(_db);
 
             IdempotencyClaimAcquireResult acquired = await claims.TryAcquireAsync(
@@ -464,7 +443,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                 Token);
 
             return acquired.Claim.Id;
-
         }
 
         /// <summary>
@@ -476,7 +454,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             Guid? sessionId,
             string content)
         {
-
             Result<LabeledArtifactWriteReceipt> receipt = await Ledger.LabelAsync(
                 new DerivedArtifactWrite(
                     kind,
@@ -491,7 +468,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
                 Token);
 
             Assert.True(receipt.IsSuccess);
-
         }
 
         /// <summary>
@@ -507,7 +483,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             SensitiveArtifactKind kind,
             Guid artifactId)
         {
-
             Result<ArtifactSensitivityLabel?> read = await Ledger.TryReadLabelAsync(kind, artifactId, Token);
 
             Assert.True(read.IsSuccess);
@@ -543,7 +518,6 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             Assert.True(erased.IsSuccess);
 
             return erased.Value;
-
         }
 
         /// <summary>
@@ -558,52 +532,42 @@ public sealed class CovenantProtectedArtifactErasureContentTests
 
         internal async Task ExecuteAsync(string sql)
         {
-
             await using DbCommand command = Connection.CreateCommand();
 
             command.CommandText = sql;
 
             _ = await command.ExecuteNonQueryAsync(Token);
-
         }
 
         internal async Task<long> CountAsync(string sql)
         {
-
             await using DbCommand command = Connection.CreateCommand();
 
             command.CommandText = sql;
 
             return Convert.ToInt64(await command.ExecuteScalarAsync(Token), CultureInfo.InvariantCulture);
-
         }
 
         internal async Task<string> ScalarStringAsync(string sql)
         {
-
             await using DbCommand command = Connection.CreateCommand();
 
             command.CommandText = sql;
 
             return (string)(await command.ExecuteScalarAsync(Token))!;
-
         }
 
         public async ValueTask DisposeAsync()
         {
-
             await _db.DisposeAsync();
 
             _fixture.Dispose();
-
         }
-
     }
 
     /// <summary>An embedder that always succeeds, so extraction reaches its write.</summary>
     private sealed class FixedEmbeddingWeaveService : IWeaveService
     {
-
         public bool IsAvailable => true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken) =>
@@ -618,13 +582,11 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             string text,
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("Saga extraction does not chunk.");
-
     }
 
     /// <summary>An extraction model that returns one fixed conclusion.</summary>
     private sealed class FixedConclusionIntelligenceProvider(string response) : IArcanumIntelligenceProvider
     {
-
         public Task<Result<PromptTurnResult>> ExecutePromptAsync(
             PingRequest request,
             ArcanumInvocationContext invocationContext,
@@ -638,7 +600,5 @@ public sealed class CovenantProtectedArtifactErasureContentTests
             CancellationToken cancellationToken,
             InferenceAuditContext? auditContext = null) =>
             throw new NotSupportedException("Saga extraction does not stream.");
-
     }
-
 }

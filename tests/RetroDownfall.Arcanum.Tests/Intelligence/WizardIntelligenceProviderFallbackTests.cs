@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -23,6 +24,7 @@ using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.Lexicon;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Generated;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -1238,25 +1240,69 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             mcpConnectionManager: null,
             providers);
 
-    /// <summary>
-    /// The same construction again, with the durable half of the staging path composed as well.
-    /// </summary>
+    /// <summary>The exact persistence and authority ports owned by a staging fixture.</summary>
+    internal sealed record CovenantStagingTurnPorts(
+        ICovenantConnectionSource Connections,
+        ICovenantOperationGate OperationGate,
+        ICovenantAuthoritySnapshotProvider Authority,
+        ICanonicalCampaignContextResolver Resolver,
+        ISessionTurnClaimCoordinator Claims);
+
+    /// <summary>Real durable ownership over the same initialized database and authority the fixture's Covenant gate uses.</summary>
+    internal static CovenantStagingTurnPorts CreateCovenantStagingTurnPorts(
+        ICovenantConnectionSource connections,
+        ICovenantOperationGate operationGate,
+        ICovenantAuthoritySnapshotProvider authority) =>
+        new(
+            connections,
+            operationGate,
+            authority,
+            CreateCovenantStagingResolver(connections),
+            new SessionTurnClaimStore(connections, new CovenantQuotaGuard(), Guid.NewGuid()));
+
+    internal static ICanonicalCampaignContextResolver CreateCovenantStagingResolver(ICovenantConnectionSource connections) =>
+        new CanonicalCampaignContextResolver(
+            new SessionCampaignBindingReader(connections),
+            UnregisteredCampaignRoots.Instance,
+            new CampaignAvailabilityReader(connections));
+
+    /// <summary>The completed turn's durable claim names its actual persisted assistant Entry.</summary>
+    internal static async Task AssertCommittedCovenantTurnClaimAsync(ICovenantConnectionSource connections, Guid sessionId)
+    {
+        await using Microsoft.Data.Sqlite.SqliteCommand command = (await connections.GetOpenCoreConnectionAsync(CancellationToken.None)).CreateCommand();
+
+        command.CommandText = """
+            SELECT claim.StateCode, entry.Role
+            FROM session_turn_claims claim
+            JOIN "Entries" entry ON entry.Id = claim.AssistantEntryId AND entry.SessionId = claim.SessionId
+            WHERE claim.SessionId = $session AND claim.AssistantEntryId = (
+                SELECT Id FROM "Entries"
+                WHERE SessionId = $session AND Role = $assistant
+                ORDER BY Sequence DESC LIMIT 1);
+            """;
+
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D").ToUpperInvariant());
+
+        command.Parameters.AddWithValue("$assistant", (int)MessageRole.Assistant);
+
+        await using Microsoft.Data.Sqlite.SqliteDataReader reader = await command.ExecuteReaderAsync(CancellationToken.None);
+
+        Assert.True(await reader.ReadAsync(CancellationToken.None));
+
+        Assert.Equal((int)SessionTurnClaimState.Committed, reader.GetInt32(0));
+
+        Assert.Equal((int)MessageRole.Assistant, reader.GetInt32(1));
+
+        Assert.False(await reader.ReadAsync(CancellationToken.None));
+    }
+
+    /// <summary>A provider composed for Covenant staging and genuine durable Session ownership.</summary>
     /// <remarks>
-    /// A turn that may author a proposal needs three things production always supplies together and
-    /// tests have never supplied at all: the gate that mints the admission, the registry the tool
-    /// binding hands a capability through, and a Grimoire that can commit the answer and the staged
-    /// batch in one transaction. Composing two of the three produces a turn that stages and then
-    /// refuses its own finalization, which reads as a Covenant failure rather than as a gap in the
-    /// harness.
-    /// </remarks>
-    /// <summary>
-    /// A provider composed for Covenant staging, with or without a batch-aware turn committer.
-    /// </summary>
-    /// <remarks>
-    /// The committer is nullable because a host that composed none is a real configuration, and the
-    /// turn's behaviour under it is a guarantee rather than an accident: a reply carrying a staged
-    /// batch must not fall through to the plain finalize path, which would write the answer and drop
-    /// the proposal the tool has already told the model was recorded.
+    /// The fixture supplies the dispatch gate, tool capability registry, claim preparer, real claim
+    /// store/coordinator, and repository that begins the claimed reply. A missing atomic committer
+    /// refuses before the provider is called. A separate publication-refusal fixture keeps these
+    /// ownership ports and refuses only after staging, proving that neither the answer nor its batch
+    /// can fall through to plain finalization.
     /// </remarks>
     internal static WizardIntelligenceProvider CreateCovenantStagingWizard(
         IChatClientFactory factory,
@@ -1264,6 +1310,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         CovenantToolCapabilityRegistry covenantToolCapabilities,
         IGrimoireRepository grimoire,
         IGrimoireTurnCommitter? turnCommitter,
+        CovenantStagingTurnPorts stagingTurn,
         params ProviderSettings[] providers) =>
         CreateWizard(
             factory,
@@ -1278,7 +1325,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantEgressGuard: null,
             covenantAuthority: null,
             mcpConnectionManager: null,
-            providers);
+            providers,
+            stagingTurn);
 
     /// <summary>
     /// The staging composition again, with tools the model can call through the turn's own tool loop.
@@ -1297,6 +1345,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         IReadOnlyList<AITool> mcpTools,
         CovenantToolEgressGuard? covenantEgressGuard,
         ICovenantAuthoritySnapshotProvider? covenantAuthority,
+        CovenantStagingTurnPorts stagingTurn,
         params ProviderSettings[] providers) =>
         CreateWizard(
             factory,
@@ -1311,7 +1360,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             covenantEgressGuard,
             covenantAuthority,
             mcpConnectionManager: null,
-            providers);
+            providers,
+            stagingTurn);
 
     private static WizardIntelligenceProvider CreateWizard(
         IChatClientFactory factory,
@@ -1368,7 +1418,8 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         CovenantToolEgressGuard? covenantEgressGuard,
         ICovenantAuthoritySnapshotProvider? covenantAuthority,
         IMcpConnectionManager? mcpConnectionManager,
-        params ProviderSettings[] providers)
+        ProviderSettings[] providers,
+        CovenantStagingTurnPorts? stagingTurn = null)
     {
         ArcanumSettings settings = new()
         {
@@ -1394,6 +1445,35 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
 
         ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
 
+        ISessionTurnClaimBeginStore? claimedBegin = stagingTurn is null
+            ? null
+            : grimoire as ISessionTurnClaimBeginStore
+                ?? throw new InvalidOperationException("The staging fixture requires the real claimed turn-begin store.");
+
+        GrimoireTurnWriter writer = new(
+            grimoire,
+            grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
+            new SessionEventHub(NullLogger<SessionEventHub>.Instance),
+            NullLogger<GrimoireTurnWriter>.Instance,
+            turnCommitter,
+            claimedBeginStore: claimedBegin,
+            claims: stagingTurn?.Claims);
+
+        CampaignRollupTurnPreparer? preparer = stagingTurn is null ? null : new(
+            new CampaignRollupStore(stagingTurn.Connections, CovenantSqliteConnectionInitializer.Instance),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
+            stagingTurn.Resolver,
+            stagingTurn.OperationGate,
+            UnreachedLongRestPorts.Coordinator,
+            UnreachedLongRestPorts.Maintenance,
+            UnreachedLongRestPorts.Discovery,
+            UnreachedLongRestPorts.Configuration,
+            UnreachedLongRestPorts.RootEnricher,
+            claimBegin: claimedBegin,
+            sessionBegin: grimoire as ISessionTurnBeginStore,
+            claims: stagingTurn.Claims,
+            authoritySnapshot: stagingTurn.Authority);
+
         return new WizardIntelligenceProvider(
             factory,
             new TestOptionsSnapshot<ArcanumSettings>(settings),
@@ -1409,13 +1489,9 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                 new NoOpSessionAttachmentStore(),
                 NullLogger<ToolExecutionPipeline>.Instance,
                 covenantEgressGuard: covenantEgressGuard,
-                covenantAuthority: covenantAuthority),
-            new GrimoireTurnWriter(
-                grimoire,
-                grimoire as ISessionTurnBeginStore ?? new FakeSessionTurnBeginStore(),
-                new SessionEventHub(NullLogger<SessionEventHub>.Instance),
-                NullLogger<GrimoireTurnWriter>.Instance,
-                turnCommitter),
+                covenantAuthority: covenantAuthority,
+                grimoireTurnWriter: stagingTurn is null ? null : writer),
+            writer,
             CreateInferenceContextBuilder(grimoire, settings),
             sanctumGuard,
             new ProcessResourceLimiter(),
@@ -1446,10 +1522,11 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new NoOpSessionAttachmentStore(),
             new HumanPromptRegistry(),
             ordinaryProvider,
-            RefusingCampaignResolver.Instance,
+            stagingTurn?.Resolver ?? RefusingCampaignResolver.Instance,
             withHealthTracker ? healthTracker : null,
             covenantDispatch: covenantDispatch,
-            covenantToolCapabilities: covenantToolCapabilities);
+            covenantToolCapabilities: covenantToolCapabilities,
+            campaignRollups: preparer);
     }
 
     private static IServiceScopeFactory CreateBudgetMonitorScopeFactory(

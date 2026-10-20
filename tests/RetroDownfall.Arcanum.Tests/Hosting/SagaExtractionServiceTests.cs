@@ -5627,7 +5627,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!), memoryDelegation: null);
 
     private static AttachmentMemoryProvenance CreateProvenance(
         Guid sessionId,

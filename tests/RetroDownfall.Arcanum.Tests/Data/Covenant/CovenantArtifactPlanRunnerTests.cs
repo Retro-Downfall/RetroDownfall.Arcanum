@@ -185,7 +185,7 @@ public sealed class CovenantArtifactPlanRunnerTests
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(harness.Context),
-            FixtureLabeledArtifactGuard.For(harness.Context));
+            FixtureLabeledArtifactGuard.For(harness.Context), memoryDelegation: null);
 
         Result<TurnCommitReceipt> committed = await committer.CommitTurnAsync(
             new TurnCommitRequest(

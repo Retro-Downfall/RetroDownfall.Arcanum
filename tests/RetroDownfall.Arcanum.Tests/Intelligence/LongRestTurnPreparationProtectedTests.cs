@@ -619,7 +619,7 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         GrimoireRepository repository = new(f.H.Saga.Context, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
             new TestOptionsSnapshot<ArcanumSettings>(f.Options.CurrentValue), null, null,
-            FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), FixtureLabeledArtifactGuard.For(f.H.Saga.Context));
+            FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), FixtureLabeledArtifactGuard.For(f.H.Saga.Context), memoryDelegation: null);
 
         CampaignRollupTurnSnapshotTests.ProbeStore rollups = new();
 

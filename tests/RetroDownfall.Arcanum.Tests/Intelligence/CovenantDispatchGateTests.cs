@@ -28,8 +28,24 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class CovenantDispatchGateTests
 {
-
     private static readonly Guid InstallationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+
+    [Fact]
+    public void Protected_tool_input_survives_later_empty_dispatch()
+    {
+        var scope = CovenantTurnScope.NotEligible();
+        Guid generation = Guid.NewGuid();
+        var provenance = GenerationProvenance.CreateExact([generation]);
+        var sensitivity = new ProviderCallSensitivity(ContentSensitivity.CovenantDerived, provenance,
+            CovenantDigests.Sensitivity(new(ContentSensitivity.CovenantDerived, provenance.Mode, provenance.ExactGenerationIds, provenance.BloomBits)));
+
+        scope.RecordDerived(sensitivity);
+
+        var next = CovenantDispatchGate.ResolveSensitivity(scope, CovenantDispatchPlan.Empty);
+
+        Assert.Equal(ContentSensitivity.CovenantDerived, next.Level);
+        Assert.Contains(generation, next.Provenance.ExactGenerationIds);
+    }
 
     [Fact]
     public void Protected_Campaign_context_taints_a_clean_Session_and_preserves_its_real_provenance()
@@ -52,7 +68,6 @@ public sealed class CovenantDispatchGateTests
     [Fact]
     public async Task An_ineligible_invocation_injects_nothing_and_reads_no_session_label()
     {
-
         RecordingSensitivityLedger ledger = new();
 
         CovenantDispatchGate gate = CreateGate(new RefusingContextProvider(), new RecordingJournal(), ledger);
@@ -72,13 +87,11 @@ public sealed class CovenantDispatchGateTests
         Assert.True(scope.PlanContent.IsEmpty);
 
         Assert.Equal(0, ledger.Reads);
-
     }
 
     [Fact]
     public async Task A_clean_dispatch_on_a_clean_session_commits_no_disclosure_at_all()
     {
-
         RecordingJournal journal = new();
 
         CovenantDispatchGate gate = CreateGate(new RefusingContextProvider(), journal, new RecordingSensitivityLedger());
@@ -112,13 +125,11 @@ public sealed class CovenantDispatchGateTests
         Assert.Null(admitted.Value.Disclosure);
 
         Assert.Empty(journal.Drafts);
-
     }
 
     [Fact]
     public async Task An_admitted_plan_renders_its_sections_and_discloses_before_dispatch()
     {
-
         RecordingJournal journal = new();
 
         CovenantTurnPlan plan = Plan(confirmed: 2, proposed: 2);
@@ -175,13 +186,11 @@ public sealed class CovenantDispatchGateTests
         Assert.Equal(admitted.Value.Receipt!.Digest, draft.AdmissionDigest);
 
         Assert.Equal(CovenantDisclosureEffectCategory.ProviderDispatch, Assert.Single(journal.Categories));
-
     }
 
     [Fact]
     public async Task A_refused_disclosure_refuses_the_dispatch()
     {
-
         RecordingJournal journal = new()
         {
             Failure = new Error(ErrorCodes.Covenant.Unavailable, "closed"),
@@ -213,13 +222,11 @@ public sealed class CovenantDispatchGateTests
         Assert.True(admitted.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.Unavailable, admitted.Error.Code);
-
     }
 
     [Fact]
     public async Task A_tainted_session_discloses_even_when_this_turn_admits_nothing()
     {
-
         RecordingJournal journal = new();
 
         CovenantDispatchGate gate = CreateGate(
@@ -262,13 +269,11 @@ public sealed class CovenantDispatchGateTests
         Assert.NotNull(admitted.Value.Disclosure);
 
         Assert.Null(Assert.Single(journal.Drafts).AdmissionDigest);
-
     }
 
     [Fact]
     public async Task An_unreadable_session_label_is_treated_as_tainted_rather_than_clean()
     {
-
         RecordingJournal journal = new();
 
         CovenantDispatchGate gate = CreateGate(
@@ -287,13 +292,11 @@ public sealed class CovenantDispatchGateTests
         await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.True(scope.HistoryTainted);
-
     }
 
     [Fact]
     public async Task Pressure_drops_Proposed_and_keeps_Confirmed_in_the_same_attempt()
     {
-
         CovenantTurnPlan plan = Plan(confirmed: 1, proposed: 3);
 
         CovenantDispatchGate gate = CreateGate(
@@ -320,13 +323,11 @@ public sealed class CovenantDispatchGateTests
         Assert.False(dispatch.Content.HasProposed);
 
         Assert.Equal(3, dispatch.Admission!.ProposedRemovals);
-
     }
 
     [Fact]
     public async Task Two_attempts_on_one_turn_take_distinct_positive_ordinals()
     {
-
         RecordingJournal journal = new();
 
         CovenantDispatchGate gate = CreateGate(
@@ -367,13 +368,11 @@ public sealed class CovenantDispatchGateTests
         // Two physical attempts are two effects. Collapsing them would let a retried dispatch hide
         // behind the first one's receipt.
         Assert.NotEqual(journal.Drafts[0].EffectIdentityDigest, journal.Drafts[1].EffectIdentityDigest);
-
     }
 
     [Fact]
     public async Task An_installation_without_established_authority_refuses_a_tainted_dispatch()
     {
-
         CovenantDispatchGate gate = CreateGate(
             new PlanningContextProvider(Plan(confirmed: 1, proposed: 0)),
             new RecordingJournal(),
@@ -401,7 +400,6 @@ public sealed class CovenantDispatchGateTests
         Assert.True(admitted.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.OperatorAuthorityUnavailable, admitted.Error.Code);
-
     }
 
     [Fact]
@@ -471,7 +469,6 @@ public sealed class CovenantDispatchGateTests
 
     private static ImmutableArray<byte> OversizedFragment()
     {
-
         byte[] bytes = new byte[2 * CovenantLimits.MaxGlobalConfirmedRenderedBytes];
 
         bytes.AsSpan().Fill((byte)'x');
@@ -481,7 +478,6 @@ public sealed class CovenantDispatchGateTests
         bytes[^1] = (byte)'\n';
 
         return [.. bytes];
-
     }
 
     private static CovenantDispatchGate CreateGate(
@@ -539,7 +535,6 @@ public sealed class CovenantDispatchGateTests
     [Fact]
     public async Task A_turn_that_resolved_to_no_campaign_says_so_once_in_a_content_free_record()
     {
-
         TestCapturingLogger<CovenantDispatchGate> logger = new();
 
         CovenantDispatchGate gate = CreateGate(
@@ -567,13 +562,11 @@ public sealed class CovenantDispatchGateTests
         Assert.Contains(nameof(CovenantTurnAbsence.NoCampaign), entry.Message, StringComparison.Ordinal);
 
         Assert.Contains("sensitivity=none", entry.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task A_turn_that_did_adopt_a_plan_records_no_byte_of_what_it_adopted()
     {
-
         TestCapturingLogger<CovenantDispatchGate> logger = new();
 
         CovenantTurnPlan plan = Plan(confirmed: 2, proposed: 2);
@@ -601,29 +594,24 @@ public sealed class CovenantDispatchGateTests
         Assert.DoesNotContain(scope.PlanContent.GlobalConfirmed, entry.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain(scope.PlanContent.CampaignProposed, entry.Message, StringComparison.Ordinal);
-
     }
 
     private static CovenantTurnPlan Plan(int confirmed, int proposed)
     {
-
         List<CovenantSnapshotCandidate> candidates = [];
 
         for (int index = 0; index < confirmed; index++)
         {
-
             candidates.Add(CovenantTask6Fixture.GlobalConfirmed(
                 $"confirmed.{index}",
                 CovenantTask6Fixture.GuidFor(100 + index),
                 CovenantTask6Fixture.GuidFor(200 + index),
                 (ulong)(index + 1),
                 (byte)(index + 1)));
-
         }
 
         for (int index = 0; index < proposed; index++)
         {
-
             candidates.Add(CovenantTask6Fixture.CampaignProposed(
                 $"proposed.{index}",
                 CovenantTask6Fixture.GuidFor(300 + index),
@@ -631,13 +619,11 @@ public sealed class CovenantDispatchGateTests
                 (ulong)(confirmed + index + 1),
                 (byte)(50 + index),
                 CovenantTask6Fixture.CampaignId));
-
         }
 
         return new CovenantLinker()
             .Link(CovenantTask6Fixture.Snapshot(CovenantTask6Fixture.CampaignId, [.. candidates]))
             .Value;
-
     }
 
     private static ulong ByteCost(CovenantPromptContent content) =>
@@ -650,25 +636,21 @@ public sealed class CovenantDispatchGateTests
     /// <summary>Reports one named absence, which is what the provider does for every reason but failure.</summary>
     private sealed class AbsentContextProvider(CovenantTurnAbsence absence) : ICovenantContextProvider
     {
-
         public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
             ArcanumInvocationContext invocation,
             Guid logicalTurnId,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantTurnContext>.Success(CovenantTurnContext.Absent(absence)));
-
     }
 
     private sealed class RefusingContextProvider : ICovenantContextProvider
     {
-
         public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
             ArcanumInvocationContext invocation,
             Guid logicalTurnId,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(Result<CovenantTurnContext>.Success(
                 CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible)));
-
     }
 
     /// <summary>
@@ -677,7 +659,6 @@ public sealed class CovenantDispatchGateTests
     /// </summary>
     private sealed class PlanningContextProvider(CovenantTurnPlan plan) : ICovenantContextProvider
     {
-
         public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
             ArcanumInvocationContext invocation,
             Guid logicalTurnId,
@@ -688,7 +669,6 @@ public sealed class CovenantDispatchGateTests
                     new CovenantTurnLease(new StubLeaseRegistration()),
                     null,
                     logicalTurnId)));
-
     }
 
     /// <summary>
@@ -697,13 +677,11 @@ public sealed class CovenantDispatchGateTests
     /// </summary>
     private sealed class LinkingContextProvider(CovenantTurnSnapshot snapshot) : ICovenantContextProvider
     {
-
         public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
             ArcanumInvocationContext invocation,
             Guid logicalTurnId,
             CancellationToken cancellationToken)
         {
-
             Result<CovenantTurnPlan> linked = new CovenantLinker().Link(snapshot);
 
             return ValueTask.FromResult(linked.IsFailure
@@ -713,14 +691,11 @@ public sealed class CovenantDispatchGateTests
                     new CovenantTurnLease(new StubLeaseRegistration()),
                     null,
                     logicalTurnId)));
-
         }
-
     }
 
     private sealed class StubLeaseRegistration : ICovenantLeaseRegistration
     {
-
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
             RegistrationId: Guid.Parse("11111111-2222-4333-8444-555555555555"),
             RuntimeAuthorityGeneration: 1,
@@ -744,12 +719,10 @@ public sealed class CovenantDispatchGateTests
             ValueTask.FromResult(Result.Success());
 
         public ValueTask ReleaseAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class RecordingJournal : ICovenantDisclosureJournal
     {
-
         public List<CovenantDisclosureDraft> Drafts { get; } = [];
 
         public List<CovenantDisclosureEffectCategory> Categories { get; } = [];
@@ -762,7 +735,6 @@ public sealed class CovenantDispatchGateTests
             ProviderCallSensitivity sensitivity,
             CancellationToken cancellationToken)
         {
-
             Drafts.Add(draft);
 
             Categories.Add(category);
@@ -771,14 +743,11 @@ public sealed class CovenantDispatchGateTests
                 ? Result<CovenantDisclosureReceipt>.Failure(error)
                 : Result<CovenantDisclosureReceipt>.Success(
                     new CovenantDisclosureReceipt(draft, (ulong)Drafts.Count)));
-
         }
-
     }
 
     private sealed class RecordingSensitivityLedger : IArtifactSensitivityLedger
     {
-
         public int Reads { get; private set; }
 
         public bool Tainted { get; init; }
@@ -800,7 +769,6 @@ public sealed class CovenantDispatchGateTests
             Guid sessionId,
             CancellationToken cancellationToken)
         {
-
             Reads++;
 
             return Task.FromResult(Failure is { } error
@@ -811,14 +779,11 @@ public sealed class CovenantDispatchGateTests
                     Tainted ? ContentSensitivity.CovenantDerived : ContentSensitivity.None,
                     CovenantTask6Fixture.D(7),
                     1)));
-
         }
-
     }
 
     private sealed class FakeAuthority(string? installationIdentity) : ICovenantAuthoritySnapshotProvider
     {
-
         public CovenantAuthoritySnapshot? Current { get; } = installationIdentity is null
             ? null
             : new CovenantAuthoritySnapshot(
@@ -829,7 +794,5 @@ public sealed class CovenantDispatchGateTests
                 1,
                 CovenantHostToolsState.Clean,
                 null);
-
     }
-
 }

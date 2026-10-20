@@ -2291,7 +2291,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
             covenantKernel: null,
             availabilityRepublisher: null,
             connections ?? FixtureOrdinaryConnectionFactory.For(context),
-            FixtureLabeledArtifactGuard.For(context));
+            FixtureLabeledArtifactGuard.For(context), memoryDelegation: null);
     }
 
     private async Task<Guid> SeedUnsummarizedWindowAsync(

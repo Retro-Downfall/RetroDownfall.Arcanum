@@ -30,7 +30,6 @@ namespace RetroDownfall.Arcanum.Tests.Storage;
 [Trait("Category", "Integration")]
 public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -711,7 +710,6 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
         });
 
         return new SagaMemoryStore(_db!, new WeaveIndexAvailability(), options, MemoryErasureTestKeys.Isolated());
-
     }
 
     private async Task<long?> ScalarAsync(string sql, Guid id)
@@ -793,7 +791,7 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!), memoryDelegation: null);
 
     private async Task<(Guid SessionId, Guid AssistantEntryId)> SeedTurnAsync()
     {
@@ -868,11 +866,8 @@ public sealed class GrimoireTurnCommitterTests : IAsyncLifetime
 
     private sealed class TestOptionsSnapshot(ArcanumSettings value) : IOptionsSnapshot<ArcanumSettings>
     {
-
         public ArcanumSettings Value => value;
 
         public ArcanumSettings Get(string? name) => value;
-
     }
-
 }

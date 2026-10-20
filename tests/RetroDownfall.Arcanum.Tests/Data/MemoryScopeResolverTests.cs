@@ -133,7 +133,7 @@ public sealed class MemoryScopeResolverTests : IClassFixture<GrimoireFixture>, I
             covenantKernel: null,
             availabilityRepublisher: null,
             FixtureOrdinaryConnectionFactory.For(_db!),
-            FixtureLabeledArtifactGuard.For(_db!));
+            FixtureLabeledArtifactGuard.For(_db!), memoryDelegation: null);
 
         Result<Guid> created = await repository.CreateBoundSessionAsync(
             campaign,

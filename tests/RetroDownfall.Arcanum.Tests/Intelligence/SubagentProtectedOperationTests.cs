@@ -145,7 +145,14 @@ public sealed class SubagentProtectedOperationTests(GrimoireFixture fixture)
         {
             facade.Chat.Release.TrySetResult();
             facade.AccountingRelease.TrySetResult();
-            try { await run.WaitAsync(TimeSpan.FromSeconds(10)); } catch (Exception) { }
+            try
+            {
+                await run.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+            catch (OperationCanceledException) when (stop is "caller" or "root")
+            {
+                // These cases assert cancellation above; cleanup still joins after releasing both barriers.
+            }
         }
     }
 
