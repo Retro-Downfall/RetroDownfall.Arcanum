@@ -409,7 +409,8 @@ public sealed class LexiconCurationArchitectureTests
         // erased; it returns ids only and never serves a name. Its purge reads only the matched entries'
         // content rowids, to prove the full-text index holds none of them afterwards. Evaluation
         // restore sanitation checks existence only; its reader proves exact metadata eligibility
-        // before hydrating and checking the content hash of explicitly selected versions.
+        // before hydrating and checking the content hash of explicitly selected versions. The
+        // shared selected-source length projection enforces remaining bytes without loading facts.
         Assert.Equal(new[]
         {
             "AnnalsClaimWriter.SnapshotLexiconProvenanceAsync",
@@ -422,8 +423,9 @@ public sealed class LexiconCurationArchitectureTests
             "GrimoireSchemaInstaller.TryRebuildLexiconFtsAsync",
             "MemoryAnnalsBackfill.ReadBatchAsync",
             "MemoryEndpoints.BuildStatusAsync",
-            "MemoryEvaluationSourceReader.Lexicon.ReadLexiconAsync",
-            "MemoryEvaluationSourceReader.Lexicon.HydrateLexiconAsync",
+            "MemorySourceProofReader.Lexicon.ReadLexiconAsync",
+            "MemorySourceProofReader.Lexicon.ReadSelectedLexiconContentBytesAsync",
+            "MemorySourceProofReader.Lexicon.HydrateLexiconAsync",
         }.Order(StringComparer.Ordinal), actual.Order(StringComparer.Ordinal));
     }
 

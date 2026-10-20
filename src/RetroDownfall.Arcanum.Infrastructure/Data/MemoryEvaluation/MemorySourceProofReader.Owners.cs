@@ -4,7 +4,7 @@ using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
-internal sealed partial class MemoryEvaluationSourceReader
+internal sealed partial class MemorySourceProofReader
 {
     private static async Task VerifyOwnersAsync(SqliteConnection connection, SqliteTransaction transaction,
         MemoryEvaluationSourceCoordinate source, CovenantCanonicalHashWriter metadata, CancellationToken ct)

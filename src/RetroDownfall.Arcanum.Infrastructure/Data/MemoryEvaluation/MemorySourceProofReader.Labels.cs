@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
-internal sealed partial class MemoryEvaluationSourceReader
+internal sealed partial class MemorySourceProofReader
 {
     private static async Task<ArtifactSensitivityLabel?> ReadLabelAsync(SqliteConnection connection, SqliteTransaction transaction,
         MemoryEvaluationSourceCoordinate source, CovenantCanonicalHashWriter? metadata, CancellationToken ct)

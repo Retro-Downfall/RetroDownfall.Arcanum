@@ -13,6 +13,17 @@ namespace RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 /// <summary>Versioned, domain-separated, length-framed SHA-256 identities using Covenant primitives.</summary>
 public static class MemoryEvaluationDigests
 {
+    public static long SourceManifestBytes(ImmutableArray<MemoryEvaluationSourceCoordinate> sources, ImmutableArray<MemoryEvaluationDependencyEdge> dependencies)
+    {
+        using CovenantCanonicalHashWriter writer = Writer("source-manifest");
+
+        WriteSources(writer, sources);
+
+        WriteDependencies(writer, dependencies);
+
+        return writer.BytesWritten;
+    }
+
     public static CovenantDigest CheckPolicy(MemoryEvaluationCheck check)
     {
         using CovenantCanonicalHashWriter writer = Writer("check-policy");
@@ -435,6 +446,13 @@ public static class MemoryEvaluationDigests
         // Coordinates form a canonical set, while indices refer to their retained input order.
         // Bind the actual exact coordinate so reordering plus remapping preserves attribution.
         WriteSources(writer, [sources[sourceIndex]]);
+    }
+
+    internal static void WriteSourceManifest(CovenantCanonicalHashWriter writer, ImmutableArray<MemoryEvaluationSourceCoordinate> sources, ImmutableArray<MemoryEvaluationDependencyEdge> dependencies)
+    {
+        WriteSources(writer, sources);
+
+        WriteDependencies(writer, dependencies);
     }
 
     private static void WriteSources(CovenantCanonicalHashWriter writer, ImmutableArray<MemoryEvaluationSourceCoordinate> sources)

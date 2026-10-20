@@ -6,6 +6,13 @@ namespace RetroDownfall.Arcanum.Core.Primitives;
 /// </summary>
 public static class ErrorCodes
 {
+    public static class MemoryDelegation
+    {
+        public const string InvalidGrant = "MemoryDelegation.InvalidGrant";
+
+        public const string StaleSource = "MemoryDelegation.StaleSource";
+    }
+
     /// <summary>Bounded memory-evaluation route, adapter and recovery/ledger refusals.</summary>
     public static class MemoryEvaluation
     {

@@ -9,7 +9,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
-internal sealed partial class MemoryEvaluationSourceReader
+internal sealed partial class MemorySourceProofReader
 {
     private async Task<MemoryEvaluationSourceCoordinate> ReadLexiconAsync(SqliteConnection connection, SqliteTransaction transaction,
         MemoryEvaluationLexiconTarget target, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct, bool intervention = true, int remainingBytes = MemoryEvaluationLimits.RenderedMemoryBytes)
@@ -74,6 +74,11 @@ internal sealed partial class MemoryEvaluationSourceReader
 
         return coordinate with { Sensitivity = label?.Sensitivity ?? coordinate.Sensitivity };
     }
+
+    private static async Task<long> ReadSelectedLexiconContentBytesAsync(SqliteConnection connection, SqliteTransaction transaction, string subjectId, CancellationToken ct) =>
+        (long)(await ScalarAsync(connection, transaction,
+            "SELECT length(CAST(FactsJson AS BLOB)) + length(CAST(FactsText AS BLOB)) + length(CAST(Name AS BLOB)) + length(CAST(Type AS BLOB)) FROM lexicon_entries WHERE Id = $id",
+            ct, ("$id", subjectId)).ConfigureAwait(false))!;
 
     private static async Task<string> HydrateLexiconAsync(SqliteConnection connection, SqliteTransaction transaction,
         MemoryEvaluationSourceCoordinate source, ArtifactSensitivityLabel? label, CancellationToken ct)

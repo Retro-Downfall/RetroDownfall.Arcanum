@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
-internal sealed partial class MemoryEvaluationSourceReader
+internal sealed partial class MemorySourceProofReader
 {
     private async Task<MemoryEvaluationSourceCoordinate> ReadSagaAsync(SqliteConnection connection, SqliteTransaction transaction,
         MemoryEvaluationSagaTarget target, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct, bool intervention = true, int remainingBytes = MemoryEvaluationLimits.RenderedMemoryBytes)
@@ -27,6 +27,7 @@ internal sealed partial class MemoryEvaluationSourceReader
                 EXISTS(SELECT 1 FROM artifact_sensitivity label WHERE label.ArtifactKindCode = 6
                     AND lower(replace(label.ArtifactId, '-', '')) = lower(replace(m.Id, '-', ''))),
                 m.PinnedAtUtc, (SELECT MutationEpoch FROM long_rest_sources WHERE MemoryId = m.Id)
+                {(policy == MemorySourceProofPolicy.Delegation && suppression ? ", EXISTS(SELECT 1 FROM long_rest_suppressions suppression JOIN annal_heads suppressed ON suppressed.CurrentVersionId = suppression.SourceVersionId JOIN annal_claims suppressedClaim ON suppressedClaim.ClaimId = suppressed.ClaimId WHERE suppressedClaim.SubjectStoreCode = 1 AND suppressedClaim.SubjectId = m.Id)" : policy == MemorySourceProofPolicy.Delegation ? ", 0" : "") }
             FROM saga_memories m
             JOIN annal_claims c ON c.SubjectStoreCode = 1 AND c.SubjectId = m.Id
             JOIN annal_heads h ON h.ClaimId = c.ClaimId AND h.SubjectStoreCode = 1
@@ -50,7 +51,8 @@ internal sealed partial class MemoryEvaluationSourceReader
         Require(target.HashFormat == AnnalContentHashFormat.LegacyStoreDigest && scope is 1 or 2 && (scope == 1 ? sourceCampaign is null : sourceCampaign == campaign)
             && scope == reader.GetInt32(14) && sourceCampaign == (reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)))
             && (!intervention || reader.IsDBNull(16) && reader.GetInt64(17) <= remainingBytes
-                && reader.GetString(18) == target.VersionId && reader.IsDBNull(20) && reader.GetBoolean(21) && reader.GetBoolean(23))
+                && reader.GetString(18) == target.VersionId && reader.IsDBNull(20) && reader.GetBoolean(21) && reader.GetBoolean(23)
+                && (policy != MemorySourceProofPolicy.Delegation || !reader.GetBoolean(27)))
             && reader.GetInt32(19) != 3 && (reader.IsDBNull(12) ? scope == 1 : reader.GetBoolean(22))
             && (!intervention || from <= now && UtcInstantText.Parse(reader.GetString(10)) <= now && (until is null || until > now))
             && reader.GetInt32(3) == (int)target.HashFormat && new CovenantDigest((byte[])reader[4]) == target.ContentDigest);

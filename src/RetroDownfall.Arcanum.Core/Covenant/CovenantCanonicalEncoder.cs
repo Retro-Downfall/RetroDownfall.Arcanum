@@ -381,6 +381,8 @@ public sealed class CovenantCanonicalEncoder
 
 public sealed class CovenantCanonicalHashWriter : IDisposable
 {
+    public long BytesWritten { get; private set; }
+
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     private readonly IncrementalHash _hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -703,6 +705,8 @@ public sealed class CovenantCanonicalHashWriter : IDisposable
     {
         ThrowIfUnavailable();
         _hash.AppendData(value);
+
+        BytesWritten = checked(BytesWritten + value.Length);
     }
 
     private void ThrowIfUnavailable()

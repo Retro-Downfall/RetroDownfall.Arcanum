@@ -5,7 +5,7 @@ using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
-internal sealed partial class MemoryEvaluationSourceReader
+internal sealed partial class MemorySourceProofReader
 {
     private async Task<List<MemoryEvaluationDependencyEdge>> DependenciesAsync(SqliteConnection connection, SqliteTransaction transaction,
         List<MemoryEvaluationSourceCoordinate> sources, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct)

@@ -7,15 +7,15 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
-internal sealed partial class MemoryEvaluationSourceReader
+internal sealed partial class MemorySourceProofReader
 {
     private sealed record PreparedCovenant(CovenantDigest MetadataDigest,
         List<MemoryEvaluationSourceCoordinate> Coordinates, List<MemoryEvaluationSourceFragment> Fragments);
 
-    private async Task<PreparedCovenant?> PrepareCovenantAsync(MemoryEvaluationValidatedRequest request, CanonicalCampaignContext campaign,
+    private async Task<PreparedCovenant?> PrepareCovenantAsync(MemoryEvaluationMemory selection, CanonicalCampaignContext campaign,
         CovenantTurnLease lease, CancellationToken ct)
     {
-        if (request.Request.Memory.Covenant.IsEmpty)
+        if (selection.Covenant.IsEmpty)
         {
             return null;
         }
@@ -48,7 +48,7 @@ internal sealed partial class MemoryEvaluationSourceReader
         {
             CovenantSnapshotCandidate candidate = decision.Candidate;
 
-            MemoryEvaluationCovenantTarget? target = request.Request.Memory.Covenant.FirstOrDefault(target => target.EntryId == candidate.EntryId && target.VersionId == candidate.VersionId);
+            MemoryEvaluationCovenantTarget? target = selection.Covenant.FirstOrDefault(target => target.EntryId == candidate.EntryId && target.VersionId == candidate.VersionId);
 
             if (target is null)
             {
@@ -67,7 +67,7 @@ internal sealed partial class MemoryEvaluationSourceReader
                 null, null, lease.Snapshot.DatasetGeneration, checked((int)candidate.Revision), candidate.Lane, decision.Placement, candidate.Origin));
         }
 
-        Require(coordinates.Count == request.Request.Memory.Covenant.Length);
+        Require(coordinates.Count == selection.Covenant.Length);
 
         return new(before, coordinates, fragments);
     }
