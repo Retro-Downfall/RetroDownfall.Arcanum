@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -20,6 +21,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed partial class GrimoireRepository : IGrimoireRepository
 {
+    private readonly IMemoryDelegationMutationBarrier? _memoryDelegation;
+
     private const int MaxLegacyBackfillPerSweep = 200;
 
     private readonly ArcanumDbContext _db;
@@ -99,8 +102,11 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
         CovenantMutationKernel? covenantKernel,
         CovenantAvailabilityRepublisher? availabilityRepublisher,
         IGrimoireOrdinaryConnectionFactory connections,
-        ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard)
+        ICovenantLabeledArtifactTransactionGuard labeledArtifactGuard,
+        IMemoryDelegationMutationBarrier? memoryDelegation = null)
     {
+        _memoryDelegation = memoryDelegation;
+
         _db = db;
 
         _connections = connections;

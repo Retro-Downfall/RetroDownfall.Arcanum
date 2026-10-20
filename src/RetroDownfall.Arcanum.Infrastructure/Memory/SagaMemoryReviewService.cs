@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.AI;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -33,7 +34,8 @@ internal sealed class SagaMemoryReviewService(
     IMemoryErasureKeyProvider erasureKeys,
     IOperatorAuthorityContextIssuer releaseAuthority,
     TimeProvider timeProvider,
-    ILogger<SagaMemoryReviewService> logger) : ISagaMemoryReviewService
+    ILogger<SagaMemoryReviewService> logger,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ISagaMemoryReviewService
 {
     private static readonly Error InvalidToken = new(
         ErrorCodes.MemoryReview.InvalidToken,
@@ -519,6 +521,8 @@ internal sealed class SagaMemoryReviewService(
             && MemoryErasureFingerprintRelease.OperatorMayRelease(releaseAuthority);
 
         using MemoryErasureKey? erasureKey = releasePermitted ? erasureKeys.TryCopyLatched() : null;
+
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>

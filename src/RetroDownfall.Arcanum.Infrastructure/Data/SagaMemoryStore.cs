@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -35,7 +36,8 @@ internal sealed partial class SagaMemoryStore(
     IMemoryErasureKeyProvider erasureKeys,
     ICovenantLabeledArtifactTransactionGuard? labeledArtifactGuard = null,
     IOperatorAuthorityContextIssuer? releaseAuthority = null,
-    TimeProvider? timeProvider = null) : ISagaMemoryStore
+    TimeProvider? timeProvider = null,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ISagaMemoryStore
 {
     public Task<SagaMemoryWriteOutcome> InsertAsync(
         string id,
@@ -93,6 +95,8 @@ internal sealed partial class SagaMemoryStore(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         int expectedDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
             options.CurrentValue.Integrations.Embeddings.Dimensions);
 
@@ -740,6 +744,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task<bool> DeleteAsync(string id, CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
@@ -825,6 +831,8 @@ internal sealed partial class SagaMemoryStore(
 
     public async Task DeleteAllAsync(CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {

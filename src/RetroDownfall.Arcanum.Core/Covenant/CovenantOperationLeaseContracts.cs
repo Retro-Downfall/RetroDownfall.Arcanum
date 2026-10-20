@@ -443,9 +443,15 @@ public abstract class CovenantOperationLease : ICovenantOperationLease
             return;
         }
 
+        OnDisposing();
+
         await _registration.ReleaseAsync().ConfigureAwait(false);
 
         GC.SuppressFinalize(this);
+    }
+
+    private protected virtual void OnDisposing()
+    {
     }
 }
 
@@ -603,6 +609,22 @@ public sealed class CovenantWriteLease(ICovenantLeaseRegistration registration)
 public sealed class CovenantTurnLease(ICovenantLeaseRegistration registration)
     : CovenantOperationLease(registration), ICovenantSnapshotReadLease
 {
+    private readonly CancellationTokenSource _lifetimeEnded = new();
+
+    /// <summary>Signals loss of the borrowed Turn lifetime before its registry ownership is released.</summary>
+    public CancellationToken LifetimeEnded => _lifetimeEnded.Token;
+
+    private protected override void OnDisposing()
+    {
+        try
+        {
+            _lifetimeEnded.Cancel();
+        }
+        catch (AggregateException)
+        {
+            // A consumer callback cannot prevent release of the already-disposed Turn.
+        }
+    }
 }
 
 /// <summary>

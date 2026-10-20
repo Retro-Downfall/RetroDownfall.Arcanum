@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -5958,6 +5959,8 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         long derived = 0;
 
         int provenance;
@@ -6121,6 +6124,8 @@ internal sealed partial class DataRetentionService
         DateTimeOffset effectiveCutoff,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         DbConnection connection = await OpenConnectionAsync(
             cancellationToken).ConfigureAwait(false);
 

@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -41,7 +42,8 @@ internal sealed partial class LexiconService(
     ICovenantLabeledArtifactGuard? labeledArtifactGuard = null,
     IMemoryReviewTokenCodec? reviewTokenCodec = null,
     TimeProvider? timeProvider = null,
-    LexiconErasureDependencies? erasure = null) : ILexiconService, ILexiconCurationService, ILexiconMemoryReviewService
+    LexiconErasureDependencies? erasure = null,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ILexiconService, ILexiconCurationService, ILexiconMemoryReviewService
 {
     private readonly ICovenantLabeledArtifactGuard? _labeledArtifactGuard = labeledArtifactGuard;
 
@@ -91,6 +93,8 @@ internal sealed partial class LexiconService(
         AttachmentMemoryProvenance? provenance,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         Result<LexiconCanonicalValue> incoming = LexiconValueNormalizer.NormalizeScribe(name, type, facts);
 
         if (incoming.IsFailure)
@@ -381,6 +385,8 @@ internal sealed partial class LexiconService(
         LexiconDeletionOrigin origin,
         CancellationToken cancellationToken = default)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         string trimmedName = name?.Trim() ?? string.Empty;
 
         if (trimmedName.Length == 0)

@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -124,6 +125,9 @@ public interface ICovenantSensitiveArtifactPurger
     ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
         CancellationToken cancellationToken = default);
+
+    ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeOwnedAsync(IReadOnlyList<CovenantSensitivePurgeTarget> targets, MemoryDelegationMutation? memoryMutation, CancellationToken cancellationToken = default) =>
+        PurgeAsync(targets, cancellationToken);
 
 }
 

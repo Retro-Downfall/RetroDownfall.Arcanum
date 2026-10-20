@@ -4,6 +4,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -33,13 +34,16 @@ internal sealed class CovenantOwnerCleanupCoordinator(
     ICovenantOperationGate gate,
     ICovenantConnectionSource connections,
     CovenantCleanupWorker worker,
-    CovenantAvailabilityRepublisher availabilityRepublisher)
+    CovenantAvailabilityRepublisher availabilityRepublisher,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null)
 {
 
     internal async ValueTask<Result<CovenantCleanupOutcome>> RunBatchAsync(
         int maxEvents,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
 
         Result<CovenantCleanupLease> acquired = await gate
             .AcquireCleanupAsync(CovenantOperationScope.Global, cancellationToken)

@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
@@ -34,6 +35,8 @@ public sealed partial class GrimoireRepository : IGrimoireTurnCommitter
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        await using MemoryDelegationMutation? memoryMutation = request.Mutations.IsEmpty ? null : await _memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         using IDisposable writeLock = await SessionEntryPersistence
             .AcquireWriteLockAsync(request.SessionId, cancellationToken)

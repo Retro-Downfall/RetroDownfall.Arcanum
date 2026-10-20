@@ -9,6 +9,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -60,7 +61,8 @@ internal sealed class SagaMemoryErasureService(
     ICovenantOperationGate gate,
     IOperatorAuthorityContextIssuer issuer,
     ICovenantSqliteConnectionInitializer initializer,
-    IOptionsMonitor<ArcanumSettings> options) : ISagaMemoryErasureService
+    IOptionsMonitor<ArcanumSettings> options,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ISagaMemoryErasureService
 {
     private const int ScrubPending = 1;
 
@@ -271,6 +273,8 @@ internal sealed class SagaMemoryErasureService(
         OperatorAuthorityContext authority,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         ArgumentNullException.ThrowIfNull(authority);
 
         Result<Target> parsed = Parse(request?.MemoryId, request?.ExpectedContentHash, request?.ExpectedClaimVersionId, request?.MutationId);

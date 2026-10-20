@@ -2,6 +2,7 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -58,7 +59,8 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     ICovenantProtectedArtifactErasureKernel artifacts,
     ICovenantManagedFileErasureKernel managedFiles,
     CovenantSensitivePurgeAuthorityScope authorityScope,
-    ILogger<CovenantSensitiveRetentionPurgeCoordinator> logger) : ICovenantSensitiveArtifactPurger
+    ILogger<CovenantSensitiveRetentionPurgeCoordinator> logger,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantSensitiveArtifactPurger
 {
     /// <summary>
     /// Replaces the policy's executor for a kind, if set, so a test can reach an executor the policy does
@@ -67,10 +69,20 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     /// </summary>
     internal Func<SensitiveArtifactKind, CovenantArtifactPurgeExecutor>? ExecutorForTesting { get; init; }
 
-    public async ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(
-        IReadOnlyList<CovenantSensitivePurgeTarget> targets,
-        CancellationToken cancellationToken = default)
+    public ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeAsync(IReadOnlyList<CovenantSensitivePurgeTarget> targets, CancellationToken cancellationToken = default) =>
+        PurgeOwnedAsync(targets, null, cancellationToken);
+
+    public async ValueTask<Result<CovenantSensitivePurgeOutcome>> PurgeOwnedAsync(IReadOnlyList<CovenantSensitivePurgeTarget> targets, MemoryDelegationMutation? memoryMutation, CancellationToken cancellationToken = default)
     {
+        if (memoryMutation is not null && (memoryDelegation is null || !memoryMutation.IsOwnedBy(memoryDelegation)))
+        {
+            throw new InvalidOperationException("The nested memory mutation has no live ownership of this coordinator.");
+        }
+
+        await using MemoryDelegationMutation? acquiredMutation = memoryMutation is null ? await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false) : null;
+
+        memoryMutation ??= acquiredMutation;
+
         ArgumentNullException.ThrowIfNull(targets);
 
         if (targets.Count is 0 or > ICovenantSensitiveArtifactPurger.MaxTargets)
@@ -144,6 +156,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
             targets,
             labeled,
             authority.Value,
+            memoryMutation,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -257,6 +270,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         IReadOnlyList<CovenantSensitivePurgeTarget> targets,
         IReadOnlyList<LabeledTarget> labeled,
         CovenantArtifactErasureAuthority authority,
+        MemoryDelegationMutation? memoryMutation,
         CancellationToken cancellationToken)
     {
         Dictionary<Guid, CovenantSensitivePurgeResult> results = [];
@@ -311,7 +325,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
                 step = ExecutorOf(candidate) switch
                 {
                     CovenantArtifactPurgeExecutor.DatabaseTransaction =>
-                        await ErasePageAsync([candidate], authority, cancellationToken).ConfigureAwait(false),
+                        await ErasePageAsync([candidate], authority, memoryMutation, cancellationToken).ConfigureAwait(false),
                     CovenantArtifactPurgeExecutor.ManagedFileKernel =>
                         await EraseManagedFileAsync(candidate, authority, cancellationToken).ConfigureAwait(false),
                     _ => Result<CovenantArtifactErasureProgress>.Success(
@@ -515,6 +529,7 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
     private async ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
         IReadOnlyList<LabeledTarget> databaseOwned,
         CovenantArtifactErasureAuthority authority,
+        MemoryDelegationMutation? memoryMutation,
         CancellationToken cancellationToken)
     {
         if (availability.Current.DatasetGeneration is not { } datasetGeneration
@@ -541,9 +556,10 @@ internal sealed class CovenantSensitiveRetentionPurgeCoordinator(
         }
 
         return await artifacts
-            .ErasePageAsync(
+            .ErasePageOwnedAsync(
                 new CovenantProtectedArtifactErasurePage(datasetGeneration, items),
                 authority,
+                memoryMutation,
                 cancellationToken)
             .ConfigureAwait(false);
     }

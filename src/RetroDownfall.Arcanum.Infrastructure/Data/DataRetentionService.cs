@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Data;
 
@@ -82,7 +83,8 @@ internal sealed partial class DataRetentionService(
     ICovenantFactoryErasureApplyRequestDigestCalculator? factoryApplyRequestDigests = null,
     ICovenantErasureEffectDigestCalculator? covenantErasureEffectDigests = null,
     LongRunningOperationOwnership? operationOwnership = null,
-    ILongRunningOperationSameOwnerLeaseResumption? sameOwnerLeaseResumption = null)
+    ILongRunningOperationSameOwnerLeaseResumption? sameOwnerLeaseResumption = null,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null)
     : IDataRetentionService, IDataRetentionHostedSweep
 {
     /// <summary>
@@ -3050,6 +3052,8 @@ internal sealed partial class DataRetentionService(
         RetentionMutationJournal? mutationJournal,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         using IDisposable? sessionGate = attachmentStore is null
             ? null
             : await attachmentStore.AcquireSessionGateAsync(
@@ -3610,6 +3614,8 @@ internal sealed partial class DataRetentionService(
         Guid? campaignId,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         List<MemoryResetSelection> selections = [];
 
         foreach (MemoryResetSelection selection in BuildMemoryResetSelections(scope, campaignId))

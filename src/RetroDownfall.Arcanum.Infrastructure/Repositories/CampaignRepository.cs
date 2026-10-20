@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using System.Data;
 using System.Text.Json;
@@ -22,6 +23,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
 public sealed class CampaignRepository : ICampaignRepository
 {
+    private readonly IMemoryDelegationMutationBarrier? _memoryDelegation;
+
     private const int DefaultListLimit = 100;
 
     private const int ImmediateTransactionTimeoutSeconds = 1;
@@ -45,8 +48,11 @@ public sealed class CampaignRepository : ICampaignRepository
         ArcanumDbContext db,
         ILogger<CampaignRepository> logger,
         IOptionsSnapshot<ArcanumSettings> arcOptions,
-        ICovenantLabeledArtifactGuard labeledArtifactGuard)
+        ICovenantLabeledArtifactGuard labeledArtifactGuard,
+        IMemoryDelegationMutationBarrier? memoryDelegation = null)
     {
+        _memoryDelegation = memoryDelegation;
+
         _db = db;
 
         _logger = logger;
@@ -487,6 +493,8 @@ public sealed class CampaignRepository : ICampaignRepository
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        await using MemoryDelegationMutation? memoryMutation = await _memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction tx =
             await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 

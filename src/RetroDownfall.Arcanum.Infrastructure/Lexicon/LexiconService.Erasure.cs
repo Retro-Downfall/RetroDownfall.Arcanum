@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -274,6 +275,8 @@ internal sealed partial class LexiconService : ILexiconErasureService
         OperatorAuthorityContext authority,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         if (erasure is not { } dependencies)
         {
             return MemoryErasureProtocol.UnavailableError;

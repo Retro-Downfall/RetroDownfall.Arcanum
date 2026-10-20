@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -71,14 +72,16 @@ internal sealed partial class SagaMemoryStore
             cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<SagaCurationOutcome> RetireAsync(
+    public async Task<SagaCurationOutcome> RetireAsync(
         string id, byte[] expectedContentDigest, DateTimeOffset retiredAt, CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
 
-        return SqliteBusyRetry.ExecuteAsync(
+        return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -273,16 +276,18 @@ internal sealed partial class SagaMemoryStore
 
                 return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(retiredAt, pinnedAtUtc));
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<SagaCurationOutcome> ReinstateAsync(
+    public async Task<SagaCurationOutcome> ReinstateAsync(
         string id,
         byte[] expectedContentDigest,
         float[] embedding,
         DateTimeOffset reinstatedAt,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
@@ -298,7 +303,7 @@ internal sealed partial class SagaMemoryStore
                 $"""Saga memory embedding has {embedding.Length} dimensions but {expectedDimensions} are configured at Arcanum:Integrations:Embeddings:Dimensions. Rejecting reinstate to avoid corrupting the vec0 index.""");
         }
 
-        return SqliteBusyRetry.ExecuteAsync(
+        return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -484,7 +489,7 @@ internal sealed partial class SagaMemoryStore
 
                 return new SagaCurationOutcome(SagaCurationOutcomeKind.Applied, new SagaMemoryLifecycle(null, pinnedAtUtc));
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <remarks>
@@ -505,6 +510,8 @@ internal sealed partial class SagaMemoryStore
         DateTimeOffset correctedAt,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         ArgumentException.ThrowIfNullOrEmpty(id);
 
         ArgumentNullException.ThrowIfNull(expectedContentDigest);
@@ -733,12 +740,14 @@ internal sealed partial class SagaMemoryStore
             cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<SagaCurationOutcome> SetPinAsync(
+    public async Task<SagaCurationOutcome> SetPinAsync(
         string id, bool pinned, DateTimeOffset changedAt, CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         ArgumentException.ThrowIfNullOrEmpty(id);
 
-        return SqliteBusyRetry.ExecuteAsync(
+        return await SqliteBusyRetry.ExecuteAsync(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -792,6 +801,6 @@ internal sealed partial class SagaMemoryStore
                     SagaCurationOutcomeKind.Applied,
                     new SagaMemoryLifecycle(retiredAtUtc, pinned ? changedAt : null));
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 }

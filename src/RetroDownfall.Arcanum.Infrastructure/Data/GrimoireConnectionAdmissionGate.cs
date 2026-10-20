@@ -1,5 +1,6 @@
 using System.Data.Common;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -21,6 +22,10 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     internal const string WorkDrainTimeoutCode = ErrorCodes.Grimoire.WorkDrainTimeout;
 
     private const string StaleOpenCode = "Grimoire.StaleOpenGeneration";
+
+    internal MemoryDelegationCoordinator? MemoryDelegation { get; }
+
+    private Task _memoryDelegationDrain = Task.CompletedTask;
 
     private readonly object _sync = new();
 
@@ -83,7 +88,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
     internal GrimoireConnectionAdmissionGate(
         TimeProvider timeProvider,
         ICovenantConnectionDrain drain,
-        IGrimoireMaintenancePathAuthority paths)
+        IGrimoireMaintenancePathAuthority paths,
+        MemoryDelegationCoordinator? memoryDelegation = null)
         : this(
             timeProvider,
             drain,
@@ -92,6 +98,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             AfterSuccessfulDrainNoOpAsync,
             paths)
     {
+        MemoryDelegation = memoryDelegation;
     }
 
     internal GrimoireConnectionAdmissionGate(
@@ -405,6 +412,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
 
                 _state = GateState.Closing;
 
+                _memoryDelegationDrain = MemoryDelegation?.CloseForMaintenance() ?? Task.CompletedTask;
+
                 _closure = new Closure(owner, promoted, scopedConnection);
 
                 if (promoted is not null)
@@ -419,7 +428,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 }
 
                 _closure.StageOneDrained =
-                    _requestLeases.Count == 0 && _workLeases.Count == 0;
+                    _requestLeases.Count == 0 && _workLeases.Count == 0 && _memoryDelegationDrain.IsCompletedSuccessfully;
 
                 revocations = [];
 
@@ -514,7 +523,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                 && _state == GateState.Closed
                 && token.Closure.StageOneDrained
                 && _requestLeases.Count == 0
-                && _workLeases.Count == 0)
+                && _workLeases.Count == 0 && _memoryDelegationDrain.IsCompletedSuccessfully)
             {
                 return Result.Success();
             }
@@ -525,7 +534,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
                     "The closing token no longer owns the request and work drain.");
             }
 
-            if (_requestLeases.Count == 0 && _workLeases.Count == 0)
+            if (_requestLeases.Count == 0 && _workLeases.Count == 0 && _memoryDelegationDrain.IsCompletedSuccessfully)
             {
                 token.Closure.StageOneDrained = true;
 
@@ -535,6 +544,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             terminalLifetimes = _requestLeases
                 .Select(static request => request.Terminal)
                 .Concat(_workLeases.Select(static work => work.Terminal))
+                .Append(_memoryDelegationDrain)
                 .ToArray();
         }
 
@@ -569,7 +579,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             if (!OwnsClosingToken(token)
                 || _state != GateState.Closing
                 || _requestLeases.Count != 0
-                || _workLeases.Count != 0)
+                || _workLeases.Count != 0
+                || !_memoryDelegationDrain.IsCompletedSuccessfully)
             {
                 return LifecycleConflict(
                     "The Grimoire closing generation changed before request and work drain completed.");
@@ -619,6 +630,7 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             }
 
             if (!token.Closure.StageOneDrained
+                || !_memoryDelegationDrain.IsCompletedSuccessfully
                 || _requestLeases.Count != 0
                 || _workLeases.Count != 0)
             {
@@ -791,6 +803,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             token.Closure.ActiveClosingOwner = null;
 
             _state = GateState.Ordinary;
+
+            MemoryDelegation?.ReopenAfterMaintenance();
 
             _closure = null;
 
@@ -1811,6 +1825,8 @@ internal sealed class GrimoireConnectionAdmissionGate : IGrimoireConnectionAdmis
             if (disposition != CovenantExclusiveLeaseDisposition.KeepClosed)
             {
                 _state = GateState.Ordinary;
+
+                MemoryDelegation?.ReopenAfterMaintenance();
 
                 _closure = null;
 

@@ -7,6 +7,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -33,7 +34,8 @@ internal sealed class CovenantMemoryReviewService(
     CovenantCurationKernel curationKernel,
     TimeProvider timeProvider,
     CovenantAvailabilityRepublisher availabilityRepublisher,
-    ILogger<CovenantMemoryReviewService> logger) : ICovenantMemoryReviewService
+    ILogger<CovenantMemoryReviewService> logger,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantMemoryReviewService
 {
     /// <summary>
     /// How long a busy database is retried before the apply gives up, or <see langword="null"/> for the
@@ -530,6 +532,8 @@ internal sealed class CovenantMemoryReviewService(
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         Result validation = request.Validate();
 
         if (validation.IsFailure)

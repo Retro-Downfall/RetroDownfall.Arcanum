@@ -1,5 +1,6 @@
 using System.Data.Common;
 using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Lexicon;
@@ -42,6 +43,8 @@ internal sealed partial class LexiconService
     private async Task<Result<LexiconCurationResult>> ChangeLifecycleAsync(
         LexiconCurationTarget target, CovenantWriteLease? writeLease, LifecycleChange change, CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         if (target is null || target.Validate().IsFailure)
         {
             return new Error(ErrorCodes.Lexicon.InvalidCurationTarget, "A complete Lexicon target is required.");

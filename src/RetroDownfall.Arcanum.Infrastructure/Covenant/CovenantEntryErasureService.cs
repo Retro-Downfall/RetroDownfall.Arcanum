@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -91,7 +92,8 @@ internal sealed class CovenantEntryErasureService(
     ICovenantSqliteConnectionInitializer initializer,
     IOptionsMonitor<ArcanumSettings> options,
     TimeProvider timeProvider,
-    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantEntryErasureService, ICovenantEntryErasurePreparer
+    CovenantAvailabilityRepublisher availabilityRepublisher,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantEntryErasureService, ICovenantEntryErasurePreparer
 {
     private const int ScrubPending = 1;
 
@@ -346,6 +348,8 @@ internal sealed class CovenantEntryErasureService(
         OperatorAuthorityContext authority,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         ArgumentNullException.ThrowIfNull(authority);
 
         if (request is null || string.IsNullOrWhiteSpace(request.PreflightToken))

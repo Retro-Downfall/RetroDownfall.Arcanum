@@ -2,6 +2,7 @@ using System.Data;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Memory;
@@ -44,7 +45,8 @@ internal sealed partial class CovenantMutationService(
     CovenantCurationKernel curationKernel,
     ICovenantAuthoritySnapshotProvider authority,
     TimeProvider timeProvider,
-    CovenantAvailabilityRepublisher availabilityRepublisher) : ICovenantMutationService
+    CovenantAvailabilityRepublisher availabilityRepublisher,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantMutationService
 {
 
     /// <summary>How long a prepared mutation stays committable.</summary>
@@ -550,6 +552,8 @@ internal sealed partial class CovenantMutationService(
         CovenantLane lane,
         CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
 
         // Every batch carries the gate its caller read from the latch before BEGIN, this operator path
         // included. Operator intents never consult it, so an operator write is never refused by it; this

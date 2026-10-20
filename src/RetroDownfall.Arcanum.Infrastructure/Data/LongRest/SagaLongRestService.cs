@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -13,10 +14,13 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 /// <summary>The owning Saga transaction for explicit exact-version consolidation declarations.</summary>
-internal sealed partial class SagaLongRestService(ArcanumDbContext db, TimeProvider timeProvider) : ILongRestService
+internal sealed partial class SagaLongRestService(ArcanumDbContext db, TimeProvider timeProvider,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ILongRestService
 {
     public async Task<Result<LongRestReceipt>> ApplyAsync(LongRestRequest request, CancellationToken cancellationToken)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         Result valid = LongRestPolicy.ValidateRequest(request);
 
         if (valid.IsFailure)

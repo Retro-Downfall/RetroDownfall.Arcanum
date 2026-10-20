@@ -2,6 +2,7 @@ using System.Globalization;
 
 using Microsoft.Data.Sqlite;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -240,7 +241,8 @@ internal static class CovenantArtifactPurgePlans
 internal sealed class CovenantProtectedArtifactErasureKernel(
     ICovenantConnectionSource connections,
     ICovenantSqliteConnectionInitializer initializer,
-    TimeProvider timeProvider) : ICovenantProtectedArtifactErasureKernel
+    TimeProvider timeProvider,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantProtectedArtifactErasureKernel
 {
     private const int SqliteBusy = 5;
 
@@ -268,11 +270,20 @@ internal sealed class CovenantProtectedArtifactErasureKernel(
 
     private readonly TimeProvider _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
 
-    public async ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(
-        CovenantProtectedArtifactErasurePage page,
-        CovenantArtifactErasureAuthority authority,
-        CancellationToken cancellationToken = default)
+    public ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageAsync(CovenantProtectedArtifactErasurePage page, CovenantArtifactErasureAuthority authority, CancellationToken cancellationToken = default) =>
+        ErasePageOwnedAsync(page, authority, null, cancellationToken);
+
+    public async ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageOwnedAsync(CovenantProtectedArtifactErasurePage page, CovenantArtifactErasureAuthority authority, MemoryDelegationMutation? memoryMutation, CancellationToken cancellationToken = default)
     {
+        if (memoryMutation is not null && (memoryDelegation is null || !memoryMutation.IsOwnedBy(memoryDelegation)))
+        {
+            throw new InvalidOperationException("The nested memory mutation has no live ownership of this coordinator.");
+        }
+
+        await using MemoryDelegationMutation? acquiredMutation = memoryMutation is null ? await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false) : null;
+
+        memoryMutation ??= acquiredMutation;
+
         ArgumentNullException.ThrowIfNull(page);
 
         ArgumentNullException.ThrowIfNull(authority);

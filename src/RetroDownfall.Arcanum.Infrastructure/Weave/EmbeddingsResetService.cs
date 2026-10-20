@@ -3,6 +3,7 @@ using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -23,7 +24,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 public sealed class EmbeddingsResetService(
     ArcanumDbContext db,
     IServiceProvider serviceProvider,
-    ICovenantSensitiveArtifactPurger? purger = null)
+    ICovenantSensitiveArtifactPurger? purger = null,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null)
 {
     private readonly IGrimoireOrdinaryConnectionFactory _connections =
         serviceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
@@ -149,6 +151,7 @@ public sealed class EmbeddingsResetService(
     /// </remarks>
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeLabeledScopeAsync(
         EmbeddingsResetScope scope,
+        MemoryDelegationMutation? memoryMutation,
         CancellationToken cancellationToken)
     {
         List<CovenantSensitivePurgeResult> results = [];
@@ -165,6 +168,7 @@ public sealed class EmbeddingsResetService(
         {
             Result<CovenantSensitivePurgeOutcome> purgedKind = await PurgeLabeledKindAsync(
                 kind,
+                memoryMutation,
                 cancellationToken).ConfigureAwait(false);
 
             if (purgedKind.IsFailure)
@@ -188,6 +192,7 @@ public sealed class EmbeddingsResetService(
 
     private async Task<Result<CovenantSensitivePurgeOutcome>> PurgeLabeledKindAsync(
         SensitiveArtifactKind kind,
+        MemoryDelegationMutation? memoryMutation,
         CancellationToken cancellationToken)
     {
         const int PageSize = 128;
@@ -336,8 +341,9 @@ public sealed class EmbeddingsResetService(
             cursor = lastLabelId;
 
             Result<CovenantSensitivePurgeOutcome> purged = await purger!
-                .PurgeAsync(
+                .PurgeOwnedAsync(
                     [.. page.Select(entry => new CovenantSensitivePurgeTarget(kind, entry.ArtifactId))],
+                    memoryMutation,
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -364,6 +370,8 @@ public sealed class EmbeddingsResetService(
         EmbeddingsResetScope scope,
         CancellationToken cancellationToken = default)
     {
+        await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
+
         List<string> targets = [];
 
         if (scope is EmbeddingsResetScope.All or EmbeddingsResetScope.Entry)
@@ -400,6 +408,7 @@ public sealed class EmbeddingsResetService(
         // runs, so the statements below are unchanged and simply find less to do (§10.20.2).
         Result<CovenantSensitivePurgeOutcome> purged = await PurgeLabeledScopeAsync(
             scope,
+            memoryMutation,
             cancellationToken).ConfigureAwait(false);
 
         if (purged.IsFailure)

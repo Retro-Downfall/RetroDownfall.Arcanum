@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -560,6 +561,9 @@ public interface ICovenantProtectedArtifactErasureKernel
         CovenantProtectedArtifactErasurePage page,
         CovenantArtifactErasureAuthority authority,
         CancellationToken cancellationToken = default);
+
+    ValueTask<Result<CovenantArtifactErasureProgress>> ErasePageOwnedAsync(CovenantProtectedArtifactErasurePage page, CovenantArtifactErasureAuthority authority, MemoryDelegationMutation? memoryMutation, CancellationToken cancellationToken = default) =>
+        ErasePageAsync(page, authority, cancellationToken);
 
 }
 

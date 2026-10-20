@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -11,7 +12,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 namespace RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
 
 /// <summary>Owns durable adjudication staging and atomic canonical/item progress.</summary>
-internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvider timeProvider) : ILongRestSweepStore
+internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvider timeProvider,
+    IMemoryDelegationMutationBarrier? memoryDelegation = null) : ILongRestSweepStore
 {
     public Task<Result<LongRestSweep>> BeginOrResumeAsync(Guid operationId, LongRestSweepScope scope,
         LongRestConfigurationStamp configuration, CancellationToken ct) => WithinAsync(async (connection, transaction) =>
@@ -89,6 +91,8 @@ internal sealed partial class LongRestSweepStore(ArcanumDbContext db, TimeProvid
 
     private async Task<Result<T>> RunAsync<T>(Func<SqliteConnection, SqliteTransaction, Task<T>> action, bool deferred, CancellationToken ct)
     {
+        await using MemoryDelegationMutation? memoryMutation = deferred ? null : await memoryDelegation.BeginOptionalAsync(ct).ConfigureAwait(false);
+
         try
         {
             return await SqliteBusyRetry.ExecuteAsync(async () =>

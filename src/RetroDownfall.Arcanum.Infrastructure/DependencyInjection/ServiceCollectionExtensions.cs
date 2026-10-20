@@ -11,6 +11,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.CommLink;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Chronosync;
@@ -342,7 +343,8 @@ public static class ServiceCollectionExtensions
                 sp.GetService<CovenantMutationKernel>(),
                 sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>()));
+                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>(),
+                sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -1226,7 +1228,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
             sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
             sp.GetRequiredService<TimeProvider>(),
-            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped<ICovenantEntryErasureService>(
             static sp => sp.GetRequiredService<CovenantEntryErasureService>());
@@ -1239,7 +1242,8 @@ public static class ServiceCollectionExtensions
             static sp => new EmbeddingsResetService(
                 sp.GetRequiredService<ArcanumDbContext>(),
                 sp,
-                sp.GetRequiredService<ICovenantSensitiveArtifactPurger>()));
+                sp.GetRequiredService<ICovenantSensitiveArtifactPurger>(),
+                sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
         services.AddScoped<SessionAttachmentIndexRepository>();
         services.AddScoped<ISessionAttachmentIndexWriter>(
@@ -1542,7 +1546,8 @@ public static class ServiceCollectionExtensions
                 provider.GetRequiredService<ICovenantOperationGate>(),
                 provider.GetRequiredService<IOperatorAuthorityContextIssuer>(),
                 provider.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>()));
+                provider.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+                provider.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         // Host only, beside the erase services: release reads the key through the provider alone and
         // never creates it, on the same DbContext connection the write chokepoints use.
@@ -1613,7 +1618,8 @@ public static class ServiceCollectionExtensions
                 sp.GetService<CovenantMutationKernel>(),
                 sp.GetService<CovenantAvailabilityRepublisher>(),
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>()));
+                sp.GetRequiredService<ICovenantLabeledArtifactTransactionGuard>(),
+                sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         // The narrow turn-begin port is deliberately a separate registration over the same scoped
         // instance. Resolving it through IGrimoireRepository would let any holder of the broad
@@ -2083,11 +2089,16 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IGrimoireMaintenancePathAuthority>(
             static _ => GrimoireInstallationMaintenancePaths.Instance);
 
+        services.TryAddSingleton<MemoryDelegationCoordinator>();
+
+        services.AddSingleton<IMemoryDelegationMutationBarrier>(static sp => sp.GetRequiredService<MemoryDelegationCoordinator>());
+
         services.AddSingleton(
             static sp => new GrimoireConnectionAdmissionGate(
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ICovenantConnectionDrain>(),
-                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>()));
+                sp.GetRequiredService<IGrimoireMaintenancePathAuthority>(),
+                sp.GetRequiredService<MemoryDelegationCoordinator>()));
 
         services.AddSingleton<IGrimoireConnectionAdmissionGate>(
             static sp => sp.GetRequiredService<GrimoireConnectionAdmissionGate>());
@@ -2196,7 +2207,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
             sp.GetRequiredService<TimeProvider>(),
-            sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
+            sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped<ICovenantMemoryReviewService>(static sp => new CovenantMemoryReviewService(
             sp.GetRequiredService<ICovenantConnectionSource>(),
@@ -2206,7 +2218,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<CovenantCurationKernel>(),
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
-            sp.GetRequiredService<ILogger<CovenantMemoryReviewService>>()));
+            sp.GetRequiredService<ILogger<CovenantMemoryReviewService>>(),
+                sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped<ICovenantContextProvider>(
             static sp => new CovenantContextProvider(
@@ -2419,13 +2432,15 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantProtectedArtifactErasureKernel>(),
                 sp.GetRequiredService<ICovenantManagedFileErasureKernel>(),
                 sp.GetRequiredService<CovenantSensitivePurgeAuthorityScope>(),
-                sp.GetRequiredService<ILogger<CovenantSensitiveRetentionPurgeCoordinator>>()));
+                sp.GetRequiredService<ILogger<CovenantSensitiveRetentionPurgeCoordinator>>(),
+                sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped<ICovenantProtectedArtifactErasureKernel>(
             static sp => new CovenantProtectedArtifactErasureKernel(
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<TimeProvider>()));
+                sp.GetRequiredService<TimeProvider>(),
+                sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         // The concrete kernel is registered as well as its port, because the two stopped-host overloads
         // are deliberately not on the port: a full reset reaches them through the concrete type, and
@@ -2623,7 +2638,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantOperationGate>(),
                 sp.GetRequiredService<ICovenantConnectionSource>(),
                 sp.GetRequiredService<CovenantCleanupWorker>(),
-                sp.GetRequiredService<CovenantAvailabilityRepublisher>()));
+                sp.GetRequiredService<CovenantAvailabilityRepublisher>(),
+            sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
 
         services.AddScoped(
             static sp => new CovenantSearchOutboxCoordinator(
