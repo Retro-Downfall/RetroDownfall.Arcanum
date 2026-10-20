@@ -329,7 +329,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                         if (observed.Details is { } details)
                         {
                             finalUsage = details;
-                            if (context?.ProtectedBinding is MemoryDelegationProtection { UsageCommit: not null })
+                            if (context?.ProtectedBinding is MemoryDelegationProtection)
                                 (protectedUsage ??= new()).Add(new UsageDetails
                                 {
                                     InputTokenCount = details.InputTokenCount,
@@ -404,6 +404,9 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             // abandoning the enumerator — so a stream that observed usage before failing or being
             // disconnected is still accounted instead of silently losing reconciliation, prompt-cache
             // and delegated-usage telemetry for that call.
+            // Protected stream accounting and telemetry share the complete numeric usage observed.
+            finalUsage = protectedUsage ?? finalUsage;
+
             RecordReconciliationMetrics(breakdown, finalUsage, context);
             RecordPromptCacheMetrics(context, purpose, finalUsage);
             RecordDelegatedUsage(context, finalUsage);

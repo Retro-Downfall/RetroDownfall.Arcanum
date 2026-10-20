@@ -70,6 +70,7 @@ public sealed class ModelCallExecutorTests
             else await executor.ExecuteBufferedAsync(chat, [new(ChatRole.User, "derived")], new(),
                 UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, default, context);
         }
+
         var running = Call();
         await chat.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var mutation = h.Coordinator.BeginMutationAsync().AsTask();
@@ -100,6 +101,7 @@ public sealed class ModelCallExecutorTests
             cancellationToken.ThrowIfCancellationRequested();
             return new(new ChatMessage(ChatRole.Assistant, "answer"));
         }
+
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -113,6 +115,7 @@ public sealed class ModelCallExecutorTests
             }
             finally { await Teardown.Task; Disposed = true; }
         }
+
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }
@@ -930,6 +933,78 @@ public sealed class ModelCallExecutorTests
         Assert.Empty(updates.OfType<ModelCallUsageUpdate>());
         Assert.Single(updates.OfType<ModelCallReasoningUpdate>());
         Assert.Single(updates.OfType<ModelCallTextDelta>());
+    }
+
+    [SkippableTheory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public async Task Protected_stream_split_usage_charges_full_delegated_cost(bool protectedStream, bool hasUsageCommit)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using var root = await h.PrepareAsync();
+
+        await using var child = (await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).Value;
+
+        var binding = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationRootBinding(
+            new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+
+        var protection = protectedStream ? binding.CaptureOutputProtection() : null;
+
+        UsageDetails? committed = null;
+
+        if (hasUsageCommit)
+        {
+            protection = protection!.WithUsageCommit(new(usage =>
+            {
+                committed = usage;
+
+                return Task.CompletedTask;
+            }));
+        }
+
+        DelegatedManaTracker tracker = new(maxTokens: 100, maxCostUsd: 0.000020m);
+
+        using var scope = SubagentExecutionAmbient.EnterChild(tracker, protection: protection);
+
+        var provider = CacheProvider();
+
+        var executor = CreateAccountedExecutor(provider, new PricingSettings
+        {
+            DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m },
+        });
+
+        ScriptingChatClient chat = new(string.Empty)
+        {
+            StreamingUpdates =
+            [
+                new(ChatRole.Assistant, [new UsageContent(new() { InputTokenCount = 11 })]),
+                new(ChatRole.Assistant, [new UsageContent(new() { OutputTokenCount = 7, TotalTokenCount = 18 })]),
+            ],
+        };
+
+        await foreach (var _ in executor.ExecuteStreamingAsync(chat, [new(ChatRole.User, "derived input")], new(),
+            UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, default,
+            new(provider, "gpt-5", 0, 0, ProtectedBinding: protection))) { }
+
+        var recorded = tracker.GetUsage();
+
+        Assert.Equal(18, recorded.Tokens);
+
+        Assert.Equal(protectedStream ? 0.000025m : 0.000014m, recorded.CostUsd);
+
+        Assert.Equal(1, recorded.ModelCalls);
+
+        Assert.Equal(protectedStream, recorded.Exhausted);
+
+        if (hasUsageCommit)
+        {
+            Assert.NotNull(committed);
+
+            Assert.Equal((11L, 7L, 18L), (committed.InputTokenCount, committed.OutputTokenCount, committed.TotalTokenCount));
+        }
+        else Assert.Null(committed);
     }
 
     /// <summary>
