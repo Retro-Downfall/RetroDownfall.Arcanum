@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
@@ -14,7 +15,8 @@ internal sealed class SubagentRunner(
     Lazy<ITurnExecutionFacade> turnCoordinator,
     ILongRunningOperationCoordinator operations,
     TimeProvider timeProvider,
-    ILogger<SubagentRunner> logger) : ISubagentRunner
+    ILogger<SubagentRunner> logger,
+    IServiceScopeFactory operationScopes) : ISubagentRunner
 {
     private static readonly TimeSpan OperationLease = TimeSpan.FromMinutes(15);
 
@@ -49,6 +51,8 @@ internal sealed class SubagentRunner(
             : null;
 
         MemoryDelegationEffect? sourceUse = null;
+
+        SubagentOperationLifetime? operationLifetime = null;
 
         if (protectedCancellation is not null) cancellationToken = protectedCancellation.Token;
 
@@ -106,11 +110,17 @@ internal sealed class SubagentRunner(
             // claims the row, abandons it under a new owner, and the finished answer is discarded.
             using CancellationTokenSource renewalStop = new();
 
+            if (protection is not null)
+            {
+                operationLifetime = new(operationScopes, operationLease.Operation.Id, ownerId, timeProvider, cancellationToken);
+                await operationLifetime.CheckAsync().ConfigureAwait(false);
+            }
+
             Task<long> renewal = RenewLeaseWhileRunningAsync(
                 operationLease.Operation.Id,
                 ownerId,
                 operationRevision,
-                renewalStop.Token, protection is not null);
+                renewalStop.Token, protection is not null, operationLifetime);
 
             Result<PromptTurnResult> result;
 
@@ -120,7 +130,7 @@ internal sealed class SubagentRunner(
                     .ExecuteBufferedAsync(
                         childRequest,
                         ArcanumInvocationContext.None,
-                        cancellationToken)
+                        operationLifetime?.Token ?? cancellationToken)
                     .ConfigureAwait(false);
             }
             finally
@@ -128,10 +138,21 @@ internal sealed class SubagentRunner(
                 await renewalStop.CancelAsync().ConfigureAwait(false);
 
                 operationRevision = await renewal.ConfigureAwait(false);
+
+                if (operationLifetime is not null) await operationLifetime.StopAsync().ConfigureAwait(false);
             }
 
             if (result.IsSuccess && result.Value.Sensitivity is { } outputSensitivity)
                 sensitivity = ProviderCallSensitivities.Merge(sensitivity, outputSensitivity);
+
+            if (operationLifetime is not null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string failureCode = tracker.GetUsage().Exhausted ? SubagentFailureCodes.BudgetExhausted : SubagentFailureCodes.ChildFailed;
+                string? failure = await operationLifetime.SettleAsync(operations, result.IsSuccess && !tracker.GetUsage().Exhausted, failureCode).ConfigureAwait(false);
+                return failure is not null ? Failure(childRunId, tracker, failure, sensitivity)
+                    : new(true, result.Value.Text, childRunId, tracker.GetUsage(), null) { Sensitivity = sensitivity };
+            }
 
             if (tracker.GetUsage().Exhausted)
             {
@@ -195,8 +216,19 @@ internal sealed class SubagentRunner(
                 tracker.GetUsage(),
                 FailureCode: null) { Sensitivity = sensitivity };
         }
+        catch (OperationCanceledException) when (operationLifetime?.Token.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+        {
+            string? failure = await operationLifetime.SettleAsync(operations, false, operationLifetime.FailureCode).ConfigureAwait(false);
+            return Failure(childRunId, tracker, failure ?? operationLifetime.FailureCode, sensitivity);
+        }
         catch (BudgetExhaustedException)
         {
+            if (operationLifetime is not null)
+            {
+                string? failure = await operationLifetime.SettleAsync(operations, false, SubagentFailureCodes.BudgetExhausted).ConfigureAwait(false);
+                return Failure(childRunId, tracker, failure ?? SubagentFailureCodes.BudgetExhausted, sensitivity);
+            }
+
             if (operationLease is { Acquired: true })
             {
                 await FailOperationAsync(
@@ -214,6 +246,9 @@ internal sealed class SubagentRunner(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // Protected teardown must not acquire an uncancellable observer/write while its
+            // caller/root is draining admission. Durable recovery settles an interrupted owner.
+            if (operationLifetime is not null) throw;
             if (operationLease is { Acquired: true })
             {
                 await FailOperationAsync(
@@ -236,6 +271,12 @@ internal sealed class SubagentRunner(
                 childRunId,
                 ex.GetType().FullName);
 
+            if (operationLifetime is not null)
+            {
+                string? failure = await operationLifetime.SettleAsync(operations, false, SubagentFailureCodes.ChildFailed).ConfigureAwait(false);
+                return Failure(childRunId, tracker, failure ?? SubagentFailureCodes.ChildFailed, sensitivity);
+            }
+
             if (operationLease is { Acquired: true })
             {
                 await FailOperationAsync(
@@ -253,10 +294,22 @@ internal sealed class SubagentRunner(
         }
         finally
         {
-            if (sourceUse is not null) await sourceUse.DisposeAsync().ConfigureAwait(false);
-
-            if (request.MemoryDelegation is { } memoryDelegation)
-                await memoryDelegation.Child.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                if (operationLifetime is not null) await operationLifetime.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                try
+                {
+                    if (sourceUse is not null) await sourceUse.DisposeAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    if (request.MemoryDelegation is { } memoryDelegation)
+                        await memoryDelegation.Child.DisposeAsync().ConfigureAwait(false);
+                }
+            }
         }
     }
 
@@ -314,8 +367,9 @@ internal sealed class SubagentRunner(
     /// owner still holds an unexpired lease, so counting successful renewals locally keeps the
     /// subsequent <c>CompleteAsync</c>/<c>FailAsync</c> addressed at the current row. A refused
     /// renewal means the lease is gone — there is nothing left to renew, so the loop stops and the
-    /// terminal transition is left to fail its compare-and-set. A renewal that <em>throws</em> stops
-    /// the same way rather than faulting this Task: the caller awaits it from a <c>finally</c> that
+    /// terminal transition is left to fail its compare-and-set. Protected children additionally
+    /// cancel their execution on renewal refusal or failure and settle only the latest owned row.
+    /// A renewal that <em>throws</em> stops the same way rather than faulting this Task: the caller awaits it from a <c>finally</c> that
     /// runs after the child turn has already produced its answer, so a throw here would discard an
     /// already-billed, unrepeatable result — and would mask the caller's own cancellation — rather
     /// than merely ending the renewals.
@@ -324,7 +378,7 @@ internal sealed class SubagentRunner(
         Guid operationId,
         string ownerId,
         long startingRevision,
-        CancellationToken stopToken, bool protectedContent)
+        CancellationToken stopToken, bool protectedContent, SubagentOperationLifetime? operationLifetime)
     {
         long revision = startingRevision;
 
@@ -338,23 +392,28 @@ internal sealed class SubagentRunner(
                         .HeartbeatAsync(operationId, ownerId, OperationLease, stopToken)
                         .ConfigureAwait(false))
                 {
+                    if (operationLifetime is not null) await operationLifetime.CancelAsync(SubagentFailureCodes.ChildFailed).ConfigureAwait(false);
                     break;
                 }
 
                 revision++;
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (stopToken.IsCancellationRequested || operationLifetime is null)
         {
             // The child finished, failed, or was cancelled. Outliving it was the loop's only job.
         }
         catch (Exception ex)
         {
+            if (operationLifetime is not null) await operationLifetime.CancelAsync(SubagentFailureCodes.ChildFailed).ConfigureAwait(false);
+
             // A heartbeat that threw committed nothing, so the last accepted revision still
             // addresses the current row and the caller's terminal transition remains correct.
             logger.LogWarning(
                 protectedContent ? null : ex,
-                "Subagent lease renewal for operation {OperationId} stopped after a failed heartbeat ({ExceptionType}); the child turn continues on revision {Revision}.",
+                protectedContent
+                    ? "Protected subagent lease renewal for operation {OperationId} failed ({ExceptionType}); execution was cancelled at revision {Revision}."
+                    : "Subagent lease renewal for operation {OperationId} stopped after a failed heartbeat ({ExceptionType}); the child turn continues on revision {Revision}.",
                 operationId,
                 ex.GetType().FullName,
                 revision);

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
@@ -95,13 +96,16 @@ public sealed partial class WizardIntelligenceProviderTests
 
         bool childSawParentAccounting = true;
 
+        using var operationServices = new ServiceCollection().BuildServiceProvider();
+
         SubagentRunner runner = new(
             new Lazy<ITurnExecutionFacade>(() => new ChildWizardTurnFacade(
                 childWizard,
                 () => childSawParentAccounting = TurnAccountingAmbient.Current is not null)),
             new AcquiringOperationCoordinator(),
             TimeProvider.System,
-            NullLogger<SubagentRunner>.Instance);
+            NullLogger<SubagentRunner>.Instance,
+            operationServices.GetRequiredService<IServiceScopeFactory>());
 
         List<DelegatedChildTurnObservation> observed = [];
 

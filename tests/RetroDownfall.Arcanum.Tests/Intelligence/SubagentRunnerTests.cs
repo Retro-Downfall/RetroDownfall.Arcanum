@@ -1,4 +1,6 @@
 using System.Threading.Channels;
+using Microsoft.Extensions.DependencyInjection;
+using RetroDownfall.Arcanum.Tests.Operations;
 
 using Microsoft.Extensions.Logging;
 
@@ -50,7 +52,7 @@ public sealed class SubagentRunnerTests
 
         FakeOperationCoordinator operations = new();
 
-        SubagentRunner runner = new(new(() => facade), operations, TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        SubagentRunner runner = CreateRunner(new(() => facade), operations, TimeProvider.System, NullLogger<SubagentRunner>.Instance);
 
         var request = new SubagentRunRequest("actual task", "model", [], 100, null) { MemoryDelegation = new(id, child) };
 
@@ -68,7 +70,10 @@ public sealed class SubagentRunnerTests
 
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(10)));
 
-            Assert.Equal(SubagentFailureCodes.Cancelled, operations.FailureCode);
+            // Root teardown cannot perform an uncancellable read/write while admission drains.
+            // The interrupted owned row is left to durable recovery, never completed here.
+            Assert.Null(operations.FailureCode);
+            Assert.Equal(0, operations.CompleteCalls);
         }
         else
         {
@@ -100,7 +105,7 @@ public sealed class SubagentRunnerTests
                 retainedWhileConsumerActive = !child.Sources.Fragments.IsEmpty;
             }
         };
-        var runner = new SubagentRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        var runner = CreateRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
         try
         {
             await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default);
@@ -125,7 +130,7 @@ public sealed class SubagentRunnerTests
         {
             Failure = outcome == "fault" ? new InvalidOperationException("private source echo") : null,
         };
-        var runner = new SubagentRunner(new(() => facade), new FakeOperationCoordinator { RefuseComplete = outcome == "complete-refused" },
+        var runner = CreateRunner(new(() => facade), new FakeOperationCoordinator { RefuseComplete = outcome == "complete-refused" },
             TimeProvider.System, NullLogger<SubagentRunner>.Instance);
         var result = await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default);
         Assert.Equal(RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, result.Sensitivity!.Level);
@@ -147,7 +152,7 @@ public sealed class SubagentRunnerTests
         Assert.Equal(captured, child.Sensitivity);
         Assert.Equal(RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, captured.Level);
         var operations = new FakeOperationCoordinator();
-        var runner = new SubagentRunner(new(() => new CapturingTurnFacade(new PromptTurnResult("never", null))), operations,
+        var runner = CreateRunner(new(() => new CapturingTurnFacade(new PromptTurnResult("never", null))), operations,
             TimeProvider.System, NullLogger<SubagentRunner>.Instance);
         try { await runner.RunAsync(new("task", "model", [], 100, null) { MemoryDelegation = new(id, child) }, default); }
         catch (OperationCanceledException) { }
@@ -176,7 +181,7 @@ public sealed class SubagentRunnerTests
             OnExecute = () => initial = SubagentExecutionAmbient.Protection!.Sensitivity,
             Failure = outcome == "fault" ? new InvalidOperationException("private") : null,
         };
-        var runner = new SubagentRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        var runner = CreateRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
         var tool = new RetroDownfall.Arcanum.Api.Intelligence.Tools.ArcanumDelegateTaskTool(runner, "model", binding);
         var output = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments(new Dictionary<string, object?>
         {
@@ -228,7 +233,7 @@ public sealed class SubagentRunnerTests
                     "child summary",
                     new ChatCompletionUsage(10, 5, 15))));
         FakeOperationCoordinator operations = new();
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             TimeProvider.System,
@@ -309,7 +314,7 @@ public sealed class SubagentRunnerTests
             },
         };
         FakeOperationCoordinator operations = new();
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             TimeProvider.System,
@@ -351,7 +356,7 @@ public sealed class SubagentRunnerTests
             Gate = childGate.Task,
         };
         FakeOperationCoordinator operations = new();
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             time,
@@ -421,7 +426,7 @@ public sealed class SubagentRunnerTests
                 "A second operation was started on this context instance before a previous operation completed."),
         };
         TestCapturingLogger<SubagentRunner> logger = new();
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             time,
@@ -484,7 +489,7 @@ public sealed class SubagentRunnerTests
         {
             HeartbeatFailure = new InvalidOperationException("connection is already open"),
         };
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             time,
@@ -524,7 +529,7 @@ public sealed class SubagentRunnerTests
             Result<PromptTurnResult>.Success(
                 new PromptTurnResult("child summary", null)));
         FakeOperationCoordinator operations = new() { RefuseComplete = true };
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             TimeProvider.System,
@@ -562,7 +567,7 @@ public sealed class SubagentRunnerTests
         };
         FakeOperationCoordinator operations = new();
         TestCapturingLogger<SubagentRunner> logger = new();
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             operations,
             TimeProvider.System,
@@ -621,7 +626,7 @@ public sealed class SubagentRunnerTests
         {
             OnExecute = () => childSawAccounting = TurnAccountingAmbient.Current is not null,
         };
-        SubagentRunner runner = new(
+        SubagentRunner runner = CreateRunner(
             new Lazy<ITurnExecutionFacade>(() => facade),
             new FakeOperationCoordinator(),
             TimeProvider.System,
@@ -693,12 +698,25 @@ public sealed class SubagentRunnerTests
             throw new NotSupportedException();
     }
 
+    private static SubagentRunner CreateRunner(Lazy<ITurnExecutionFacade> facade, ILongRunningOperationCoordinator operations, TimeProvider clock, ILogger<SubagentRunner> logger)
+    {
+        var store = new FakeLongRunningOperationStore(clock)
+        {
+            GetOverride = _ => ((FakeOperationCoordinator)operations).CurrentOperation is { } current
+                ? current with { Revision = ((FakeOperationCoordinator)operations).Revision } : null,
+        };
+        var provider = new ServiceCollection().AddSingleton<ILongRunningOperationStore>(store).BuildServiceProvider();
+        return new(facade, operations, clock, logger, provider.GetRequiredService<IServiceScopeFactory>());
+    }
+
     private sealed class FakeOperationCoordinator : ILongRunningOperationCoordinator
     {
         private int _heartbeatCalls;
 
         private readonly TaskCompletionSource _heartbeatAttempted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal LongRunningOperation? CurrentOperation;
 
         public LongRunningOperationCreateRequest? StartRequest { get; private set; }
 
@@ -771,6 +789,8 @@ public sealed class SubagentRunnerTests
                 request.PublicSummary,
                 TerminalErrorCode: null,
                 Revision: 1);
+
+            CurrentOperation = operation;
 
             return Task.FromResult(
                 new LongRunningOperationLeaseResult(true, operation));
