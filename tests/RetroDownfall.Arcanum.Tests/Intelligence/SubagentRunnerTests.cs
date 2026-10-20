@@ -154,6 +154,44 @@ public sealed class SubagentRunnerTests
         Assert.Null(operations.StartRequest);
     }
 
+    [SkippableTheory]
+    [InlineData(false, "success")]
+    [InlineData(true, "success")]
+    [InlineData(false, "empty")]
+    [InlineData(true, "fault")]
+    public async Task Selected_child_initial_disclosure_and_result_include_frozen_parent_input_label(bool selectedSensitive, string outcome)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync(sensitive: selectedSensitive);
+        await using var root = await h.PrepareAsync();
+        Guid parentGeneration = Guid.NewGuid();
+        var input = RetroDownfall.Arcanum.Core.Covenant.ProviderCallSensitivities.Create(
+            RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived,
+            RetroDownfall.Arcanum.Core.Covenant.GenerationProvenance.CreateExact([parentGeneration]));
+        var binding = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationRootBinding(
+            new PingRequest("parent"), h.Source.Invocation, h.RootId, root, h.Coordinator);
+        binding.RecordDerived(input);
+        RetroDownfall.Arcanum.Core.Covenant.ProviderCallSensitivity? initial = null;
+        var facade = new CapturingTurnFacade(new PromptTurnResult(outcome == "empty" ? "" : "summary", null))
+        {
+            OnExecute = () => initial = SubagentExecutionAmbient.Protection!.Sensitivity,
+            Failure = outcome == "fault" ? new InvalidOperationException("private") : null,
+        };
+        var runner = new SubagentRunner(new(() => facade), new FakeOperationCoordinator(), TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+        var tool = new RetroDownfall.Arcanum.Api.Intelligence.Tools.ArcanumDelegateTaskTool(runner, "model", binding);
+        var output = await tool.InvokeAsync(new Microsoft.Extensions.AI.AIFunctionArguments(new Dictionary<string, object?>
+        {
+            ["prompt"] = "explicit derived input", ["max_tokens"] = 100, ["memory_grant"] = "memory",
+        }));
+        Assert.NotNull(initial);
+        Assert.Equal(RetroDownfall.Arcanum.Core.Covenant.ContentSensitivity.CovenantDerived, initial.Level);
+        Assert.Contains(parentGeneration, initial.Provenance.ExactGenerationIds);
+        foreach (var generation in root.Sensitivity.Provenance.ExactGenerationIds) Assert.Contains(generation, initial.Provenance.ExactGenerationIds);
+        var result = Assert.IsType<RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationToolResult>(output);
+        Assert.Equal(initial.Digest, result.Sensitivity.Digest);
+        Assert.Equal("explicit derived input", facade.Request!.Prompt);
+        Assert.Same(ArcanumInvocationContext.None, facade.InvocationContext);
+    }
+
     [Fact]
     public void SubagentRunRequest_CarriesOnlyFieldsTheRunnerConsumes()
     {

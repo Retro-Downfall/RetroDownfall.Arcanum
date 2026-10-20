@@ -1,4 +1,7 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -268,6 +271,256 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal(1, chat.BufferedCallCount);
 
         Assert.False(root.IsConsumed);
+    }
+
+    [SkippableTheory]
+    [InlineData(false, false, false, false, false, false, true)]
+    [InlineData(false, true, false, false, false, false, true)]
+    [InlineData(false, true, true, false, false, false, true)]
+    [InlineData(true, false, false, false, false, false, true)]
+    [InlineData(true, true, false, false, false, false, true)]
+    [InlineData(true, true, true, false, false, false, true)]
+    [InlineData(false, false, false, true, false, false, true)]
+    [InlineData(true, false, false, true, false, false, true)]
+    [InlineData(true, false, false, false, true, false, true)]
+    [InlineData(true, true, false, false, true, false, true)]
+    [InlineData(false, false, false, false, false, false, false)]
+    [InlineData(true, false, false, false, false, false, false)]
+    [InlineData(true, false, false, false, false, true, true)]
+    public async Task MemoryDelegation_known_provider_usage_commits_once_even_when_publication_is_revoked(bool streaming, bool revoke, bool cancelCaller, bool fallback, bool splitUsage, bool failAccounting, bool reportUsage)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        var child = (await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).Value;
+        await child.DisposeAsync();
+        using var caller = new CancellationTokenSource();
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")] };
+        var binding = new MemoryDelegationRootBinding(request, h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var usage = new UsageDetails { InputTokenCount = 11, OutputTokenCount = 7, TotalTokenCount = 18 };
+        const string marker = "protected late provider text";
+        void CompleteProvider()
+        {
+            if (revoke) h.Time.Advance(TimeSpan.FromMinutes(5));
+            if (cancelCaller) caller.Cancel();
+        }
+        async IAsyncEnumerable<ChatResponseUpdate> ProviderStream()
+        {
+            await Task.CompletedTask;
+            if (splitUsage)
+                yield return new(ChatRole.Assistant, [new UsageContent(new() { InputTokenCount = 11 })]);
+            CompleteProvider();
+            var update = new ChatResponseUpdate(ChatRole.Assistant, marker);
+            if (reportUsage) update.Contents.Add(new UsageContent(splitUsage ? new() { OutputTokenCount = 7, TotalTokenCount = 18 } : usage));
+            yield return update;
+        }
+
+        var chat = new ScriptingChatClient();
+        if (fallback)
+        {
+            chat.EnqueueException(new HttpRequestException("transport failure"));
+            chat.EnqueueImmediateStreamFailure(new HttpRequestException("transport failure"));
+        }
+        chat.EnqueueBufferedResponder(_ =>
+        {
+            CompleteProvider();
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, marker)) { Usage = reportUsage ? usage : null });
+        });
+        chat.EnqueueStreamResponder(_ => ProviderStream());
+        var runs = new BlockingDelegationUsageWriter(new TurnRunWriter(h.Source.Saga.Context), failAccounting);
+        var reservations = new RecordingBudgetReservationService();
+        var firstProvider = DelegationProvider("first", true);
+        var fallbackProvider = DelegationProvider("fallback", true);
+        var factory = new DelegationCandidateFactory(firstProvider, chat, chat);
+        var defaults = DefaultSettings();
+        var pricedSettings = defaults with
+        {
+            Providers = [firstProvider, fallbackProvider],
+            Cost = defaults.Cost with { Pricing = new PricingSettings { DefaultPricing = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m } } },
+        };
+        var wizard = CreateWizard(chat, pricedSettings,
+            factory: factory, healthTracker: new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance),
+            turnRunWriter: runs, budgetReservationService: reservations,
+            covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate(), subagentRunner: new MemoryDelegationCapturingRunner());
+        using var scope = streaming
+            ? SubagentExecutionAmbient.EnterChild(new(10000, null), protection: binding.CaptureOutputProtection())
+            : MemoryDelegationRootBinding.Enter(binding);
+        List<IntelligenceEvent> frames = [];
+        string? returned = null;
+        async Task ExecuteAsync()
+        {
+            try
+            {
+                if (streaming)
+                {
+                    await foreach (var frame in wizard.StreamPromptAsync(request, ArcanumInvocationContext.None, caller.Token)) frames.Add(frame);
+                }
+                else
+                {
+                    var result = await wizard.ExecutePromptAsync(request, h.Source.Invocation, caller.Token);
+                    if (result.IsSuccess) returned = result.Value.Text;
+                }
+            }
+            catch (OperationCanceledException) when (cancelCaller) { }
+            catch (InvalidOperationException) when (failAccounting) { }
+        }
+
+        var executing = ExecuteAsync();
+        Task<RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationMutation>? mutation = null;
+        try
+        {
+            if (reportUsage)
+            {
+                await runs.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.False(executing.IsCompleted);
+            }
+
+            if (revoke)
+            {
+                mutation = h.Coordinator.BeginMutationAsync().AsTask();
+                Assert.False(mutation.IsCompleted);
+            }
+        }
+        finally { runs.Release.TrySetResult(); }
+        await executing.WaitAsync(TimeSpan.FromSeconds(10));
+        if (mutation is not null) await (await mutation.WaitAsync(TimeSpan.FromSeconds(10))).DisposeAsync();
+        await using var command = h.Source.Connection.CreateCommand();
+        command.CommandText = "SELECT InputTokens,OutputTokens,ActualCostUsd FROM BillableOperations";
+        await using var rows = await command.ExecuteReaderAsync();
+        if (!reportUsage)
+        {
+            Assert.False(await rows.ReadAsync());
+            Assert.Equal(0, runs.Attempts);
+            Assert.Equal(0m, reservations.ReconciledUsd);
+            return;
+        }
+        Assert.Equal(1, runs.Attempts);
+        Assert.True(await rows.ReadAsync());
+        Assert.Equal((11L, 7L), (rows.GetInt64(0), rows.GetInt64(1)));
+        Assert.Equal(0.000025m, rows.GetDecimal(2));
+        Assert.Equal(failAccounting ? 0 : 1, reservations.ReconcileCount);
+        if (!failAccounting) Assert.Equal(rows.GetDecimal(2), reservations.ReconciledUsd);
+        Assert.False(await rows.ReadAsync());
+        Assert.Equal(fallback ? 2 : 1, streaming ? chat.StreamingCallCount : chat.BufferedCallCount);
+        Assert.Equal(fallback ? 2 : 1, factory.Leases.Count);
+        if (revoke)
+        {
+            Assert.Null(returned);
+            Assert.DoesNotContain(frames, frame => frame.Data?.Contains(marker, StringComparison.Ordinal) == true || frame.Message?.Contains(marker, StringComparison.Ordinal) == true);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MemoryDelegation_parent_tool_continuation_retains_revoked_usage_without_child_tracker(bool cancelCaller)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        using var caller = new CancellationTokenSource();
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")] };
+        var binding = new MemoryDelegationRootBinding(request, h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var chat = new ScriptingChatClient();
+        chat.EnqueueToolCall(ArcanumBuiltInToolNames.DelegateTask, "child", new()
+        {
+            ["prompt"] = "explicit child input",
+            ["max_tokens"] = 100,
+            ["memory_grant"] = "memory",
+        });
+        chat.EnqueueBufferedResponder(_ =>
+        {
+            Assert.Null(SubagentExecutionAmbient.Tracker);
+            Assert.True(root.IsConsumed);
+            h.Time.Advance(TimeSpan.FromMinutes(5));
+            if (cancelCaller) caller.Cancel();
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "revoked continuation secret"))
+            {
+                Usage = new() { InputTokenCount = 11, OutputTokenCount = 7, TotalTokenCount = 18 },
+            });
+        });
+        var wizard = CreateWizard(chat, turnRunWriter: new TurnRunWriter(h.Source.Saga.Context),
+            covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate(),
+            subagentRunner: new MemoryDelegationCapturingRunner());
+        using var scope = MemoryDelegationRootBinding.Enter(binding);
+        try
+        {
+            var result = await wizard.ExecutePromptAsync(request, h.Source.Invocation, caller.Token);
+            Assert.True(result.IsFailure);
+            Assert.DoesNotContain("revoked continuation secret", result.Error.Message);
+        }
+        catch (OperationCanceledException) when (cancelCaller) { }
+        Assert.Equal(2, chat.BufferedCallCount);
+        await using var command = h.Source.Connection.CreateCommand();
+        command.CommandText = "SELECT Purpose,InputTokens,OutputTokens FROM BillableOperations";
+        await using var rows = await command.ExecuteReaderAsync();
+        Assert.True(await rows.ReadAsync());
+        Assert.Equal("tool-continuation", rows.GetString(0));
+        Assert.Equal((11L, 7L), (rows.GetInt64(1), rows.GetInt64(2)));
+        Assert.False(await rows.ReadAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MemoryDelegation_structured_retry_has_separate_physical_usage_acknowledgement(bool revokeRetry)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        await using var child = (await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).Value;
+        using var schema = System.Text.Json.JsonDocument.Parse("""{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""");
+        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")], ResponseFormat = "json_schema", ResponseFormatJsonSchema = StrictJsonSchema(schema.RootElement) };
+        var chat = new ScriptingChatClient();
+        chat.EnqueueResponse(new ChatResponse(new ChatMessage(ChatRole.Assistant, "invalid json"))
+        {
+            Usage = new() { InputTokenCount = 11, OutputTokenCount = 7, TotalTokenCount = 18 },
+        });
+        chat.EnqueueBufferedResponder(_ =>
+        {
+            if (revokeRetry) h.Time.Advance(TimeSpan.FromMinutes(5));
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, """{"name":"secret"}"""))
+            {
+                Usage = new() { InputTokenCount = 13, OutputTokenCount = 5, TotalTokenCount = 18 },
+            });
+        });
+        var wizard = CreateWizard(chat, turnRunWriter: new TurnRunWriter(h.Source.Saga.Context),
+            covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate(),
+            subagentRunner: new MemoryDelegationCapturingRunner());
+        using var scope = MemoryDelegationRootBinding.Enter(new(request, h.Source.Invocation, h.RootId, root, h.Coordinator));
+        var result = await wizard.ExecutePromptAsync(request, h.Source.Invocation, default);
+        Assert.Equal(!revokeRetry, result.IsSuccess);
+        Assert.Equal(2, chat.BufferedCallCount);
+        await using var command = h.Source.Connection.CreateCommand();
+        command.CommandText = "SELECT Purpose,InputTokens,OutputTokens FROM BillableOperations ORDER BY Purpose";
+        await using var rows = await command.ExecuteReaderAsync();
+        Assert.True(await rows.ReadAsync());
+        Assert.Equal("chat", rows.GetString(0));
+        Assert.Equal((11L, 7L), (rows.GetInt64(1), rows.GetInt64(2)));
+        Assert.True(await rows.ReadAsync());
+        Assert.Equal("structured-output-retry", rows.GetString(0));
+        Assert.Equal((13L, 5L), (rows.GetInt64(1), rows.GetInt64(2)));
+        Assert.False(await rows.ReadAsync());
+    }
+
+    private sealed class BlockingDelegationUsageWriter(ITurnRunWriter inner, bool failAccounting) : ITurnRunWriter
+    {
+        internal int Attempts;
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<Guid> StartRunAsync(InferenceRunStart start, CancellationToken cancellationToken = default) => inner.StartRunAsync(start, cancellationToken);
+        public Task CompleteRunAsync(Guid runId, InferenceRunStatus status, CancellationToken cancellationToken = default) => inner.CompleteRunAsync(runId, status, cancellationToken);
+        public Task<bool> TryAbandonRunAsync(Guid runId, CancellationToken cancellationToken = default) => inner.TryAbandonRunAsync(runId, cancellationToken);
+        public async Task<Guid> RecordBillableOperationAsync(BillableOperationRecord operation, CancellationToken cancellationToken = default)
+        {
+            Attempts++;
+            Assert.False(cancellationToken.CanBeCanceled);
+            Entered.TrySetResult();
+            await Release.Task;
+            var id = await inner.RecordBillableOperationAsync(operation, cancellationToken);
+            if (failAccounting) throw new InvalidOperationException("ambiguous accounting completion");
+            return id;
+        }
     }
 
     private static ProviderSettings DelegationProvider(string name, bool? supportsTools) =>

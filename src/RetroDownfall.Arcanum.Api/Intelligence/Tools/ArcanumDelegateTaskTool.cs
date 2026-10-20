@@ -139,6 +139,9 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             return "Subagent task failed: Explicit files were invalid or exceeded their bounds.";
         }
 
+        // Freeze metadata with the validated explicit bytes, before any consumption/revalidation await.
+        var inputSensitivity = memoryDelegation?.CaptureInputSensitivity();
+
         SubagentRunRequest request = new(prompt, inheritedModel, files, maxTokens, maxCostUsd)
         {
             InputProtection = memoryDelegation?.CaptureOutputProtection(),
@@ -170,7 +173,7 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
             if (consumed.IsFailure) return "Subagent task failed: Memory delegation is unavailable.";
 
-            request = request with { MemoryDelegation = new(runId, consumed.Value) };
+            request = request with { MemoryDelegation = new(runId, consumed.Value) { InputSensitivity = inputSensitivity } };
         }
 
         SubagentRunResult result = await runner
@@ -187,7 +190,7 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             _ => "Subagent task failed.",
         };
 
-        var sensitivity = result.Sensitivity ?? request.MemoryDelegation?.Child.Sensitivity ?? request.InputProtection?.Sensitivity;
+        var sensitivity = result.Sensitivity ?? request.MemoryDelegation?.Sensitivity ?? request.InputProtection?.Sensitivity;
 
         if (sensitivity is null) return text;
 

@@ -179,7 +179,11 @@ public sealed record ModelCallFailure(
     string ModelCallId,
     Error Error,
     Exception? Cause,
-    ModelCallRetryDirective RetryDirective = ModelCallRetryDirective.None);
+    ModelCallRetryDirective RetryDirective = ModelCallRetryDirective.None)
+{
+    /// <summary>Content-free host classification retained when a protected exception is redacted.</summary>
+    internal bool IsConnectivityFailure { get; init; }
+}
 
 /// <summary>Strongly typed success/failure outcome for a buffered provider call.</summary>
 public sealed class ModelCallOutcome

@@ -38,10 +38,10 @@ internal sealed class SubagentRunner(
 
         Guid childRunId = request.MemoryDelegation?.RunId ?? Guid.NewGuid();
 
-        ProviderCallSensitivity? sensitivity = request.MemoryDelegation?.Child.Sensitivity ?? request.InputProtection?.Sensitivity;
+        ProviderCallSensitivity? sensitivity = request.MemoryDelegation?.Sensitivity ?? request.InputProtection?.Sensitivity;
 
         MemoryDelegationProtection? protection = request.MemoryDelegation is { } delegated
-            ? new(delegated.Child.Sensitivity, delegated.Child.Revocation, delegated.Child.AdmitEffectAsync)
+            ? new(sensitivity!, delegated.Child.Revocation, delegated.Child.AdmitEffectAsync)
             : request.InputProtection;
 
         using CancellationTokenSource? protectedCancellation = protection is not null

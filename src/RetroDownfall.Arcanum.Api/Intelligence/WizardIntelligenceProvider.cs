@@ -1,5 +1,5 @@
 using System.Buffers;
-using System.ClientModel;
+using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
@@ -39,7 +39,6 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
-using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
@@ -3325,6 +3324,9 @@ public sealed partial class WizardIntelligenceProvider(
                             ? ModelCallPurpose.ToolCompatibilityRetry
                             : ModelCallPurpose.MainInference
                         : ModelCallPurpose.ToolContinuation;
+                    MemoryDelegationProtection? roundProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
+                        lease.Provider.Name, targetModel, streamPurpose, out MemoryDelegationUsageCommit? roundUsageCommit);
+
                     PromptCachePlan streamPromptCachePlan = BuildPromptCachePlan(
                         lease,
                         streamSystemPromptDocument,
@@ -3353,7 +3355,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         ResolveCallSensitivity(),
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
                                         streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                        covenantScope?.Protection))
+                                        roundProtection))
                                 .ConfigureAwait(false);
                         }
 
@@ -3376,7 +3378,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                             inferenceError = BuildInferenceFailureMessage(lease, streamingMoveNextFailure);
 
-                            classification.IsConnectivityFailure = IsConnectivityFailure(streamingMoveNextFailure, callerToken);
+                            classification.IsConnectivityFailure = roundProtection?.Revocation.IsCancellationRequested != true
+                                && (modelCall.Failure.IsConnectivityFailure || IsConnectivityFailure(streamingMoveNextFailure, callerToken));
                         }
                         else
                         {
@@ -3399,7 +3402,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     lease.Provider.Name,
                                     targetModel,
                                     streamPurpose,
-                                    CancellationToken.None)
+                                    CancellationToken.None, roundUsageCommit)
                                 .ConfigureAwait(false);
 
                             SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
@@ -3453,7 +3456,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     ResolveCallSensitivity(),
                                     streamCachePrepared?.Bind(chatMessages, streamChatOptions),
                                     streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                        covenantScope?.Protection))
+                                        roundProtection))
                         .GetAsyncEnumerator(inferenceToken);
 
                 try
@@ -3483,7 +3486,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     streamAccountingLocal,
                                     lease.Provider.Name,
                                     targetModel,
-                                    streamPurpose)
+                                    streamPurpose, roundUsageCommit)
                                 .ConfigureAwait(false);
 
                             throw;
@@ -3497,7 +3500,7 @@ public sealed partial class WizardIntelligenceProvider(
                                     streamAccountingLocal,
                                     lease.Provider.Name,
                                     targetModel,
-                                    streamPurpose)
+                                    streamPurpose, roundUsageCommit)
                                 .ConfigureAwait(false);
 
                             streamingMoveNextFailure = ex;
@@ -3509,7 +3512,8 @@ public sealed partial class WizardIntelligenceProvider(
                             inferenceError = BuildInferenceFailureMessage(lease, ex);
 
                             // Only a genuine connectivity failure should trigger provider fallback.
-                            classification.IsConnectivityFailure = IsConnectivityFailure(ex, callerToken);
+                            classification.IsConnectivityFailure = roundProtection?.Revocation.IsCancellationRequested != true
+                                && IsConnectivityFailure(ex, callerToken);
 
                             break;
                         }
@@ -3732,7 +3736,7 @@ public sealed partial class WizardIntelligenceProvider(
                             lease.Provider.Name,
                             targetModel,
                             streamPurpose,
-                            CancellationToken.None)
+                            CancellationToken.None, roundUsageCommit)
                         .ConfigureAwait(false);
 
                     SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
@@ -4381,6 +4385,9 @@ public sealed partial class WizardIntelligenceProvider(
                                     retryOptions,
                                     PromptCacheSemanticNamespace.Main,
                                     streamCachePrepared);
+                                MemoryDelegationProtection? retryProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
+                                    lease.Provider.Name, targetModel, ModelCallPurpose.StructuredOutputRetry, out MemoryDelegationUsageCommit? retryUsageCommit);
+
                                 ModelCallOutcome retryCall = await ModelCallExecutor
                                     .ExecuteBufferedAsync(
                                         chatClient,
@@ -4397,7 +4404,7 @@ public sealed partial class WizardIntelligenceProvider(
                                             ResolveCallSensitivity(),
                                             streamCachePrepared?.Bind(chatMessages, retryOptions),
                                             streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                        covenantScope?.Protection))
+                                        retryProtection))
                                     .ConfigureAwait(false);
 
                                 if (retryCall.IsFailure)
@@ -4428,7 +4435,7 @@ public sealed partial class WizardIntelligenceProvider(
                                         lease.Provider.Name,
                                         targetModel,
                                         ModelCallPurpose.StructuredOutputRetry,
-                                        CancellationToken.None)
+                                        CancellationToken.None, retryUsageCommit)
                                     .ConfigureAwait(false);
 
                                 SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
@@ -8350,8 +8357,8 @@ public sealed partial class WizardIntelligenceProvider(
         TurnAccountingHandle accounting,
         string provider,
         string model,
-        ModelCallPurpose callPurpose) =>
-        roundUpdates.Count == 0
+        ModelCallPurpose callPurpose, MemoryDelegationUsageCommit? protectedUsage = null) =>
+        protectedUsage?.Attempt is { } attempt ? attempt : roundUpdates.Count == 0
             ? Task.CompletedTask
             : RecordProviderCallUsageAsync(
                 accounting,
@@ -8361,14 +8368,33 @@ public sealed partial class WizardIntelligenceProvider(
                 callPurpose,
                 CancellationToken.None);
 
+    private MemoryDelegationProtection? BindProtectedUsage(CovenantTurnScope? scope, TurnAccountingHandle accounting,
+        string provider, string model, ModelCallPurpose purpose, out MemoryDelegationUsageCommit? usageCommit)
+    {
+        var protection = scope?.Protection;
+
+        usageCommit = protection is null ? null : new(usage => RecordProviderCallUsageAsync(
+            accounting, MapUsageDetails(usage), provider, model, purpose, CancellationToken.None));
+
+        return usageCommit is null ? null : protection!.WithUsageCommit(usageCommit);
+    }
+
     private async Task RecordProviderCallUsageAsync(
         TurnAccountingHandle accounting,
         ChatCompletionUsage? usage,
         string provider,
         string model,
         ModelCallPurpose callPurpose,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, MemoryDelegationUsageCommit? protectedUsage = null)
     {
+        // Re-observe the same attempt: successful persistence is acknowledged once, while
+        // failed/ambiguous persistence stays failed instead of writing a second ledger row.
+        if (protectedUsage?.Attempt is { } attempt)
+        {
+            await attempt.ConfigureAwait(false);
+            return;
+        }
+
         if (usage is null)
         {
             return;
@@ -8721,66 +8747,8 @@ public sealed partial class WizardIntelligenceProvider(
         };
     }
 
-    /// <summary>
-    /// Classifies an exception observed during lease construction or inference as a connectivity
-    /// failure eligible for resilience fallback (retry on the next healthy candidate provider).
-    /// Caller-initiated cancellation (<paramref name="callerToken"/> already cancelled) is never a
-    /// connectivity failure — it propagates immediately and is never retried. Model-not-found, token
-    /// limit, content filter, and tool-loop-limit failures also do not count.
-    /// </summary>
-    /// <remarks>
-    /// The classification (which triggers provider fallback and health tracking) goes purely by exception
-    /// type/status — never by inspecting <see cref="Exception.Message"/>. A substring match on the
-    /// message text is both too broad (any error whose text happens to contain "connection" — including
-    /// some 4xx/5xx model errors — would wrongly fall back) and too narrow (a real connectivity failure
-    /// phrased differently would be missed), and message text is not a stable contract across
-    /// SDK/runtime versions.
-    /// </remarks>
-    private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken)
-    {
-        if (ex is HttpRequestException or System.Net.Sockets.SocketException)
-        {
-            return true;
-        }
-
-        if (ex is TaskCanceledException { InnerException: TimeoutException })
-        {
-            return true;
-        }
-
-        // A Familiar has no socket, so its transport failures arrive as a typed transport exception
-        // rather than an HTTP one. The same distinction applies: an unreachable transport (binary
-        // missing, spawn refused, deadline passed) is a connectivity-class failure and may fall back
-        // to the next candidate, while the CLI answering and refusing — a rejected model name, a
-        // rate limit — is a provider verdict that must stand.
-        if (ex is Familiars.FamiliarTransportException familiar)
-        {
-            return familiar.Failure
-                is FamiliarProcessFailure.NotInstalled
-                or FamiliarProcessFailure.StartFailed
-                or FamiliarProcessFailure.TimedOut;
-        }
-
-        if (ex is OperationCanceledException)
-        {
-            return !callerToken.IsCancellationRequested;
-        }
-
-        if (ex is ClientResultException clientResultEx)
-        {
-            // OpenAI-SDK-shaped providers (OpenAI, DeepSeek, most self-hosted OpenAI-compatible
-            // servers — see WeaveService's identical handling for the embedding path) surface HTTP
-            // error responses as ClientResultException, not HttpRequestException. A genuine
-            // connectivity failure (DNS, connection refused, TLS handshake failure) either never
-            // reaches an HTTP response (Status <= 0) or wraps the underlying transport exception; an
-            // actual HTTP response (400/401/404/429/5xx, ...) is a model/auth/rate-limit failure, not
-            // a connectivity one, and must not trigger provider fallback.
-            return clientResultEx.Status <= 0
-                || (clientResultEx.InnerException is { } clientInner && IsConnectivityFailure(clientInner, callerToken));
-        }
-
-        return ex.InnerException is { } inner && IsConnectivityFailure(inner, callerToken);
-    }
+    private static bool IsConnectivityFailure(Exception ex, CancellationToken callerToken) =>
+        ProviderFailureClassifier.IsConnectivityFailure(ex, callerToken);
 
     private readonly record struct InferenceAttemptResult(
         Result<PromptTurnResult> Result,

@@ -36,7 +36,12 @@ public sealed record SubagentRunRequest(
 }
 
 internal sealed record MemoryDelegationExecution(Guid RunId,
-    RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild Child);
+    RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild Child)
+{
+    internal ProviderCallSensitivity? InputSensitivity { get; init; }
+
+    internal ProviderCallSensitivity Sensitivity => ProviderCallSensitivities.Merge(InputSensitivity, Child.Sensitivity);
+}
 
 public sealed record SubagentRunResult(
     bool Success,

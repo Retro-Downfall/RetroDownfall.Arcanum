@@ -160,6 +160,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, refusal.Error, Cause: null, refusal.RetryDirective));
             }
 
+            await CommitProtectedUsageAsync(context, response.Usage).ConfigureAwait(false);
+
             (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
                 ResolveReasoningOutput(options, purpose);
             ModelCallReasoningResult reasoning = ExtractReasoning(
@@ -203,7 +205,12 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 new Error(
                     ErrorCodes.Hub.Error,
                     PublicInferenceErrorMessages.NativeGenericFailure),
-                context?.ProtectedBinding is null ? ex : null));
+                context?.ProtectedBinding is null ? ex : null)
+            {
+                IsConnectivityFailure = context?.ProtectedBinding is MemoryDelegationProtection protection
+                    && !protection.Revocation.IsCancellationRequested
+                    && ProviderFailureClassifier.IsConnectivityFailure(ex, cancellationToken),
+            });
         }
     }
 
@@ -267,6 +274,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
         UsageDetails? finalUsage = null;
 
+        UsageDetails? protectedUsage = null;
+
         SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
         var dispatchError = await ValidateDispatchAsync(chatClient, messages, options, context, cancellationToken).ConfigureAwait(false);
@@ -310,6 +319,26 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                     yield return new ModelCallFailureUpdate(purpose, modelCallId, refusal.Error, refusal.RetryDirective);
 
                     yield break;
+                }
+
+                if (next.HasUpdate)
+                {
+                    // A completed MoveNext already delivered these counts even when its token was
+                    // revoked concurrently. Capture them before refusing any protected payload.
+                    foreach (UsageContent observed in stream.Current.Contents.OfType<UsageContent>())
+                        if (observed.Details is { } details)
+                        {
+                            finalUsage = details;
+                            if (context?.ProtectedBinding is MemoryDelegationProtection { UsageCommit: not null })
+                                (protectedUsage ??= new()).Add(new UsageDetails
+                                {
+                                    InputTokenCount = details.InputTokenCount,
+                                    OutputTokenCount = details.OutputTokenCount,
+                                    TotalTokenCount = details.TotalTokenCount,
+                                    CachedInputTokenCount = details.CachedInputTokenCount,
+                                    ReasoningTokenCount = details.ReasoningTokenCount,
+                                });
+                        }
                 }
 
                 providerToken.ThrowIfCancellationRequested();
@@ -378,8 +407,14 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             RecordReconciliationMetrics(breakdown, finalUsage, context);
             RecordPromptCacheMetrics(context, purpose, finalUsage);
             RecordDelegatedUsage(context, finalUsage);
+
+            await CommitProtectedUsageAsync(context, protectedUsage).ConfigureAwait(false);
         }
     }
+
+    private static Task CommitProtectedUsageAsync(ModelCallContext? context, UsageDetails? usage) =>
+        context?.ProtectedBinding is MemoryDelegationProtection { UsageCommit: { } commit }
+            ? commit.CommitAsync(usage) : Task.CompletedTask;
 
     private static Task<Result<MemoryDelegationEffect?>> AdmitProtectedAsync(ModelCallContext? context, CancellationToken ct) =>
         context?.ProtectedBinding switch

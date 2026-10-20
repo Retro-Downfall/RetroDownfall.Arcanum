@@ -13,6 +13,11 @@ internal sealed class MemoryDelegationProtection(
 {
     internal ProviderCallSensitivity Sensitivity { get; } = sensitivity;
 
+    internal MemoryDelegationUsageCommit? UsageCommit { get; private init; }
+
+    internal MemoryDelegationProtection WithUsageCommit(MemoryDelegationUsageCommit usage) =>
+        new(Sensitivity, Revocation, admit) { UsageCommit = usage };
+
     internal CancellationToken Revocation { get; } = revocation;
 
     internal Task<Result<MemoryDelegationEffect>> AdmitAsync(CancellationToken ct) => admit(ct);

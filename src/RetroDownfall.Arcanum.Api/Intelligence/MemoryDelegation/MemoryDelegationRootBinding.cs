@@ -57,6 +57,11 @@ internal sealed class MemoryDelegationRootBinding(PingRequest request, ArcanumIn
         lock (_sensitivityLock) _derivedSensitivity = ProviderCallSensitivities.Merge(_derivedSensitivity, sensitivity);
     }
 
+    internal ProviderCallSensitivity? CaptureInputSensitivity()
+    {
+        lock (_sensitivityLock) return _derivedSensitivity;
+    }
+
     internal MemoryDelegationProtection? CaptureOutputProtection()
     {
         if (!Root.IsConsumed) return null;
