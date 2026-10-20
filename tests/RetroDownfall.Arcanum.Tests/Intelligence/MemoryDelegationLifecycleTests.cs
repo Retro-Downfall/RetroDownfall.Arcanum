@@ -400,6 +400,200 @@ public sealed class MemoryDelegationLifecycleTests
         Assert.True(duplicate.IsFailure);
     }
 
+    [SkippableTheory]
+    [InlineData("maintenance")]
+    [InlineData("parent")]
+    [InlineData("deadline")]
+    [InlineData("caller")]
+    public async Task Blocked_preparation_cancels_reader_but_drains_only_after_teardown(string cause)
+    {
+        await using var h = await Harness.CreateAsync();
+
+        using var caller = new CancellationTokenSource();
+
+        var reader = new BlockingReader(h.CreateReader()) { BlockRead = true };
+
+        var preparation = h.TryPrepareAsync(reader: reader, ct: caller.Token);
+
+        await reader.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task? drain = null;
+
+        try
+        {
+            if (cause == "maintenance") drain = h.Coordinator.CloseForMaintenance();
+            else if (cause == "parent") await h.Source.Lease.DisposeAsync();
+            else if (cause == "caller") caller.Cancel();
+            else h.Time.Advance(TimeSpan.FromMinutes(5));
+
+            await reader.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.False(preparation.IsCompleted);
+
+            drain ??= h.Coordinator.CloseForMaintenance();
+
+            Assert.False(drain.IsCompleted);
+        }
+        finally
+        {
+            reader.Teardown.TrySetResult();
+        }
+
+        if (cause == "caller") Assert.Equal(caller.Token, (await Assert.ThrowsAnyAsync<OperationCanceledException>(() => preparation)).CancellationToken);
+        else Assert.Equal(ErrorCodes.MemoryDelegation.StaleSource, (await preparation).Error.Code);
+
+        await drain!.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(0, h.Time.ActiveTimers);
+
+        h.Coordinator.ReopenAfterMaintenance();
+
+        if (cause == "parent") await h.Source.AdmitAsync();
+
+        await using var fresh = await h.PrepareAsync();
+
+        Assert.False(fresh.Revocation.IsCancellationRequested);
+    }
+
+    [SkippableTheory]
+    [InlineData("consume", "caller")]
+    [InlineData("root", "caller")]
+    [InlineData("consume", "deadline")]
+    [InlineData("consume", "maintenance")]
+    [InlineData("root", "deadline")]
+    [InlineData("root", "maintenance")]
+    [InlineData("child", "deadline")]
+    [InlineData("child", "maintenance")]
+    [InlineData("child", "completion")]
+    [InlineData("child", "caller")]
+    public async Task Blocked_validation_cancels_reader_but_drains_only_after_teardown(string operation, string cause)
+    {
+        await using var h = await Harness.CreateAsync();
+
+        using var caller = new CancellationTokenSource();
+
+        var reader = new BlockingReader(h.CreateReader());
+
+        await using var root = MemoryEvaluationSourceHarness.Require(await h.TryPrepareAsync(reader: reader));
+
+        Guid childId = Guid.NewGuid();
+
+        MemoryDelegationChild? child = operation == "consume" ? null
+            : MemoryEvaluationSourceHarness.Require(await h.Coordinator.ConsumeAsync(root, h.RootId, childId, h.Digest));
+
+        reader.BlockValidation = true;
+
+        async Task<Result> ValidateAsync()
+        {
+            if (operation == "consume")
+            {
+                var result = await h.Coordinator.ConsumeAsync(root, h.RootId, childId, h.Digest, caller.Token);
+
+                return result.IsFailure ? result.Error : Result.Success();
+            }
+
+            var effect = operation == "child"
+                ? await h.Coordinator.AdmitEffectAsync(child!, childId, h.Digest, caller.Token)
+                : await h.Coordinator.AdmitEffectAsync(root, caller.Token);
+
+            if (effect.IsSuccess) await effect.Value.DisposeAsync();
+
+            return effect.IsFailure ? effect.Error : Result.Success();
+        }
+
+        var validation = ValidateAsync();
+
+        await reader.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Task? drain = null;
+
+        try
+        {
+            if (cause == "maintenance") drain = h.Coordinator.CloseForMaintenance();
+            else if (cause == "completion") drain = child!.DisposeAsync().AsTask();
+            else if (cause == "caller") caller.Cancel();
+            else h.Time.Advance(TimeSpan.FromMinutes(5));
+
+            await reader.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.False(validation.IsCompleted);
+
+            drain ??= root.DisposeAsync().AsTask();
+
+            Assert.False(drain.IsCompleted);
+        }
+        finally
+        {
+            reader.Teardown.TrySetResult();
+        }
+
+        if (cause == "caller") Assert.Equal(caller.Token, (await Assert.ThrowsAnyAsync<OperationCanceledException>(() => validation)).CancellationToken);
+        else Assert.Equal(ErrorCodes.MemoryDelegation.StaleSource, (await validation).Error.Code);
+
+        await drain!.WaitAsync(TimeSpan.FromSeconds(10));
+
+        reader.BlockValidation = false;
+
+        if (cause == "completion")
+        {
+            Assert.False(root.Revocation.IsCancellationRequested);
+
+            await using var continuation = MemoryEvaluationSourceHarness.Require(await h.Coordinator.AdmitEffectAsync(root));
+        }
+        else
+        {
+            await root.DisposeAsync();
+
+            if (child is not null) Assert.Throws<InvalidOperationException>(() => child.Sources);
+
+            Assert.Equal(0, h.Time.ActiveTimers);
+
+            h.Coordinator.ReopenAfterMaintenance();
+
+            await using var fresh = await h.PrepareAsync();
+        }
+    }
+
+    private sealed class BlockingReader(IMemoryDelegationSourceReader inner) : IMemoryDelegationSourceReader
+    {
+        internal bool BlockRead { get; init; }
+
+        internal bool BlockValidation { get; set; }
+
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Teardown { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private async Task BlockAsync(CancellationToken ct)
+        {
+            using var registration = ct.Register(() => Cancelled.TrySetResult());
+
+            Entered.TrySetResult();
+
+            await Teardown.Task;
+
+            ct.ThrowIfCancellationRequested();
+        }
+
+        public async Task<Result<MemoryEvaluationSourceSnapshot>> ReadAsync(MemoryDelegationGrant grant, ArcanumInvocationContext parent, CovenantTurnLease lease, CancellationToken ct)
+        {
+            var result = await inner.ReadAsync(grant, parent, lease, ct);
+
+            if (BlockRead) await BlockAsync(ct);
+
+            return result;
+        }
+
+        public async Task<Result> ValidateAsync(MemoryEvaluationSourceSnapshot snapshot, CovenantTurnLease lease, CancellationToken ct)
+        {
+            if (BlockValidation) await BlockAsync(ct);
+
+            return await inner.ValidateAsync(snapshot, lease, ct);
+        }
+    }
+
     internal sealed class Harness : IAsyncDisposable
     {
         private Harness(MemoryEvaluationSourceHarness source) => Source = source;
@@ -429,7 +623,7 @@ public sealed class MemoryDelegationLifecycleTests
             return h;
         }
 
-        internal async Task<Result<MemoryDelegationRoot>> TryPrepareAsync(Guid? id = null, CovenantTurnLease? lease = null, IMemoryDelegationSourceReader? reader = null)
+        internal async Task<Result<MemoryDelegationRoot>> TryPrepareAsync(Guid? id = null, CovenantTurnLease? lease = null, IMemoryDelegationSourceReader? reader = null, CancellationToken ct = default)
         {
             var request = await Source.RequestAsync("source");
 
@@ -437,8 +631,10 @@ public sealed class MemoryDelegationLifecycleTests
                 Source.Invocation.Campaign, InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.AllTools, Source.Invocation.ReadAuthorityEpoch));
 
             return await Coordinator.PrepareAsync(id ?? RootId, new(request.Request.Scope, request.Request.Memory), parent, lease ?? Source.Lease,
-                reader ?? new MemoryDelegationSourceReader(new FixedCovenantConnectionSource(Source.Connection), Source.Gate, TimeProvider.System));
+                reader ?? CreateReader(), ct);
         }
+
+        internal IMemoryDelegationSourceReader CreateReader() => new MemoryDelegationSourceReader(new FixedCovenantConnectionSource(Source.Connection), Source.Gate, TimeProvider.System);
 
         internal async Task<MemoryDelegationRoot> PrepareAsync(Guid? id = null) => MemoryEvaluationSourceHarness.Require(await TryPrepareAsync(id));
 

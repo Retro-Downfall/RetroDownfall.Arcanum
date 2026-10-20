@@ -13,7 +13,7 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
     private readonly HashSet<Registration> _live = [];
 
-    private readonly HashSet<TaskCompletionSource> _preparing = [];
+    private readonly HashSet<Preparation> _preparing = [];
 
     private readonly Dictionary<Guid, Registration> _roots = [];
 
@@ -31,14 +31,33 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
             return new Error(ErrorCodes.MemoryDelegation.InvalidGrant, "The memory delegation grant violates policy v1.");
         }
 
-        TaskCompletionSource preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
         DateTimeOffset preparedAt = timeProvider.GetUtcNow();
 
-        await _admission.WaitAsync(ct).ConfigureAwait(false);
+        CancellationToken leaseRevocation;
 
         try
         {
+            leaseRevocation = lease.Revocation;
+        }
+        catch (ObjectDisposedException)
+        {
+            return Refused;
+        }
+
+        using CancellationTokenSource deadlineCancellation = new(MemoryDelegationLimits.MaximumLifetime, timeProvider);
+
+        using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, lease.LifetimeEnded, leaseRevocation, deadlineCancellation.Token);
+
+        Preparation preparation = new(cancellation);
+
+        bool admitted = false;
+
+        try
+        {
+            await _admission.WaitAsync(cancellation.Token).ConfigureAwait(false);
+
+            admitted = true;
+
             long generation;
 
             lock (_sync)
@@ -53,7 +72,9 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 _preparing.Add(preparation);
             }
 
-            Result<MemoryEvaluationSourceSnapshot> read = await reader.ReadAsync(grant, parent, lease, ct).ConfigureAwait(false);
+            Result<MemoryEvaluationSourceSnapshot> read = await reader.ReadAsync(grant, parent, lease, cancellation.Token).ConfigureAwait(false);
+
+            cancellation.Token.ThrowIfCancellationRequested();
 
             if (read.IsFailure)
             {
@@ -124,16 +145,22 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
             return root;
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            return Refused;
+        }
         finally
         {
             lock (_sync)
             {
-                preparation.TrySetResult();
+                preparation.Drained.TrySetResult();
 
                 _preparing.Remove(preparation);
             }
 
-            _admission.Release();
+            if (admitted) _admission.Release();
         }
     }
 
@@ -144,12 +171,18 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
             return Refused;
         }
 
-        await _admission.WaitAsync(ct).ConfigureAwait(false);
+        using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, root.Revocation);
 
         MemoryDelegationEffect? proof = null;
 
+        bool ownsAdmission = false;
+
         try
         {
+            await _admission.WaitAsync(cancellation.Token).ConfigureAwait(false);
+
+            ownsAdmission = true;
+
             Registration registration = root.Registration;
 
             lock (_sync)
@@ -164,7 +197,9 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 proof = new MemoryDelegationEffect(root);
             }
 
-            Result valid = await registration.Reader!.ValidateAsync(registration.Snapshot!, registration.Lease!, ct).ConfigureAwait(false);
+            Result valid = await registration.Reader!.ValidateAsync(registration.Snapshot!, registration.Lease!, cancellation.Token).ConfigureAwait(false);
+
+            cancellation.Token.ThrowIfCancellationRequested();
 
             if (valid.IsFailure)
             {
@@ -187,6 +222,12 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 return registration.Child;
             }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            return Refused;
+        }
         finally
         {
             if (proof is not null)
@@ -194,7 +235,7 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 await proof.DisposeAsync().ConfigureAwait(false);
             }
 
-            _admission.Release();
+            if (ownsAdmission) _admission.Release();
         }
     }
 
@@ -213,14 +254,20 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
             return Refused;
         }
 
-        await _admission.WaitAsync(ct).ConfigureAwait(false);
+        using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, child?.Revocation ?? root.Revocation);
 
         MemoryDelegationEffect? proof = null;
+
+        bool ownsAdmission = false;
 
         bool admitted = false;
 
         try
         {
+            await _admission.WaitAsync(cancellation.Token).ConfigureAwait(false);
+
+            ownsAdmission = true;
+
             Registration registration = root.Registration;
 
             lock (_sync)
@@ -240,7 +287,9 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 proof = new MemoryDelegationEffect(root, child);
             }
 
-            Result valid = await registration.Reader!.ValidateAsync(registration.Snapshot!, registration.Lease!, ct).ConfigureAwait(false);
+            Result valid = await registration.Reader!.ValidateAsync(registration.Snapshot!, registration.Lease!, cancellation.Token).ConfigureAwait(false);
+
+            cancellation.Token.ThrowIfCancellationRequested();
 
             if (valid.IsFailure)
             {
@@ -261,6 +310,12 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 return proof;
             }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            return Refused;
+        }
         finally
         {
             if (!admitted && proof is not null)
@@ -268,7 +323,7 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
                 await proof.DisposeAsync().ConfigureAwait(false);
             }
 
-            _admission.Release();
+            if (ownsAdmission) _admission.Release();
         }
     }
 
@@ -319,6 +374,8 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
     {
         Registration[] registrations;
 
+        Preparation[] preparations;
+
         Task[] drains;
 
         lock (_sync)
@@ -327,16 +384,32 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
 
             registrations = [.. _live];
 
+            preparations = [.. _preparing];
+
             foreach (Registration registration in registrations)
             {
                 registration.Terminal = true;
             }
 
-            drains = registrations.Select(registration => registration.Drained.Task).Concat(_preparing.Select(preparation => preparation.Task)).ToArray();
+            drains = registrations.Select(registration => registration.Drained.Task).Concat(preparations.Select(preparation => preparation.Drained.Task)).ToArray();
 
             foreach (Registration registration in registrations)
             {
                 ReleaseSlotIfDrained(registration);
+            }
+        }
+
+        foreach (Preparation preparation in preparations)
+        {
+            // Global closure may hold its gate lock. Schedule callbacks, but retain the
+            // drain until ReadAsync has physically unwound in PrepareAsync's finally.
+            try
+            {
+                _ = preparation.Cancellation.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Preparation already completed and disposed its linked cancellation.
             }
         }
 
@@ -490,6 +563,13 @@ public sealed class MemoryDelegationCoordinator(TimeProvider timeProvider) : IMe
         await registration.LeaseCancellation.DisposeAsync().ConfigureAwait(false);
 
         await registration.LeaseCompletion.DisposeAsync().ConfigureAwait(false);
+    }
+
+    private sealed class Preparation(CancellationTokenSource cancellation)
+    {
+        internal CancellationTokenSource Cancellation { get; } = cancellation;
+
+        internal TaskCompletionSource Drained { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     internal sealed class Registration(Guid rootId, ArcanumInvocationContext parent, CovenantTurnLease lease, IMemoryDelegationSourceReader reader,
