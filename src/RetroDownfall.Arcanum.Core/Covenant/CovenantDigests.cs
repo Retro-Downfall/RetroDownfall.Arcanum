@@ -371,6 +371,33 @@ public static class CovenantDigests
             WriteDigest(writer, input.EligibleGlobalConfirmedSectionDigest);
             WriteDigest(writer, input.EligibleCampaignConfirmedSectionDigest);
             WriteDigest(writer, input.EligibleCampaignProposedSectionDigest);
+
+            // Empty/default vectors preserve the complete published policy-v1 preimage. Typed
+            // plans append one independently versioned extension rather than changing old plans.
+            if (!input.OperationalDefaults.IsDefaultOrEmpty)
+            {
+                if (input.OperationalDefaults.Length > 2)
+                {
+                    throw new ArgumentException("The operational default vector exceeds its closed catalog.", nameof(input));
+                }
+
+                writer.WriteUtf8("Arcanum.Covenant.OperationalDefaults.v1");
+                writer.WriteCount((ulong)input.OperationalDefaults.Length);
+
+                foreach (CovenantOperationalDefault operationalDefault in input.OperationalDefaults)
+                {
+                    ArgumentNullException.ThrowIfNull(operationalDefault);
+                    writer.WriteUInt32(operationalDefault.PolicyVersion);
+                    writer.WriteUInt32((uint)operationalDefault.Kind);
+                    writer.WriteUInt32((uint)operationalDefault.Consumer);
+                    writer.WriteUInt32(BitConverter.SingleToUInt32Bits(operationalDefault.Value));
+                    writer.WriteGuid(operationalDefault.EntryId);
+                    writer.WriteGuid(operationalDefault.VersionId);
+                    writer.WriteUInt64(operationalDefault.Revision);
+                    WriteCode(writer, operationalDefault.Scope);
+                    WriteOptionalGuid(writer, operationalDefault.CampaignId);
+                }
+            }
         });
     }
 

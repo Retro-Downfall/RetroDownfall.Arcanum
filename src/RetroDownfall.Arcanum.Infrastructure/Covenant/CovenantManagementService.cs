@@ -646,7 +646,18 @@ internal sealed class CovenantManagementService(
             // attempt's own budget and tokenizer. Reporting the plan's decisions and leaving admission
             // unclaimed is the honest shape for a question asked outside any turn.
             CovenantAdmissionDecision.Admitted,
-            request.ShowContent);
+            request.ShowContent,
+            [.. plan.OperationalDefaults.Select(value => new CovenantExplainOperationalDefaultDto(
+                value.EntryId,
+                value.VersionId,
+                value.Revision,
+                value.Scope,
+                value.CampaignId,
+                value.Kind,
+                value.Consumer,
+                value.PolicyVersion,
+                CovenantPlanDecision.EligibleConfirmed,
+                request.ShowContent ? value.Value : null))]);
 
     private static CovenantExplainSectionDto Section(CovenantTurnSection section, bool showContent) =>
         new(

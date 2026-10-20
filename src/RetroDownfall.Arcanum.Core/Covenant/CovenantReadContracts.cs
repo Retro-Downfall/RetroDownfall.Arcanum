@@ -280,8 +280,26 @@ public sealed record CovenantExplainDecisionDto(
     long ByteCost,
     string FragmentDigest);
 
+/// <summary>One eligible planned sampling default, with its exact Confirmed source.</summary>
+/// <remarks>
+/// Eligibility is not proof that an arbitrary request applied this default: explicit sampling values
+/// win, and each provider attempt still has to admit its Confirmed candidates. Value is disclosed
+/// only under the explanation's existing showContent gate and protected read authority.
+/// </remarks>
+public sealed record CovenantExplainOperationalDefaultDto(
+    Guid EntryId,
+    Guid VersionId,
+    ulong Revision,
+    CovenantScope Scope,
+    Guid? CampaignId,
+    CovenantOperationalDefaultKind Kind,
+    CovenantOperationalDefaultConsumer Consumer,
+    uint PolicyVersion,
+    CovenantPlanDecision Decision,
+    float? Value);
+
 /// <summary>
-/// One fresh diagnostic snapshot, plan, and preview receipt for one explicit evaluation.
+/// One fresh diagnostic snapshot and plan for one explicit evaluation.
 /// </summary>
 /// <remarks>
 /// It runs the same loader, linker, and admission code as a live turn and publishes no mutation, so
@@ -299,7 +317,8 @@ public sealed record CovenantExplainDto(
     long ConfirmedTokens,
     long ProposedTokens,
     CovenantAdmissionDecision Admission,
-    bool ContentIncluded);
+    bool ContentIncluded,
+    CovenantExplainOperationalDefaultDto[] OperationalDefaults);
 
 /// <summary>
 /// One aggregate count in the memory-status Covenant block.

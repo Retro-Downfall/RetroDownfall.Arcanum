@@ -215,6 +215,9 @@ public static class CovenantPublicContractInventory
         new(Namespace + nameof(CovenantExplainDecisionDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
             "Why one candidate was or was not rendered, without disclosing what it says."),
 
+        new(Namespace + nameof(CovenantExplainOperationalDefaultDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
+            "One eligible sampling default with exact version and policy provenance; its value requires showContent and it makes no applied-request claim."),
+
         new(Namespace + nameof(CovenantExplainDto), CovenantContractSurface.OperatorApi, CovenantContractDirection.Response, Management,
             "A fresh diagnostic snapshot and plan that publishes no mutation and never warms the turn cache."),
 

@@ -276,14 +276,12 @@ public sealed class CovenantDispatchGate(
     /// Acquires this turn's single Covenant plan, or a typed reason why it has none.
     /// </summary>
     /// <remarks>
-    /// Never fails the turn. Every absence the provider reports is a fact about Covenant state that a
-    /// turn is entitled to proceed without; a genuine authority or storage failure is logged and
-    /// degraded to <see cref="CovenantTurnAbsence.CapabilityUnavailable"/> rather than taking down an
-    /// inference the operator did not ask to be Covenant-bearing. What is *not* degraded is the
-    /// disclosure obligation: a tainted Session still reaches
-    /// <see cref="AcknowledgeDispatchAsync"/> below, and that path does fail closed.
+    /// Successful typed absences preserve ordinary prompt behavior. Authority and canonical storage
+    /// failures remain failures: silently omitting an enabled operator agreement would produce a
+    /// plausible answer without the context the operator required. Tainted history still reaches
+    /// <see cref="AcknowledgeDispatchAsync"/> when acquisition succeeds without a plan.
     /// </remarks>
-    public async ValueTask<CovenantTurnScope> BeginTurnAsync(
+    public async ValueTask<Result<CovenantTurnScope>> BeginTurnAsync(
         ArcanumInvocationContext invocation,
         Guid logicalTurnId,
         Guid? sessionId,
@@ -315,16 +313,10 @@ public sealed class CovenantDispatchGate(
         {
 
             logger.LogWarning(
-                "Covenant turn acquisition failed with {ErrorCode}; the turn proceeds without Covenant content.",
+                "Covenant turn acquisition failed with {ErrorCode}; the turn is refused.",
                 begun.Error.Code);
 
-            return Record(
-                new CovenantTurnScope(
-                    CovenantTurnContext.Absent(CovenantTurnAbsence.CapabilityUnavailable),
-                    logicalTurnId,
-                    sessionId,
-                    tainted),
-                invocation.Campaign?.CampaignId);
+            return begun.Error;
 
         }
 

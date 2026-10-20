@@ -95,6 +95,22 @@ public sealed partial class WizardIntelligenceProvider
             return Result<ContextPreviewResult>.Failure(preflight.Error);
         }
 
+        // Acquire before provider resolution and auxiliary routing/retrieval, so canonical failure
+        // cannot trigger a model or embedding call. The one owned scope also covers resolution errors;
+        // the builder below borrows its plan and performs the same admission as a live turn.
+        Result<CovenantTurnScope> covenantAcquisition = await BeginCovenantTurnAsync(
+                turn,
+                invocationContext,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (covenantAcquisition.IsFailure)
+        {
+            return covenantAcquisition.Error;
+        }
+
+        await using CovenantTurnScope previewCovenantScope = covenantAcquisition.Value;
+
         ChatClientLease lease;
 
         try
@@ -157,6 +173,8 @@ public sealed partial class WizardIntelligenceProvider
 
                     invocationContext,
 
+                    previewCovenantScope,
+
                     lease,
 
                     auxiliaryCalls,
@@ -177,6 +195,8 @@ public sealed partial class WizardIntelligenceProvider
         PingRequest turn,
 
         ArcanumInvocationContext invocationContext,
+
+        CovenantTurnScope previewCovenantScope,
 
         ChatClientLease lease,
 
@@ -360,18 +380,6 @@ public sealed partial class WizardIntelligenceProvider
 
             : [];
 
-        // The same scope a live turn opens, through the same gate, so inspection and dispatch start from
-        // one plan. Inspection exists to answer "what will this turn actually send", and the plan is not
-        // that answer: only the admission below decides what is injected, which is why the preview
-        // re-measures rather than reporting the plan it was handed.
-        CovenantTurnScope previewCovenantScope = await BeginCovenantTurnAsync(
-                turn,
-                invocationContext,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        await using CovenantTurnScope previewCovenantOwned = previewCovenantScope;
-
         CampaignRollupTurnSnapshot? previewCampaign = null;
 
         if (settings.Value.ResolveIntelligence().EnableCampaignRollups
@@ -518,7 +526,7 @@ public sealed partial class WizardIntelligenceProvider
         // the operator content a real turn might have pressured out, and would leave the pressure
         // counters below permanently zero.
         CovenantDispatchPlan previewDispatch = ResolveCovenantAdmission(
-            previewCovenantOwned,
+            previewCovenantScope,
             lease,
             turn,
             messages,

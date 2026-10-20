@@ -333,11 +333,15 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
     /// </remarks>
     private async Task<string> LaterProposedSectionAsync()
     {
-        await using CovenantTurnScope later = await Gate().BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await Gate().BeginTurnAsync(
             Invocation(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope later = acquisition.Value;
 
         Assert.True(later.HasPlan);
 

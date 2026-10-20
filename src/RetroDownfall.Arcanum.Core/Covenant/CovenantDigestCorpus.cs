@@ -139,6 +139,23 @@ public static class CovenantDigestCorpus
         recorder.RecordDigest(CorpusCategory.Domain, "domain.receipt", receipt, "2BEDD9C9BE05EFB2F14D668559A63BF96B65C92843DC336AF762395BF34C9E54");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.turn-aggregate", turnAggregate, "96BC9B64B84BCDFD86552DC9B019F51BA1654CECD1B045FE98E4954AED6E49B8");
         recorder.RecordDigest(CorpusCategory.Domain, "domain.cursor", cursor, "7CB570A957038AF8C657D9213E1E833D49F0E31B0270D1042633DCD0B2E0C3FF");
+
+        // Independently encoded with Python struct big-endian primitives, UUID network bytes,
+        // and hashlib SHA-256. This extends the corpus without replacing any policy-v1 vector.
+        CovenantDigest operationalPlan = CovenantDigests.Plan(new PlanDigestInput(
+            D(1),
+            1,
+            1,
+            [],
+            D(2),
+            D(3),
+            D(4),
+            [
+                new CovenantOperationalDefault(CovenantOperationalDefaultKind.Temperature, CovenantOperationalDefaultConsumer.InferenceSampling, 0.25f, 1, G1, G2, 7, CovenantScope.Global, null),
+                new CovenantOperationalDefault(CovenantOperationalDefaultKind.TopP, CovenantOperationalDefaultConsumer.InferenceSampling, 0.875f, 1, G3, G4, 8, CovenantScope.Campaign, G5)
+            ]));
+
+        recorder.RecordDigest(CorpusCategory.Domain, "domain.plan-operational-defaults-v1", operationalPlan, "3221BD5F1ADCE2FA8CAD2DFC7A179745AE68FE4DC47FD8AAABE2338EF1B55244");
     }
 
     private static void RunSectionCases(CorpusRecorder recorder)

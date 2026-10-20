@@ -219,12 +219,12 @@ public sealed partial class WizardIntelligenceProvider(
     /// <para>A host that composed no Covenant arm gets the inert scope rather than a null, so the
     /// dispatch path below reads one shape whether or not the gate exists.</para>
     /// </remarks>
-    private ValueTask<CovenantTurnScope> BeginCovenantTurnAsync(
+    private ValueTask<Result<CovenantTurnScope>> BeginCovenantTurnAsync(
         PingRequest request,
         ArcanumInvocationContext invocationContext,
         CancellationToken cancellationToken) =>
         covenantDispatch is null
-            ? ValueTask.FromResult(CovenantTurnScope.NotEligible())
+            ? ValueTask.FromResult(Result<CovenantTurnScope>.Success(CovenantTurnScope.NotEligible()))
             : covenantDispatch.BeginTurnAsync(
                 invocationContext,
                 Guid.NewGuid(),
@@ -667,8 +667,15 @@ public sealed partial class WizardIntelligenceProvider(
 
         bool resilienceEnabled = healthTracker is not null;
 
-        CovenantTurnScope covenantScope = await BeginCovenantTurnAsync(request, invocationContext, cancellationToken)
+        Result<CovenantTurnScope> covenantAcquisition = await BeginCovenantTurnAsync(request, invocationContext, cancellationToken)
             .ConfigureAwait(false);
+
+        if (covenantAcquisition.IsFailure)
+        {
+            return covenantAcquisition.Error;
+        }
+
+        CovenantTurnScope covenantScope = covenantAcquisition.Value;
 
         try
         {
@@ -1013,8 +1020,17 @@ public sealed partial class WizardIntelligenceProvider(
 
         // One scope for the whole streamed run, disposed with the enumerator so that an abandoned
         // stream releases the turn lease as reliably as a completed one.
-        await using CovenantTurnScope streamCovenantScope =
+        Result<CovenantTurnScope> covenantAcquisition =
             await BeginCovenantTurnAsync(request, invocationContext, cancellationToken).ConfigureAwait(false);
+
+        if (covenantAcquisition.IsFailure)
+        {
+            yield return ErrorFrame(covenantAcquisition.Error);
+
+            yield break;
+        }
+
+        await using CovenantTurnScope streamCovenantScope = covenantAcquisition.Value;
 
         if (!resilienceEnabled)
         {
@@ -7677,11 +7693,31 @@ public sealed partial class WizardIntelligenceProvider(
             + (content.HasCampaignConfirmed ? CovenantSectionFramingTokenAllowance : 0UL)
             + (content.HasProposed ? CovenantSectionFramingTokenAllowance : 0UL);
 
-        return CovenantDispatchGate.PlanDispatch(
+        CovenantDispatchPlan dispatch = CovenantDispatchGate.PlanDispatch(
             scope,
             headroom,
             MeasureSections,
             Measure);
+
+        if (dispatch.Admission is { } admission)
+        {
+            // Sampling defaults share the exact admission that controls their source bytes. Applying
+            // them sooner would let a withheld Confirmed preference affect this provider attempt.
+            foreach (CovenantOperationalDefault operationalDefault in CovenantOperationalDefaultCatalog.SelectAdmitted(scope.Plan!, admission))
+            {
+                switch (operationalDefault.Kind)
+                {
+                    case CovenantOperationalDefaultKind.Temperature when request.Temperature is null:
+                        chatOptions.Temperature = operationalDefault.Value;
+                        break;
+                    case CovenantOperationalDefaultKind.TopP when request.TopP is null:
+                        chatOptions.TopP = operationalDefault.Value;
+                        break;
+                }
+            }
+        }
+
+        return dispatch;
     }
 
     private Result EnsureContextBudgetWithMaterializations(

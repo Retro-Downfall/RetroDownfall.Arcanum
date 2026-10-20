@@ -39,6 +39,11 @@ public sealed class CovenantAdmissionReceipt
 
         ValidateClosedDecisionShape(plan, EligibleCandidates);
 
+        OperationalDefaults = CovenantOperationalDefaultCatalog.SelectAdmitted(
+            plan,
+            EligibleCandidates,
+            !EligibleCandidates.Any(static candidate => candidate.Decision == CovenantAdmissionDecision.RequiredNoFit));
+
         AdmittedGlobalConfirmedSection = BuildAdmittedSection(
             plan.GlobalConfirmedSection,
             plan,
@@ -94,6 +99,12 @@ public sealed class CovenantAdmissionReceipt
             AdmittedCampaignProposedSection.Digest);
         Digest = CovenantDigests.Admission(_digestInput);
     }
+
+    /// <summary>
+    /// Defaults whose exact sources this attempt admitted. Explicit request values may override them;
+    /// <see cref="ProviderOptions"/> records the actual frozen provider settings.
+    /// </summary>
+    public ImmutableArray<CovenantOperationalDefault> OperationalDefaults { get; }
 
     public CovenantTurnPlan Plan { get; }
 

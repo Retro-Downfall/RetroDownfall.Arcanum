@@ -53,7 +53,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </remarks>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
+public sealed partial class CovenantOperatorJourneyTests : IAsyncLifetime
 {
     private const string ModelName = "covenant-journey-test-model";
 
@@ -1445,6 +1445,8 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
     {
         public string? SystemPrompt { get; private set; }
 
+        public ChatOptions? Options { get; private set; }
+
         public void Dispose()
         {
         }
@@ -1461,6 +1463,8 @@ public sealed class CovenantOperatorJourneyTests : IAsyncLifetime
             Assert.Equal(ChatRole.System, first.Role);
 
             SystemPrompt = first.Text;
+
+            Options = options?.Clone();
 
             return Task.FromResult(new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer)));
         }

@@ -217,6 +217,8 @@ public sealed class CovenantTurnPlan
 
         ValidateSections();
 
+        OperationalDefaults = CovenantOperationalDefaultCatalog.FromDecisions(EligibleDecisions);
+
         _digestInput = new PlanDigestInput(
             Snapshot.Digest,
             LinkerPolicyVersion,
@@ -224,11 +226,14 @@ public sealed class CovenantTurnPlan
             [.. Decisions.Select(static decision => decision.ToDigestInput())],
             GlobalConfirmedSection.Digest,
             CampaignConfirmedSection.Digest,
-            CampaignProposedSection.Digest);
+            CampaignProposedSection.Digest,
+            OperationalDefaults);
         Digest = CovenantDigests.Plan(_digestInput);
     }
 
     public CovenantTurnSnapshot Snapshot { get; }
+
+    public ImmutableArray<CovenantOperationalDefault> OperationalDefaults { get; }
 
     public uint LinkerPolicy => LinkerPolicyVersion;
 

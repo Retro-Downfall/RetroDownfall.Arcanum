@@ -57,11 +57,15 @@ public sealed class CovenantDispatchGateTests
 
         CovenantDispatchGate gate = CreateGate(new RefusingContextProvider(), new RecordingJournal(), ledger);
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.False(scope.HasPlan);
 
@@ -79,11 +83,15 @@ public sealed class CovenantDispatchGateTests
 
         CovenantDispatchGate gate = CreateGate(new RefusingContextProvider(), journal, new RecordingSensitivityLedger());
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         CovenantDispatchPlan plan = CovenantDispatchGate.PlanDispatch(scope, 10_000, ByteCost, FragmentCost);
 
@@ -120,11 +128,15 @@ public sealed class CovenantDispatchGateTests
             journal,
             new RecordingSensitivityLedger());
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.True(scope.HasPlan);
 
@@ -180,11 +192,15 @@ public sealed class CovenantDispatchGateTests
             journal,
             new RecordingSensitivityLedger());
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         CovenantDispatchPlan dispatch = CovenantDispatchGate.PlanDispatch(scope, 10_000, ByteCost, FragmentCost);
 
@@ -211,11 +227,15 @@ public sealed class CovenantDispatchGateTests
             journal,
             new RecordingSensitivityLedger { Tainted = true });
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.True(scope.HistoryTainted);
 
@@ -256,11 +276,15 @@ public sealed class CovenantDispatchGateTests
             journal,
             new RecordingSensitivityLedger { Failure = new Error(ErrorCodes.Grimoire.WriteFailed, "unreadable") });
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.True(scope.HistoryTainted);
 
@@ -277,11 +301,15 @@ public sealed class CovenantDispatchGateTests
             new RecordingJournal(),
             new RecordingSensitivityLedger());
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         ulong confirmedOnly = ByteCost(CovenantPromptContent.FromAdmittedPrefix(plan, true, 0));
 
@@ -306,11 +334,15 @@ public sealed class CovenantDispatchGateTests
             journal,
             new RecordingSensitivityLedger());
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         CovenantDispatchPlan dispatch = CovenantDispatchGate.PlanDispatch(scope, 10_000, ByteCost, FragmentCost);
 
@@ -348,11 +380,15 @@ public sealed class CovenantDispatchGateTests
             new RecordingSensitivityLedger(),
             new FakeAuthority(null));
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         CovenantDispatchPlan dispatch = CovenantDispatchGate.PlanDispatch(scope, 10_000, ByteCost, FragmentCost);
 
@@ -369,27 +405,49 @@ public sealed class CovenantDispatchGateTests
     }
 
     [Fact]
-    public async Task A_stored_covenant_that_cannot_be_rendered_leaves_the_turn_covenant_free()
+    public async Task A_stored_covenant_that_cannot_be_rendered_refuses_the_turn()
     {
-
-        // The gate promises never to fail the turn, but it only handles typed failures. Linking is
-        // where stored state meets the Section ceilings, so a store holding entries that render past
-        // one has to arrive here as an absence rather than as an exception past every catch.
         CovenantDispatchGate gate = CreateGate(
             new LinkingContextProvider(OversizedSnapshot()),
             new RecordingJournal(),
             new RecordingSensitivityLedger());
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> result = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
 
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+    }
+
+    [Theory]
+    [InlineData(CovenantTurnAbsence.FeatureDisabled)]
+    [InlineData(CovenantTurnAbsence.CapabilityUnavailable)]
+    [InlineData(CovenantTurnAbsence.NotEligible)]
+    [InlineData(CovenantTurnAbsence.Empty)]
+    public async Task Optional_absence_remains_a_successful_scope(CovenantTurnAbsence absence)
+    {
+        CovenantDispatchGate gate = CreateGate(
+            new AbsentContextProvider(absence),
+            new RecordingJournal(),
+            new RecordingSensitivityLedger());
+
+        Result<CovenantTurnScope> result = await gate.BeginTurnAsync(
+            ArcanumInvocationContext.None,
+            Guid.NewGuid(),
+            sessionId: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        await using CovenantTurnScope scope = result.Value;
+
+        Assert.Equal(absence, scope.Absence);
+
         Assert.False(scope.HasPlan);
-
-        Assert.Equal(CovenantTurnAbsence.CapabilityUnavailable, scope.Absence);
-
     }
 
     private static CovenantTurnSnapshot OversizedSnapshot() =>
@@ -490,11 +548,15 @@ public sealed class CovenantDispatchGateTests
             new RecordingSensitivityLedger(),
             logger: logger);
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.Equal(CovenantTurnAbsence.NoCampaign, scope.Absence);
 
@@ -522,11 +584,15 @@ public sealed class CovenantDispatchGateTests
             new RecordingSensitivityLedger(),
             logger: logger);
 
-        await using CovenantTurnScope scope = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             ArcanumInvocationContext.None,
             Guid.NewGuid(),
             sessionId: null,
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope scope = acquisition.Value;
 
         Assert.True(scope.HasPlan);
 

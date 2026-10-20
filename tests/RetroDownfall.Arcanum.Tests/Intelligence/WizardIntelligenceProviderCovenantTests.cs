@@ -31,7 +31,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// SQL. That is the same object a storage-backed turn hands the gate, and it keeps this file about
 /// the provider composition instead of about the canonical store, which its own tests already cover.</para>
 /// </remarks>
-public sealed class WizardIntelligenceProviderCovenantTests : IAsyncLifetime
+public sealed partial class WizardIntelligenceProviderCovenantTests : IAsyncLifetime
 {
 
     private const string ModelName = "wizard-covenant-test-model";
@@ -245,6 +245,15 @@ public sealed class WizardIntelligenceProviderCovenantTests : IAsyncLifetime
             TimeProvider.System,
             NullLogger<CovenantDispatchGate>.Instance);
 
+    private static CovenantDispatchGate Gate(CovenantTurnPlan plan) =>
+        new(
+            new PlannedContextProvider(plan),
+            new AcceptingJournal(),
+            new CleanSensitivityLedger(),
+            new EstablishedAuthority(),
+            TimeProvider.System,
+            NullLogger<CovenantDispatchGate>.Instance);
+
     private sealed class SingleLeaseChatClientFactory(
         IChatClient client,
         ProviderSettings provider,
@@ -376,6 +385,8 @@ public sealed class WizardIntelligenceProviderCovenantTests : IAsyncLifetime
 
         public List<string> SystemPrompts { get; } = [];
 
+        public List<ChatOptions> Options { get; } = [];
+
         public void EnqueueText(string text) =>
             _responses.Enqueue(() => new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, text)));
 
@@ -390,6 +401,8 @@ public sealed class WizardIntelligenceProviderCovenantTests : IAsyncLifetime
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+
+            Options.Add(options?.Clone() ?? new ChatOptions());
 
             foreach (MeAiChatMessage message in messages)
             {
@@ -411,11 +424,15 @@ public sealed class WizardIntelligenceProviderCovenantTests : IAsyncLifetime
 
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<MeAiChatMessage> messages,
             ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            ChatResponse response = await GetResponseAsync(messages, options, cancellationToken);
+
+            yield return new ChatResponseUpdate(ChatRole.Assistant, response.Text);
+        }
 
     }
 

@@ -170,11 +170,15 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         // The rendered bytes a second, independent turn is handed. A published head that rendered
         // into nothing would satisfy every intermediate assertion and still show the model nothing.
-        await using CovenantTurnScope later = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             Invocation(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope later = acquisition.Value;
 
         Assert.True(later.HasPlan);
 
@@ -236,11 +240,15 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
 
         Assert.Equal(0, _journal.Count);
 
-        await using CovenantTurnScope later = await Gate().BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await Gate().BeginTurnAsync(
             Invocation(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope later = acquisition.Value;
 
         Assert.DoesNotContain(ProposedContent, later.PlanContent.CampaignProposed, StringComparison.Ordinal);
     }
@@ -318,11 +326,15 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                     && entry.Content == "Noted — I will lead with the failing assertion.",
                 CancellationToken.None));
 
-        await using CovenantTurnScope later = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             Invocation(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope later = acquisition.Value;
 
         Assert.Contains(ProposedContent, later.PlanContent.CampaignProposed, StringComparison.Ordinal);
     }
@@ -452,11 +464,15 @@ public sealed class CovenantBootstrapProposalTests : IAsyncLifetime
                 CancellationToken.None));
 
         // Committed with the reply: a later turn's plan no longer carries the retired proposal.
-        await using CovenantTurnScope later = await gate.BeginTurnAsync(
+        Result<CovenantTurnScope> acquisition = await gate.BeginTurnAsync(
             Invocation(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             CancellationToken.None);
+
+        Assert.True(acquisition.IsSuccess, acquisition.IsFailure ? acquisition.Error.Message : null);
+
+        await using CovenantTurnScope later = acquisition.Value;
 
         Assert.DoesNotContain(ProposedContent, later.PlanContent.CampaignProposed, StringComparison.Ordinal);
     }

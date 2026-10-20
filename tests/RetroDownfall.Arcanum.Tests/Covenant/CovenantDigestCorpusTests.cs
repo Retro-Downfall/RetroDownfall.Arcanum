@@ -10,8 +10,8 @@ public sealed class CovenantDigestCorpusTests
         CovenantDigestCorpusResult result = CovenantDigestCorpus.Run();
 
         Assert.True(result.Succeeded, result.FirstFailureCaseId);
-        Assert.Equal(249, result.TotalCaseCount);
-        Assert.Equal(35, result.CategoryCounts.DomainVectors);
+        Assert.Equal(250, result.TotalCaseCount);
+        Assert.Equal(36, result.CategoryCounts.DomainVectors);
         Assert.Equal(6, result.CategoryCounts.SectionCases);
         Assert.Equal(35, result.CategoryCounts.ProviderCases);
         Assert.Equal(17, result.CategoryCounts.OptionalCases);
@@ -20,9 +20,9 @@ public sealed class CovenantDigestCorpusTests
         Assert.Equal(16, result.CategoryCounts.WriterCases);
         Assert.Equal(16, result.CategoryCounts.DisclosureCases);
         Assert.Equal(95, result.CategoryCounts.RefusalCases);
-        Assert.Equal(Digest("F6445FFA3C98B7247D8A250E01FBB9DD3D01653F3B925537D2A13230775EEE3F"), result.CaseManifestDigest);
-        Assert.Equal(Digest("7AF01898CCE65599249BCB4EAB99CAD7E89ECB8EB2A9868B27F4D5563E4B88DD"), result.ResultAggregateDigest);
-        Assert.Equal(Digest("231B661139A6DF328BE3440233B8C1B4E8CE42371C70E18D734BCBAC7617F4C6"), result.Aggregate);
+        Assert.Equal(Digest("B9DCBD46B99C3C66DAA0C4D731E34AE221F5AA95CD5021340B89A4DAED8F88DE"), result.CaseManifestDigest);
+        Assert.Equal(Digest("0867B5597CC65A844BF42F4CF61DB989F9DCC876B80918E9AAE9AA8BD8036723"), result.ResultAggregateDigest);
+        Assert.Equal(Digest("775640D28CC579AE63ED8C13A55840366BE6B46E525645E1AF2B228E1AD05ACF"), result.Aggregate);
     }
 
     [Fact]

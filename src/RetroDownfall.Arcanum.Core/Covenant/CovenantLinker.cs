@@ -9,20 +9,19 @@ public sealed class CovenantLinker : ICovenantLinker
     {
         ArgumentNullException.ThrowIfNull(snapshot);
 
-        // Section rendering enforces the per-placement byte ceilings by throwing, and nothing on the
-        // write path stops an installation from accumulating entries that together exceed one. That
-        // is a fact about stored state, not a programming error, so it degrades the turn through the
-        // ordinary failure channel the dispatch gate already handles rather than escaping as an
-        // exception past the gate's never-fail-the-turn contract and taking the turn lease with it.
-        //
-        // Only that one condition. The same call tree throws ArgumentException for its own invariant
-        // breaches -- a Section handed a decision its placement does not admit, a Section that is not
-        // the subsequence its plan says it is, an unknown placement, a null argument -- and catching
-        // those here would report a defect in this assembly as corruption of the operator's stored
-        // data, in a message that names their Covenant and not our bug.
+        // Stored sections can exceed their placement bounds, and reserved Confirmed defaults can
+        // violate their closed catalog. Report these stored-state failures through Result so callers
+        // refuse the affected turn and release its lease. ArgumentException from an internal plan or
+        // placement invariant remains a programming defect and must not be reported as corrupt data.
         try
         {
             return LinkCore(snapshot);
+        }
+        catch (CovenantOperationalDefaultInvalidException)
+        {
+            return Result<CovenantTurnPlan>.Failure(new Error(
+                ErrorCodes.Covenant.IntegrityFailure,
+                "A Confirmed Covenant operational default is invalid or unsupported."));
         }
         catch (CovenantSectionBoundExceededException)
         {
@@ -106,6 +105,8 @@ public sealed class CovenantLinker : ICovenantLinker
             {
                 return IntegrityFailure("An active Confirmed Covenant candidate uses an unsupported policy version.");
             }
+
+            CovenantOperationalDefaultCatalog.ValidateAuthoritativeFragment(candidate);
         }
 
         return Result.Success();

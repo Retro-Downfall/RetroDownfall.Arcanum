@@ -23,6 +23,8 @@ public sealed class CovenantCompiler : ICovenantCompiler
 
         ValidateAuthoredScalars(authoredContent);
 
+        CovenantOperationalDefaultCatalog.ValidateAuthored(normalizedKey.Value, authoredContent);
+
         string normalized = CovenantUnicodePolicyV1.NormalizeToNfc(authoredContent);
         string collapsed = CollapseWhitespace(normalized);
 

@@ -1,5 +1,9 @@
 using System.Collections.Immutable;
 
+using System.Text.Json;
+
+using RetroDownfall.Arcanum.Api.Serialization;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -67,6 +71,122 @@ public sealed class CovenantManagementServiceTests
         Assert.Equal(
             hits.Select(static hit => hit.NormalizedKey),
             page.Value.Items.Select(static item => item.Key));
+    }
+
+    [Theory]
+    [InlineData(false, false, "defaults.inference.temperature", "Temperature")]
+    [InlineData(true, false, "defaults.inference.temperature", "Temperature")]
+    [InlineData(false, true, "defaults.inference.top-p", "TopP")]
+    [InlineData(true, true, "defaults.inference.top-p", "TopP")]
+    public async Task Explain_reports_exact_eligible_default_provenance_and_discloses_values_only_when_requested(
+        bool showContent,
+        bool campaignScoped,
+        string key,
+        string kind)
+    {
+        Guid? campaignId = campaignScoped ? CovenantOperationGateFixture.CampaignOne : null;
+
+        CovenantCompiledContent compiled = new CovenantCompiler().Compile(key, "0.25");
+
+        CovenantSnapshotCandidate candidate = CovenantTask6Fixture.CreateCandidate(
+            compiled.NormalizedKey,
+            CovenantTask6Fixture.G1,
+            CovenantTask6Fixture.G2,
+            searchDocumentId: 7,
+            campaignScoped ? CovenantScope.Campaign : CovenantScope.Global,
+            campaignId,
+            CovenantLane.Confirmed,
+            CovenantOperation.Set,
+            CovenantOrigin.Operator,
+            CovenantCompiler.CompilerPolicyVersion,
+            provenanceCount: 0,
+            CovenantSnapshotCandidateIntegrity.Verified,
+            compiledFragment: [.. compiled.FragmentUtf8]);
+
+        CovenantTurnSnapshot snapshot = new(
+            new CovenantGenerationId(CovenantOperationGateFixture.DatasetGeneration),
+            keyReclamationEpoch: 1,
+            canonicalCampaignId: campaignId,
+            canonicalSearchSequence: 12,
+            [candidate]);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        CovenantManagementService management = new(
+            new ExplanationStore(snapshot),
+            new CovenantLinker(),
+            gate,
+            new FakeCovenantAvailability(),
+            new UnreachableCodec(),
+            new ExplanationCampaignReader());
+
+        CovenantLeasedServiceResult<CovenantExplainDto> explained = await management.ExplainAsync(
+            new CovenantExplainRequest(campaignId, showContent),
+            CancellationToken.None);
+
+        (Result<CovenantExplainDto> result, ICovenantOperationLease lease) = explained.Take();
+
+        await using (lease)
+        {
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+            string json = JsonSerializer.Serialize(result.Value, ArcanumJsonContext.Default.CovenantExplainDto);
+
+            using JsonDocument document = JsonDocument.Parse(json);
+
+            Assert.True(document.RootElement.TryGetProperty("operationalDefaults", out JsonElement defaults),
+                "The explanation must expose the exact eligible operational defaults.");
+
+            JsonElement item = Assert.Single(defaults.EnumerateArray());
+
+            Assert.Equal(CovenantTask6Fixture.G1, item.GetProperty("entryId").GetGuid());
+
+            Assert.Equal(CovenantTask6Fixture.G2, item.GetProperty("versionId").GetGuid());
+
+            Assert.Equal(7UL, item.GetProperty("revision").GetUInt64());
+
+            Assert.Equal(1U, item.GetProperty("policyVersion").GetUInt32());
+
+            Assert.Equal(kind, item.GetProperty("kind").GetString());
+
+            Assert.Equal("InferenceSampling", item.GetProperty("consumer").GetString());
+
+            Assert.Equal(campaignScoped ? "Campaign" : "Global", item.GetProperty("scope").GetString());
+
+            Assert.Equal(campaignId, item.GetProperty("campaignId").ValueKind == JsonValueKind.Null
+                ? (Guid?)null
+                : item.GetProperty("campaignId").GetGuid());
+
+            if (showContent)
+            {
+                Assert.Equal(0.25f, item.GetProperty("value").GetSingle());
+            }
+            else
+            {
+                Assert.Equal(JsonValueKind.Null, item.GetProperty("value").ValueKind);
+            }
+
+            Assert.Equal("EligibleConfirmed", item.GetProperty("decision").GetString());
+
+            Assert.False(item.TryGetProperty("applied", out _));
+        }
+    }
+
+    private sealed class ExplanationCampaignReader : ICampaignAvailabilityReader
+    {
+        public ValueTask<Result<long?>> FindAvailabilityGenerationAsync(
+            Guid campaignId,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<long?>.Success(5));
+    }
+
+    private sealed class ExplanationStore(CovenantTurnSnapshot snapshot) : DelegatingCovenantStore(null!)
+    {
+        public override ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
+            CanonicalCampaignContext campaign,
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantTurnSnapshot>.Success(snapshot));
     }
 
     /// <summary>What changed between the page that issued a cursor and the page that continued it.</summary>

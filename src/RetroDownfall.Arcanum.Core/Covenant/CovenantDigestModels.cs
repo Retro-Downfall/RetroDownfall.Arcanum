@@ -50,7 +50,7 @@ public sealed record SnapshotDigestInput(Guid DatasetGeneration, Guid? Canonical
 
 public sealed record PlanDecisionDigestInput(Guid EntryId, Guid VersionId, CovenantPlanDecision Decision, Guid? ShadowingVersionId, CovenantPlacement Placement, CovenantDigest FragmentDigest, uint ByteCost);
 
-public sealed record PlanDigestInput(CovenantDigest SnapshotDigest, uint LinkerPolicy, uint PlacementPolicy, ImmutableArray<PlanDecisionDigestInput> Decisions, CovenantDigest EligibleGlobalConfirmedSectionDigest, CovenantDigest EligibleCampaignConfirmedSectionDigest, CovenantDigest EligibleCampaignProposedSectionDigest);
+public sealed record PlanDigestInput(CovenantDigest SnapshotDigest, uint LinkerPolicy, uint PlacementPolicy, ImmutableArray<PlanDecisionDigestInput> Decisions, CovenantDigest EligibleGlobalConfirmedSectionDigest, CovenantDigest EligibleCampaignConfirmedSectionDigest, CovenantDigest EligibleCampaignProposedSectionDigest, ImmutableArray<CovenantOperationalDefault> OperationalDefaults = default);
 
 public sealed record MaterializationOccurrenceDigestInput(CovenantMaterializationContainer Container, uint? MessageIndex, uint? ContentPartIndex, CovenantMaterializationOccurrence Occurrence, uint? Utf16Start, uint Length);
 
