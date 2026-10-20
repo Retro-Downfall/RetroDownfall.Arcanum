@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 internal sealed partial class MemorySourceProofReader
 {
     private async Task<MemoryEvaluationSourceCoordinate> ReadLexiconAsync(SqliteConnection connection, SqliteTransaction transaction,
-        MemoryEvaluationLexiconTarget target, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct, bool intervention = true, int remainingBytes = MemoryEvaluationLimits.RenderedMemoryBytes)
+        MemoryEvaluationLexiconTarget target, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct, bool intervention = true)
     {
         await using SqliteCommand command = Command(connection, transaction, """
             SELECT c.ClaimId, v.Revision, v.ContentHashFormatCode, v.ContentHash, v.OriginCode, v.ScopeKindCode, v.CampaignId,
@@ -47,7 +47,7 @@ internal sealed partial class MemorySourceProofReader
             && sourceCampaign == (reader.GetString(12).Length == 0 ? null : Guid.Parse(reader.GetString(12)))
             && reader.GetInt64(15) > 0 && reader.GetInt32(18) != 3
             && reader.GetInt32(2) == (int)target.HashFormat && new CovenantDigest((byte[])reader[3]) == target.ContentDigest
-            && (!intervention || reader.IsDBNull(13) && reader.GetInt64(16) <= remainingBytes
+            && (!intervention || reader.IsDBNull(13) && reader.GetInt64(16) <= _limits.RenderedMemoryBytes
                 && reader.GetString(17) == target.VersionId && reader.IsDBNull(19)
                 && reader.GetInt32(1) == reader.GetInt32(23) && reader.GetInt32(18) == reader.GetInt32(24)
                 && !(sourceCampaign is null && campaign is not null && reader.GetBoolean(20))

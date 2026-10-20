@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Annals;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -14,6 +15,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 
 internal sealed partial class MemorySourceProofReader(ICovenantConnectionSource connections, ICovenantOperationGate gate, TimeProvider timeProvider, ICovenantStore? covenantStore = null, MemorySourceProofPolicy policy = MemorySourceProofPolicy.Evaluation)
 {
+    private readonly (int RenderedMemoryBytes, int ManifestCoordinates, int EvidenceBytes) _limits = policy switch
+    {
+        MemorySourceProofPolicy.Evaluation => (MemoryEvaluationLimits.RenderedMemoryBytes, MemoryEvaluationLimits.ManifestCoordinates, MemoryEvaluationLimits.EvidenceBytes),
+        MemorySourceProofPolicy.Delegation => (MemoryDelegationLimits.RenderedMemoryBytes, MemoryDelegationLimits.ManifestCoordinates, MemoryDelegationLimits.EvidenceBytes),
+        _ => throw new ArgumentOutOfRangeException(nameof(policy))
+    };
+
     private static readonly Error Unavailable = new(ErrorCodes.MemoryEvaluation.StaleSource, "The exact source evidence is unavailable or no longer eligible.");
 
     private static readonly Error Forbidden = new(ErrorCodes.Covenant.ForbiddenAuthority, "Evaluation requires its genuine live, scope-matched operator Turn lease.");
@@ -119,7 +127,7 @@ internal sealed partial class MemorySourceProofReader(ICovenantConnectionSource 
                 fragments.Add(new(coordinates.IndexOf(source), rendered, MemoryEvaluationPromptPart.System));
             }
 
-            Require(coordinates.Count > 0 && fragments.Sum(fragment => Utf8.GetByteCount(fragment.Text) + 2) <= MemoryEvaluationLimits.RenderedMemoryBytes);
+            Require(coordinates.Count > 0 && fragments.Sum(fragment => Utf8.GetByteCount(fragment.Text) + 2) <= _limits.RenderedMemoryBytes);
 
             Require((await gate.ValidateTurnLeaseAsync(lease, ct).ConfigureAwait(false)).IsSuccess);
 
@@ -141,8 +149,8 @@ internal sealed partial class MemorySourceProofReader(ICovenantConnectionSource 
         }
     }
 
-    private static int RemainingMemoryBytes(List<MemoryEvaluationSourceFragment> fragments) =>
-        MemoryEvaluationLimits.RenderedMemoryBytes - fragments.Sum(fragment => Utf8.GetByteCount(fragment.Text) + 2);
+    private int RemainingMemoryBytes(List<MemoryEvaluationSourceFragment> fragments) =>
+        _limits.RenderedMemoryBytes - fragments.Sum(fragment => Utf8.GetByteCount(fragment.Text) + 2);
 
     public async Task<Result> ValidateAsync(MemoryEvaluationSourceSnapshot snapshot, CovenantTurnLease lease, CancellationToken ct)
     {
@@ -214,11 +222,11 @@ internal sealed partial class MemorySourceProofReader(ICovenantConnectionSource 
 
     private void RequireManifestBounds(IReadOnlyCollection<MemoryEvaluationSourceCoordinate> sources, IReadOnlyCollection<MemoryEvaluationDependencyEdge> edges)
     {
-        Require(sources.Count is >= 1 and <= MemoryEvaluationLimits.ManifestCoordinates);
+        Require(sources.Count >= 1 && sources.Count <= _limits.ManifestCoordinates);
 
         if (policy == MemorySourceProofPolicy.Delegation)
         {
-            Require(MemoryEvaluationDigests.SourceManifestBytes([.. sources], [.. edges]) <= Core.Intelligence.MemoryDelegation.MemoryDelegationLimits.EvidenceBytes);
+            Require(MemoryEvaluationDigests.SourceManifestBytes([.. sources], [.. edges]) <= _limits.EvidenceBytes);
 
             return;
         }
@@ -239,14 +247,14 @@ internal sealed partial class MemorySourceProofReader(ICovenantConnectionSource 
             bytes += 24 + Utf8.GetByteCount(edge.DependentVersionId) + Utf8.GetByteCount(edge.DependencyVersionId);
         }
 
-        Require(bytes <= MemoryEvaluationLimits.EvidenceBytes);
+        Require(bytes <= _limits.EvidenceBytes);
     }
 
     private void RequireProofMetadataBounds(MemoryEvaluationSourceSnapshot snapshot)
     {
         if (policy == MemorySourceProofPolicy.Delegation)
         {
-            Require(Core.Intelligence.MemoryDelegation.MemoryDelegationDigests.ProofMetadataBytes(snapshot) <= Core.Intelligence.MemoryDelegation.MemoryDelegationLimits.EvidenceBytes);
+            Require(Core.Intelligence.MemoryDelegation.MemoryDelegationDigests.ProofMetadataBytes(snapshot) <= _limits.EvidenceBytes);
         }
     }
 

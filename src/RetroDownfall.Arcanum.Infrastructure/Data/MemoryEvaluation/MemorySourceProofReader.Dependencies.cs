@@ -69,7 +69,7 @@ internal sealed partial class MemorySourceProofReader
 
                 if (visited.Add((pendingSource.Store == 1 ? MemoryEvaluationSource.Saga : MemoryEvaluationSource.Lexicon, pendingSource.Target.VersionId)))
                 {
-                    Require(sources.Count < MemoryEvaluationLimits.ManifestCoordinates);
+                    Require(sources.Count < _limits.ManifestCoordinates);
 
                     sources.Add(pendingSource.Store == 1
                         ? await ReadSagaAsync(connection, transaction, pendingSource.Target, campaign, metadata, now, ct, intervention: false).ConfigureAwait(false)

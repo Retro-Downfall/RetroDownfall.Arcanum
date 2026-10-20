@@ -10,7 +10,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.MemoryEvaluation;
 internal sealed partial class MemorySourceProofReader
 {
     private async Task<MemoryEvaluationSourceCoordinate> ReadSagaAsync(SqliteConnection connection, SqliteTransaction transaction,
-        MemoryEvaluationSagaTarget target, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct, bool intervention = true, int remainingBytes = MemoryEvaluationLimits.RenderedMemoryBytes)
+        MemoryEvaluationSagaTarget target, Guid? campaign, CovenantCanonicalHashWriter metadata, DateTimeOffset now, CancellationToken ct, bool intervention = true)
     {
         bool suppression = await LongRestRecallSql.AvailableAsync(connection, ct, transaction).ConfigureAwait(false);
 
@@ -50,7 +50,7 @@ internal sealed partial class MemorySourceProofReader
 
         Require(target.HashFormat == AnnalContentHashFormat.LegacyStoreDigest && scope is 1 or 2 && (scope == 1 ? sourceCampaign is null : sourceCampaign == campaign)
             && scope == reader.GetInt32(14) && sourceCampaign == (reader.IsDBNull(15) ? null : Guid.Parse(reader.GetString(15)))
-            && (!intervention || reader.IsDBNull(16) && reader.GetInt64(17) <= remainingBytes
+            && (!intervention || reader.IsDBNull(16) && reader.GetInt64(17) <= _limits.RenderedMemoryBytes
                 && reader.GetString(18) == target.VersionId && reader.IsDBNull(20) && reader.GetBoolean(21) && reader.GetBoolean(23)
                 && (policy != MemorySourceProofPolicy.Delegation || !reader.GetBoolean(27)))
             && reader.GetInt32(19) != 3 && (reader.IsDBNull(12) ? scope == 1 : reader.GetBoolean(22))
