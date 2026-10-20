@@ -32287,7 +32287,14 @@ internal static partial class HostedGrimoireProducerInventory
 
                 if (value is not null)
                 {
-                    values[field] = new(ValueExpressionContext(constructor, value), value);
+                    if (AnalysedModel(value) is not { } valueModel)
+                    {
+                        values.Remove(field);
+
+                        continue;
+                    }
+
+                    values[field] = new(ValueExpressionContext(constructor, value, valueModel), value);
                 }
                 else if (assignments.Length != 0)
                 {
