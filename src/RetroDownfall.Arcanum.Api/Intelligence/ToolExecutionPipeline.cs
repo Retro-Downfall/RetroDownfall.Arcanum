@@ -282,8 +282,22 @@ public sealed class ToolExecutionPipeline(
         string resultText,
         IReadOnlyList<TextReasoningContent>? reasoningContents = null)
     {
-        FunctionCallContent normalizedCall = string.IsNullOrEmpty(fcc.CallId)
-            ? new FunctionCallContent(callId, fcc.Name, fcc.Arguments)
+        // The pinned OpenAI adapter rebuilds outgoing calls from these public fields and ignores
+        // ChatToolCall transport bookkeeping. Project that known representation before materialization;
+        // unknown raw types and additional metadata remain subject to exact payload proof.
+        FunctionCallContent normalizedCall = string.IsNullOrEmpty(fcc.CallId) || fcc.RawRepresentation is OpenAI.Chat.ChatToolCall
+            ? new FunctionCallContent(string.IsNullOrEmpty(fcc.CallId) ? callId : fcc.CallId, fcc.Name, fcc.Arguments)
+            {
+                AdditionalProperties = fcc.AdditionalProperties,
+
+                Annotations = fcc.Annotations,
+
+                Exception = fcc.Exception,
+
+                InformationalOnly = fcc.InformationalOnly,
+
+                RawRepresentation = fcc.RawRepresentation is OpenAI.Chat.ChatToolCall ? null : fcc.RawRepresentation,
+            }
             : fcc;
 
         List<AIContent> assistantContents = new((reasoningContents?.Count ?? 0) + 1);

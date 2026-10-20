@@ -48,7 +48,6 @@ internal sealed partial class CovenantMutationService(
     CovenantAvailabilityRepublisher availabilityRepublisher,
     IMemoryDelegationMutationBarrier? memoryDelegation = null) : ICovenantMutationService
 {
-
     /// <summary>How long a prepared mutation stays committable.</summary>
     /// <remarks>
     /// Short because the effect it describes is a measurement of live state. Long enough that an
@@ -64,25 +63,20 @@ internal sealed partial class CovenantMutationService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         Result<CovenantCompiledContent> compiled = TryCompile(request.Key, request.Content);
 
         if (compiled.IsFailure)
         {
-
             return compiled.Error;
-
         }
 
         return await PrepareAsync(
@@ -97,7 +91,6 @@ internal sealed partial class CovenantMutationService(
                 readLease,
                 cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<CovenantMutationPreflightDto>> PrepareRetireAsync(
@@ -105,16 +98,13 @@ internal sealed partial class CovenantMutationService(
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         return await PrepareAsync(
@@ -129,7 +119,6 @@ internal sealed partial class CovenantMutationService(
                     readLease,
                     cancellationToken)
                 .ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<CovenantMutationResultDto>> SetAsync(
@@ -137,16 +126,13 @@ internal sealed partial class CovenantMutationService(
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         Result<CovenantCompiledContent> compiled = TryCompile(request.Key, request.Content);
@@ -166,7 +152,6 @@ internal sealed partial class CovenantMutationService(
                     writeLease,
                     cancellationToken)
                 .ConfigureAwait(false);
-
     }
 
     public async ValueTask<Result<CovenantMutationResultDto>> RetireAsync(
@@ -174,16 +159,13 @@ internal sealed partial class CovenantMutationService(
         CovenantWriteLease writeLease,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         Result validated = request.Validate();
 
         if (validated.IsFailure)
         {
-
             return validated.Error;
-
         }
 
         return await ApplyAsync(
@@ -199,7 +181,6 @@ internal sealed partial class CovenantMutationService(
                     writeLease,
                     cancellationToken)
                 .ConfigureAwait(false);
-
     }
 
     /// <summary>
@@ -224,14 +205,11 @@ internal sealed partial class CovenantMutationService(
         Guid? targetVersionId = null,
         CovenantDigest? targetRenderedHash = null)
     {
-
         Result<ulong> authorityEpoch = ResolveAuthorityEpoch();
 
         if (authorityEpoch.IsFailure)
         {
-
             return authorityEpoch.Error;
-
         }
 
         Result<CovenantMutationEffectSnapshot> effect = await store
@@ -243,9 +221,7 @@ internal sealed partial class CovenantMutationService(
 
         if (effect.IsFailure)
         {
-
             return effect.Error;
-
         }
 
         Result<CovenantDetail> detail = await store
@@ -254,9 +230,7 @@ internal sealed partial class CovenantMutationService(
 
         if (detail.IsFailure)
         {
-
             return detail.Error;
-
         }
 
         // Reported from the head rather than echoed from the request: an operator comparing what they
@@ -269,7 +243,6 @@ internal sealed partial class CovenantMutationService(
 
         if (operation is CovenantOperation.Set)
         {
-
             // The kernel's one capture, taken here for the disclosure only. It copies the latch and is
             // never credential I/O, so taking it while the read lease is held is harmless. The answer is
             // not bound into the token: an operator write is never refused over a fingerprint.
@@ -284,7 +257,6 @@ internal sealed partial class CovenantMutationService(
                     erasureGate.Key,
                     cancellationToken)
                 .ConfigureAwait(false);
-
         }
 
         CovenantDigest requestDigest = RequestDigest(
@@ -331,9 +303,7 @@ internal sealed partial class CovenantMutationService(
 
         if (token.IsFailure)
         {
-
             return token.Error;
-
         }
 
         return new CovenantMutationPreflightDto(
@@ -354,7 +324,6 @@ internal sealed partial class CovenantMutationService(
             issuedAt,
             expiresAt,
             token.Value);
-
     }
 
     /// <summary>
@@ -381,16 +350,13 @@ internal sealed partial class CovenantMutationService(
         Guid? targetVersionId = null,
         CovenantDigest? targetRenderedHash = null)
     {
-
         ArgumentNullException.ThrowIfNull(writeLease);
 
         Result revalidated = await writeLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
 
         if (revalidated.IsFailure)
         {
-
             return revalidated.Error;
-
         }
 
         CovenantDigest committedRequestDigest = RequestDigest(
@@ -418,23 +384,17 @@ internal sealed partial class CovenantMutationService(
 
         if (replayed.IsFailure)
         {
-
             return replayed.Error;
-
         }
 
         if (replayed.Value is { } committed)
         {
-
             return committed;
-
         }
 
         if (AfterReplayProbeForTesting is { } afterProbe)
         {
-
             await afterProbe(cancellationToken).ConfigureAwait(false);
-
         }
 
         Result<CovenantEnvelopeBody> envelope = codec.Decode(
@@ -443,9 +403,7 @@ internal sealed partial class CovenantMutationService(
 
         if (envelope.IsFailure)
         {
-
             return envelope.Error;
-
         }
 
         Result<CovenantOperatorPreflightBody> body =
@@ -453,18 +411,14 @@ internal sealed partial class CovenantMutationService(
 
         if (body.IsFailure)
         {
-
             return body.Error;
-
         }
 
         if (body.Value.RequestDigest != committedRequestDigest)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token was issued for a different request.");
-
         }
 
         // Three-way equality: what the request states, what the token bound, and — inside the kernel —
@@ -475,11 +429,9 @@ internal sealed partial class CovenantMutationService(
         if (body.Value.TargetVersionId != targetVersionId
             || body.Value.TargetRenderedHash != targetRenderedHash)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token was issued for a different correction target.");
-
         }
 
         // Issued-at and expires-at must equal the authenticated header values byte for byte before
@@ -488,29 +440,23 @@ internal sealed partial class CovenantMutationService(
         if (body.Value.IssuedAt != envelope.Value.IssuedAtUtc.ToUnixTimeMilliseconds()
             || body.Value.ExpiresAt != envelope.Value.ExpiresAtUtc.ToUnixTimeMilliseconds())
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 "This Covenant preflight token is internally inconsistent.");
-
         }
 
         Result<ulong> authorityEpoch = ResolveAuthorityEpoch();
 
         if (authorityEpoch.IsFailure)
         {
-
             return authorityEpoch.Error;
-
         }
 
         if (authorityEpoch.Value != body.Value.OperatorAuthorityEpoch)
         {
-
             return new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
                 "Operator authority changed after this mutation was prepared.");
-
         }
 
         Result<CovenantMutationIntent> intent = compiled is null
@@ -534,14 +480,11 @@ internal sealed partial class CovenantMutationService(
 
         if (intent.IsFailure)
         {
-
             return intent.Error;
-
         }
 
         return await CommitAsync(intent.Value, body.Value, scope, normalizedKey, lane, cancellationToken)
             .ConfigureAwait(false);
-
     }
 
     private async ValueTask<Result<CovenantMutationResultDto>> CommitAsync(
@@ -553,7 +496,6 @@ internal sealed partial class CovenantMutationService(
         CancellationToken cancellationToken)
     {
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
-
 
         // Every batch carries the gate its caller read from the latch before BEGIN, this operator path
         // included. Operator intents never consult it, so an operator write is never refused by it; this
@@ -585,11 +527,9 @@ internal sealed partial class CovenantMutationService(
 
         if (applied.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return applied.Error;
-
         }
 
         CovenantMutationReceipt receipt = applied.Value[0];
@@ -633,7 +573,6 @@ internal sealed partial class CovenantMutationService(
             Hex(receipt.ResponseReceiptDigest),
             receipt.Replayed,
             releasedErasureFingerprint);
-
     }
 
     /// <summary>
@@ -654,7 +593,6 @@ internal sealed partial class CovenantMutationService(
         CovenantOperation operation,
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = await connections
             .GetOpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -683,20 +621,16 @@ internal sealed partial class CovenantMutationService(
 
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             return Result<CovenantMutationResultDto?>.Success(null);
-
         }
 
         CovenantDigest storedRequest = new((byte[])reader.GetValue(0));
 
         if (storedRequest != requestDigest)
         {
-
             return Result<CovenantMutationResultDto?>.Failure(new Error(
                 ErrorCodes.Security.IdempotencyConflict,
                 "This mutation identity was already used for a different Covenant request."));
-
         }
 
         return Result<CovenantMutationResultDto?>.Success(new CovenantMutationResultDto(
@@ -713,7 +647,6 @@ internal sealed partial class CovenantMutationService(
             Hex(storedRequest),
             Hex(new CovenantDigest((byte[])reader.GetValue(1))),
             Replayed: true));
-
     }
 
     private static CovenantOperatorMutationBinding Binding(CovenantOperatorPreflightBody body) =>
@@ -797,22 +730,16 @@ internal sealed partial class CovenantMutationService(
     /// </remarks>
     private Result<CovenantCompiledContent> TryCompile(string key, string content)
     {
-
         try
         {
-
             return Result<CovenantCompiledContent>.Success(compiler.Compile(key, content));
-
         }
         catch (Exception exception) when (exception is ArgumentException or ArgumentOutOfRangeException)
         {
-
             return Result<CovenantCompiledContent>.Failure(new Error(
                 ErrorCodes.Covenant.InvalidContent,
                 exception.Message));
-
         }
-
     }
 
     private static CovenantOperationScope Scope(CovenantScope kind, Guid? campaignId) =>
@@ -863,5 +790,4 @@ internal sealed partial class CovenantMutationService(
             releasesErasureFingerprint);
 
     private static string Hex(CovenantDigest digest) => Convert.ToHexStringLower(digest.Bytes);
-
 }

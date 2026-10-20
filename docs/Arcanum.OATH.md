@@ -111,7 +111,7 @@ Two defects were found by writing the end-to-end proof rather than by review, an
 | **#101** | M | Scoped read-only agent recall. |
 | **#103** | XL | Dynamic Context Injection v2 — secure provider-cacheable prefix. |
 | **#104** | L | Typed Covenant operational defaults excluding security-policy authority. |
-| **#107** | XL | Least-authority subagent memory delegation capsules. |
+| **#107** | XL | One authenticated native parent delegates one bounded exact-version selection to an isolated child; consumed-branch sensitivity and publication remain protected (§20.11; DESIGN §10.21.9; API §8.10.4). |
 | **#73** | Epic | The umbrella. Closes when #74, #76, #77, #75, and #78 are all closed. |
 
 ### 2.3 Contract precedence
@@ -349,7 +349,7 @@ API orchestration owns:
 - branch-aware tool loops and mutation collection;
 - response finalization and protected-output propagation.
 
-Every intelligence entry point must classify its execution surface explicitly. Subagents, A2A, batch, daemon, recovery, and unattended background execution receive `None` unless a narrower future capability is deliberately designed (issue #107).
+Every intelligence entry point must classify its execution surface explicitly. Subagents, A2A, batch, daemon, recovery, and unattended background execution receive `None`. The explicit selected-memory capability in §20.11 supplies only its bounded listed fragments to one child; it does not upgrade that child's ordinary context or mutation authority.
 
 | Execution surface | Covenant context | Mutation authority |
 |---|---|---|
@@ -1294,16 +1294,15 @@ Represent operator-confirmed **nonsecurity** preferences as constrained typed de
 
 The implemented catalog is deliberately bounded to `Temperature` (`[0, 2]`, key `defaults.inference.temperature`) and `TopP` (`[0, 1]`, key `defaults.inference.top-p`), both consumed only by `InferenceSampling`. Authoring uses the existing operator Confirmed Global/Campaign path; malformed scalar values and any other `defaults.` target are refused. Ordinary linking governs shadowing and masks, and Proposed content cannot supply executable defaults. Explicit inference request values win. Plans and admitted-default receipts bind the exact entry/version/revision, scope, kind, consumer, and typed policy version; the provider envelope binds the effective options. Explain reports eligible planned defaults with protected values only under `showContent`, and never claims an unspecified request applied them. The exact syntax and contract are owned by DESIGN §10.21.8 and API §8.28.
 
-### 20.11 Least-authority subagent delegation capsules (#107, XL, research)
+### 20.11 Least-authority subagent delegation capsules (#107, XL)
 
-Allow a top-level invocation to delegate a bounded explicit memory grant to a subagent without exposing ambient parent memory.
+A top-level authenticated native invocation may authorize one bounded explicit memory selection through `POST /api/intelligence/memory-delegation`. The ordinary stateless or Session-backed parent may select `memory` in one native `delegate_task` call. The host binds exact current eligible versions, canonical scope and owner, provenance, a closed purpose and actual executed child task identity to one process-local capability. Count, rendered bytes, proof metadata, process quota and lifetime are code-owned bounds; overflow refuses the whole selection. DESIGN §10.21.9 and API §8.10.4 own the architecture and exact wire contract. This section states the runtime contract; it does not record terminal qualification or delivery of #107.
 
-- Existing subagent invocation continues to receive **no memory** when no valid capsule is supplied.
-- A capsule grants only listed versions and scope, with hard count, byte, purpose, and lifetime bounds.
-- Subagents cannot widen the grant, search outside it, mutate memory, promote content, or transfer authority to another invocation.
-- Campaign deletion, version retirement, reset, restore, expiry, and authority-generation changes invalidate affected capsules.
+The child remains `None`, stateless, tool-free and without ambient retrieval or mutation/promotion authority. It receives only selected frozen fragments plus ordinary explicit task inputs. Missing selection retains ordinary isolated delegation. Siblings, nested invocations, operation rows and backups cannot recreate, widen, renew or forward the selected-source capability. Data remains data: Proposed and model-writable fragments do not gain system, defaults or tool authority.
 
-Until this capability exists, subordinate and unattended execution receives no protected memory by default.
+Relevant memory mutations conservatively revoke all active capsules in v1 and cancel/drain admitted protected effects before their transaction. Expiry, Campaign deletion, retirement, suppression, reset/restore and authority/generation changes prevent later protected use or publication. Consumed-branch maximum sensitivity and union provenance cover selected sources and frozen explicit parent-derived inputs and propagate through child results, atomic Session tool persistence, parent continuation and complete protected HTTP serialization. A later ordinary child can retain only a non-reading output guard and label for explicit derived input, with no additional selected fragments or read authority. Known provider usage is durably recorded exactly once even if revocation withholds the result; earlier remote disclosure remains disclosed.
+
+A consumed root with actual nonempty staged Covenant mutations refuses the combined finalization before its mutation writer or effects run, committing neither those source changes nor the assistant reply. Immediate parent memory tools may execute and revoke the root, after which protected pair/final publication refuses. Unused-root and ordinary combined commits retain their existing behavior. An unused expired grant only prevents later selection; ordinary parent work with no capsule-derived output retains its normal lifetime and authority. No additional global delegation limit follows from these publication rules.
 
 ## 21. Glossary
 

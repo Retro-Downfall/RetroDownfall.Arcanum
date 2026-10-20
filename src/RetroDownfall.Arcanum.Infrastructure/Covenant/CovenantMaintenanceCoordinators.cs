@@ -37,13 +37,11 @@ internal sealed class CovenantOwnerCleanupCoordinator(
     CovenantAvailabilityRepublisher availabilityRepublisher,
     IMemoryDelegationMutationBarrier? memoryDelegation = null)
 {
-
     internal async ValueTask<Result<CovenantCleanupOutcome>> RunBatchAsync(
         int maxEvents,
         CancellationToken cancellationToken)
     {
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
-
 
         Result<CovenantCleanupLease> acquired = await gate
             .AcquireCleanupAsync(CovenantOperationScope.Global, cancellationToken)
@@ -51,9 +49,7 @@ internal sealed class CovenantOwnerCleanupCoordinator(
 
         if (acquired.IsFailure)
         {
-
             return acquired.Error;
-
         }
 
         await using CovenantCleanupLease lease = acquired.Value;
@@ -72,11 +68,9 @@ internal sealed class CovenantOwnerCleanupCoordinator(
 
         if (applied.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return applied.Error;
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -86,9 +80,7 @@ internal sealed class CovenantOwnerCleanupCoordinator(
             .ConfigureAwait(false);
 
         return applied.Value;
-
     }
-
 }
 
 /// <summary>
@@ -111,7 +103,6 @@ internal sealed class CovenantSearchOutboxCoordinator(
     CovenantSearchOutboxWorker worker,
     CovenantAvailabilityRepublisher availabilityRepublisher)
 {
-
     /// <summary>Test seam: runs inside the batch's transaction after the worker has applied it, before COMMIT.</summary>
     internal Func<SqliteTransaction, CancellationToken, Task>? BeforeCommitForTesting { get; init; }
 
@@ -119,16 +110,13 @@ internal sealed class CovenantSearchOutboxCoordinator(
         int maxRows,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantAcceleratorLease> acquired = await gate
             .AcquireAcceleratorAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (acquired.IsFailure)
         {
-
             return acquired.Error;
-
         }
 
         await using CovenantAcceleratorLease lease = acquired.Value;
@@ -147,18 +135,14 @@ internal sealed class CovenantSearchOutboxCoordinator(
 
         if (applied.IsFailure)
         {
-
             await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
             return applied.Error;
-
         }
 
         if (BeforeCommitForTesting is { } beforeCommit)
         {
-
             await beforeCommit(transaction, cancellationToken).ConfigureAwait(false);
-
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -169,9 +153,7 @@ internal sealed class CovenantSearchOutboxCoordinator(
             .ConfigureAwait(false);
 
         return applied.Value;
-
     }
-
 }
 
 /// <summary>What one compaction pass folded, and for how many Sessions.</summary>
@@ -195,23 +177,19 @@ internal sealed class CovenantTurnReceiptCompactionCoordinator(
     ICovenantConnectionSource connections,
     CovenantTurnReceiptCompactor compactor)
 {
-
     internal const int DefaultSessionsPerPass = 16;
 
     internal async ValueTask<Result<CovenantReceiptCompactionOutcome>> CompactAsync(
         int maxSessions,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantCleanupLease> acquired = await gate
             .AcquireCleanupAsync(CovenantOperationScope.Global, cancellationToken)
             .ConfigureAwait(false);
 
         if (acquired.IsFailure)
         {
-
             return acquired.Error;
-
         }
 
         await using CovenantCleanupLease lease = acquired.Value;
@@ -229,7 +207,6 @@ internal sealed class CovenantTurnReceiptCompactionCoordinator(
 
         foreach (Guid sessionId in backlog)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             await using SqliteTransaction transaction = (SqliteTransaction)await connection
@@ -242,28 +219,22 @@ internal sealed class CovenantTurnReceiptCompactionCoordinator(
 
             if (folded.IsFailure)
             {
-
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
                 return folded.Error;
-
             }
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             if (folded.Value > 0)
             {
-
                 sessions++;
 
                 receipts += folded.Value;
-
             }
-
         }
 
         return new CovenantReceiptCompactionOutcome(sessions, receipts);
-
     }
 
     private static async ValueTask<ImmutableArray<Guid>> ReadBacklogAsync(
@@ -271,7 +242,6 @@ internal sealed class CovenantTurnReceiptCompactionCoordinator(
         int maxSessions,
         CancellationToken cancellationToken)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = CovenantStoreSql.TurnReceiptBacklog();
@@ -287,21 +257,15 @@ internal sealed class CovenantTurnReceiptCompactionCoordinator(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-
             // Stored as the canonical text form everywhere in this family, so a row that is not one is
             // a corrupt identity rather than a Session to fold, and skipping it leaves it for the
             // integrity checks that are allowed to say so.
             if (Guid.TryParse(reader.GetString(0), CultureInfo.InvariantCulture, out Guid sessionId))
             {
-
                 sessions.Add(sessionId);
-
             }
-
         }
 
         return sessions.ToImmutable();
-
     }
-
 }

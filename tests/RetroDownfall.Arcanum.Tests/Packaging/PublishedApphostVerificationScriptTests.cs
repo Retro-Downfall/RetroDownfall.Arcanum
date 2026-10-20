@@ -694,7 +694,7 @@ public sealed class PublishedApphostVerificationScriptTests
     internal sealed class ScriptFixture : IDisposable
     {
         private const string ExpectedImageSha256 =
-            "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
+            "713ec8279747a2a33ee6e7407155f5c75be51037545aaec18677f0d7f91bf3da";
 
         private readonly string _root;
 
@@ -724,7 +724,7 @@ public sealed class PublishedApphostVerificationScriptTests
             Directory.CreateDirectory(_processTemporaryDirectory);
 
             Executable = Path.Combine(_root, "arcanum");
-            Image = Path.Combine(_root, "qualified-image.jpg");
+            Image = Path.Combine(_root, "qualified-image.png");
             DotnetLog = Path.Combine(_root, "dotnet.log");
             ReceiptKind = receiptKind;
             FakeBin = fakeBin;
@@ -735,7 +735,7 @@ public sealed class PublishedApphostVerificationScriptTests
                 #!/usr/bin/env bash
                 exit 0
                 """);
-            File.WriteAllBytes(Image, [0xFF, 0xD8, 0xFF, 0xD9]);
+            File.WriteAllBytes(Image, [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
             WriteExecutable(
                 Path.Combine(fakeBin, "rg"),
                 """

@@ -1348,7 +1348,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs", "EmbeddingsResetService", "PurgeLabeledKindAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(scopedConnection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs", "EmbeddingsResetService", "PurgeLabeledKindAsync(3)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(scopedConnection,CovenantSqliteConnectionMode.ReadOnly,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -1689,6 +1689,29 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
+
+        // Protected tool text and both labels share the same admitted context connection/transaction.
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Repositories/GrimoireRepository.ProtectedTools.cs", "GrimoireRepository", "AppendProtectedToolInteractionAsync(2)", AcquisitionConstructKind.MarkedRouteInvocation, "AcquireScopedAsync", 3, "_connections.AcquireScopedAsync(connection,CovenantSqliteConnectionMode.ReadWrite,cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        // OpenAsync here returns only an authenticated request/Turn scope, never a SQLite connection.
+        new(
+            new("src/RetroDownfall.Arcanum.Api/Intelligence/MemoryDelegation/MemoryDelegationEndpoints.cs", "MemoryDelegationEndpoints", "RunAsync(1)", AcquisitionConstructKind.ProviderOpen, "MemoryDelegationRequestScope.OpenAsync", 3, "MemoryDelegationRequestScope.OpenAsync(http,read.Body!,http.RequestAborted)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "MemoryDelegationEndpoints.RunAsync(1)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Api/Intelligence/MemoryDelegation/MemoryDelegationEndpoints.cs", "MemoryDelegationEndpoints", "RunAsync(1)", AcquisitionConstructKind.MarkedRouteInvocation, "OpenAsync", 3, "MemoryDelegationRequestScope.OpenAsync(http,read.Body!,http.RequestAborted)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "MemoryDelegationEndpoints.RunAsync(1)", 0)),
 
         // Claim input, begin, and replay retain an explicit ordinary lease over the EF context's
         // exact connection. Begin and replay attach their transaction before factory commands run.

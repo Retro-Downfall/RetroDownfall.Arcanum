@@ -609,17 +609,17 @@ internal static class LocalOllamaQualificationGuards
         {
             using FileStream stream = File.OpenRead(path);
 
-            if (stream.Length is < 4 or > 20L * 1024L * 1024L)
+            if (stream.Length is < 8 or > 20L * 1024L * 1024L)
             {
                 return false;
             }
 
-            Span<byte> prefix = stackalloc byte[3];
+            Span<byte> prefix = stackalloc byte[8];
+
+            ReadOnlySpan<byte> expectedPrefix = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
             if (stream.Read(prefix) != prefix.Length
-                || prefix[0] != 0xFF
-                || prefix[1] != 0xD8
-                || prefix[2] != 0xFF)
+                || !prefix.SequenceEqual(expectedPrefix))
             {
                 return false;
             }

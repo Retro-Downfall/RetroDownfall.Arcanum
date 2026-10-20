@@ -13,15 +13,15 @@ MODEL="gemma4:e4b"
 ENDPOINT="http://127.0.0.1:11434/v1/"
 PERPLEXITY=0
 PERPLEXITY_KEY_VARIABLE="ARCANUM_PERPLEXITY_API_KEY"
-EXPECTED_IMAGE_SHA256="88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0"
+EXPECTED_IMAGE_SHA256="713ec8279747a2a33ee6e7407155f5c75be51037545aaec18677f0d7f91bf3da"
 
 usage() {
   cat <<'EOF'
-Usage: verify-local-ollama-aot.sh --executable <published-apphost> --image <jpeg> [options]
+Usage: verify-local-ollama-aot.sh --executable <published-apphost> --image <png> [options]
 
 Local qualification options:
   --executable <path>    Existing Native AOT Arcanum apphost. This wrapper never publishes it.
-  --image <path>         The qualified stop-sign JPEG (exact SHA-256 is checked).
+  --image <path>         The qualified stop-sign PNG (exact SHA-256 is checked).
   --model <tag>          Installed Ollama vision model (tools required with --perplexity; default: gemma4:e4b).
   --endpoint <uri>       Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
   --perplexity          Also require a live Perplexity search and parsed citation recall (paid network).
@@ -31,7 +31,7 @@ Local qualification options:
 The test creates and removes an isolated temporary Arcanum home. It never reads or writes the
 operator's Arcanum configuration, never starts or stops Ollama, and never publishes a product.
 It refuses GitHub Actions and proves three persisted turns (four with --perplexity), attachment
-v1/v2 replacement across an Arcanum host restart, latest-version selection, and the fixed JPEG
+v1/v2 replacement across an Arcanum host restart, latest-version selection, and the fixed PNG
 vision fixture. It does not claim in-place transcript or memory editing.
 EOF
 }
@@ -134,7 +134,7 @@ if [[ ! -f "$EXECUTABLE_PATH" || ( "$WINDOWS_HOST" -eq 0 && ! -x "$EXECUTABLE_PA
 fi
 
 if [[ ! -f "$IMAGE_PATH" || ! -r "$IMAGE_PATH" ]]; then
-  echo "error: --image must name a readable JPEG: $IMAGE" >&2
+  echo "error: --image must name a readable PNG: $IMAGE" >&2
   exit 2
 fi
 

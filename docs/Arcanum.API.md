@@ -39,6 +39,7 @@ The established §8 contract numbers are retained in this extracted reference so
 | GET | `/api/perception/look` | Eye of the World snapshot (optional `directory` query; requires `Arcanum:Security:PerceptionWorkspaceRoots`; **403** when unset). |
 | POST | `/api/perception/chronosync` | Analyze a `PatternSnapshot` body and persist the workspace-context baseline it implies (`ApiResponse<ChronosyncReport>` through `IChronosyncEngine.AnalyzeAndSyncAsync`). The body is validated before any analysis and a refusal carries the mapper's status for its code. Honors `Idempotency-Key` through the bound-argument filter (§11.17), so a second post under the same key with a different snapshot is **409** `Security.IdempotencyConflict`. |
 | POST | `/api/intelligence/ping` | Buffered inference. |
+| POST | `/api/intelligence/memory-delegation` | Buffered native parent inference with one bounded exact-version child memory grant (`MemoryDelegationRequest` → `ApiResponse<PromptResponseDto>`; §8.10.4). |
 | POST | `/api/intelligence/ping-stream` | NDJSON streaming inference (same `PingRequest` extensions as buffered ping). |
 | POST | `/api/intelligence/human-response` | Submit human-in-the-loop answer. |
 | POST | `/api/intelligence/arsenal` | Spell names, metadata-only `SpellSummary[]`, native tools, and MCP server status. |
@@ -57,7 +58,7 @@ The established §8 contract numbers are retained in this extracted reference so
 | POST | `/api/mcp/reload` | Reload MCP connections (global nuclear reload — DESIGN §5.6). |
 | POST | `/api/mcp/tools/invoke` | **Diagnostic MCP Invocation** — policy-constrained direct invoke of an **external** MCP tool by an operator (`ApiResponse<McpToolInvokeResponse>`). Development edition only; otherwise **404** `Mcp.DiagnosticDisabled`. |
 | GET | `/api/sessions` | Search/list Grimoire sessions (`ApiResponse<SessionQueryResult>`; DESIGN §11.16). |
-| POST | `/api/sessions` | Create session (`ApiResponse<SessionDetailDto>`; **201**; a `campaignId` no Campaign has is **404** `Campaign.NotFound`, because the Session's Campaign binding is immutable and the table carries no foreign key). |
+| POST | `/api/sessions` | Create a Session and its immutable canonical Campaign binding atomically (`ApiResponse<SessionDetailDto>`; **201**; a missing Campaign is **404** `Campaign.NotFound`, including a Campaign removed before commit). Optional `title` is nullable and trimmed; blank becomes null, with no generated-title 200-character cap. Creation does not adopt a legacy unbound Session (DESIGN §11.16). |
 | GET | `/api/sessions/analytics` | Session analytics (`ApiResponse<SessionAnalytics>`; DESIGN §11.16). |
 | GET | `/api/sessions/{id}` | Session metadata (`ApiResponse<SessionDetailDto>`; **404** when missing). |
 | GET | `/api/sessions/{id}/entries` | Entry history (`ApiResponse<EntryDto[]>`; optional `offset`, `limit`, and keyset cursor parameters `beforeCreatedAt` / `beforeId`, which must be supplied together or not at all: either one alone is **400** `Validation.InvalidQuery` rather than being ignored). `?countOnly=true` returns `ApiResponse<SessionEntryCountDto>` instead of entry rows; it reads no page, but a half cursor sent with it is still the same **400**, checked before the count. |
@@ -379,6 +380,8 @@ Successful endpoints use `Results.Ok(ApiResponse<T>.FromResult(result, traceId))
 
 - **`POST /api/intelligence/ping`** — `ApiResponse<PromptResponseDto>` on every path: **400** for request/reasoning validation, **200** on success, and shared `ArcanumErrorMapper` status for inference failures (for example 404/403/400/409/503/500 by stable code; **409** includes `LongRest.SweepParked` and `LongRest.OperationBusy` when a turn must finish a protected Long Rest partition, §8.36). The payload contract is detailed in §8.10.
 
+- **`POST /api/intelligence/memory-delegation`** — buffered `ApiResponse<PromptResponseDto>` with **200** success; protected **400** `MemoryDelegation.InvalidGrant`, **409** `MemoryDelegation.StaleSource`, **503** `MemoryDelegation.Unavailable`, and the shared authentication, canonical context and inference mappings (§8.10.4).
+
 - **`POST /api/intelligence/human-response`** — **400** validation (including the code-owned answer UTF-8 byte limit); **404** + `ApiResponse<bool>` failure when no waiter exists for `promptId` (`Intelligence.HumanPromptNotFound`); **200** + `ApiResponse<bool>` with `Data: true` when the answer is accepted.
 
 - **`POST /api/unseen-servant/jobs/{name}/initiative`** — `ApiResponse<UnseenServantJobStatusDto>` on every path. **400** `Validation.InvalidBody` for a missing or unparsable body and for an `intervalMinutes` outside the inclusive range **1..10080**; **400** `Validation.InvalidJobName` for a blank route name; **404** `Daemon.NotFound` when no job of that trimmed name is configured under `Arcanum:Daemon:Jobs`, with a message naming `arcanum daemon jobs` as the way to list the configured names; **200** with the recomputed job status once the dynamic interval is applied. `UnseenServantPacer.SetDynamicInterval` is a no-op for an unconfigured name, so the **404** is what keeps a mistyped name from reading as an applied change.
@@ -494,6 +497,67 @@ Before any search-provider work, the server validates the request and prospectiv
 There is no hop counter. Passes continue while they discover new unique URLs and stop at an optional `sourceTarget`, deterministic source exhaustion/no-progress, caller cancellation, explicit token/cost policy, provider/context failure, or a safety denial. The fetch phase that follows is bounded even when the request names no `sourceTarget`: a code-owned ceiling of 50 citations applies, and fetching stops once the retained page text already covers the synthesis prompt's character budget, since everything past it would be held in memory and then dropped unread. An explicit `sourceTarget` is the operator's own authority and is honoured as written.
 
 On live synthesis, supplied `attachedFiles` and `scryingFoci` enter the normal attachment pipeline: when Attachments are enabled they are persisted and bound to the synthesis Session before model inference; when Attachments are disabled they remain in-memory current-turn content. A context preview never persists them. `attachToSessionId` is separate: it stores the final research Markdown, not the supplied synthesis context. Attachment is an optional side effect on an answer that is already billed by the time it runs, so a failure there is never terminal: the stream emits an `attachment_failed` progress frame carrying the attachment error and still emits the `result` frame, with `attachmentId` null. `/api/web/search` and `/api/web/browse` have no progress channel, so they carry the same fact as an `attachmentError` field on the result itself.
+
+### 8.10.4 Explicit subagent memory delegation (`POST /api/intelligence/memory-delegation`)
+
+The authenticated native route accepts source-generated `MemoryDelegationRequest(PingRequest Parent, MemoryDelegationGrant Grant)` and returns **200** `ApiResponse<PromptResponseDto>` on success (§8.10). The parent can be stateless or Session-backed. The grant scope must equal the server-resolved canonical parent scope; a body Campaign id does not establish authority. The original authenticated `ProtectedRead` authority, clean request epoch and genuine Turn lease remain live through protected response serialization. A parent with context policy `None`, an explicit `noTools` policy, `disableAllTools: true` or forwarded client tools cannot select this capability. Health-aware preflight requires a configured candidate that supports native tools before protected hydration; effective candidate and concrete provider-lease checks apply again before execution and each fallback. Preparation holds no provider lease and makes no inference probe.
+
+The example illustrates the wire shape only. Its placeholder identities and zero digest do not identify a usable source or credential:
+
+```json
+{
+  "parent": {
+    "prompt": "Delegate the bounded task using the selected memory.",
+    "model": "exact-configured-model",
+    "sessionId": "11111111-1111-1111-1111-111111111111",
+    "skipSpellRouting": true,
+    "disableMcpTools": true,
+    "disableAllTools": false,
+    "maxOutputTokens": 256
+  },
+  "grant": {
+    "scope": { "kind": "Global", "campaignId": null },
+    "memory": {
+      "covenant": [
+        {
+          "entryId": "22222222-2222-2222-2222-222222222222",
+          "versionId": "33333333-3333-3333-3333-333333333333",
+          "fragmentDigest": { "bytes": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" }
+        }
+      ],
+      "saga": [],
+      "lexicon": []
+    },
+    "purpose": "DelegatedTask"
+  }
+}
+```
+
+The Session must already exist with its immutable Global-only binding for this example; omitting `sessionId` selects the ordinary stateless parent form. A Campaign grant uses `"kind": "Campaign"` and the matching nonempty canonical `campaignId`. The body is strict UTF-8 JSON with the ordinary 16 MiB native-parent transport ceiling and unknown-member rejection throughout the request closure. `purpose` is a string-only enum with canonical token `DelegatedTask`, also the omitted-field default. Scope canonical tokens are `Global` and `Campaign`; numeric scope and purpose values are refused.
+
+Exact coordinate shapes follow §8.21 without granting evaluation authority. Supply all three `memory` arrays, using empty arrays for unselected stores. Covenant `entryId` and `versionId` are nonempty GUIDs. Saga `memoryId` and Annals `versionId` are bounded nonempty strings; Lexicon `entryId` is a nonempty GUID and its Annals `versionId` is a bounded nonempty string. Saga and Lexicon add numeric `hashFormat` and `contentDigest` in the same digest-object shape: `1` is `LegacyStoreDigest`, and `2` is `LexiconStructuredSnapshot`; Saga permits only 1, while Lexicon must match its exact head's supported format. A digest contains base64 for exactly 32 bytes. For Covenant, obtain the current committed entry/version and matching eligible explain decision, then decode its hexadecimal `fragmentDigest` to bytes before base64 encoding. The source must be an exact current eligible head, not merely retained history. Normal scope, Campaign shadowing, masks, lifecycle, owner, validity, sensitivity and provenance checks still apply; historical dependencies are metadata proof only. Duplicate or invalid coordinates refuse the whole grant.
+
+| Code-owned bound | Limit |
+|---|---|
+| Selected exact versions across all three stores | 1–16 |
+| Selected plus dependency proof coordinates | 128 |
+| Rendered selected strict UTF-8 memory, including framing | 32 KiB |
+| Canonical proof metadata | 64 KiB |
+| Grant lifetime | At most five minutes from preparation, clipped by selected-source validity and parent lifetime |
+| Grants per root / live grants per process | One / 32, including consumed children until drained |
+| Successful consumption | Once, for one host-bound child |
+
+Overflow refuses the entire selection. The child must also fit the effective model context with explicit input/output reservations; selected fragments are never silently dropped to fit. No configuration knob widens these limits.
+
+Only this root's bound native `delegate_task` gains optional model argument `memory_grant`, whose accepted selector is `"memory"`. It is not a wrapper body field or bearer credential. The host validates and freezes the executed task, model, explicit files and attachment identities, token/cost limits and purpose, binds their canonical digest to the child RunId, and atomically consumes the grant. Missing selection follows ordinary isolated delegation. Bad, stale or consumed selection refuses that child and can return a tool failure while allowing the ordinary parent to continue. Siblings and nested invocations receive no selectable grant. Native delegation does not require `Arcanum:Features:Apprentices`; `disableMcpTools: true` leaves native tools available, and `skipSpellRouting: true` avoids auxiliary spell selection without disabling delegation.
+
+The selected child remains `ArcanumInvocationContext.None`, stateless and tool-free, without ambient retrieval or mutation/promotion authority. It receives only its ordinary explicit task inputs and the frozen selected fragments, preserving CONTEXT versus fenced DATA and source-token attribution. Its trusted maximum sensitivity and union provenance cover both selected sources and any frozen explicit parent-derived inputs. Later ordinary delegation can carry only explicit derived input with its non-reading output guard and label; it receives no additional selected fragments or source-read authority.
+
+Each physical protected provider send is durably disclosed and source-revalidated immediately before admission, remains cancellable and counted until teardown, and records known provider usage durably exactly once even when revocation withholds the result. Relevant source mutations conservatively revoke all live capsules in v1, cancel/drain their admitted effects before opening the SQLite write transaction, and prevent later protected sends or publication. This includes all three stores, deletion, retirement, suppression, reset/restore and authority/generation changes. Consumed-root protection persists through parent continuation and the whole HTTP serialization. An unused expired grant only prevents later selection; it does not cap ordinary untainted parent work. Earlier remote disclosure remains disclosed.
+
+Labels and provenance survive empty, failed and interrupted output, tool conversion, atomic Session tool-call/result text plus label persistence, subsequent parent sends and final output. A consumed root with actual nonempty staged Covenant mutations refuses the combined finalization before the mutation writer or its effects run: neither those source changes nor the assistant reply commit. Ordinary and unused-root combined commits retain their existing behavior. Immediate parent memory tools may commit and revoke the root, after which protected pair/final publication refuses (DESIGN §10.21.9).
+
+Responses carry `Cache-Control: no-store, private`, `Pragma: no-cache`, `Expires: 0` and no `ETag` or `Last-Modified`; original authority is revalidated before the first byte and the protected publication effect spans the entire serialization. Refusals are content-free: **400** `MemoryDelegation.InvalidGrant` for invalid body/scope/purpose/coordinates/bounds; **409** `MemoryDelegation.StaleSource` for changed, consumed, expired or revoked proof/authority, process quota, duplicate root or closed mutation admission; **503** `MemoryDelegation.Unavailable` for unavailable native composition/candidate or excluded client-forwarding mode. Shared authentication, Covenant, canonical Campaign/Session, preflight, provider and context-budget errors retain their established mapping. No idempotency cache/replay, durable grant CRUD, renewal or recovery can recreate executable authority. No CLI, Forge or configuration surface is added.
 
 ### 8.11 Daemon event SSE bus (`GET /api/events/daemon`)
 
@@ -789,6 +853,9 @@ The same Core `ErrorCodes.MemoryEvaluation` family owns internal adapter and led
 
 | Codes (grouped) | HTTP | Semantics |
 |-----------------|------|-----------|
+| `MemoryDelegation.InvalidGrant` | 400 | Malformed or invalid exact selection, body, scope, purpose, coordinate or bound (§8.10.4). |
+| `MemoryDelegation.StaleSource` | 409 | Changed, consumed, expired or revoked proof/authority; process quota, duplicate root or closed mutation admission. |
+| `MemoryDelegation.Unavailable` | 503 | Native delegation composition or eligible effective model candidate unavailable, or client forwarding excludes native execution. |
 | `MemoryEvaluation.InvalidRequest`; `MemoryEvaluation.InvalidScope`; `MemoryEvaluation.InvalidPrompt`; `MemoryEvaluation.InvalidEvaluation`; `MemoryEvaluation.InvalidMetadata` | 400 | Exact evaluation input, policy or bounded metadata refusal (§8.21). |
 | `MemoryEvaluation.NotFound` | 404 | Unknown evaluation evidence/identity, including another operation kind. |
 | `MemoryEvaluation.Gone` | 410 | The exact retained evaluation request identity remains after evidence erasure. |

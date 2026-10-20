@@ -225,12 +225,13 @@ public sealed class CampaignRollupTurnPreparer(
     ISessionTurnClaimReplayStore? replayStore = null,
     ILogger<CampaignRollupTurnPreparer>? logger = null)
 {
-    internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation) =>
+    internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation,
+        bool requireProtectedToolPersistence = false) =>
         invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
         && invocation.ContextPolicy is CovenantContextPolicy.Default
         && invocation.Campaign is { } canonical && canonical != default
         && !InferenceContextBuilder.HasStatelessMessages(request)
-        && (configuration.Features.LongRest || (configuration.ResolveIntelligence().EnableCampaignRollups && canonical.IsCampaignBound));
+        && (requireProtectedToolPersistence || configuration.Features.LongRest || (configuration.ResolveIntelligence().EnableCampaignRollups && canonical.IsCampaignBound));
 
     public async Task<Result<CampaignRollupTurnSnapshot?>> PrepareLiveAsync(
         PingRequest request,
@@ -238,13 +239,14 @@ public sealed class CampaignRollupTurnPreparer(
         bool streaming,
         CancellationToken cancellationToken,
         CovenantDigest? requestConfigurationDigest = null,
-        CampaignPreparationProgress? progress = null)
+        CampaignPreparationProgress? progress = null,
+        bool requireProtectedToolPersistence = false)
     {
         TurnIdempotencyRequestIdentity? accepted = TurnIdempotencyAmbient.RequestIdentity;
 
         ArcanumSettings preparationSettings = settings.CurrentValue;
 
-        if (!IsLiveEligible(preparationSettings, request, invocation))
+        if (!IsLiveEligible(preparationSettings, request, invocation, requireProtectedToolPersistence))
         {
             if (accepted is not null)
             {

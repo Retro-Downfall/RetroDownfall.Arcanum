@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -65,6 +66,20 @@ public sealed class PublishedArcanumSessionSmokeTests
     internal const string EvaluationMemory = "published-evaluation-memory-secret";
 
     internal const string EvaluationAnswer = "memory-known-answer";
+
+    internal const string DelegationParentPrompt = "published-delegation-parent";
+
+    internal const string DelegationChildPrompt = "published-delegation-child";
+
+    internal const string DelegationSelected = "published-delegation-selected-secret";
+
+    internal const string DelegationUnselected = "published-delegation-unselected-secret";
+
+    internal const string DelegationHistory = "published-delegation-history-secret";
+
+    internal const string DelegationChildAnswer = "published-delegation-child-answer " + DelegationSelected;
+
+    internal const string DelegationFinal = "published-delegation-final";
 
     private static readonly TimeSpan CliCleanupAttemptBudget = TimeSpan.FromSeconds(5);
 
@@ -262,6 +277,8 @@ public sealed class PublishedArcanumSessionSmokeTests
             Assert.Equal(ExpectedReply, assistantEntry.GetProperty("content").GetString());
 
             await ExerciseMemoryEvaluationAsync(client, provider, priorCalls: 1, deadline.Token);
+
+            await ExerciseMemoryDelegationAsync(client, provider, priorCalls: 7, deadline.Token);
 
             await AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
                 client,
@@ -726,6 +743,37 @@ public sealed class PublishedArcanumSessionSmokeTests
         Assert.Equal(7, provider.Requests.Length);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Loopback_fixture_delegates_one_child_then_continues_and_refuses_a_fourth_send(bool streaming)
+    {
+        await using var provider = await FakeOpenAiProvider.StartAsync();
+        using HttpClient client = new();
+
+        string[] prompts = ["published-delegation-parent", "published-delegation-child", "published-delegation-parent"];
+
+        for (int index = 0; index < prompts.Length; index++)
+        {
+            string json = "{\"model\":\"published-smoke-model\",\"stream\":" + (streaming ? "true" : "false")
+                + ",\"messages\":[{\"role\":\"user\",\"content\":\"" + prompts[index] + "\"}]}";
+
+            using var response = await client.PostAsync(new Uri(provider.Endpoint.AbsoluteUri + "/chat/completions"), new StringContent(json, Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            string body = await response.Content.ReadAsStringAsync();
+
+            Assert.Contains(index == 0 ? "tool_calls" : index == 1 ? "published-delegation-child-answer" : "published-delegation-final", body);
+        }
+
+        using var overflow = await client.PostAsync(new Uri(provider.Endpoint.AbsoluteUri + "/chat/completions"), new StringContent("{\"model\":\"published-smoke-model\",\"messages\":[{\"role\":\"user\",\"content\":\"published-delegation-parent\"}]}", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, overflow.StatusCode);
+
+        Assert.Equal(3, provider.Requests.Length);
+    }
+
     internal static void ConfigureEvaluationPricing(ArcanumSettings settings)
     {
         settings.Cost.Pricing.ModelPricing[ExpectedModel] = new ModelPricingEntry { InputPer1M = 1m, OutputPer1M = 2m };
@@ -830,6 +878,109 @@ public sealed class PublishedArcanumSessionSmokeTests
         Assert.Equal(priorCalls + 6, provider.RequestCount);
     }
 
+    internal sealed record DelegationEvidence(Guid SessionId, Guid CallEntryId, Guid ResultEntryId, Guid AssistantEntryId);
+
+    internal static async Task<DelegationEvidence> ExerciseMemoryDelegationAsync(HttpClient client, FakeOpenAiProvider provider,
+        int priorCalls, CancellationToken ct, Func<Guid, Task>? beforeTurn = null, Guid? campaignId = null)
+    {
+        var driver = new MemoryErasureRouteDriver(client);
+        var selected = await driver.SetCovenantAsync(CovenantScope.Global, null, "published.delegation.selected", DelegationSelected, ct);
+        _ = await driver.SetCovenantAsync(CovenantScope.Global, null, "published.delegation.unselected", DelegationUnselected, ct);
+        using var explainResponse = await client.PostAsync("api/memory/covenant/explain",
+            JsonContent.Create(new CovenantExplainRequest(null, false), ArcanumJsonContext.Default.CovenantExplainRequest), ct);
+        Assert.Equal(HttpStatusCode.OK, explainResponse.StatusCode);
+        var explain = await ReadDataAsync(explainResponse, ArcanumJsonContext.Default.ApiResponseCovenantExplainDto, ct);
+        var decision = Assert.Single(explain.Decisions, item => item.EntryId == selected.EntryId && item.VersionId == selected.ResultingVersionId);
+        Assert.Equal(CovenantLane.Confirmed, decision.Lane);
+        Assert.Equal(CovenantPlanDecision.EligibleConfirmed, decision.Decision);
+        Assert.NotNull(decision.Placement);
+
+        using var create = await client.PostAsync("api/sessions",
+            JsonContent.Create(new CreateSessionRequest(campaignId, "published delegation"), ArcanumJsonContext.Default.CreateSessionRequest), ct);
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+        Guid sessionId = (await ReadDataAsync(create, ArcanumJsonContext.Default.ApiResponseSessionDetailDto, ct)).Id;
+        using var append = await client.PostAsync($"api/sessions/{sessionId:D}/entries",
+            JsonContent.Create(new AppendEntryRequest(RetroDownfall.Arcanum.Core.Storage.Entities.MessageRole.User, DelegationHistory), ArcanumJsonContext.Default.AppendEntryRequest), ct);
+        Assert.True(append.IsSuccessStatusCode);
+
+        var request = new MemoryDelegationRequest(new(DelegationParentPrompt, Model: ExpectedModel, SessionId: sessionId,
+            DisableMcpTools: true, SkipSpellRouting: true, MaxOutputTokens: 256),
+            new(new(campaignId.HasValue ? MemoryEvaluationScopeKind.Campaign : MemoryEvaluationScopeKind.Global, campaignId), new([new(selected.EntryId, selected.ResultingVersionId!.Value,
+                new CovenantDigest(Convert.FromHexString(decision.FragmentDigest)))], [], [])));
+
+        if (beforeTurn is not null) await beforeTurn(sessionId);
+
+        using var response = await client.PostAsync("api/intelligence/memory-delegation",
+            JsonContent.Create(request, ArcanumJsonContext.Default.MemoryDelegationRequest), ct);
+        string diagnostic = await response.Content.ReadAsStringAsync(ct);
+        Assert.True(response.StatusCode == HttpStatusCode.OK, $"Delegation returned {(int)response.StatusCode}: {diagnostic}; provider calls={provider.RequestCount}.");
+        AssertProtectedHeaders(response);
+        var result = await ReadDataAsync(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, ct);
+        Assert.Equal(DelegationFinal, result.Text);
+        Assert.Equal(priorCalls + 3, provider.RequestCount);
+        var calls = provider.Requests.Skip(priorCalls).ToArray();
+        Assert.Equal(3, calls.Length);
+        Assert.All(calls, call =>
+        {
+            Assert.Equal(ExpectedModel, call.Model);
+            Assert.Equal("Bearer " + ProviderKey, call.Authorization);
+        });
+        var function = Assert.Single(calls[0].Payload.GetProperty("tools").EnumerateArray(), tool => tool.GetProperty("function").GetProperty("name").GetString() == "delegate_task").GetProperty("function");
+        var schema = function.GetProperty("parameters");
+        Assert.Equal("memory", Assert.Single(schema.GetProperty("properties").GetProperty("memory_grant").GetProperty("enum").EnumerateArray()).GetString());
+        Assert.DoesNotContain(schema.GetProperty("required").EnumerateArray(), item => item.GetString() == "memory_grant");
+        Assert.Contains(DelegationHistory, calls[0].Payload.GetProperty("messages").GetRawText());
+        string child = calls[1].Payload.GetProperty("messages").GetRawText();
+        Assert.Contains(DelegationSelected, child);
+        Assert.DoesNotContain(DelegationUnselected, child);
+        Assert.DoesNotContain(DelegationHistory, child);
+        Assert.DoesNotContain(DelegationParentPrompt, child);
+        Assert.Equal(DelegationChildPrompt, calls[1].Prompt);
+        Assert.Equal(256, calls[1].Payload.GetProperty("max_completion_tokens").GetInt32());
+        Assert.False(calls[1].Payload.TryGetProperty("tools", out _));
+        Assert.False(calls[1].Payload.TryGetProperty("tool_choice", out _));
+        var toolResult = Assert.Single(calls[2].Payload.GetProperty("messages").EnumerateArray(), message => message.GetProperty("role").GetString() == "tool");
+        Assert.Equal("call-published-delegation", toolResult.GetProperty("tool_call_id").GetString());
+        Assert.Contains(DelegationChildAnswer, toolResult.GetProperty("content").GetRawText());
+
+        using var entriesResponse = await client.GetAsync($"api/sessions/{sessionId:D}/entries?limit=20", ct);
+        Assert.Equal(HttpStatusCode.OK, entriesResponse.StatusCode);
+        var entries = await ReadDataAsync(entriesResponse, ArcanumJsonContext.Default.ApiResponseEntryDtoArray, ct);
+        var callEntry = Assert.Single(entries, entry => entry.ToolName == "delegate_task");
+        var resultEntry = Assert.Single(entries, entry => entry.Content.StartsWith("[ToolResult:", StringComparison.Ordinal));
+        var finalEntry = Assert.Single(entries, entry => entry.Content == DelegationFinal);
+        Assert.Equal("assistant", callEntry.Role);
+        Assert.Equal("system", resultEntry.Role);
+        Assert.Contains(DelegationChildAnswer, resultEntry.Content);
+        Assert.Equal("assistant", finalEntry.Role);
+
+        var invalid = request with { Grant = request.Grant with { Memory = request.Grant.Memory with
+        {
+            Covenant = [request.Grant.Memory.Covenant[0] with { FragmentDigest = new CovenantDigest(new byte[32]) }]
+        } } };
+        using var refused = await client.PostAsync("api/intelligence/memory-delegation",
+            JsonContent.Create(invalid, ArcanumJsonContext.Default.MemoryDelegationRequest), ct);
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        AssertProtectedHeaders(refused);
+        var failure = await JsonSerializer.DeserializeAsync(await refused.Content.ReadAsStreamAsync(ct), ArcanumJsonContext.Default.ApiResponsePromptResponseDto, ct);
+        Assert.False(failure!.IsSuccess);
+        Assert.Equal("MemoryDelegation.StaleSource", failure.Error!.Value.Code);
+        string refusal = await refused.Content.ReadAsStringAsync(ct);
+        Assert.DoesNotContain(DelegationSelected, refusal);
+        Assert.DoesNotContain(DelegationUnselected, refusal);
+        Assert.Equal(priorCalls + 3, provider.RequestCount);
+        return new(sessionId, callEntry.Id, resultEntry.Id, finalEntry.Id);
+    }
+
+    private static void AssertProtectedHeaders(HttpResponseMessage response)
+    {
+        Assert.Equal("no-store, private", response.Headers.CacheControl!.ToString());
+        Assert.Equal("no-cache", response.Headers.Pragma.ToString());
+        Assert.Equal("0", Assert.Single(response.Content.Headers.GetValues("Expires")));
+        Assert.Null(response.Headers.ETag);
+        Assert.Null(response.Content.Headers.LastModified);
+    }
+
     private static async Task<T> ReadDataAsync<T>(HttpResponseMessage response, JsonTypeInfo<ApiResponse<T>> info, CancellationToken ct)
     {
         var body = await JsonSerializer.DeserializeAsync(await response.Content.ReadAsStreamAsync(ct), info, ct);
@@ -862,7 +1013,7 @@ public sealed class PublishedArcanumSessionSmokeTests
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = providerEndpoint.AbsoluteUri,
                         CredentialEnvironmentVariable = ProviderKeyVariable,
-                        Models = [new ModelEntry(ExpectedModel, SupportsTools: false)],
+                        Models = [new ModelEntry(ExpectedModel, SupportsTools: true)],
                         ContextWindowLimit = 8192,
                     },
                 ],
@@ -1057,6 +1208,8 @@ public sealed class PublishedArcanumSessionSmokeTests
 
         private int _requestCount;
 
+        private int? _delegationStart;
+
         private readonly ConcurrentQueue<ProviderRequest> _requests = new();
 
         internal readonly TaskCompletionSource FirstArm = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1108,7 +1261,12 @@ public sealed class PublishedArcanumSessionSmokeTests
                 bool streaming = request.RootElement.TryGetProperty("stream", out var stream) && stream.GetBoolean();
 
                 int count = Interlocked.Increment(ref provider!._requestCount);
-                if (count > 7)
+                // The dedicated parent marker begins one bounded scenario; default fixtures retain seven sends.
+                if (provider._delegationStart is null && prompt == DelegationParentPrompt) provider._delegationStart = count;
+
+                int? phase = provider._delegationStart is { } start ? count - start : null;
+
+                if (phase is >= 3 || phase is null && count > 7)
                 {
                     context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
                     return;
@@ -1117,6 +1275,12 @@ public sealed class PublishedArcanumSessionSmokeTests
                 var captured = new ProviderRequest(model, authorization, prompt, streaming, request.RootElement.Clone());
                 provider._requests.Enqueue(captured);
                 _ = provider._request.TrySetResult(captured);
+
+                if (phase is { } delegationPhase)
+                {
+                    await WriteDelegationAsync(context, delegationPhase, streaming);
+                    return;
+                }
 
                 if (!streaming)
                 {
@@ -1155,6 +1319,22 @@ public sealed class PublishedArcanumSessionSmokeTests
             provider = new FakeOpenAiProvider(application, endpoint);
 
             return provider;
+        }
+
+        private static async Task WriteDelegationAsync(HttpContext context, int phase, bool streaming)
+        {
+            const string arguments = "{\"prompt\":\"published-delegation-child\",\"max_tokens\":256,\"memory_grant\":\"memory\"}";
+            string content = phase == 1 ? DelegationChildAnswer : DelegationFinal;
+            string message = phase == 0
+                ? "\"role\":\"assistant\",\"tool_calls\":[{" + (streaming ? "\"index\":0," : "")
+                    + "\"id\":\"call-published-delegation\",\"type\":\"function\",\"function\":{\"name\":\"delegate_task\",\"arguments\":\"" + JsonEncodedText.Encode(arguments) + "\"}}]"
+                : "\"role\":\"assistant\",\"content\":\"" + JsonEncodedText.Encode(content) + "\"";
+            string body = "{\"id\":\"chatcmpl-delegation\",\"object\":\"" + (streaming ? "chat.completion.chunk" : "chat.completion")
+                + "\",\"created\":0,\"model\":\"published-smoke-model\",\"choices\":[{\"index\":0,\"" + (streaming ? "delta" : "message")
+                + "\":{" + message + "},\"finish_reason\":\"" + (phase == 0 ? "tool_calls" : "stop")
+                + "\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":4,\"total_tokens\":24}}";
+            context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
+            await context.Response.WriteAsync(streaming ? "data: " + body + "\n\ndata: [DONE]\n\n" : body, context.RequestAborted);
         }
 
         public Task<ProviderRequest> WaitForRequestAsync(CancellationToken cancellationToken) =>

@@ -76,7 +76,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
         + "and reply with exactly MARKER=<conversation marker>; TOKEN=<CURRENT_TOKEN> and no other text.";
 
     private const string RequiredImageSha256 =
-        "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
+        "713ec8279747a2a33ee6e7407155f5c75be51037545aaec18677f0d7f91bf3da";
 
     private static readonly TimeSpan HostStartupBudget = TimeSpan.FromMinutes(3);
 
@@ -430,7 +430,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 "add",
                 isolatedImage,
                 "--mime",
-                "image/jpeg",
+                "image/png",
                 "--name",
                 LocalOllamaQualificationGuards.VisionAttachmentName,
                 "--session",
@@ -440,7 +440,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
             string? imageLogicalKey = image.GetProperty("logicalKey").GetString();
             string? imageOriginalFileName = image.GetProperty("originalFileName").GetString();
 
-            Assert.Equal("image/jpeg", image.GetProperty("mimeType").GetString());
+            Assert.Equal("image/png", image.GetProperty("mimeType").GetString());
             Assert.False(
                 LocalOllamaQualificationGuards.ContainsVisionAnswerLeakage(
                     imageLogicalKey,
@@ -1148,8 +1148,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 },
                 Security = new SecuritySettings
                 {
-                    AllowedUploadMimeTypes = ["text/plain", "image/jpeg"],
-                    AllowedImageMimeTypes = ["image/jpeg"],
+                    AllowedUploadMimeTypes = ["text/plain", "image/png"],
+                    AllowedImageMimeTypes = ["image/png"],
                 },
                 Workspaces = new WorkspaceSettings
                 {
@@ -1578,7 +1578,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
     {
         Assert.True(
             LocalOllamaQualificationGuards.IsQualifiedImage(path, RequiredImageSha256),
-            $"Qualification image must be the bounded JPEG fixture with SHA-256 {RequiredImageSha256}.");
+            $"Qualification image must be the bounded PNG fixture with SHA-256 {RequiredImageSha256}.");
     }
 
     private static string ComputeSha256(ReadOnlySpan<byte> bytes) =>

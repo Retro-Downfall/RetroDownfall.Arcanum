@@ -18,10 +18,13 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fixture)
 {
     private const string QualifiedImageSha256 =
-        "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
+        "713ec8279747a2a33ee6e7407155f5c75be51037545aaec18677f0d7f91bf3da";
 
     private const string RetiredImageSha256 =
         "0495a19041de6db44a4a8eca3b5117e6b1ff0ce14b80a22134bb9d65a7f87b22";
+
+    private const string RetiredOperatorImageSha256 =
+        "88d2994d07000a2c3bb31f307c536c6a9c45731d9d002c33bd8407817f269cb0";
 
     private const string OptInVariable = "ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION";
 
@@ -105,6 +108,99 @@ public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fix
 
             Assert.Contains(QualifiedImageSha256, contents, StringComparison.Ordinal);
             Assert.DoesNotContain(RetiredImageSha256, contents, StringComparison.Ordinal);
+            Assert.DoesNotContain(RetiredOperatorImageSha256, contents, StringComparison.Ordinal);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Wrapper_accepts_checked_in_png_fixture_with_its_real_checksum()
+    {
+        RequirePosixScriptFixture();
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
+            receiptKind: "ollama");
+
+        File.Delete(Path.Combine(fixture.Root, "bin", "shasum"));
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable,
+            "--image",
+            Path.Combine(fixture.RepositoryRoot, "tests", "assets", "stop-sign.png"));
+
+        Assert.True(result.ExitCode == 0, result.StandardError);
+        Assert.Contains(
+            $"--filter {ExactQualificationFilter}",
+            File.ReadAllText(fixture.DotnetLog),
+            StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Wrapper_rejects_tampered_png_before_launching_the_harness()
+    {
+        RequirePosixScriptFixture();
+
+        using PublishedApphostVerificationScriptTests.ScriptFixture fixture = new(
+            receiptKind: "ollama");
+
+        File.Delete(Path.Combine(fixture.Root, "bin", "shasum"));
+
+        byte[] image = File.ReadAllBytes(
+            Path.Combine(fixture.RepositoryRoot, "tests", "assets", "stop-sign.png"));
+
+        image[^1] ^= 1;
+
+        File.WriteAllBytes(fixture.Image, image);
+
+        PublishedApphostVerificationScriptTests.ScriptResult result = await fixture.RunAsync(
+            Path.Combine(fixture.RepositoryRoot, "scripts", WrapperName),
+            "--executable",
+            fixture.Executable,
+            "--image",
+            fixture.Image);
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains("not the qualified stop-sign fixture", result.StandardError, StringComparison.Ordinal);
+        Assert.False(File.Exists(fixture.DotnetLog));
+    }
+
+    [Fact]
+    public void Checked_in_png_fixture_is_admitted_but_tampered_or_non_png_bytes_are_rejected()
+    {
+        const string expectedSha256 =
+            "713ec8279747a2a33ee6e7407155f5c75be51037545aaec18677f0d7f91bf3da";
+
+        string source = Path.Combine(FindRepositoryRoot(), "tests", "assets", "stop-sign.png");
+
+        Assert.True(LocalOllamaQualificationGuards.IsQualifiedImage(source, expectedSha256));
+
+        string root = Path.Combine(Path.GetTempPath(), $"arcanum-png-guard-{Guid.NewGuid():N}");
+        string candidate = Path.Combine(root, "candidate.dat");
+
+        try
+        {
+            Directory.CreateDirectory(root);
+
+            byte[] bytes = File.ReadAllBytes(source);
+
+            bytes[^1] ^= 1;
+
+            File.WriteAllBytes(candidate, bytes);
+
+            Assert.False(LocalOllamaQualificationGuards.IsQualifiedImage(candidate, expectedSha256));
+
+            byte[] jpeg = [0xFF, 0xD8, 0xFF, 0xD9, 0x00, 0x00, 0x00, 0x00];
+
+            File.WriteAllBytes(candidate, jpeg);
+
+            Assert.False(LocalOllamaQualificationGuards.IsQualifiedImage(
+                candidate,
+                Convert.ToHexString(SHA256.HashData(jpeg))));
+        }
+        finally
+        {
+            LocalOllamaQualificationGuards.DeleteDirectoryWithRetries(root);
         }
     }
 
@@ -472,12 +568,12 @@ public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fix
         Assert.False(LocalOllamaQualificationGuards.IsLocalOllamaEndpoint(null, out _));
 
         string root = Path.Combine(Path.GetTempPath(), $"arcanum-ollama-guard-{Guid.NewGuid():N}");
-        string path = Path.Combine(root, "candidate.jpg");
+        string path = Path.Combine(root, "candidate.png");
 
         try
         {
             Directory.CreateDirectory(root);
-            byte[] bytes = [0xFF, 0xD8, 0xFF, 0x00];
+            byte[] bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00];
             File.WriteAllBytes(path, bytes);
 
             string expectedSha256 = Convert.ToHexString(SHA256.HashData(bytes));
@@ -488,7 +584,7 @@ public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fix
             Assert.False(LocalOllamaQualificationGuards.IsQualifiedImage(string.Empty, expectedSha256));
             Assert.False(LocalOllamaQualificationGuards.IsQualifiedImage(root, expectedSha256));
             Assert.False(LocalOllamaQualificationGuards.IsQualifiedImage(
-                Path.Combine(root, "missing.jpg"),
+                Path.Combine(root, "missing.png"),
                 expectedSha256));
             Assert.False(LocalOllamaQualificationGuards.IsQualifiedImage("\0", expectedSha256));
         }

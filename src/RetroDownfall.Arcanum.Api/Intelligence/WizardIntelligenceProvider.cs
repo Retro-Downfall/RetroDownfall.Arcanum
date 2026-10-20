@@ -1744,7 +1744,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         CampaignRollupTurnSnapshot? campaignTurn = null;
 
-        if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext)
+        if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext, requireProtectedToolPersistence: memoryDelegation is not null)
             || (TurnIdempotencyAmbient.RequestIdentity is not null && campaignRollups is not null))
         {
             if (campaignRollups is null || covenantScope is null)
@@ -1763,7 +1763,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
                 request, invocationContext, streaming, inferenceToken,
-                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value), preparationProgress);
+                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value), preparationProgress,
+                requireProtectedToolPersistence: memoryDelegation is not null);
 
             Task<Result<CampaignRollupTurnSnapshot?>> preparation = covenantScope.CampaignPreparation;
 
