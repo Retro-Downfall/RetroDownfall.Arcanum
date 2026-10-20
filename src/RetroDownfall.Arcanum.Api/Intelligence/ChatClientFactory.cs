@@ -37,7 +37,8 @@ public sealed class ChatClientFactory(
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IProviderApiKeyResolver? apiKeyResolver = null,
     IFamiliarProcessRunner? familiarProcessRunner = null,
-    ILoggerFactory? loggerFactory = null) : IChatClientFactory
+    ILoggerFactory? loggerFactory = null,
+    PromptCacheConfigurationEpoch? promptCacheConfigurationEpoch = null) : IChatClientFactory
 {
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
@@ -56,6 +57,15 @@ public sealed class ChatClientFactory(
         // Hot-reload: read settings only here — never cache ArcanumSettings on the singleton factory.
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
+        PromptCacheConfigurationSnapshot? snapshot = arc.Features.DynamicContextInjectionV2
+            ? promptCacheConfigurationEpoch?.Capture()
+            : null;
+
+        if (snapshot is not null)
+        {
+            arc = snapshot.ReadSettings();
+        }
+
         if (!ProviderResolver.TryResolveProviderForModel(arc, targetModel, out ProviderSettings? provider, out string resolvedModel)
             || provider is null)
         {
@@ -64,12 +74,35 @@ public sealed class ChatClientFactory(
 
         }
 
-        return ResolveClientAsync(provider, resolvedModel, cancellationToken);
+        return ResolveClientCoreAsync(provider, resolvedModel, arc.Features.DynamicContextInjectionV2, snapshot, cancellationToken);
 
     }
 
-    public async Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
+    public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
     {
+        bool enabled = optionsMonitor.CurrentValue.Features.DynamicContextInjectionV2;
+
+        PromptCacheConfigurationSnapshot? snapshot = enabled ? promptCacheConfigurationEpoch?.Capture() : null;
+
+        enabled = snapshot?.ReadSettings().Features.DynamicContextInjectionV2 ?? enabled;
+
+        return ResolveClientCoreAsync(provider, resolvedModel, enabled, snapshot, cancellationToken);
+    }
+
+    private async Task<ChatClientLease> ResolveClientCoreAsync(
+        ProviderSettings provider,
+        string resolvedModel,
+        bool enabled,
+        PromptCacheConfigurationSnapshot? snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (!Enum.IsDefined(provider.OutputTokenLimitWireDialect))
+        {
+            throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
+        }
+
+        // Freeze the declared wire contract before any asynchronous credential resolution.
+        provider = PromptCacheClientIdentity.Freeze(provider);
 
         if (FamiliarProviders.IsFamiliar(provider))
         {
@@ -83,6 +116,15 @@ public sealed class ChatClientFactory(
             throw new InvalidOperationException(
                 $"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'.");
 
+        }
+
+        if (enabled)
+        {
+            ResolvedProviderCredential captured = await _apiKeyResolver
+                .ResolveWithIdentityAsync(provider, cancellationToken)
+                .ConfigureAwait(false);
+
+            return CreateOpenAiCompatibleLease(provider, resolvedModel, captured.Secret, snapshot?.Stamp, captured.Stamp);
         }
 
         string? resolvedApiKey = await _apiKeyResolver
@@ -134,7 +176,9 @@ public sealed class ChatClientFactory(
     private ChatClientLease CreateOpenAiCompatibleLease(
         ProviderSettings provider,
         string resolvedModel,
-        string? resolvedApiKey)
+        string? resolvedApiKey,
+        PromptCacheConfigurationStamp? configurationStamp = null,
+        ProviderCredentialStamp? credentialStamp = null)
     {
 
         string key = resolvedApiKey ?? KeylessOpenAiPlaceholder;
@@ -152,11 +196,24 @@ public sealed class ChatClientFactory(
 
         };
 
+        options.AddPolicy(new OutputTokenLimitWirePolicy(provider.OutputTokenLimitWireDialect), PipelinePosition.PerCall);
+
+        PromptCacheDispatchPolicy? dispatchPolicy = configurationStamp is null ? null : new();
+
+        if (dispatchPolicy is not null)
+        {
+            options.AddPolicy(dispatchPolicy, PipelinePosition.BeforeTransport);
+        }
+
         var chatClient = new ChatClient(resolvedModel, credential, options);
 
         IChatClient meAi = chatClient.AsIChatClient();
 
-        return new ChatClientLease(meAi, provider, resolvedModel, ownedHttpClient: null);
+        PromptCacheClientIdentity? identity = configurationStamp is not null
+            ? new(meAi, provider, resolvedModel, configurationStamp, credentialStamp, dispatchPolicy)
+            : null;
+
+        return new ChatClientLease(meAi, provider, resolvedModel, ownedHttpClient: null, identity);
 
     }
 
@@ -177,8 +234,11 @@ public sealed class ChatClientLease : IDisposable
         IChatClient chatClient,
         ProviderSettings provider,
         string resolvedModel,
-        HttpClient? ownedHttpClient)
+        HttpClient? ownedHttpClient,
+        PromptCacheClientIdentity? promptCacheIdentity = null)
     {
+
+        PromptCacheIdentity = promptCacheIdentity;
 
         ChatClient = chatClient;
 
@@ -189,6 +249,8 @@ public sealed class ChatClientLease : IDisposable
         _ownedHttpClient = ownedHttpClient;
 
     }
+
+    public PromptCacheClientIdentity? PromptCacheIdentity { get; }
 
     public IChatClient ChatClient { get; }
 

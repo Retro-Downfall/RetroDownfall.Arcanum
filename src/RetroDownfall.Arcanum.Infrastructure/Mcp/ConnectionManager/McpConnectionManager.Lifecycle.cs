@@ -794,6 +794,8 @@ public sealed partial class McpConnectionManager
                             TrustedStructuredToolResultKind.WorkspaceCheck);
                 }
 
+                server.IssueCacheProvenance(trustedTool);
+
                 tagged.Add(
                     new LoadedMcpToolRow(
                         trustedTool,

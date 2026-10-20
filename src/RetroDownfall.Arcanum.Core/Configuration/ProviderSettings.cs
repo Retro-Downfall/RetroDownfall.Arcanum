@@ -39,6 +39,9 @@ public sealed record ProviderSettings
     /// </summary>
     public string[] HiddenModels { get; set; } = [];
 
+    /// <summary>Output-limit field accepted by this HTTP provider. The default preserves the SDK wire contract.</summary>
+    public OutputTokenLimitWireDialect OutputTokenLimitWireDialect { get; set; }
+
     public int ContextWindowLimit { get; set; } = 8192;
 
     public override string ToString()

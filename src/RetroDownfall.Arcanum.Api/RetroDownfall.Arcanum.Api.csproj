@@ -18,6 +18,8 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
 
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.PromptCache.Benchmarks" />
+
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using RetroDownfall.Arcanum.Core.Covenant;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -26,6 +27,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     private readonly ILogger? _logger;
 
+    private readonly PromptCacheDispatchValidator? _promptCacheDispatchValidator;
+
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator)
         : this(tokenEstimator, settings: null, logger: (ILogger?)null)
     {
@@ -41,18 +44,21 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
     public ModelCallExecutor(
         IModelTokenEstimator tokenEstimator,
         IOptionsMonitor<ArcanumSettings>? settings,
-        ILogger<ModelCallExecutor> logger)
-        : this(tokenEstimator, settings, (ILogger?)logger)
+        ILogger<ModelCallExecutor> logger,
+        PromptCacheDispatchValidator? promptCacheDispatchValidator = null)
+        : this(tokenEstimator, settings, (ILogger?)logger, promptCacheDispatchValidator)
     {
     }
 
     internal ModelCallExecutor(
         IModelTokenEstimator tokenEstimator,
         IOptionsMonitor<ArcanumSettings>? settings,
-        ILogger? logger)
+        ILogger? logger,
+        PromptCacheDispatchValidator? promptCacheDispatchValidator = null)
     {
         _tokenEstimator = tokenEstimator ?? throw new ArgumentNullException(nameof(tokenEstimator));
         _settings = settings;
+        _promptCacheDispatchValidator = promptCacheDispatchValidator;
         _logger = logger;
     }
 
@@ -75,6 +81,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         ArgumentNullException.ThrowIfNull(messages);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
+
+        context = SuppressSensitiveCachePlan(context);
 
         if (ValidatePrecomputedBreakdown(messages, options, context) is { } staleError)
         {
@@ -115,12 +123,27 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         {
             SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
-            ChatResponse response = await chatClient
-                .GetResponseAsync(
-                    providerPayload.Messages,
-                    providerPayload.Options,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            if (await ValidateDispatchAsync(chatClient, messages, options, context, cancellationToken).ConfigureAwait(false) is { } dispatchError)
+            {
+                return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, dispatchError.Error, Cause: null, dispatchError.RetryDirective));
+            }
+
+            using PromptCacheDispatchPolicy.Scope? dispatchScope = EnterPromptCacheDispatchScope(chatClient, messages, options, context, cancellationToken);
+
+            ChatResponse response;
+
+            try
+            {
+                response = await chatClient.GetResponseAsync(
+                    providerPayload.Messages, providerPayload.Options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (AggregateException ex) when (dispatchScope?.IsTerminalRefusal(ex) == true)
+            {
+                PromptCacheDispatchException refusal = dispatchScope.Refusal!;
+
+                return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, refusal.Error, Cause: null, refusal.RetryDirective));
+            }
+
             (ReasoningOutputMode? requestedOutput, ReasoningOutputMode effectiveOutput) =
                 ResolveReasoningOutput(options, purpose);
             ModelCallReasoningResult reasoning = ExtractReasoning(
@@ -139,6 +162,10 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                     response.Usage,
                     reasoning,
                     breakdown));
+        }
+        catch (PromptCacheDispatchException ex)
+        {
+            return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, ex.Error, Cause: null, ex.RetryDirective));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -175,6 +202,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         ArgumentNullException.ThrowIfNull(messages);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(budget);
+
+        context = SuppressSensitiveCachePlan(context);
 
         if (ValidatePrecomputedBreakdown(messages, options, context) is { } staleError)
         {
@@ -222,16 +251,35 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
         SubagentExecutionAmbient.Tracker?.BeginModelCall();
 
+        var dispatchError = await ValidateDispatchAsync(chatClient, messages, options, context, cancellationToken).ConfigureAwait(false);
+
+        if (dispatchError is not null)
+        {
+            yield return new ModelCallFailureUpdate(purpose, modelCallId, dispatchError.Value.Error, dispatchError.Value.RetryDirective);
+
+            yield break;
+        }
+
         try
         {
-            await foreach (ChatResponseUpdate update in chatClient
-                .GetStreamingResponseAsync(
-                    providerPayload.Messages,
-                    providerPayload.Options,
-                    cancellationToken)
-                .WithCancellation(cancellationToken)
-                .ConfigureAwait(false))
+            await using IAsyncEnumerator<ChatResponseUpdate> stream = chatClient.GetStreamingResponseAsync(
+                providerPayload.Messages, providerPayload.Options, cancellationToken).GetAsyncEnumerator(cancellationToken);
+
+            while (true)
             {
+                var next = await MoveNextProviderUpdateAsync(stream, chatClient, messages, options, context, cancellationToken).ConfigureAwait(false);
+
+                if (next.Refusal is { } refusal)
+                {
+                    yield return new ModelCallFailureUpdate(purpose, modelCallId, refusal.Error, refusal.RetryDirective);
+
+                    yield break;
+                }
+
+                if (!next.HasUpdate) break;
+
+                ChatResponseUpdate update = stream.Current;
+
                 if (update.Contents is { Count: > 0 })
                 {
                     foreach (AIContent content in update.Contents)
@@ -292,6 +340,34 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             RecordReconciliationMetrics(breakdown, finalUsage, context);
             RecordPromptCacheMetrics(context, purpose, finalUsage);
             RecordDelegatedUsage(context, finalUsage);
+        }
+    }
+
+    private PromptCacheDispatchPolicy.Scope? EnterPromptCacheDispatchScope(IChatClient client, IList<ChatMessage> messages,
+        ChatOptions options, ModelCallContext? context, CancellationToken ct) =>
+        context?.PromptCacheBinding is PromptCacheDispatchBinding binding
+            ? binding.Prepared.Identity.DispatchPolicy?.Enter(() => ValidateDispatchAsync(client, messages, options, context, ct))
+            : null;
+
+    private async ValueTask<(bool HasUpdate, PromptCacheDispatchException? Refusal)> MoveNextProviderUpdateAsync(
+        IAsyncEnumerator<ChatResponseUpdate> stream, IChatClient client, IList<ChatMessage> messages,
+        ChatOptions options, ModelCallContext? context, CancellationToken ct)
+    {
+        // Scope each MoveNext, never a yielded consumer continuation. AsyncLocal isolates concurrent
+        // requests sharing this lease, and disposal restores the caller even on cancellation/fault.
+        using PromptCacheDispatchPolicy.Scope? scope = EnterPromptCacheDispatchScope(client, messages, options, context, ct);
+
+        try
+        {
+            return (await stream.MoveNextAsync().ConfigureAwait(false), null);
+        }
+        catch (PromptCacheDispatchException refusal)
+        {
+            return (false, refusal);
+        }
+        catch (AggregateException ex) when (scope?.IsTerminalRefusal(ex) == true)
+        {
+            return (false, scope.Refusal);
         }
     }
 
@@ -402,6 +478,41 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 (double)actualSavings,
                 tags);
         }
+    }
+
+    private static ModelCallContext? SuppressSensitiveCachePlan(ModelCallContext? context) =>
+        context is { Sensitivity: not ContentSensitivity.None, PromptCachePlan: not null }
+            ? context with { PromptCachePlan = null } : context;
+
+    private async ValueTask<(Error Error, ModelCallRetryDirective RetryDirective)?> ValidateDispatchAsync(IChatClient client, IList<ChatMessage> messages,
+        ChatOptions options, ModelCallContext? context, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        if (context?.PromptCacheBinding is null)
+        {
+            return null;
+        }
+
+        Result<PromptCacheDispatchStatus> validation = _promptCacheDispatchValidator is null
+            ? Result<PromptCacheDispatchStatus>.Success(PromptCacheDispatchStatus.ReplanRequired)
+            : await _promptCacheDispatchValidator.ValidateAsync(client, messages, options, context, ct).ConfigureAwait(false);
+
+        if (validation.IsFailure)
+        {
+            return (validation.Error, ModelCallRetryDirective.None);
+        }
+
+        if (validation.Value == PromptCacheDispatchStatus.OptimizationUnavailable)
+        {
+            return (new Error(ErrorCodes.Hub.ContextBudgetExceeded,
+                "Optional cache proof is unavailable; admit the ordinary payload before dispatch."),
+                ModelCallRetryDirective.OrdinaryPromptCacheFallback);
+        }
+
+        return validation.Value == PromptCacheDispatchStatus.Current ? null : (new Error(
+            ErrorCodes.Hub.ContextBudgetExceeded,
+            "The provider payload or its authority changed after materialization; replan before dispatch."), ModelCallRetryDirective.None);
     }
 
     private static Error? ValidatePromptCachePlan(
@@ -521,7 +632,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 messageList,
                 options,
                 context.ReservedAnswerTokens,
-                context.ReservedReasoningTokens));
+                context.ReservedReasoningTokens,
+                context.SystemPromptAttribution));
         RecordEstimatedInput(breakdown, context);
         return breakdown;
     }

@@ -69,13 +69,26 @@ internal static class PromptCachePlanner
                 PromptCacheNonEligibilityReason.UnsupportedDialect);
         }
 
+        if (document.OrderedSegments.Any(static segment => segment.Sensitive
+            || IsProtectedKind(segment.Kind)
+            || segment.ResolvedParts.Any(static part => SystemPromptAttributionMap.IsCovenant(part.Attribution))))
+        {
+            return PromptCachePlan.NonCacheable(
+                provider.Name,
+                model,
+                semanticNamespace,
+                PromptCacheEligibility.NonCacheable,
+                PromptCacheNonEligibilityReason.SensitiveContent);
+        }
+
         int lastEligibleSegment = -1;
 
         for (int index = 0; index < document.OrderedSegments.Count; index++)
         {
             PromptSegment segment = document.OrderedSegments[index];
 
-            if (segment.Stability == PromptSegmentStability.Volatile)
+            if (segment.Stability != PromptSegmentStability.Stable
+                || !Enum.IsDefined(segment.Kind))
             {
                 break;
             }
@@ -96,7 +109,7 @@ internal static class PromptCachePlanner
                 PromptCacheNonEligibilityReason.NoStablePrefix);
         }
 
-        string stableDigest = ComputeStableSegmentDigest(document);
+        string stableDigest = ComputeStableSegmentDigest(document, lastEligibleSegment);
         string toolDigest = profile.ToolSchemasParticipate
             ? ComputeToolSchemaDigest(options.Tools)
             : string.Empty;
@@ -124,16 +137,105 @@ internal static class PromptCachePlanner
             PromptCacheNonEligibilityReason.None);
     }
 
-    private static string ComputeStableSegmentDigest(SystemPromptDocument document)
+    /// <summary>
+    /// Plans a local v2 prefix over the existing render. Tool hashing binds order and bytes;
+    /// trusted tool provenance and dispatch authority remain the responsibility of later gates.
+    /// An optional scope marker is already present in that render; this method inserts no text.
+    /// </summary>
+    public static PromptCachePrefixDecision CreatePrefixDecision(
+        SystemPromptBuildResult buildResult,
+        ChatOptions options,
+        string scopeMarkerDigest = "")
+    {
+        ArgumentNullException.ThrowIfNull(buildResult);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(scopeMarkerDigest);
+
+        if (buildResult.HasCovenantContent
+            || buildResult.CacheSegments.Any(static segment => segment.Sensitive
+                || segment.SourceClass == PromptCacheSourceClass.Protected))
+        {
+            return NonCacheablePrefix(PromptCacheNonEligibilityReason.SensitiveContent);
+        }
+
+        if (scopeMarkerDigest.Length != 0
+            && (scopeMarkerDigest.Length != 64
+                || scopeMarkerDigest.Any(static character => !char.IsAsciiHexDigit(character))))
+        {
+            return NonCacheablePrefix(PromptCacheNonEligibilityReason.InvalidPlan);
+        }
+
+        int prefixEnd = 0;
+
+        foreach (PromptCacheSegmentDescriptor segment in buildResult.CacheSegments)
+        {
+            if (!PromptCachePolicyV2.IsEligible(
+                segment.SourceClass,
+                segment.Stability == PromptSegmentStability.Stable,
+                segment.Sensitive))
+            {
+                break;
+            }
+
+            if (segment.CacheBoundaryEligible)
+            {
+                prefixEnd = segment.Utf16Start + segment.Utf16Length;
+            }
+        }
+
+        if (prefixEnd == 0)
+        {
+            return NonCacheablePrefix(PromptCacheNonEligibilityReason.NoStablePrefix);
+        }
+
+        if (prefixEnd < buildResult.Prompt.Length
+            && char.IsHighSurrogate(buildResult.Prompt[prefixEnd - 1])
+            && char.IsLowSurrogate(buildResult.Prompt[prefixEnd]))
+        {
+            return NonCacheablePrefix(PromptCacheNonEligibilityReason.InvalidPlan);
+        }
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        Append(hash, "arcanum-dci-prefix-v2");
+        Append(hash, buildResult.Prompt.AsSpan(0, prefixEnd));
+
+        return new PromptCachePrefixDecision(
+            PromptCachePolicyV2.Version,
+            0,
+            prefixEnd,
+            FinishHex(hash),
+            scopeMarkerDigest,
+            ComputeToolSchemaDigest(options.Tools),
+            PromptCacheEligibility.Eligible,
+            PromptCacheNonEligibilityReason.None);
+    }
+
+    private static PromptCachePrefixDecision NonCacheablePrefix(PromptCacheNonEligibilityReason reason) =>
+        new(
+            PromptCachePolicyV2.Version,
+            0,
+            0,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            PromptCacheEligibility.NonCacheable,
+            reason);
+
+    private static bool IsProtectedKind(PromptSegmentKind kind) =>
+        kind is PromptSegmentKind.CovenantProposed
+            or PromptSegmentKind.CovenantGlobalConfirmed
+            or PromptSegmentKind.CovenantCampaignConfirmed;
+
+    private static string ComputeStableSegmentDigest(
+        SystemPromptDocument document,
+        int lastEligibleSegment)
     {
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-        foreach (PromptSegment segment in document.OrderedSegments)
+        for (int index = 0; index <= lastEligibleSegment; index++)
         {
-            if (segment.Stability != PromptSegmentStability.Stable)
-            {
-                continue;
-            }
+            PromptSegment segment = document.OrderedSegments[index];
 
             Append(hash, segment.Kind.ToString());
             Append(hash, segment.Text);
@@ -205,6 +307,11 @@ internal static class PromptCachePlanner
             return;
         }
 
+        Append(hash, value.AsSpan());
+    }
+
+    private static void Append(IncrementalHash hash, ReadOnlySpan<char> value)
+    {
         int byteCount = Encoding.UTF8.GetByteCount(value);
         Span<byte> length = stackalloc byte[4];
         BinaryPrimitives.WriteInt32LittleEndian(length, byteCount);
@@ -219,7 +326,7 @@ internal static class PromptCachePlanner
 
         try
         {
-            int written = Encoding.UTF8.GetBytes(value, rented);
+            int written = Encoding.UTF8.GetBytes(value, rented.AsSpan());
             hash.AppendData(rented.AsSpan(0, written));
         }
         finally

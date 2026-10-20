@@ -66,6 +66,176 @@ public sealed class ProviderCredentialStoreTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failed_os_read_preserves_ordinary_resolution_but_never_proves_combined_capture(bool hasMirror)
+    {
+        SetEnvironment("ARCANUM_TEST_PROOF_QUALITY", null);
+
+        if (hasMirror)
+        {
+            using ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore());
+
+            await writer.SaveApiKeyAsync("proof-quality", "mirror-secret");
+        }
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.Failed("locked OS store"));
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "proof-quality", CredentialEnvironmentVariable = "ARCANUM_TEST_PROOF_QUALITY" };
+
+        string? expectedSecret = hasMirror ? "mirror-secret" : null;
+
+        Assert.Equal(expectedSecret, await resolver.ResolveAsync(provider));
+
+        Assert.Equal(1, os.ReadCallCount);
+
+        ResolvedProviderCredential combined = await resolver.ResolveWithIdentityAsync(provider);
+
+        Assert.Equal(expectedSecret, combined.Secret);
+
+        Assert.Equal(2, os.ReadCallCount);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+
+        Assert.Null(combined.Stamp);
+    }
+
+    [Fact]
+    public async Task Genuine_os_and_mirror_absence_proves_keylessness_from_one_read()
+    {
+        SetEnvironment("ARCANUM_TEST_PROOF_QUALITY", null);
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "proof-quality", CredentialEnvironmentVariable = "ARCANUM_TEST_PROOF_QUALITY" };
+
+        ResolvedProviderCredential combined = await resolver.ResolveWithIdentityAsync(provider);
+
+        Assert.Null(combined.Secret);
+
+        Assert.NotNull(combined.Stamp);
+
+        Assert.Equal(1, os.ReadCallCount);
+
+        Assert.Null(await resolver.ResolveAsync(provider));
+
+        Assert.Equal(2, os.ReadCallCount);
+
+        Assert.Equal(0, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Combined_and_ordinary_resolution_preserve_one_read_mirror_migration(bool combined)
+    {
+        SetEnvironment("ARCANUM_TEST_PROOF_QUALITY", null);
+
+        using (ProviderCredentialStore writer = CreateStore(new UnavailableOsCredentialStore()))
+        {
+            await writer.SaveApiKeyAsync("proof-quality", "migration-secret");
+        }
+
+        RecordingOsCredentialStore os = new(OsCredentialStoreResult.NotFound());
+
+        using ProviderCredentialStore store = CreateStore(os);
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "proof-quality", CredentialEnvironmentVariable = "ARCANUM_TEST_PROOF_QUALITY" };
+
+        if (combined)
+        {
+            ResolvedProviderCredential captured = await resolver.ResolveWithIdentityAsync(provider);
+
+            Assert.Equal("migration-secret", captured.Secret);
+
+            Assert.NotNull(captured.Stamp);
+        }
+        else
+        {
+            Assert.Equal("migration-secret", await resolver.ResolveAsync(provider));
+        }
+
+        Assert.Equal(1, os.ReadCallCount);
+
+        Assert.Equal(1, os.SetCallCount);
+
+        Assert.Equal(0, os.DeleteCallCount);
+    }
+
+    [Fact]
+    public async Task Successful_local_save_and_delete_ABA_revoke_captured_identity()
+    {
+        SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", null);
+
+        using ProviderCredentialStore store = CreateStore(new InMemoryOsCredentialStore());
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "identity", CredentialEnvironmentVariable = "ARCANUM_TEST_LOCAL_IDENTITY" };
+
+        await store.SaveApiKeyAsync(provider.Name, "first");
+
+        var first = await resolver.ResolveWithIdentityAsync(provider);
+
+        Assert.NotNull(first.Stamp);
+
+        await store.SaveApiKeyAsync(provider.Name, "second");
+
+        await store.SaveApiKeyAsync(provider.Name, "first");
+
+        Assert.False(await resolver.IsCurrentAsync(provider, first.Stamp));
+
+        var second = await resolver.ResolveWithIdentityAsync(provider);
+
+        await store.DeleteApiKeyAsync(provider.Name);
+
+        await store.SaveApiKeyAsync(provider.Name, "first");
+
+        Assert.False(await resolver.IsCurrentAsync(provider, second.Stamp!));
+    }
+
+    [Fact]
+    public async Task Failed_local_mutation_does_not_publish_a_new_identity()
+    {
+        SetEnvironment("ARCANUM_TEST_LOCAL_IDENTITY", null);
+
+        InMemoryOsCredentialStore backing = new();
+
+        using (ProviderCredentialStore writer = CreateStore(backing))
+        {
+            await writer.SaveApiKeyAsync("identity", "first");
+        }
+
+        using ProviderCredentialStore store = CreateStore(new WriteFailingStore(backing, deleteFails: true));
+
+        IProviderApiKeyResolver resolver = new ProviderApiKeyResolver(store);
+
+        ProviderSettings provider = new() { Name = "identity", CredentialEnvironmentVariable = "ARCANUM_TEST_LOCAL_IDENTITY" };
+
+        var first = await resolver.ResolveWithIdentityAsync(provider);
+
+        Assert.NotNull(first.Stamp);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.SaveApiKeyAsync("identity", "second"));
+
+        Assert.True(await resolver.IsCurrentAsync(provider, first.Stamp));
+    }
+
     [Fact]
     public void Credential_identity_is_stable_and_distinct_from_the_web_research_account()
     {
@@ -692,7 +862,14 @@ public sealed class ProviderCredentialStoreTests : IDisposable
 
         public int DeleteCallCount { get; private set; }
 
-        public OsCredentialStoreResult TryGet(string service, string account) => readResult;
+        public int ReadCallCount { get; private set; }
+
+        public OsCredentialStoreResult TryGet(string service, string account)
+        {
+            ReadCallCount++;
+
+            return readResult;
+        }
 
         public OsCredentialStoreResult Set(string service, string account, string secret)
         {

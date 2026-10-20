@@ -9560,7 +9560,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ISessionTurnClaimBeginStore? claimedBeginStore = null,
         ISessionTurnClaimCoordinator? claims = null,
         ICanonicalCampaignContextResolver? campaignResolver = null,
-        RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker? healthTracker = null)
+        RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker? healthTracker = null,
+        PromptCacheDispatchValidator? cacheValidator = null)
     {
         settings ??= DefaultSettings();
 
@@ -9620,6 +9621,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ordinaryServices.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
             ordinaryConnections ?? new FixtureOrdinaryConnectionFactory());
 
+        if (cacheValidator is not null)
+        {
+            ordinaryServices.AddSingleton(cacheValidator);
+        }
+
         ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
 
         GrimoireTurnWriter grimoireTurnWriter = new(
@@ -9673,6 +9679,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             sessionAttachmentRetrieval: sessionAttachmentRetrieval,
             serviceProvider: ordinaryProvider,
             modelTokenEstimator: modelTokenEstimator,
+            modelCallExecutor: cacheValidator is null ? null : new ModelCallExecutor(
+                modelTokenEstimator ?? new ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
+                null, (ILogger?)null, cacheValidator),
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities,
             campaignRollups: campaignRollups,

@@ -124,6 +124,7 @@ public sealed class SettingDescriptorParityTests
 
     [Theory]
     [InlineData("providers.models.reasoning.wireDialect", typeof(ReasoningWireDialect))]
+    [InlineData("providers.outputTokenLimitWireDialect", typeof(OutputTokenLimitWireDialect))]
     public void Reasoning_enum_descriptors_match_contract_types(string key, Type enumType)
     {
 

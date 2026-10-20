@@ -4,6 +4,9 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Covenant;
+using RetroDownfall.Arcanum.Tests.Support;
 using OpenAI;
 using OpenAI.Chat;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -122,6 +125,42 @@ public sealed class PromptCachingChatOptionsAdapterTests
         Assert.Null(mapped.RawRepresentationFactory);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Executor_protected_history_without_prompt_markers_suppresses_cache_directives(bool streaming)
+    {
+        ChatOptions options = new();
+
+        ReasoningChatOptionsAdapter.Apply(options, new ReasoningRequestOptions(BudgetTokens: 2048), ReasoningWireDialect.OpenRouter);
+
+        byte[] body = await SendProviderRequestAsync(options, streaming, protectedHistory: true);
+
+        using JsonDocument document = JsonDocument.Parse(body);
+
+        Assert.False(document.RootElement.TryGetProperty("prompt_cache_key", out _));
+
+        Assert.False(document.RootElement.TryGetProperty("prompt_cache_retention", out _));
+
+        Assert.Equal(2048, document.RootElement.GetProperty("reasoning").GetProperty("max_tokens").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("gpt-5.6")]
+    [InlineData("gpt-5.6-mini")]
+    [InlineData("gpt-6")]
+    public void New_model_generation_has_no_unverified_explicit_cache_contract(string model)
+    {
+        ProviderSettings provider = new() { Name = "openai", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://api.openai.com/v1", Models = [model] };
+
+        Assert.Null(ModelCapabilityCatalog.ResolvePromptCaching(provider, model));
+
+        if (model.StartsWith("gpt-5.", StringComparison.Ordinal))
+        {
+            Assert.Equal("o200k_base", ModelCapabilityCatalog.Resolve(provider, model)?.Tokenization.TokenizerId);
+        }
+    }
+
     private static PromptCachingProfile ExplicitProfile(PromptCacheRetentionPolicy retention) =>
         new()
         {
@@ -149,7 +188,8 @@ public sealed class PromptCachingChatOptionsAdapterTests
 
     private static async Task<byte[]> SendProviderRequestAsync(
         ChatOptions options,
-        bool streaming)
+        bool streaming,
+        bool protectedHistory = false)
     {
         using CapturingProviderHandler handler = new();
         using HttpClient httpClient = new(handler);
@@ -165,7 +205,29 @@ public sealed class PromptCachingChatOptionsAdapterTests
         using IChatClient client = concreteClient.AsIChatClient();
         MeAiChatMessage[] messages = [new(ChatRole.System, "stable"), new(ChatRole.User, "solve")];
 
-        if (streaming)
+        if (protectedHistory)
+        {
+            ProviderSettings provider = new() { Name = "provider", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://api.openai.com/v1", Models = ["gpt-5"] };
+
+            ModelCallExecutor executor = new(new ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)));
+
+            ModelCallContext context = new(provider, "gpt-5", 0, 0,
+                PromptCachePlan: EligiblePlan(PromptCacheRetentionPolicy.ProviderDefault) with { Model = "gpt-5" },
+                Sensitivity: ContentSensitivity.CovenantDerived);
+
+            if (streaming)
+            {
+                await foreach (var update in executor.ExecuteStreamingAsync(client, messages, options, UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, CancellationToken.None, context))
+                {
+                    Assert.IsNotType<ModelCallFailureUpdate>(update);
+                }
+            }
+            else
+            {
+                Assert.True((await executor.ExecuteBufferedAsync(client, messages, options, UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, CancellationToken.None, context)).IsSuccess);
+            }
+        }
+        else if (streaming)
         {
             await foreach (ChatResponseUpdate _ in client.GetStreamingResponseAsync(messages, options))
             {

@@ -992,6 +992,13 @@ public sealed class ConfigurationValidator(
                     $"Provider '{provider.Name}' type must be OpenAICompatible (Ollama via http://localhost:11434/v1), ClaudeCodeCli, or CodexCli."));
             }
 
+            if (!Enum.IsDefined(provider.OutputTokenLimitWireDialect))
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{providerPointer}.outputTokenLimitWireDialect",
+                    "OutputTokenLimitWireDialect must be MaxCompletionTokens or MaxTokens."));
+            }
+
             bool isFamiliar = FamiliarProviders.IsFamiliar(provider.Type);
 
             ModelEntry[] models = provider.Models ?? [];
@@ -1861,6 +1868,13 @@ public sealed class ConfigurationValidator(
             errors.Add(new ConfigurationValidationError(
                 $"{providerPointer}.command",
                 $"Provider '{provider.Name}' command must name the {FamiliarProviders.DisplayName(provider.Type)} binary, or be omitted to resolve `{FamiliarProviders.DefaultCommand(provider.Type)}` on PATH."));
+        }
+
+        if (provider.OutputTokenLimitWireDialect != OutputTokenLimitWireDialect.MaxCompletionTokens)
+        {
+            errors.Add(new ConfigurationValidationError(
+                $"{providerPointer}.outputTokenLimitWireDialect",
+                "Output-limit wire dialect applies only to HTTP providers. Remove the non-default value."));
         }
 
         ValidateHiddenModels(provider, providerPointer, errors);

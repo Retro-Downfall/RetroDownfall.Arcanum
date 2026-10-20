@@ -6,6 +6,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
 public sealed class ArcanumLocalTimeTool : AIFunction
 {
+    public ArcanumLocalTimeTool() =>
+        RetroDownfall.Arcanum.Infrastructure.Intelligence.PromptCacheToolProvenance.Issue(this);
+
     public const string ToolName =
         ArcanumBuiltInToolNames.GetLocalSystemTime;
 

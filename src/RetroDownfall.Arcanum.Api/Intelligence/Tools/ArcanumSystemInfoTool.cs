@@ -7,6 +7,9 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
 public sealed class ArcanumSystemInfoTool : AIFunction
 {
+    public ArcanumSystemInfoTool() =>
+        RetroDownfall.Arcanum.Infrastructure.Intelligence.PromptCacheToolProvenance.Issue(this);
+
     public const string ToolName =
         ArcanumBuiltInToolNames.GetArcanumSystemInfo;
 

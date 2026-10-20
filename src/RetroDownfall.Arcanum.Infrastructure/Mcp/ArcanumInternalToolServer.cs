@@ -812,6 +812,26 @@ internal sealed partial class ArcanumInternalToolServer
         return new JsonRpcResponse { Id = rpcId, Result = result, Error = null };
     }
 
+    private McpToolDefinitionWire[] _cacheDefinitions = [];
+
+    internal void IssueCacheProvenance(McpBridgeTool tool)
+    {
+        McpToolDefinitionWire? expected = _cacheDefinitions.FirstOrDefault(d => d.Name == tool.Name);
+
+        if (expected is not null && expected.Description == tool.Description
+            && JsonElement.DeepEquals(expected.InputSchema, tool.JsonSchema))
+        {
+            RetroDownfall.Arcanum.Infrastructure.Intelligence.PromptCacheToolProvenance.Issue(tool);
+        }
+    }
+
+    private static bool HasConstantCacheDefinition(string name) => name is
+        "read_file_chunk" or "replace_text_block" or "write_file" or "list_directory" or "execute_command"
+        or "adjust_initiative" or "send_commlink_alert" or "petition_dungeon_master" or "ask_human"
+        or "cast_sending" or "dispatch_sending" or "continue_sending" or "scribe_lexicon" or "delete_lexicon"
+        or "propose_covenant" or "retire_covenant" or "search_archives" or "read_saga"
+        or "attach_session_file" or "refresh_session_file";
+
     private JsonRpcResponse BuildToolsListResponse(JsonElement rpcId)
     {
         List<McpToolDefinitionWire> tools = [];
@@ -1058,6 +1078,8 @@ internal sealed partial class ArcanumInternalToolServer
                     InputSchema = _refreshSessionFileSchema,
                 });
         }
+
+        _cacheDefinitions = tools.Where(t => HasConstantCacheDefinition(t.Name)).ToArray();
 
         McpToolsListResultWire body = new() { Tools = tools.ToArray() };
 

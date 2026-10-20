@@ -23,11 +23,13 @@ public sealed class InternalsVisibleToInventoryTests
         "src/RetroDownfall.Arcanum.Core/RetroDownfall.Arcanum.Core.csproj",
         "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.Tests")]
 
+    // The prompt-cache benchmark seeds its controlled public-fixture availability from the
+    // production CovenantRuntimeGenerationState.Initial projection.
     [InlineData(
         "src/RetroDownfall.Arcanum.Infrastructure/RetroDownfall.Arcanum.Infrastructure.csproj",
         "RetroDownfall.Arcanum.Api,RetroDownfall.Arcanum.Api.DevHost,RetroDownfall.Arcanum.Cli,"
         + "RetroDownfall.Arcanum.Covenant.Benchmarks,RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks,"
-        + "RetroDownfall.Arcanum.RegexAotSmoke,"
+        + "RetroDownfall.Arcanum.PromptCache.Benchmarks,RetroDownfall.Arcanum.RegexAotSmoke,"
         + "RetroDownfall.Arcanum.Tests")]
 
     [InlineData(

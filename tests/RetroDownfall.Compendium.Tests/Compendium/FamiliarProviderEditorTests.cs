@@ -18,6 +18,30 @@ public sealed class FamiliarProviderEditorTests
 {
 
     [Fact]
+    public void HTTP_output_limit_contract_is_editable_and_resets_when_switched_to_a_Familiar()
+    {
+        ProvidersSectionViewModel section = new(new StubDialogService());
+
+        section.LoadFrom([new ProviderSettings { Name = "public", Endpoint = "http://example.test/v1", Models = ["public-model"], OutputTokenLimitWireDialect = OutputTokenLimitWireDialect.MaxTokens }], null, null);
+
+        var row = Assert.Single(section.Providers);
+
+        Assert.Equal(OutputTokenLimitWireDialect.MaxTokens, row.OutputTokenLimitWireDialect);
+
+        Assert.Equal(OutputTokenLimitWireDialect.MaxTokens, Assert.Single(section.BuildProviders()).OutputTokenLimitWireDialect);
+
+        row.OutputTokenLimitWireDialect = OutputTokenLimitWireDialect.MaxCompletionTokens;
+
+        Assert.Equal(OutputTokenLimitWireDialect.MaxCompletionTokens, Assert.Single(section.BuildProviders()).OutputTokenLimitWireDialect);
+
+        row.OutputTokenLimitWireDialect = OutputTokenLimitWireDialect.MaxTokens;
+
+        row.Type = AiProviderKind.CodexCli;
+
+        Assert.Equal(OutputTokenLimitWireDialect.MaxCompletionTokens, Assert.Single(section.BuildProviders()).OutputTokenLimitWireDialect);
+    }
+
+    [Fact]
     public void The_hide_list_round_trips_through_the_editor()
     {
 

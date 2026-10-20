@@ -164,6 +164,65 @@ public static class SystemPromptBuilder
         return new SystemPromptDocument(segments);
     }
 
+    /// <summary>Stable-partitions complete typed sections, preserving their framing and source order.</summary>
+    public static SystemPromptDocument BuildCacheLayout(SystemPromptDocument ordinary, string scopeMarkerDigest)
+    {
+        if (scopeMarkerDigest.Length != 64 || scopeMarkerDigest.Any(c => !char.IsAsciiHexDigit(c))
+            || ordinary.OrderedSegments.Count == 0
+            || ordinary.OrderedSegments[0].Kind != PromptSegmentKind.Preamble
+            || ordinary.OrderedSegments.Any(s => !Enum.IsDefined(s.Kind) || s.Sensitive
+                || s.ResolvedParts.Any(p => p.Attribution is CovenantPromptAttribution.CovenantConfirmed or CovenantPromptAttribution.CovenantProposed)
+                || s.Kind is PromptSegmentKind.CovenantGlobalConfirmed or PromptSegmentKind.CovenantCampaignConfirmed or PromptSegmentKind.CovenantProposed))
+        {
+            return ordinary;
+        }
+
+        List<List<PromptSegment>> sections = [];
+
+        foreach (PromptSegment segment in ordinary.OrderedSegments.Skip(1))
+        {
+            if (segment.Kind is PromptSegmentKind.Data or PromptSegmentKind.DataHeader
+                or PromptSegmentKind.ContextHeader or PromptSegmentKind.InstructionsHeader)
+            {
+                sections.Add([]);
+            }
+
+            if (sections.Count == 0)
+            {
+                return ordinary;
+            }
+
+            sections[^1].Add(segment);
+        }
+
+        PromptSegment preamble = ordinary.OrderedSegments[0];
+
+        string marker = $"\n[arcanum-dci-scope-v2:{scopeMarkerDigest}]\n";
+
+        List<PromptSegment> ordered = [preamble with
+        {
+            Text = preamble.Text + marker,
+            Parts = [.. preamble.ResolvedParts, new PromptSegmentPart(CovenantPromptAttribution.Preamble, marker.Length)],
+        }];
+
+        bool Eligible(List<PromptSegment> section) => section.All(s =>
+            PromptCachePolicyV2.IsEligible(
+                s.Kind switch
+                {
+                    PromptSegmentKind.ContextHeader or PromptSegmentKind.ContextPlaceholder
+                        or PromptSegmentKind.InstructionsHeader or PromptSegmentKind.InstructionsPlaceholder => PromptCacheSourceClass.CodeOwnedFraming,
+                    PromptSegmentKind.TerminalFormatting => PromptCacheSourceClass.CodeOwnedFormatting,
+                    _ => PromptCacheSourceClass.Unclassified,
+                }, s.Stability == PromptSegmentStability.Stable, s.Sensitive));
+
+        foreach (List<PromptSegment> section in sections.Where(Eligible).Concat(sections.Where(s => !Eligible(s))))
+        {
+            ordered.AddRange(section);
+        }
+
+        return new SystemPromptDocument(ordered);
+    }
+
     internal static void AppendUntrusted(StringBuilder sb, string label, string content)
     {
         sb.Append("[Attached: ");

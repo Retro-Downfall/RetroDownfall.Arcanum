@@ -2049,6 +2049,9 @@ public static class ServiceCollectionExtensions
         // intends instead of whatever a reflective activator can reach.
         services.AddSingleton<CovenantRuntimeGenerationProvider>();
 
+        services.AddSingleton<IPromptCacheAuthoritySnapshotProvider>(
+            static sp => new PromptCacheAuthoritySnapshotProvider(sp.GetRequiredService<CovenantRuntimeGenerationProvider>()));
+
         services.AddSingleton<ICovenantRuntimeGenerationProvider>(
             static sp => sp.GetRequiredService<CovenantRuntimeGenerationProvider>());
 

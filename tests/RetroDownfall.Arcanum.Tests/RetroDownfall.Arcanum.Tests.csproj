@@ -61,6 +61,20 @@
 
   <ItemGroup>
 
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkRunner.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkRunner.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkArguments.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkArguments.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkTransport.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkTransport.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkComposition.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkComposition.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkContracts.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkContracts.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkJsonContext.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkJsonContext.cs" />
+
+    <Compile Include="..\RetroDownfall.Arcanum.PromptCache.Benchmarks\PromptCacheBenchmarkEvidence.cs" Link="Benchmarks\PromptCache\PromptCacheBenchmarkEvidence.cs" />
+
     <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\AdmissionBenchmarkContracts.cs" Link="Benchmarks\GrimoireAdmission\AdmissionBenchmarkContracts.cs" />
 
     <Compile Include="..\RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks\AdmissionBenchmarkComparison.cs" Link="Benchmarks\GrimoireAdmission\AdmissionBenchmarkComparison.cs" />

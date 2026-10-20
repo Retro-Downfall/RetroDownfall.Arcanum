@@ -15,6 +15,23 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class ArcanumSettingsBindingTests
 {
     [Fact]
+    public void Configure_binds_Dci_v2_opt_in_and_omission_is_disabled()
+    {
+        Assert.False(new ArcanumSettings().Features.DynamicContextInjectionV2);
+
+        IConfigurationRoot configuration = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["Arcanum:Features:DynamicContextInjectionV2"] = "true" }).Build();
+
+        ServiceCollection services = new();
+
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        Assert.True(provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Features.DynamicContextInjectionV2);
+    }
+
+    [Fact]
     public void Configure_binds_providers_and_default_model_via_source_generator()
     {
         string json = """

@@ -19,6 +19,7 @@ public enum PromptCacheNonEligibilityReason
     NoStablePrefix = 5,
     AuxiliaryPurpose = 6,
     InvalidPlan = 7,
+    SensitiveContent = 8,
 }
 
 public enum PromptCacheSemanticNamespace
@@ -66,3 +67,27 @@ public sealed record PromptCachePlan(
             eligibility,
             reason);
 }
+
+/// <summary>Closed source provenance classes; stability alone never grants v2 eligibility.</summary>
+public enum PromptCacheSourceClass
+{
+    Unclassified = 0,
+    CodeOwnedFraming = 1,
+    CodeOwnedFormatting = 2,
+    Protected = 3,
+    Dynamic = 4,
+}
+
+/// <summary>
+/// Content-free local planning result over one already rendered system prompt. This decision
+/// grants no authority and is not proof of tool provenance or eligibility to dispatch.
+/// </summary>
+public sealed record PromptCachePrefixDecision(
+    string PolicyVersion,
+    int Utf16Start,
+    int Utf16Length,
+    string PrefixDigest,
+    string ScopeMarkerDigest,
+    string ToolSchemaDigest,
+    PromptCacheEligibility Eligibility,
+    PromptCacheNonEligibilityReason NonEligibilityReason);

@@ -21,6 +21,59 @@ public sealed class CovenantRuntimeGenerationProviderTests
     private static readonly Guid NextDataset = Guid.Parse("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE");
 
     [Fact]
+    public void Prompt_cache_facade_projects_exactly_one_composite_runtime_read()
+    {
+        var first = CovenantRuntimeGenerationState.Initial with
+        {
+            AuthoritySlot = new CovenantAuthoritySnapshot(1, "test-installation", 2, 3, 4, CovenantHostToolsState.Clean, null),
+        };
+
+        var second = first with
+        {
+            RuntimeAuthorityGeneration = 8,
+
+            AuthorityRetired = true,
+
+            Availability = first.Availability with { Generation = 21, FeatureEnabled = true },
+        };
+
+        CountingRuntime runtime = new(first, second);
+
+        IPromptCacheAuthoritySnapshotProvider facade = new PromptCacheAuthoritySnapshotProvider(runtime);
+
+        var captured = facade.Capture();
+
+        Assert.Equal(1, runtime.Reads);
+
+        Assert.Equal(1, captured.RuntimeAuthorityGeneration);
+
+        Assert.Same(first.Availability, captured.Availability);
+
+        Assert.Same(first.ActiveAuthority, captured.Authority);
+
+        Assert.False(captured.Availability.FeatureEnabled);
+
+        var next = facade.Capture();
+
+        Assert.Equal(2, runtime.Reads);
+
+        Assert.Equal(8, next.RuntimeAuthorityGeneration);
+
+        Assert.Same(second.Availability, next.Availability);
+
+        Assert.True(next.Availability.FeatureEnabled);
+
+        Assert.Null(next.Authority);
+    }
+
+    private sealed class CountingRuntime(CovenantRuntimeGenerationState first, CovenantRuntimeGenerationState second) : ICovenantRuntimeGenerationProvider
+    {
+        public int Reads { get; private set; }
+
+        public CovenantRuntimeGenerationState Current => ++Reads == 1 ? first : second;
+    }
+
+    [Fact]
     public void Codec_key_captures_bind_the_runtime_authority_generation()
     {
         Assert.NotNull(typeof(CovenantEnvelopeKeyReservation).GetProperty("RuntimeAuthorityGeneration"));

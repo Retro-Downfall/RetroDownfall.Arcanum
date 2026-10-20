@@ -35,6 +35,19 @@ internal sealed record MirroredCredentialPolicy(
     bool RequireOsWrite = false);
 
 /// <summary>
+/// The effective result and proof quality of one gated credential read. Never serialize or log
+/// this secret-bearing carrier; proof quality cannot be reconstructed from the degraded result.
+/// </summary>
+internal sealed class MirroredCredentialRead(SecretStoreReadResult result, bool identityProven)
+{
+    internal SecretStoreReadResult Result { get; } = result;
+
+    internal bool IdentityProven { get; } = identityProven;
+
+    public override string ToString() => "MirroredCredentialRead { Result = [REDACTED] }";
+}
+
+/// <summary>
 /// The single read/peek/save/delete policy for a credential kept in the OS credential store with an
 /// owner-only, Data Protection-encrypted file mirror (DESIGN §11.2). Each instance owns one account
 /// and one gate; operations on that account are serialized through it.
@@ -105,7 +118,11 @@ internal sealed class MirroredOsCredential(
     /// When the OS store cannot answer, a mirror is served — unless a mirror write after a committed
     /// OS change failed and left it marked stale, in which case it is refused.
     /// </summary>
-    internal Task<SecretStoreReadResult> GetAsync(CancellationToken cancellationToken) =>
+    internal async Task<SecretStoreReadResult> GetAsync(CancellationToken cancellationToken) =>
+        (await GetCoreAsync(adoptMirrorServedOverOsFailure: false, cancellationToken).ConfigureAwait(false)).Result;
+
+    /// <summary>Preserves proof quality from the same ordinary resolution, without a second read.</summary>
+    internal Task<MirroredCredentialRead> GetWithProofAsync(CancellationToken cancellationToken) =>
         GetCoreAsync(adoptMirrorServedOverOsFailure: false, cancellationToken);
 
     /// <summary>
@@ -113,10 +130,10 @@ internal sealed class MirroredOsCredential(
     /// failed is adopted for this process (<see cref="ServingMirrorDuringOsFailure"/>), so a
     /// locked-keychain boot keeps authenticating its key once the startup digest's TTL lapses.
     /// </summary>
-    internal Task<SecretStoreReadResult> GetAtStartupAsync(CancellationToken cancellationToken) =>
-        GetCoreAsync(adoptMirrorServedOverOsFailure: true, cancellationToken);
+    internal async Task<SecretStoreReadResult> GetAtStartupAsync(CancellationToken cancellationToken) =>
+        (await GetCoreAsync(adoptMirrorServedOverOsFailure: true, cancellationToken).ConfigureAwait(false)).Result;
 
-    private async Task<SecretStoreReadResult> GetCoreAsync(
+    private async Task<MirroredCredentialRead> GetCoreAsync(
         bool adoptMirrorServedOverOsFailure,
         CancellationToken cancellationToken)
     {
@@ -132,7 +149,7 @@ internal sealed class MirroredOsCredential(
             {
                 await SynchronizeMirrorAsync(os.Value).ConfigureAwait(false);
 
-                return SecretStoreReadResult.Ok(os.Value);
+                return new(SecretStoreReadResult.Ok(os.Value), identityProven: true);
             }
 
             if (os.Status == OsCredentialStoreStatus.Failed)
@@ -143,11 +160,15 @@ internal sealed class MirroredOsCredential(
                     os.Message);
             }
 
+            // Failed reads leave a potentially superseding OS credential unknown. The legacy
+            // result may still serve the mirror or report Missing, but neither establishes proof.
+            bool identityProven = os.Status is OsCredentialStoreStatus.NotFound or OsCredentialStoreStatus.Unavailable;
+
             SecretStoreReadResult fromMirror = await mirror.ReadAsync(cancellationToken).ConfigureAwait(false);
 
             if (fromMirror.Status == SecretStoreReadStatus.Ok && MirrorIsMarkedStale())
             {
-                return StaleMirrorRefusal(os);
+                return new(StaleMirrorRefusal(os), identityProven: false);
             }
 
             if (fromMirror.Status == SecretStoreReadStatus.Ok)
@@ -158,7 +179,7 @@ internal sealed class MirroredOsCredential(
 
                     if (refused is not null)
                     {
-                        return refused;
+                        return new(refused, identityProven: false);
                     }
                 }
                 else if (os.Status == OsCredentialStoreStatus.Unavailable)
@@ -175,12 +196,12 @@ internal sealed class MirroredOsCredential(
                     _servingMirrorDuringOsFailure = true;
                 }
 
-                return fromMirror;
+                return new(fromMirror, identityProven);
             }
 
             if (fromMirror.Status != SecretStoreReadStatus.Missing)
             {
-                return fromMirror;
+                return new(fromMirror, identityProven);
             }
 
             // A read that FAILED leaves the credential's existence unknown, so it must not collapse to
@@ -189,12 +210,12 @@ internal sealed class MirroredOsCredential(
             // different: the backend is absent, so nothing of ours can be living in it.
             if (os.Status == OsCredentialStoreStatus.Failed && policy.OsReadFailureWithoutMirrorIsCorrupt)
             {
-                return SecretStoreReadResult.Corrupted(
+                return new(SecretStoreReadResult.Corrupted(
                     $"OS key storage failed while reading {policy.Description}. "
-                    + (os.Message ?? policy.RecoveryHint));
+                    + (os.Message ?? policy.RecoveryHint)), identityProven: false);
             }
 
-            return fromMirror;
+            return new(fromMirror, identityProven);
         }
         finally
         {

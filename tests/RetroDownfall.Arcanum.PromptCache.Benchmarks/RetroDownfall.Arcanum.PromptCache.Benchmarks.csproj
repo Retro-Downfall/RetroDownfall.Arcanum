@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk" TreatAsLocalProperty="DisableImplicitLibraryPacksFolder">
+
+  <!-- Deliberately outside the solution; the operator script and explicit CI lane own compilation. -->
+  <PropertyGroup>
+
+    <OutputType>Exe</OutputType>
+
+    <TargetFramework>net10.0</TargetFramework>
+
+    <RootNamespace>RetroDownfall.Arcanum.PromptCache.Benchmarks</RootNamespace>
+
+    <AssemblyName>RetroDownfall.Arcanum.PromptCache.Benchmarks</AssemblyName>
+
+    <PublishAot>true</PublishAot>
+
+    <IsAotCompatible>true</IsAotCompatible>
+
+    <IsTrimmable>true</IsTrimmable>
+
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+
+    <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
+
+    <RestorePackagesPath>$(MSBuildProjectDirectory)/obj/nuget-packages</RestorePackagesPath>
+
+  </PropertyGroup>
+
+  <ItemGroup>
+
+    <ProjectReference Include="..\..\src\RetroDownfall.Arcanum.Api\RetroDownfall.Arcanum.Api.csproj" />
+
+    <EmbeddedResource Include="prompt-cache-workload-v1.json" />
+
+  </ItemGroup>
+
+</Project>

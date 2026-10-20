@@ -35,10 +35,18 @@ public sealed record ModelCallContextUpdate(
     ContextTokenBreakdown Breakdown)
     : ModelCallUpdate(Purpose, ModelCallId);
 
+/// <summary>A pre-I/O request to re-admit an ordinary payload after optional cache proof is lost.</summary>
+public enum ModelCallRetryDirective
+{
+    None,
+    OrdinaryPromptCacheFallback,
+}
+
 public sealed record ModelCallFailureUpdate(
     ModelCallPurpose Purpose,
     string ModelCallId,
-    Error Error)
+    Error Error,
+    ModelCallRetryDirective RetryDirective = ModelCallRetryDirective.None)
     : ModelCallUpdate(Purpose, ModelCallId);
 
 /// <summary>
@@ -170,7 +178,8 @@ public sealed record ModelCallFailure(
     ModelCallPurpose Purpose,
     string ModelCallId,
     Error Error,
-    Exception? Cause);
+    Exception? Cause,
+    ModelCallRetryDirective RetryDirective = ModelCallRetryDirective.None);
 
 /// <summary>Strongly typed success/failure outcome for a buffered provider call.</summary>
 public sealed class ModelCallOutcome

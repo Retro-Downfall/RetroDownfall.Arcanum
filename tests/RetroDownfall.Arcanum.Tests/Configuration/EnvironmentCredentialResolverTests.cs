@@ -24,6 +24,7 @@ public sealed class EnvironmentCredentialResolverTests : IDisposable
                 nameof(ProviderSettings.HiddenModels),
                 nameof(ProviderSettings.Models),
                 nameof(ProviderSettings.Name),
+                nameof(ProviderSettings.OutputTokenLimitWireDialect),
                 nameof(ProviderSettings.Type),
             ],
             PublicPropertyNames<ProviderSettings>());

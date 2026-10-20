@@ -99,6 +99,13 @@
 
                 </StackPanel>
 
+                <controls:LabeledPicker Label="Output token limit format"
+                                        Description="Use MaxCompletionTokens unless this HTTP provider requires the legacy MaxTokens field."
+                                        PickerTitle="Select output limit format"
+                                        IsVisible="{Binding IsHttpProvider}"
+                                        ItemsSource="{Binding OutputTokenLimitWireDialectValues}"
+                                        SelectedItem="{Binding OutputTokenLimitWireDialect, Mode=TwoWay}" />
+
                 <controls:LabeledStepper Label="Context window limit"
                                          Description="Factual provider context-window capacity."
                                          Value="{Binding ContextWindowLimit, Mode=TwoWay}"

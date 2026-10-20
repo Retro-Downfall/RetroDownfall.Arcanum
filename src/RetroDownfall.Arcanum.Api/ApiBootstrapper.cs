@@ -554,7 +554,16 @@ public static class ApiBootstrapper
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler())
             .AddHttpMessageHandler<OpenAiRequestAugmentingHandler>();
 
-        services.AddSingleton<IChatClientFactory, ChatClientFactory>();
+        services.AddSingleton(sp => new PromptCacheConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));
+
+        services.AddSingleton<IChatClientFactory>(sp => new ChatClientFactory(
+            sp.GetRequiredService<IHttpClientFactory>(),
+            sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
+            sp.GetRequiredService<IProviderApiKeyResolver>(),
+            sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Familiars.IFamiliarProcessRunner>(),
+            sp.GetRequiredService<ILoggerFactory>(),
+            sp.GetRequiredService<PromptCacheConfigurationEpoch>()));
 
         services.AddSingleton(sp => new LongRestConfigurationEpoch(sp.GetRequiredService<IOptionsMonitor<ArcanumSettings>>(),
             sp.GetRequiredService<RetroDownfall.Arcanum.Infrastructure.Data.Covenant.CovenantProcessBootIdentity>().BootId));
@@ -588,6 +597,8 @@ public static class ApiBootstrapper
         services.AddSingleton<StructuredOutputValidator>();
 
         services.AddSingleton<BudgetMonitor>();
+
+        services.AddSingleton<PromptCacheDispatchValidator>();
 
         services.AddSingleton<IModelCallExecutor, ModelCallExecutor>();
 

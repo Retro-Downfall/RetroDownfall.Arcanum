@@ -548,6 +548,23 @@ jobs:
       - name: Verify macOS AOT IL warnings and search regex smoke
         run: ./scripts/verify-aot-il-warnings.sh
 
+      - name: Build the prompt cache benchmark host
+        run: >-
+          dotnet build tests/RetroDownfall.Arcanum.PromptCache.Benchmarks/RetroDownfall.Arcanum.PromptCache.Benchmarks.csproj
+          -c Debug --no-incremental -p:RestoreLockedMode=true
+
+      - name: Exercise the Native AOT prompt cache fixture
+        run: ./scripts/benchmark-prompt-cache.sh --smoke --record prompt-cache-fixture.json
+
+      - name: Upload the prompt cache fixture report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prompt-cache-fixture
+          path: prompt-cache-fixture.json*
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Build the Grimoire admission benchmark host
         run: >-
           dotnet build tests/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks/RetroDownfall.Arcanum.GrimoireAdmission.Benchmarks.csproj

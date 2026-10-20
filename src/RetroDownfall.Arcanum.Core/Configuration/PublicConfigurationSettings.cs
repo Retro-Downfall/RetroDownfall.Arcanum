@@ -9,6 +9,9 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record FeatureSettings
 {
+    /// <summary>Opt-in versioned prompt-prefix identity and layout. Defaults off.</summary>
+    public bool DynamicContextInjectionV2 { get; set; }
+
     public bool EnterpriseTelemetry { get; set; }
 
     public bool ScalarUi { get; set; }

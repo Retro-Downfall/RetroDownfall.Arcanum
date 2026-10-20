@@ -653,11 +653,17 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
                 RedirectStandardError = true,
             };
 
+            // This exercises a pipe holder that containment missed. The real descendant supervisor
+            // can capture even a double fork before reparenting and kill it before the drain starts.
+            // Disable that supervisor here, and let the parent exit only after the descendant has
+            // detached and recorded its PID; a fixed sleep races the shell's process-group cleanup.
             psi.ArgumentList.Add("-e");
             psi.ArgumentList.Add(
-                "fork { fork { Process.setsid; File.write('"
+                "require 'timeout'; fork { fork { Process.setsid; File.write('"
                 + pidFile
-                + "', Process.pid.to_s); sleep 30 }; exit! 0 }; sleep 0.5; exit 0");
+                + "', Process.pid.to_s); sleep 30 }; exit! 0 }; Timeout.timeout(10) { sleep 0.01 until File.size?('"
+                + pidFile
+                + "') }; exit 0");
 
             Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -668,7 +674,8 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
                 timeout: Timeout.InfiniteTimeSpan,
                 resourceLimits: null,
                 resourceLimiter: null,
-                CancellationToken.None);
+                CancellationToken.None,
+                descendantSupervisorFactory: static (_, _) => null);
 
             Task finished = await Task.WhenAny(
                 run,
@@ -739,11 +746,17 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
                 RedirectStandardError = true,
             };
 
+            // This exercises a pipe holder that containment missed. The real descendant supervisor
+            // can capture even a double fork before reparenting and kill it before the drain starts.
+            // Disable that supervisor here, and let the parent exit only after the descendant has
+            // detached and recorded its PID; a fixed sleep races the shell's process-group cleanup.
             psi.ArgumentList.Add("-e");
             psi.ArgumentList.Add(
-                "fork { fork { Process.setsid; File.write('"
+                "require 'timeout'; fork { fork { Process.setsid; File.write('"
                 + pidFile
-                + "', Process.pid.to_s); sleep 4; STDOUT.reopen('/dev/null'); sleep 30 }; exit! 0 }; sleep 0.5; exit 0");
+                + "', Process.pid.to_s); sleep 4; STDOUT.reopen('/dev/null'); sleep 30 }; exit! 0 }; Timeout.timeout(10) { sleep 0.01 until File.size?('"
+                + pidFile
+                + "') }; exit 0");
 
             Stopwatch stopwatch = Stopwatch.StartNew();
 
@@ -754,7 +767,8 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
                 timeout: Timeout.InfiniteTimeSpan,
                 resourceLimits: null,
                 resourceLimiter: null,
-                CancellationToken.None);
+                CancellationToken.None,
+                descendantSupervisorFactory: static (_, _) => null);
 
             stopwatch.Stop();
 
@@ -812,11 +826,17 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
                 RedirectStandardError = true,
             };
 
+            // This exercises a pipe holder that containment missed. The real descendant supervisor
+            // can capture even a double fork before reparenting and kill it before the drain starts.
+            // Disable that supervisor here, and let the parent exit only after the descendant has
+            // detached and recorded its PID; a fixed sleep races the shell's process-group cleanup.
             psi.ArgumentList.Add("-e");
             psi.ArgumentList.Add(
-                "STDOUT.write('x' * 100000); STDOUT.flush; fork { fork { Process.setsid; STDOUT.reopen('/dev/null'); File.write('"
+                "require 'timeout'; STDOUT.write('x' * 100000); STDOUT.flush; fork { fork { Process.setsid; STDOUT.reopen('/dev/null'); File.write('"
                 + pidFile
-                + "', Process.pid.to_s); sleep 30 }; exit! 0 }; sleep 0.5; exit 0");
+                + "', Process.pid.to_s); sleep 30 }; exit! 0 }; Timeout.timeout(10) { sleep 0.01 until File.size?('"
+                + pidFile
+                + "') }; exit 0");
 
             CappedChildProcessRunResult result = await CappedChildProcessRunner.RunAsync(
                 psi,
@@ -826,7 +846,8 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
                 resourceLimits: null,
                 resourceLimiter: null,
                 CancellationToken.None,
-                outputSpillDirectory: spillDirectory);
+                outputSpillDirectory: spillDirectory,
+                descendantSupervisorFactory: static (_, _) => null);
 
             Assert.Equal(CappedChildProcessOutcome.Completed, result.Outcome);
 

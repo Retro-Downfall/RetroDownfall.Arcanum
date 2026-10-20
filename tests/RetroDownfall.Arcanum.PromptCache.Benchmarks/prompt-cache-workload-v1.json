@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "corpusRevision": "public-functions-v1",
+  "model": "gemma4:e4b",
+  "pairs": 6,
+  "samples": 3,
+  "warmup": 1,
+  "maxOutputTokens": 32,
+  "seed": 103,
+  "maximumSeconds": 1800,
+  "cases": [
+    {
+      "id": "digits",
+      "facts": "The fictional pure function count_ascii_digits counts only ASCII characters 0 through 9. All other characters contribute zero. The input is a1b2c9.",
+      "question": "Using the supplied public function facts, return only the decimal count."
+    },
+    {
+      "id": "crlf",
+      "facts": "The fictional pure function normalize_crlf replaces each CR followed immediately by LF with one LF. An isolated CR is preserved. The input contains an isolated CR between letters a and b.",
+      "question": "Using the supplied public function facts, return only YES if the isolated CR is preserved, otherwise NO."
+    },
+    {
+      "id": "decimal",
+      "facts": "The fictional pure function parse_decimal accepts one or more ASCII decimal digits and rejects trailing junk. The input is 12x.",
+      "question": "Using the supplied public function facts, return only ACCEPT or REJECT."
+    },
+    {
+      "id": "join",
+      "facts": "The fictional pure function join_words joins input words with one ASCII space and preserves their order. The input words are red and blue.",
+      "question": "Using the supplied public function facts, return only the joined words."
+    }
+  ]
+}

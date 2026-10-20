@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Covenant;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.LongRest;
@@ -319,7 +320,13 @@ public sealed record ModelCallContext(
     int ReservedAnswerTokens,
     int ReservedReasoningTokens,
     ContextTokenBreakdown? PrecomputedBreakdown = null,
-    PromptCachePlan? PromptCachePlan = null);
+    PromptCachePlan? PromptCachePlan = null,
+    ContentSensitivity Sensitivity = ContentSensitivity.None,
+    IPromptCacheDispatchBinding? PromptCacheBinding = null,
+    SystemPromptAttributionMap? SystemPromptAttribution = null);
+
+/// <summary>Opaque ephemeral dispatch binding. Only the physical API owner interprets it.</summary>
+public interface IPromptCacheDispatchBinding;
 
 /// <summary>Resolves profiles and estimates provider-facing context without performing model I/O.</summary>
 public interface IModelTokenEstimator

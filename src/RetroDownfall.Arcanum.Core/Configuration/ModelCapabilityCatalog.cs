@@ -50,7 +50,7 @@ public static class ModelCapabilityCatalog
                 UnknownImageReserveTokens = imageReserve,
                 Confidence = 1d,
             },
-            new PromptCachingProfile
+            model.StartsWith("gpt-5.", StringComparison.OrdinalIgnoreCase) ? null : new PromptCachingProfile
             {
                 ControlMode = PromptCachingControlMode.Explicit,
                 WireDialect = PromptCachingWireDialect.OpenAiPromptCacheRetention,

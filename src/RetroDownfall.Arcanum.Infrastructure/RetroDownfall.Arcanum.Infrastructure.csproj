@@ -45,6 +45,8 @@
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Tests" />
 
+    <InternalsVisibleTo Include="RetroDownfall.Arcanum.PromptCache.Benchmarks" />
+
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api" />
 
     <InternalsVisibleTo Include="RetroDownfall.Arcanum.Api.DevHost" />

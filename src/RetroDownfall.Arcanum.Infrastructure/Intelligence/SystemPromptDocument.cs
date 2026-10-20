@@ -102,7 +102,33 @@ public sealed record PromptCacheSegmentDescriptor(
     bool CacheBoundaryEligible,
     bool Sensitive,
     int Utf16Start,
-    int Utf16Length);
+    int Utf16Length)
+{
+    /// <summary>
+    /// Closed owner-kind projection, independent of caller-supplied stability and sensitivity.
+    /// Codex and Spell owners do not yet provide the same-read proof required for promotion.
+    /// </summary>
+    public PromptCacheSourceClass SourceClass => Kind switch
+    {
+        PromptSegmentKind.Preamble
+            or PromptSegmentKind.ContextHeader
+            or PromptSegmentKind.DataHeader
+            or PromptSegmentKind.InstructionsHeader
+            or PromptSegmentKind.ContextPlaceholder
+            or PromptSegmentKind.InstructionsPlaceholder => PromptCacheSourceClass.CodeOwnedFraming,
+        PromptSegmentKind.TerminalFormatting => PromptCacheSourceClass.CodeOwnedFormatting,
+        PromptSegmentKind.CovenantProposed
+            or PromptSegmentKind.CovenantGlobalConfirmed
+            or PromptSegmentKind.CovenantCampaignConfirmed => PromptCacheSourceClass.Protected,
+        PromptSegmentKind.Data
+            or PromptSegmentKind.WorkspaceContext
+            or PromptSegmentKind.CampaignSummary
+            or PromptSegmentKind.CampaignRollup
+            or PromptSegmentKind.SessionRollup
+            or PromptSegmentKind.AdditionalInstructions => PromptCacheSourceClass.Dynamic,
+        _ => PromptCacheSourceClass.Unclassified,
+    };
+}
 
 /// <summary>
 /// One rendered system prompt plus the two coordinate systems that describe it.

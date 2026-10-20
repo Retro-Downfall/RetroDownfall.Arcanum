@@ -72,6 +72,8 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// </remarks>
     private static readonly Dictionary<string, string> Allowed = new(StringComparer.Ordinal)
     {
+        ["src/RetroDownfall.Arcanum.Core/Intelligence/ModelTokenizationContracts.cs:ModelCallContext:PromptCacheBinding"] = "opaque per-call metadata, not a DI service; null preserves ordinary/default-off calls and source compatibility. Wizard supplies a binding only for a prepared candidate; the physical executor refuses every nonnull unknown/stale binding or missing validator. Null never grants source or dispatch authority",
+
         ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:fileEncryptionRuntimeStatus"] = "owner is container-activated and IFileEncryptionRuntimeStatus is registered; the container supplies its constant-time snapshot in a composed host",
 
         ["src/RetroDownfall.Arcanum.Api/Health/ArcanumHealthChecker.cs:ArcanumHealthChecker:operationDiagnosticsSource"] = "every use of the IDurableOperationDiagnostics is null-safe; absence disables an observation, not a refusal",

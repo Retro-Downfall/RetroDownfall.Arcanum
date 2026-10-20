@@ -38,6 +38,15 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
     private readonly ConcurrentDictionary<string, MirroredOsCredential> _credentials =
         new(StringComparer.Ordinal);
 
+    private readonly ConcurrentDictionary<string, long> _mutationGenerations = new(StringComparer.Ordinal);
+
+    // Process-local successful mutations are observed even when callers rotate A-B-A between reads.
+    internal long MutationGeneration(string providerName) =>
+        _mutationGenerations.GetValueOrDefault(ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName));
+
+    private void Mutated(string providerName) => _mutationGenerations.AddOrUpdate(
+        ArcanumCredentialIdentity.InferenceProviderApiKeyAccount(providerName), 1, static (_, current) => checked(current + 1));
+
     private bool _disposed;
 
     public ProviderCredentialStore(
@@ -76,6 +85,18 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
         return Credential(providerName).GetAsync(cancellationToken);
     }
 
+    /// <summary>Ordinary resolution plus proof quality from that exact gated OS/mirror read.</summary>
+    internal Task<MirroredCredentialRead> GetApiKeyWithProofAsync(
+        string providerName,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerName);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Credential(providerName).GetWithProofAsync(cancellationToken);
+    }
+
     /// <summary>
     /// Resolves a provider credential without promoting its encrypted mirror into OS storage. A
     /// failed OS read is not interchangeable with absence: its hidden value may supersede the
@@ -109,7 +130,7 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
             && !string.IsNullOrWhiteSpace(result.Value);
     }
 
-    public Task SaveApiKeyAsync(
+    public async Task SaveApiKeyAsync(
         string providerName,
         string apiKey,
         CancellationToken cancellationToken = default)
@@ -120,10 +141,12 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Credential(providerName).SaveAsync(apiKey.Trim(), cancellationToken);
+        await Credential(providerName).SaveAsync(apiKey.Trim(), cancellationToken).ConfigureAwait(false);
+
+        Mutated(providerName);
     }
 
-    public Task DeleteApiKeyAsync(
+    public async Task DeleteApiKeyAsync(
         string providerName,
         CancellationToken cancellationToken = default)
     {
@@ -131,7 +154,9 @@ public sealed class ProviderCredentialStore : IProviderCredentialStore, IDisposa
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Credential(providerName).DeleteAsync(cancellationToken);
+        await Credential(providerName).DeleteAsync(cancellationToken).ConfigureAwait(false);
+
+        Mutated(providerName);
     }
 
     private MirroredOsCredential Credential(string providerName)

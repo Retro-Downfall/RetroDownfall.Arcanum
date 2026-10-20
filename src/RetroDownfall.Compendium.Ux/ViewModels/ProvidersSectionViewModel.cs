@@ -114,6 +114,10 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
         [ObservableProperty] private int _contextWindowLimit;
 
+        [ObservableProperty] private OutputTokenLimitWireDialect _outputTokenLimitWireDialect;
+
+        public IReadOnlyList<OutputTokenLimitWireDialect> OutputTokenLimitWireDialectValues { get; } = Enum.GetValues<OutputTokenLimitWireDialect>();
+
         /// <summary>
         /// Optional path to the subscription CLI. Blank resolves the kind's default name on PATH.
         /// </summary>
@@ -277,6 +281,8 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
 
             ContextWindowLimit = snapshot.ContextWindowLimit;
 
+            OutputTokenLimitWireDialect = snapshot.OutputTokenLimitWireDialect;
+
             Command = snapshot.Command ?? string.Empty;
 
             HiddenModels = string.Join(", ", snapshot.HiddenModels ?? []);
@@ -328,6 +334,7 @@ public sealed partial class ProvidersSectionViewModel : ObservableObject
                 Models = [.. Models.Select(static model => model.Build())],
                 HiddenModels = familiar ? SplitList(HiddenModels) : [],
                 ContextWindowLimit = ContextWindowLimit,
+                OutputTokenLimitWireDialect = familiar ? OutputTokenLimitWireDialect.MaxCompletionTokens : OutputTokenLimitWireDialect,
             };
         }
 

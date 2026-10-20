@@ -11,6 +11,28 @@ namespace RetroDownfall.Arcanum.Core.Security;
 public interface IProviderApiKeyResolver
 {
 
+    /// <summary>
+    /// Opt-in secret and identity capture. Compatibility resolvers deliberately supply no proof.
+    /// </summary>
+    async Task<ResolvedProviderCredential> ResolveWithIdentityAsync(
+        ProviderSettings provider,
+        CancellationToken cancellationToken = default) =>
+        new(await ResolveAsync(provider, cancellationToken).ConfigureAwait(false), null);
+
+    /// <summary>Proves currentness without migrating or repairing credential storage.</summary>
+    Task<bool> IsCurrentAsync(
+        ProviderSettings provider,
+        ProviderCredentialStamp stamp,
+        CancellationToken cancellationToken = default) => Task.FromResult(false);
+
+    /// <summary>Same-observation proof quality. Legacy false remains a conservative refusal.</summary>
+    async Task<ProviderCredentialCurrentness> GetCurrentnessAsync(
+        ProviderSettings provider,
+        ProviderCredentialStamp stamp,
+        CancellationToken cancellationToken = default) =>
+        await IsCurrentAsync(provider, stamp, cancellationToken).ConfigureAwait(false)
+            ? ProviderCredentialCurrentness.Current : ProviderCredentialCurrentness.ConfirmedStale;
+
     Task<string?> ResolveAsync(
         ProviderSettings provider,
         CancellationToken cancellationToken = default);
@@ -49,4 +71,12 @@ public sealed class EnvironmentOnlyProviderApiKeyResolver : IProviderApiKeyResol
 
     }
 
+}
+
+/// <summary>Cache-only currentness; unavailable proof grants no credential authority.</summary>
+public enum ProviderCredentialCurrentness
+{
+    Current,
+    ConfirmedStale,
+    Unavailable,
 }

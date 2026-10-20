@@ -7,10 +7,21 @@ using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.Tools;
 
-internal sealed class ArcanumDelegateTaskTool(
-    ISubagentRunner runner,
-    string? inheritedModel) : AIFunction
+internal sealed class ArcanumDelegateTaskTool : AIFunction
 {
+    private readonly ISubagentRunner runner;
+
+    private readonly string? inheritedModel;
+
+    internal ArcanumDelegateTaskTool(ISubagentRunner runner, string? inheritedModel)
+    {
+        this.runner = runner;
+
+        this.inheritedModel = inheritedModel;
+
+        RetroDownfall.Arcanum.Infrastructure.Intelligence.PromptCacheToolProvenance.Issue(this);
+    }
+
     private const int MaxPromptCharacters = 262_144;
 
     private const int MaxFileCharacters = 262_144;
