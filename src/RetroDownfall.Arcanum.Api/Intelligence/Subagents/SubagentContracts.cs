@@ -24,7 +24,14 @@ public sealed record SubagentRunRequest(
     string? Model,
     IReadOnlyList<AttachedFileDto> Files,
     long? MaxTokens,
-    decimal? MaxCostUsd);
+    decimal? MaxCostUsd)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    internal MemoryDelegationExecution? MemoryDelegation { get; init; }
+}
+
+internal sealed record MemoryDelegationExecution(Guid RunId,
+    RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild Child);
 
 public sealed record SubagentRunResult(
     bool Success,

@@ -30,6 +30,8 @@ internal static class IntelligenceEndpoints
 {
     public static RouteGroupBuilder MapIntelligenceEndpoints(this RouteGroupBuilder apiGroup)
     {
+        MemoryDelegation.MemoryDelegationEndpoints.MapMemoryDelegationEndpoints(apiGroup);
+
         apiGroup.MapPost("/intelligence/ping", async (PingRequest? body, IArcanumIntelligenceProvider intelligence, ICampaignRepository campaignRepository, IOptionsSnapshot<ArcanumSettings> settings, HttpContext httpContext, CancellationToken cancellationToken) =>
         {
             if (body is null

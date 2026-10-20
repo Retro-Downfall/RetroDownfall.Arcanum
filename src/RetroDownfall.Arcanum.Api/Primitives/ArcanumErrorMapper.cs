@@ -350,6 +350,12 @@ internal static class ArcanumErrorMapper
             ErrorCodes.Sending.MaxTasksReached =>
                 StatusCodes.Status429TooManyRequests,
 
+            ErrorCodes.MemoryDelegation.InvalidGrant => StatusCodes.Status400BadRequest,
+
+            ErrorCodes.MemoryDelegation.StaleSource => StatusCodes.Status409Conflict,
+
+            ErrorCodes.MemoryDelegation.Unavailable => StatusCodes.Status503ServiceUnavailable,
+
             ErrorCodes.MemoryEvaluation.InvalidRequest or ErrorCodes.MemoryEvaluation.InvalidScope or ErrorCodes.MemoryEvaluation.InvalidPrompt
                 or ErrorCodes.MemoryEvaluation.InvalidEvaluation or ErrorCodes.MemoryEvaluation.InvalidMetadata => StatusCodes.Status400BadRequest,
 

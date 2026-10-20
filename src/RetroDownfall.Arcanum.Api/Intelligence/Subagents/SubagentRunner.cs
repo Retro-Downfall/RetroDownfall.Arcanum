@@ -33,7 +33,14 @@ internal sealed class SubagentRunner(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        Guid childRunId = Guid.NewGuid();
+        Guid childRunId = request.MemoryDelegation?.RunId ?? Guid.NewGuid();
+
+        using CancellationTokenSource? protectedCancellation = request.MemoryDelegation is { } delegated
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, delegated.Child.Revocation)
+            : null;
+
+        if (protectedCancellation is not null) cancellationToken = protectedCancellation.Token;
+
         DelegatedManaTracker tracker = new(
             request.MaxTokens,
             request.MaxCostUsd);
@@ -66,7 +73,7 @@ internal sealed class SubagentRunner(
 
             operationRevision = operationLease.Operation.Revision;
 
-            using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker);
+            using IDisposable isolation = SubagentExecutionAmbient.EnterChild(tracker, request.MemoryDelegation?.Child);
 
             // This runs inside the parent's delegate_task call, where the parent turn's accounting is
             // ambient. The child is billed under its own run and reservation, never the parent's.
@@ -220,6 +227,11 @@ internal sealed class SubagentRunner(
                 childRunId,
                 tracker,
                 SubagentFailureCodes.ChildFailed);
+        }
+        finally
+        {
+            if (request.MemoryDelegation is { } memoryDelegation)
+                await memoryDelegation.Child.DisposeAsync().ConfigureAwait(false);
         }
     }
 

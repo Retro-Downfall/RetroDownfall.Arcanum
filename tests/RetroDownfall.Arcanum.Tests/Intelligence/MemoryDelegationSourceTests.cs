@@ -23,6 +23,27 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class MemoryDelegationSourceTests
 {
     [SkippableFact]
+    public async Task Native_delegate_read_authority_is_independent_of_the_conservative_mcp_tool_classification()
+    {
+        await using var h = await MemoryEvaluationSourceHarness.CreateAsync();
+
+        await Insert(h, "source", "fact");
+
+        await h.AdmitAsync();
+
+        var parent = MemoryEvaluationSourceHarness.Require(ArcanumInvocationContext.Create(ArcanumExecutionSurface.StatelessOperatorTurn,
+            h.Invocation.Campaign, InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.NoTools, h.Invocation.ReadAuthorityEpoch));
+
+        var result = await Reader(h).ReadAsync(Grant(await h.RequestAsync("source")), parent, h.Lease, default);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.ToString() : "");
+
+        Assert.Single(result.Value.Fragments);
+
+        Assert.False(parent.CanStageCovenantMutation);
+    }
+
+    [SkippableFact]
     public async Task Current_head_required_but_retained_dependency_allowed()
     {
         await using var h = await MemoryEvaluationSourceHarness.CreateAsync();
@@ -173,7 +194,7 @@ public sealed class MemoryDelegationSourceTests
     }
 
     [SkippableFact]
-    public async Task Authority_free_no_tools_wrong_scope_and_released_parent_refuse()
+    public async Task Authority_free_wrong_scope_and_released_parent_refuse()
     {
         await using var h = await MemoryEvaluationSourceHarness.CreateAsync();
 
@@ -184,8 +205,6 @@ public sealed class MemoryDelegationSourceTests
         var grant = Grant(await h.RequestAsync("source"));
 
         Assert.True((await Reader(h).ReadAsync(grant, ArcanumInvocationContext.None, h.Lease, CancellationToken.None)).IsFailure);
-
-        Assert.True((await Reader(h).ReadAsync(grant, h.Invocation, h.Lease, CancellationToken.None)).IsFailure);
 
         Assert.True((await Reader(h).ReadAsync(grant with { Scope = new(MemoryEvaluationScopeKind.Campaign, Guid.NewGuid()) }, Parent(h), h.Lease, CancellationToken.None)).IsFailure);
 

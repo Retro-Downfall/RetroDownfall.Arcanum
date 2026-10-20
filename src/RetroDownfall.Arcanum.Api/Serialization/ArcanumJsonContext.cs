@@ -27,6 +27,8 @@ using RetroDownfall.Arcanum.Core.Pattern.Entities;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.ProvingGrounds.MemoryEvaluation;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Workspaces;
@@ -730,6 +732,9 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(SemanticInquisitor))]
 [JsonSerializable(typeof(List<Inquisitor>))]
 [JsonSerializable(typeof(Inquisitor[]))]
+[JsonSerializable(typeof(MemoryDelegationRequest))]
+[JsonSerializable(typeof(MemoryDelegationGrant))]
+[JsonSerializable(typeof(MemoryDelegationPurpose))]
 [JsonSerializable(typeof(MemoryEvaluationRequest))]
 [JsonSerializable(typeof(MemoryEvaluationScope))]
 [JsonSerializable(typeof(MemoryEvaluationOptions))]

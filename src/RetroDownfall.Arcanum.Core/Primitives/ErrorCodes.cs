@@ -11,6 +11,8 @@ public static class ErrorCodes
         public const string InvalidGrant = "MemoryDelegation.InvalidGrant";
 
         public const string StaleSource = "MemoryDelegation.StaleSource";
+
+        public const string Unavailable = "MemoryDelegation.Unavailable";
     }
 
     /// <summary>Bounded memory-evaluation route, adapter and recovery/ledger refusals.</summary>

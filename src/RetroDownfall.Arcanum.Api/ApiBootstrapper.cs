@@ -886,7 +886,8 @@ public static class ApiBootstrapper
     {
         app.Use(static async (HttpContext context, Func<Task> next) =>
         {
-            if (context.GetEndpoint()?.Metadata.GetMetadata<ProvingGrounds.MemoryEvaluation.MemoryEvaluationRouteMetadata>() is not null)
+            if (context.GetEndpoint()?.Metadata.GetMetadata<ProvingGrounds.MemoryEvaluation.MemoryEvaluationRouteMetadata>() is not null
+                || context.GetEndpoint()?.Metadata.GetMetadata<Intelligence.MemoryDelegation.MemoryDelegationRouteMetadata>() is not null)
                 CovenantRequestFeatures.MarkProtectedResponse(context);
 
             if (context.GetEndpoint()?.Metadata.GetMetadata<ApiKeyRequirementMetadata>() is null)

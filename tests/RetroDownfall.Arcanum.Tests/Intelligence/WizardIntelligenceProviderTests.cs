@@ -9561,7 +9561,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ISessionTurnClaimCoordinator? claims = null,
         ICanonicalCampaignContextResolver? campaignResolver = null,
         RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker? healthTracker = null,
-        PromptCacheDispatchValidator? cacheValidator = null)
+        PromptCacheDispatchValidator? cacheValidator = null,
+        RetroDownfall.Arcanum.Api.Intelligence.Subagents.ISubagentRunner? subagentRunner = null)
     {
         settings ??= DefaultSettings();
 
@@ -9672,6 +9673,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             sessionAttachmentStore,
             humanPrompts ?? new HumanPromptRegistry(),
             healthTracker: healthTracker,
+            subagentRunner: subagentRunner,
             guardrailsPipeline: guardrailsPipeline,
             turnRunWriter: turnRunWriter,
             budgetReservationService: budgetReservationService,

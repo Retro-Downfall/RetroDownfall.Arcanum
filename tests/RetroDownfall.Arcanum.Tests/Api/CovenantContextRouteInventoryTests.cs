@@ -37,6 +37,7 @@ public sealed class CovenantContextRouteInventoryTests(ArcanumWebApplicationFact
         "Spell_ExecuteStream",
         "Spell_Cast",
         "PostIntelligencePing",
+        "PostIntelligenceMemoryDelegation",
         "PostIntelligencePingStream",
         "PostIntelligenceContextInspect",
     ];

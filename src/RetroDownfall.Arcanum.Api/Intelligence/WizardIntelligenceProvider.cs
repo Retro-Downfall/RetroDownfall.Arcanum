@@ -41,6 +41,7 @@ using RetroDownfall.Arcanum.Api.Intelligence.Tools;
 using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Infrastructure.Familiars;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -631,6 +632,8 @@ public sealed partial class WizardIntelligenceProvider(
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
             eventSink = null)
     {
+        MemoryDelegationRootBinding? memoryDelegation = MemoryDelegationRootBinding.TryCapture(request, invocationContext);
+
         string prompt = request.Prompt;
 
         Result guardrailsInput = await FilterGuardrailsInputAsync(request, cancellationToken).ConfigureAwait(false);
@@ -717,7 +720,8 @@ public sealed partial class WizardIntelligenceProvider(
                             callerToken,
                             auditContext,
                             eventSink,
-                            covenantScope: covenantScope)
+                            covenantScope: covenantScope,
+                            memoryDelegation: memoryDelegation)
                         .ConfigureAwait(false);
 
                     return single.Result;
@@ -731,7 +735,8 @@ public sealed partial class WizardIntelligenceProvider(
                     callerToken,
                     auditContext,
                     eventSink,
-                    covenantScope)
+                    covenantScope,
+                    memoryDelegation)
                 .ConfigureAwait(false);
         }
         finally
@@ -748,7 +753,8 @@ public sealed partial class WizardIntelligenceProvider(
         InferenceAuditContext? auditContext,
         Func<IntelligenceEvent, CancellationToken, ValueTask>?
             eventSink,
-        CovenantTurnScope? covenantScope = null)
+        CovenantTurnScope? covenantScope = null,
+        MemoryDelegationRootBinding? memoryDelegation = null)
     {
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
             ProviderResolver.ResolveCandidates(settings.Value, request.Model, healthTracker);
@@ -841,7 +847,8 @@ public sealed partial class WizardIntelligenceProvider(
                             eventSink,
                             seed,
                             canFallBack: !isLastAttempt,
-                            covenantScope)
+                            covenantScope,
+                            memoryDelegation)
                         .ConfigureAwait(false);
 
                     if (attempt.IsConnectivityFailure)
@@ -928,7 +935,8 @@ public sealed partial class WizardIntelligenceProvider(
             eventSink,
         TurnContextSeed? seed = null,
         bool canFallBack = false,
-        CovenantTurnScope? covenantScope = null)
+        CovenantTurnScope? covenantScope = null,
+        MemoryDelegationRootBinding? memoryDelegation = null)
     {
         StreamFailureClassification classification = new();
 
@@ -944,7 +952,8 @@ public sealed partial class WizardIntelligenceProvider(
                 auditContext,
                 seed,
                 canFallBack,
-                covenantScope)
+                covenantScope,
+                memoryDelegation)
             .ConfigureAwait(false))
         {
             if (eventSink is not null)
@@ -1598,7 +1607,8 @@ public sealed partial class WizardIntelligenceProvider(
         InferenceAuditContext? auditContext,
         TurnContextSeed? seed = null,
         bool canFallBack = false,
-        CovenantTurnScope? covenantScope = null)
+        CovenantTurnScope? covenantScope = null,
+        MemoryDelegationRootBinding? memoryDelegation = null)
 #pragma warning restore CS8425
     {
         bool streaming = mode == TurnResponseMode.Streaming;
@@ -2698,7 +2708,8 @@ public sealed partial class WizardIntelligenceProvider(
                     streamResolvedSpell,
                     grimoireTurn.SessionId ?? request.SessionId,
                     grimoireTurn.AssistantEntryId,
-                    inferenceToken).ConfigureAwait(false);
+                    inferenceToken,
+                    memoryDelegation: memoryDelegation).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
             request,
@@ -6903,7 +6914,8 @@ public sealed partial class WizardIntelligenceProvider(
         Guid? sessionIdForTurn,
         Guid? assistantEntryIdForTurn,
         CancellationToken cancellationToken,
-        List<ContextPreviewTool>? previewExclusions = null)
+        List<ContextPreviewTool>? previewExclusions = null,
+        MemoryDelegationRootBinding? memoryDelegation = null)
     {
         if (request.DisableAllTools)
         {
@@ -6920,7 +6932,8 @@ public sealed partial class WizardIntelligenceProvider(
         {
             tools.Add(new ArcanumDelegateTaskTool(
                 subagentRunner,
-                request.Model));
+                request.Model,
+                memoryDelegation));
         }
 
         List<string> scriptRoots = CollectScriptRoots(resolvedSpell);

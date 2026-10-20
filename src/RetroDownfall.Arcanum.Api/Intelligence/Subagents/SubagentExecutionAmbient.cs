@@ -11,22 +11,26 @@ internal static class SubagentExecutionAmbient
 
     public static DelegatedManaTracker? Tracker => Slot.Value?.Tracker;
 
-    public static IDisposable EnterChild(DelegatedManaTracker tracker)
+    internal static RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? MemoryDelegation => Slot.Value?.MemoryDelegation;
+
+    public static IDisposable EnterChild(DelegatedManaTracker tracker,
+        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? memoryDelegation = null)
     {
         ArgumentNullException.ThrowIfNull(tracker);
 
         State? previous = Slot.Value;
 
-        Slot.Value = new State(IsIsolated: true, tracker);
+        Slot.Value = new State(IsIsolated: true, tracker, memoryDelegation);
 
-        return new Scope(previous);
+        return new Scope(previous, Intelligence.MemoryDelegation.MemoryDelegationRootBinding.Enter(null));
     }
 
     private sealed record State(
         bool IsIsolated,
-        DelegatedManaTracker Tracker);
+        DelegatedManaTracker Tracker,
+        RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.MemoryDelegationChild? MemoryDelegation);
 
-    private sealed class Scope(State? previous) : IDisposable
+    private sealed class Scope(State? previous, IDisposable rootMask) : IDisposable
     {
         private int _disposed;
 
@@ -35,6 +39,8 @@ internal static class SubagentExecutionAmbient
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 Slot.Value = previous;
+
+                rootMask.Dispose();
             }
         }
     }

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence.Subagents;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 
@@ -13,11 +14,15 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
     private readonly string? inheritedModel;
 
-    internal ArcanumDelegateTaskTool(ISubagentRunner runner, string? inheritedModel)
+    private readonly MemoryDelegationRootBinding? memoryDelegation;
+
+    internal ArcanumDelegateTaskTool(ISubagentRunner runner, string? inheritedModel, MemoryDelegationRootBinding? memoryDelegation = null)
     {
         this.runner = runner;
 
         this.inheritedModel = inheritedModel;
+
+        this.memoryDelegation = memoryDelegation;
 
         RetroDownfall.Arcanum.Infrastructure.Intelligence.PromptCacheToolProvenance.Issue(this);
     }
@@ -80,7 +85,18 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
     public override string Description =>
         "Runs a self-contained task in one isolated child agent with an explicit token or cost budget and returns only its final summary.";
 
-    public override JsonElement JsonSchema => SchemaDocument.RootElement;
+    private static readonly JsonDocument MemorySchemaDocument = CreateMemorySchema();
+
+    private static JsonDocument CreateMemorySchema()
+    {
+        var schema = System.Text.Json.Nodes.JsonNode.Parse(SchemaDocument.RootElement.GetRawText())!;
+
+        schema["properties"]!["memory_grant"] = System.Text.Json.Nodes.JsonNode.Parse("""{"type":"string","enum":["memory"],"description":"Select the one operator-authorized memory grant for this child."}""");
+
+        return JsonDocument.Parse(schema.ToJsonString());
+    }
+
+    public override JsonElement JsonSchema => memoryDelegation is null ? SchemaDocument.RootElement : MemorySchemaDocument.RootElement;
 
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
@@ -108,7 +124,8 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
         FileReadResult fileResult = TryReadFiles(
             arguments,
-            out IReadOnlyList<AttachedFileDto> files);
+            out IReadOnlyList<AttachedFileDto> files,
+            out IReadOnlyList<Guid?> attachmentIds);
 
         if (fileResult == FileReadResult.ParentPolicyDenied)
         {
@@ -122,14 +139,40 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             return "Subagent task failed: Explicit files were invalid or exceeded their bounds.";
         }
 
+        SubagentRunRequest request = new(prompt, inheritedModel, files, maxTokens, maxCostUsd);
+
+        if (arguments.TryGetValue("memory_grant", out object? selector))
+        {
+            if (memoryDelegation is null || !TryReadString(arguments, "memory_grant", out string selected)
+                || selected != "memory" || selector is string literal && literal != selected
+                || selector is JsonElement json && json.GetString() != selected)
+            {
+                return "Subagent task failed: Memory delegation is unavailable.";
+            }
+
+            Core.Covenant.CovenantDigest digest;
+
+            try
+            {
+                digest = MemoryDelegationTaskDigest.Compute(request, attachmentIds);
+            }
+            catch (ArgumentException)
+            {
+                return "Subagent task failed: The executed task could not be bound.";
+            }
+
+            Guid runId = Guid.NewGuid();
+
+            var consumed = await memoryDelegation.ConsumeAsync(runId, digest, cancellationToken).ConfigureAwait(false);
+
+            if (consumed.IsFailure) return "Subagent task failed: Memory delegation is unavailable.";
+
+            request = request with { MemoryDelegation = new(runId, consumed.Value) };
+        }
+
         SubagentRunResult result = await runner
             .RunAsync(
-                new SubagentRunRequest(
-                    prompt,
-                    inheritedModel,
-                    files,
-                    maxTokens,
-                    maxCostUsd),
+                request,
                 cancellationToken)
             .ConfigureAwait(false);
 
@@ -144,9 +187,12 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
     private static FileReadResult TryReadFiles(
         AIFunctionArguments arguments,
-        out IReadOnlyList<AttachedFileDto> files)
+        out IReadOnlyList<AttachedFileDto> files,
+        out IReadOnlyList<Guid?> attachmentIds)
     {
         files = [];
+
+        attachmentIds = [];
 
         if (!arguments.TryGetValue("files", out object? raw)
             || raw is null)
@@ -165,6 +211,8 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
         }
 
         List<AttachedFileDto> parsed = new(element.GetArrayLength());
+
+        List<Guid?> identities = new(element.GetArrayLength());
 
         foreach (JsonElement item in element.EnumerateArray())
         {
@@ -191,6 +239,8 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
                 "attachment_id",
                 out JsonElement attachmentIdElement);
 
+            Guid? parsedAttachmentId = null;
+
             if (hasAttachmentId)
             {
 
@@ -203,6 +253,8 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
 
                 }
 
+                parsedAttachmentId = attachmentId;
+
             }
             else if (AttachmentMemoryGateAmbient.HasMaterializedAttachmentContent)
             {
@@ -212,9 +264,13 @@ internal sealed class ArcanumDelegateTaskTool : AIFunction
             }
 
             parsed.Add(new AttachedFileDto(path, content));
+
+            identities.Add(parsedAttachmentId);
         }
 
-        files = parsed;
+        files = parsed.AsReadOnly();
+
+        attachmentIds = identities.AsReadOnly();
 
         return FileReadResult.Success;
     }

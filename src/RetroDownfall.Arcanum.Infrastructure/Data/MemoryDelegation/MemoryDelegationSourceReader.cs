@@ -23,7 +23,6 @@ internal sealed class MemoryDelegationSourceReader(ICovenantConnectionSource con
 
         if (authority.IsFailure || !parent.CanReadCovenant
             || parent.Surface is not (ArcanumExecutionSurface.StatelessOperatorTurn or ArcanumExecutionSurface.SessionBackedOperatorTurn)
-            || parent.ToolPolicy is not (ToolPolicy.AllTools or ToolPolicy.ReadOnlyTools or ToolPolicy.NoForbiddenArts)
             || parent.ReadAuthorityEpoch?.Matches(lease.Snapshot) != true
             || parent.Campaign is not { } campaign || campaign.CampaignId != grant.Scope.CampaignId
             || lease.Snapshot.Scope?.CampaignId != campaign.CampaignId)

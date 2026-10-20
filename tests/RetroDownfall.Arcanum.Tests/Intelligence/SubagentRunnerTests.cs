@@ -21,11 +21,69 @@ using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Tests.Support;
+using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SubagentRunnerTests
 {
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Consumed_child_uses_same_operation_identity_and_expiry_cancels_execution_without_completing_root(bool expire)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using var root = await h.PrepareAsync();
+
+        Guid id = Guid.NewGuid();
+
+        var child = MemoryEvaluationSourceHarness.Require(await h.Coordinator.ConsumeAsync(root, h.RootId, id, h.Digest));
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var facade = new CapturingTurnFacade(new PromptTurnResult("summary", null))
+        {
+            Gate = release.Task,
+            OnExecute = () => Assert.Same(child, SubagentExecutionAmbient.MemoryDelegation)
+        };
+
+        FakeOperationCoordinator operations = new();
+
+        SubagentRunner runner = new(new(() => facade), operations, TimeProvider.System, NullLogger<SubagentRunner>.Instance);
+
+        var request = new SubagentRunRequest("actual task", "model", [], 100, null) { MemoryDelegation = new(id, child) };
+
+        var running = runner.RunAsync(request, default);
+
+        await facade.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(id, operations.StartRequest!.RunId);
+
+        Assert.Same(ArcanumInvocationContext.None, facade.InvocationContext);
+
+        if (expire)
+        {
+            h.Time.Advance(TimeSpan.FromMinutes(5));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(SubagentFailureCodes.Cancelled, operations.FailureCode);
+        }
+        else
+        {
+            release.TrySetResult();
+
+            Assert.Equal(id, (await running.WaitAsync(TimeSpan.FromSeconds(10))).RunId);
+
+            Assert.False(root.Revocation.IsCancellationRequested);
+
+            await using var continuation = MemoryEvaluationSourceHarness.Require(await h.Coordinator.AdmitEffectAsync(root));
+        }
+
+        Assert.Throws<InvalidOperationException>(() => child.Sources);
+    }
+
     [Fact]
     public void SubagentRunRequest_CarriesOnlyFieldsTheRunnerConsumes()
     {
