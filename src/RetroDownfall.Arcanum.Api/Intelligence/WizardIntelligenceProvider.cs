@@ -668,7 +668,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         CancellationToken inferenceToken = callerToken;
 
-        bool resilienceEnabled = healthTracker is not null;
+        bool resilienceEnabled = healthTracker is not null || memoryDelegation is not null;
 
         Result<CovenantTurnScope> covenantAcquisition = await BeginCovenantTurnAsync(request, invocationContext, cancellationToken)
             .ConfigureAwait(false);
@@ -757,13 +757,17 @@ public sealed partial class WizardIntelligenceProvider(
         MemoryDelegationRootBinding? memoryDelegation = null)
     {
         IReadOnlyList<(ProviderSettings Provider, string CanonicalModelId)> candidates =
-            ProviderResolver.ResolveCandidates(settings.Value, request.Model, healthTracker);
+            memoryDelegation is null
+                ? ProviderResolver.ResolveCandidates(settings.Value, request.Model, healthTracker)
+                : MemoryDelegationNativeCandidates.Resolve(settings.Value, request.Model, healthTracker);
 
         if (candidates.Count == 0)
         {
             logger.LogWarning("Hub model resolution failed for requested model {RequestedModel}.", request.Model);
 
-            return Result<PromptTurnResult>.Failure(new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage));
+            return Result<PromptTurnResult>.Failure(memoryDelegation is null
+                ? new Error(ErrorCodes.Hub.Model, PublicModelResolutionFailureMessage)
+                : MemoryDelegationNativeCandidates.Unavailable());
         }
 
         Result<PromptTurnResult> lastFailure = Result<PromptTurnResult>.Failure(
@@ -779,6 +783,14 @@ public sealed partial class WizardIntelligenceProvider(
                 (ProviderSettings provider, string resolvedModel) = candidates[attemptIndex];
 
                 bool isLastAttempt = attemptIndex == candidates.Count - 1;
+
+                // Configuration may have changed since the ordered candidate set was captured.
+                if (memoryDelegation is not null && !MemoryDelegationNativeCandidates.SupportsTools(provider, resolvedModel))
+                {
+                    lastFailure = Result<PromptTurnResult>.Failure(MemoryDelegationNativeCandidates.Unavailable());
+
+                    continue;
+                }
 
                 Result capabilityValidation = ValidateModelCapabilitiesForCandidate(
                     request,
@@ -813,7 +825,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (isConnectivityFailure)
                     {
-                        healthTracker!.MarkFailed(provider.Name);
+                        healthTracker?.MarkFailed(provider.Name);
                     }
 
                     logger.LogWarning(
@@ -837,6 +849,12 @@ public sealed partial class WizardIntelligenceProvider(
 
                 using (lease)
                 {
+                    // The concrete lease can differ from the settings used for preflight/resolution.
+                    if (memoryDelegation is not null && !MemoryDelegationNativeCandidates.SupportsTools(lease.Provider, lease.ResolvedModel))
+                    {
+                        return Result<PromptTurnResult>.Failure(MemoryDelegationNativeCandidates.Unavailable());
+                    }
+
                     InferenceAttemptResult attempt = await DrainBufferedInferenceAttemptAsync(
                             lease,
                             request,
@@ -853,14 +871,14 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (attempt.IsConnectivityFailure)
                     {
-                        healthTracker!.MarkFailed(provider.Name);
+                        healthTracker?.MarkFailed(provider.Name);
                     }
 
                     if (attempt.Result.IsSuccess)
                     {
                         if (!attempt.IsConnectivityFailure)
                         {
-                            healthTracker!.MarkHealthy(provider.Name);
+                            healthTracker?.MarkHealthy(provider.Name);
                         }
 
                         return attempt.Result;
@@ -3600,9 +3618,20 @@ public sealed partial class WizardIntelligenceProvider(
                         ClientToolCapabilityValidator.RequiresToolCall(request);
 
                     bool allowNoToolsRestart = providerRejectedTools
-                        && !requiredClientToolCall;
+                        && !requiredClientToolCall
+                        && memoryDelegation is null;
 
-                    if (providerRejectedTools && requiredClientToolCall)
+                    if (providerRejectedTools && memoryDelegation is not null)
+                    {
+                        Error unavailable = MemoryDelegationNativeCandidates.Unavailable();
+
+                        inferenceTypedError = unavailable;
+
+                        inferenceError = unavailable.Message;
+
+                        classification.IsConnectivityFailure = false;
+                    }
+                    else if (providerRejectedTools && requiredClientToolCall)
                     {
                         Error modelUnsupportedError = ClientToolCapabilityValidator.CreateModelUnsupportedError(
                             lease.ResolvedModel,

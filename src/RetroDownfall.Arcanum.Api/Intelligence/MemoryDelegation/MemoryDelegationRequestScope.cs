@@ -9,6 +9,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Resilience;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 
@@ -57,7 +58,7 @@ internal sealed class MemoryDelegationRequestScope(HttpContext http, CovenantAut
 
         if (preflight.IsFailure) return preflight.Error;
 
-        Result available = ValidateNativeDelegation(parent, settings);
+        Result available = ValidateNativeDelegation(parent, settings, services.GetService<IProviderHealthTracker>());
 
         if (available.IsFailure) return available.Error;
 
@@ -141,7 +142,7 @@ internal sealed class MemoryDelegationRequestScope(HttpContext http, CovenantAut
         }
     }
 
-    internal static Result ValidateNativeDelegation(PingRequest parent, ArcanumSettings settings)
+    internal static Result ValidateNativeDelegation(PingRequest parent, ArcanumSettings settings, IProviderHealthTracker? healthTracker = null)
     {
         if (parent.DisableAllTools || parent.ToolPolicy is ToolPolicy.NoTools
             || parent.ToolPolicy is { } policy && !Enum.IsDefined(policy))
@@ -150,14 +151,13 @@ internal sealed class MemoryDelegationRequestScope(HttpContext http, CovenantAut
         if (parent.ForwardClientTools
             || parent.ToolPolicy == ToolPolicy.NoForbiddenArts
                 && ToolRiskClassifier.BuildForbiddenToolNames(settings.Security?.Ward?.ForbiddenArts).Contains(ArcanumBuiltInToolNames.DelegateTask)
-            || !ProviderResolver.TryResolveProviderForModel(settings, parent.Model, out var provider, out string model) || provider is null
-            || ProviderResolver.TryResolveModelEntry(provider, model, out var entry) && entry is { SupportsTools: false })
+            || MemoryDelegationNativeCandidates.Resolve(settings, parent.Model, healthTracker).Count == 0)
             return Unavailable();
 
         return Result.Success();
     }
 
-    private static Error Unavailable() => new(ErrorCodes.MemoryDelegation.Unavailable, "Native memory delegation is unavailable for this parent.");
+    private static Error Unavailable() => MemoryDelegationNativeCandidates.Unavailable();
 
     internal async ValueTask<Result> RevalidateAsync(CancellationToken ct)
     {

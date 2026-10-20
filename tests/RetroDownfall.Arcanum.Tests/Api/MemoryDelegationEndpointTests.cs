@@ -1,4 +1,7 @@
 using System.Net;
+using Microsoft.Extensions.Logging.Abstractions;
+using RetroDownfall.Arcanum.Core.Resilience;
+using RetroDownfall.Arcanum.Infrastructure.Resilience;
 using System.Text;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -135,6 +138,60 @@ public sealed class MemoryDelegationEndpointTests
         var result = MemoryDelegationRequestScope.ValidateNativeDelegation(new("parent", DisableMcpTools: true, ToolPolicy: policy), settings);
 
         Assert.Equal(allowed, result.IsSuccess);
+    }
+
+    [Theory]
+    [InlineData(true, false, HttpStatusCode.ServiceUnavailable, 0)]
+    [InlineData(false, true, HttpStatusCode.Conflict, 1)]
+    [InlineData(false, false, HttpStatusCode.ServiceUnavailable, 0)]
+    public async Task MemoryDelegation_health_selected_native_candidates_gate_source_hydration(
+        bool firstSupportsTools, bool healthySupportsTools, HttpStatusCode expected, int expectedReads)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        var configure = factory.SettingsOverride;
+
+        factory.SettingsOverride = current => configure!(current) with
+        {
+            DefaultModel = "shared-model",
+            Providers =
+            [
+                new() { Name = "test", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", Models = [new("shared-model", SupportsTools: firstSupportsTools)] },
+                new() { Name = "healthy", Type = AiProviderKind.OpenAICompatible, Endpoint = "https://example.test/v1", Models = [new("shared-model", SupportsTools: healthySupportsTools)] },
+            ]
+        };
+
+        IProviderHealthTracker health = new ProviderHealthTracker(NullLogger<ProviderHealthTracker>.Instance);
+
+        for (int count = 0; count < 10; count++) health.MarkFailed("test");
+
+        int reads = 0;
+
+        var original = factory.ServiceOverrides;
+
+        factory.ServiceOverrides = services =>
+        {
+            original!(services);
+
+            services.RemoveAll<IProviderHealthTracker>();
+
+            services.AddSingleton(health);
+
+            services.RemoveAll<IMemoryDelegationSourceReader>();
+
+            services.AddSingleton<IMemoryDelegationSourceReader>(new RefusingSources(() => reads++));
+        };
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", JsonContent.Create(
+            new MemoryDelegationRequest(new("parent", DisableMcpTools: true), Grant()), ArcanumJsonContext.Default.MemoryDelegationRequest));
+
+        Assert.Equal(expected, response.StatusCode);
+
+        Assert.Equal(expectedReads, reads);
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
     }
 
     [SkippableTheory]
