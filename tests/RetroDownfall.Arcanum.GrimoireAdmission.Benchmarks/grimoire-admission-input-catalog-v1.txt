@@ -91,6 +91,7 @@ R	src/RetroDownfall.Arcanum.Core/Configuration/ModelPricingEntry.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/ModelReasoningSettings.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/ModelTokenizationProfile.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/OperatorFacingUnattendedMode.cs
+R	src/RetroDownfall.Arcanum.Core/Configuration/OutputTokenLimitWireDialect.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/PerceptionSettings.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/Presets/ConfigurationPresetCatalog.cs
 R	src/RetroDownfall.Arcanum.Core/Configuration/Presets/ConfigurationPresetContracts.cs
@@ -262,6 +263,7 @@ R	src/RetroDownfall.Arcanum.Core/Intelligence/IInferenceAuditLogger.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/IManaMeter.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/IModelCallExecutor.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/IOperatorAuthorityContextIssuer.cs
+R	src/RetroDownfall.Arcanum.Core/Intelligence/IPromptCacheAuthoritySnapshotProvider.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/IToolResultMaterializer.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ITurnBudget.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/InferenceAuditContext.cs
@@ -297,6 +299,7 @@ R	src/RetroDownfall.Arcanum.Core/Intelligence/OperatorAuthorityContextIssuer.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/PingRequest.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/PingRequestBoundsValidator.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/PromptCacheContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Intelligence/PromptCachePolicyV2.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ReasoningContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ReasoningRequestValidator.cs
 R	src/RetroDownfall.Arcanum.Core/Intelligence/ScryingValidator.cs
@@ -467,6 +470,7 @@ R	src/RetroDownfall.Arcanum.Core/Security/IProviderCredentialStore.cs
 R	src/RetroDownfall.Arcanum.Core/Security/ISecretStore.cs
 R	src/RetroDownfall.Arcanum.Core/Security/IWard.cs
 R	src/RetroDownfall.Arcanum.Core/Security/IWebResearchCredentialStore.cs
+R	src/RetroDownfall.Arcanum.Core/Security/ProviderCredentialStamp.cs
 R	src/RetroDownfall.Arcanum.Core/Security/SecretStoreReadResult.cs
 R	src/RetroDownfall.Arcanum.Core/Security/SecretStoreReadStatus.cs
 R	src/RetroDownfall.Arcanum.Core/Security/WardResolutionOrigins.cs
@@ -1922,6 +1926,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostInstalla
 R	src/RetroDownfall.Arcanum.Infrastructure/InstallationReset/StoppedHostLockLender.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/ArcanumBrowseWebConstants.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/ArtifactAttunement.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/PromptCacheToolProvenance.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/SpellCastPreviewService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/ISpellRepository.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SkillJsonBoundsValidator.cs
@@ -2169,6 +2174,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Security/OsKeychainSecretStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundConnectException.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OutboundUrlGuard.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/OwnerOnlyAtomicFile.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Security/PromptCacheAuthoritySnapshotProvider.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ProtectedCredentialFile.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderApiKeyResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Security/ProviderCredentialStore.cs
