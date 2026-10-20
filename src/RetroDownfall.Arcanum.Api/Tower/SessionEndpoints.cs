@@ -45,36 +45,43 @@ internal static class SessionEndpoints
     {
         apiGroup.MapPost(
             "/sessions",
-            async (CreateSessionRequest? request, ISessionRepository repo, ICampaignRepository campaignRepo, HttpContext ctx) =>
+            async (CreateSessionRequest? request, ISessionTurnBeginStore creation, ICanonicalCampaignContextResolver resolver, HttpContext ctx) =>
             {
                 string traceId = Activity.Current?.Id ?? ctx.TraceIdentifier;
 
                 if (request is null)
                 {
-                    return Results.BadRequest(
-                        ApiResponse<SessionDetailDto>.FromResult(
-                            Result<SessionDetailDto>.Failure(
-                                new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
-                            traceId));
-                }
-
-                // The Sessions table carries no foreign key to Campaigns, and a Session's Campaign binding is
-                // immutable once created, so an unverified id would bind the Session to nothing for good.
-                if (request.CampaignId is Guid campaignId
-                    && await campaignRepo.GetByIdAsync(campaignId, ctx.RequestAborted).ConfigureAwait(false) is null)
-                {
                     return Results.Json(
                         ApiResponse<SessionDetailDto>.FromResult(
-                            Result<SessionDetailDto>.Failure(
-                                new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier.")),
+                            Result<SessionDetailDto>.Failure(new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId),
                         ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
-                        statusCode: StatusCodes.Status404NotFound);
+                        statusCode: StatusCodes.Status400BadRequest);
                 }
 
-                Session session = await repo
-                    .CreateAsync(request.CampaignId, request.Title, ctx.RequestAborted)
-                    .ConfigureAwait(false);
+                Result<CanonicalCampaignContext> canonical = await resolver
+                    .ResolveAsync(new(null, request.CampaignId, null), ctx.RequestAborted).ConfigureAwait(false);
+
+                if (canonical.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Failure(canonical.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(canonical.Error.Code));
+                }
+
+                Result<Session> created = await creation
+                    .CreateNamedSessionAsync(canonical.Value, request.Title, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (created.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Failure(created.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseSessionDetailDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCode(created.Error.Code));
+                }
+
+                Session session = created.Value;
 
                 int entryCount = 0;
 

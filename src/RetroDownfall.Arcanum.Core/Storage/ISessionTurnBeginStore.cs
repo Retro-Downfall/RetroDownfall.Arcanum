@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Tower;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
 
@@ -50,6 +51,16 @@ public sealed record AssistantReplyBeginReceipt(
 /// </remarks>
 public interface ISessionTurnBeginStore
 {
+    /// <summary>
+    /// Creates a Session with an explicit operator title and its canonical immutable binding atomically.
+    /// Null/blank titles remain null; explicit titles are trimmed without the generated-title truncation.
+    /// Implementations without the atomic owner must refuse rather than fall back to generic Session insertion.
+    /// </summary>
+    ValueTask<Result<Session>> CreateNamedSessionAsync(
+        CanonicalCampaignContext campaign,
+        string? title,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Result<Session>.Failure(new Error(ErrorCodes.Grimoire.WriteFailed, "Atomic bound Session creation is unavailable.")));
 
     /// <summary>
     /// Creates one Session and its immutable Campaign binding atomically.

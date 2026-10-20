@@ -34,6 +34,22 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
     {
         ArgumentNullException.ThrowIfNull(title);
 
+        var created = await CreateBoundSessionCoreAsync(campaign, TruncateTitle(title), cancellationToken).ConfigureAwait(false);
+
+        return created.IsFailure ? created.Error : Result<Guid>.Success(created.Value.Id);
+    }
+
+    public ValueTask<Result<Session>> CreateNamedSessionAsync(
+        CanonicalCampaignContext campaign,
+        string? title,
+        CancellationToken cancellationToken) =>
+        CreateBoundSessionCoreAsync(campaign, string.IsNullOrWhiteSpace(title) ? null : title.Trim(), cancellationToken);
+
+    private async ValueTask<Result<Session>> CreateBoundSessionCoreAsync(
+        CanonicalCampaignContext campaign,
+        string? title,
+        CancellationToken cancellationToken)
+    {
         Guid sessionId = Guid.NewGuid();
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -57,16 +73,18 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
                 }
             }
 
-            _ = _db.Sessions.Add(new Session
+            Session session = new()
             {
                 Id = sessionId,
                 CampaignId = campaign.CampaignId,
                 CreatedAt = now,
                 UpdatedAt = now,
                 Status = "active",
-                Title = TruncateTitle(title),
+                Title = title,
                 UnsummarizedEntryCount = 0,
-            });
+            };
+
+            _ = _db.Sessions.Add(session);
 
             await SqliteBusyRetry.ExecuteAsync(
                 () => _db.SaveChangesAsync(cancellationToken),
@@ -79,7 +97,7 @@ public sealed partial class GrimoireRepository : ISessionTurnBeginStore
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-            return Result<Guid>.Success(sessionId);
+            return Result<Session>.Success(session);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

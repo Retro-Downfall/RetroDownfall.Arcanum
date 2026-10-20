@@ -631,6 +631,9 @@ public static class ApiBootstrapper
                 new Lazy<ITurnExecutionFacade>(
                     sp.GetRequiredService<ITurnExecutionFacade>)));
 
+        services.AddScoped<RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation.IMemoryDelegationSourceReader,
+            RetroDownfall.Arcanum.Infrastructure.Data.MemoryDelegation.MemoryDelegationSourceReader>();
+
         // The one seam through which a live turn reaches the Covenant. Registered in the API rather
         // than the shared Infrastructure composition because its whole job is per-turn: it exists only
         // where there is an invocation context, and the CLI bootstrap has no turn to adopt.
