@@ -227,7 +227,9 @@ public sealed class CampaignRollupTurnPreparer(
 {
     internal static bool IsLiveEligible(ArcanumSettings configuration, PingRequest request, ArcanumInvocationContext invocation,
         bool requireProtectedToolPersistence = false) =>
-        invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
+        (invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn
+            || (requireProtectedToolPersistence && request.SessionId is null
+                && invocation.Surface is ArcanumExecutionSurface.StatelessOperatorTurn))
         && invocation.ContextPolicy is CovenantContextPolicy.Default
         && invocation.Campaign is { } canonical && canonical != default
         && !InferenceContextBuilder.HasStatelessMessages(request)
@@ -274,9 +276,13 @@ public sealed class CampaignRollupTurnPreparer(
 
         CanonicalCampaignContext campaign = invocation.Campaign!.Value;
 
-        bool maintainRollups = preparationSettings.ResolveIntelligence().EnableCampaignRollups && campaign.IsCampaignBound;
+        // A stateless-classified prompt can still create a durable Session. Its claim owns only that creation;
+        // it does not change the invocation's read/mutation authority or opt it into live maintenance.
+        bool sessionMaintenance = invocation.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn;
 
-        bool maintainLongRest = preparationSettings.Features.LongRest;
+        bool maintainRollups = sessionMaintenance && preparationSettings.ResolveIntelligence().EnableCampaignRollups && campaign.IsCampaignBound;
+
+        bool maintainLongRest = sessionMaintenance && preparationSettings.Features.LongRest;
 
         LongRestConfigurationStamp? acceptedLongRestStamp = maintainLongRest ? longRestConfiguration.Capture().Stamp : null;
 

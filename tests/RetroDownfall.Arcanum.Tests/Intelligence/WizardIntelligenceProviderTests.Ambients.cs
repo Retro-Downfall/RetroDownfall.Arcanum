@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
@@ -119,19 +120,34 @@ public sealed partial class WizardIntelligenceProviderTests
 
         CovenantToolCapabilityRegistry capabilities = new();
 
+        FakeGrimoireRepository grimoire = new() { Session = new Session { Id = sessionId, Entries = [] } };
+        CampaignWizardClaims claims = new();
+        FakeCovenantAuthorityProvider authority = new();
+        FakeCovenantCampaignScopeProbe campaigns = new();
+        campaigns.Set(CovenantTask6Fixture.CampaignId, CovenantCampaignScopeState.Live);
+        var operationGate = CovenantOperationGateFixture.CreateGate(authority: authority, campaigns: campaigns);
+        var canonical = InvocationContexts.AttendedSession(CovenantTask6Fixture.CampaignId).Campaign!.Value;
+        var epoch = CovenantReadAuthorityEpoch.CreateForTests(Guid.Parse(authority.Current!.InstallationIdentity),
+            authority.Current.RuntimeAuthorityGeneration, authority.Current.AuthorityEpoch);
+        var invocation = ArcanumInvocationContext.Create(ArcanumExecutionSurface.SessionBackedOperatorTurn, canonical,
+            InvocationAttendance.Attended, CovenantContextPolicy.Default, ToolPolicy.AllTools, epoch).Value;
+        CampaignRollupTurnPreparer preparer = new(new CampaignRollupTurnSnapshotTests.ProbeStore(),
+            new TestOptionsMonitor<ArcanumSettings>(settings), new AmbientCanonicalResolver(canonical), operationGate,
+            UnreachedLongRestPorts.Coordinator, UnreachedLongRestPorts.Maintenance, UnreachedLongRestPorts.Discovery,
+            UnreachedLongRestPorts.Configuration, UnreachedLongRestPorts.RootEnricher,
+            claimBegin: claims, sessionBegin: grimoire, claims: claims, authoritySnapshot: authority);
+
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
-            grimoire: new FakeGrimoireRepository
-            {
-                Session = new Session { Id = sessionId, Entries = [] },
-            },
+            grimoire: grimoire,
             mcp: mcp,
             turnRunWriter: new RecordingTurnRunWriter(),
             budgetReservationService: reservations,
             sessionAttachmentStore: store,
             covenantDispatch: StagingCovenantGate(),
-            covenantToolCapabilities: capabilities);
+            covenantToolCapabilities: capabilities,
+            campaignRollups: preparer, turnCommitter: claims, claimedBeginStore: claims, claims: claims);
 
         PingRequest request = BaseRequest() with
         {
@@ -140,8 +156,6 @@ public sealed partial class WizardIntelligenceProviderTests
             AttachmentReferences = [attachmentId],
             SkipSpellRouting = true,
         };
-
-        ArcanumInvocationContext invocation = InvocationContexts.AttendedSession(CovenantTask6Fixture.CampaignId);
 
         if (streaming)
         {
@@ -187,6 +201,8 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.NotNull(seen.BudgetReservationId);
 
         Assert.NotNull(seen.CovenantStaging);
+        Assert.Single(claims.Requests);
+        Assert.Equal(ContentSensitivity.CovenantDerived, Assert.Single(claims.ProtectedTools).Sensitivity.Level);
 
         // The turn is over, so nothing it published may outlive it: the gate's per-Session state is
         // the bridge server-side tools resolve through, and a stale one would hand the next turn's tool
@@ -632,6 +648,12 @@ public sealed partial class WizardIntelligenceProviderTests
                 ContentSensitivity.None,
                 CovenantTask6Fixture.D(7),
                 1)));
+    }
+
+    private sealed class AmbientCanonicalResolver(CanonicalCampaignContext campaign) : ICanonicalCampaignContextResolver
+    {
+        public ValueTask<Result<CanonicalCampaignContext>> ResolveAsync(CanonicalCampaignResolutionRequest request, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CanonicalCampaignContext>.Success(campaign));
     }
 
     private sealed class StagingAuthority : ICovenantAuthoritySnapshotProvider

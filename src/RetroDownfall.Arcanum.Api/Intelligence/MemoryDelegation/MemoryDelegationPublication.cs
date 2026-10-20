@@ -10,7 +10,7 @@ internal sealed class MemoryDelegationPublication(CancellationToken cancellation
 
     private CancellationTokenSource? _cancellation;
 
-    internal CancellationToken Token => _cancellation?.Token ?? cancellationToken;
+    internal CancellationToken Token => _cancellation?.Token ?? CancellationToken.None;
 
     internal async Task<Result> AdmitAsync(MemoryDelegationProtection protection)
     {

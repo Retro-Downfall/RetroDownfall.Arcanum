@@ -550,6 +550,14 @@ public sealed partial class WizardIntelligenceProviderTests
 
         public List<TurnCommitRequest> Commits { get; } = [];
 
+        public List<ProtectedToolInteraction> ProtectedTools { get; } = [];
+
+        public Task<Result<ProtectedToolInteractionReceipt>> AppendProtectedToolInteractionAsync(ProtectedToolInteraction request, CancellationToken cancellationToken)
+        {
+            ProtectedTools.Add(request);
+            return Task.FromResult(Result<ProtectedToolInteractionReceipt>.Success(new(Guid.NewGuid(), Guid.NewGuid(), HistoryRevision + 2)));
+        }
+
         public List<SessionTurnClaimOutcome> Outcomes { get; } = [];
 
         public async ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(SessionTurnRequestIdentity request, CancellationToken cancellationToken)

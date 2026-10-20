@@ -1744,7 +1744,13 @@ public sealed partial class WizardIntelligenceProvider(
 
         CampaignRollupTurnSnapshot? campaignTurn = null;
 
-        if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext, requireProtectedToolPersistence: memoryDelegation is not null)
+        // A server tool can add protected sensitivity after the first dispatch. Reserve genuine Session ownership
+        // before any tool executes, even when no memory is currently admitted and maintenance is disabled.
+        bool requireProtectedToolPersistence = memoryDelegation is not null
+            || (covenantDispatch is not null && !request.DisableAllTools && !request.ForwardClientTools
+                && !streamModelDeclaresToolsUnsupported && request.ToolPolicy is not ToolPolicy.NoTools);
+
+        if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext, requireProtectedToolPersistence: requireProtectedToolPersistence)
             || (TurnIdempotencyAmbient.RequestIdentity is not null && campaignRollups is not null))
         {
             if (campaignRollups is null || covenantScope is null)
@@ -1764,7 +1770,7 @@ public sealed partial class WizardIntelligenceProvider(
             covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
                 request, invocationContext, streaming, inferenceToken,
                 CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value), preparationProgress,
-                requireProtectedToolPersistence: memoryDelegation is not null);
+                requireProtectedToolPersistence: requireProtectedToolPersistence);
 
             Task<Result<CampaignRollupTurnSnapshot?>> preparation = covenantScope.CampaignPreparation;
 

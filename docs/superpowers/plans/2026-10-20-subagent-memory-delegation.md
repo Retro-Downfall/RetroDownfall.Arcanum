@@ -121,6 +121,15 @@ Use these initial interface names consistently across tasks; coordinated signatu
 - [ ] Test Arcanum's configured local embedding path with an actual embedding request and appropriate vector/result checks; use existing installed/configured resources.
 - [ ] Investigate and fix validated issues proportionately, requalifying any changed repository candidate and updating both delivery branches as required. Record final runtime/configuration evidence independently from the frozen CI candidate.
 
+### Task 7: Authorized 0.1.0-beta.5 GitHub release
+
+**Sequence:** Dispatch the unified release only after every required CI, integration and Task 6 local test is green. The release must build the exact qualified commit delivered to main. The user explicitly authorized public publication of this prerelease.
+
+- [ ] Review the unified release, reusable macOS/Windows workflows, SDK resolution, version propagation, native packaging and exact packaged-apphost smoke for compatibility with the final implementation and tracked PNG fixture. Fix validated avoidable errors before the final candidate is qualified; do not weaken any gate.
+- [ ] Recheck that `v0.1.0-beta.5` is available and that delivered main equals the qualified SHA/tree. Dispatch `.github/workflows/release.yml` on main with explicit `version=0.1.0-beta.5` and `publish=true`, then bind the resulting run to that exact SHA. Do not create a tag manually or rely on automatic beta numbering.
+- [ ] Require terminal success for the entire release run: SDK/version/native-asset prerequisites, macOS signing/notarization, both native Windows architectures, all AOT diagnostic audits, exact packaged-apphost provider-contract smoke, asset assembly and public publication.
+- [ ] Verify the public prerelease and independently peeled tag point to the qualified release-run SHA. Require all nine product archives plus `SHA256SUMS.txt`; download the assets to an owned directory, validate the exact unique checksum inventory, and verify all nine downloaded product hashes. Recheck release/tag identity after verification and retain the release/run URLs and content-free evidence.
+
 ## Self-review and handoff
 
 Spec coverage maps to Tasks 1 (proof/bounds), 2 (lifecycle/races), 3 (wrapper/binding), 4 (materialization/sensitivity), 5 (docs/qualification/delivery). All five Review Focus cases have named tests. Shared interfaces are defined once above; no task can issue a new generic operator context to a child. Mutation waits are outside transactions and bounded by active effect cancellation/drain, not parent lifetime. This plan is ready for the already-authorized implementation; the coordinating agent owns integration and exact delivery.

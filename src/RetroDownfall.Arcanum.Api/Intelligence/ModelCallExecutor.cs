@@ -172,7 +172,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             RecordPromptCacheMetrics(context, purpose, response.Usage);
             RecordDelegatedUsage(context, response.Usage);
 
-            providerToken.ThrowIfCancellationRequested();
+            if (effect is not null) providerToken.ThrowIfCancellationRequested();
 
             return ModelCallOutcome.Success(
                 new ModelCallResult(
@@ -341,7 +341,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                         }
                 }
 
-                providerToken.ThrowIfCancellationRequested();
+                if (effect is not null) providerToken.ThrowIfCancellationRequested();
 
                 if (!next.HasUpdate) break;
 
