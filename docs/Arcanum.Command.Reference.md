@@ -182,6 +182,8 @@ The bottom row shows the hints for the focused region that fit, most important f
 
 `/model <name>` needs you to know the model id before you can type it. That is fine for models you wrote into `arcanum.json` yourself, but a Familiar's catalogue belongs to the vendor and changes without a configuration edit, so Command Center also carries a model control in the header.
 
+All Command Center choice lists use `>` for the pending row that `Enter` will choose. The model and session lists separately mark the active item with `●`, so browsing another row does not imply it is already active. The cursor stays visible while the type-ahead field has focus, including in monochrome. This applies to Models, Sessions, the command palette, and the slash-command menu.
+
 It is a full focus region: `Tab` / `Shift+Tab` reach it alongside Composer, Sessions, Transcript, and Incantations. `Enter`, `Space`, or `↓` opens it; typing narrows by model name or provider name; `↑`/`↓` (or `k`/`j`) move; `Enter` selects; `Esc` cancels back to the composer. No mouse anywhere.
 
 The list is `GET /api/models`, so it spans every provider kind, groups by provider, marks the model prompts currently go to, and already excludes anything on a Familiar's `hiddenModels` list. Its first row is a type-to-filter field, which is why the overlay is titled `Models · type to filter`. Selecting sets exactly the session model `/model <name>` sets — the two cannot disagree — and prints `Model set to <model> (<provider>) for this session.` On a terminal under 72 columns the control is not rendered and drops out of the `Tab` cycle; `/model <name>` is unchanged, and so is `-m` / `--model` on `arcanum run`.

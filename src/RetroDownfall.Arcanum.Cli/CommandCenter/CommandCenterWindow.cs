@@ -35,6 +35,12 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
     private readonly ObservableCollection<string> _overlayLines = new();
 
+    private IReadOnlyList<string> _pickerRows = [];
+
+    private int _pickerSelectedIndex = -1;
+
+    private const int PickerCursorWidth = 2;
+
     private bool _overlayShowFilter;
 
     private bool _overlayHumanPrompt;
@@ -966,10 +972,17 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             ? lines
             : OverlayLayout.WrapLines(lines, innerWidth);
 
-        _overlayLines.Clear();
-        foreach (string line in displayLines)
+        if (kind == CommandCenterOverlayKind.CommandPalette)
         {
-            _overlayLines.Add(line);
+            SetPickerRows(displayLines, displayLines.Count > 0 ? 0 : -1);
+        }
+        else
+        {
+            _overlayLines.Clear();
+            foreach (string line in displayLines)
+            {
+                _overlayLines.Add(line);
+            }
         }
 
         if (showFilter || listBacked)
@@ -1135,6 +1148,44 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         _overlayLines.Clear();
     }
 
+    /// <summary>All choice lists show the pending Enter target even while their filter has focus.</summary>
+    private static string RenderPickerRow(string row, int index, int selectedIndex) =>
+        selectedIndex < 0 ? row : $"{(index == selectedIndex ? "> " : "  ")}{row}";
+
+    private void SetPickerRows(IReadOnlyList<string> rows, int selectedIndex)
+    {
+        _pickerRows = rows;
+
+        _overlayLines.Clear();
+
+        foreach (string row in rows)
+        {
+            _overlayLines.Add(row);
+        }
+
+        UpdatePickerSelection(selectedIndex);
+    }
+
+    private void UpdatePickerSelection(int selectedIndex)
+    {
+        _pickerSelectedIndex = selectedIndex;
+
+        for (int i = 0; i < _pickerRows.Count; i++)
+        {
+            _overlayLines[i] = RenderPickerRow(_pickerRows[i], i, selectedIndex);
+        }
+
+        try
+        {
+            OverlayList.SelectedItem = Math.Max(0, selectedIndex);
+
+            OverlayList.EnsureSelectedItemVisible();
+        }
+        catch
+        {
+        }
+    }
+
     /// <summary>
     /// Opens the model drop-down as a filterable list, the same shape the Sessions picker uses —
     /// the only overlay form in this codebase that is genuinely keyboard-navigable.
@@ -1189,13 +1240,6 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         IReadOnlyList<ModelPickerItem> visible = state.FilteredModels;
 
-        _overlayLines.Clear();
-
-        foreach (string line in CommandCenterModelPicker.Render(visible, state.Model))
-        {
-            _overlayLines.Add(line);
-        }
-
         int active = visible
             .Select(static (item, index) => (item, index))
             .Where(pair => string.Equals(pair.item.Model, state.Model, StringComparison.OrdinalIgnoreCase))
@@ -1205,14 +1249,9 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         state.SelectedModelIndex = visible.Count == 0 ? 0 : Math.Clamp(active, 0, visible.Count - 1);
 
-        try
-        {
-            OverlayList.SelectedItem = _overlayLines.Count > 0 ? state.SelectedModelIndex : 0;
-            OverlayList.EnsureSelectedItemVisible();
-        }
-        catch
-        {
-        }
+        SetPickerRows(
+            CommandCenterModelPicker.Render(visible, state.Model),
+            visible.Count > 0 ? state.SelectedModelIndex : -1);
     }
 
     /// <summary>
@@ -1232,14 +1271,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         int current = Math.Clamp(OverlayList.SelectedItem ?? 0, 0, list.Count - 1);
         int next = Math.Clamp(current + delta, 0, list.Count - 1);
         state.SelectedModelIndex = next;
-        try
-        {
-            OverlayList.SelectedItem = next;
-            OverlayList.EnsureSelectedItemVisible();
-        }
-        catch
-        {
-        }
+
+        UpdatePickerSelection(next);
     }
 
     public void FocusModelSelector(IApplication? app = null)
@@ -1324,6 +1357,17 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         int current = Math.Clamp(OverlayList.SelectedItem ?? 0, 0, _overlayLines.Count - 1);
         int next = Math.Clamp(current + delta, 0, _overlayLines.Count - 1);
+
+        if (_overlayKind == CommandCenterOverlayKind.CommandPalette)
+        {
+            if (_pickerSelectedIndex >= 0)
+            {
+                UpdatePickerSelection(next);
+            }
+
+            return;
+        }
+
         try
         {
             OverlayList.SelectedItem = next;
@@ -1391,7 +1435,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         OverlayList.Height = Dim.Fill();
 
         _paletteRowWidth = Math.Clamp(
-            CommandPaletteCatalog.NaturalRowWidth(state.PaletteMode) + 1,
+            CommandPaletteCatalog.NaturalRowWidth(state.PaletteMode) + 1 + PickerCursorWidth,
             MinimumPaletteRowWidth,
             Math.Max(MinimumPaletteRowWidth, Math.Min(_cols - 6, OverlayLayout.AbsoluteMaxWidth - 2)));
 
@@ -1413,25 +1457,11 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     {
         ArgumentNullException.ThrowIfNull(state);
 
-        _overlayLines.Clear();
+        IReadOnlyList<CommandPaletteEntry> entries = state.FilteredPaletteEntries;
 
-        foreach (string row in CommandPaletteCatalog.Render(
-            state.FilteredPaletteEntries,
-            state.PaletteMode,
-            _paletteRowWidth))
-        {
-            _overlayLines.Add(row);
-        }
-
-        try
-        {
-            OverlayList.SelectedItem = 0;
-
-            OverlayList.EnsureSelectedItemVisible();
-        }
-        catch
-        {
-        }
+        SetPickerRows(
+            CommandPaletteCatalog.Render(entries, state.PaletteMode, _paletteRowWidth - PickerCursorWidth),
+            entries.Count > 0 ? 0 : -1);
     }
 
     /// <summary>
@@ -2110,17 +2140,59 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     private void RefreshSessionList(CommandCenterState state)
     {
         _boundSessions = state.FilteredSessions;
-        _sessionLines.Clear();
+
+        int selectedIndex = _boundSessions.Count > 0 ? 0 : -1;
+
+        for (int i = 0; i < _boundSessions.Count; i++)
+        {
+            if (_boundSessions[i].Id == state.SelectedSessionId)
+            {
+                selectedIndex = i;
+
+                break;
+            }
+
+            if (_boundSessions[i].Id == state.SessionId)
+            {
+                selectedIndex = i;
+            }
+        }
+
+        List<string> rows = [];
+
         if (_boundSessions.Count == 0)
         {
-            _sessionLines.Add("(no sessions yet)");
+            rows.Add("(no sessions yet)");
         }
         else
         {
             foreach (SessionListItem item in _boundSessions)
             {
-                bool current = state.SessionId == item.Id || state.SelectedSessionId == item.Id;
-                _sessionLines.Add(current ? $"> {item.DisplayLine}" : $"  {item.DisplayLine}");
+                string active = state.SessionId == item.Id ? CommandCenterModelPicker.ActiveMarker : " ";
+
+                rows.Add($"{active} {item.DisplayLine}");
+            }
+
+            state.SelectedSessionId = _boundSessions[selectedIndex].Id;
+        }
+
+        _sessionLines.Clear();
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            _sessionLines.Add(RenderPickerRow(rows[i], i, selectedIndex));
+        }
+
+        if (selectedIndex >= 0)
+        {
+            SessionsView.SelectedItem = selectedIndex;
+
+            try
+            {
+                SessionsView.EnsureSelectedItemVisible();
+            }
+            catch
+            {
             }
         }
 
@@ -2128,50 +2200,12 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
             int previousRows = _overlayLines.Count;
 
-            _overlayLines.Clear();
-            foreach (string line in _sessionLines)
-            {
-                _overlayLines.Add(line);
-            }
+            SetPickerRows(rows, selectedIndex);
 
-            // The picker opens before the host hands it any sessions, so its frame was measured for
-            // whatever the list held then — nothing, or the overlay it replaced. Re-measure whenever
-            // the row count moves; ApplyAbsoluteLayout is re-entrancy guarded and never calls back here.
+            // The picker opens before its rows arrive. Measure again when filtering changes their count.
             if (_overlayLines.Count != previousRows)
             {
                 ApplyAbsoluteLayout(_cols, _rows);
-            }
-        }
-
-        if (_boundSessions.Count > 0 && state.SelectedSessionId is { } selected)
-        {
-            int idx = -1;
-            for (int i = 0; i < _boundSessions.Count; i++)
-            {
-                if (_boundSessions[i].Id == selected)
-                {
-                    idx = i;
-                    break;
-                }
-            }
-
-            if (idx >= 0)
-            {
-                SessionsView.SelectedItem = idx;
-
-                // Only the session picker is showing session rows. Any other overlay is a different,
-                // usually shorter, list — writing a session index into it re-points the wrong
-                // selection at best and throws past the last row at worst.
-                if (OverlayPane.Visible && _overlayKind == CommandCenterOverlayKind.SessionPicker)
-                {
-                    try
-                    {
-                        OverlayList.SelectedItem = Math.Clamp(idx, 0, Math.Max(0, _overlayLines.Count - 1));
-                    }
-                    catch
-                    {
-                    }
-                }
             }
         }
     }

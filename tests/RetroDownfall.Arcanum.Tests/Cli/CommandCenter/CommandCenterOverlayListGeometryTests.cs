@@ -49,9 +49,9 @@ public sealed class CommandCenterOverlayListGeometryTests
 
         Assert.Equal(0, window.OverlayList.Viewport.Y);
 
-        Assert.Equal(
-            CommandCenterModelPicker.Render(state.FilteredModels, state.Model),
-            window.GetOverlayLinesSnapshot());
+        Assert.Contains("ornith1.5:35b", window.GetOverlayLinesSnapshot()[0], StringComparison.Ordinal);
+
+        Assert.Contains("gemma4:e4b", window.GetOverlayLinesSnapshot()[1], StringComparison.Ordinal);
 
         Assert.Equal(2, window.GetOverlayLinesSnapshot().Count);
 

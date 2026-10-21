@@ -77,7 +77,7 @@ public sealed class CommandCenterPaletteOverlayTests
 
         string only = Assert.Single(window.GetOverlayLinesSnapshot());
 
-        Assert.StartsWith("Choose Model", only, StringComparison.Ordinal);
+        Assert.StartsWith("> Choose Model", only, StringComparison.Ordinal);
 
         Assert.Equal(0, window.GetOverlaySelectedIndex());
     }
@@ -270,7 +270,7 @@ public sealed class CommandCenterPaletteOverlayTests
 
         string only = Assert.Single(window.GetOverlayLinesSnapshot());
 
-        Assert.StartsWith("/model", only, StringComparison.Ordinal);
+        Assert.StartsWith("> /model", only, StringComparison.Ordinal);
 
         Assert.Empty(deferred);
 
