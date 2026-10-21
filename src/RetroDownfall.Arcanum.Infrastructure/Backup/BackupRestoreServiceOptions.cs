@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
@@ -22,6 +23,9 @@ internal sealed record CovenantSelectiveImportServices(
 
 internal sealed class BackupRestoreServiceOptions
 {
+    /// <summary>The shared live key cache invalidated by restore secret writes and rollback.</summary>
+    internal FileEncryptionKeyProvider? FileEncryptionKeys { get; init; }
+
     /// <summary>Embedding width this installation is configured for; derived vectors of any other width are rebuilt.</summary>
     public int EmbeddingDimensions { get; init; } = 1536;
 

@@ -91,6 +91,35 @@ public sealed class FileEncryptionKeyProvider :
         _gate.Dispose();
     }
 
+    /// <summary>
+    /// Drops the live ring after a restore attempted to replace, merge or reinstate its secret.
+    /// Already-borrowed material remains valid until this provider is disposed.
+    /// </summary>
+    internal async Task InvalidateAfterRestoreAsync()
+    {
+        // A secret write may have committed before throwing or cancellation. Cache cleanup must
+        // finish independently of the restore request's cancellation token.
+        await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+
+        try
+        {
+            if (_keys is not null)
+            {
+                _retired.AddRange(_keys.Values);
+            }
+
+            _keys = null;
+
+            _activeKeyId = null;
+
+            _keysLoadedByPeek = false;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public async ValueTask<FileEncryptionKeyMaterial> GetForWriteAsync(
         CancellationToken cancellationToken = default)
     {

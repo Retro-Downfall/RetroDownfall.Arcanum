@@ -14,7 +14,7 @@ using RetroDownfall.Arcanum.Infrastructure.Backup;
 
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
-public sealed class BackupSecretRewrapperTests : IDisposable
+public sealed partial class BackupSecretRewrapperTests : IDisposable
 {
     private readonly string _root = Path.Combine(
         Path.GetTempPath(),
@@ -553,9 +553,16 @@ public sealed class BackupSecretRewrapperTests : IDisposable
                     ? SecretStoreReadResult.Missing()
                     : SecretStoreReadResult.Ok(FileEncryptionSecret));
 
+        public Exception? FileEncryptionWriteFailure { get; set; }
+
         public Task SaveFileEncryptionSecretAsync(string encryptionSecret)
         {
             FileEncryptionSecret = encryptionSecret;
+
+            if (FileEncryptionWriteFailure is { } failure)
+            {
+                throw failure;
+            }
 
             return Task.CompletedTask;
         }

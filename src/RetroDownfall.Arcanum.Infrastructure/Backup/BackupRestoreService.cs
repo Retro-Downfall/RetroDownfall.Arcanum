@@ -781,7 +781,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
 
         BackupRestoreJournalRecord journal;
 
-        BackupSecretRewrapper rewrapper = new(_secretStore);
+        BackupSecretRewrapper rewrapper = new(_secretStore, _options.FileEncryptionKeys);
 
         BackupSecretSnapshot priorSecrets;
 
@@ -2409,7 +2409,7 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
                 ]);
         }
 
-        BackupSecretRewrapResult merged = await new BackupSecretRewrapper(_secretStore)
+        BackupSecretRewrapResult merged = await new BackupSecretRewrapper(_secretStore, _options.FileEncryptionKeys)
             .MergeFileEncryptionKeysAsync(
                 Path.Combine(
                     extractRoot,

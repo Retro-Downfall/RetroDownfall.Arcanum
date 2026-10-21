@@ -134,6 +134,10 @@ public sealed partial class BackupRestoreServiceTests
             priorDataset = await ScalarAsync(current, "SELECT hex(DatasetGeneration) FROM covenant_state;");
         }
 
+        FileEncryptionKeyProvider liveKeys = scoped.GetRequiredService<FileEncryptionKeyProvider>();
+
+        string originalKey = (await liveKeys.GetForWriteAsync()).KeyId;
+
         IBackupRestoreService restore = scoped.GetRequiredService<IBackupRestoreService>();
 
         BackupRestoreRequest request = new(archive, Confirmed: true, CreateSafetyBackup: createSafetyBackup);
@@ -164,6 +168,14 @@ public sealed partial class BackupRestoreServiceTests
         Assert.False(File.Exists(marker));
 
         Assert.Equal(source.GrimoireSecret, secrets.GrimoireSecret);
+
+        using FileEncryptionKeyProvider persistedKeys = new(secrets);
+
+        string restoredKey = (await persistedKeys.GetForWriteAsync()).KeyId;
+
+        Assert.NotEqual(originalKey, restoredKey);
+
+        Assert.Equal(restoredKey, (await liveKeys.GetForWriteAsync()).KeyId);
 
         Assert.Equal(createSafetyBackup, result.SafetyBackupPath is not null);
 

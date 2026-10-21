@@ -869,6 +869,8 @@ public static class ServiceCollectionExtensions
                 serviceProvider.GetRequiredService<IMemoryErasureKeyProvider>(),
                 new BackupRestoreServiceOptions
                 {
+                    FileEncryptionKeys = serviceProvider.GetRequiredService<FileEncryptionKeyProvider>(),
+
                     EmbeddingDimensions = ArcanumSettingClamps.EmbeddingsDimensions(
                         serviceProvider
                             .GetService<IOptionsMonitor<ArcanumSettings>>()?

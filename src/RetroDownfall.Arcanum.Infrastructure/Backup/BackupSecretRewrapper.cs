@@ -12,6 +12,8 @@ using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Security;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Backup;
 
 internal sealed record BackupSecretRewrapResult(
@@ -101,7 +103,9 @@ internal sealed record BackupSecretSnapshot(
 /// off by default — it authenticates callers to this installation, and adopting the old one on a new
 /// machine is a decision, not a side effect of restoring data.
 /// </remarks>
-internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
+internal sealed class BackupSecretRewrapper(
+    ISecretStore secretStore,
+    FileEncryptionKeyProvider? fileEncryptionKeys = null)
 {
     private const string KeyRingHeader = "ARCANUM-KEYRING-1";
 
@@ -182,7 +186,7 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
             {
                 _fileEncryptionSecretWritten = true;
 
-                await secretStore.SaveFileEncryptionSecretAsync(keyRing).ConfigureAwait(false);
+                await SaveFileEncryptionSecretAsync(keyRing).ConfigureAwait(false);
             }
 
             List<BackupVerifyIssue> issues = [];
@@ -437,7 +441,7 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
 
             _fileEncryptionSecretWritten = true;
 
-            await secretStore.SaveFileEncryptionSecretAsync(merged).ConfigureAwait(false);
+            await SaveFileEncryptionSecretAsync(merged).ConfigureAwait(false);
 
             return new BackupSecretRewrapResult(
                 GrimoireSecretWritten: false,
@@ -630,8 +634,8 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
         {
             await ReinstateAsync(
                     snapshot.FileEncryptionSecret,
-                    secretStore.SaveFileEncryptionSecretAsync,
-                    secretStore.DeleteFileEncryptionSecretAsync,
+                    SaveFileEncryptionSecretAsync,
+                    DeleteFileEncryptionSecretAsync,
                     failures)
                 .ConfigureAwait(false);
         }
@@ -653,6 +657,36 @@ internal sealed class BackupSecretRewrapper(ISecretStore secretStore)
                 "The prior installation's local secrets could not all be reinstated: "
                 + string.Join("; ", failures)
                 + "."));
+    }
+
+    private async Task SaveFileEncryptionSecretAsync(string value)
+    {
+        try
+        {
+            await secretStore.SaveFileEncryptionSecretAsync(value).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (fileEncryptionKeys is not null)
+            {
+                await fileEncryptionKeys.InvalidateAfterRestoreAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task DeleteFileEncryptionSecretAsync()
+    {
+        try
+        {
+            await secretStore.DeleteFileEncryptionSecretAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            if (fileEncryptionKeys is not null)
+            {
+                await fileEncryptionKeys.InvalidateAfterRestoreAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     private static async Task ReinstateAsync(
