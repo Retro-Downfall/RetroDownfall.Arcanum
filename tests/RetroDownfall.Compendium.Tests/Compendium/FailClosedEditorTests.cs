@@ -52,6 +52,73 @@ public sealed class FailClosedEditorTests
 
     }
 
+    [Theory]
+    [InlineData("success")]
+    [InlineData("failure")]
+    [InlineData("cancellation")]
+    public async Task Edits_made_while_a_save_is_pending_remain_dirty_saveable_and_close_protected(string completion)
+    {
+        TaskCompletionSource<ConfigurationWriteResult> pendingWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeConfigurationStore store = new(
+            static () => new ArcanumSettings { Host = new HostSettings { Port = 5001 } })
+        {
+            PendingWrite = pendingWrite.Task,
+        };
+
+        RecordingDialogService dialogs = new() { ConfirmResult = false };
+
+        ConfigurationViewModel vm = CreateViewModel(store, dialogs);
+
+        await WaitForAsync(() => vm.StatusMessage.StartsWith("Loaded", StringComparison.Ordinal));
+
+        vm.Host.Port = 5051;
+
+        Task save = vm.SaveCommand.ExecuteAsync(null);
+
+        await WaitForAsync(() => store.LastWriteAttempt is not null);
+
+        Assert.Equal(5051, store.LastWriteAttempt!.Host.Port);
+
+        Assert.True(vm.IsSaving);
+
+        vm.Host.Port = 5052;
+
+        if (completion == "cancellation")
+        {
+            pendingWrite.SetCanceled();
+        }
+        else
+        {
+            pendingWrite.SetResult(completion == "success"
+                ? new ConfigurationWriteResult(true, [], null)
+                : new ConfigurationWriteResult(false, [], "The configuration changed on disk."));
+        }
+
+        await save;
+
+        if (completion == "success")
+        {
+            Assert.Equal(5051, Assert.Single(store.Writes).Host.Port);
+        }
+        else
+        {
+            Assert.Empty(store.Writes);
+        }
+
+        Assert.Equal(5052, vm.Host.Port);
+
+        Assert.True(vm.IsDirty);
+
+        Assert.False(vm.IsSaving);
+
+        Assert.True(vm.SaveCommand.CanExecute(null));
+
+        Assert.False(await vm.ConfirmDiscardOnExitAsync());
+
+        Assert.Contains(dialogs.Confirms, confirmation => confirmation.Title == "Unsaved changes");
+    }
+
     [Fact]
     public async Task Successful_load_after_a_failure_clears_the_block()
     {
@@ -518,6 +585,10 @@ public sealed class FailClosedEditorTests
 
         public ConfigurationWriteResult NextWriteResult { get; set; } = new(true, [], null);
 
+        public Task<ConfigurationWriteResult>? PendingWrite { get; set; }
+
+        public ArcanumSettings? LastWriteAttempt { get; private set; }
+
         public List<ArcanumSettings> Writes { get; } = [];
 
         public event EventHandler? ExternalChange;
@@ -528,18 +599,20 @@ public sealed class FailClosedEditorTests
 
         public Task<ArcanumSettings> ReadAsync(CancellationToken ct = default) => Task.FromResult(read());
 
-        public Task<ConfigurationWriteResult> WriteAsync(ArcanumSettings settings, CancellationToken ct = default)
+        public async Task<ConfigurationWriteResult> WriteAsync(ArcanumSettings settings, CancellationToken ct = default)
         {
+            LastWriteAttempt = settings;
 
-            if (NextWriteResult.IsSuccess)
+            ConfigurationWriteResult result = PendingWrite is null
+                ? NextWriteResult
+                : await PendingWrite;
+
+            if (result.IsSuccess)
             {
-
                 Writes.Add(settings);
-
             }
 
-            return Task.FromResult(NextWriteResult);
-
+            return result;
         }
 
         public void Dispose()

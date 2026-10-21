@@ -56,6 +56,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     private ArcanumSettings _snapshot = new();
 
+    private long _editRevision;
+
     private Dictionary<string, string> _serverValidationErrors = new(StringComparer.Ordinal);
 
     public HostSectionViewModel Host { get; } = new();
@@ -145,6 +147,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public void MarkDirty()
     {
+
+        _editRevision++;
 
         IsDirty = true;
 
@@ -519,6 +523,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
             ArcanumSettings settings = BuildSettings();
 
+            long savedRevision = _editRevision;
+
             ConfigurationWriteResult result = await _store.WriteAsync(settings, CancellationToken.None).ConfigureAwait(false);
 
             await _uiDispatcher.InvokeAsync(() =>
@@ -529,7 +535,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
                     _snapshot = settings;
 
-                    IsDirty = false;
+                    IsDirty = _editRevision != savedRevision;
 
                     HasExternalChange = false;
 
