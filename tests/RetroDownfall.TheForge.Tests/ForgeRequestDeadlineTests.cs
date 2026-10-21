@@ -2,6 +2,8 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.CommLink;
+using RetroDownfall.Arcanum.Core.ProvingGrounds;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Workspaces;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -292,6 +294,9 @@ public sealed class ForgeRequestDeadlineTests
     [InlineData("spell-export")]
     [InlineData("spell-import")]
     [InlineData("spell-clone")]
+    [InlineData("trial-run")]
+    [InlineData("prompt-test")]
+    [InlineData("commlink-send")]
     public async Task Inline_work_routes_finish_after_the_ordinary_header_budget_without_arming_a_deadline(string route)
     {
         ManualTimerTimeProvider clock = new();
@@ -323,7 +328,7 @@ public sealed class ForgeRequestDeadlineTests
 
         string body = route switch
         {
-            "mcp-start" or "mcp-stop" or "mcp-restart" => "{\"isSuccess\":true,\"data\":true}",
+            "mcp-start" or "mcp-stop" or "mcp-restart" or "commlink-send" => "{\"isSuccess\":true,\"data\":true}",
             "mcp-reload" => "{\"isSuccess\":true,\"data\":\"done\"}",
             "batch-create" => "{}",
             _ => "{\"isSuccess\":true,\"data\":null}",
@@ -345,6 +350,9 @@ public sealed class ForgeRequestDeadlineTests
 
         return route switch
         {
+            "trial-run" => (await new TrialService(api).RunAsync(new Trial(TrialTargetKind.Prompt, "test", []), cancellationToken))?.IsSuccess == true,
+            "prompt-test" => (await new PromptService(api).TestAsync(Guid.Empty, new TestPromptRequest(null, null, null, null, null), cancellationToken))?.IsSuccess == true,
+            "commlink-send" => (await new CommLinkService(api).SendAsync("test", "test", CommLinkSeverity.Info, "test", cancellationToken))?.IsSuccess == true,
             "fork" => (await new SessionService(api, sse).ForkAsync(Guid.Empty, null, cancellationToken))?.IsSuccess == true,
             "session-export" => (await new SessionService(api, sse).ExportAsync(Guid.Empty, "json", cancellationToken))?.IsSuccess == true,
             "daemon" => (await new DaemonService(api, sse).RunAsync("test", cancellationToken))?.IsSuccess == true,

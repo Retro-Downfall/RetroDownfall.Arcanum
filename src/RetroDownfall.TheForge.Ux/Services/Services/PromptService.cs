@@ -91,7 +91,7 @@ public sealed class PromptService
             request,
             TheForgeJsonContext.Default.TestPromptRequest,
             TheForgeJsonContext.Default.ApiResponsePromptTestResultDto,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>POST /api/prompts/{id}/execute-stream</c> — live prompt execution, NDJSON <see cref="IntelligenceEvent"/> stream.</summary>
     public IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(Guid id, PromptExecuteRequest request, CancellationToken cancellationToken) =>

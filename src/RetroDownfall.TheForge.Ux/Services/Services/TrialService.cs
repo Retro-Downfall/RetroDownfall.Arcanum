@@ -23,6 +23,6 @@ public sealed class TrialService
             trial,
             TheForgeJsonContext.Default.Trial,
             TheForgeJsonContext.Default.ApiResponseTrialResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

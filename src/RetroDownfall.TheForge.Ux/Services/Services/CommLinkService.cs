@@ -24,6 +24,6 @@ public sealed class CommLinkService
             new CommLinkMessageRequestDto(title, body, severity, source),
             TheForgeJsonContext.Default.CommLinkMessageRequestDto,
             TheForgeJsonContext.Default.ApiResponseBoolean,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }
