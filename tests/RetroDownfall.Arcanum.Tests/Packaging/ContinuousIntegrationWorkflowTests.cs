@@ -295,6 +295,9 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Process.ChildProcessBoundaryBehaviorTests",
             "Process.ChildProcessFilesystemJailTests",
             "Familiars.FamiliarExecutableResolverTests",
+            "Intelligence.Spells.SpellDirectoryTests",
+            "Repositories.SpellRepositoryTests",
+            "Workspaces.SpellScannerTests",
         ];
 
         string[] methods =
