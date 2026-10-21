@@ -26,6 +26,45 @@ public sealed class SpellDependencyResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task Dependency_catalog_cannot_supply_body_after_parent_pivots_outside_workspace()
+    {
+        await CreateSpellAsync("primary", "Primary", "safe primary", ["Dependent"]);
+
+        await CreateSpellAsync("dependent", "Dependent", "safe dependency", dependencies: null);
+
+        ParsedSpell primary = Assert.IsType<ParsedSpell>(await LoadSpellAsync("primary"));
+
+        IReadOnlyList<SpellMetadata> catalog = await SpellScanner.ScanMetadataAsync(_workspace, CancellationToken.None, _maxFileSizeBytes);
+
+        string external = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(external);
+
+        await File.WriteAllTextAsync(Path.Combine(external, "SPELL.md"), "---\nname: Dependent\n---\nEXTERNAL PROVIDER SECRET");
+
+        string dependent = Path.Combine(_workspace, "dependent");
+
+        Directory.Move(dependent, dependent + "-original");
+
+        Directory.CreateSymbolicLink(dependent, external);
+
+        try
+        {
+            ResolvedSpell result = await SpellDependencyResolver.ResolveAsync(primary, _workspace, _maxFileSizeBytes, CancellationToken.None, spellCatalog: catalog);
+
+            Assert.Empty(result.Resonants);
+
+            Assert.Equal("safe primary", result.Primary!.Body.Trim());
+        }
+        finally
+        {
+            Directory.Delete(dependent);
+
+            Directory.Delete(external, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Dependency_chain_reaches_beyond_the_former_total_depth_ceiling()
     {
         await CreateSpellAsync("primary", "Primary", "primary body", ["SpellA"]);
@@ -167,7 +206,7 @@ public sealed class SpellDependencyResolverTests : IDisposable
     {
         string path = Path.Combine(_workspace, folderName, "SPELL.md");
 
-        return await SpellScanner.LoadFullAsync(path, CancellationToken.None, _maxFileSizeBytes);
+        return await SpellScanner.LoadFullAsync(path, _workspace, CancellationToken.None, _maxFileSizeBytes);
     }
 
     private async Task CreateSpellAsync(

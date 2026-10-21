@@ -5353,7 +5353,7 @@ public sealed partial class WizardIntelligenceProvider(
             }
 
             ParsedSpell? overrideSpell = await SpellScanner
-                .LoadFullAsync(validated.Value, cancellationToken, maxSpellFileSizeBytes)
+                .LoadFullAsync(validated.Value, spellWorkspaceRoot, cancellationToken, maxSpellFileSizeBytes)
                 .ConfigureAwait(false);
 
             if (overrideSpell is null)
@@ -5506,7 +5506,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
 
         ParsedSpell? activeSpell = await SpellScanner
-            .LoadFullAsync(matchedMetadata.FilePath, cancellationToken, maxSpellFileSizeBytes)
+            .LoadFullAsync(matchedMetadata, spellWorkspaceRoot, cancellationToken, maxSpellFileSizeBytes)
             .ConfigureAwait(false);
 
         if (activeSpell is null)

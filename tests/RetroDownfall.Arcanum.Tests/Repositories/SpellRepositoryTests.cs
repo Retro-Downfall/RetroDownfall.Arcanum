@@ -23,7 +23,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
 [Collection("ProcessEnvironment")]
-public sealed class SpellRepositoryTests : IAsyncLifetime
+public sealed partial class SpellRepositoryTests : IAsyncLifetime
 {
     private readonly GrimoireFixture _fixture;
 
@@ -66,6 +66,187 @@ public sealed class SpellRepositoryTests : IAsyncLifetime
         if (Directory.Exists(_workspaceRoot))
         {
             Directory.Delete(_workspaceRoot, recursive: true);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("create", false)]
+    [InlineData("clone", false)]
+    [InlineData("import", false)]
+    [InlineData("create", true)]
+    [InlineData("clone", true)]
+    [InlineData("import", true)]
+    public async Task Authoring_refuses_spells_parent_link_without_writing_external_files(string operation, bool pivotBeforeWrite)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string external = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(external);
+
+        string source = Path.Combine(_workspaceRoot, "source");
+
+        Directory.CreateDirectory(source);
+
+        await File.WriteAllTextAsync(Path.Combine(source, "SPELL.md"), "---\nname: source\n---\nsafe source body");
+
+        string spells = Path.Combine(_workspaceRoot, "spells");
+
+        SpellRepository repository = CreateRepository();
+
+        if (pivotBeforeWrite)
+        {
+            Directory.CreateDirectory(spells);
+
+            repository.BeforeFirstSpellWriteForTests = () =>
+            {
+                // Plant matching empty staging names so a pathname-only writer reaches its external target.
+                foreach (string staging in Directory.EnumerateDirectories(spells, ".staging-*"))
+                {
+                    Directory.CreateDirectory(Path.Combine(external, Path.GetFileName(staging)));
+                }
+
+                Directory.Move(spells, spells + "-original");
+
+                Directory.CreateSymbolicLink(spells, external);
+            };
+        }
+        else
+        {
+            Directory.CreateSymbolicLink(spells, external);
+        }
+
+        try
+        {
+            Result result;
+
+            if (operation == "clone")
+            {
+                Result<SpellSummary> cloned = await repository.CloneAsync("source", _workspaceRoot, new CloneSpellRequest("escaped"), CancellationToken.None);
+
+                result = cloned.IsSuccess ? Result.Success() : Result.Failure(cloned.Error);
+            }
+            else if (operation == "import")
+            {
+                SpellExportDto payload = new(null, "---\nname: escaped\n---\nimported body", []);
+
+                Result<SpellSummary> imported = await repository.ImportAsync(new SpellImportRequest(payload, _workspaceRoot, null), CancellationToken.None);
+
+                result = imported.IsSuccess ? Result.Success() : Result.Failure(imported.Error);
+            }
+            else
+            {
+                result = await repository.CreateAsync(_workspaceRoot, new CreateSpellRequest("escaped", "description", [], "prompt", null, null, null, [], [], Body: "body"), CancellationToken.None);
+            }
+
+            Assert.True(result.IsFailure);
+
+            Assert.Empty(Directory.EnumerateFiles(external, "*", SearchOption.AllDirectories));
+
+            Assert.False(Directory.Exists(Path.Combine(external, "escaped")));
+        }
+        finally
+        {
+            Directory.Delete(spells);
+
+            Directory.Delete(external, recursive: true);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("update")]
+    [InlineData("create-version")]
+    [InlineData("update-version")]
+    [InlineData("activate")]
+    [InlineData("delete")]
+    public async Task Existing_spell_mutation_refuses_parent_pivot_and_preserves_external_files(string operation)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string spells = Path.Combine(_workspaceRoot, "spells");
+
+        string victim = Path.Combine(spells, "victim");
+
+        Directory.CreateDirectory(victim);
+
+        await File.WriteAllTextAsync(Path.Combine(victim, "SPELL.md"), "---\nname: victim\n---\nsafe body");
+
+        await File.WriteAllTextAsync(Path.Combine(victim, "SPELL.v1.md"), "---\nname: victim\n---\nsafe version");
+
+        string external = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(external, "victim"));
+
+        string externalBody = Path.Combine(external, "victim", "SPELL.md");
+
+        string externalVersion = Path.Combine(external, "victim", "SPELL.v1.md");
+
+        await File.WriteAllTextAsync(externalBody, "EXTERNAL BODY MUST REMAIN");
+
+        await File.WriteAllTextAsync(externalVersion, "EXTERNAL VERSION MUST REMAIN");
+
+        bool pivoted = false;
+
+        void Pivot()
+        {
+            if (pivoted)
+            {
+                return;
+            }
+
+            Directory.Move(spells, spells + "-original");
+
+            Directory.CreateSymbolicLink(spells, external);
+
+            pivoted = true;
+        }
+
+        SpellRepository repository = CreateRepository();
+
+        repository.BeforeFirstSpellWriteForTests = Pivot;
+
+        if (operation == "activate")
+        {
+            SecureFileReader.AfterOpenForTests = path =>
+            {
+                if (path == Path.Combine(victim, "SPELL.v1.md"))
+                {
+                    Pivot();
+                }
+            };
+        }
+
+        try
+        {
+            bool failed = operation switch
+            {
+                "delete" => (await repository.DeleteAsync("victim", _workspaceRoot, CancellationToken.None)).IsFailure,
+                "update" => (await repository.UpdateAsync("victim", _workspaceRoot, new UpdateSpellRequest("new description", null, null, null, null, null, null, null), CancellationToken.None)).IsFailure,
+                "create-version" => (await repository.CreateVersionAsync("victim", _workspaceRoot, new CreateSpellVersionRequest("2", "new version"), CancellationToken.None)).IsFailure,
+                "update-version" => (await repository.UpdateVersionAsync("victim", "1", _workspaceRoot, new UpdateSpellVersionRequest("changed version"), CancellationToken.None)).IsFailure,
+                _ => (await repository.ActivateVersionAsync("victim", "1", _workspaceRoot, CancellationToken.None)).IsFailure,
+            };
+
+            Assert.True(pivoted);
+
+            Assert.True(failed);
+
+            Assert.Equal("EXTERNAL BODY MUST REMAIN", await File.ReadAllTextAsync(externalBody));
+
+            Assert.Equal("EXTERNAL VERSION MUST REMAIN", await File.ReadAllTextAsync(externalVersion));
+
+            Assert.Equal(2, Directory.EnumerateFiles(external, "*", SearchOption.AllDirectories).Count());
+        }
+        finally
+        {
+            SecureFileReader.AfterOpenForTests = null;
+
+            if (pivoted)
+            {
+                Directory.Delete(spells);
+            }
+
+            Directory.Delete(external, recursive: true);
         }
     }
 

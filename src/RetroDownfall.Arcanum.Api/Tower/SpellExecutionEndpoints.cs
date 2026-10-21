@@ -334,6 +334,7 @@ internal static partial class SpellExecutionEndpoints
                         activeVersionLabel ?? "(active)",
                         isActive: true,
                         unversionedPath,
+                        resolvedWorkspace,
                         maxFileSizeBytes,
                         ctx.RequestAborted).ConfigureAwait(false));
                 }
@@ -351,6 +352,7 @@ internal static partial class SpellExecutionEndpoints
                         label,
                         isActive: false,
                         versionFile,
+                        resolvedWorkspace,
                         maxFileSizeBytes,
                         ctx.RequestAborted).ConfigureAwait(false));
                 }
@@ -719,6 +721,7 @@ internal static partial class SpellExecutionEndpoints
         string version,
         bool isActive,
         string filePath,
+        string? workspaceRoot,
         long maxFileSizeBytes,
         CancellationToken cancellationToken)
     {
@@ -737,7 +740,7 @@ internal static partial class SpellExecutionEndpoints
             createdAt = DateTimeOffset.UtcNow;
         }
 
-        ParsedSpell? parsed = await SpellScanner.LoadFullAsync(filePath, cancellationToken, maxFileSizeBytes).ConfigureAwait(false);
+        ParsedSpell? parsed = await SpellScanner.LoadFullAsync(filePath, workspaceRoot, cancellationToken, maxFileSizeBytes).ConfigureAwait(false);
 
         string? description = string.IsNullOrWhiteSpace(parsed?.Description) ? null : parsed.Description;
 

@@ -123,6 +123,9 @@ internal static class SkillJsonIO
     }
 
     /// <summary>Writes canonical <see cref="CanonicalFileName"/> only. Never creates a new legacy sidecar.</summary>
+    internal static Task WriteAsync(SpellDirectory directory, SkillMetadata metadata, CancellationToken ct) =>
+        directory.WriteTextAsync(CanonicalFileName, JsonSerializer.Serialize(metadata, ArcanumCoreJsonContext.Default.SkillMetadata), ct);
+
     public static async Task WriteAsync(string spellDirectory, SkillMetadata metadata, CancellationToken ct)
     {
         string path = Path.Combine(spellDirectory, CanonicalFileName);

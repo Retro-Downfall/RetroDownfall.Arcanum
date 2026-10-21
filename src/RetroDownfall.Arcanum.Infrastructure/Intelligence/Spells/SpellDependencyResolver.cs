@@ -49,13 +49,13 @@ internal static class SpellDependencyResolver
                 .ScanMetadataAsync(workspaceRoot, cancellationToken, maxFileSizeBytes)
                 .ConfigureAwait(false);
 
-        Dictionary<string, string> nameToPath = new(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, SpellMetadata> nameToPath = new(StringComparer.OrdinalIgnoreCase);
 
         foreach (SpellMetadata meta in catalog)
         {
             if (!string.IsNullOrWhiteSpace(meta.Name) && !string.IsNullOrWhiteSpace(meta.FilePath))
             {
-                nameToPath[meta.Name] = meta.FilePath;
+                nameToPath[meta.Name] = meta;
             }
         }
 
@@ -91,7 +91,7 @@ internal static class SpellDependencyResolver
                 continue;
             }
 
-            if (!nameToPath.TryGetValue(depName, out string? filePath))
+            if (!nameToPath.TryGetValue(depName, out SpellMetadata? metadata))
             {
                 logger?.LogWarning(
                     "Arcane Resonance: dependency spell '{DependencyName}' was not found in the spell catalog; skipping.",
@@ -101,7 +101,7 @@ internal static class SpellDependencyResolver
             }
 
             ParsedSpell? loaded = await SpellScanner
-                .LoadFullAsync(filePath, cancellationToken, maxFileSizeBytes)
+                .LoadFullAsync(metadata, workspaceRoot, cancellationToken, maxFileSizeBytes)
                 .ConfigureAwait(false);
 
             if (loaded is null)
@@ -109,7 +109,7 @@ internal static class SpellDependencyResolver
                 logger?.LogWarning(
                     "Arcane Resonance: dependency spell '{DependencyName}' could not be loaded from '{FilePath}'; skipping.",
                     depName,
-                    filePath);
+                    metadata.FilePath);
 
                 continue;
             }

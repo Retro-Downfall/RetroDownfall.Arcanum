@@ -17,7 +17,14 @@ public sealed record SpellMetadata(
     string Description,
     string FilePath,
     string[]? Tags = null,
-    string[]? Tools = null);
+    string[]? Tools = null)
+{
+    internal string? SourceRoot { get; init; }
+
+    internal FileHandleIdentity? SourceRootIdentity { get; init; }
+
+    internal FileHandleIdentity? FileIdentity { get; init; }
+}
 
 public sealed record ParsedSpell(
     string Name,
@@ -52,7 +59,7 @@ internal static class SpellScanner
 
     private const int MetadataScanCacheCapacity = 32;
 
-    private static readonly BoundedLruCache<string, ParsedSpell> FullSpellCache = new(FullSpellCacheCapacity);
+    private static readonly BoundedLruCache<FullSpellCacheKey, ParsedSpell> FullSpellCache = new(FullSpellCacheCapacity);
 
     private static readonly BoundedLruCache<MetadataScanCacheKey, MetadataScanCacheEntry> MetadataScanCache =
         new(MetadataScanCacheCapacity);
@@ -66,9 +73,18 @@ internal static class SpellScanner
 
     /// <summary>
     /// Per-key single-flight map for in-flight <see cref="LoadFullAsync"/> miss waves, keyed by
-    /// the same <c>$"{fullPath}|{mtimeTicks}"</c> string as <see cref="FullSpellCache"/>.
+    /// the same root, identity, timestamp and limits as <see cref="FullSpellCache"/>.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, CoalescedWork<ParsedSpell?>> FullSpellInFlight = new();
+    private static readonly ConcurrentDictionary<FullSpellCacheKey, CoalescedWork<ParsedSpell?>> FullSpellInFlight = new();
+
+    private readonly record struct FullSpellCacheKey(
+        string Root,
+        FileHandleIdentity RootIdentity,
+        string Path,
+        FileHandleIdentity FileIdentity,
+        long MtimeTicks,
+        long MaxBytes,
+        int? MaxDeclaredTools);
 
     private readonly record struct MetadataScanCacheKey(string GlobalRoot, string WorkspaceRoot);
 
@@ -434,50 +450,64 @@ internal static class SpellScanner
         }
     }
 
-    internal static async Task<ParsedSpell?> LoadFullAsync(
-        string filePath,
+    internal static Task<ParsedSpell?> LoadFullAsync(
+        SpellMetadata metadata,
+        string? workspaceRoot,
         CancellationToken cancellationToken,
         long maxFileSizeBytes,
-        int? maxDeclaredTools = null)
+        int? maxDeclaredTools = null) =>
+        LoadFullAsync(
+            metadata.FilePath,
+            workspaceRoot,
+            cancellationToken,
+            maxFileSizeBytes,
+            maxDeclaredTools,
+            metadata.FileIdentity,
+            metadata.SourceRootIdentity,
+            metadata.SourceRoot);
+
+    internal static async Task<ParsedSpell?> LoadFullAsync(
+        string filePath,
+        string? workspaceRoot,
+        CancellationToken cancellationToken,
+        long maxFileSizeBytes,
+        int? maxDeclaredTools = null,
+        FileHandleIdentity? expectedIdentity = null,
+        FileHandleIdentity? expectedRootIdentity = null,
+        string? discoveredRoot = null)
     {
-        if (string.IsNullOrWhiteSpace(filePath))
+        cancellationToken.ThrowIfCancellationRequested();
+
+        string? sourceRoot = ResolveSourceRoot(filePath, workspaceRoot, discoveredRoot);
+
+        using SpellReadAuthority? authority = SpellReadAuthority.TryOpen(sourceRoot, expectedRootIdentity);
+
+        if (authority is null)
         {
             return null;
         }
 
-        string fullPath;
+        using FileStream? probe = authority.OpenFile(filePath, expectedIdentity, out FileHandleMetadata metadata);
 
-        try
-        {
-            fullPath = Path.GetFullPath(filePath);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        if (probe is null)
         {
             return null;
         }
 
-        long mtimeTicks;
+        string fullPath = Path.GetFullPath(filePath);
 
-        try
-        {
-            mtimeTicks = File.GetLastWriteTimeUtc(fullPath).Ticks;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return await TryParseSpellFileAsync(fullPath, maxFileSizeBytes, maxDeclaredTools, workspaceRootForRevalidation: null, cancellationToken).ConfigureAwait(false);
-        }
+        long mtimeTicks = File.GetLastWriteTimeUtc(fullPath).Ticks;
 
-        string cacheKey = $"{fullPath}|{mtimeTicks}";
+        FullSpellCacheKey cacheKey = new(
+            sourceRoot!, authority.Identity, fullPath, metadata.Identity, mtimeTicks, maxFileSizeBytes, maxDeclaredTools);
 
         if (FullSpellCache.TryGetValue(cacheKey, out ParsedSpell? cached))
         {
-            return cached;
+            return authority.Contains(probe) ? cached : null;
         }
 
-        // Single-flight the miss path: concurrent misses for the same (path, mtime) key share
-        // one parse task. Only the leader parses and populates the LRU cache. The shared parse runs
-        // under the wave's own token so a cancelled `spell show` cannot fail a concurrent load.
-        ParsedSpell? parsed = await CoalesceWithCallerCancellationAsync(
+        // A shared wave retains its own authority; a canceled joiner cannot dispose another caller's handles.
+        return await CoalesceWithCallerCancellationAsync(
             FullSpellInFlight,
             cacheKey,
             async parseToken =>
@@ -486,8 +516,10 @@ internal static class SpellScanner
                     fullPath,
                     maxFileSizeBytes,
                     maxDeclaredTools,
-                    workspaceRootForRevalidation: null,
-                    parseToken).ConfigureAwait(false);
+                    sourceRoot,
+                    parseToken,
+                    metadata.Identity,
+                    authority.Identity).ConfigureAwait(false);
 
                 if (result is not null)
                 {
@@ -497,8 +529,41 @@ internal static class SpellScanner
                 return result;
             },
             cancellationToken).ConfigureAwait(false);
+    }
 
-        return parsed;
+    private static string? ResolveSourceRoot(string filePath, string? workspaceRoot, string? discoveredRoot)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+        {
+            return null;
+        }
+
+        string globalRoot = Path.GetFullPath(ArcanumPaths.GlobalSpellsDirectory);
+
+        if (discoveredRoot is not null)
+        {
+            string admittedRoot = Path.GetFullPath(discoveredRoot);
+
+            StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+            bool admitted = string.Equals(admittedRoot, globalRoot, comparison)
+                || (!string.IsNullOrWhiteSpace(workspaceRoot)
+                    && string.Equals(admittedRoot, Path.GetFullPath(workspaceRoot), comparison));
+
+            return admitted && WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(admittedRoot, filePath, out _)
+                ? admittedRoot
+                : null;
+        }
+
+        if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(globalRoot, filePath, out _))
+        {
+            return globalRoot;
+        }
+
+        return !string.IsNullOrWhiteSpace(workspaceRoot)
+            && WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(Path.GetFullPath(workspaceRoot), filePath, out _)
+                ? Path.GetFullPath(workspaceRoot)
+                : null;
     }
 
     internal static async Task<IReadOnlyList<RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary>> ScanSummariesAsync(
@@ -1061,17 +1126,37 @@ internal static class SpellScanner
             return null;
         }
 
+        using SpellReadAuthority? authority = SpellReadAuthority.TryOpen(workspaceRootForRevalidation);
+
+        using FileStream? stream = authority?.OpenFile(filePath, null, out _);
+
+        if (authority is null || stream is null
+            || !SecureFileReader.TryValidateRegularFileHandle(stream.SafeFileHandle, null, out FileHandleMetadata metadata))
+        {
+            return null;
+        }
+
         string directoryFallbackName = GetSpellDirectoryFallbackName(filePath);
 
         string? frontmatterBlock = await ReadFrontmatterBlockAsync(
-            filePath,
+            stream,
             fileLength,
             maxFileSizeBytes,
             cancellationToken).ConfigureAwait(false);
 
+        if (!authority.Contains(stream))
+        {
+            return null;
+        }
+
         if (frontmatterBlock is null)
         {
-            return new SpellMetadata(directoryFallbackName, string.Empty, filePath);
+            return new SpellMetadata(directoryFallbackName, string.Empty, filePath)
+            {
+                SourceRoot = workspaceRootForRevalidation,
+                SourceRootIdentity = authority.Identity,
+                FileIdentity = metadata.Identity,
+            };
         }
 
         SpellParseResult parsed = SpellFileParser.Parse(frontmatterBlock, directoryFallbackName);
@@ -1081,11 +1166,16 @@ internal static class SpellScanner
             return null;
         }
 
-        return new SpellMetadata(parsed.Name, parsed.Description, filePath, parsed.Tags, parsed.Tools);
+        return new SpellMetadata(parsed.Name, parsed.Description, filePath, parsed.Tags, parsed.Tools)
+        {
+            SourceRoot = workspaceRootForRevalidation,
+            SourceRootIdentity = authority.Identity,
+            FileIdentity = metadata.Identity,
+        };
     }
 
     private static async Task<string?> ReadFrontmatterBlockAsync(
-        string filePath,
+        FileStream stream,
         long fileLength,
         long maxFileSizeBytes,
         CancellationToken cancellationToken)
@@ -1095,29 +1185,9 @@ internal static class SpellScanner
             return null;
         }
 
-        // Prove the object is an unaliased regular file before opening it (DESIGN §11.6). TryGetFileLength
-        // reports 0 for a FIFO, so the size gate above passes, and a blocking open(2) on a FIFO never returns
-        // until a writer appears — no CancellationToken can interrupt an open. Because ScanMetadataAsync
-        // coalesces through CoalesceWithCallerCancellationAsync, one planted FIFO would pin a thread-pool thread and leave the spell
-        // catalog permanently unavailable for every caller of that workspace.
-        if (SecureFileReader.TryOpenRegularFile(
-                filePath,
-                expectedIdentity: null,
-                out FileStream? secureStream,
-                out _)
-            is not SecureFileOpenStatus.Success
-            || secureStream is null)
-        {
-            secureStream?.Dispose();
-
-            return null;
-        }
-
-        await using FileStream stream = secureStream;
-
         try
         {
-            using StreamReader reader = new(stream);
+            using StreamReader reader = new(stream, leaveOpen: true);
 
             long bytesRead = 0L;
 
@@ -1175,7 +1245,9 @@ internal static class SpellScanner
         long maxFileSizeBytes,
         int? maxDeclaredTools,
         string? workspaceRootForRevalidation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileHandleIdentity? expectedIdentity = null,
+        FileHandleIdentity? expectedRootIdentity = null)
     {
         if (workspaceRootForRevalidation is not null
             && !WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, filePath))
@@ -1199,11 +1271,20 @@ internal static class SpellScanner
         // SecureFileReader rejects non-regular/aliased objects and bounds the read at maxFileSizeBytes + 1.
         int maxBytes = (int)Math.Min(maxFileSizeBytes, int.MaxValue - 1);
 
+        using SpellReadAuthority? authority = SpellReadAuthority.TryOpen(workspaceRootForRevalidation, expectedRootIdentity);
+
+        using FileStream? bodyStream = authority?.OpenFile(filePath, expectedIdentity, out _);
+
+        if (authority is null || bodyStream is null)
+        {
+            return null;
+        }
+
         SecureUtf8FileReadResult readResult = await SecureFileReader
-            .ReadUtf8TextAsync(filePath, maxBytes, cancellationToken)
+            .ReadUtf8TextAsync(bodyStream, maxBytes, cancellationToken)
             .ConfigureAwait(false);
 
-        if (readResult.Status is not SecureFileReadStatus.Success || readResult.Text is null)
+        if (!authority.Contains(bodyStream) || readResult.Status is not SecureFileReadStatus.Success || readResult.Text is null)
         {
             return null;
         }
@@ -1236,7 +1317,7 @@ internal static class SpellScanner
         }
 
         IReadOnlyList<string> availableScripts = spellDirectoryPath.Length > 0
-            ? DiscoverAvailableScripts(spellDirectoryPath, cancellationToken)
+            ? DiscoverAvailableScripts(spellDirectoryPath, authority, cancellationToken)
             : Array.Empty<string>();
 
         SkillMetadata? skillMetadata = null;
@@ -1247,12 +1328,8 @@ internal static class SpellScanner
         {
             string? sidecarPath = SkillJsonIO.ResolveSidecarPath(spellDirectoryPath);
 
-            // The sidecar gets the same fail-closed read as the SPELL.md body above (DESIGN §11.6). It used to
-            // go through the weak TryGetFileLength gate — a FIFO stats as length 0, so the size check passed —
-            // and then File.ReadAllTextAsync, whose blocking open(2) parks until a writer appears and cannot be
-            // interrupted by any CancellationToken. TryGetRegularFileLength proves the object is an unaliased
-            // regular file, and SecureFileReader re-proves it on the handle (O_NOFOLLOW), which also rejects a
-            // sidecar symlinked out of the workspace on the LoadFullAsync path where no root is threaded in.
+            // The sidecar uses the body's retained root. A fresh handle check prevents an ancestor
+            // replacement from redirecting this read after the body has already been admitted.
             if (sidecarPath is not null
                 && (workspaceRootForRevalidation is null
                     || WorkspacePathPolicy.RevalidatePathBeforeIo(workspaceRootForRevalidation, sidecarPath))
@@ -1261,11 +1338,18 @@ internal static class SpellScanner
             {
                 try
                 {
+                    using FileStream? sidecarStream = authority.OpenFile(sidecarPath, null, out _);
+
+                    if (sidecarStream is null)
+                    {
+                        return null;
+                    }
+
                     SecureUtf8FileReadResult sidecarRead = await SecureFileReader
-                        .ReadUtf8TextAsync(sidecarPath, maxBytes, cancellationToken)
+                        .ReadUtf8TextAsync(sidecarStream, maxBytes, cancellationToken)
                         .ConfigureAwait(false);
 
-                    if (sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
+                    if (authority.Contains(sidecarStream) && sidecarRead.Status is SecureFileReadStatus.Success && sidecarRead.Text is not null)
                     {
                         skillMetadata = JsonSerializer.Deserialize(sidecarRead.Text, ArcanumCoreJsonContext.Default.SkillMetadata);
 
@@ -1316,9 +1400,9 @@ internal static class SpellScanner
         };
     }
 
-    private static string[] MergeTags(string[] frontmatterTags, List<string> skillTags)
+    private static string[] MergeTags(string[] frontmatterTags, List<string>? skillTags)
     {
-        if (skillTags.Count == 0)
+        if (skillTags is null || skillTags.Count == 0)
         {
             return frontmatterTags;
         }
@@ -1348,39 +1432,13 @@ internal static class SpellScanner
         return result;
     }
 
-    private static IReadOnlyList<string> DiscoverAvailableScripts(string spellDirectoryFullPath, CancellationToken cancellationToken)
-    {
-        string scriptsDir = Path.Combine(spellDirectoryFullPath, "scripts");
-
-        if (!Directory.Exists(scriptsDir))
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            var names = new List<string>();
-
-            foreach (string path in Directory.EnumerateFiles(scriptsDir))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                names.Add(Path.GetFileName(path));
-            }
-
-            names.Sort(StringComparer.Ordinal);
-
-            return names;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return Array.Empty<string>();
-        }
-    }
+    private static IReadOnlyList<string> DiscoverAvailableScripts(
+        string spellDirectoryFullPath,
+        SpellReadAuthority authority,
+        CancellationToken cancellationToken) =>
+        authority.TryReadFileNames(Path.Combine(spellDirectoryFullPath, "scripts"), cancellationToken, out string[] names)
+            ? names
+            : Array.Empty<string>();
 
     /// <summary>
     /// Stat gate for spell files that also proves the object is an unaliased regular file. Directory

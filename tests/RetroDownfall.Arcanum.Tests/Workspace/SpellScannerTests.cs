@@ -1,12 +1,14 @@
 using System.Text.Json;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
 
 [Collection("SpellScanner")]
-public sealed class SpellScannerTests : IAsyncLifetime
+public sealed partial class SpellScannerTests : IAsyncLifetime
 {
     private TempWorkspace _workspace = null!;
 
@@ -42,6 +44,206 @@ public sealed class SpellScannerTests : IAsyncLifetime
         await _workspace.DisposeAsync();
     }
 
+    [Theory]
+    [InlineData("{\"name\":\"fireball\"}")]
+    [InlineData("{\"name\":\"fireball\",\"tags\":null}")]
+    public async Task Hydration_preserves_frontmatter_tags_when_sidecar_tags_are_absent(string sidecar)
+    {
+        _workspace.WriteFile("spells/fireball/SPELL.json", sidecar);
+
+        ParsedSpell spell = Assert.IsType<ParsedSpell>(await SpellScanner.LoadFullAsync(
+            Path.Combine(_workspace.Root, "spells", "fireball", "SPELL.md"),
+            _workspace.Root,
+            CancellationToken.None,
+            MaxFileSizeBytes));
+
+        Assert.NotNull(spell.SkillMetadata);
+
+        Assert.Contains("combat", spell.Tags);
+    }
+
+    [Fact]
+    public async Task Metadata_hydration_retains_the_discovered_workspace_root_inside_the_global_spell_tree()
+    {
+        string? previousHome = global::System.Environment.GetEnvironmentVariable("ARCANUM_TEST_HOME");
+
+        string? previousEnvironment = global::System.Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+
+        global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", _workspace.Root);
+
+        global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Testing");
+
+        try
+        {
+            string workspace = Path.Combine(ArcanumPaths.GlobalSpellsDirectory, "nested");
+
+            Directory.CreateDirectory(workspace);
+
+            string file = Path.Combine(workspace, "SPELL.md");
+
+            await File.WriteAllTextAsync(file, "---\nname: nested-spell\n---\nNested body");
+
+            SpellMetadata metadata = Assert.Single(
+                await SpellScanner.ScanMetadataAsync(workspace, CancellationToken.None, MaxFileSizeBytes),
+                item => item.FilePath == file);
+
+            Assert.Equal(workspace, metadata.SourceRoot);
+
+            Assert.NotNull(await SpellScanner.LoadFullAsync(file, workspace, CancellationToken.None, MaxFileSizeBytes));
+
+            ParsedSpell spell = Assert.IsType<ParsedSpell>(
+                await SpellScanner.LoadFullAsync(metadata, workspace, CancellationToken.None, MaxFileSizeBytes));
+
+            Assert.Contains("Nested body", spell.FullContent, StringComparison.Ordinal);
+        }
+        finally
+        {
+            global::System.Environment.SetEnvironmentVariable("ARCANUM_TEST_HOME", previousHome);
+
+            global::System.Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", previousEnvironment);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoadFullAsync_refuses_discovered_parent_pivot_including_cached_spells(bool warmCache)
+    {
+        string spellPath = Path.Combine(_workspace.Root, "spells", "fireball", "SPELL.md");
+
+        IReadOnlyList<SpellMetadata> catalog = await SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes);
+
+        SpellMetadata discovered = Assert.Single(catalog, entry => entry.FilePath == spellPath);
+
+        if (warmCache)
+        {
+            Assert.NotNull(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+        }
+
+        string external = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(external, "fireball"));
+
+        string externalSpell = Path.Combine(external, "fireball", "SPELL.md");
+
+        await File.WriteAllTextAsync(externalSpell, "---\nname: fireball\n---\nEXTERNAL SECRET BODY");
+
+        File.SetLastWriteTimeUtc(externalSpell, File.GetLastWriteTimeUtc(spellPath));
+
+        string spells = Path.Combine(_workspace.Root, "spells");
+
+        Directory.Move(spells, spells + "-original");
+
+        Directory.CreateSymbolicLink(spells, external);
+
+        try
+        {
+            Assert.Null(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+        }
+        finally
+        {
+            Directory.Delete(spells);
+
+            Directory.Delete(external, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoadFullAsync_rejects_replaced_discovery_identity_even_when_timestamp_matches(bool warmCache)
+    {
+        string spellPath = Path.Combine(_workspace.Root, "spells", "fireball", "SPELL.md");
+
+        SpellMetadata discovered = Assert.Single(await SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes), entry => entry.Name == "fireball");
+
+        if (warmCache)
+        {
+            Assert.NotNull(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+        }
+
+        DateTime timestamp = File.GetLastWriteTimeUtc(spellPath);
+
+        File.Move(spellPath, spellPath + ".original");
+
+        await File.WriteAllTextAsync(spellPath, "---\nname: fireball\n---\nREPLACEMENT BODY");
+
+        File.SetLastWriteTimeUtc(spellPath, timestamp);
+
+        Assert.Null(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LoadFullAsync_parent_pivot_after_body_open_never_reads_external_sidecar(bool warmCache)
+    {
+        string spellPath = Path.Combine(_workspace.Root, "spells", "fireball", "SPELL.md");
+
+        SpellMetadata discovered = Assert.Single(await SpellScanner.ScanMetadataAsync(_workspace.Root, CancellationToken.None, MaxFileSizeBytes), entry => entry.Name == "fireball");
+
+        if (warmCache)
+        {
+            Assert.NotNull(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+        }
+
+        string external = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.Combine(external, "fireball"));
+
+        await File.WriteAllTextAsync(Path.Combine(external, "fireball", "SPELL.md"), "---\nname: fireball\n---\nEXTERNAL BODY");
+
+        await File.WriteAllTextAsync(Path.Combine(external, "fireball", "SPELL.json"), "{\"name\":\"fireball\",\"description\":\"EXTERNAL SIDECAR SECRET\"}");
+
+        string spells = Path.Combine(_workspace.Root, "spells");
+
+        bool pivoted = false;
+
+        int sidecarReads = 0;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (!pivoted && path == spellPath)
+            {
+                Directory.Move(spells, spells + "-original");
+
+                Directory.CreateSymbolicLink(spells, external);
+
+                pivoted = true;
+            }
+        };
+
+        SecureFileReader.AfterOpenForTests = path =>
+        {
+            if (path.EndsWith("SPELL.json", StringComparison.Ordinal))
+            {
+                sidecarReads++;
+            }
+        };
+
+        try
+        {
+            Assert.Null(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+
+            Assert.True(pivoted);
+
+            Assert.Equal(0, sidecarReads);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+            SecureFileReader.AfterOpenForTests = null;
+
+            if (pivoted)
+            {
+                Directory.Delete(spells);
+            }
+
+            Directory.Delete(external, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task ScanAsync_finds_workspace_spells_and_skips_heavy_dirs()
     {
@@ -73,9 +275,9 @@ public sealed class SpellScannerTests : IAsyncLifetime
     {
         string spellPath = Path.Combine(_workspace.Root, "spells", "fireball", "SPELL.md");
 
-        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
-        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(first);
 
@@ -176,7 +378,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
             {
                 barrier.SignalAndWait();
 
-                return await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+                return await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
             }))
             .ToArray();
 
@@ -328,13 +530,13 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         string spellPath = Path.Combine(spellDir, "SPELL.md");
 
-        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(first);
 
         File.SetLastWriteTimeUtc(spellPath, File.GetLastWriteTimeUtc(spellPath).AddSeconds(1));
 
-        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(second);
 
@@ -385,7 +587,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         string spellPath = Path.Combine(_workspace.Root, "spells", "reparse-sidecar", "SPELL.md");
 
-        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? first = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(first);
 
@@ -393,7 +595,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         File.SetLastWriteTimeUtc(spellPath, File.GetLastWriteTimeUtc(spellPath).AddSeconds(1));
 
-        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? second = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(second);
 
@@ -554,7 +756,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         string spellPath = Path.Combine(spellDir, "SPELL.md");
 
-        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(loaded);
 
@@ -570,7 +772,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
     {
         string spellPath = Path.Combine(_workspace.Root, "spells", "heavy", "SPELL.md");
 
-        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.Null(loaded);
     }
@@ -579,7 +781,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
     public async Task LoadFullAsync_returns_null_for_missing_path()
     {
         ParsedSpell? loaded = await SpellScanner.LoadFullAsync(
-            Path.Combine(_workspace.Root, "missing", "SPELL.md"),
+            Path.Combine(_workspace.Root, "missing", "SPELL.md"), _workspace.Root,
             CancellationToken.None,
             MaxFileSizeBytes);
 
@@ -776,7 +978,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
             """);
 
         ParsedSpell? loaded = await SpellScanner.LoadFullAsync(
-            Path.Combine(_workspace.Root, "spells", "many-dependencies", "SPELL.md"),
+            Path.Combine(_workspace.Root, "spells", "many-dependencies", "SPELL.md"), _workspace.Root,
             CancellationToken.None,
             MaxFileSizeBytes);
 
@@ -840,7 +1042,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         string spellPath = Path.Combine(_workspace.Root, "spells", "canonical-meta", "SPELL.md");
 
-        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(loaded);
 
@@ -879,7 +1081,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         string spellPath = Path.Combine(_workspace.Root, "spells", "legacy-meta", "SPELL.md");
 
-        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(loaded);
 
@@ -931,7 +1133,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         string spellPath = Path.Combine(_workspace.Root, "spells", "both-meta", "SPELL.md");
 
-        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+        ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
         Assert.NotNull(loaded);
 
@@ -1026,7 +1228,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
         // Offloaded so a regression blocks a pool thread rather than wedging the whole test run.
         Task<ParsedSpell?> load = Task.Run(
-            () => SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes));
+            () => SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
 
         Task completed = await Task.WhenAny(load, Task.Delay(TimeSpan.FromSeconds(20)));
 
@@ -1122,7 +1324,7 @@ public sealed class SpellScannerTests : IAsyncLifetime
 
             string spellPath = Path.Combine(_workspace.Root, "spells", "escaped-sidecar", "SPELL.md");
 
-            ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, CancellationToken.None, MaxFileSizeBytes);
+            ParsedSpell? loaded = await SpellScanner.LoadFullAsync(spellPath, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
             Assert.NotNull(loaded);
 
