@@ -46,8 +46,11 @@ public sealed class SagaCommandTests
     /// The listing reads memory rows, so a retired memory is listed beside live ones; the State column
     /// is what keeps an operator from reading it as something a turn can recall.
     /// </summary>
-    [Fact]
-    public void Saga_list_marks_retired_and_pinned_memories()
+    [Theory]
+    [InlineData(null)]
+    [InlineData("--plain")]
+    [InlineData("--json")]
+    public void Saga_list_marks_retired_and_pinned_memories(string? outputOption)
     {
         DateTimeOffset retiredAt = new(2026, 9, 20, 12, 34, 56, TimeSpan.Zero);
 
@@ -65,11 +68,24 @@ public sealed class SagaCommandTests
             new ApiResponse<SagaMemoryDto[]>(payload, true, null),
             ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray));
 
-        CliTestResult result = RunCommand(handler, ["saga", "list"]);
+        string[] args = outputOption is null ? ["saga", "list"] : ["saga", "list", outputOption];
+
+        CliTestResult result = RunCommand(handler, args);
 
         Assert.Equal(0, result.ExitCode);
 
-        string[] lines = result.Output.ReplaceLineEndings("\n").Split('\n');
+        string output = result.Output;
+
+        if (outputOption == "--json")
+        {
+            using JsonDocument document = JsonDocument.Parse(output);
+
+            Assert.Equal(0, document.RootElement.GetProperty("exitCode").GetInt32());
+
+            output = document.RootElement.GetProperty("output").GetString()!;
+        }
+
+        string[] lines = output.ReplaceLineEndings("\n").Split('\n');
 
         Assert.Contains(lines, static line => line.Contains("State", StringComparison.Ordinal));
 

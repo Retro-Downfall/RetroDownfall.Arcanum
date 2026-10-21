@@ -106,7 +106,7 @@ public interface ISagaMemoryStore
     /// <see cref="MemoryScope.Installation"/> narrows nothing, which is the whole listing this surface
     /// has always returned.
     ///
-    /// <para>Ownership is all that is shared. A retired memory is listed exactly as a live one is --
+    /// <para>Ownership is all that is shared. Retired memories remain included alongside live memories --
     /// this reads <c>saga_memories</c> and retirement removes only the embeddings retrieval ranks
     /// through -- so the two surfaces agree about who owns a memory and not about whether a turn can
     /// recall it. Each row carries <see cref="SagaMemoryDto.RetiredAtUtc"/> and
