@@ -429,6 +429,44 @@ class ClassifyManifestDiffTests(unittest.TestCase):
 
         self.assertEqual("d", result[("+", other_site)].label)
 
+    def test_restore_reviewed_calls_explain_only_the_exact_quota_and_secret_sites(self) -> None:
+        root = "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService"
+
+        operation = root + ".RestoreAsync"
+
+        quota_caller = "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ProtectedArtifactTransferStore.cs"
+
+        secret_caller = "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSecretRewrapper.cs"
+
+        cases = (
+            ("Data/Covenant/CovenantQuotaGuard.cs", "InsertReservationAsync", "System.Data.Common.DbCommand.ExecuteNonQueryAsync", quota_caller, ".AllocateDirectFinalizationAsync("),
+            ("Data/Covenant/CovenantQuotaGuard.cs", "MoveCountersAsync", "System.Data.Common.DbCommand.ExecuteNonQueryAsync", quota_caller, ".AllocateDirectFinalizationAsync("),
+            ("Data/Covenant/CovenantQuotaGuard.cs", "ReadReservationAsync", "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync", quota_caller, ".AllocateDirectFinalizationAsync("),
+            ("Data/Covenant/CovenantQuotaGuard.cs", "ReadReservationAsync", "System.Data.Common.DbDataReader.ReadAsync", quota_caller, ".AllocateDirectFinalizationAsync("),
+            ("Security/MirroredOsCredential.cs", "DeleteAsync", "System.IO.File.Delete", secret_caller, "await secretStore.DeleteFileEncryptionSecretAsync().ConfigureAwait(false);"),
+            ("Security/MirroredOsCredential.cs", "DeleteAsync", "System.IO.File.Exists", secret_caller, "await secretStore.DeleteFileEncryptionSecretAsync().ConfigureAwait(false);"),
+        )
+
+        for path, member, callee, caller, marker in cases:
+            with self.subTest(member=member, callee=callee):
+                added = site("src/RetroDownfall.Arcanum.Infrastructure/" + path, member=member, callee=callee, root=root, operation=operation)
+
+                other = added._replace(authority_operation_id=root + ".Other")
+
+                gained = FakeSources(base={caller: "Other();"}, head={caller: marker})
+
+                kept = FakeSources(base={caller: marker}, head={caller: marker})
+
+                result = classify(manifest(), manifest(added, other), edited={caller}, parity=manifest(), sources=gained)
+
+                unchanged = classify(manifest(), manifest(added), edited={caller}, parity=manifest(), sources=kept)
+
+                self.assertEqual("r", result[("+", added)].label)
+
+                self.assertEqual("d", result[("+", other)].label)
+
+                self.assertEqual("d", unchanged[("+", added)].label)
+
     def test_a_removed_row_the_base_source_still_yields_is_the_sources_and_one_it_does_not_is_the_checkers(self) -> None:
         by_source = site("src/Unedited.cs", member="BySource")
 

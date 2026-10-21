@@ -623,7 +623,84 @@ def _attested_apply_reach(source_path: str, member: str, callee: str, side: str,
     )
 
 
+def _restore_reach(source_path: str, member: str, callee: str, caller: str, marker: str, reason: str) -> "Reach":
+    return Reach(
+        "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService",
+        "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync",
+        source_path,
+        member,
+        callee,
+        "+",
+        caller,
+        marker,
+        reason,
+    )
+
+
+RESTORE_QUOTA_CALLER = "src/RetroDownfall.Arcanum.Infrastructure/Repositories/ProtectedArtifactTransferStore.cs"
+
+RESTORE_QUOTA_REASON = (
+    "the protected Session import now allocates direct finalization capacity for each imported finalization; "
+    "AllocateDirectFinalizationAsync reads and inserts the reservation and moves its quota counters"
+)
+
+RESTORE_SECRET_CALLER = "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSecretRewrapper.cs"
+
+RESTORE_SECRET_REASON = (
+    "the restored-secret rollback now calls an explicit DeleteFileEncryptionSecretAsync wrapper before invalidating "
+    "the live key cache; OsKeychainSecretStore deletes the mirrored credential through MirroredOsCredential.DeleteAsync"
+)
+
+
 REACHED_THROUGH = (
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantQuotaGuard.cs",
+        "InsertReservationAsync",
+        "System.Data.Common.DbCommand.ExecuteNonQueryAsync",
+        RESTORE_QUOTA_CALLER,
+        ".AllocateDirectFinalizationAsync(",
+        RESTORE_QUOTA_REASON,
+    ),
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantQuotaGuard.cs",
+        "MoveCountersAsync",
+        "System.Data.Common.DbCommand.ExecuteNonQueryAsync",
+        RESTORE_QUOTA_CALLER,
+        ".AllocateDirectFinalizationAsync(",
+        RESTORE_QUOTA_REASON,
+    ),
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantQuotaGuard.cs",
+        "ReadReservationAsync",
+        "Microsoft.Data.Sqlite.SqliteCommand.ExecuteReaderAsync",
+        RESTORE_QUOTA_CALLER,
+        ".AllocateDirectFinalizationAsync(",
+        RESTORE_QUOTA_REASON,
+    ),
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Data/Covenant/CovenantQuotaGuard.cs",
+        "ReadReservationAsync",
+        "System.Data.Common.DbDataReader.ReadAsync",
+        RESTORE_QUOTA_CALLER,
+        ".AllocateDirectFinalizationAsync(",
+        RESTORE_QUOTA_REASON,
+    ),
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/MirroredOsCredential.cs",
+        "DeleteAsync",
+        "System.IO.File.Delete",
+        RESTORE_SECRET_CALLER,
+        "await secretStore.DeleteFileEncryptionSecretAsync().ConfigureAwait(false);",
+        RESTORE_SECRET_REASON,
+    ),
+    _restore_reach(
+        "src/RetroDownfall.Arcanum.Infrastructure/Security/MirroredOsCredential.cs",
+        "DeleteAsync",
+        "System.IO.File.Exists",
+        RESTORE_SECRET_CALLER,
+        "await secretStore.DeleteFileEncryptionSecretAsync().ConfigureAwait(false);",
+        RESTORE_SECRET_REASON,
+    ),
     Reach(
         "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService",
         "RetroDownfall.Arcanum.Infrastructure.Backup.BackupRestoreService.RestoreAsync",
