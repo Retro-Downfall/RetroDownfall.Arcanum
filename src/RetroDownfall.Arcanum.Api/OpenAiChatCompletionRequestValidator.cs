@@ -70,7 +70,17 @@ internal static partial class OpenAiV1Endpoints
 
         for (int i = 0; i < body.Messages.Count; i++)
         {
-            OpenAiChatMessage m = body.Messages[i];
+            OpenAiChatMessage? m = body.Messages[i];
+
+            if (m is null)
+            {
+                return new ChatCompletionValidationFailure(
+                    $"messages[{i}] must be a message object.",
+                    "invalid_request_error",
+                    "invalid_value",
+                    $"messages[{i}]",
+                    StatusCodes.Status400BadRequest);
+            }
 
             if (string.IsNullOrWhiteSpace(m.Role))
             {

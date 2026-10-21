@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Collections.Concurrent;
 
 using Microsoft.EntityFrameworkCore;
@@ -1658,6 +1659,52 @@ public sealed partial class BatchProcessingServiceTests : IAsyncLifetime
         Assert.Contains("req-fail", outputContent, StringComparison.Ordinal);
 
         Assert.Contains("Hub.Model", outputContent, StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
+    [InlineData("[null]", 0)]
+    [InlineData("[{\"role\":\"user\",\"content\":\"hello\"},null]", 1)]
+    public async Task ProcessBatchAsync_NullMessage_RecordsIndexedErrorWithoutInference(string messages, int index)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        FakeIntelligenceProvider intelligence = new();
+
+        BatchProcessingService service = CreateService(intelligence);
+
+        string line = """{"custom_id":"null-message","method":"POST","url":"/v1/chat/completions","body":{"model":"m","messages": """ + messages + "}}";
+
+        Guid inputFileId = await SeedInputFileAsync(line + "\n");
+
+        BatchRecord batch = new(Guid.NewGuid(), inputFileId, "/v1/chat/completions", BatchStatuses.Validating, DateTimeOffset.UtcNow, null, null, null);
+
+        await _batches!.CreateAsync(batch, CancellationToken.None);
+
+        await service.ProcessBatchAsync(batch, CancellationToken.None);
+
+        BatchRecord finished = Assert.IsType<BatchRecord>(await _batches.GetByIdAsync(batch.Id, CancellationToken.None));
+
+        Assert.Equal(BatchStatuses.Completed, finished.Status);
+
+        Assert.NotNull(finished.OutputFileId);
+
+        Assert.Null(finished.ErrorFileId);
+
+        Assert.Equal(0, intelligence.ExecutePromptCallCount);
+
+        string outputPath = UploadedFileStorage.ResolvePath(finished.OutputFileId.Value);
+
+        _createdFilePaths.Add(outputPath);
+
+        using JsonDocument output = JsonDocument.Parse(await ReadArtifactTextAsync(outputPath));
+
+        Assert.Equal(JsonValueKind.Null, output.RootElement.GetProperty("response").ValueKind);
+
+        JsonElement error = output.RootElement.GetProperty("error");
+
+        Assert.Equal("invalid_value", error.GetProperty("code").GetString());
+
+        Assert.Contains($"messages[{index}]", error.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
     [SkippableFact]

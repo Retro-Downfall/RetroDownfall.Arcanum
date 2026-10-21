@@ -31,6 +31,44 @@ public sealed class OpenAiV1EndpointTests
         _factory = factory;
     }
 
+    [SkippableTheory]
+    [InlineData("[null]", 0)]
+    [InlineData("[{\"role\":\"user\",\"content\":\"hello\"},null]", 1)]
+    public async Task PostChatCompletions_NullMessage_ReturnsIndexed400WithoutInference(string messages, int index)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        foreach (bool stream in new[] { false, true })
+        {
+            string payload = $$"""{"model":"mistral:latest","messages":{{messages}},"stream":{{stream.ToString().ToLowerInvariant()}}}""";
+
+            using HttpResponseMessage response = await client.PostAsync(
+                "/v1/chat/completions",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+            OpenAiErrorResponse? body = JsonSerializer.Deserialize(
+                await response.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.OpenAiErrorResponse);
+
+            Assert.NotNull(body);
+
+            Assert.Equal("invalid_request_error", body.Error.Type);
+
+            Assert.Equal("invalid_value", body.Error.Code);
+
+            Assert.Equal($"messages[{index}]", body.Error.Param);
+        }
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+
+        Assert.Equal(0, factory.FakeIntelligence.StreamPromptCallCount);
+    }
+
     [SkippableFact]
     public async Task PostChatCompletions_WithoutApiKey_Returns401()
     {
