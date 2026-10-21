@@ -387,6 +387,24 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         return descriptor;
     }
 
+    public async Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+        string path,
+        EncryptedBlobPurpose purpose,
+        CancellationToken cancellationToken = default)
+    {
+        await using Stream plaintext = await OpenReadCoreAsync(
+                path, purpose, peekKey: true, cancellationToken)
+            .ConfigureAwait(false);
+
+        EncryptedBlobDescriptor descriptor = ((EncryptedBlobReadStream)plaintext).Descriptor;
+
+        // HashDataAsync uses bounded memory and reads through EOF, authenticating every chunk
+        // and the final length marker before either metadata or plaintext identity escapes.
+        byte[] digest = await SHA256.HashDataAsync(plaintext, cancellationToken).ConfigureAwait(false);
+
+        return new EncryptedBlobPlaintextInspection(descriptor, digest);
+    }
+
     private async Task VerifyEnvelopeAsync(
         string path,
         EncryptedBlobPurpose purpose,

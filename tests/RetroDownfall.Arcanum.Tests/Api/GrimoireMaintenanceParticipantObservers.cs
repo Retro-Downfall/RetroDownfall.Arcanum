@@ -779,6 +779,12 @@ internal sealed class ControlledEncryptedBlobStore(EncryptedBlobStore inner) : I
         ReadOnlyMemory<byte> authenticatedMetadata = default, CancellationToken cancellationToken = default) =>
         inner.CreateWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken);
 
+    public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+        string path,
+        EncryptedBlobPurpose purpose,
+        CancellationToken cancellationToken = default) =>
+        inner.InspectAuthenticatedAsync(path, purpose, cancellationToken);
+
     public Task<EncryptedBlobDescriptor> InspectAsync(string path, EncryptedBlobPurpose purpose, bool verifyAllChunks, CancellationToken cancellationToken = default) =>
         inner.InspectAsync(path, purpose, verifyAllChunks, cancellationToken);
 

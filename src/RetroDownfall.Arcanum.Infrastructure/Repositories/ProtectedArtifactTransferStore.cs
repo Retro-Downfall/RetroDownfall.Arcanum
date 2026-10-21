@@ -688,24 +688,19 @@ internal sealed class ProtectedArtifactTransferStore(
 
         try
         {
-            await using Stream plaintext = await encryptedBlobs.OpenReadAsync(
+            EncryptedBlobPlaintextInspection inspection = await encryptedBlobs.InspectAuthenticatedAsync(
                 blob.DestinationFile, EncryptedBlobPurpose.SessionAttachment, cancellationToken)
                 .ConfigureAwait(false);
 
-            if (plaintext is not EncryptedBlobReader reader
-                || reader.Descriptor.Version != blob.Attachment.EncryptionVersion
-                || !string.Equals(reader.Descriptor.KeyId, blob.Attachment.EncryptionKeyId, StringComparison.Ordinal)
-                || plaintext.Length != blob.Attachment.ByteLength)
+            if (inspection.Descriptor.Version != blob.Attachment.EncryptionVersion
+                || !string.Equals(inspection.Descriptor.KeyId, blob.Attachment.EncryptionKeyId, StringComparison.Ordinal)
+                || inspection.Descriptor.PlaintextLength != blob.Attachment.ByteLength)
             {
                 return new Error(ErrorCodes.Covenant.IntegrityFailure,
                     "An encrypted attachment does not match its archived encryption or plaintext length metadata.");
             }
 
-            // Reading through EOF authenticates every chunk and the final length marker. HashDataAsync
-            // keeps a bounded buffer even when an attachment is much larger than the import graph.
-            byte[] digest = await SHA256.HashDataAsync(plaintext, cancellationToken).ConfigureAwait(false);
-
-            return digest.AsSpan().SequenceEqual(blob.Attachment.ContentSha256)
+            return inspection.PlaintextSha256.Span.SequenceEqual(blob.Attachment.ContentSha256)
                 ? Result.Success()
                 : new Error(ErrorCodes.Covenant.IntegrityFailure,
                     "An encrypted attachment does not match its archived plaintext digest.");

@@ -1223,6 +1223,12 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                     : writer;
         }
 
+        public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default) =>
+            inner.InspectAuthenticatedAsync(path, purpose, cancellationToken);
+
         public Task<EncryptedBlobDescriptor> InspectAsync(
             string path,
             EncryptedBlobPurpose purpose,

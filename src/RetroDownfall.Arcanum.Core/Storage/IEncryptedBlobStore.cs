@@ -50,6 +50,11 @@ public sealed record EncryptedBlobDescriptor(
     EncryptedBlobPurpose Purpose,
     ReadOnlyMemory<byte> AuthenticatedMetadata);
 
+/// <summary>Metadata and plaintext identity returned only after every envelope chunk authenticates.</summary>
+public sealed record EncryptedBlobPlaintextInspection(
+    EncryptedBlobDescriptor Descriptor,
+    ReadOnlyMemory<byte> PlaintextSha256);
+
 public interface IEncryptedBlobStore
 {
     Task<EncryptedBlobDescriptor> WriteAsync(
@@ -75,6 +80,15 @@ public interface IEncryptedBlobStore
         string path,
         EncryptedBlobPurpose purpose,
         bool verifyAllChunks,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Authenticates through EOF and hashes plaintext with bounded memory, without persisting or migrating key material.
+    /// The store owns and closes the underlying reader before returning.
+    /// </summary>
+    Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+        string path,
+        EncryptedBlobPurpose purpose,
         CancellationToken cancellationToken = default);
 
     bool HasEnvelope(string path);

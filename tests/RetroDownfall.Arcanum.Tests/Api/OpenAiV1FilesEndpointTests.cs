@@ -792,6 +792,12 @@ public sealed class OpenAiV1FilesEndpointTests
             CancellationToken cancellationToken = default) =>
             _inner.CreateWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken);
 
+        public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default) =>
+            _inner.InspectAuthenticatedAsync(path, purpose, cancellationToken);
+
         public Task<EncryptedBlobDescriptor> InspectAsync(
             string path,
             EncryptedBlobPurpose purpose,

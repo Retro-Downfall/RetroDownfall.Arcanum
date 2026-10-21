@@ -191,6 +191,12 @@ public sealed class DiagnosticCredentialPurityTests : IDisposable
             CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("No diagnostic blob candidate was expected.");
 
+        public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("No diagnostic blob candidate was expected.");
+
         public Task<EncryptedBlobDescriptor> InspectAsync(
             string path,
             EncryptedBlobPurpose purpose,

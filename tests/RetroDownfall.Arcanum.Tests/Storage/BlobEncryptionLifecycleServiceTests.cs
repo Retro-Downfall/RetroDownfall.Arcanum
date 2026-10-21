@@ -364,6 +364,16 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("Blob lifecycle work never streams a new writer.");
 
+        public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _inspectCalls);
+            ThrowIfDenied(path);
+            return inner.InspectAuthenticatedAsync(path, purpose, cancellationToken);
+        }
+
         public Task<EncryptedBlobDescriptor> InspectAsync(
             string path,
             EncryptedBlobPurpose purpose,

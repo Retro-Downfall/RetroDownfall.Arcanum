@@ -154,6 +154,12 @@ public sealed class BatchJsonlWriterOwnershipTests
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+            string path,
+            EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<EncryptedBlobDescriptor> InspectAsync(
             string path,
             EncryptedBlobPurpose purpose,

@@ -801,6 +801,7 @@ internal static partial class HostedGrimoireProducerInventory
         ["RetroDownfall.Arcanum.Infrastructure.A2A.IA2AClientService.CancelRemoteTaskAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.OpenReadAsync"] = (HostedProducerSiteKind)4,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.InspectAsync"] = (HostedProducerSiteKind)4,
+        ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.InspectAuthenticatedAsync"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.HasEnvelope"] = (HostedProducerSiteKind)4,
         ["RetroDownfall.Arcanum.Core.Storage.EncryptedBlobStoreCompatibilityExtensions.OpenCompatibleReadAsync"] = (HostedProducerSiteKind)4,
         ["RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.OpenReadAsync"] = (HostedProducerSiteKind)4,

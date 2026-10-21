@@ -404,6 +404,12 @@ internal sealed class BatchAdmissionBlobs(IEncryptedBlobStore inner, BatchAdmiss
 
     public Task<EncryptedBlobDescriptor> WriteAsync(string destinationPath, Stream plaintext, EncryptedBlobPurpose purpose, ReadOnlyMemory<byte> authenticatedMetadata = default, long? plaintextLength = null, CancellationToken cancellationToken = default) => inner.WriteAsync(destinationPath, plaintext, purpose, authenticatedMetadata, plaintextLength, cancellationToken);
 
+    public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
+        string path,
+        EncryptedBlobPurpose purpose,
+        CancellationToken cancellationToken = default) =>
+        inner.InspectAuthenticatedAsync(path, purpose, cancellationToken);
+
     public Task<EncryptedBlobDescriptor> InspectAsync(string path, EncryptedBlobPurpose purpose, bool verifyAllChunks, CancellationToken cancellationToken = default) => inner.InspectAsync(path, purpose, verifyAllChunks, cancellationToken);
 
     public bool HasEnvelope(string path) => inner.HasEnvelope(path);
