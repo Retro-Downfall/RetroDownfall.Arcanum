@@ -7,7 +7,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 namespace RetroDownfall.Arcanum.Tests.Build;
 
 /// <summary>
-/// The code that fixes the identity of a registered Campaign root, of a spelled path and of the Sanctum's judgement of it never asks
+/// The code that fixes the identity of a registered Campaign root, a spelled path, a backup archive name and the Sanctum's judgement never asks
 /// <see cref="string.Normalize()"/> for a Unicode normalisation form. The shipping executable runs with invariant globalization, where that
 /// method (and <see cref="string.IsNormalized()"/>) hands a non-ASCII string back unchanged and says nothing, so a unit test that runs with
 /// the globalization library passes against behaviour the product does not have: two canonically equivalent spellings of one directory
@@ -24,13 +24,16 @@ public sealed class PathKeyGlobalizationTests
         "RetroDownfall.Arcanum.Api",
     ];
 
-    // The sources named for a Campaign root or a Sanctum, and the path policy they judge through.
+    // The sources that establish Campaign, Sanctum and authenticated backup path identities.
     private static readonly string[] NamedSources =
     [
         "WorkspacePathPolicy.cs",
         "AttachmentSourceSanctum.cs",
         "UnicodeNfc.cs",
         "CovenantUnicodePolicyV1.cs",
+        "BackupInventoryPlanner.cs",
+        "BackupArchiveCodec.cs",
+        "BackupArchivePathFolding.cs",
     ];
 
     private static bool IsPathKeySource(string path)
@@ -110,6 +113,12 @@ public sealed class PathKeyGlobalizationTests
 
         Assert.Contains("UnicodeNfc.cs", names);
 
+        Assert.Contains("BackupInventoryPlanner.cs", names);
+
+        Assert.Contains("BackupArchiveCodec.cs", names);
+
+        Assert.Contains("BackupArchivePathFolding.cs", names);
+
         string[] offenders =
         [
             .. sources.SelectMany(path => GlobalizationNormalization(File.ReadAllText(path))
@@ -117,6 +126,16 @@ public sealed class PathKeyGlobalizationTests
         ];
 
         Assert.Empty(offenders);
+    }
+
+    [SkippableFact]
+    public void Explicit_invariant_runtime_probe_confirms_the_shipping_globalization_restriction()
+    {
+        Skip.If(
+            global::System.Environment.GetEnvironmentVariable("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT") != "1",
+            "Run the archive identity regressions with DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 to exercise shipping globalization.");
+
+        Assert.Equal("cafe\u0301", "cafe\u0301".Normalize(global::System.Text.NormalizationForm.FormC));
     }
 
     [Fact]

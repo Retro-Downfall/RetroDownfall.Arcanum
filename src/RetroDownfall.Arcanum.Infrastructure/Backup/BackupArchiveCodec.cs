@@ -13,6 +13,8 @@ using SQLitePCL;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -1237,7 +1239,7 @@ public sealed class BackupArchiveCodec
 
         try
         {
-            return value.IsNormalized(NormalizationForm.FormC);
+            return string.Equals(value, UnicodeNfc.Normalize(value), StringComparison.Ordinal);
         }
         catch (ArgumentException)
         {
@@ -1275,7 +1277,7 @@ public sealed class BackupArchiveCodec
             throw new InvalidDataException("Backup archive path is not canonical.");
         }
 
-        string normalized = path.Normalize(NormalizationForm.FormC);
+        string normalized = UnicodeNfc.Normalize(path);
 
         string[] segments = normalized.Split('/');
 
@@ -1757,6 +1759,11 @@ public sealed class BackupArchiveCodec
             bufferSize: 4096,
             useAsync: true);
 
+        // Validate exact record identities before opening any output. A later decomposed name
+        // can otherwise alias an earlier composed name on the destination volume before it is refused.
+        // Only bounded headers are read here; entry bodies are skipped without allocating them.
+        await ValidatePayloadPathIdentitiesAsync(input, cancellationToken).ConfigureAwait(false);
+
         Dictionary<string, ObservedEntry> entries = new(StringComparer.Ordinal);
 
         BackupManifest? manifest = null;
@@ -1865,6 +1872,27 @@ public sealed class BackupArchiveCodec
         return new ExtractedPayload(
             manifest ?? throw new InvalidDataException("Backup manifest is missing."),
             entries);
+    }
+
+    private static async Task ValidatePayloadPathIdentitiesAsync(
+        FileStream input,
+        CancellationToken cancellationToken)
+    {
+        int count = 0;
+
+        while (input.Position < input.Length)
+        {
+            if (++count > MaximumEntryCount + 1)
+            {
+                throw new InvalidDataException("Backup payload contains excessive entries.");
+            }
+
+            PayloadRecord record = await ReadRecordAsync(input, cancellationToken).ConfigureAwait(false);
+
+            input.Seek(record.Length, SeekOrigin.Current);
+        }
+
+        input.Position = 0;
     }
 
     private static async Task<PayloadRecord> ReadRecordAsync(

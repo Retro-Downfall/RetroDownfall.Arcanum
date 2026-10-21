@@ -2,11 +2,11 @@ using System.Buffers;
 
 using System.Security.Cryptography;
 
-using System.Text;
-
 using Microsoft.Data.Sqlite;
 
 using RetroDownfall.Arcanum.Core.Backup;
+
+using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
@@ -1249,7 +1249,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
         return new BackupInventoryFile(
             component,
             fullPath,
-            archivePath.Normalize(NormalizationForm.FormC),
+            UnicodeNfc.Normalize(archivePath),
             size,
             sha256,
             metadata.Identity.VolumeId,
@@ -1555,7 +1555,7 @@ public sealed class BackupInventoryPlanner(BackupStatePaths paths)
     {
         string[] archivePaths =
         [
-            .. files.Select(static file => file.ArchivePath.Normalize(NormalizationForm.FormC)),
+            .. files.Select(static file => UnicodeNfc.Normalize(file.ArchivePath)),
         ];
 
         HashSet<int> colliding = BackupArchivePathFolding.FindCollidingIndexes(archivePaths);

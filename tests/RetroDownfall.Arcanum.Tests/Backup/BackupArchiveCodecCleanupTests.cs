@@ -574,6 +574,97 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
         Assert.Empty(Directory.GetFiles(_root, ".*.payload.tmp.*"));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Authenticated_decomposed_names_are_refused_before_any_entry_is_materialized(bool collidingPair, bool inspect)
+    {
+        byte[] firstContent = "first distinct payload"u8.ToArray();
+
+        byte[] secondContent = "second distinct payload"u8.ToArray();
+
+        BackupManifestEntry first = Entry(firstContent, "content/caf\u00e9.txt");
+
+        BackupManifestEntry second = Entry(secondContent, "content/other.txt");
+
+        string archive = Path.Combine(_root, "unicode.arcbackup");
+
+        await CreateCodec().WriteAsync(
+            archive,
+            Manifest(first, second),
+            [
+                BackupArchiveSource.FromMemory(first.Path, firstContent),
+
+                BackupArchiveSource.FromMemory(second.Path, secondContent),
+            ],
+            Passphrase.AsMemory(),
+            overwrite: false,
+            CancellationToken.None);
+
+        await RewriteAuthenticatedPayloadAsync(archive, payload =>
+        {
+            TestPayloadRecord record = ParseRecords(payload)[collidingPair ? 1 : 0];
+
+            byte[] replacement = Encoding.UTF8.GetBytes("content/cafe\u0301.txt");
+
+            using MemoryStream rewritten = new();
+
+            rewritten.Write(payload.AsSpan(0, record.PathOffset - sizeof(int)));
+
+            byte[] pathLength = new byte[sizeof(int)];
+
+            BinaryPrimitives.WriteInt32BigEndian(pathLength, replacement.Length);
+
+            rewritten.Write(pathLength);
+
+            rewritten.Write(replacement);
+
+            rewritten.Write(payload.AsSpan(record.PathOffset + record.PathLength));
+
+            return rewritten.ToArray();
+        });
+
+        if (inspect)
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => CreateCodec().InspectAsync(
+                archive,
+                Passphrase.AsMemory(),
+                CancellationToken.None));
+
+            return;
+        }
+
+        string destination = Directory.CreateDirectory(Path.Combine(_root, "unicode-output")).FullName;
+
+        string scratch = Directory.CreateDirectory(Path.Combine(_root, "unicode-scratch")).FullName;
+
+        List<string> materialized = [];
+
+        BackupArchiveCodec codec = new(new BackupArchiveCodecOptions
+        {
+            KdfIterations = 10_000,
+
+            AfterExtractedEntryForTests = materialized.Add,
+        });
+
+        BackupArchiveExtraction extraction = await codec.ExtractAsync(
+            archive,
+            Passphrase.AsMemory(),
+            destination,
+            scratch,
+            CancellationToken.None);
+
+        Assert.NotEmpty(extraction.Issues);
+
+        Assert.Empty(materialized);
+
+        Assert.Empty(Directory.GetFileSystemEntries(destination));
+
+        Assert.Empty(Directory.GetFileSystemEntries(scratch));
+    }
+
     [Fact]
     public async Task Write_routes_all_self_verification_artifacts_through_the_protected_scratch_root()
     {
@@ -975,7 +1066,7 @@ public sealed class BackupArchiveCodecCleanupTests : IDisposable
 
         byte[] rewritten = rewrite(plaintext);
 
-        Assert.Equal(plaintext.Length, rewritten.Length);
+        BinaryPrimitives.WriteInt64BigEndian(header.AsSpan(28), rewritten.LongLength);
 
         byte[] authenticated = EncryptPayload(header, rewritten);
 

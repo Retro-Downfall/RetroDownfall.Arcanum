@@ -1072,8 +1072,34 @@ public sealed class BackupInventoryPlannerTests : IDisposable
         BackupInventoryFile file = Assert.Single(inventory.Files);
 
         Assert.Equal("authored/spells/caf\u00e9/SPELL.md", file.ArchivePath);
+    }
 
-        Assert.True(file.ArchivePath.IsNormalized());
+    [Fact]
+    public void Canonically_equivalent_archive_names_fail_the_owning_component_before_publication()
+    {
+        Dictionary<BackupComponent, BackupInventoryPlanner.ComponentAccumulator> components = Accumulators();
+
+        List<BackupInventoryFile> files =
+        [
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/caf\u00e9/SPELL.md"),
+
+            InventoryFile(BackupComponent.GlobalSpells, "authored/spells/cafe\u0301/SPELL.md"),
+        ];
+
+        Resolve(
+            new HashSet<BackupComponent> { BackupComponent.GlobalSpells },
+            files,
+            components);
+
+        BackupPlanComponent component = components[BackupComponent.GlobalSpells].ToPlanComponent();
+
+        Assert.Equal(BackupComponentStatus.Failed, component.Status);
+
+        Assert.Empty(files);
+
+        Assert.Equal(0, component.Files);
+
+        Assert.Equal(2, component.NonportablePaths.Length);
     }
 
     [Fact]
