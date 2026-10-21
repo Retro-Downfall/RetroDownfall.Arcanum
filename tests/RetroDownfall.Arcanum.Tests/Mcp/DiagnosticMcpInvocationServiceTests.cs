@@ -8,11 +8,13 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Tests.Support;
 using Xunit;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("ProcessEnvironment")]
 public sealed class DiagnosticMcpInvocationServiceTests
 {
     [Fact]
@@ -73,11 +75,17 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.Equal(ErrorCodes.Validation.InvalidBody, result.Error.Code);
     }
 
-    [Fact]
-    public async Task ServerNotRunning_ReturnsServerNotRunning()
+    [Theory]
+    [InlineData("Stopped")]
+    [InlineData("Failed")]
+    [InlineData("Starting")]
+    [InlineData("Restarting")]
+    [InlineData("unknown")]
+    public async Task ServerNotRunning_ReturnsServerNotRunning(string status)
     {
         FakeMcpConnectionManager manager = new();
-        manager.AddServer("stopped-srv", "stopped", ["echo"]);
+        manager.AddServer("stopped-srv", status, ["echo"]);
+        manager.AddTool("stopped-srv", "echo", "unexpected");
         DiagnosticMcpInvocationService service = CreateService(manager);
 
         Result<DiagnosticMcpInvocationOutcome> result = await service
@@ -85,6 +93,89 @@ public sealed class DiagnosticMcpInvocationServiceTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Mcp.ServerNotRunning, result.Error.Code);
+        Assert.Equal(0, manager.GetToolCallCount("stopped-srv", "echo"));
+    }
+
+    [Theory]
+    [InlineData("Stopped")]
+    [InlineData("Failed")]
+    [InlineData("Starting")]
+    [InlineData("Restarting")]
+    [InlineData("unknown")]
+    public async Task ServerNotRunning_WithoutServerName_ReturnsToolNotFound(string status)
+    {
+        FakeMcpConnectionManager manager = new();
+
+        manager.AddServer("stopped-srv", status, ["echo"]);
+
+        manager.AddTool("stopped-srv", "echo", "unexpected");
+
+        DiagnosticMcpInvocationService service = CreateService(manager);
+
+        Result<DiagnosticMcpInvocationOutcome> result = await service
+            .InvokeAsync("echo", default, null, null, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Mcp.ToolNotFound, result.Error.Code);
+
+        Assert.Equal(0, manager.GetToolCallCount("stopped-srv", "echo"));
+    }
+
+    [Theory]
+    [InlineData("external-srv")]
+    [InlineData(null)]
+    public async Task RunningManager_OnlineProjection_InvokesSelectedExternalTool(string? serverName)
+    {
+        using ArcanumTestHomeScope home = new("arcanum-diagnostic-mcp");
+
+        await using McpConnectionManager manager = McpConnectionManagerHarness.Create();
+
+        DiagnosticMcpClient client = new();
+
+        manager.ClientFactoryForTests = _ => client;
+
+        await manager.RegisterFromConfigAsync(
+            new McpConfig
+            {
+                McpServers = new Dictionary<string, McpServerConfig>(StringComparer.Ordinal)
+                {
+                    ["external-srv"] = new() { Command = "arcanum-test-diagnostic-server" },
+                },
+            },
+            scopeWorkingDirectory: null,
+            CancellationToken.None);
+
+        Result started = await manager.StartAsync("external-srv", workingDirectory: null);
+
+        Assert.True(started.IsSuccess, started.IsFailure ? started.Error.Message : null);
+
+        McpServerInfo? lifecycle = await manager.GetStatusAsync("external-srv", workingDirectory: null);
+
+        Assert.NotNull(lifecycle);
+
+        Assert.Equal(McpServerState.Running, lifecycle.State);
+
+        List<McpServerStatusDto> statuses = await manager.GetServerStatusesAsync(string.Empty);
+
+        McpServerStatusDto status = Assert.Single(statuses, candidate => candidate.ServerName == "external-srv");
+
+        Assert.Equal("Online", status.Status);
+
+        DiagnosticMcpInvocationService service = CreateService(manager);
+
+        Result<DiagnosticMcpInvocationOutcome> result = await service
+            .InvokeAsync("echo", default, serverName, null, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal("external-srv", result.Value.ServerName);
+
+        Assert.Equal("echo", result.Value.ToolName);
+
+        Assert.True(result.Value.Result.GetProperty("ok").GetBoolean());
+
+        Assert.Equal(1, client.InvokeCount);
     }
 
     [Fact]
@@ -335,11 +426,44 @@ public sealed class DiagnosticMcpInvocationServiceTests
         Assert.Equal(0, manager.GetToolCallCount("srv-b", "echo"));
     }
 
-    private static DiagnosticMcpInvocationService CreateService(FakeMcpConnectionManager? manager = null, ArcanumSettings? settings = null) =>
+    private static DiagnosticMcpInvocationService CreateService(IMcpConnectionManager? manager = null, ArcanumSettings? settings = null) =>
         new(
             manager ?? new FakeMcpConnectionManager(),
             new TestOptionsMonitor<ArcanumSettings>(settings ?? new ArcanumSettings()),
             NullLogger<DiagnosticMcpInvocationService>.Instance);
+
+    private sealed class DiagnosticMcpClient : IMcpClient
+    {
+        public int InvokeCount { get; private set; }
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<IReadOnlyList<McpBridgeTool>> GetToolsAsync(CancellationToken cancellationToken = default)
+        {
+            using JsonDocument schema = JsonDocument.Parse("""{"type":"object","properties":{}}""");
+
+            return Task.FromResult<IReadOnlyList<McpBridgeTool>>(
+                [new McpBridgeTool("echo", "Diagnostic test tool", schema.RootElement, this, 1024)]);
+        }
+
+        public Task<ModelContextProtocol.Protocol.CallToolResult> CallToolAsync(
+            string toolName,
+            IReadOnlyDictionary<string, object?> arguments,
+            TimeSpan? requestTimeout = null,
+            CancellationToken cancellationToken = default)
+        {
+            Assert.Equal("echo", toolName);
+
+            InvokeCount++;
+
+            return Task.FromResult(new ModelContextProtocol.Protocol.CallToolResult
+            {
+                Content = [new ModelContextProtocol.Protocol.TextContentBlock { Text = """{"ok":true}""" }],
+            });
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     private sealed class FakeMcpConnectionManager : IMcpConnectionManager
     {

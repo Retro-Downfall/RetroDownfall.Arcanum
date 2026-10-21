@@ -292,7 +292,8 @@ public sealed class DiagnosticMcpInvocationService
     }
 
     private static bool IsRunning(McpServerStatusDto server) =>
-        string.Equals(server.Status, "running", StringComparison.OrdinalIgnoreCase);
+        string.Equals(server.Status, "Online", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(server.Status, "running", StringComparison.OrdinalIgnoreCase);
 
     private static Dictionary<string, object?> ToArgumentDictionary(JsonElement arguments)
     {
