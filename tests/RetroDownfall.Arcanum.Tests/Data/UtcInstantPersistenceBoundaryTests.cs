@@ -27,6 +27,159 @@ public sealed class UtcInstantPersistenceBoundaryTests
         }
     }
 
+    [Theory]
+    [InlineData("CreatedAt < $value")]
+    [InlineData("createdat < $value")]
+    [InlineData("e.\"CreatedAt\" <= $value")]
+    [InlineData("CreatedAt > $value")]
+    [InlineData("CreatedAt >= $value")]
+    [InlineData("CreatedAt = $value")]
+    [InlineData("CreatedAt != $value")]
+    [InlineData("CreatedAt <> $value")]
+    [InlineData("LastSummarizedMessageAt IS $value")]
+    [InlineData("LastSummarizedMessageAt IS NOT $value")]
+    [InlineData("$value < e.\"CreatedAt\"")]
+    [InlineData("$value >= CreatedAt")]
+    [InlineData("$value = CreatedAt")]
+    [InlineData("CreatedAt BETWEEN $value AND $end")]
+    public void Per_binding_guard_follows_timestamp_comparisons_with_generic_bounds(string predicate)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+
+            internal static class Fixture
+            {
+                internal static void Read(SqliteCommand command, DateTimeOffset imported)
+                {
+                    command.CommandText = "SELECT Id FROM Entries WHERE {{predicate.Replace("\"", "\\\"", StringComparison.Ordinal)}};";
+                    _ = command.Parameters.AddWithValue("$value", imported);
+                    _ = command.Parameters.AddWithValue("$end", UtcInstantText.Format(imported));
+                }
+            }
+            """;
+
+        InstantBindingViolation violation = Assert.Single(
+            FindInstantBindingViolations([new ProductionSource("Fixture.cs", source)]));
+
+        Assert.Equal("$value", violation.ParameterName);
+        Assert.Equal("imported", violation.Value);
+    }
+
+    [Theory]
+    [InlineData("SELECT Id FROM Entries WHERE CreatedAt < $value;", "UtcInstantText.Format(imported)")]
+    [InlineData("DELETE FROM Entries WHERE CreatedAt <= $value;", "UtcInstantText.Format(imported)")]
+    [InlineData("SELECT Id FROM Entries WHERE julianday(CreatedAt) < julianday($value);", "imported")]
+    public void Per_binding_guard_accepts_canonical_bounds_and_parsed_SQLite_instants(string sql, string value)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+
+            internal static class Fixture
+            {
+                internal static void Read(SqliteCommand command, DateTimeOffset imported)
+                {
+                    command.CommandText = "{{sql}}";
+                    _ = command.Parameters.AddWithValue("$value", {{value}});
+                }
+            }
+            """;
+
+        Assert.Empty(FindInstantBindingViolations([new ProductionSource("Fixture.cs", source)]));
+    }
+
+    [Fact]
+    public void Per_binding_guard_fails_closed_for_an_unrecognized_comparison_binding()
+    {
+        const string source = """
+            using Microsoft.Data.Sqlite;
+
+            internal static class Fixture
+            {
+                internal static void Read(SqliteCommand command, DateTimeOffset imported)
+                {
+                    command.CommandText = "DELETE FROM Entries WHERE CreatedAt < :value;";
+                    _ = command.Parameters.Add(new SqliteParameter(":value", imported));
+                }
+            }
+            """;
+
+        InstantBindingViolation violation = Assert.Single(
+            FindInstantBindingViolations([new ProductionSource("Fixture.cs", source)]));
+
+        Assert.Equal(":value", violation.ParameterName);
+        Assert.Equal("<unproven binding>", violation.Value);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Per_binding_guard_proves_common_bounds_only_after_unexecuted_alternative_queries(int executionPosition)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+
+            internal static class Fixture
+            {
+                internal static void Read(SqliteCommand command, DateTimeOffset at, bool filtered)
+                {
+                    if (filtered)
+                    {
+                        command.CommandText = "SELECT Id FROM Entries WHERE CreatedAt < $value;";
+                        {{(executionPosition == 1 ? "command.ExecuteScalar();" : string.Empty)}}
+                    }
+                    else
+                    {
+                        command.CommandText = "SELECT Id FROM Entries WHERE CreatedAt <= $value;";
+                    }
+
+                    {{(executionPosition == 2 ? "command.ExecuteScalar();" : string.Empty)}}
+                    _ = command.Parameters.AddWithValue("$value", UtcInstantText.Format(at));
+                }
+            }
+            """;
+
+        IReadOnlyList<InstantBindingViolation> violations = FindInstantBindingViolations(
+            [new ProductionSource("Fixture.cs", source)]);
+
+        if (executionPosition != 0)
+        {
+            Assert.NotEmpty(violations);
+        }
+        else
+        {
+            Assert.Empty(violations);
+        }
+    }
+
+    [Theory]
+    [InlineData("string", "ListPositionsAfterAsync", true)]
+    [InlineData("DateTimeOffset", "ListPositionsAfterAsync", false)]
+    [InlineData("string", "AnotherRead", false)]
+    public void Stored_ordering_cursor_exception_preserves_only_the_exact_string_binding(
+        string propertyType, string method, bool allowed)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+
+            internal sealed record SagaMemoryPosition({{propertyType}} CreatedAt);
+
+            internal static class SagaMemoryStore
+            {
+                internal static void {{method}}(SqliteCommand cmd, SagaMemoryPosition after)
+                {
+                    cmd.CommandText = "SELECT Id FROM saga_memories WHERE CreatedAt <= @afterCreatedText;";
+                    AddParameter(cmd, "@afterCreatedText", after.CreatedAt);
+                }
+            }
+            """;
+
+        IReadOnlyList<InstantBindingViolation> violations = FindInstantBindingViolations(
+            [new ProductionSource("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs", source)]);
+
+        Assert.Equal(allowed, violations.Count == 0);
+    }
+
     [Fact]
     public void Per_binding_guard_rejects_a_raw_neighbor_beside_a_legitimate_codec_call()
     {
@@ -642,6 +795,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         string[] expectedNonDatabaseOwners =
         [
             "src/RetroDownfall.Arcanum.Infrastructure/CommLink/WebhookCommLinkDispatcher.cs",
+            "src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryRecallCandidateReader.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Repositories/SessionRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Security/ListenAnySecurityPolicy.cs",
         ];
@@ -736,7 +890,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
 
             foreach (SyntaxNode scope in scopes)
             {
-                SqlWriteContract[] contracts = DiscoverSqlWriteContracts(scope, source.Root);
+                SqlInstantContract[] contracts = DiscoverSqlInstantContracts(scope, source.Root);
                 HashSet<SqlParameterSlot> inspected = [];
 
                 foreach (InvocationExpressionSyntax invocation in OwnedDescendants<InvocationExpressionSyntax>(
@@ -818,12 +972,12 @@ public sealed class UtcInstantPersistenceBoundaryTests
                     }
 
                     string? commandKey = ParameterCollectionCommandKey(initializer.Expression);
-                    SqlWriteContract[] commandContracts = ResolveCommandContracts(
+                    SqlInstantContract[] commandContracts = ResolveCommandContracts(
                         contracts,
                         commandKey,
                         declaration,
                         exactContractOrigin: null);
-                    SqlWriteContract[] mappedContracts =
+                    SqlInstantContract[] mappedContracts =
                     [
                         .. commandContracts.Where(contract =>
                             contract.InstantParameters.Contains(declaredParameterName)),
@@ -925,12 +1079,12 @@ public sealed class UtcInstantPersistenceBoundaryTests
                             assignment,
                             scope,
                             source.Root);
-                        SqlWriteContract[] commandContracts = ResolveCommandContracts(
+                        SqlInstantContract[] commandContracts = ResolveCommandContracts(
                             contracts,
                             commandKey,
                             assignment,
                             exactContractOrigin: null);
-                        SqlWriteContract[] mappedContracts =
+                        SqlInstantContract[] mappedContracts =
                         [
                             .. commandContracts.Where(contract =>
                                 contract.InstantParameters.Contains(manuallyNamedParameter)),
@@ -952,7 +1106,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
                     }
                 }
 
-                foreach (SqlWriteContract contract in contracts)
+                foreach (SqlInstantContract contract in contracts)
                 {
                     foreach (string parameterName in contract.InstantParameters)
                     {
@@ -988,7 +1142,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
 
     private static void InspectBinding(
         ProductionSource source,
-        IReadOnlyList<SqlWriteContract> contracts,
+        IReadOnlyList<SqlInstantContract> contracts,
         HashSet<SqlParameterSlot> inspected,
         string parameterName,
         ExpressionSyntax value,
@@ -1000,16 +1154,16 @@ public sealed class UtcInstantPersistenceBoundaryTests
         IReadOnlyDictionary<string, HashSet<string>> memberTypes,
         List<InstantBindingViolation> violations)
     {
-        SqlWriteContract[] mapped = contracts
+        SqlInstantContract[] mapped = contracts
             .Where(contract => contract.InstantParameters.Contains(parameterName))
             .ToArray();
 
-        SqlWriteContract[] provenance = ResolveCommandContracts(
+        SqlInstantContract[] provenance = ResolveCommandContracts(
             contracts,
             commandKey,
             binding,
             exactContractOrigin);
-        SqlWriteContract[] resolved =
+        SqlInstantContract[] resolved =
         [
             .. provenance.Where(contract => contract.InstantParameters.Contains(parameterName)),
         ];
@@ -1037,6 +1191,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         if (resolved.Length == 1)
         {
             MarkInspected(resolved, parameterName, inspected);
+            MarkAlternativeQueryContracts(resolved[0], mapped, binding, parameterName, inspected);
         }
         else if (!semantic)
         {
@@ -1044,6 +1199,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         }
 
         if (canonicalByContract
+            || IsExactStoredOrderingCursor(source, parameterName, value, binding, memberTypes)
             || IsCanonicalExpression(value, binding, methods, memberTypes, []))
         {
             return;
@@ -1052,8 +1208,57 @@ public sealed class UtcInstantPersistenceBoundaryTests
         AddViolation(source, value, parameterName, value.ToString(), violations);
     }
 
-    private static SqlWriteContract[] ResolveCommandContracts(
-        IReadOnlyList<SqlWriteContract> contracts,
+    private static bool IsExactStoredOrderingCursor(
+        ProductionSource source,
+        string parameterName,
+        ExpressionSyntax value,
+        SyntaxNode binding,
+        IReadOnlyDictionary<string, HashSet<string>> memberTypes) =>
+        source.IsExactOwner("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs")
+            && parameterName == "@afterCreatedText"
+            && value.ToString() == "after.CreatedAt"
+            && binding.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault()
+                ?.Identifier.ValueText == "ListPositionsAfterAsync"
+            && InferExpressionType(value, binding, memberTypes) == "string";
+
+    private static void MarkAlternativeQueryContracts(
+        SqlInstantContract resolved,
+        IReadOnlyList<SqlInstantContract> mapped,
+        SyntaxNode binding,
+        string parameterName,
+        HashSet<SqlParameterSlot> inspected)
+    {
+        IfStatementSyntax? alternatives = resolved.Origin.Ancestors().OfType<IfStatementSyntax>()
+            .Where(branch => branch.Span.End < binding.SpanStart)
+            .LastOrDefault();
+
+        if (alternatives is null
+            || binding.Ancestors().First(IsExecutableScope).DescendantNodes()
+                .OfType<InvocationExpressionSyntax>().Any(invocation =>
+                    invocation.SpanStart > alternatives.SpanStart
+                    && invocation.SpanStart < binding.SpanStart
+                    && invocation.Expression is MemberAccessExpressionSyntax execution
+                    && CommandIdentity(execution.Expression) == resolved.CommandKey
+                    && execution.Name.Identifier.ValueText.StartsWith("Execute", StringComparison.Ordinal))
+            || binding.SyntaxTree.GetRoot().DescendantNodes().OfType<AssignmentExpressionSyntax>()
+                .Any(assignment => assignment.SpanStart > alternatives.Span.End
+                    && assignment.SpanStart < binding.SpanStart
+                    && assignment.Left is MemberAccessExpressionSyntax
+                    {
+                        Name.Identifier.ValueText: "CommandText",
+                        Expression: ExpressionSyntax command,
+                    }
+                    && CommandIdentity(command) == resolved.CommandKey))
+        {
+            return;
+        }
+
+        MarkInspected(mapped.Where(contract => contract.CommandKey == resolved.CommandKey
+            && alternatives.Span.Contains(contract.Origin.Span)), parameterName, inspected);
+    }
+
+    private static SqlInstantContract[] ResolveCommandContracts(
+        IReadOnlyList<SqlInstantContract> contracts,
         string? commandKey,
         SyntaxNode binding,
         SyntaxNode? exactContractOrigin)
@@ -1071,7 +1276,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
             return [.. contracts];
         }
 
-        SqlWriteContract[] preceding =
+        SqlInstantContract[] preceding =
         [
             .. contracts.Where(contract =>
                 string.Equals(contract.CommandKey, commandKey, StringComparison.Ordinal)
@@ -1089,11 +1294,11 @@ public sealed class UtcInstantPersistenceBoundaryTests
     }
 
     private static void MarkInspected(
-        IEnumerable<SqlWriteContract> contracts,
+        IEnumerable<SqlInstantContract> contracts,
         string parameterName,
         HashSet<SqlParameterSlot> inspected)
     {
-        foreach (SqlWriteContract contract in contracts)
+        foreach (SqlInstantContract contract in contracts)
         {
             _ = inspected.Add(new SqlParameterSlot(contract.Id, parameterName));
         }
@@ -1122,7 +1327,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
 
     private static bool InspectTransitiveContractBinding(
         ProductionSource source,
-        SqlWriteContract contract,
+        SqlInstantContract contract,
         string parameterName,
         SyntaxNode scope,
         SyntaxNode root,
@@ -1404,9 +1609,9 @@ public sealed class UtcInstantPersistenceBoundaryTests
             : [];
     }
 
-    private static SqlWriteContract[] DiscoverSqlWriteContracts(SyntaxNode scope, SyntaxNode root)
+    private static SqlInstantContract[] DiscoverSqlInstantContracts(SyntaxNode scope, SyntaxNode root)
     {
-        List<SqlWriteContract> contracts = [];
+        List<SqlInstantContract> contracts = [];
 
         foreach (AssignmentExpressionSyntax assignment in OwnedDescendants<AssignmentExpressionSyntax>(
                      scope,
@@ -1422,7 +1627,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
                 continue;
             }
 
-            AddSqlWriteContract(
+            AddSqlInstantContract(
                 contracts,
                 CommandIdentity(command),
                 assignment,
@@ -1450,7 +1655,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
                     continue;
                 }
 
-                AddSqlWriteContract(
+                AddSqlInstantContract(
                     contracts,
                     InvocationSqlCommandKey(invocation),
                     invocation,
@@ -1462,21 +1667,21 @@ public sealed class UtcInstantPersistenceBoundaryTests
         return [.. contracts];
     }
 
-    private static void AddSqlWriteContract(
-        List<SqlWriteContract> contracts,
+    private static void AddSqlInstantContract(
+        List<SqlInstantContract> contracts,
         string? commandKey,
         SyntaxNode origin,
         int? sqlArgumentIndex,
         string sql)
     {
-        if (!IsSqlWrite(sql))
+        if (!IsSqlStatement(sql))
         {
             return;
         }
 
         HashSet<string> parameters = DiscoverSqlMappedInstantParameters(sql);
 
-        contracts.Add(new SqlWriteContract(
+        contracts.Add(new SqlInstantContract(
             contracts.Count,
             commandKey,
             origin,
@@ -1601,6 +1806,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
             literal.IsKind(SyntaxKind.StringLiteralExpression)
             && (literal.Token.ValueText.Contains("INSERT", StringComparison.OrdinalIgnoreCase)
                 || literal.Token.ValueText.Contains("UPDATE", StringComparison.OrdinalIgnoreCase)
+                || literal.Token.ValueText.Contains("SELECT", StringComparison.OrdinalIgnoreCase)
+                || literal.Token.ValueText.Contains("DELETE", StringComparison.OrdinalIgnoreCase)
                 || TryReadParameterName(literal, out _)));
 
     private static IEnumerable<TNode> OwnedDescendants<TNode>(SyntaxNode scope, SyntaxNode root)
@@ -1858,34 +2065,50 @@ public sealed class UtcInstantPersistenceBoundaryTests
             || name.EndsWith("Watermark", StringComparison.Ordinal)
             || name.EndsWith("OlderThan", StringComparison.Ordinal)
             || name.EndsWith("NewerThan", StringComparison.Ordinal)
-            || name == "now";
+            || name is "now" or "before";
     }
 
     private static HashSet<string> DiscoverSqlMappedInstantParameters(string sql)
     {
-        HashSet<string> instantColumns =
-        [
-            .. UtcInstantColumnInventory.Core.SelectMany(static table => table.Columns),
-            .. UtcInstantColumnInventory.CovenantCanonical.SelectMany(static table => table.Columns),
-        ];
+        HashSet<string> instantColumns = new(
+            UtcInstantColumnInventory.Core.SelectMany(static table => table.Columns)
+                .Concat(UtcInstantColumnInventory.CovenantCanonical.SelectMany(static table => table.Columns)),
+            StringComparer.OrdinalIgnoreCase);
 
         HashSet<string> parameters = new(StringComparer.Ordinal);
 
-        if (!IsSqlWrite(sql))
+        if (!IsSqlStatement(sql))
         {
             return parameters;
         }
 
-        foreach (Match assignment in Regex.Matches(
-                     sql,
-                     "(?<column>\\\"?[A-Za-z][A-Za-z0-9_]*\\\"?)\\s*=\\s*(?<parameter>[@$:][A-Za-z][A-Za-z0-9_]*)",
-                     RegexOptions.CultureInvariant))
-        {
-            string column = assignment.Groups["column"].Value.Trim('"');
+        const string column = "(?:[A-Za-z_][A-Za-z0-9_]*\\.)?\\\"?(?<column>[A-Za-z][A-Za-z0-9_]*)\\\"?";
+        const string parameter = "(?<parameter>[@$:][A-Za-z][A-Za-z0-9_]*)";
+        const string comparison = "(?:<=|>=|<>|!=|=|<|>|IS(?:\\s+NOT)?)";
 
-            if (instantColumns.Contains(column))
+        string[] predicates =
+        [
+            column + "\\s*" + comparison + "\\s*" + parameter,
+            parameter + "\\s*" + comparison + "\\s*" + column,
+            column + "\\s+BETWEEN\\s+" + parameter + "\\s+AND\\s+(?<end>[@$:][A-Za-z][A-Za-z0-9_]*)",
+        ];
+
+        foreach (string predicate in predicates)
+        {
+            foreach (Match match in Regex.Matches(
+                         sql,
+                         predicate,
+                         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase))
             {
-                _ = parameters.Add(assignment.Groups["parameter"].Value);
+                if (instantColumns.Contains(match.Groups["column"].Value))
+                {
+                    _ = parameters.Add(match.Groups["parameter"].Value);
+
+                    if (match.Groups["end"].Success)
+                    {
+                        _ = parameters.Add(match.Groups["end"].Value);
+                    }
+                }
             }
         }
 
@@ -1894,9 +2117,9 @@ public sealed class UtcInstantPersistenceBoundaryTests
         return parameters;
     }
 
-    private static bool IsSqlWrite(string sql) =>
-        TryFindWord(sql, "INSERT", 0, out _)
-        || TryFindWord(sql, "UPDATE", 0, out _);
+    private static bool IsSqlStatement(string sql) =>
+        Regex.IsMatch(sql, @"\b(?:INSERT|UPDATE|SELECT|DELETE)\b",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     private static bool TryEvaluateString(ExpressionSyntax expression, out string text)
     {
@@ -2596,7 +2819,7 @@ public sealed class UtcInstantPersistenceBoundaryTests
         internal SyntaxNode Root { get; } = Tree.GetRoot();
     }
 
-    private sealed record SqlWriteContract(
+    private sealed record SqlInstantContract(
         int Id,
         string? CommandKey,
         SyntaxNode Origin,

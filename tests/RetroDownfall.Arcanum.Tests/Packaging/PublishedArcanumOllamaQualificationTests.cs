@@ -457,6 +457,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                     StringComparison.Ordinal),
                 "Persisted image metadata did not retain the required neutral name.");
 
+            TimestampProbe timestampProbe = await PrepareTimestampProbeAsync(api, configurationDirectory);
+
             await StopHostAsync(api, firstHost, TimeSpan.FromSeconds(45));
 
             restartedHost = PublishedHost.Start(
@@ -475,6 +477,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 configurationDirectory,
                 configurationPath,
                 hostPort);
+
+            await CompleteTimestampProbeAsync(api, configurationDirectory, timestampProbe);
 
             Guid restartedSessionId = await ReadOnlySessionIdAsync(
                 executable,
@@ -582,6 +586,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 beforeRestartRows);
 
             await RunNativeMemoryRecallAsync(api, hostPort, masterApiKey, model, workspace, sessionId);
+
+            _ = await AssertPersistedTimestampEncodingAsync(configurationDirectory);
 
             await StopHostAsync(api, restartedHost, TimeSpan.FromSeconds(45));
 
@@ -1131,7 +1137,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                     ReasoningSummaries = false,
                     Guardrails = false,
                     WorkspaceChecks = false,
-                    MemoryManagement = false,
+                    MemoryManagement = true,
                     Covenant = true,
                     AgentMemoryRecall = true,
                     CampaignScopedMemory = false,

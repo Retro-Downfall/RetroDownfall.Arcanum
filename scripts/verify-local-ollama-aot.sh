@@ -34,7 +34,10 @@ It refuses GitHub Actions and proves four persisted turns (five with --perplexit
 v1/v2 replacement across an Arcanum host restart, latest-version selection, the fixed PNG vision
 fixture, and one attended recall_memory call against an operator-confirmed test memory. The recall
 turn must return the actual source version, preserve its opaque tool-call correlation and persisted
-exchange, and leave the source unchanged. It does not claim in-place transcript or memory editing.
+exchange, and leave the source unchanged. A separate provider-free Session verifies a deleted
+Entry cursor with UTC and positive/negative offsets before and after the same host restart,
+and read-only SQLCipher inspection verifies the exercised rows contain canonical UTC text.
+It does not claim in-place transcript or memory editing.
 EOF
 }
 
@@ -306,7 +309,7 @@ if [[ "$actual_qualification_receipt" != "$EXPECTED_QUALIFICATION_RECEIPT" \
   exit 1
 fi
 
-echo "==> Native AOT first-session, durable correction, attachment history, restart, and vision are healthy"
+echo "==> Native AOT first-session, durable correction, attachment history, restart, vision, and canonical timestamp cursor/storage checks are healthy"
 
 if [[ "$PERPLEXITY" -eq 1 ]]; then
   echo "==> Live Perplexity search, parsed citation recall, and durable tool exchange are healthy"
