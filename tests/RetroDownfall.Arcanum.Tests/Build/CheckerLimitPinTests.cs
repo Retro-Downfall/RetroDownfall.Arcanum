@@ -1043,6 +1043,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "An AI tool the chat client's function-invocation loop invokes inside the classified model call."),
         (P + "Api.Intelligence.Tools.ArcanumDelegateTaskTool", [P + "Api.Intelligence.WizardIntelligenceProvider.BuildToolSetWithMcpAsync"],
             "An AI tool the chat client's function-invocation loop invokes inside the classified model call."),
+        (P + "Api.Intelligence.Tools.ArcanumMemoryRecallTool", [P + "Api.Intelligence.WizardIntelligenceProvider.BuildToolSetWithMcpAsync"],
+            "An attended-turn AI tool invoked by the chat client's function-invocation loop inside the classified model call; its request-scoped recall revalidates the captured canonical authority and retains no hosted producer root."),
         (P + "Api.Intelligence.Tools.ArcanumSpellScriptTool", [P + "Api.Intelligence.WizardIntelligenceProvider.BuildToolSetWithMcpAsync"],
             "An AI tool the chat client's function-invocation loop invokes inside the classified model call."),
         (P + "Api.ProvingGrounds.MemoryEvaluation.MemoryEvaluationBoundedResponseHandler",
