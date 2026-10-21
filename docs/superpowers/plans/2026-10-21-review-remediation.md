@@ -88,6 +88,14 @@
 - [ ] Hold WriteAsync on a TaskCompletionSource; save revision A, edit revision B, complete A, assert B stays dirty/saveable and close still prompts. Verify written snapshot is A. Observe RED.
 - [ ] Track edit revision through the save snapshot and clear dirty only for matching revision; failed/canceled save remains dirty. Run focused Compendium suite; independent review.
 
+### Task 7: Forge long-operation deadlines (R10)
+
+**Files:** `TheForge.Ux/ServiceCollectionConfigurator.cs`, `Services/ArcanumApiClient.cs`, `Services/OpenAiCompatApiClient.cs`, long-operation route services, and corresponding Forge client/DI tests.
+
+- [ ] Reproduce delayed compaction headers or multipart upload cancellation caused solely by the production finite client timeout; caller cancellation must remain distinguishable. Observe behavioral RED, using a controlled deadline clock/seam if needed rather than a permanent 100-second test.
+- [ ] Separate short-call response-headers deadlines from operations with no product-owned expected duration. Explicitly classify compaction, inference/streams, file transfer, tool work and other exposed long operations; use caller cancellation for them. Preserve bounded ordinary calls and error mapping.
+- [ ] Run Forge transport/route/DI suites and independent review; document the actual timeout policy.
+
 ## Phase 4 — Integration and delivery
 
 - [ ] Integrate task commits, reconcile shared docs/source-analysis catalogs without weakening any gate, and update the #73 acceptance record to include the repaired restore regressions.
