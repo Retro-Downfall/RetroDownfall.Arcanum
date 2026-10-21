@@ -855,6 +855,18 @@ internal static partial class HostedGrimoireProducerInventory
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.ProcPidFdInfo"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.FileHandleIdentityInterop.GetFinalPathNameByHandle"] = HostedProducerSiteKind.FileSystemRead,
         ["RetroDownfall.Arcanum.Infrastructure.Security.SecureFilePermissions.GetEffectiveUserIdNative"] = HostedProducerSiteKind.FileSystemRead,
+        // Spell publication and cleanup cross these exact retained-handle native boundaries. Even
+        // NtCreateFile and openat may create artifacts, so none is an effect-free metadata exemption.
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.MkdirAt"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.OpenAtFixedArity"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.OpenAtAppleArm64"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.RenameAt"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.RenameAtMac"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.RenameAtLinux"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.UnlinkAt"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.CreateFileWindows"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.NtCreateFile"] = HostedProducerSiteKind.FileSystemEffect,
+        ["RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells.SpellDirectory.NtSetInformationFile"] = HostedProducerSiteKind.FileSystemEffect,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.WriteAsync"] = (HostedProducerSiteKind)5,
         ["RetroDownfall.Arcanum.Core.Storage.IEncryptedBlobStore.CreateWriterAsync"] = (HostedProducerSiteKind)5,
         ["RetroDownfall.Arcanum.Core.Storage.EncryptedBlobWriter.CompleteAsync"] = (HostedProducerSiteKind)5,
