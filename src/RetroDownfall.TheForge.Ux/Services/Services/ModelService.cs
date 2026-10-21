@@ -26,6 +26,6 @@ public sealed class ModelService
     public Task<ApiResponse<ProviderTestResult>?> TestProviderAsync(ProviderTestRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync("/api/providers/test", request,
             TheForgeJsonContext.Default.ProviderTestRequest,
-            TheForgeJsonContext.Default.ApiResponseProviderTestResult, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseProviderTestResult, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

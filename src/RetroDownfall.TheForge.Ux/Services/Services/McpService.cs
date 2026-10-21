@@ -31,32 +31,32 @@ public sealed class McpService
 
     public Task<ApiResponse<bool>?> StartAsync(string name, CancellationToken cancellationToken) =>
         _apiClient.PostAsync($"/api/mcp/{Uri.EscapeDataString(name)}/start",
-            TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<bool>?> StopAsync(string name, CancellationToken cancellationToken) =>
         _apiClient.PostAsync($"/api/mcp/{Uri.EscapeDataString(name)}/stop",
-            TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<bool>?> RestartAsync(string name, CancellationToken cancellationToken) =>
         _apiClient.PostAsync($"/api/mcp/{Uri.EscapeDataString(name)}/restart",
-            TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseBoolean, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<string>?> ReloadAsync(string? workingDirectory, CancellationToken cancellationToken) =>
         _apiClient.PostAsync("/api/mcp/reload",
             new OptionalWorkspaceRequest(workingDirectory),
             TheForgeJsonContext.Default.OptionalWorkspaceRequest,
-            TheForgeJsonContext.Default.ApiResponseString, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseString, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<WorkspaceArsenalDto>?> GetArsenalAsync(string? workingDirectory, CancellationToken cancellationToken) =>
         _apiClient.PostAsync("/api/intelligence/arsenal",
             new OptionalWorkspaceRequest(workingDirectory),
             TheForgeJsonContext.Default.OptionalWorkspaceRequest,
-            TheForgeJsonContext.Default.ApiResponseWorkspaceArsenalDto, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseWorkspaceArsenalDto, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<McpToolInvokeResponse>?> InvokeDiagnosticMcpAsync(McpToolInvokeRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync("/api/mcp/tools/invoke",
             request,
             TheForgeJsonContext.Default.McpToolInvokeRequest,
-            TheForgeJsonContext.Default.ApiResponseMcpToolInvokeResponse, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseMcpToolInvokeResponse, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

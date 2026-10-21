@@ -132,7 +132,7 @@ public sealed class FilesBatchesService
             body,
             TheForgeJsonContext.Default.OpenAiBatchRequest,
             TheForgeJsonContext.Default.OpenAiBatchObject,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     }
 

@@ -22,6 +22,6 @@ public sealed class ToolInvokeService
     public Task<ApiResponse<ToolInvokeResponse>?> InvokeAsync(ToolInvokeRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync("/api/tools/invoke", request,
             TheForgeJsonContext.Default.ToolInvokeRequest,
-            TheForgeJsonContext.Default.ApiResponseToolInvokeResponse, cancellationToken);
+            TheForgeJsonContext.Default.ApiResponseToolInvokeResponse, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

@@ -25,7 +25,7 @@ public sealed class DivinationService
             request,
             TheForgeJsonContext.Default.SemanticSearchRequest,
             TheForgeJsonContext.Default.ApiResponseSemanticSearchResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<WorkspaceSearchResult[]>?> SearchWorkspaceFilesAsync(
         string workspaceId,
@@ -36,7 +36,7 @@ public sealed class DivinationService
             request,
             TheForgeJsonContext.Default.WorkspaceSemanticSearchRequest,
             TheForgeJsonContext.Default.ApiResponseWorkspaceSearchResultArray,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>POST /api/saga/divine</c> — Saga Divination; gated by
     /// <c>Arcanum:Features:Saga</c> plus valid embedding integration facts
@@ -47,6 +47,6 @@ public sealed class DivinationService
             request,
             TheForgeJsonContext.Default.SagaSearchRequest,
             TheForgeJsonContext.Default.ApiResponseSagaSearchResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

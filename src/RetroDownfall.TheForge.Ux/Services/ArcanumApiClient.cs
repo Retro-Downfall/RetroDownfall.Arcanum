@@ -23,6 +23,10 @@ public sealed class ArcanumApiClient
 {
     public const string HttpClientName = "ArcanumApi";
 
+    internal TimeSpan RequestResponseHeadersTimeout { get; init; } = ArcanumResponseHeadersDeadline.DefaultTimeout;
+
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
+
     private const string ApiKeyHeaderName = "X-Arcanum-Key";
 
     /// <summary>Envelope code for a <c>the-forge.json</c> <c>BaseUrl</c> that is not an absolute http/https URL.</summary>
@@ -59,14 +63,16 @@ public sealed class ArcanumApiClient
     public Task<ApiResponse<TResponse>?> GetAsync<TResponse>(
         string path,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Get, path, requestContent: null, responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendAsync(HttpMethod.Get, path, requestContent: null, responseTypeInfo, cancellationToken, lifetime);
 
     public Task<ApiResponse<TResponse>?> DeleteAsync<TResponse>(
         string path,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Delete, path, requestContent: null, responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendAsync(HttpMethod.Delete, path, requestContent: null, responseTypeInfo, cancellationToken, lifetime);
 
     /// <summary>
     /// For routes that respond <c>204 No Content</c> / a bare status on success (e.g. <c>DELETE /api/campaigns/{id}</c>).
@@ -74,7 +80,10 @@ public sealed class ArcanumApiClient
     /// carries the status or transport code rather than a bare flag every caller would have to invent
     /// a reason for.
     /// </summary>
-    public async Task<DeleteOutcome> DeleteNoContentAsync(string path, CancellationToken cancellationToken)
+    public async Task<DeleteOutcome> DeleteNoContentAsync(
+        string path,
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline)
     {
         try
         {
@@ -82,9 +91,12 @@ public sealed class ArcanumApiClient
 
             using HttpRequestMessage request = new(HttpMethod.Delete, path);
 
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client,
+                request,
+                cancellationToken,
+                lifetime == ArcanumRequestLifetime.CallerCancellation ? null : RequestResponseHeadersTimeout,
+                HeadersDeadlineClock).ConfigureAwait(false);
 
             if (response.IsSuccessStatusCode)
             {
@@ -117,9 +129,8 @@ public sealed class ArcanumApiClient
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            // A TaskCanceledException that did NOT originate from the caller's token is HttpClient's own
-            // request-timeout signal, so report it as a failed delete rather than letting it escape as
-            // if the caller had cancelled — see the matching clause in SendAsync.
+            // A send cancellation the caller did not request is a response-headers deadline or
+            // transport timeout; preserve the typed timeout result rather than caller cancellation.
             _logger.LogWarning(ex, "DELETE {Path} timed out.", path);
 
             return DeleteOutcome.Fail("Connection.Timeout", "The request to Arcanum timed out.");
@@ -129,24 +140,27 @@ public sealed class ArcanumApiClient
     public Task<ApiResponse<TResponse>?> PostAsync<TResponse>(
         string path,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Post, path, requestContent: null, responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendAsync(HttpMethod.Post, path, requestContent: null, responseTypeInfo, cancellationToken, lifetime);
 
     public Task<ApiResponse<TResponse>?> PostAsync<TRequest, TResponse>(
         string path,
         TRequest body,
         JsonTypeInfo<TRequest> requestTypeInfo,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Post, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendAsync(HttpMethod.Post, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken, lifetime);
 
     public Task<ApiResponse<TResponse>?> PutAsync<TRequest, TResponse>(
         string path,
         TRequest body,
         JsonTypeInfo<TRequest> requestTypeInfo,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Put, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendAsync(HttpMethod.Put, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken, lifetime);
 
     /// <summary>
     /// <c>PATCH</c> with a JSON body — used by <c>PATCH /api/workspaces/{id}/files/contents</c>
@@ -158,8 +172,9 @@ public sealed class ArcanumApiClient
         TRequest body,
         JsonTypeInfo<TRequest> requestTypeInfo,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendAsync(HttpMethod.Patch, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendAsync(HttpMethod.Patch, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken, lifetime);
 
     /// <summary>
     /// NDJSON streaming (<c>POST /api/intelligence/ping-stream</c>, <c>POST /api/spells/{name}/execute-stream</c>):
@@ -198,9 +213,8 @@ public sealed class ArcanumApiClient
                 Content = SerializeBody(body, requestTypeInfo),
             };
 
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client, request, cancellationToken, timeout: null, HeadersDeadlineClock).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -310,9 +324,8 @@ public sealed class ArcanumApiClient
         {
             using HttpRequestMessage request = new(HttpMethod.Get, path);
 
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client, request, cancellationToken, timeout: null, HeadersDeadlineClock).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -397,7 +410,8 @@ public sealed class ArcanumApiClient
         string path,
         HttpContent? requestContent,
         JsonTypeInfo<ApiResponse<TResponse>> responseTypeInfo,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime)
     {
         try
         {
@@ -405,9 +419,12 @@ public sealed class ArcanumApiClient
 
             using HttpRequestMessage request = new(method, path) { Content = requestContent };
 
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client,
+                request,
+                cancellationToken,
+                lifetime == ArcanumRequestLifetime.CallerCancellation ? null : RequestResponseHeadersTimeout,
+                HeadersDeadlineClock).ConfigureAwait(false);
 
             byte[]? body = await BoundedHttpContentReader
                 .TryReadAsync(response.Content, cancellationToken: cancellationToken)
@@ -466,8 +483,8 @@ public sealed class ArcanumApiClient
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            // A TaskCanceledException that did NOT originate from the caller's token is HttpClient's
-            // own request-timeout signal, not a caller-requested cancellation — surface it as a
+            // A TaskCanceledException that did NOT originate from the caller's token is a headers
+            // deadline or transport timeout, not a caller-requested cancellation — surface it as a
             // connection failure like any other transport fault, rather than letting it propagate as
             // if the caller cancelled.
             _logger.LogWarning(ex, "{Method} {Path} timed out.", method, path);

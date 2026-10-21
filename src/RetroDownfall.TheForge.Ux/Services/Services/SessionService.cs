@@ -68,14 +68,14 @@ public sealed class SessionService
             request ?? new ForkSessionRequest(),
             TheForgeJsonContext.Default.ForkSessionRequest,
             TheForgeJsonContext.Default.ApiResponseSessionDetailDto,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<SessionExportResult>?> ExportAsync(Guid id, string format, CancellationToken cancellationToken)
     {
 
         string path = QueryStringBuilder.Build($"/api/sessions/{id}/export", ("format", format));
 
-        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSessionExportResult, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseSessionExportResult, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     }
 
@@ -123,7 +123,7 @@ public sealed class SessionService
         _apiClient.DeleteAsync(
             $"/api/sessions/{id}/entries/{entryId}",
             TheForgeJsonContext.Default.ApiResponseBoolean,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>POST /api/sessions/{id}/entries/{entryId}/pin</c> — gated by <c>Arcanum:Features:MemoryManagement</c>; 409 <c>Session.TooManyPinned</c>.</summary>
     public Task<ApiResponse<bool>?> PinEntryAsync(Guid id, Guid entryId, CancellationToken cancellationToken) =>
@@ -144,6 +144,6 @@ public sealed class SessionService
         _apiClient.PostAsync(
             $"/api/sessions/{id}/compact",
             TheForgeJsonContext.Default.ApiResponseCompactResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

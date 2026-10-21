@@ -119,7 +119,7 @@ public sealed class SpellService
 
         string path = QueryStringBuilder.Build($"/api/spells/{Uri.EscapeDataString(name)}/export", ("workspace", workspace));
 
-        return _apiClient.PostAsync(path, TheForgeJsonContext.Default.ApiResponseSpellExportDto, cancellationToken);
+        return _apiClient.PostAsync(path, TheForgeJsonContext.Default.ApiResponseSpellExportDto, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     }
 
@@ -129,7 +129,7 @@ public sealed class SpellService
             request,
             TheForgeJsonContext.Default.SpellImportRequest,
             TheForgeJsonContext.Default.ApiResponseSpellSummary,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<SpellSummary>?> CloneAsync(string name, CloneSpellRequest request, CancellationToken cancellationToken) =>
         _apiClient.PostAsync(
@@ -137,7 +137,7 @@ public sealed class SpellService
             request,
             TheForgeJsonContext.Default.CloneSpellRequest,
             TheForgeJsonContext.Default.ApiResponseSpellSummary,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary>Dry-run preview — consumes no tokens.</summary>
     public Task<ApiResponse<SpellCastResult>?> CastAsync(string name, SpellCastRequest? request, CancellationToken cancellationToken) =>
@@ -146,7 +146,7 @@ public sealed class SpellService
             request ?? new SpellCastRequest(),
             TheForgeJsonContext.Default.SpellCastRequest,
             TheForgeJsonContext.Default.ApiResponseSpellCastResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary>Live execution — NDJSON <see cref="IntelligenceEvent"/> stream, opens a Tome tab in the Workbench.</summary>
     public IAsyncEnumerable<IntelligenceEvent> ExecuteStreamAsync(

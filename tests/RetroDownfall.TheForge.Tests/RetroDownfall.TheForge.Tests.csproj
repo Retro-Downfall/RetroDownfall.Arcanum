@@ -46,6 +46,12 @@
 
   <ItemGroup>
 
+    <Compile Include="..\RetroDownfall.Arcanum.Tests\Support\ManualTimerTimeProvider.cs" Link="Support\ManualTimerTimeProvider.cs" />
+
+  </ItemGroup>
+
+  <ItemGroup>
+
     <None Include="Fixtures\illumination-kitchen-sink.md" CopyToOutputDirectory="PreserveNewest" />
 
   </ItemGroup>

@@ -42,7 +42,7 @@ public sealed class SagaService
             new SagaSearchRequest(query, limit),
             TheForgeJsonContext.Default.SagaSearchRequest,
             TheForgeJsonContext.Default.ApiResponseSagaSearchResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>DELETE /api/saga/{id}</c> — 204 / 404 <c>Saga.NotFound</c>. <paramref name="id"/> is the Saga memory's string id.</summary>
     public Task<ApiResponse<bool>?> DeleteAsync(string id, CancellationToken cancellationToken) =>
@@ -53,7 +53,7 @@ public sealed class SagaService
 
     /// <summary><c>DELETE /api/saga?confirm=true</c> — success is <c>204 No Content</c>.</summary>
     public Task<DeleteOutcome> DeleteAllAsync(CancellationToken cancellationToken) =>
-        _apiClient.DeleteNoContentAsync("/api/saga?confirm=true", cancellationToken);
+        _apiClient.DeleteNoContentAsync("/api/saga?confirm=true", cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>GET /api/saga/stats</c> — always available (not gated on
     /// <c>Arcanum:Features:Saga</c>).</summary>

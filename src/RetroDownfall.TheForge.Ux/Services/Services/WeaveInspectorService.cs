@@ -54,6 +54,6 @@ public sealed class WeaveInspectorService
         _apiClient.PostAsync(
             QueryStringBuilder.Build("/api/embeddings/reset", ("scope", scope), ("confirm", "true")),
             TheForgeJsonContext.Default.ApiResponseEmbeddingsResetResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
 }

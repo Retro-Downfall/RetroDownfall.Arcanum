@@ -59,7 +59,7 @@ public sealed class WorkspaceService
             $"/api/workspaces/{Uri.EscapeDataString(workspaceId)}/files/contents",
             ("relativePath", relativePath));
 
-        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseFileReadResult, cancellationToken);
+        return _apiClient.GetAsync(path, TheForgeJsonContext.Default.ApiResponseFileReadResult, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     }
 
@@ -83,7 +83,7 @@ public sealed class WorkspaceService
             new FileWriteRequest(content),
             TheForgeJsonContext.Default.FileWriteRequest,
             TheForgeJsonContext.Default.ApiResponseFileWriteResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>PATCH /api/workspaces/{id}/files/contents?relativePath=</c> — text-block replace; server-gated by <c>Arcanum:Workspaces:EnableFileWrite</c>.</summary>
     public Task<ApiResponse<TextBlockReplaceResult>?> ReplaceTextBlockAsync(
@@ -96,7 +96,7 @@ public sealed class WorkspaceService
             request,
             TheForgeJsonContext.Default.TextBlockReplaceRequest,
             TheForgeJsonContext.Default.ApiResponseTextBlockReplaceResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>DELETE /api/workspaces/{id}/files?relativePath=</c> — 200 <c>ApiResponse&lt;FileDeleteResult&gt;</c>; server-gated by <c>Arcanum:Workspaces:EnableFileWrite</c>.</summary>
     public Task<ApiResponse<FileDeleteResult>?> DeleteFileAsync(
@@ -110,7 +110,7 @@ public sealed class WorkspaceService
                 ("relativePath", relativePath),
                 ("recursive", recursive?.ToString())),
             TheForgeJsonContext.Default.ApiResponseFileDeleteResult,
-            cancellationToken);
+            cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     /// <summary><c>POST /api/workspaces/{id}/files/directory?relativePath=</c> — 201; server-gated by <c>Arcanum:Workspaces:EnableFileWrite</c>.</summary>
     public Task<ApiResponse<DirectoryCreateResult>?> CreateDirectoryAsync(string workspaceId, string relativePath, CancellationToken cancellationToken) =>

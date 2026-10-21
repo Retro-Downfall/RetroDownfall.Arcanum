@@ -128,9 +128,9 @@ internal static class ServiceCollectionConfigurator
 
         services.AddHttpClient(ArcanumApiClient.HttpClientName, static client =>
         {
-            // Unary The Forge ↔ Arcanum API calls — keep a finite budget (HttpClient default is 100s).
-            // Do not use InfiniteTimeSpan here; inference/streaming uses separate clients on the API side.
-            client.Timeout = TimeSpan.FromSeconds(100);
+            // Long operations and transfers have no client-owned total duration. Ordinary calls
+            // carry their own response-headers deadline, disposed as soon as SendAsync completes.
+            client.Timeout = Timeout.InfiniteTimeSpan;
         }).ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false });
 
         // Must use the parameterless-ctor factory, not AddSingleton<IOsCredentialStore, OsCredentialStore>():

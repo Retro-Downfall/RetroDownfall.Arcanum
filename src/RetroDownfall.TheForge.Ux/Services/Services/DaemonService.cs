@@ -33,7 +33,7 @@ public sealed class DaemonService
         _apiClient.GetAsync($"/api/daemons/{Uri.EscapeDataString(id)}", TheForgeJsonContext.Default.ApiResponseDaemonJobInfo, cancellationToken);
 
     public Task<ApiResponse<DaemonExecutionSummary>?> RunAsync(string id, CancellationToken cancellationToken) =>
-        _apiClient.PostAsync($"/api/daemons/{Uri.EscapeDataString(id)}/run", TheForgeJsonContext.Default.ApiResponseDaemonExecutionSummary, cancellationToken);
+        _apiClient.PostAsync($"/api/daemons/{Uri.EscapeDataString(id)}/run", TheForgeJsonContext.Default.ApiResponseDaemonExecutionSummary, cancellationToken, ArcanumRequestLifetime.CallerCancellation);
 
     public Task<ApiResponse<DaemonExecutionSummary[]>?> HistoryAsync(string id, CancellationToken cancellationToken) =>
         _apiClient.GetAsync(

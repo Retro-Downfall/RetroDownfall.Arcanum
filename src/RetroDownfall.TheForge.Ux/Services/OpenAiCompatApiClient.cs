@@ -21,6 +21,10 @@ namespace RetroDownfall.TheForge.Ux.Services;
 public sealed class OpenAiCompatApiClient
 {
 
+    internal TimeSpan RequestResponseHeadersTimeout { get; init; } = ArcanumResponseHeadersDeadline.DefaultTimeout;
+
+    internal TimeProvider HeadersDeadlineClock { get; init; } = TimeProvider.System;
+
     private const string ApiKeyHeaderName = "X-Arcanum-Key";
 
     private static readonly MediaTypeHeaderValue JsonMediaType = new("application/json") { CharSet = "utf-8" };
@@ -58,28 +62,32 @@ public sealed class OpenAiCompatApiClient
     public Task<OpenAiResult<TResponse>> GetAsync<TResponse>(
         string path,
         JsonTypeInfo<TResponse> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendJsonAsync(HttpMethod.Get, path, requestContent: null, responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendJsonAsync(HttpMethod.Get, path, requestContent: null, responseTypeInfo, cancellationToken, lifetime);
 
     public Task<OpenAiResult<TResponse>> DeleteAsync<TResponse>(
         string path,
         JsonTypeInfo<TResponse> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendJsonAsync(HttpMethod.Delete, path, requestContent: null, responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendJsonAsync(HttpMethod.Delete, path, requestContent: null, responseTypeInfo, cancellationToken, lifetime);
 
     public Task<OpenAiResult<TResponse>> PostAsync<TResponse>(
         string path,
         JsonTypeInfo<TResponse> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendJsonAsync(HttpMethod.Post, path, requestContent: null, responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendJsonAsync(HttpMethod.Post, path, requestContent: null, responseTypeInfo, cancellationToken, lifetime);
 
     public Task<OpenAiResult<TResponse>> PostAsync<TRequest, TResponse>(
         string path,
         TRequest body,
         JsonTypeInfo<TRequest> requestTypeInfo,
         JsonTypeInfo<TResponse> responseTypeInfo,
-        CancellationToken cancellationToken) =>
-        SendJsonAsync(HttpMethod.Post, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken);
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime = ArcanumRequestLifetime.ResponseHeadersDeadline) =>
+        SendJsonAsync(HttpMethod.Post, path, SerializeBody(body, requestTypeInfo), responseTypeInfo, cancellationToken, lifetime);
 
     /// <summary>
     /// Multipart upload for <c>POST /v1/files</c> (<c>file</c> + <c>purpose</c> form fields).
@@ -120,9 +128,8 @@ public sealed class OpenAiCompatApiClient
 
             using HttpRequestMessage request = new(HttpMethod.Post, path) { Content = form };
 
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client, request, cancellationToken, timeout: null, HeadersDeadlineClock).ConfigureAwait(false);
 
             return await ParseJsonResponseAsync(response, responseTypeInfo, path, cancellationToken)
                 .ConfigureAwait(false);
@@ -198,12 +205,8 @@ public sealed class OpenAiCompatApiClient
 
                         using HttpRequestMessage request = new(HttpMethod.Get, path);
 
-                        using HttpResponseMessage response = await client
-                            .SendAsync(
-                                request,
-                                HttpCompletionOption.ResponseHeadersRead,
-                                admittedCancellationToken)
-                            .ConfigureAwait(false);
+                        using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                            client, request, admittedCancellationToken, timeout: null, HeadersDeadlineClock).ConfigureAwait(false);
 
                         if (!response.IsSuccessStatusCode)
                         {
@@ -383,9 +386,8 @@ public sealed class OpenAiCompatApiClient
 
             using HttpRequestMessage request = new(HttpMethod.Get, path);
 
-            response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client, request, cancellationToken, timeout: null, HeadersDeadlineClock).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -474,7 +476,8 @@ public sealed class OpenAiCompatApiClient
         string path,
         HttpContent? requestContent,
         JsonTypeInfo<TResponse> responseTypeInfo,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArcanumRequestLifetime lifetime)
     {
 
         try
@@ -484,9 +487,12 @@ public sealed class OpenAiCompatApiClient
 
             using HttpRequestMessage request = new(method, path) { Content = requestContent };
 
-            using HttpResponseMessage response = await client
-                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
-                .ConfigureAwait(false);
+            using HttpResponseMessage response = await ArcanumResponseHeadersDeadline.SendAsync(
+                client,
+                request,
+                cancellationToken,
+                lifetime == ArcanumRequestLifetime.CallerCancellation ? null : RequestResponseHeadersTimeout,
+                HeadersDeadlineClock).ConfigureAwait(false);
 
             return await ParseJsonResponseAsync(response, responseTypeInfo, path, cancellationToken)
                 .ConfigureAwait(false);
