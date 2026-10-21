@@ -33,7 +33,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         Assert.Equal(CovenantLane.Confirmed, seeded.Lane);
 
-        Assert.NotNull(seeded.ResultingVersionId);
+        Assert.True(seeded.ResultingVersionId.HasValue, "Recall qualification seed did not return a confirmed version identity.");
 
         Guid version = seeded.ResultingVersionId.Value;
 
@@ -81,9 +81,13 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         using StreamReader reader = new(stream, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false);
 
-        var evidence = await LocalOllamaRecallQualificationGuards.ReadAsync(reader, sessionId, RecallSubject, token, version, deadline.Token);
+        LocalOllamaRecallQualificationGuards.Refusal? refusal = null;
 
-        Assert.NotNull(evidence);
+        var evidence = await LocalOllamaRecallQualificationGuards.ReadAsync(reader, sessionId, RecallSubject, token, version,
+            deadline.Token, observed => refusal = observed);
+
+        Assert.True(evidence is not null,
+            $"Recall stream evidence verification failed: code={refusal?.Code ?? "Unknown"}; frame={refusal?.FrameOrdinal ?? 0}; type={refusal?.Type?.ToString() ?? "None"}.");
 
         JsonElement[] afterRows = await ReadRecallRowsAsync(api, sessionId, deadline.Token);
 

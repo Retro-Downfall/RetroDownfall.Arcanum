@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.Extensions.AI;
-using RetroDownfall.Arcanum.Api.Intelligence;
+using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine;
+using RetroDownfall.Arcanum.Api.Intelligence.TurnEngine.Projections;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Memory;
@@ -20,12 +20,16 @@ public sealed class LocalOllamaRecallQualificationContractTests
 
     private const string Arguments = "{\"query\":\"local.recall.subject\",\"scope\":\"Covenant\",\"limit\":1}";
 
-    [Fact]
-    public async Task Native_recall_evidence_preserves_opaque_call_and_exact_result_and_consumes_version()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Native_recall_evidence_preserves_opaque_call_and_exact_result_and_consumes_version(bool includeNullCursor)
     {
-        var frames = Frames();
+        string arguments = includeNullCursor ? Arguments[..^1] + ",\"cursor\":null}" : Arguments;
 
-        Assert.Equal("recall_memory: " + Arguments, frames[0]["data"]!.GetValue<string>());
+        var frames = Frames(arguments);
+
+        Assert.Equal(arguments, frames[0]["data"]!.GetValue<string>());
 
         using var reader = new StringReader(Text(frames));
 
@@ -35,7 +39,7 @@ public sealed class LocalOllamaRecallQualificationContractTests
 
         Assert.Equal("opaque:recall/call-17", evidence.CallId);
 
-        Assert.Equal(Arguments, evidence.ArgumentsJson);
+        Assert.Equal(arguments, evidence.ArgumentsJson);
 
         Assert.Contains(Token, evidence.ResultJson);
 
@@ -48,7 +52,8 @@ public sealed class LocalOllamaRecallQualificationContractTests
     [InlineData("missing-result")]
     [InlineData("wrong-version")]
     [InlineData("wrong-query")]
-    [InlineData("raw-display-arguments")]
+    [InlineData("prefixed-display-arguments")]
+    [InlineData("nonnull-first-page-cursor")]
     [InlineData("extra-authority")]
     [InlineData("wrong-token")]
     [InlineData("replayed-terminal")]
@@ -66,7 +71,13 @@ public sealed class LocalOllamaRecallQualificationContractTests
             case "extra-call": frames.Insert(1, frames[0].DeepClone().AsObject()); break;
             case "missing-result": frames.RemoveAt(1); break;
             case "wrong-version": frames[1]["data"] = frames[1]["data"]!.GetValue<string>().Replace(Version.ToString("D"), Guid.NewGuid().ToString("D"), StringComparison.Ordinal); break;
-            case "raw-display-arguments": frames[0]["data"] = Arguments; break;
+            case "prefixed-display-arguments": frames[0]["data"] = "recall_memory: " + Arguments; break;
+            case "nonnull-first-page-cursor":
+                string continued = Arguments[..^1] + ",\"cursor\":\"opaque-continuation\"}";
+                frames[0]["toolCall"]!["argumentsJson"] = continued;
+                frames[1]["toolCall"]!["argumentsJson"] = continued;
+                frames[0]["data"] = continued;
+                break;
             case "wrong-query": frames[0]["toolCall"]!["argumentsJson"] = "{\"query\":\"other\",\"scope\":\"Covenant\",\"limit\":1}"; break;
             case "extra-authority": frames[0]["toolCall"]!["argumentsJson"] = "{\"query\":\"local.recall.subject\",\"scope\":\"Covenant\",\"limit\":1,\"campaignId\":\"forged\"}"; break;
             case "wrong-token": frames[2]["message"] = "guessed"; frames[2]["data"] = "guessed"; frames[3]["message"] = "guessed"; break;
@@ -75,7 +86,7 @@ public sealed class LocalOllamaRecallQualificationContractTests
             case "wrong-session": frames.Insert(0, Frame(new(IntelligenceEventType.SessionBound, "bound", Guid.NewGuid().ToString("D")))); break;
         }
 
-        if (defect is "wrong-query" or "extra-authority") frames[0]["data"] = "recall_memory: " + frames[0]["toolCall"]!["argumentsJson"]!.GetValue<string>();
+        if (defect is "wrong-query" or "extra-authority") frames[0]["data"] = frames[0]["toolCall"]!["argumentsJson"]!.GetValue<string>();
 
         string text = Text(frames);
 
@@ -86,6 +97,50 @@ public sealed class LocalOllamaRecallQualificationContractTests
         using var reader = new StringReader(text);
 
         Assert.Null(await LocalOllamaRecallQualificationGuards.ReadAsync(reader, Session, Query, Token, Version, default));
+    }
+
+    [Theory]
+    [InlineData("display", "ToolCall.DisplayMismatch", 1)]
+    [InlineData("malformed", "Envelope.MalformedJson", 1)]
+    [InlineData("missing-result", "Terminal.MissingToolResult", 2)]
+    [InlineData("missing-terminal", "Terminal.Missing", 3)]
+    [InlineData("answer", "Terminal.AnswerMismatch", 4)]
+    public async Task Recall_refusals_identify_boundary_without_protected_content(string defect, string code, int ordinal)
+    {
+        const string sentinel = "PROTECTED_SENTINEL_MUST_NOT_ENTER_DIAGNOSTICS";
+
+        var frames = Frames();
+
+        string text;
+
+        switch (defect)
+        {
+            case "display": frames[0]["data"] = sentinel; break;
+            case "missing-result": frames.RemoveRange(1, 2); break;
+            case "missing-terminal": frames.RemoveAt(3); break;
+            case "answer":
+                frames[2]["message"] = sentinel;
+                frames[2]["data"] = sentinel;
+                frames[3]["message"] = sentinel;
+                break;
+        }
+
+        text = defect == "malformed" ? "{\"type\":\"" + sentinel + "\n" : Text(frames);
+
+        List<LocalOllamaRecallQualificationGuards.Refusal> refusals = [];
+
+        using var reader = new StringReader(text);
+
+        Assert.Null(await LocalOllamaRecallQualificationGuards.ReadAsync(reader, Session, Query, Token, Version,
+            default, refusals.Add));
+
+        var refusal = Assert.Single(refusals);
+
+        Assert.Equal(code, refusal.Code);
+
+        Assert.Equal(ordinal, refusal.FrameOrdinal);
+
+        Assert.DoesNotContain(sentinel, refusal.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -185,9 +240,9 @@ public sealed class LocalOllamaRecallQualificationContractTests
         return document.RootElement.Clone();
     }
 
-    private static List<JsonObject> Frames()
+    private static List<JsonObject> Frames(string arguments = Arguments)
     {
-        IntelligenceToolCallEvent call = new("opaque:recall/call-17", "recall_memory", Arguments);
+        IntelligenceToolCallEvent call = new("opaque:recall/call-17", "recall_memory", arguments);
 
         var page = new MemoryRecallPage([new(MemoryRecallScope.Covenant, Version.ToString("D"), Token, VersionId: Version)], null);
 
@@ -195,10 +250,11 @@ public sealed class LocalOllamaRecallQualificationContractTests
 
         string answer = $"RECALLED_TOKEN={Token}; VERSION={Version:D}";
 
-        string display = ToolExecutionPipeline.FormatToolCallEventData(new FunctionCallContent(call.CallId, call.Name), Arguments);
+        IntelligenceEvent proposed = Assert.Single(IntelligenceEventProjection.Map(new ToolCallProposed(
+            new TurnEventCorrelation(Guid.NewGuid(), 1, DateTimeOffset.UtcNow), call.CallId, call.Name, arguments, ToolCallDisposition.ServerExecution)));
 
         return [
-            Frame(new(IntelligenceEventType.ToolCall, "recall_memory", display, ToolCall: call)),
+            Frame(proposed),
             Frame(new(IntelligenceEventType.ToolResult, "recall_memory", result, ToolCall: call)),
             Frame(new(IntelligenceEventType.Token, answer, answer)),
             Frame(new(IntelligenceEventType.Result, answer, "42", FinishReason: "stop")),
