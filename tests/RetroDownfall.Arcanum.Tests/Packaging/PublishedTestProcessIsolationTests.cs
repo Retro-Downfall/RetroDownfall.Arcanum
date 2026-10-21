@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ProcessEnvironment")]
 public sealed class PublishedTestProcessIsolationTests
 {
     [Fact]

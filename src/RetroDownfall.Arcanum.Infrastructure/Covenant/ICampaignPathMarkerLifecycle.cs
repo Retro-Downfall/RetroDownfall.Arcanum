@@ -36,6 +36,12 @@ internal partial interface ICampaignPathMarkerLifecycle
         CovenantExclusiveRecoveryOwner owner,
         CancellationToken cancellationToken);
 
+    /// <summary>Borrows the restore-owned destination connection for its pre-swap inventory.</summary>
+    Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        SqliteConnection destinationConnection,
+        CancellationToken cancellationToken);
+
     /// <summary>
     /// Commits one restore-cleanup child per Campaign whose marker this restore must remove, inside
     /// the caller's staged core transaction.
@@ -65,6 +71,16 @@ internal partial interface ICampaignPathMarkerLifecycle
     Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
         CampaignPathMarkerGateReconcileRequest request,
         ICovenantExclusiveOperationLease exclusiveLease,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Borrows the proved committed connection through reconciliation and the returned finalizer.
+    /// The caller retains that connection until its exclusive disposition and finalizer complete.
+    /// </summary>
+    Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
+        CampaignPathMarkerGateReconcileRequest request,
+        ICovenantExclusiveOperationLease exclusiveLease,
+        SqliteConnection committedConnection,
         CancellationToken cancellationToken);
 
     /// <summary>

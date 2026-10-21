@@ -5837,6 +5837,19 @@ public sealed partial class HostToolsMarkerPairResetCoordinatorTests
 
     private sealed class RecordingFullResetLifecycle : ICampaignPathMarkerLifecycle
     {
+        public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            Microsoft.Data.Sqlite.SqliteConnection destinationConnection,
+            CancellationToken cancellationToken) =>
+            InventoryRestoreCleanupAsync(owner, cancellationToken);
+
+        public Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
+            CampaignPathMarkerGateReconcileRequest request,
+            ICovenantExclusiveOperationLease exclusiveLease,
+            Microsoft.Data.Sqlite.SqliteConnection committedConnection,
+            CancellationToken cancellationToken) =>
+            ReconcileGateOwnedAsync(request, exclusiveLease, cancellationToken);
+
         private readonly List<string>? _events;
 
         private readonly CampaignPathFullInstallationResetInventory? _inventory;

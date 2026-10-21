@@ -15,7 +15,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// the version the step leaves. The pin must be copied from the tier's <i>currently published</i>
 /// fingerprint before any object file is edited, because nothing can recompute it afterwards.</para>
 ///
-/// <para>The pins through Core version 6 and every Covenant pin were taken with
+/// <para>The pins for Core versions 1–5 and every Covenant pin were taken with
 /// <see cref="GrimoireSchemaCatalog.ComputeRawSourceFingerprint"/>, which is what those installations
 /// recorded. Core moved its published value to the normalized computation at version 6, so the pin for
 /// the step leaving version 6 is normalized too. A tier always pins the exact computation its source

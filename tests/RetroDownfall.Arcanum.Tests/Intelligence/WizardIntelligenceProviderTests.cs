@@ -9623,6 +9623,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         if (memoryRecallReader is not null)
         {
             ordinaryServices.AddSingleton(memoryRecallReader);
+
+            ordinaryServices.AddSingleton<ICovenantAuthoritySnapshotProvider>(new RecallAuthority());
         }
 
         ordinaryServices.AddSingleton<IGrimoireOrdinaryConnectionFactory>(

@@ -7077,7 +7077,7 @@ public sealed partial class WizardIntelligenceProvider(
             tools.Add(new ArcanumMemoryRecallTool(recallReader, request, recallInvocation, recallTurn,
                 settings.Value.Features.AgentMemoryRecall, settings.Value.Features.CampaignScopedMemory,
                 (int)ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.ResolveIntelligence().ToolOutputCapBytes),
-                serviceProvider.GetService<ICovenantAuthoritySnapshotProvider>(),
+                serviceProvider.GetRequiredService<ICovenantAuthoritySnapshotProvider>(),
                 enabledNow: () => recallSettings?.CurrentValue.Features.AgentMemoryRecall ?? settings.Value.Features.AgentMemoryRecall));
         }
 

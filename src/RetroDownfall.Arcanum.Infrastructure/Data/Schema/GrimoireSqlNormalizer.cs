@@ -32,8 +32,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// is: raise the version, pin the currently published fingerprint for the version the step leaves
 /// before editing anything, and add the fixture that reconstructs it.
 /// <c>GrimoireSqlNormalizerTests</c> pins the exact output against a fixed input and fails with that
-/// instruction, because nothing else in the tree can - head fingerprints are never pinned by design and
-/// every version fixture hashes the raw bytes instead.</para>
+/// instruction. Head fingerprints are never pinned by design, and historical fixtures cover their
+/// own reconstructed SQL rather than every possible normalization input.</para>
 /// </remarks>
 internal static class GrimoireSqlNormalizer
 {

@@ -27,6 +27,8 @@ internal enum GrimoirePathAuthority : byte
     NotGrimoire = 9,
 
     ClosedCommittedRestore = 10,
+
+    ClosedRestoreDestination = 11,
 }
 
 internal enum GrimoireAcquisitionKind : byte
@@ -48,6 +50,10 @@ internal enum GrimoireAcquisitionKind : byte
     NonGrimoireCandidate = 9,
 
     ClosedRestoreVerification = 10,
+
+    ClosedRestoreDestinationInventory = 11,
+
+    ClosedRestoreReconciliation = 12,
 }
 
 internal enum AcquisitionConstructKind : byte
@@ -116,6 +122,8 @@ internal enum ExactNonServingProofKind : byte
     NegativeNonDatabaseProof = 7,
 
     ExactClosedRestoreOwner = 8,
+
+    ExactClosedRestoreDestinationOwner = 9,
 }
 
 internal enum InventoryFailureCode : byte
@@ -2290,6 +2298,20 @@ internal static class GrimoireConnectionAcquisitionScanner
             new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.cs", "BackupRestoreCovenantCoordinator", "CompleteCommittedAsync(5)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(candidate.Database.Path,committedGrimoireSecret,readOnly:true,cancellationToken)"),
             GrimoirePathAuthority.ClosedCommittedRestore,
             GrimoireAcquisitionKind.ClosedRestoreVerification,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.ExactClosedRestoreOwner, "BackupRestoreCovenantCoordinator.CompleteCommittedAsync(5)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.MarkerConnections.cs", "BackupRestoreCovenantCoordinator", "InventoryDestinationMarkersAsync(4)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(destination.Path,secret.Value,readOnly:true,cancellationToken)"),
+            GrimoirePathAuthority.ClosedRestoreDestination,
+            GrimoireAcquisitionKind.ClosedRestoreDestinationInventory,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.ExactClosedRestoreDestinationOwner, "BackupRestoreCovenantCoordinator.InventoryDestinationMarkersAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.cs", "BackupRestoreCovenantCoordinator", "CompleteCommittedAsync(5)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(candidate.Database.Path,committedGrimoireSecret,readOnly:false,cancellationToken)"),
+            GrimoirePathAuthority.ClosedCommittedRestore,
+            GrimoireAcquisitionKind.ClosedRestoreReconciliation,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.ExactClosedRestoreOwner, "BackupRestoreCovenantCoordinator.CompleteCommittedAsync(5)", 0)),
 
@@ -4765,8 +4787,17 @@ internal static class GrimoireConnectionAcquisitionScanner
                 && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
                 && HasProof(entry, ExactNonServingProofKind.NativeRuntimeValidation),
 
+            // A destination registry read precedes displacement. Its current authenticated journal,
+            // held exclusive owner, installation lock and PreSwap physical identity prove this exact
+            // handle; committed-generation proof and staging classification do not describe it.
+            GrimoirePathAuthority.ClosedRestoreDestination =>
+                entry.AcquisitionKind == GrimoireAcquisitionKind.ClosedRestoreDestinationInventory
+                && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
+                && HasProof(entry, ExactNonServingProofKind.ExactClosedRestoreDestinationOwner),
+
             GrimoirePathAuthority.ClosedCommittedRestore =>
-                entry.AcquisitionKind == GrimoireAcquisitionKind.ClosedRestoreVerification
+                (entry.AcquisitionKind is GrimoireAcquisitionKind.ClosedRestoreVerification
+                    or GrimoireAcquisitionKind.ClosedRestoreReconciliation)
                 && entry.RuntimeRoute == GrimoireRuntimeAdmissionRoute.ExactNonServingProof
                 && HasProof(entry, ExactNonServingProofKind.ExactClosedRestoreOwner),
 

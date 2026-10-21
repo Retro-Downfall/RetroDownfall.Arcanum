@@ -13,6 +13,7 @@ namespace RetroDownfall.Arcanum.Tests.Packaging;
 /// Deterministic contracts for the opt-in Long Rest qualification: its wrapper, its isolation and refusals, the configuration it
 /// writes, the corpus it seeds and the arithmetic it reports. None of them contacts Ollama or starts a host.
 /// </summary>
+[Collection("ProcessEnvironment")]
 public sealed class LocalOllamaLongRestQualificationContractTests
 {
     private const string WrapperName = "verify-local-ollama-long-rest.sh";

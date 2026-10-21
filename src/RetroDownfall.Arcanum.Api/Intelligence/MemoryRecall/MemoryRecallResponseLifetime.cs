@@ -5,8 +5,11 @@ using RetroDownfall.Arcanum.Core.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.MemoryRecall;
 
-internal sealed class MemoryRecallResponseLifetime(ICovenantAuthoritySnapshotProvider? authority = null) : IAsyncDisposable
+internal sealed class MemoryRecallResponseLifetime(ICovenantAuthoritySnapshotProvider authority) : IAsyncDisposable
 {
+    private readonly ICovenantAuthoritySnapshotProvider _authority =
+        authority ?? throw new ArgumentNullException(nameof(authority));
+
     private readonly object _sync = new();
 
     private ArcanumInvocationContext? _invocation;
@@ -66,9 +69,9 @@ internal sealed class MemoryRecallResponseLifetime(ICovenantAuthoritySnapshotPro
         }
 
         return scope is null
-            || (invocation?.ReadAuthorityEpoch?.Matches(authority?.Current) is true
+            || (invocation?.ReadAuthorityEpoch?.Matches(_authority.Current) is true
                 && (await scope.RevalidateAsync(cancellationToken).ConfigureAwait(false)).IsSuccess
-                && invocation.ReadAuthorityEpoch.Matches(authority?.Current));
+                && invocation.ReadAuthorityEpoch.Matches(_authority.Current));
     }
 
     public async ValueTask DisposeAsync()

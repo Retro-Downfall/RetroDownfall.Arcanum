@@ -33,7 +33,7 @@ internal sealed class ArcanumMemoryRecallTool : AIFunction
 
     private readonly int _outputCapBytes;
 
-    private readonly ICovenantAuthoritySnapshotProvider? _authority;
+    private readonly ICovenantAuthoritySnapshotProvider _authority;
 
     private readonly string _cursorBinding = Guid.NewGuid().ToString("N") + ".";
 
@@ -56,7 +56,7 @@ internal sealed class ArcanumMemoryRecallTool : AIFunction
 
     internal ArcanumMemoryRecallTool(IMemoryRecallCandidateReader reader, PingRequest request,
         ArcanumInvocationContext invocation, CovenantTurnScope? turn, bool enabled, bool campaignScopedMemory,
-        int outputCapBytes, ICovenantAuthoritySnapshotProvider? authority = null, Func<bool>? enabledNow = null)
+        int outputCapBytes, ICovenantAuthoritySnapshotProvider authority, Func<bool>? enabledNow = null)
     {
         _reader = reader;
 
@@ -74,7 +74,7 @@ internal sealed class ArcanumMemoryRecallTool : AIFunction
 
         _outputCapBytes = outputCapBytes;
 
-        _authority = authority;
+        _authority = authority ?? throw new ArgumentNullException(nameof(authority));
 
         PromptCacheToolProvenance.Issue(this);
     }
@@ -220,9 +220,9 @@ internal sealed class ArcanumMemoryRecallTool : AIFunction
     private async ValueTask<bool> RevalidateProtectedAsync(CancellationToken cancellationToken) =>
         _invocation.CanReadCovenant
         && _turn?.Plan is not null
-        && _invocation.ReadAuthorityEpoch?.Matches(_authority?.Current) == true
+        && _invocation.ReadAuthorityEpoch?.Matches(_authority.Current) == true
         && (await _turn.RevalidateAsync(cancellationToken).ConfigureAwait(false)).IsSuccess
-        && _invocation.ReadAuthorityEpoch.Matches(_authority?.Current);
+        && _invocation.ReadAuthorityEpoch.Matches(_authority.Current);
 
     private static bool TryReadRequest(AIFunctionArguments arguments, out MemoryRecallRequest request)
     {

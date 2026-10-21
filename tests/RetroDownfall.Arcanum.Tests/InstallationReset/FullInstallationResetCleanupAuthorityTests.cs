@@ -1641,6 +1641,19 @@ public sealed class FullInstallationResetCleanupAuthorityTests
 
     private sealed class InertLifecycle : ICampaignPathMarkerLifecycle
     {
+        public Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
+            CovenantExclusiveRecoveryOwner owner,
+            Microsoft.Data.Sqlite.SqliteConnection destinationConnection,
+            CancellationToken cancellationToken) =>
+            InventoryRestoreCleanupAsync(owner, cancellationToken);
+
+        public Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
+            CampaignPathMarkerGateReconcileRequest request,
+            ICovenantExclusiveOperationLease exclusiveLease,
+            Microsoft.Data.Sqlite.SqliteConnection committedConnection,
+            CancellationToken cancellationToken) =>
+            ReconcileGateOwnedAsync(request, exclusiveLease, cancellationToken);
+
         public Task<Result<CampaignPathFullInstallationResetInventory>>
             InventoryFullInstallationResetCleanupAsync(
                 Guid ownerOperationId,

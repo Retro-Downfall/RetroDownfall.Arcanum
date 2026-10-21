@@ -2708,27 +2708,63 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task ExecuteCommand_successful_run_whose_stderr_a_descendant_holds_reports_the_output_it_finished()
+    public async Task ExecuteCommand_successful_run_whose_stderr_another_process_holds_reports_the_output_it_finished()
     {
         Skip.IfNot(
             OperatingSystem.IsMacOS() && File.Exists("/usr/bin/ruby"),
-            "Needs a POSIX host with fork/setsid available to strand an inherited pipe.");
+            "Needs a POSIX host with Unix-domain descriptor passing available to hold a pipe.");
 
-        // The command succeeds and its stdout (over the preview cap) reaches EOF, but a daemonized
-        // descendant keeps the inherited stderr, so the runner abandons the post-exit drain. The model
-        // must still get the exit code and stdout's complete output, with stderr reported as not
-        // captured, rather than a retention error for a run that completed.
+        // A test-owned process outside the command's descendant tree receives stderr over a Unix
+        // socket. The command waits for its acknowledgement before exiting, so containment cannot
+        // win a race against a double fork and close the pipe before the post-exit drain abandons it.
+        // The model must still get the exit code and stdout's complete output, with stderr reported
+        // as not captured, rather than a retention error for a run that completed.
         IntelligenceSettings settings = ArcanumRuntimeDefaults.Intelligence with
         {
             ToolOutputCapBytes = 65_536,
         };
 
-        string pidFile = Path.Combine(
-            Path.GetFullPath(_workspace.Root),
-            "descendant-" + Guid.NewGuid().ToString("N") + ".pid");
+        // macOS Unix socket paths are bounded, so use a short directory instead of the workspace root.
+        string socketDirectory = Path.Combine("/tmp", "arcanum-pipe-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(socketDirectory);
+
+        string socketPath = Path.Combine(socketDirectory, "stderr.sock");
+
+        using System.Diagnostics.Process holder = new()
+        {
+            StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "/usr/bin/ruby",
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            },
+        };
+
+        holder.StartInfo.ArgumentList.Add("-e");
+
+        // An independent watchdog releases the held pipe even if a regressed tool call never returns.
+        holder.StartInfo.ArgumentList.Add(
+            "require 'socket'; Thread.new { sleep 30; exit! 124 }; server = UNIXServer.new(ARGV.fetch(0)); "
+            + "STDOUT.puts 'ready'; STDOUT.flush; peer = server.accept; "
+            + "held = peer.recv_io; peer.write('held'); peer.flush; STDIN.read; held.close");
+
+        holder.StartInfo.ArgumentList.Add(socketPath);
+
+        bool holderStarted = false;
 
         try
         {
+            holderStarted = holder.Start();
+
+            Assert.True(holderStarted);
+
+            Assert.Equal(
+                "ready",
+                await holder.StandardOutput.ReadLineAsync().WaitAsync(ChildCallResponseLimit));
+
             await using TestMcpSession session = await CreateSessionAsync(
                 intelligenceSettings: settings);
 
@@ -2739,9 +2775,10 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
                     ArgumentList =
                     [
                         "-e",
-                        "STDOUT.write('x' * 100000); STDOUT.flush; fork { fork { Process.setsid; STDOUT.reopen('/dev/null'); File.write('"
-                        + pidFile
-                        + "', Process.pid.to_s); sleep 30 }; exit! 0 }; sleep 0.5; exit 0",
+                        "require 'socket'; STDOUT.write('x' * 100000); STDOUT.flush; "
+                        + "peer = UNIXSocket.new(ARGV.fetch(0)); peer.send_io(STDERR); "
+                        + "raise 'stderr handoff failed' unless peer.read(4) == 'held'; peer.close; exit 0",
+                        socketPath,
                     ],
                 },
                 McpJsonSerializerContext.Default.ExecuteCommandParams);
@@ -2769,7 +2806,14 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
         }
         finally
         {
-            TestDescendantProcess.KillRecorded(pidFile);
+            if (holderStarted)
+            {
+                TestDescendantProcess.KillTreeIfRunning(holder.Id);
+
+                await holder.WaitForExitAsync().WaitAsync(ChildCallResponseLimit);
+            }
+
+            Directory.Delete(socketDirectory, recursive: true);
         }
     }
 

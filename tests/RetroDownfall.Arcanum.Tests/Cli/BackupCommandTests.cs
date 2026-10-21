@@ -6,19 +6,27 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Cli.Commands;
+
 using RetroDownfall.Arcanum.Cli.Infrastructure;
 
 using RetroDownfall.Arcanum.Cli.Services;
 
 using RetroDownfall.Arcanum.Core.Backup;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Infrastructure.Backup;
 
+using RetroDownfall.Arcanum.Infrastructure.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
+
+using RetroDownfall.Arcanum.Secrets.Security;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -441,8 +449,101 @@ public sealed class BackupCommandTests
 
     }
 
+    [Theory]
+    [InlineData("command")]
+    [InlineData("plan")]
+    [InlineData("migrate")]
+    public async Task Archive_only_backup_operations_do_not_require_the_live_database_passphrase(string operation)
+    {
+
+        using ArcanumTestHomeScope home = new("arcanum-backup-command-resolution");
+
+        ServiceCollection services = CreateServices(new FakeBackupService(), new FakeBackupPassphraseReader());
+
+        services.Configure<ArcanumSettings>(settings => settings.Features.Covenant = true);
+
+        services.RemoveAll<IOsCredentialStore>();
+
+        services.AddSingleton<IOsCredentialStore, InMemoryOsCredentialStore>();
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        IGrimoireDbPassphraseSource databasePassphrase = provider.GetRequiredService<IGrimoireDbPassphraseSource>();
+
+        Assert.Throws<InvalidOperationException>(() => _ = databasePassphrase.Passphrase);
+
+        if (operation == "command")
+        {
+
+            Assert.IsType<BackupCommands>(provider.GetRequiredService<BackupCommands>());
+
+        }
+        else
+        {
+
+            IBackupRestoreService restore = provider.GetRequiredService<IBackupRestoreService>();
+
+            string missing = Path.Combine(home.Root, "missing.arcbackup");
+
+            if (operation == "plan")
+            {
+
+                BackupRestorePlan plan = await restore.PlanAsync(
+                    new BackupRestoreRequest(missing, BackupRestoreConflictMode.NewProfileRoot),
+                    "archive passphrase".AsMemory());
+
+                Assert.Contains(plan.Blockers, static issue => issue.Code == "backup.restore_archive_missing");
+
+            }
+            else
+            {
+
+                string output = Path.Combine(home.Root, "migrated.arcbackup");
+
+                BackupMigrateResult migrated = await restore.MigrateAsync(
+                    new BackupMigrateRequest(missing, output), "archive passphrase".AsMemory());
+
+                Assert.False(migrated.Migrated);
+
+                Assert.Contains(migrated.Issues, static issue => issue.Code == "backup.restore_archive_missing");
+
+                Assert.False(File.Exists(output));
+
+            }
+
+        }
+
+        Assert.Throws<InvalidOperationException>(() => _ = databasePassphrase.Passphrase);
+
+    }
+
     [Fact]
-    public void ConfigureCliServices_resolves_the_real_backup_and_passphrase_services()
+    public async Task Deferred_marker_live_read_still_requires_the_real_database_passphrase()
+    {
+
+        using ArcanumTestHomeScope home = new("arcanum-backup-marker-read");
+
+        ServiceCollection services = CreateServices(new FakeBackupService(), new FakeBackupPassphraseReader());
+
+        services.Configure<ArcanumSettings>(settings => settings.Features.Covenant = true);
+
+        services.RemoveAll<IOsCredentialStore>();
+
+        services.AddSingleton<IOsCredentialStore, InMemoryOsCredentialStore>();
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        DeferredCampaignPathMarkerConnectionSource source = new(provider);
+
+        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => source.GetOpenCoreConnectionAsync(CancellationToken.None).AsTask());
+
+        Assert.Equal("Grimoire database passphrase has not been initialized.", failure.Message);
+
+    }
+
+    [Fact]
+    public async Task ConfigureCliServices_resolves_the_real_backup_and_passphrase_services()
     {
 
         ServiceCollection services = new();
@@ -451,7 +552,7 @@ public sealed class BackupCommandTests
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
 
-        using ServiceProvider provider = services.BuildServiceProvider();
+        await using ServiceProvider provider = services.BuildServiceProvider();
 
         GrimoireDbPassphraseSource databasePassphrase = Assert.IsType<GrimoireDbPassphraseSource>(
             provider.GetRequiredService<IGrimoireDbPassphraseSource>());

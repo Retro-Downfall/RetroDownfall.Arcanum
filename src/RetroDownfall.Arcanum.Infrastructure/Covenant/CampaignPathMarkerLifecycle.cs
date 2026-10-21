@@ -311,9 +311,27 @@ internal sealed partial class CampaignPathMarkerLifecycle
             vector.Value);
     }
 
-    public async Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
+    public Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
         CampaignPathMarkerGateReconcileRequest request,
         ICovenantExclusiveOperationLease exclusiveLease,
+        CancellationToken cancellationToken) =>
+        ReconcileGateOwnedCoreAsync(request, exclusiveLease, suppliedConnection: null, cancellationToken);
+
+    public Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedAsync(
+        CampaignPathMarkerGateReconcileRequest request,
+        ICovenantExclusiveOperationLease exclusiveLease,
+        SqliteConnection committedConnection,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(committedConnection);
+
+        return ReconcileGateOwnedCoreAsync(request, exclusiveLease, committedConnection, cancellationToken);
+    }
+
+    private async Task<Result<CampaignPathMarkerGateCompletion>> ReconcileGateOwnedCoreAsync(
+        CampaignPathMarkerGateReconcileRequest request,
+        ICovenantExclusiveOperationLease exclusiveLease,
+        SqliteConnection? suppliedConnection,
         CancellationToken cancellationToken)
     {
         if (request is null || exclusiveLease is null)
@@ -374,7 +392,7 @@ internal sealed partial class CampaignPathMarkerLifecycle
         }
 
         SqliteConnection connection =
-            await _liveConnections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            suppliedConnection ?? await _liveConnections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         foreach (Guid intentId in request.OrderedIntentIds)
         {

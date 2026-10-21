@@ -9,10 +9,10 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// This is not a unit test of a formatting helper. From Core schema version 6 the tier's published
 /// source-definition fingerprint is taken over this function's output, so what it returns <i>is</i>
 /// Core's durable identity in <c>grimoire_feature_schemas</c>, and Core is the tier whose refusal
-/// aborts startup. Nothing else in the tree can catch a change to it: head fingerprints are never
-/// pinned by design, every version fixture hashes the raw bytes instead, and the published-fingerprint
-/// test compares the function to itself and agrees with any behaviour. A normaliser that grew slightly
-/// more forgiving - collapsing the space around a comma, say - would move Core's head value, and the
+/// aborts startup. Head fingerprints are never pinned by design, and historical fixtures cover their
+/// own reconstructed SQL rather than every possible normalization input. A head-only comparison
+/// cannot independently detect a change to the algorithm. A normaliser that grew more forgiving -
+/// collapsing the space around a comma, say - would move Core's head value, and the
 /// first thing to notice would be every version-6 installation refusing to open.
 ///
 /// <para>So the golden below is a literal on both sides. It is written to be read as a specification

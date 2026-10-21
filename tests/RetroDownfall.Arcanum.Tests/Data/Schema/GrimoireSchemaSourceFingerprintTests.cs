@@ -231,7 +231,7 @@ public sealed class GrimoireSchemaSourceFingerprintTests
     /// The pinned computation is still reachable and still reads the file's bytes.
     /// </summary>
     /// <remarks>
-    /// Core pins through version 6 and every Covenant canonical pin were taken with the raw computation,
+    /// Core versions 1–5 and every Covenant canonical pin were taken with the raw computation,
     /// and a fixture reconstructing one of those trees has to reproduce the value the same way. That
     /// makes the raw computation a permanent part of the contract rather than dead code, so it is
     /// asserted to still disagree with the normalized one for exactly the input normalization exists

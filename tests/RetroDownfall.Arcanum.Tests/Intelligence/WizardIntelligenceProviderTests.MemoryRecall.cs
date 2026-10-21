@@ -3,6 +3,7 @@ using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Memory;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -150,6 +151,11 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
 
         Assert.DoesNotContain(chat.LastChatOptions!.Tools ?? [], static tool => tool.Name == "recall_memory");
+    }
+
+    private sealed class RecallAuthority : ICovenantAuthoritySnapshotProvider
+    {
+        public CovenantAuthoritySnapshot? Current => null;
     }
 
     private sealed class RecallReader : IMemoryRecallCandidateReader

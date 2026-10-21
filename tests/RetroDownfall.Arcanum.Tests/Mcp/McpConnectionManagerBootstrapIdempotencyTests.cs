@@ -52,9 +52,12 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
+[Collection("ProcessEnvironment")]
 public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifetime
 {
     private const string BootstrapProbeServer = "bootstrap-idempotency-probe";
+
+    private ArcanumTestHomeScope _home = null!;
 
     private McpConnectionManager _manager = null!;
 
@@ -70,6 +73,8 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     public Task InitializeAsync()
     {
+        _home = new ArcanumTestHomeScope("mcp-bootstrap-idempotency");
+
         _settings = new MutableOptionsMonitor(
             new ArcanumSettings
             {
@@ -127,7 +132,14 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
     public async Task DisposeAsync()
     {
-        await _manager.DisposeAsync();
+        try
+        {
+            await _manager.DisposeAsync();
+        }
+        finally
+        {
+            _home.Dispose();
+        }
     }
 
     [Fact]
@@ -558,22 +570,37 @@ public sealed class McpConnectionManagerBootstrapIdempotencyTests : IAsyncLifeti
 
         Task initializer = _manager.InitializeAsync();
 
-        await Task.Delay(50);
+        long invalidatedGeneration;
 
-        Assert.False(initializer.IsCompleted);
+        try
+        {
+            System.Collections.IDictionary partitions = GetPrivateField<System.Collections.IDictionary>(
+                _manager,
+                "_partitionClients");
 
-        Result stopped = await _manager.StopAsync(
-            "projection-invalidator",
-            workingDirectory: null,
-            CancellationToken.None);
+            // The first global partition is created after capturing the projection generation.
+            // Its presence proves the initializer reached projection before this invalidation.
+            await WaitUntilAsync(
+                () => partitions.Contains("__arcanum_mcp_global__"),
+                TimeSpan.FromSeconds(30));
 
-        Assert.True(stopped.IsSuccess, stopped.IsFailure ? stopped.Error.Message : string.Empty);
+            Assert.False(initializer.IsCompleted);
 
-        long invalidatedGeneration = GetPrivateField<long>(
-            _manager,
-            "_toolSurfaceGeneration");
+            Result stopped = await _manager.StopAsync(
+                "projection-invalidator",
+                workingDirectory: null,
+                CancellationToken.None);
 
-        blocked.Gate.Release();
+            Assert.True(stopped.IsSuccess, stopped.IsFailure ? stopped.Error.Message : string.Empty);
+
+            invalidatedGeneration = GetPrivateField<long>(
+                _manager,
+                "_toolSurfaceGeneration");
+        }
+        finally
+        {
+            blocked.Gate.Release();
+        }
 
         await initializer.WaitAsync(TimeSpan.FromSeconds(30));
 

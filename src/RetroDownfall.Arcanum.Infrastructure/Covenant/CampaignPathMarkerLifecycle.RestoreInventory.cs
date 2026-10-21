@@ -62,6 +62,25 @@ internal sealed partial class CampaignPathMarkerLifecycle
         SqliteConnection connection =
             await _liveConnections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
+        return await InventoryRestoreCleanupAsync(owner, connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<CampaignPathRestoreCleanupInventory>> InventoryRestoreCleanupAsync(
+        CovenantExclusiveRecoveryOwner owner,
+        SqliteConnection destinationConnection,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(destinationConnection);
+
+        Result ownerValid = ValidateRestoreOwner(owner);
+
+        if (ownerValid.IsFailure)
+        {
+            return ownerValid.Error;
+        }
+
+        SqliteConnection connection = destinationConnection;
+
         Result<List<RegisteredRoot>> registered =
             await ReadRegisteredRootsAsync(connection, cancellationToken).ConfigureAwait(false);
 

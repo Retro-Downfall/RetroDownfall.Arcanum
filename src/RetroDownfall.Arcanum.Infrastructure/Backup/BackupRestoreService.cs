@@ -99,7 +99,8 @@ internal sealed partial class BackupRestoreService : IBackupRestoreService
             ? new BackupRestoreCovenantCoordinator(
                 staging,
                 CovenantSqliteConnectionInitializer.Instance,
-                _timeProvider)
+                _timeProvider,
+                _secretStore)
             : null;
     }
 

@@ -13,6 +13,12 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class MemoryRecallResponseLifetimeTests
 {
     [Fact]
+    public void Missing_authority_is_rejected_before_a_response_can_bind()
+    {
+        Assert.Throws<ArgumentNullException>("authority", () => new MemoryRecallResponseLifetime(null!));
+    }
+
+    [Fact]
     public async Task Original_turn_lease_stays_owned_until_the_complete_response_write_finishes()
     {
         var invocation = InvocationContexts.AttendedGlobalOnlySession();

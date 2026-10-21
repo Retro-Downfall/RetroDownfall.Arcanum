@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ProcessEnvironment")]
 public sealed class LocalOllamaTimestampQualificationContractTests
 {
     [Fact]

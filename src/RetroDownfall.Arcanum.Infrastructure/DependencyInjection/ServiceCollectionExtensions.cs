@@ -2006,7 +2006,7 @@ public static class ServiceCollectionExtensions
             static sp => new CampaignPathMarkerLifecycle(
                 sp.GetRequiredService<ICampaignPathMarkerCodec>(),
                 sp.GetRequiredService<PhysicalCampaignRootOpener>(),
-                sp.GetRequiredService<ICovenantConnectionSource>(),
+                new DeferredCampaignPathMarkerConnectionSource(sp),
                 CovenantSqliteConnectionInitializer.Instance,
                 sp.GetRequiredService<TimeProvider>(),
                 sp.GetRequiredService<ICampaignRootIdentityRecoveryKeyProvider>()));

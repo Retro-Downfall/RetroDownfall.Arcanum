@@ -8,6 +8,7 @@ using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Backup;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -116,7 +117,7 @@ internal sealed class BackupRestoreCovenantSession
 /// rather than restarting it. Only a restore that provably changed nothing durable may select
 /// <c>RollbackAndReopen</c> (§10.19.9).</para>
 /// </remarks>
-internal sealed class BackupRestoreCovenantCoordinator
+internal sealed partial class BackupRestoreCovenantCoordinator
 {
     /// <summary>
     /// The domain the restore-request digest is computed under.
@@ -135,16 +136,21 @@ internal sealed class BackupRestoreCovenantCoordinator
 
     private readonly TimeProvider _timeProvider;
 
+    private readonly ISecretStore _secretStore;
+
     internal BackupRestoreCovenantCoordinator(
         CovenantRestoreStagingServices services,
         CovenantSqliteConnectionInitializer initializer,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ISecretStore secretStore)
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));
 
         _initializer = initializer ?? throw new ArgumentNullException(nameof(initializer));
 
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+
+        _secretStore = secretStore ?? throw new ArgumentNullException(nameof(secretStore));
     }
 
     /// <summary>
@@ -324,9 +330,8 @@ internal sealed class BackupRestoreCovenantCoordinator
 
         ArgumentNullException.ThrowIfNull(staged);
 
-        Result<CampaignPathRestoreCleanupInventory> inventory = await _services.Markers
-            .InventoryRestoreCleanupAsync(session.Owner, cancellationToken)
-            .ConfigureAwait(false);
+        Result<CampaignPathRestoreCleanupInventory> inventory = await InventoryDestinationMarkersAsync(
+            session, heldInstallationLock, guardedDirectory, cancellationToken).ConfigureAwait(false);
 
         if (inventory.IsFailure)
         {
@@ -554,6 +559,14 @@ internal sealed class BackupRestoreCovenantCoordinator
                 "A restore that displaced the installation carries no marker cleanup checkpoint.");
         }
 
+        // This is the committed generation, not the scope's pre-swap DbContext connection. Keep it
+        // alive until CompleteAsync has run the marker finalizer after the successful disposition.
+        await using SqliteConnection markerConnection = await BackupRestoreDatabaseWorker.OpenAsync(
+            candidate.Database.Path, committedGrimoireSecret, readOnly: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (ValidateClosedCommittedCandidate(candidate).IsFailure) return BackupRestoreLongRestSanitation.Unknown();
+
         Result<CampaignPathMarkerGateCompletion> completion = await _services.Markers
             .ReconcileGateOwnedAsync(
                 new CampaignPathMarkerGateReconcileRequest(
@@ -561,6 +574,7 @@ internal sealed class BackupRestoreCovenantCoordinator
                     checkpoint.OrderedIntentIds,
                     checkpoint.IntentVectorDigest),
                 session.Lease,
+                markerConnection,
                 cancellationToken)
             .ConfigureAwait(false);
 

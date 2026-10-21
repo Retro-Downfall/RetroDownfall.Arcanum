@@ -19,6 +19,13 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class MemoryRecallToolTests
 {
     [Fact]
+    public void Missing_authority_is_rejected_before_a_recall_tool_can_be_advertised()
+    {
+        Assert.Throws<ArgumentNullException>("authority", () => new ArcanumMemoryRecallTool(new Reader(),
+            new PingRequest("parent"), InvocationContexts.AttendedGlobalOnlySession(), null, true, true, 4096, null!));
+    }
+
+    [Fact]
     public async Task Recall_returns_bounded_typed_results_and_continuation_belongs_to_one_turn()
     {
         var reader = new Reader();
@@ -69,7 +76,8 @@ public sealed class MemoryRecallToolTests
 
         var request = new PingRequest("parent", UnattendedMode: mode == "unattended", DisableAllTools: mode == "no-tools", ForwardClientTools: mode == "forwarded");
 
-        var tool = new ArcanumMemoryRecallTool(reader, request, invocation, null, mode != "disabled", true, 4096);
+        var tool = new ArcanumMemoryRecallTool(reader, request, invocation, null, mode != "disabled", true, 4096,
+            new Authority(InvocationContexts.AttendedGlobalOnlySession().ReadAuthorityEpoch!));
 
         var result = await tool.InvokeAsync(Arguments());
 
@@ -102,7 +110,8 @@ public sealed class MemoryRecallToolTests
         var reader = new Reader { AfterRead = () => enabled = false };
 
         var tool = new ArcanumMemoryRecallTool(reader, new PingRequest("parent"), InvocationContexts.AttendedGlobalOnlySession(),
-            null, true, true, 4096, enabledNow: () => enabled);
+            null, true, true, 4096, new Authority(InvocationContexts.AttendedGlobalOnlySession().ReadAuthorityEpoch!),
+            enabledNow: () => enabled);
 
         var result = await tool.InvokeAsync(Arguments());
 
@@ -197,7 +206,8 @@ public sealed class MemoryRecallToolTests
     }
 
     private static ArcanumMemoryRecallTool Tool(Reader reader) => new(reader, new PingRequest("parent"),
-        InvocationContexts.AttendedGlobalOnlySession(), null, true, true, 4096);
+        InvocationContexts.AttendedGlobalOnlySession(), null, true, true, 4096,
+        new Authority(InvocationContexts.AttendedGlobalOnlySession().ReadAuthorityEpoch!));
 
     private static AIFunctionArguments Arguments(int limit = 10, string? cursor = null) => new()
     {

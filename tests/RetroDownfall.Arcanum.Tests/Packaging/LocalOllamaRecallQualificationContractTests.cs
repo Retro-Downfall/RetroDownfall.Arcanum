@@ -8,6 +8,7 @@ using RetroDownfall.Arcanum.Core.Memory;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ProcessEnvironment")]
 public sealed class LocalOllamaRecallQualificationContractTests
 {
     private static readonly Guid Session = Guid.Parse("11111111-1111-1111-1111-111111111111");

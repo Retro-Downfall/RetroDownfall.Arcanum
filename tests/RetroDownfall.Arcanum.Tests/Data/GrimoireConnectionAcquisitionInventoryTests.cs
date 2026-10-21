@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 517;
+    private const int ExpectedProductionAcquisitionCount = 519;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -1412,6 +1412,99 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireRuntimeAdmissionRoute.ExactNonServingProof)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.InvalidClassification);
+    }
+
+    [Fact]
+    public void Closed_restore_acquisitions_distinguish_destination_inventory_verification_and_reconciliation()
+    {
+        GrimoireAcquisitionCatalogEntry[] entries =
+        [
+            .. GrimoireConnectionAcquisitionScanner.Catalog().Where(static entry =>
+                entry.Identity.EnclosingType == "BackupRestoreCovenantCoordinator"
+                && entry.Identity.CalleeOrConstructedType == "BackupRestoreDatabaseWorker.OpenAsync"),
+        ];
+
+        Assert.Equal(3, entries.Length);
+
+        Assert.Empty(GrimoireConnectionAcquisitionScanner.Validate(
+            entries.Select(static entry => entry.Identity).ToArray(), entries));
+
+        GrimoireAcquisitionCatalogEntry destination = Assert.Single(entries,
+            static entry => entry.Identity.EnclosingMember == "InventoryDestinationMarkersAsync(4)");
+
+        Assert.Equal(GrimoirePathAuthority.ClosedRestoreDestination, destination.PathAuthority);
+
+        Assert.Equal(GrimoireAcquisitionKind.ClosedRestoreDestinationInventory, destination.AcquisitionKind);
+
+        AssertExactProof(destination, GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            ExactNonServingProofKind.ExactClosedRestoreDestinationOwner);
+
+        GrimoireAcquisitionCatalogEntry verification = Assert.Single(entries,
+            static entry => entry.Identity.Fingerprint.Contains("readOnly:true", StringComparison.Ordinal)
+                && entry.Identity.EnclosingMember == "CompleteCommittedAsync(5)");
+
+        Assert.Equal(GrimoirePathAuthority.ClosedCommittedRestore, verification.PathAuthority);
+
+        Assert.Equal(GrimoireAcquisitionKind.ClosedRestoreVerification, verification.AcquisitionKind);
+
+        AssertExactProof(verification, GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            ExactNonServingProofKind.ExactClosedRestoreOwner);
+
+        GrimoireAcquisitionCatalogEntry reconciliation = Assert.Single(entries,
+            static entry => entry.Identity.Fingerprint.Contains("readOnly:false", StringComparison.Ordinal));
+
+        Assert.Equal(GrimoirePathAuthority.ClosedCommittedRestore, reconciliation.PathAuthority);
+
+        Assert.Equal(GrimoireAcquisitionKind.ClosedRestoreReconciliation, reconciliation.AcquisitionKind);
+
+        AssertExactProof(reconciliation, GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            ExactNonServingProofKind.ExactClosedRestoreOwner);
+    }
+
+    [Theory]
+    [InlineData("destination-as-committed")]
+    [InlineData("destination-as-staging")]
+    [InlineData("destination-with-committed-proof")]
+    [InlineData("destination-with-ordinary-route")]
+    [InlineData("reconciliation-with-destination-proof")]
+    public void Closed_restore_acquisitions_reject_mismatched_phase_kind_proof_or_route(string defect)
+    {
+        bool reconciliation = defect == "reconciliation-with-destination-proof";
+
+        GrimoireAcquisitionCatalogEntry entry = Assert.Single(
+            GrimoireConnectionAcquisitionScanner.Catalog(), candidate =>
+                candidate.Identity.EnclosingType == "BackupRestoreCovenantCoordinator"
+                && candidate.Identity.CalleeOrConstructedType == "BackupRestoreDatabaseWorker.OpenAsync"
+                && (reconciliation
+                    ? candidate.Identity.EnclosingMember == "CompleteCommittedAsync(5)"
+                        && candidate.Identity.Fingerprint.Contains("readOnly:false", StringComparison.Ordinal)
+                    : candidate.Identity.EnclosingMember == "InventoryDestinationMarkersAsync(4)"));
+
+        ExactNonServingProof proof = Assert.IsType<ExactNonServingProof>(entry.NonServingProof);
+
+        GrimoireAcquisitionCatalogEntry changed = defect switch
+        {
+            "destination-as-committed" => entry with { PathAuthority = GrimoirePathAuthority.ClosedCommittedRestore },
+            "destination-as-staging" => entry with { AcquisitionKind = GrimoireAcquisitionKind.StagingOrArchive },
+            "destination-with-committed-proof" => entry with
+            {
+                NonServingProof = proof with { Kind = ExactNonServingProofKind.ExactClosedRestoreOwner },
+            },
+            "destination-with-ordinary-route" => entry with { RuntimeRoute = GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory },
+            "reconciliation-with-destination-proof" => entry with
+            {
+                NonServingProof = proof with { Kind = ExactNonServingProofKind.ExactClosedRestoreDestinationOwner },
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(defect)),
+        };
+
+        IReadOnlyList<InventoryFailure> failures = GrimoireConnectionAcquisitionScanner.Validate(
+            [entry.Identity], [changed]);
+
+        Assert.Contains(failures, static failure => failure.Code == InventoryFailureCode.InvalidClassification);
+
+        Assert.DoesNotContain(failures,
+            static failure => failure.Detail == "A non-serving proof must derive from one exact catalog identity.");
     }
 
     [Fact]
