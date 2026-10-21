@@ -185,16 +185,21 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
 
         await File.WriteAllTextAsync(externalVersion, "EXTERNAL VERSION MUST REMAIN");
 
+        DirectoryPivotAttempt pivot = new(spells);
+
         bool pivoted = false;
 
         void Pivot()
         {
-            if (pivoted)
+            if (pivot.Attempted)
             {
                 return;
             }
 
-            Directory.Move(spells, spells + "-original");
+            if (!pivot.TryMoveAside())
+            {
+                return;
+            }
 
             Directory.CreateSymbolicLink(spells, external);
 
@@ -227,9 +232,28 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
                 _ => (await repository.ActivateVersionAsync("victim", "1", _workspaceRoot, CancellationToken.None)).IsFailure,
             };
 
-            Assert.True(pivoted);
+            pivot.AssertCompleted(pivoted);
 
-            Assert.True(failed);
+            Assert.Equal(pivoted, failed);
+
+            if (pivot.Blocked)
+            {
+                if (operation == "delete")
+                {
+                    Assert.False(Directory.Exists(victim));
+                }
+                else
+                {
+                    string changed = operation == "create-version" ? "SPELL.v2.md"
+                        : operation == "update-version" ? "SPELL.v1.md" : "SPELL.md";
+
+                    string expected = operation == "create-version" ? "new version"
+                        : operation == "update-version" ? "changed version"
+                        : operation == "activate" ? "safe version" : "new description";
+
+                    Assert.Contains(expected, await File.ReadAllTextAsync(Path.Combine(victim, changed)), StringComparison.Ordinal);
+                }
+            }
 
             Assert.Equal("EXTERNAL BODY MUST REMAIN", await File.ReadAllTextAsync(externalBody));
 

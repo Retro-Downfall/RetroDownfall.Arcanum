@@ -197,15 +197,22 @@ public sealed partial class SpellScannerTests : IAsyncLifetime
 
         string spells = Path.Combine(_workspace.Root, "spells");
 
+        DirectoryPivotAttempt pivot = new(spells);
+
+        string originalBody = await File.ReadAllTextAsync(spellPath);
+
         bool pivoted = false;
 
         int sidecarReads = 0;
 
         SecureFileReader.AfterRegularFileOpenedForTests = path =>
         {
-            if (!pivoted && path == spellPath)
+            if (!pivot.Attempted && path == spellPath)
             {
-                Directory.Move(spells, spells + "-original");
+                if (!pivot.TryMoveAside())
+                {
+                    return;
+                }
 
                 Directory.CreateSymbolicLink(spells, external);
 
@@ -223,9 +230,26 @@ public sealed partial class SpellScannerTests : IAsyncLifetime
 
         try
         {
-            Assert.Null(await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes));
+            ParsedSpell? loaded = await SpellScanner.LoadFullAsync(discovered, _workspace.Root, CancellationToken.None, MaxFileSizeBytes);
 
-            Assert.True(pivoted);
+            pivot.AssertCompleted(pivoted);
+
+            if (pivot.Blocked)
+            {
+                Assert.NotNull(loaded);
+
+                Assert.Equal(originalBody, loaded.FullContent);
+
+                Assert.Equal("A blazing spell", loaded.Description);
+            }
+            else
+            {
+                Assert.Null(loaded);
+            }
+
+            Assert.Equal("---\nname: fireball\n---\nEXTERNAL BODY", await File.ReadAllTextAsync(Path.Combine(external, "fireball", "SPELL.md")));
+
+            Assert.Equal("{\"name\":\"fireball\",\"description\":\"EXTERNAL SIDECAR SECRET\"}", await File.ReadAllTextAsync(Path.Combine(external, "fireball", "SPELL.json")));
 
             Assert.Equal(0, sidecarReads);
         }

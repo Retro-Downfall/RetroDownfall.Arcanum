@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
@@ -209,9 +210,14 @@ public sealed partial class SpellRepositoryTests
             // Warm hydration so the seam below belongs to the export's separate read group.
             Assert.NotNull(await repository.GetAsync("export-contained", workspace, CancellationToken.None));
 
+            DirectoryPivotAttempt attempt = new(pivot);
+
             void Pivot()
             {
-                Directory.Move(pivot, pivot + "-original");
+                if (!attempt.TryMoveAside())
+                {
+                    return;
+                }
 
                 try
                 {
@@ -232,7 +238,7 @@ public sealed partial class SpellRepositoryTests
                 // This seam fires at the export's actual bounded read, after warm-cache hydration.
                 SecureFileReader.AfterOpenForTests = path =>
                 {
-                    if (path == specPath && !pivoted)
+                    if (path == specPath && !attempt.Attempted)
                     {
                         Pivot();
                     }
@@ -244,7 +250,7 @@ public sealed partial class SpellRepositoryTests
                 {
                     bool success = FileHandleIdentityInterop.TryGetPathMetadataIgnoringTestSeam(path, out FileHandleMetadata metadata);
 
-                    if (path == target && !pivoted)
+                    if (path == target && !attempt.Attempted)
                     {
                         Pivot();
                     }
@@ -255,9 +261,31 @@ public sealed partial class SpellRepositoryTests
 
             SpellExportDto? exported = await repository.ExportAsync("export-contained", workspace, CancellationToken.None);
 
-            Assert.True(pivoted);
+            attempt.AssertCompleted(pivoted);
 
-            if (artifact == "spec")
+            Assert.Equal("EXTERNAL SECRET", await File.ReadAllTextAsync(Path.Combine(external, "SPELL.md")));
+
+            Assert.Equal("EXTERNAL SECRET", await File.ReadAllTextAsync(Path.Combine(external, "run.sh")));
+
+            Assert.Equal("{\"name\":\"export-contained\",\"description\":\"EXTERNAL SECRET\",\"tags\":[]}", await File.ReadAllTextAsync(Path.Combine(external, "SPELL.json")));
+
+            if (attempt.Blocked)
+            {
+                Assert.NotNull(exported);
+
+                Assert.Equal("---\nname: export-contained\ndescription: safe\n---\nSAFE BODY", exported.FullContent);
+
+                Assert.Equal("SAFE SIDECAR", exported.Metadata?.Description);
+
+                SpellExportScriptDto script = Assert.Single(exported.Scripts);
+
+                Assert.Equal("run.sh", script.FileName);
+
+                Assert.Equal("SAFE SCRIPT", System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(script.Base64Content)));
+
+                Assert.Equal(0, exported.OmittedScriptCount);
+            }
+            else if (artifact == "spec")
             {
                 Assert.Null(exported);
             }
