@@ -155,27 +155,49 @@ internal static class BackupSessionImporter
 
         foreach (Guid sessionId in sessionIds)
         {
-            Result<ImportedSessionCommitReceipt> imported = await ImportOneProtectedAsync(
-                services,
-                sourceDatabasePath,
-                sourceGrimoireSecret,
-                sourceAttachmentsRoot,
-                destination,
-                destinationAttachmentsRoot,
-                sessionId,
-                campaignMappings,
-                cancellationToken).ConfigureAwait(false);
+            Result imported;
+
+            try
+            {
+                imported = await ImportOneProtectedAsync(
+                    services,
+                    sourceDatabasePath,
+                    sourceGrimoireSecret,
+                    sourceAttachmentsRoot,
+                    destination,
+                    destinationAttachmentsRoot,
+                    sessionId,
+                    campaignMappings,
+                    receipt =>
+                    {
+                        // Record durable evidence before spending the lease disposition: neither
+                        // a failed reopen nor cancellation may hide the Session that already landed.
+                        sessions++;
+
+                        entries += receipt.Entries;
+
+                        attachments += receipt.Attachments;
+
+                        deduplicated += receipt.DeduplicatedBlobs;
+
+                        committed.Add(new BackupImportedSession(sessionId, receipt.DestinationSessionId));
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (committed.Count > 0
+                && exception is SqliteException or IOException or UnauthorizedAccessException
+                    or OperationCanceledException or FormatException)
+            {
+                imported = new Error(
+                    ErrorCodes.Covenant.MaintenanceFailed,
+                    "The import stopped after committing Sessions; reconciliation is required before retrying.");
+            }
 
             if (imported.IsFailure)
             {
                 BackupVerifyIssue refusal =
                     new("backup.restore_import_refused", imported.Error.Message);
 
-                // Every Session before this one committed under its own compound lease, and no
-                // transaction spans them: those rows, their attachments, and their transfer-intent
-                // journal are in the live installation whatever this refusal says. Reporting zero
-                // counts here is what told the operator the destination was untouched — and made
-                // re-running the import, which mints fresh identities per run, import them again.
                 return committed.Count == 0
                     ? BackupSessionImportResult.Failed(refusal)
                     : BackupSessionImportResult.Partial(
@@ -186,16 +208,6 @@ internal static class BackupSessionImporter
                         committed,
                         refusal);
             }
-
-            sessions++;
-
-            entries += imported.Value.Entries;
-
-            attachments += imported.Value.Attachments;
-
-            deduplicated += imported.Value.DeduplicatedBlobs;
-
-            committed.Add(new BackupImportedSession(sessionId, imported.Value.DestinationSessionId));
         }
 
         return new BackupSessionImportResult(
@@ -208,7 +220,7 @@ internal static class BackupSessionImporter
             [.. committed]);
     }
 
-    private static async Task<Result<ImportedSessionCommitReceipt>> ImportOneProtectedAsync(
+    private static async Task<Result> ImportOneProtectedAsync(
         CovenantSelectiveImportServices services,
         string sourceDatabasePath,
         string sourceGrimoireSecret,
@@ -217,6 +229,7 @@ internal static class BackupSessionImporter
         string destinationAttachmentsRoot,
         Guid sessionId,
         IReadOnlyList<BackupSessionCampaignMapping> campaignMappings,
+        Action<ImportedSessionCommitReceipt> recordCommitted,
         CancellationToken cancellationToken)
     {
         // One lease per Session, held from the first source read through the destination commit. The
@@ -265,6 +278,11 @@ internal static class BackupSessionImporter
                 new ProtectedSessionImportDestination(destination, destinationAttachmentsRoot),
                 cancellationToken).ConfigureAwait(false);
 
+        if (completion.Result.IsSuccess)
+        {
+            recordCommitted(completion.Result.Value);
+        }
+
         // The caller of the store owns the lease, so the disposition is spent here — exactly once —
         // and the finalizer runs only after it succeeds. A failed disposition leaves the journal
         // pending and the owner adoptable, which is strictly safer than recording a terminal phase.
@@ -278,7 +296,10 @@ internal static class BackupSessionImporter
             ? completion.Result.Error
             : disposed.IsFailure
                 ? disposed.Error
-                : completion.Result;
+                : completion.Disposition == CovenantExclusiveLeaseDisposition.KeepClosed
+                    ? new Error(ErrorCodes.Covenant.MaintenanceFailed,
+                        "The Session committed, but its protected transfer requires reconciliation before reopening.")
+                    : Result.Success();
     }
 
     public static async Task<BackupSessionImportResult> ImportAsync(
@@ -404,12 +425,15 @@ internal static class BackupSessionImporter
 
                 sessions++;
 
+                Dictionary<Guid, Guid> entryIds = [];
+
                 entries += await CopyEntriesAsync(
                     source,
                     destination,
                     transaction,
                     original,
                     effective,
+                    entryIds,
                     cancellationToken).ConfigureAwait(false);
 
                 (long copied, long deduped) = await CopyAttachmentsAsync(
@@ -418,6 +442,7 @@ internal static class BackupSessionImporter
                     transaction,
                     original,
                     effective,
+                    entryIds,
                     sourceAttachmentsRoot,
                     destinationAttachmentsRoot,
                     copies,
@@ -586,6 +611,7 @@ internal static class BackupSessionImporter
         SqliteTransaction transaction,
         string originalSessionId,
         string effectiveSessionId,
+        Dictionary<Guid, Guid> entryIds,
         CancellationToken cancellationToken)
     {
         if (!await BackupRestoreDatabaseWorker
@@ -610,7 +636,7 @@ internal static class BackupSessionImporter
             // payload bytes.
             read.CommandText = $"""
                 SELECT "Role", "Content", "ModelUsed", "CreatedAt", "Sequence", "ToolCallId",
-                       "ToolName", "ToolArguments", "IsPinned"
+                       "ToolName", "ToolArguments", "IsPinned", "Id"
                 FROM "Entries" WHERE {CovenantIdentitySql.Keyed("\"SessionId\"", "$id")}
                 ORDER BY "Sequence";
                 """;
@@ -634,6 +660,7 @@ internal static class BackupSessionImporter
                     Value(reader, 6),
                     Value(reader, 7),
                     Value(reader, 8),
+                    reader.GetString(9),
                 ]);
             }
         }
@@ -651,7 +678,11 @@ internal static class BackupSessionImporter
                         $toolCallId, $toolName, $toolArguments, $pinned);
                 """;
 
-            _ = write.Parameters.AddWithValue("$id", Guid.NewGuid().ToString().ToUpperInvariant());
+            Guid entryId = Guid.NewGuid();
+
+            entryIds.Add(Guid.Parse((string)row[9]), entryId);
+
+            _ = write.Parameters.AddWithValue("$id", entryId);
 
             _ = write.Parameters.AddWithValue("$sessionId", effectiveSessionId);
 
@@ -685,6 +716,7 @@ internal static class BackupSessionImporter
         SqliteTransaction transaction,
         string originalSessionId,
         string effectiveSessionId,
+        IReadOnlyDictionary<Guid, Guid> entryIds,
         string sourceAttachmentsRoot,
         string destinationAttachmentsRoot,
         List<PendingAttachmentCopy> copies,
@@ -823,7 +855,7 @@ internal static class BackupSessionImporter
                      "SourceRelativePath", "SourceCanonicalPath", "SourceContentSha256",
                      "SourceFileIdentity", "SourceLastWriteAt", "SourceByteLength", "SourceStatus",
                      "SourceDiagnosticReason", "EncryptionVersion", "EncryptionKeyId")
-                VALUES ($id, $sessionId, NULL, NULL, $state, $logicalKey, $originalFileName, $version,
+                VALUES ($id, $sessionId, $entryId, NULL, $state, $logicalKey, $originalFileName, $version,
                         $relativePath, $contentSha256, $mimeType, $byteLength, $kind, $createdAt,
                         $sourceKind, $sourceWorkspaceIdentity, $sourceRelativePath,
                         $sourceCanonicalPath, $sourceContentSha256, $sourceFileIdentity,
@@ -834,6 +866,20 @@ internal static class BackupSessionImporter
             _ = write.Parameters.AddWithValue("$id", attachmentId);
 
             _ = write.Parameters.AddWithValue("$sessionId", effectiveSessionId);
+
+            object entryId = DBNull.Value;
+
+            if (row.Values[0] is string sourceEntry)
+            {
+                if (!entryIds.TryGetValue(Guid.Parse(sourceEntry), out Guid copiedEntry))
+                {
+                    throw new IOException("An imported attachment names an Entry outside its Session graph.");
+                }
+
+                entryId = copiedEntry;
+            }
+
+            _ = write.Parameters.AddWithValue("$entryId", entryId);
 
             _ = write.Parameters.AddWithValue("$state", row.Values[2]);
 

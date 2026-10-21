@@ -68,7 +68,8 @@ internal sealed record ProtectedSessionImportDestination(
 /// </remarks>
 internal sealed class ProtectedArtifactTransferStore(
     CovenantSqliteConnectionInitializer initializer,
-    TimeProvider timeProvider) : IProtectedArtifactTransferStore
+    TimeProvider timeProvider,
+    IEncryptedBlobStore encryptedBlobs) : IProtectedArtifactTransferStore
 {
     /// <summary>
     /// How many revisions one blob child advances between <c>Prepared</c> and <c>ReopenedVerified</c>.
@@ -361,7 +362,41 @@ internal sealed class ProtectedArtifactTransferStore(
             // An exact replay that already committed is answered from the journal rather than run a
             // second time. Idempotency is keyed only to the import operation identity, so a retried
             // request never produces a second destination Session.
-            if (prepared.Value.Phase >= ProtectedSessionTransferPhase.ReopenPending)
+            if (prepared.Value.Phase == ProtectedSessionTransferPhase.DatabaseCommitted)
+            {
+                await prepare.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return new ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>(
+                    new ImportedSessionCommitReceipt(
+                        request.OperationId,
+                        request.DestinationSessionId,
+                        request.CampaignMapping?.DestinationCampaignId,
+                        graph.Entries.Length,
+                        graph.Attachments.Length,
+                        0,
+                        graph.Finalizations.Length),
+                    CovenantExclusiveLeaseDisposition.KeepClosed,
+                    CovenantNoOpPostDispositionFinalizer.Instance);
+            }
+
+            if (prepared.Value.Phase == ProtectedSessionTransferPhase.Abandoned
+                || (prepared.Value.Phase == ProtectedSessionTransferPhase.ReopenPending
+                    && prepared.Value.PendingDisposition == CovenantExclusiveLeaseDisposition.RollbackAndReopen))
+            {
+                await prepare.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+                return new ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>(
+                    Result<ImportedSessionCommitReceipt>.Failure(new Error(
+                        ErrorCodes.Covenant.MaintenanceFailed,
+                        "This transfer was rolled back and has no committed destination Session.")),
+                    CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                    prepared.Value.Phase == ProtectedSessionTransferPhase.ReopenPending
+                        ? finalizer
+                        : CovenantNoOpPostDispositionFinalizer.Instance);
+            }
+
+            if (prepared.Value.Phase is ProtectedSessionTransferPhase.ReopenPending
+                or ProtectedSessionTransferPhase.Completed)
             {
                 await prepare.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
@@ -482,8 +517,21 @@ internal sealed class ProtectedArtifactTransferStore(
             await commit.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        await using (SqliteTransaction pending = await BeginAsync(destination.Connection, cancellationToken))
+        // From this point the graph is durable. Reopening is a separate obligation, and failure
+        // cannot erase the receipt or turn the committed graph into a rollback disposition.
+        ImportedSessionCommitReceipt receipt = new(
+            request.OperationId,
+            request.DestinationSessionId,
+            request.CampaignMapping?.DestinationCampaignId,
+            graph.Entries.Length,
+            graph.Attachments.Length,
+            deduplicated,
+            graph.Finalizations.Length);
+
+        try
         {
+            await using SqliteTransaction pending = await BeginAsync(destination.Connection, cancellationToken);
+
             Result reopen = await journal.AdvanceAsync(
                 request.OperationId,
                 expectedRevision: 2,
@@ -494,21 +542,21 @@ internal sealed class ProtectedArtifactTransferStore(
 
             if (reopen.IsFailure)
             {
-                return Refused(reopen.Error);
+                return new(receipt, CovenantExclusiveLeaseDisposition.KeepClosed,
+                    CovenantNoOpPostDispositionFinalizer.Instance);
             }
 
             await pending.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
+        catch (Exception exception) when (
+            exception is SqliteException or IOException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            return new(receipt, CovenantExclusiveLeaseDisposition.KeepClosed,
+                CovenantNoOpPostDispositionFinalizer.Instance);
+        }
 
         return new ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt>(
-            new ImportedSessionCommitReceipt(
-                request.OperationId,
-                request.DestinationSessionId,
-                request.CampaignMapping?.DestinationCampaignId,
-                graph.Entries.Length,
-                graph.Attachments.Length,
-                deduplicated,
-                graph.Finalizations.Length),
+            receipt,
             CovenantExclusiveLeaseDisposition.CommitAndReopen,
             finalizer);
     }
@@ -545,9 +593,10 @@ internal sealed class ProtectedArtifactTransferStore(
                 destinationFile,
                 $"{finalLeaf}.{Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant()}.tmp",
                 finalLeaf,
-                attachment.ContentSha256,
-                attachment.ByteLength,
-                present));
+                attachment.EncryptionVersion > 0 ? ReadContentIdentity(sourceFile) : attachment.ContentSha256,
+                attachment.EncryptionVersion > 0 ? new FileInfo(sourceFile).Length : attachment.ByteLength,
+                present,
+                attachment));
         }
 
         return builder.ToImmutable();
@@ -568,51 +617,41 @@ internal sealed class ProtectedArtifactTransferStore(
         {
             StagedBlob blob = blobs[ordinal];
 
-            if (blob.AlreadyPresent)
+            if (!blob.AlreadyPresent)
             {
-                // The bytes are already here and already identical. Advancing straight to the
-                // verified phase records that fact without a second copy of the same payload.
-                Result deduplicated = await AdvanceThroughAsync(
-                    journal,
-                    destination.Connection,
-                    request.OperationId,
-                    ordinal,
-                    blob,
-                    ReadContentIdentity(blob.DestinationFile),
-                    cancellationToken).ConfigureAwait(false);
+                string temporary = ResolveContained(destination.AttachmentsRoot, blob.TemporaryLeaf);
 
-                if (deduplicated.IsFailure)
+                SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(Path.GetDirectoryName(temporary)!);
+
+                File.Copy(blob.SourceFile, temporary, overwrite: false);
+
+                SecureFilePermissions.ApplyOwnerOnlyFile(temporary);
+
+                using (FileStream flush = new(temporary, FileMode.Open, FileAccess.ReadWrite))
                 {
-                    return deduplicated;
+                    flush.Flush(flushToDisk: true);
                 }
 
-                continue;
+                // No-replace: a final leaf that already exists belongs to another operation.
+                File.Move(temporary, blob.DestinationFile, overwrite: false);
             }
-
-            string temporary = ResolveContained(destination.AttachmentsRoot, blob.TemporaryLeaf);
-
-            SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(Path.GetDirectoryName(temporary)!);
-
-            File.Copy(blob.SourceFile, temporary, overwrite: false);
-
-            SecureFilePermissions.ApplyOwnerOnlyFile(temporary);
-
-            using (FileStream flush = new(temporary, FileMode.Open, FileAccess.ReadWrite))
-            {
-                flush.Flush(flushToDisk: true);
-            }
-
-            // No-replace: a final leaf that already exists is somebody else's payload, and silently
-            // overwriting it would destroy an attachment this operation never owned.
-            File.Move(temporary, blob.DestinationFile, overwrite: false);
 
             byte[] observed = ReadContentIdentity(blob.DestinationFile);
 
-            if (!observed.AsSpan().SequenceEqual(blob.ExpectedHash))
+            if (!observed.AsSpan().SequenceEqual(blob.ExpectedHash)
+                || new FileInfo(blob.DestinationFile).Length != blob.ExpectedLength)
             {
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A staged attachment did not reopen with the content its manifest committed to.");
+            }
+
+            Result authenticated = await AuthenticateEncryptedAttachmentAsync(blob, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (authenticated.IsFailure)
+            {
+                return authenticated;
             }
 
             Result advanced = await AdvanceThroughAsync(
@@ -631,6 +670,49 @@ internal sealed class ProtectedArtifactTransferStore(
         }
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Checks encrypted payload content against the archived plaintext metadata without materializing it.
+    /// </summary>
+    private async Task<Result> AuthenticateEncryptedAttachmentAsync(
+        StagedBlob blob,
+        CancellationToken cancellationToken)
+    {
+        if (blob.Attachment.EncryptionVersion == 0)
+        {
+            return Result.Success();
+        }
+
+        try
+        {
+            await using Stream plaintext = await encryptedBlobs.OpenReadAsync(
+                blob.DestinationFile, EncryptedBlobPurpose.SessionAttachment, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (plaintext is not EncryptedBlobReader reader
+                || reader.Descriptor.Version != blob.Attachment.EncryptionVersion
+                || !string.Equals(reader.Descriptor.KeyId, blob.Attachment.EncryptionKeyId, StringComparison.Ordinal)
+                || plaintext.Length != blob.Attachment.ByteLength)
+            {
+                return new Error(ErrorCodes.Covenant.IntegrityFailure,
+                    "An encrypted attachment does not match its archived encryption or plaintext length metadata.");
+            }
+
+            // Reading through EOF authenticates every chunk and the final length marker. HashDataAsync
+            // keeps a bounded buffer even when an attachment is much larger than the import graph.
+            byte[] digest = await SHA256.HashDataAsync(plaintext, cancellationToken).ConfigureAwait(false);
+
+            return digest.AsSpan().SequenceEqual(blob.Attachment.ContentSha256)
+                ? Result.Success()
+                : new Error(ErrorCodes.Covenant.IntegrityFailure,
+                    "An encrypted attachment does not match its archived plaintext digest.");
+        }
+        catch (Exception exception) when (exception is CryptographicException or IOException)
+        {
+            return new Error(ErrorCodes.Covenant.IntegrityFailure,
+                "An encrypted attachment could not be authenticated with this installation's restored keys.");
+        }
     }
 
     /// <summary>
@@ -1037,6 +1119,21 @@ internal sealed class ProtectedArtifactTransferStore(
                 return new Error(
                     ErrorCodes.Covenant.IntegrityFailure,
                     "A source finalization names an assistant Entry the source graph does not carry.");
+            }
+
+            Result<AssistantFinalizationCapacityReservation> capacity = await new CovenantQuotaGuard(initializer)
+                .AllocateDirectFinalizationAsync(
+                    new DirectFinalizationCapacityRequest(
+                        Guid.NewGuid(),
+                        request.DestinationSessionId,
+                        Guid.Parse(remapped),
+                        AssistantFinalizationCapacityOrigin.Imported),
+                    new CovenantMutationTransaction(destination.Connection, transaction),
+                    cancellationToken).ConfigureAwait(false);
+
+            if (capacity.IsFailure)
+            {
+                return capacity.Error;
             }
 
             await using SqliteCommand write = destination.Connection.CreateCommand();
@@ -1468,6 +1565,10 @@ internal sealed class ProtectedArtifactTransferStore(
 
         internal long ByteLength =>
             Values[9] is DBNull ? 0 : Convert.ToInt64(Values[9], CultureInfo.InvariantCulture);
+
+        internal int EncryptionVersion => Convert.ToInt32(Values[20], CultureInfo.InvariantCulture);
+
+        internal string? EncryptionKeyId => Values[21] as string;
     }
 
     private sealed record FinalizationRow(
@@ -1524,7 +1625,8 @@ internal sealed class ProtectedArtifactTransferStore(
         string FinalLeaf,
         byte[] ExpectedHash,
         long ExpectedLength,
-        bool AlreadyPresent);
+        bool AlreadyPresent,
+        AttachmentRow Attachment);
 
     /// <summary>
     /// Advances the transfer journal to its terminal phase after the caller's disposition succeeded.

@@ -24,6 +24,8 @@ using RetroDownfall.Arcanum.Tests.Data.Schema;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Covenant;
 
 /// <summary>
@@ -339,7 +341,7 @@ internal sealed class IdentitySpellingHarness : IAsyncDisposable
 
         CovenantSelectiveImportServices services = new(
             new GrantingProtectedTransferGate(),
-            new ProtectedArtifactTransferStore(CovenantSqliteConnectionInitializer.Instance, TimeProvider.System));
+            new ProtectedArtifactTransferStore(CovenantSqliteConnectionInitializer.Instance, TimeProvider.System, TestEncryptedBlobStore.Create()));
 
         BackupSessionImportResult result = await BackupSessionImporter.ImportProtectedAsync(
             services,

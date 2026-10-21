@@ -957,7 +957,8 @@ public static class ServiceCollectionExtensions
                 gate,
                 new ProtectedArtifactTransferStore(
                     CovenantSqliteConnectionInitializer.Instance,
-                    serviceProvider.GetRequiredService<TimeProvider>()));
+                    serviceProvider.GetRequiredService<TimeProvider>(),
+                    serviceProvider.GetRequiredService<IEncryptedBlobStore>()));
     }
 
     /// <summary>

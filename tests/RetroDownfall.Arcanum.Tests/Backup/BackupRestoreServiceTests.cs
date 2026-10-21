@@ -2820,6 +2820,47 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task A_committed_import_with_failed_disposition_requires_reconciliation_and_names_its_destination()
+    {
+        Fixture fixture = await CreateFixtureAsync(refusableSessionTrio: true);
+
+        string archive = await fixture.CreateBackupAsync("import-disposition.arcbackup");
+
+        BackupRestoreServiceOptions options = new()
+        {
+            SelectiveImport = new CovenantSelectiveImportServices(
+                new BackupSessionImporterTests.ProtectedTransferGate(_ =>
+                    new Error(ErrorCodes.Covenant.MaintenanceFailed, "injected disposition refusal")),
+                new ProtectedArtifactTransferStore(CovenantSqliteConnectionInitializer.Instance, TimeProvider.System, TestEncryptedBlobStore.Create())),
+        };
+
+        BackupRestoreResult result = await Restore(
+                new RecordingSecretStore { GrimoireSecret = fixture.GrimoireSecret }, options)
+            .RestoreAsync(new BackupRestoreRequest(archive, BackupRestoreConflictMode.ImportSelectedSessions,
+                    SessionIds: [Fixture.CleanSessionA], Confirmed: true, CreateSafetyBackup: false),
+                Passphrase.AsMemory(), CancellationToken.None);
+
+        Assert.Equal(BackupRestoreStatus.ReconciliationRequired, result.Status);
+
+        BackupVerifyIssue evidence = Assert.Single(result.Issues,
+            static issue => issue.Code == "backup.restore_import_partially_committed");
+
+        await using SqliteConnection connection = await OpenRestoredAsync(fixture.GrimoireSecret);
+
+        string? destination = await ScalarAsync(connection,
+            "SELECT Id FROM Sessions WHERE Title = 'Session A' AND Id <> '"
+            + Fixture.CleanSessionA.ToString("D").ToUpperInvariant() + "';");
+
+        Assert.True(Guid.TryParse(destination, out Guid committed));
+
+        Assert.Contains(committed.ToString("D"), evidence.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(Fixture.CleanSessionA.ToString("D"), evidence.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Do not re-run", evidence.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Importing_a_session_the_archive_does_not_contain_is_refused()
     {
         Fixture fixture = await CreateFixtureAsync();
@@ -3534,7 +3575,7 @@ public sealed partial class BackupRestoreServiceTests : IDisposable
                 new BackupSessionImporterTests.ProtectedTransferGate(),
                 new ProtectedArtifactTransferStore(
                     CovenantSqliteConnectionInitializer.Instance,
-                    TimeProvider.System)),
+                    TimeProvider.System, TestEncryptedBlobStore.Create())),
         };
 
     private static BackupRestoreServiceOptions SelectiveImportEnabled() =>

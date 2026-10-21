@@ -26,13 +26,15 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Backup;
 
 /// <summary>
 /// The importer merges into the <em>live</em> installation, so its failure paths are the interesting
 /// ones: whatever it wrote outside the destination transaction has to come back out with it.
 /// </summary>
-public sealed class BackupSessionImporterTests : IDisposable
+public sealed partial class BackupSessionImporterTests : IDisposable
 {
 
     /// <summary>
@@ -390,13 +392,8 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// <para>The counts are asserted, not just the absence of issues. A plan assembled from a graph the
     /// planner could not see would still commit — of nothing — and report success.</para>
     ///
-    /// <para>The archive carries no committed finalization, and that is a limit of this case rather
-    /// than a choice about what an archive holds: the destination's finalization guard requires a
-    /// consumed capacity reservation for the imported assistant identity, and the transfer store
-    /// writes the guard without one, so an archive with a finalization cannot commit here for a reason
-    /// that has nothing to do with how an identity is spelled. The planner's own two finalization
-    /// reads are covered where they can be reached — over an archive that has one — in
-    /// <c>BackupSessionImportPlannerTests</c>.</para>
+    /// <para>The companion finalized-archive integrity case covers capacity allocation and imported
+    /// non-replayable evidence; this case retains the empty-finalization graph boundary.</para>
     /// </remarks>
     [Fact]
     public async Task A_selective_protected_import_of_an_ordinary_archive_commits_a_Session_with_no_finalization()
@@ -420,7 +417,7 @@ public sealed class BackupSessionImporterTests : IDisposable
                 new ProtectedTransferGate(),
                 new ProtectedArtifactTransferStore(
                     CovenantSqliteConnectionInitializer.Instance,
-                    TimeProvider.System)),
+                    TimeProvider.System, TestEncryptedBlobStore.Create())),
             Path.Combine(_sourceRoot, "arcanum.db"),
             Path.Combine(_destinationRoot, "arcanum.db"),
             [ArchivedSessionId],
@@ -550,7 +547,8 @@ public sealed class BackupSessionImporterTests : IDisposable
     /// that started needing it. What is under test here is the archive the planner reads and the graph
     /// the store copies — not the arbitration, which has its own suite.
     /// </remarks>
-    internal sealed class ProtectedTransferGate : ICovenantOperationGate
+    internal sealed class ProtectedTransferGate(
+        Func<CovenantExclusiveLeaseDisposition, Result>? complete = null) : ICovenantOperationGate
     {
 
         public ValueTask<Result<CovenantProtectedTransferLease>> AcquireProtectedTransferAsync(
@@ -560,7 +558,7 @@ public sealed class BackupSessionImporterTests : IDisposable
             ValueTask.FromResult(
                 Result<CovenantProtectedTransferLease>.Success(
                     new CovenantProtectedTransferLease(
-                        new GrantedRegistration(owner, scope.ToOperationScope()))));
+                        new GrantedRegistration(owner, scope.ToOperationScope(), complete))));
 
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(
             CancellationToken cancellationToken) =>
@@ -637,7 +635,8 @@ public sealed class BackupSessionImporterTests : IDisposable
 
         private sealed class GrantedRegistration(
             CovenantExclusiveRecoveryOwner owner,
-            CovenantOperationScope scope) : ICovenantExclusiveLeaseRegistration
+            CovenantOperationScope scope,
+            Func<CovenantExclusiveLeaseDisposition, Result>? complete) : ICovenantExclusiveLeaseRegistration
         {
 
             public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
@@ -667,7 +666,7 @@ public sealed class BackupSessionImporterTests : IDisposable
             public ValueTask<Result> CompleteAsync(
                 CovenantExclusiveLeaseDisposition disposition,
                 CancellationToken cancellationToken) =>
-                ValueTask.FromResult(Result.Success());
+                ValueTask.FromResult(complete?.Invoke(disposition) ?? Result.Success());
 
             public ValueTask ReleaseAsync() => ValueTask.CompletedTask;
 

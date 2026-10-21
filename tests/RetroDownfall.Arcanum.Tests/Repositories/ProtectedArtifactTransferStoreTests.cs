@@ -15,6 +15,8 @@ using RetroDownfall.Arcanum.Tests.Covenant;
 using RetroDownfall.Arcanum.Tests.Data.Covenant;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Repositories;
 
 /// <summary>
@@ -42,6 +44,11 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
         "Entries",
         "SessionAttachments",
         "assistant_entry_finalizations",
+        "installation_turn_quota_state",
+        "session_turn_quota_state",
+        "assistant_finalization_capacity_reservations",
+        "Sessions_turn_quota_state",
+        "assistant_entry_finalizations_validate_insert",
         "protected_session_transfer_intents",
         "protected_session_transfer_blobs",
         "protected_session_transfer_intents_guard_update",
@@ -101,13 +108,16 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
 
         await _destination.InstallCoreObjectsAsync(DestinationObjects, CancellationToken.None);
 
+        await _destination.ExecuteAsync(
+            "INSERT INTO installation_turn_quota_state VALUES (1, 0, 0, 0);", CancellationToken.None);
+
         _sourceAttachments = Directory.CreateDirectory(Path.Combine(_root, "source")).FullName;
 
         _destinationAttachments = Directory.CreateDirectory(Path.Combine(_root, "destination")).FullName;
 
         _store = new ProtectedArtifactTransferStore(
             CovenantSqliteConnectionInitializer.Instance,
-            TimeProvider.System);
+            TimeProvider.System, TestEncryptedBlobStore.Create());
 
         await SeedSourceSessionAsync();
     }
@@ -125,6 +135,103 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     /// spellings production writes — but only this one says so, and only this one fails with a message
     /// naming the cause when the fixture drifts back.
     /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_rolled_back_transfer_replay_cannot_claim_a_committed_destination(bool abandoned)
+    {
+        await _destination.ExecuteAsync(
+            "UPDATE installation_turn_quota_state SET ConsumedFinalizationCount = 1048576;", CancellationToken.None);
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        Assert.True((await CommitAsync(request)).Result.IsFailure);
+
+        ProtectedSessionTransferIntentStore journal = new(
+            CovenantSqliteConnectionInitializer.Instance, _destination.Connection, TimeProvider.System);
+
+        await using (SqliteTransaction transaction = _destination.Connection.BeginTransaction())
+        {
+            Assert.True((await journal.AdvanceAsync(request.OperationId, 0,
+                ProtectedSessionTransferPhase.ReopenPending, CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                transaction, CancellationToken.None)).IsSuccess);
+
+            if (abandoned)
+            {
+                Assert.True((await journal.AdvanceAsync(request.OperationId, 1,
+                    ProtectedSessionTransferPhase.Abandoned, CovenantExclusiveLeaseDisposition.RollbackAndReopen,
+                    transaction, CancellationToken.None)).IsSuccess);
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> replay = await CommitAsync(request);
+
+        Assert.True(replay.Result.IsFailure);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, replay.Disposition);
+
+        Assert.Equal(0, await CountDestinationAsync("Sessions"));
+    }
+
+    [Fact]
+    public async Task Finalization_capacity_refusal_rolls_back_the_imported_graph_and_counters()
+    {
+        await _destination.ExecuteAsync(
+            "UPDATE installation_turn_quota_state SET ConsumedFinalizationCount = 1048576;", CancellationToken.None);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> result =
+            await CommitAsync(await BuildRequestAsync(Guid.NewGuid(), null));
+
+        Assert.True(result.Result.IsFailure);
+
+        Assert.Contains("exhausted", result.Result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.RollbackAndReopen, result.Disposition);
+
+        Assert.Equal(0, await CountDestinationAsync("Sessions"));
+
+        Assert.Equal(0, await CountDestinationAsync("Entries"));
+
+        Assert.Equal(0, await CountDestinationAsync("SessionAttachments"));
+
+        Assert.Equal(0, await CountDestinationAsync("assistant_finalization_capacity_reservations"));
+
+        Assert.Equal(1048576, await _destination.ScalarLongAsync(
+            "SELECT ConsumedFinalizationCount FROM installation_turn_quota_state;", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Replaying_a_database_committed_import_preserves_its_receipt_and_closed_disposition()
+    {
+        await _destination.ExecuteAsync("""
+            CREATE TRIGGER fail_reopen_pending BEFORE UPDATE ON protected_session_transfer_intents
+            WHEN NEW.PhaseCode = 4
+            BEGIN SELECT RAISE(ABORT, 'injected postcommit journal failure'); END;
+            """, CancellationToken.None);
+
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> first = await CommitAsync(request);
+
+        Assert.True(first.Result.IsSuccess, first.Result.Error.Message);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, first.Disposition);
+
+        ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> replay = await CommitAsync(request);
+
+        Assert.True(replay.Result.IsSuccess, replay.Result.Error.Message);
+
+        Assert.Equal(first.Result.Value.DestinationSessionId, replay.Result.Value.DestinationSessionId);
+
+        Assert.Equal(CovenantExclusiveLeaseDisposition.KeepClosed, replay.Disposition);
+
+        Assert.Equal(1, await CountDestinationAsync("Sessions"));
+
+        Assert.Equal(1, await CountDestinationAsync("assistant_finalization_capacity_reservations"));
+    }
+
     [Fact]
     public async Task An_archive_written_by_the_object_relational_writer_is_found_and_imported()
     {
