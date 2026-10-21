@@ -236,7 +236,9 @@ internal static class SessionEndpoints
                 return Results.Ok(
                     ApiResponse<EntryDto[]>.FromResult(Result<EntryDto[]>.Success(dtos), traceId));
             })
-        .WithName("GetSessionEntries");
+        .WithName("GetSessionEntries")
+        .RequireConditionalCovenantReadAuthority()
+        .AddEndpointFilter(new SessionEntriesReadFilter());
 
         apiGroup.MapGet(
             "/sessions/{id:guid}/attachments",

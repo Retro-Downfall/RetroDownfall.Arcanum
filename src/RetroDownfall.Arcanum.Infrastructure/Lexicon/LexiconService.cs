@@ -504,11 +504,26 @@ internal sealed partial class LexiconService(
         }
     }
 
-    public async Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
+    public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
         IReadOnlyList<string> entities,
         int limit,
         LexiconScope scope,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        MatchEntitiesCoreAsync(entities, limit, scope, false, cancellationToken);
+
+    public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchCleanEntitiesAsync(
+        IReadOnlyList<string> entities,
+        int limit,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default) =>
+        MatchEntitiesCoreAsync(entities, limit, scope, true, cancellationToken);
+
+    private async Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesCoreAsync(
+        IReadOnlyList<string> entities,
+        int limit,
+        LexiconScope scope,
+        bool cleanOnly,
+        CancellationToken cancellationToken)
     {
         if (entities is null || entities.Count == 0)
         {
@@ -557,6 +572,7 @@ internal sealed partial class LexiconService(
                                 seenIds,
                                 shadowedNames,
                                 ordered,
+                                cleanOnly,
                                 cancellationToken).ConfigureAwait(false);
                         }
 
@@ -570,12 +586,18 @@ internal sealed partial class LexiconService(
                                 seenIds,
                                 shadowedNames,
                                 ordered,
+                                cleanOnly,
                                 cancellationToken).ConfigureAwait(false);
                         }
 
                         if (ordered.Count > clampedLimit)
                         {
                             ordered = ordered.GetRange(0, clampedLimit);
+                        }
+
+                        if (cleanOnly)
+                        {
+                            return Result<IReadOnlyList<LexiconEntryDto>>.Success(ordered);
                         }
 
                         Dictionary<Guid, LexiconFactProvenance[]> provenance = await ReadFactProvenanceBatchAsync(
@@ -602,7 +624,14 @@ internal sealed partial class LexiconService(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "Lexicon match failed.");
+            if (cleanOnly)
+            {
+                logger.LogWarning("Clean Lexicon match failed.");
+            }
+            else
+            {
+                logger.LogWarning(ex, "Lexicon match failed.");
+            }
 
             return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon search failed.");
         }
@@ -733,6 +762,7 @@ internal sealed partial class LexiconService(
         HashSet<Guid> seenIds,
         HashSet<string> shadowedNames,
         List<LexiconEntryDto> ordered,
+        bool cleanOnly,
         CancellationToken cancellationToken)
     {
         int remaining = limit - ordered.Count;
@@ -753,7 +783,7 @@ internal sealed partial class LexiconService(
 
         HashSet<string> exactNames = new(StringComparer.Ordinal);
 
-        await FillExactMatchesAsync(connection, scopeKey, unshadowed, remaining, exactHits, seenIds, exactNames, cancellationToken).ConfigureAwait(false);
+        await FillExactMatchesAsync(connection, scopeKey, unshadowed, remaining, exactHits, seenIds, exactNames, cleanOnly, cancellationToken).ConfigureAwait(false);
 
         List<LexiconEntryDto> ftsHits = new(Math.Max(0, remaining - exactHits.Count));
 
@@ -763,7 +793,7 @@ internal sealed partial class LexiconService(
 
             if (unresolved.Count > 0)
             {
-                await FillFtsMatchesAsync(connection, scopeKey, unresolved, remaining - exactHits.Count, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+                await FillFtsMatchesAsync(connection, scopeKey, unresolved, remaining - exactHits.Count, seenIds, ftsHits, cleanOnly, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -788,6 +818,7 @@ internal sealed partial class LexiconService(
         List<LexiconEntryDto> exactHits,
         HashSet<Guid> seenIds,
         HashSet<string> exactNames,
+        bool cleanOnly,
         CancellationToken cancellationToken)
     {
         bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -796,7 +827,7 @@ internal sealed partial class LexiconService(
 
         StringBuilder sql = new();
         _ = sql.Append("SELECT ")
-            .Append(EntryColumnsFor(curation))
+            .Append(cleanOnly ? CleanRecallColumns(curation, "lexicon_entries") : EntryColumnsFor(curation))
             .Append(" FROM lexicon_entries WHERE NameNormalized IN (");
 
         for (int i = 0; i < normalized.Count; i++)
@@ -815,6 +846,7 @@ internal sealed partial class LexiconService(
 
         _ = sql.Append(") AND ScopeCampaignId = @scopeKey")
             .Append(curation ? " AND RetiredAtUtc IS NULL" : "")
+            .Append(cleanOnly ? CleanRecallPredicate("lexicon_entries") : "")
             .Append(" ORDER BY UpdatedAt DESC LIMIT @limit");
 
         AddParameter(cmd, "@scopeKey", scopeKey);
@@ -845,6 +877,7 @@ internal sealed partial class LexiconService(
         int remaining,
         HashSet<Guid> seenIds,
         List<LexiconEntryDto> ftsHits,
+        bool cleanOnly,
         CancellationToken cancellationToken)
     {
         string matchQuery = BuildFtsMatchQuery(unresolved);
@@ -856,13 +889,20 @@ internal sealed partial class LexiconService(
 
         try
         {
-            await FillFtsMatchesViaMatchAsync(connection, scopeKey, matchQuery, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+            await FillFtsMatchesViaMatchAsync(connection, scopeKey, matchQuery, remaining, seenIds, ftsHits, cleanOnly, cancellationToken).ConfigureAwait(false);
         }
         catch (SqliteException ex)
         {
-            logger.LogWarning(ex, "Lexicon FTS MATCH failed; falling back to LIKE search.");
+            if (cleanOnly)
+            {
+                logger.LogWarning("Clean Lexicon FTS MATCH failed; falling back to LIKE search.");
+            }
+            else
+            {
+                logger.LogWarning(ex, "Lexicon FTS MATCH failed; falling back to LIKE search.");
+            }
 
-            await FillFtsMatchesViaLikeAsync(connection, scopeKey, unresolved, remaining, seenIds, ftsHits, cancellationToken).ConfigureAwait(false);
+            await FillFtsMatchesViaLikeAsync(connection, scopeKey, unresolved, remaining, seenIds, ftsHits, cleanOnly, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -873,6 +913,7 @@ internal sealed partial class LexiconService(
         int remaining,
         HashSet<Guid> seenIds,
         List<LexiconEntryDto> ftsHits,
+        bool cleanOnly,
         CancellationToken cancellationToken)
     {
         bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -885,13 +926,11 @@ internal sealed partial class LexiconService(
         // support it; mathematical boosting lives only in bm25().
         cmd.CommandText =
             $"""
-            SELECT e.Id, e.Name, e.Type, e.FactsJson, e.UpdatedAt, e.ScopeCampaignId,
-                   {(curation ? "e.RetiredAtUtc" : "NULL")} AS RetiredAtUtc,
-                   {(curation ? "e.PinnedAtUtc" : "NULL")} AS PinnedAtUtc,
-                   {(curation ? "e.CurationGeneration" : "1")} AS CurationGeneration
+            SELECT {RecallMatchColumns(curation, cleanOnly, "e")}
             FROM lexicon_fts
             INNER JOIN lexicon_entries e ON e.rowid = lexicon_fts.rowid
             WHERE lexicon_fts MATCH @query AND e.ScopeCampaignId = @scopeKey {(curation ? "AND e.RetiredAtUtc IS NULL" : "")}
+                {(cleanOnly ? CleanRecallPredicate("e") : "")}
             ORDER BY bm25(lexicon_fts, 3.0, 2.0, 1.0) ASC
             LIMIT @limit
             """;
@@ -927,6 +966,7 @@ internal sealed partial class LexiconService(
         int remaining,
         HashSet<Guid> seenIds,
         List<LexiconEntryDto> ftsHits,
+        bool cleanOnly,
         CancellationToken cancellationToken)
     {
         bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -935,9 +975,10 @@ internal sealed partial class LexiconService(
 
         StringBuilder sql = new();
         _ = sql.Append("SELECT ")
-            .Append(EntryColumnsFor(curation))
+            .Append(cleanOnly ? CleanRecallColumns(curation, "lexicon_entries") : EntryColumnsFor(curation))
             .Append(" FROM lexicon_entries WHERE ScopeCampaignId = @scopeKey")
             .Append(curation ? " AND RetiredAtUtc IS NULL" : "")
+            .Append(cleanOnly ? CleanRecallPredicate("lexicon_entries") : "")
             .Append(" AND (");
 
         AddParameter(cmd, "@scopeKey", scopeKey);

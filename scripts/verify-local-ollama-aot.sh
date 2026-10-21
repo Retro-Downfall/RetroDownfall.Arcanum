@@ -22,7 +22,7 @@ Usage: verify-local-ollama-aot.sh --executable <published-apphost> --image <png>
 Local qualification options:
   --executable <path>    Existing Native AOT Arcanum apphost. This wrapper never publishes it.
   --image <path>         The qualified stop-sign PNG (exact SHA-256 is checked).
-  --model <tag>          Installed Ollama vision model (tools required with --perplexity; default: gemma4:e4b).
+  --model <tag>          Installed Ollama vision model with tools (default: gemma4:e4b).
   --endpoint <uri>       Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
   --perplexity          Also require a live Perplexity search and parsed citation recall (paid network).
   --perplexity-key-variable <name> Credential environment-variable name, never a key value.
@@ -30,9 +30,11 @@ Local qualification options:
 
 The test creates and removes an isolated temporary Arcanum home. It never reads or writes the
 operator's Arcanum configuration, never starts or stops Ollama, and never publishes a product.
-It refuses GitHub Actions and proves three persisted turns (four with --perplexity), attachment
-v1/v2 replacement across an Arcanum host restart, latest-version selection, and the fixed PNG
-vision fixture. It does not claim in-place transcript or memory editing.
+It refuses GitHub Actions and proves four persisted turns (five with --perplexity), attachment
+v1/v2 replacement across an Arcanum host restart, latest-version selection, the fixed PNG vision
+fixture, and one attended recall_memory call against an operator-confirmed test memory. The recall
+turn must return the actual source version, preserve its opaque tool-call correlation and persisted
+exchange, and leave the source unchanged. It does not claim in-place transcript or memory editing.
 EOF
 }
 
@@ -259,7 +261,7 @@ reject_warnings "$BUILD_LOG"
 rm -f "$QUALIFICATION_RECEIPT"
 
 echo "==> Running isolated Native AOT + Ollama qualification (cold turns may take up to 3 minutes)"
-# The one selected test spends up to two 3-minute host starts and up to four 3-minute cold model turns
+# The one selected test spends up to two 3-minute host starts and up to five 3-minute cold model turns
 # plus its own 45-second steps, so the suite-wide 15 minute hang bound would kill a slow but live
 # local model. Thirty minutes still names and kills a test host that has stopped making progress.
 ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION=1 \

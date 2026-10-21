@@ -9562,7 +9562,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         ICanonicalCampaignContextResolver? campaignResolver = null,
         RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker? healthTracker = null,
         PromptCacheDispatchValidator? cacheValidator = null,
-        RetroDownfall.Arcanum.Api.Intelligence.Subagents.ISubagentRunner? subagentRunner = null)
+        RetroDownfall.Arcanum.Api.Intelligence.Subagents.ISubagentRunner? subagentRunner = null,
+        RetroDownfall.Arcanum.Core.Memory.IMemoryRecallCandidateReader? memoryRecallReader = null)
     {
         settings ??= DefaultSettings();
 
@@ -9618,6 +9619,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         sessionAttachmentStore ??= new NoOpSessionAttachmentStore();
 
         ServiceCollection ordinaryServices = new();
+
+        if (memoryRecallReader is not null)
+        {
+            ordinaryServices.AddSingleton(memoryRecallReader);
+        }
 
         ordinaryServices.AddSingleton<IGrimoireOrdinaryConnectionFactory>(
             ordinaryConnections ?? new FixtureOrdinaryConnectionFactory());

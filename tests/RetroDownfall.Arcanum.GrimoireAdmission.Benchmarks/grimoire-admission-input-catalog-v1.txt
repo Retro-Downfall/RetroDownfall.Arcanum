@@ -406,6 +406,8 @@ R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureDigestGrammar.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureEffectFacts.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureIdentity.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryErasureKey.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryRecallContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Memory/MemoryRecallPager.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewOutcomes.cs
 R	src/RetroDownfall.Arcanum.Core/Memory/MemoryReviewTokenFacts.cs
@@ -966,6 +968,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaExtractionCursorResolver.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryScopeClassifier.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Curation.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Ranking.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.Recall.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaRetirementSuppression.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/SagaSuppressionKeyStore.cs
@@ -1966,6 +1969,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/WebResearchC
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/WebResearchJsonContext.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/WebResearchProviderCatalog.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/WebResearch/WebResearchTelemetry.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CleanRecall.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Correction.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CurationInspection.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.Erasure.cs
@@ -2059,6 +2063,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureProtocol.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureRelease.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureScrubber.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryErasureTokens.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryRecallCandidateReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewReceiptKeys.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/MemoryReviewTokenCodec.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Memory/SagaMemoryErasureService.cs

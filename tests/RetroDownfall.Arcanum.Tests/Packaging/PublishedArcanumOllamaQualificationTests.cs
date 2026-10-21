@@ -17,7 +17,7 @@ using DiagnosticsProcess = System.Diagnostics.Process;
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
 [Collection(LocalNativeAotOllamaQualificationCollection.Name)]
-public sealed class PublishedArcanumOllamaQualificationTests
+public sealed partial class PublishedArcanumOllamaQualificationTests
 {
     private const string OptInVariable = "ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION";
 
@@ -581,6 +581,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                 searchPrompt,
                 beforeRestartRows);
 
+            await RunNativeMemoryRecallAsync(api, hostPort, masterApiKey, model, workspace, sessionId);
+
             await StopHostAsync(api, restartedHost, TimeSpan.FromSeconds(45));
 
             AssertNoPlaintextCredentialFiles(
@@ -1103,7 +1105,7 @@ public sealed class PublishedArcanumOllamaQualificationTests
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = endpoint.AbsoluteUri,
                         CredentialEnvironmentVariable = ProviderKeyVariable,
-                        Models = [new ModelEntry(model, SupportsVision: true, SupportsTools: perplexity)],
+                        Models = [new ModelEntry(model, SupportsVision: true, SupportsTools: true)],
                         ContextWindowLimit = 131_072,
                     },
                 ],
@@ -1130,7 +1132,8 @@ public sealed class PublishedArcanumOllamaQualificationTests
                     Guardrails = false,
                     WorkspaceChecks = false,
                     MemoryManagement = false,
-                    Covenant = false,
+                    Covenant = true,
+                    AgentMemoryRecall = true,
                     CampaignScopedMemory = false,
                     Annals = false,
                     Conclave = false,

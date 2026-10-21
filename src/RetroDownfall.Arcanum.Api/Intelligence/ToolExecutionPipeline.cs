@@ -1284,7 +1284,9 @@ public sealed class ToolExecutionPipeline(
 
         await RecordUngatedWardResolutionAsync(
                 toolName,
-                turnContext.ProtectedContent ? string.Empty : argsSnapshot,
+                turnContext.ProtectedContent
+                    || string.Equals(toolName, ArcanumBuiltInToolNames.RecallMemory, StringComparison.OrdinalIgnoreCase)
+                        ? string.Empty : argsSnapshot,
                 metricToolName,
                 wardEvents,
                 cancellationToken,
@@ -1625,6 +1627,11 @@ public sealed class ToolExecutionPipeline(
             fcc,
             chatOptions,
             cancellationToken).ConfigureAwait(false);
+
+        if (rawResult is Tools.MemoryRecallToolResult recall)
+        {
+            return (recall.Text, false, recall.Sensitivity);
+        }
 
         if (rawResult is MemoryDelegationToolResult delegated)
         {

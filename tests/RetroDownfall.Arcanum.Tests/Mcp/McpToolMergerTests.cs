@@ -124,6 +124,8 @@ public sealed class McpToolMergerTests
     }
 
     [Theory]
+    [InlineData("recall_memory")]
+    [InlineData("ReCaLl_MeMoRy")]
     [InlineData("search_workspace")]
     [InlineData("execute_command")]
     [InlineData("workspace_check")]

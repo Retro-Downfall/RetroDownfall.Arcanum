@@ -35,6 +35,8 @@ using RetroDownfall.Arcanum.Core.Mcp;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Core.Lexicon;
+using RetroDownfall.Arcanum.Core.Memory;
+using RetroDownfall.Arcanum.Api.Intelligence.MemoryRecall;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Api.Intelligence.Tools;
@@ -109,6 +111,16 @@ public sealed partial class WizardIntelligenceProvider(
     /// receipt into a description of a prompt that never went out.
     /// </remarks>
     private const ulong CovenantSectionFramingTokenAllowance = 64;
+
+    private sealed class CovenantScopeOwnership(CovenantTurnScope scope, ArcanumInvocationContext invocation,
+        MemoryRecallResponseLifetime? recallResponses) : IAsyncDisposable
+    {
+        private int _disposed;
+
+        public ValueTask DisposeAsync() =>
+            Interlocked.Exchange(ref _disposed, 1) != 0 || recallResponses?.TryRetain(invocation, scope) == true
+                ? ValueTask.CompletedTask : scope.DisposeAsync();
+    }
 
     private readonly TokenAccountingDependencies _tokenAccounting =
         TokenAccountingDependencies.Create(
@@ -683,6 +695,9 @@ public sealed partial class WizardIntelligenceProvider(
 
         CovenantTurnScope covenantScope = covenantAcquisition.Value;
 
+        CovenantScopeOwnership covenantScopeOwner = new(covenantScope, invocationContext,
+            serviceProvider?.GetService<MemoryRecallResponseLifetime>());
+
         if (memoryDelegation is not null) covenantScope.BindProtection(memoryDelegation.CaptureOutputProtection);
 
         try
@@ -746,7 +761,7 @@ public sealed partial class WizardIntelligenceProvider(
         }
         finally
         {
-            await covenantScope.DisposeAsync().ConfigureAwait(false);
+            await covenantScopeOwner.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -1062,7 +1077,10 @@ public sealed partial class WizardIntelligenceProvider(
             yield break;
         }
 
-        await using CovenantTurnScope streamCovenantScope = covenantAcquisition.Value;
+        CovenantTurnScope streamCovenantScope = covenantAcquisition.Value;
+
+        await using CovenantScopeOwnership streamCovenantOwner = new(streamCovenantScope, invocationContext,
+            serviceProvider?.GetService<MemoryRecallResponseLifetime>());
 
         if (!resilienceEnabled)
         {
@@ -2751,7 +2769,9 @@ public sealed partial class WizardIntelligenceProvider(
                     grimoireTurn.SessionId ?? request.SessionId,
                     grimoireTurn.AssistantEntryId,
                     inferenceToken,
-                    memoryDelegation: memoryDelegation).ConfigureAwait(false);
+                    memoryDelegation: memoryDelegation,
+                    recallInvocation: invocationContext,
+                    recallTurn: covenantScope).ConfigureAwait(false);
 
         ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
             request,
@@ -4034,7 +4054,9 @@ public sealed partial class WizardIntelligenceProvider(
 
                             auditContext?.ToolNames.Add(processed.ToolName);
 
-                            auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null ? processed.ArgsSnapshot : string.Empty);
+                            auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null
+                                && !string.Equals(processed.ToolName, ArcanumBuiltInToolNames.RecallMemory, StringComparison.OrdinalIgnoreCase)
+                                    ? processed.ArgsSnapshot : string.Empty);
 
                             ToolExecutionPipeline.AppendToolExchangeToMessages(
                                 chatMessages,
@@ -7029,7 +7051,9 @@ public sealed partial class WizardIntelligenceProvider(
         Guid? assistantEntryIdForTurn,
         CancellationToken cancellationToken,
         List<ContextPreviewTool>? previewExclusions = null,
-        MemoryDelegationRootBinding? memoryDelegation = null)
+        MemoryDelegationRootBinding? memoryDelegation = null,
+        ArcanumInvocationContext? recallInvocation = null,
+        CovenantTurnScope? recallTurn = null)
     {
         if (request.DisableAllTools)
         {
@@ -7041,6 +7065,21 @@ public sealed partial class WizardIntelligenceProvider(
         ParsedSpell? activeSpell = resolvedSpell?.Primary;
 
         List<AITool> tools = [_localTimeTool, _systemInfoTool];
+
+        if (recallInvocation is not null
+            && ArcanumMemoryRecallTool.IsEligible(request, recallInvocation, settings.Value.Features.AgentMemoryRecall)
+            && (activeSpell?.SkillMetadata?.DeclaredTools is not { Count: > 0 } recallDeclared
+                || recallDeclared.Contains(ArcanumBuiltInToolNames.RecallMemory, StringComparer.OrdinalIgnoreCase))
+            && serviceProvider?.GetService<IMemoryRecallCandidateReader>() is { } recallReader)
+        {
+            var recallSettings = serviceProvider.GetService<IOptionsMonitor<ArcanumSettings>>();
+
+            tools.Add(new ArcanumMemoryRecallTool(recallReader, request, recallInvocation, recallTurn,
+                settings.Value.Features.AgentMemoryRecall, settings.Value.Features.CampaignScopedMemory,
+                (int)ArcanumSettingClamps.ToolOutputCapBytes(settings.Value.ResolveIntelligence().ToolOutputCapBytes),
+                serviceProvider.GetService<ICovenantAuthoritySnapshotProvider>(),
+                enabledNow: () => recallSettings?.CurrentValue.Features.AgentMemoryRecall ?? settings.Value.Features.AgentMemoryRecall));
+        }
 
         if (subagentRunner is not null)
         {
@@ -7330,6 +7369,7 @@ public sealed partial class WizardIntelligenceProvider(
         "list_directory",
         "read_lore",
         "search_archives",
+        ArcanumBuiltInToolNames.RecallMemory,
         "attach_session_file",
         "refresh_session_file",
         ToolRiskClassifier.SearchWorkspaceToolName,

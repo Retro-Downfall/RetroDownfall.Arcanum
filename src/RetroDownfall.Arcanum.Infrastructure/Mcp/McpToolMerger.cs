@@ -39,6 +39,8 @@ internal static class McpToolMerger
             CovenantToolNames.ProposeCovenant,
 
             CovenantToolNames.RetireCovenant,
+
+            ArcanumBuiltInToolNames.RecallMemory,
         };
 
     /// <summary>

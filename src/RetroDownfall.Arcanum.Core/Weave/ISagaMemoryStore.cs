@@ -140,6 +140,17 @@ public interface ISagaMemoryStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// One bounded local subject-recall window, excluding protected content, retired memories,
+    /// missing embeddings and unavailable owners inside the same read snapshot as its content.
+    /// </summary>
+    Task<SagaMemoryCurationRow[]> ListCleanRecallRowsAsync(
+        string query,
+        MemoryScope scope,
+        int limit,
+        CancellationToken cancellationToken) =>
+        Task.FromException<SagaMemoryCurationRow[]>(new NotSupportedException("Clean Saga recall is unavailable."));
+
+    /// <summary>
     /// One bounded page of memory positions for a walk that removes what it reads: every memory, in one
     /// total order, strictly after <paramref name="after"/>, or from the newest when it is
     /// <see langword="null"/>.

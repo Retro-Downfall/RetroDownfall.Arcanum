@@ -1500,6 +1500,8 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<ISagaMemoryStore, SagaMemoryStore>();
 
+        services.AddScoped<IMemoryRecallCandidateReader, MemoryRecallCandidateReader>();
+
         // Same lifetime and DbContext as the store: extraction's page gate and pre-embed check ask
         // the store's own connection what the insert chokepoint will later decide.
         services.AddScoped<SagaErasureWriteGate>();

@@ -98,16 +98,29 @@ internal static class ArcanumInvocationContexts
 
         bool campaignTurn = IsCampaignTurn(settings, request, campaign, ResolveContextPolicy(httpContext));
 
-        if (campaignTurn)
+        bool recallTurn = settings?.Features.AgentMemoryRecall is true
+            && !request.UnattendedMode && !request.DisableAllTools && !request.ForwardClientTools
+            && request.ToolPolicy is null or ToolPolicy.AllTools or ToolPolicy.ReadOnlyTools or ToolPolicy.NoForbiddenArts
+            && campaign is { } recallCampaign && recallCampaign != default
+            && ResolveContextPolicy(httpContext) is CovenantContextPolicy.Default;
+
+        if (campaignTurn || recallTurn)
         {
             // Maintenance turns use their durable claim and authoritative native answer for replay.
             // Mark before preparation can await: even an idle stream's first heartbeat seals headers.
             CovenantRequestFeatures.MarkProtectedResponse(httpContext);
         }
 
-        return request.SessionId is not null || campaignTurn
+        ArcanumInvocationContext invocation = request.SessionId is not null || campaignTurn
             ? ForSessionTurn(httpContext, request, campaign)
             : ForStatelessTurn(httpContext, request, campaign);
+
+        if (recallTurn)
+        {
+            httpContext.RequestServices?.GetService<MemoryRecall.MemoryRecallResponseLifetime>()?.Bind(invocation);
+        }
+
+        return invocation;
     }
 
     /// <summary>

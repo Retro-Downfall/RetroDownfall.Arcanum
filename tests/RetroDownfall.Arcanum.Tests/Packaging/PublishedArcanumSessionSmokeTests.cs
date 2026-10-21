@@ -280,6 +280,8 @@ public sealed class PublishedArcanumSessionSmokeTests
 
             await ExerciseMemoryDelegationAsync(client, provider, priorCalls: 7, deadline.Token);
 
+            await ExerciseMemoryRecallAsync(client, provider, priorCalls: 10, deadline.Token);
+
             await AssertCampaignRegistrationFoldsUnicodeNormalizationAsync(
                 client,
                 testHome,
@@ -998,8 +1000,82 @@ public sealed class PublishedArcanumSessionSmokeTests
         return new(sessionId, callEntry.Id, resultEntry.Id, finalEntry.Id);
     }
 
+    internal const string RecallPrompt = "published-recall-parent";
+
+    internal const string RecallMemory = "The native recall festival uses silver lanterns.";
+
+    internal const string RecallFinal = "published-recall-complete";
+
+    internal static async Task<Guid> ExerciseMemoryRecallAsync(HttpClient client, FakeOpenAiProvider provider,
+        int priorCalls, CancellationToken ct)
+    {
+        var driver = new MemoryErasureRouteDriver(client);
+
+        var selected = await driver.SetCovenantAsync(CovenantScope.Global, null, "published.recall.festival", RecallMemory, ct);
+
+        using var create = await client.PostAsync("api/sessions",
+            JsonContent.Create(new CreateSessionRequest(null, "published recall"), ArcanumJsonContext.Default.CreateSessionRequest), ct);
+
+        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
+
+        Guid sessionId = (await ReadDataAsync(create, ArcanumJsonContext.Default.ApiResponseSessionDetailDto, ct)).Id;
+
+        var request = new PingRequest(RecallPrompt, Model: ExpectedModel, SessionId: sessionId,
+            DisableMcpTools: true, SkipSpellRouting: true, MaxOutputTokens: 256);
+
+        using var response = await client.PostAsync("api/intelligence/ping",
+            JsonContent.Create(request, ArcanumJsonContext.Default.PingRequest), ct);
+
+        string diagnostic = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.True(response.StatusCode == HttpStatusCode.OK, $"Recall returned {(int)response.StatusCode}: {diagnostic}; provider calls={provider.RequestCount}.");
+
+        AssertProtectedHeaders(response);
+
+        Assert.Equal(RecallFinal, (await ReadDataAsync(response, ArcanumJsonContext.Default.ApiResponsePromptResponseDto, ct)).Text);
+
+        Assert.Equal(priorCalls + 2, provider.RequestCount);
+
+        var calls = provider.Requests.Skip(priorCalls).ToArray();
+
+        Assert.Equal(2, calls.Length);
+
+        var function = Assert.Single(calls[0].Payload.GetProperty("tools").EnumerateArray(),
+            tool => tool.GetProperty("function").GetProperty("name").GetString() == "recall_memory").GetProperty("function");
+
+        Assert.False(function.GetProperty("parameters").GetProperty("additionalProperties").GetBoolean());
+
+        var toolResult = Assert.Single(calls[1].Payload.GetProperty("messages").EnumerateArray(),
+            message => message.GetProperty("role").GetString() == "tool");
+
+        Assert.Equal("call-published-recall", toolResult.GetProperty("tool_call_id").GetString());
+
+        string content = toolResult.GetProperty("content").GetRawText();
+
+        Assert.Contains(RecallMemory, content);
+
+        Assert.Contains(selected.ResultingVersionId!.Value.ToString("D"), content);
+
+        using var entriesResponse = await client.GetAsync($"api/sessions/{sessionId:D}/entries?limit=20", ct);
+
+        AssertProtectedHeaders(entriesResponse);
+
+        var entries = await ReadDataAsync(entriesResponse, ArcanumJsonContext.Default.ApiResponseEntryDtoArray, ct);
+
+        Assert.Single(entries, entry => entry.ToolName == "recall_memory");
+
+        Assert.Single(entries, entry => entry.Content.StartsWith("[ToolResult:", StringComparison.Ordinal)
+            && entry.Content.Contains(RecallMemory, StringComparison.Ordinal));
+
+        Assert.Single(entries, entry => entry.Content == RecallFinal);
+
+        return sessionId;
+    }
+
     private static void AssertProtectedHeaders(HttpResponseMessage response)
     {
+        Assert.NotNull(response.Headers.CacheControl);
+
         Assert.Equal("no-store, private", response.Headers.CacheControl!.ToString());
         Assert.Equal("no-cache", response.Headers.Pragma.ToString());
         Assert.Equal("0", Assert.Single(response.Content.Headers.GetValues("Expires")));
@@ -1056,6 +1132,7 @@ public sealed class PublishedArcanumSessionSmokeTests
                     WorkspaceChecks = false,
                     Annals = false,
                     Covenant = true,
+                    AgentMemoryRecall = true,
                 },
                 Workspaces = new WorkspaceSettings
                 {
@@ -1239,6 +1316,8 @@ public sealed class PublishedArcanumSessionSmokeTests
 
         private int? _ordinaryStart;
 
+        private int? _recallStart;
+
         internal const string OrdinaryToolPrompt = "published-ordinary-protected-tool";
 
         internal const string OrdinaryToolFinal = "published-ordinary-protected-final";
@@ -1294,6 +1373,26 @@ public sealed class PublishedArcanumSessionSmokeTests
                 bool streaming = request.RootElement.TryGetProperty("stream", out var stream) && stream.GetBoolean();
 
                 int count = Interlocked.Increment(ref provider!._requestCount);
+
+                if (provider._recallStart is null && prompt == RecallPrompt) provider._recallStart = count;
+
+                if (provider._recallStart is { } recallStart)
+                {
+                    int recallPhase = count - recallStart;
+
+                    if (recallPhase > 1)
+                    {
+                        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+                        return;
+                    }
+
+                    provider._requests.Enqueue(new ProviderRequest(model, authorization, prompt, streaming, request.RootElement.Clone()));
+
+                    await WriteRecallAsync(context, recallPhase, streaming);
+
+                    return;
+                }
                 // The dedicated parent marker begins one bounded scenario; default fixtures retain seven sends.
                 if (provider._delegationStart is null && prompt == DelegationParentPrompt) provider._delegationStart = count;
 
@@ -1378,6 +1477,25 @@ public sealed class PublishedArcanumSessionSmokeTests
                 + "\":{" + message + "},\"finish_reason\":\"" + (phase == 0 ? "tool_calls" : "stop")
                 + "\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":4,\"total_tokens\":24}}";
             context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
+            await context.Response.WriteAsync(streaming ? "data: " + body + "\n\ndata: [DONE]\n\n" : body, context.RequestAborted);
+        }
+
+        private static async Task WriteRecallAsync(HttpContext context, int phase, bool streaming)
+        {
+            const string arguments = "{\"query\":\"festival\",\"scope\":\"Covenant\",\"limit\":2}";
+
+            string message = phase == 0
+                ? "\"role\":\"assistant\",\"tool_calls\":[{" + (streaming ? "\"index\":0," : "")
+                    + "\"id\":\"call-published-recall\",\"type\":\"function\",\"function\":{\"name\":\"recall_memory\",\"arguments\":\"" + JsonEncodedText.Encode(arguments) + "\"}}]"
+                : "\"role\":\"assistant\",\"content\":\"" + RecallFinal + "\"";
+
+            string body = "{\"id\":\"chatcmpl-recall\",\"object\":\"" + (streaming ? "chat.completion.chunk" : "chat.completion")
+                + "\",\"created\":0,\"model\":\"published-smoke-model\",\"choices\":[{\"index\":0,\"" + (streaming ? "delta" : "message")
+                + "\":{" + message + "},\"finish_reason\":\"" + (phase == 0 ? "tool_calls" : "stop")
+                + "\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":4,\"total_tokens\":24}}";
+
+            context.Response.ContentType = streaming ? "text/event-stream" : "application/json";
+
             await context.Response.WriteAsync(streaming ? "data: " + body + "\n\ndata: [DONE]\n\n" : body, context.RequestAborted);
         }
 

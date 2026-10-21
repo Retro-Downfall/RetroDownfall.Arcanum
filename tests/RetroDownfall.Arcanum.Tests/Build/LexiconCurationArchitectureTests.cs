@@ -14,6 +14,8 @@ public sealed class LexiconCurationArchitectureTests
 {
     private const string Service = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.cs";
 
+    private const string CleanRecall = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CleanRecall.cs";
+
     private const string Inspection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.CurationInspection.cs";
 
     private const string Projection = "RetroDownfall.Arcanum.Infrastructure/Lexicon/LexiconService.InspectionProjection.cs";
@@ -94,6 +96,33 @@ public sealed class LexiconCurationArchitectureTests
         Assert.Equal(expected.Split(','), ProjectionColumns(SqlText(Method(path, method), legacy: true), query));
     }
 
+    [Theory]
+    [InlineData("FillExactMatchesAsync")]
+    [InlineData("FillFtsMatchesViaMatchAsync")]
+    [InlineData("FillFtsMatchesViaLikeAsync")]
+    public void Clean_recall_projections_preserve_ordinals_and_apply_guards_before_limit(string method)
+    {
+        foreach (bool legacy in new[] { false, true })
+        {
+            string sql = SqlText(Method(Service, method), legacy, cleanOnly: true);
+
+            Assert.Equal(EntryColumns.Split(','), ProjectionColumns(sql, 0));
+
+            Assert.Equal(!legacy, sql.Contains("RetiredAtUtc IS NULL", StringComparison.Ordinal));
+
+            foreach (string guard in new[] { "artifact_sensitivity", "owner_deletion_events", "annal_heads", "version.SensitivityCode <> 0", "version.OperationCode = 3", "lexicon_fact_attachment_provenance" })
+            {
+                int position = sql.IndexOf(guard, StringComparison.Ordinal);
+
+                Assert.True(position >= 0 && position < sql.LastIndexOf("LIMIT", StringComparison.Ordinal), guard);
+            }
+
+            Assert.Contains("length(CAST(e.FactsJson AS BLOB)) <= 65536", sql, StringComparison.Ordinal);
+
+            Assert.Contains("ELSE NULL END", sql, StringComparison.Ordinal);
+        }
+    }
+
     public static TheoryData<string, string, string> Readers => new()
     {
         { Service, "ReadEntry", "GetString:0,GetString:1,GetString:2,GetString:3,GetString:4,GetString:5,GetString:6,GetString:7,ReadPositiveInteger:8" },
@@ -157,7 +186,8 @@ public sealed class LexiconCurationArchitectureTests
             .Select(method => method.Identifier.ValueText).Order(StringComparer.Ordinal)];
 
         Assert.Equal(Projections.Where(row => (string)row[0] is Service or Inspection or Projection or Review or Erasure).Select(row => (string)row[1])
-            .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
+            .Append("VersionColumnsFor").Append("InspectionEvidenceColumns").Append("CleanRecallPredicate")
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal), projected);
 
         foreach (string method in new[] { "FillExactMatchesAsync", "FillFtsMatchesViaMatchAsync", "FillFtsMatchesViaLikeAsync", "ReadNamedEntryAsync" })
         {
@@ -239,12 +269,23 @@ public sealed class LexiconCurationArchitectureTests
 
         foreach ((string caller, string callee) in new (string, string)[]
         {
-            ("MatchEntitiesAsync", "FillTierAsync"), ("FillTierAsync", "FillExactMatchesAsync"),
+            ("MatchEntitiesAsync", "MatchEntitiesCoreAsync"), ("MatchCleanEntitiesAsync", "MatchEntitiesCoreAsync"),
+            ("MatchEntitiesCoreAsync", "FillTierAsync"), ("FillTierAsync", "FillExactMatchesAsync"),
             ("FillTierAsync", "FillFtsMatchesAsync"), ("FillFtsMatchesAsync", "FillFtsMatchesViaMatchAsync"),
             ("FillFtsMatchesAsync", "FillFtsMatchesViaLikeAsync"),
         })
         {
             Assert.True(Calls(Method(Service, caller), callee), caller + " must reach " + callee);
+        }
+
+        foreach ((string entryPoint, string cleanOnly) in new[] { ("MatchEntitiesAsync", "false"), ("MatchCleanEntitiesAsync", "true") })
+        {
+            InvocationExpressionSyntax call = Assert.Single(Method(Service, entryPoint).DescendantNodes().OfType<InvocationExpressionSyntax>());
+
+            Assert.Equal("MatchEntitiesCoreAsync", call.Expression.ToString());
+
+            Assert.Equal(new[] { "entities", "limit", "scope", cleanOnly, "cancellationToken" },
+                call.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
         }
     }
 
@@ -253,7 +294,7 @@ public sealed class LexiconCurationArchitectureTests
     {
         foreach ((string path, string method) in new (string, string)[]
         {
-            (Service, "MatchEntitiesAsync"), (Service, "GetByNameAsync"), (Service, "GetByNameInScopeAsync"),
+            (Service, "MatchEntitiesCoreAsync"), (Service, "GetByNameAsync"), (Service, "GetByNameInScopeAsync"),
             (Annals, "GetVersionsAsync"), (Annals, "GetLexiconFactProvenanceAsync"),
             ("RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "AddLexiconCandidatesAsync"),
         })
@@ -282,6 +323,7 @@ public sealed class LexiconCurationArchitectureTests
         {
             ["RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs"] = ["MatchEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Daemons/UnseenServantDaemonJob.cs"] = ["GetByNameAsync"],
+            ["RetroDownfall.Arcanum.Infrastructure/Memory/MemoryRecallCandidateReader.cs"] = ["MatchCleanEntitiesAsync"],
             ["RetroDownfall.Arcanum.Infrastructure/Mcp/InternalTools/ArcanumInternalToolServer.LexiconTools.cs"] = ["DeleteByNameAsync", "FindAgentDeletionTargetAsync", "FindAllLifecycleIdentityForDeletionAsync", "UpsertAsync", "UpsertAsync"],
             ["RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs"] = ["CountInspectionAsync", "DeleteByNameAsync", "FindAllLifecycleIdentityForDeletionAsync", "ListInspectionAsync", "SearchInspectionAsync", "ShowEffectiveAsync"],
             ["RetroDownfall.Arcanum.Api/Tower/LexiconCurationEndpoints.cs"] = ["CorrectAsync", "PinAsync", "ReinstateAsync", "RetireAsync", "ShowExactAsync", "UnpinAsync"],
@@ -372,6 +414,7 @@ public sealed class LexiconCurationArchitectureTests
     [Theory]
     [InlineData("SELECT a, nested(x, y), c FROM table", new[] { "a", "nested(x, y)", "c" })]
     [InlineData("SELECT a, (SELECT x FROM other) AS evidence, c FROM table", new[] { "a", "evidence", "c" })]
+    [InlineData("SELECT CASE WHEN length(CAST(e.FactsJson AS BLOB)) <= 65536 THEN e.FactsJson ELSE NULL END, e.Id FROM table", new[] { "FactsJson", "Id" })]
     public void Projection_parser_counts_nested_expressions_as_one_column(string sql, string[] expected)
     {
         Assert.Equal(expected, ProjectionColumns(sql, 0));
@@ -497,8 +540,11 @@ public sealed class LexiconCurationArchitectureTests
 
                     int alias = column.LastIndexOf(" AS ", StringComparison.Ordinal);
 
-                    columns.Add(alias >= 0 ? column[(alias + 4)..] : column.StartsWith("EXISTS(", StringComparison.Ordinal)
-                        ? "SourceAvailable" : Regex.Replace(column, @"^\w+\.", string.Empty));
+                    Match boundedColumn = Regex.Match(column, @"^CASE WHEN .+ THEN (?:\w+\.)?(\w+) ELSE NULL END$", RegexOptions.CultureInvariant);
+
+                    columns.Add(boundedColumn.Success ? boundedColumn.Groups[1].Value
+                        : alias >= 0 ? column[(alias + 4)..] : column.StartsWith("EXISTS(", StringComparison.Ordinal)
+                            ? "SourceAvailable" : Regex.Replace(column, @"^\w+\.", string.Empty));
 
                     columnStart = cursor + 1;
 
@@ -517,7 +563,7 @@ public sealed class LexiconCurationArchitectureTests
         throw new InvalidOperationException("Unterminated SELECT: " + sql);
     }
 
-    private static string SqlText(MethodDeclarationSyntax method, bool legacy = false)
+    private static string SqlText(MethodDeclarationSyntax method, bool legacy = false, bool cleanOnly = false)
     {
         // The named SQL constants a method's command text is built from. ReceiptLookupSql is a whole statement
         // lifted to a constant so a query-plan test can run exactly what the service runs; it is resolved here
@@ -532,9 +578,20 @@ public sealed class LexiconCurationArchitectureTests
 
             if (node is IdentifierNameSyntax identifier && constants.TryGetValue(identifier.Identifier.ValueText, out string? constant)) return constant;
 
+            if (node is IdentifierNameSyntax { Identifier.ValueText: "alias" }) return "e";
+
+            if (node is IdentifierNameSyntax { Identifier.ValueText: "bounded" }) return Expand(Method(CleanRecall, "CleanRecallColumns")
+                .DescendantNodes().OfType<VariableDeclaratorSyntax>().Single(variable => variable.Identifier.ValueText == "bounded").Initializer!.Value);
+
             if (node is InvocationExpressionSyntax invocation && invocation.Expression is IdentifierNameSyntax helper)
             {
                 if (helper.Identifier.ValueText == "EntryColumnsFor") return constants[legacy ? "LegacySelectColumns" : "SelectColumns"];
+
+                if (helper.Identifier.ValueText is "RecallMatchColumns" or "CleanRecallPredicate")
+                    return Expand(Method(CleanRecall, helper.Identifier.ValueText).ExpressionBody!.Expression);
+
+                if (helper.Identifier.ValueText == "CleanRecallColumns") return Expand(Method(CleanRecall, "CleanRecallColumns")
+                    .DescendantNodes().OfType<ReturnStatementSyntax>().Single().Expression!);
 
                 if (helper.Identifier.ValueText == "InspectionEvidenceColumns") return Expand(Method(Projection, "InspectionEvidenceColumns").ExpressionBody!.Expression);
 
@@ -544,9 +601,14 @@ public sealed class LexiconCurationArchitectureTests
             }
 
             if (node is ConditionalExpressionSyntax conditional && conditional.Condition is IdentifierNameSyntax capability
-                && capability.Identifier.ValueText is "curation" or "hasFormat" or "legacySchema")
+                && capability.Identifier.ValueText is "curation" or "hasFormat" or "legacySchema" or "cleanOnly")
             {
-                bool whenTrue = capability.Identifier.ValueText == "legacySchema" ? legacy : !legacy;
+                bool whenTrue = capability.Identifier.ValueText switch
+                {
+                    "legacySchema" => legacy,
+                    "cleanOnly" => cleanOnly,
+                    _ => !legacy,
+                };
 
                 return Expand(whenTrue ? conditional.WhenTrue : conditional.WhenFalse);
             }

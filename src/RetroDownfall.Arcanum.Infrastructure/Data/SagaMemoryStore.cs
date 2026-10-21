@@ -581,7 +581,8 @@ internal sealed partial class SagaMemoryStore(
         int limit,
         int offset,
         bool includeEmbeddingProbe,
-        bool longRest)
+        bool longRest,
+        bool cleanRecall = false)
     {
         StringBuilder sql = new(
             """
@@ -594,6 +595,23 @@ internal sealed partial class SagaMemoryStore(
                    ),
                    m.ScopeKindCode, m.CampaignId, m."RetiredAtUtc", m."PinnedAtUtc"
             """);
+
+        if (cleanRecall)
+        {
+            // A refused payload remains in the candidate window as a null sentinel. The recall port
+            // fails that page explicitly rather than allocating its bytes or silently skipping it.
+            sql.Replace("m.\"Content\"", """
+                CASE WHEN length(CAST(m."Content" AS BLOB)) <= 65536
+                    AND length(CAST(m."Id" AS BLOB)) <= 512
+                    AND (m."Source" IS NULL OR length(CAST(m."Source" AS BLOB)) <= 512)
+                    AND (p.LogicalKey IS NULL OR length(CAST(p.LogicalKey AS BLOB)) <= 512)
+                    AND (p.ContentHash IS NULL OR length(CAST(p.ContentHash AS BLOB)) <= 128)
+                    AND (p.SourceType IS NULL OR length(CAST(p.SourceType AS BLOB)) <= 512)
+                    THEN m."Content" ELSE NULL END AS "Content"
+                """);
+
+            sql.Replace("m.\"Tags\"", "NULL AS Tags");
+        }
 
         if (includeEmbeddingProbe)
         {
@@ -662,6 +680,40 @@ internal sealed partial class SagaMemoryStore(
             }
 
             AddParameter(cmd, "@globalScopeKind", (int)SagaMemoryScopeKind.Global);
+        }
+
+        if (cleanRecall)
+        {
+            // The predicates precede LIMIT and content hydration. Historical label keys are not in
+            // the governed GUID spelling family, so all aliases are excluded conservatively.
+            sql.Append(" AND m.\"RetiredAtUtc\" IS NULL AND EXISTS(SELECT 1 FROM saga_memory_embeddings clean_embedding WHERE clean_embedding.MemoryId = m.\"Id\")");
+
+            sql.Append(" AND ").Append(LongRestRecallSql.Eligible("m", longRest));
+
+            sql.Append("""
+                 AND NOT EXISTS(SELECT 1 FROM artifact_sensitivity clean_label WHERE clean_label.ArtifactKindCode = 6
+                     AND lower(replace(clean_label.ArtifactId, '-', '')) = lower(replace(m."Id", '-', '')))
+                 AND NOT EXISTS(
+                     SELECT 1 FROM annal_claims clean_claim
+                     LEFT JOIN annal_heads clean_head ON clean_head.ClaimId = clean_claim.ClaimId AND clean_head.SubjectStoreCode = 1
+                     LEFT JOIN annal_versions clean_version ON clean_version.VersionId = clean_head.CurrentVersionId AND clean_version.ClaimId = clean_claim.ClaimId
+                     WHERE clean_claim.SubjectStoreCode = 1
+                         AND lower(replace(clean_claim.SubjectId, '-', '')) = lower(replace(m."Id", '-', ''))
+                         AND (clean_head.CurrentVersionId IS NULL OR clean_version.VersionId IS NULL OR clean_version.SensitivityCode <> 0
+                             OR clean_head.CurrentOperationCode = 3 OR clean_version.OperationCode = 3
+                             OR clean_version.ScopeKindCode <> m.ScopeKindCode
+                             OR COALESCE(lower(replace(clean_version.CampaignId, '-', '')), '') <> COALESCE(lower(replace(m.CampaignId, '-', '')), '')
+                             OR EXISTS(SELECT 1 FROM owner_deletion_events clean_source_deleted
+                                 WHERE clean_source_deleted.OwnerKindCode = 2
+                                     AND lower(replace(clean_source_deleted.OwnerId, '-', '')) = lower(replace(clean_version.SourceSessionId, '-', '')))))
+                 AND (m.CampaignId IS NULL OR EXISTS(SELECT 1 FROM "Campaigns" clean_campaign WHERE clean_campaign."Id" = m.CampaignId))
+                 AND (m.SessionId IS NULL OR EXISTS(SELECT 1 FROM "Sessions" clean_session WHERE lower(replace(clean_session."Id", '-', '')) = lower(replace(m.SessionId, '-', ''))))
+                 AND NOT EXISTS(SELECT 1 FROM owner_deletion_events clean_deleted
+                     WHERE (clean_deleted.OwnerKindCode = 1 AND lower(replace(clean_deleted.OwnerId, '-', '')) = lower(replace(m.CampaignId, '-', '')))
+                         OR (clean_deleted.OwnerKindCode = 2 AND lower(replace(clean_deleted.OwnerId, '-', '')) = lower(replace(m.SessionId, '-', '')))
+                         OR (clean_deleted.OwnerKindCode = 1 AND EXISTS(SELECT 1 FROM "Sessions" clean_source_session
+                             WHERE lower(replace(clean_source_session."Id", '-', '')) = lower(replace(m.SessionId, '-', '')) AND clean_source_session.CampaignId = clean_deleted.OwnerId)))
+                """);
         }
 
         // The identity breaks a tie, so the order is total and is the one ListPositionsAfterAsync walks. A

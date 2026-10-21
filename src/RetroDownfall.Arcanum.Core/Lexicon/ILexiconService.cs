@@ -117,6 +117,15 @@ public interface ILexiconService
         LexiconScope scope,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Matches only clean, current, living-owner entities in the same bounded read snapshot.</summary>
+    Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchCleanEntitiesAsync(
+        IReadOnlyList<string> entities,
+        int limit,
+        LexiconScope scope,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<IReadOnlyList<LexiconEntryDto>>.Failure(new Error(
+            ErrorCodes.Lexicon.SearchFailed, "Clean Lexicon recall is unavailable.")));
+
     /// <summary>
     /// Looks up an eligible active entity by case-insensitive name, resolving Campaign before Global.
     /// Retired Campaign rows do not shadow active Global rows; null when neither holds an active row.

@@ -15,6 +15,8 @@ public static class ArcanumBuiltInToolNames
 
     public const string DelegateTask = "delegate_task";
 
+    public const string RecallMemory = "recall_memory";
+
     public const string WebSearch = "web_search";
 
     public const string ReadUrl = "read_url";
@@ -27,6 +29,7 @@ public static class ArcanumBuiltInToolNames
 
     public static bool IsKnown(string? toolName) =>
         IsAttunementExempt(toolName)
+        || string.Equals(toolName, RecallMemory, StringComparison.OrdinalIgnoreCase)
         || string.Equals(
             toolName,
             WebSearch,

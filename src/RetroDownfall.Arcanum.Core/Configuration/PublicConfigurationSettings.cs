@@ -80,6 +80,9 @@ public sealed record FeatureSettings
 
     public bool MemoryManagement { get; set; }
 
+    /// <summary>Allows bounded read-only memory recall during an attended authorized operator turn. Defaults off.</summary>
+    public bool AgentMemoryRecall { get; set; }
+
     /// <summary>
     /// Whether The Covenant participates in turns. Default <c>false</c>, and the default is the
     /// contract: an installation that never names this key adds no Covenant prompt bytes, performs

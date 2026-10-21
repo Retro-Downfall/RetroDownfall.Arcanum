@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.Net;
+using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
@@ -1151,7 +1153,7 @@ public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fix
             case "blank-result-id": frames[1]["toolCall"]!["callId"] = " "; break;
             case "missing-result-id": frames[1]["toolCall"]!.AsObject().Remove("callId"); break;
             case "case-changed-result-id": frames[1]["toolCall"]!["callId"] = "OPAQUE-call-id:one"; break;
-            case "duplicate-query": frames[0]["toolCall"]!["argumentsJson"] = "{\"query\":\"other\",\"query\":\"What is the purpose of NASA Voyager?\"}"; frames[0]["data"] = frames[0]["toolCall"]!["argumentsJson"]!.GetValue<string>(); break;
+            case "duplicate-query": frames[0]["toolCall"]!["argumentsJson"] = "{\"query\":\"other\",\"query\":\"What is the purpose of NASA Voyager?\"}"; frames[0]["data"] = "web_search: " + frames[0]["toolCall"]!["argumentsJson"]!.GetValue<string>(); break;
             case "structured-call-on-token": frames[2]["toolCall"] = frames[0]["toolCall"]!.DeepClone(); break;
             case "late-token": frames.Add(frames[2].DeepClone().AsObject()); break;
             case "missing-structured-call": frames[0]["toolCall"] = null; break;
@@ -1281,7 +1283,8 @@ public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fix
 
         return
         [
-            Frame(new(IntelligenceEventType.ToolCall, "web_search", SearchArguments, ToolCall: call)),
+            Frame(new(IntelligenceEventType.ToolCall, "web_search", ToolExecutionPipeline.FormatToolCallEventData(
+                new FunctionCallContent(call.CallId, call.Name), SearchArguments), ToolCall: call)),
             Frame(new(IntelligenceEventType.ToolResult, "web_search", envelope ?? SearchEnvelope(), ToolCall: call)),
             Frame(new(IntelligenceEventType.Token, reply, reply)),
             Frame(new(IntelligenceEventType.Result, reply, "64", FinishReason: "stop")),

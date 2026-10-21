@@ -41,6 +41,8 @@ internal static class CovenantEndpointConventionBuilderExtensions
 
         builder.WithMetadata(CovenantContextPolicyRequirementMetadata.Instance);
 
+        builder.AddEndpointFilter(new Intelligence.MemoryRecall.MemoryRecallResponseFilter());
+
         return builder;
 
     }

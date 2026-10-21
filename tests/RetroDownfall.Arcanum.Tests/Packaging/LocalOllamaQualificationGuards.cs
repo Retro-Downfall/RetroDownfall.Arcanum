@@ -143,7 +143,7 @@ internal static class LocalOllamaQualificationGuards
                                 || frame.ToolCall is not { } proposed
                                 || string.IsNullOrWhiteSpace(proposed.CallId)
                                 || proposed.Name != "web_search" || proposed.Index != 0
-                                || frame.Message != proposed.Name || frame.Data != proposed.ArgumentsJson
+                                || frame.Message != proposed.Name || frame.Data != "web_search: " + proposed.ArgumentsJson
                                 || string.IsNullOrWhiteSpace(proposed.ArgumentsJson)
                                 || !IsSearchArguments(proposed.ArgumentsJson, expectedQuery))
                             {

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Serialization;
 
@@ -14,6 +15,32 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 /// </summary>
 public sealed class ArcanumSettingsBindingTests
 {
+    [Fact]
+    public void Configure_binds_agent_recall_opt_in_and_omission_is_disabled()
+    {
+        using JsonDocument defaults = JsonDocument.Parse(JsonSerializer.Serialize(
+            new FeatureSettings(), ConfigurationJsonContext.Default.FeatureSettings));
+
+        Assert.True(defaults.RootElement.TryGetProperty("agentMemoryRecall", out JsonElement disabled));
+
+        Assert.False(disabled.GetBoolean());
+
+        IConfigurationRoot configuration = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["Arcanum:Features:AgentMemoryRecall"] = "true" }).Build();
+
+        ServiceCollection services = new();
+
+        services.Configure<ArcanumSettings>(configuration.GetSection("Arcanum"));
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        using JsonDocument bound = JsonDocument.Parse(JsonSerializer.Serialize(
+            provider.GetRequiredService<IOptions<ArcanumSettings>>().Value.Features,
+            ConfigurationJsonContext.Default.FeatureSettings));
+
+        Assert.True(bound.RootElement.GetProperty("agentMemoryRecall").GetBoolean());
+    }
+
     [Fact]
     public void Configure_binds_Dci_v2_opt_in_and_omission_is_disabled()
     {
