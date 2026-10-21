@@ -108,7 +108,7 @@
 
 ## Phase 4 — Integration and delivery
 
-- [ ] Integrate task commits, reconcile shared docs/source-analysis catalogs without weakening any gate, and update the #73 acceptance record to include the repaired restore regressions.
+- [x] Integrate task commits, reconcile shared docs/source-analysis catalogs without weakening any gate, and update the #73 acceptance record to include the repaired restore regressions.
 - [x] Run independent whole-branch review and fix all validated findings using regressions.
 - [ ] Freeze final SHA/tree, run full CI, inspect complete partition authority, coverage, native/provider artifacts and all terminal jobs.
 - [ ] Fast-forward memory-enhancement and main, push and prove live ref/tree equality. Close #229 and #73 only when their evidence is complete.
