@@ -609,6 +609,53 @@ public sealed class ProtectedArtifactTransferStoreTests : IAsyncLifetime, IDispo
     }
 
     [Fact]
+    public async Task A_completed_import_replay_completes_its_lease_without_refinalizing_the_journal()
+    {
+        ImportedSessionTransferRequest request = await BuildRequestAsync(Guid.NewGuid(), null);
+
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            await using ImportedSessionSourceLease sourceLease = ImportedSessionSourceLease.Adopt(
+                await _source.OpenAdditionalConnectionAsync(CancellationToken.None), _sourceAttachments);
+
+            await using CovenantProtectedTransferLease transferLease = new(
+                new StubTransferRegistration(
+                    new CovenantExclusiveRecoveryOwner(
+                        request.OperationId,
+                        CovenantExclusiveOperation.ProtectedSessionTransfer,
+                        request.TransferEffectDigest),
+                    ProtectedTransferScope.Global.ToOperationScope()));
+
+            ProtectedSessionTransferCompletion<ImportedSessionCommitReceipt> completion =
+                await _store.CommitImportedSessionAsync(
+                    request,
+                    sourceLease,
+                    transferLease,
+                    new ProtectedSessionImportDestination(_destination.Connection, _destinationAttachments),
+                    CancellationToken.None);
+
+            Assert.True(completion.Result.IsSuccess, completion.Result.Error.Message);
+
+            Assert.Equal(request.DestinationSessionId, completion.Result.Value.DestinationSessionId);
+
+            Assert.Equal(CovenantExclusiveLeaseDisposition.CommitAndReopen, completion.Disposition);
+
+            Result completed = await transferLease.CompleteAsync(
+                completion.Disposition, completion.Finalizer, CancellationToken.None);
+
+            Assert.True(completed.IsSuccess, $"Attempt {attempt}: {completed.Error.Message}");
+
+            Assert.Equal(5, await DestinationPhaseAsync());
+        }
+
+        Assert.Equal(1, await CountDestinationAsync("Sessions"));
+
+        Assert.Equal(1, await CountDestinationAsync("assistant_finalization_capacity_reservations"));
+
+        Assert.Equal(1, await CountDestinationAsync("protected_session_transfer_intents"));
+    }
+
+    [Fact]
     public async Task The_same_operation_identity_cannot_be_reused_for_a_different_destination()
     {
         Guid operationId = Guid.NewGuid();

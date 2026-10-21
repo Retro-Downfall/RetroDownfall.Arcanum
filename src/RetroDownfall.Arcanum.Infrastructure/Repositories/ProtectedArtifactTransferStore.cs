@@ -410,7 +410,9 @@ internal sealed class ProtectedArtifactTransferStore(
                         0,
                         graph.Finalizations.Length),
                     prepared.Value.PendingDisposition ?? CovenantExclusiveLeaseDisposition.CommitAndReopen,
-                    finalizer);
+                    prepared.Value.Phase == ProtectedSessionTransferPhase.Completed
+                        ? CovenantNoOpPostDispositionFinalizer.Instance
+                        : finalizer);
             }
 
             if (prepared.Value.Phase == ProtectedSessionTransferPhase.Prepared
