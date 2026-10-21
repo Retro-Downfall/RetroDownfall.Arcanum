@@ -98,10 +98,18 @@
 - [x] Separate short-call response-headers deadlines from operations with no product-owned expected duration. Explicitly classify compaction, inference/streams, file transfer, tool work and other exposed long operations; use caller cancellation for them. Preserve bounded ordinary calls and error mapping.
 - [x] Run Forge transport/route/DI suites and independent review; document the actual timeout policy.
 
+### Task 8: Restore key-cache coherence (R12, found during qualification)
+
+**Files:** `Infrastructure/Security/FileEncryptionKeyProvider.cs`, `Infrastructure/Backup/BackupSecretRewrapper.cs`, restore options/composition, encrypted import and key-provider tests.
+
+- [x] Warm the real destination provider, merge a new archive key through the real rewrapper, and observe protected import fail to authenticate.
+- [x] Invalidate the live provider cache after attempted restore key mutations, including rollback, while retaining already-borrowed material until provider disposal. Preserve the existing active write key during selective merge.
+- [x] Prove immediate import and subsequent same-provider reads, replacement/rollback visibility, production DI propagation and borrowed-key safety; independent review.
+
 ## Phase 4 — Integration and delivery
 
 - [ ] Integrate task commits, reconcile shared docs/source-analysis catalogs without weakening any gate, and update the #73 acceptance record to include the repaired restore regressions.
-- [ ] Run independent whole-branch review and fix all validated findings using regressions.
+- [x] Run independent whole-branch review and fix all validated findings using regressions.
 - [ ] Freeze final SHA/tree, run full CI, inspect complete partition authority, coverage, native/provider artifacts and all terminal jobs.
 - [ ] Fast-forward memory-enhancement and main, push and prove live ref/tree equality. Close #229 and #73 only when their evidence is complete.
 - [ ] Run a newly published exact-candidate Native AOT binary against a fresh isolated local Arcanum install with Ollama gemma4:e4b; retain success evidence.
