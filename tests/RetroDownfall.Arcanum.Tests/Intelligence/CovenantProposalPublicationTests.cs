@@ -48,7 +48,8 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// with. Both would otherwise leave an operator an answer whose proposal the tool had already
 /// reported as recorded, which is the one outcome worse than losing the reply.
 ///
-/// <para>Every turn here enters through <see cref="WizardIntelligenceProvider.ExecutePromptAsync"/>.
+/// <para>Every turn here enters through <see cref="WizardIntelligenceProvider.ExecutePromptAsync"/>
+/// or <see cref="WizardIntelligenceProvider.StreamPromptAsync"/>.
 /// That is not a preference: the only production caller of the dispatch gate's admission, planning
 /// and sensitivity members is a private wrapper on the provider, and a suite that reaches those
 /// members directly runs the gate's half of the turn and none of the wrapper's — which is exactly how
@@ -166,6 +167,87 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
 
         // The rendered bytes a later, independent turn is handed. A published head that rendered into
         // nothing would satisfy a head-count assertion and still be a leak.
+        Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
+    [InlineData(true, true, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, false, false, false)]
+    [InlineData(true, false, true, false)]
+    [InlineData(true, false, false, true)]
+    public async Task An_interrupted_stream_reports_only_a_partial_reply_it_actually_dropped(bool emitPartial, bool failAfterStaging, bool refuseDiscard, bool cancelPublication)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await SeedCampaignAsync();
+
+        Guid sessionId = await SeedUntaintedSessionAsync();
+
+        CovenantToolCapabilityRegistry registry = new();
+
+        await using CovenantToolCall toolCall = await CovenantToolCall.CreateAsync(registry, _availability);
+
+        StagingChatClient chat = new(toolCall, ProposedKey, ProposedContent, AssistantAnswer, failAfterStaging)
+        {
+            EmitPartialStream = emitPartial,
+
+            RefuseDiscard = refuseDiscard,
+
+            CancelPublication = cancelPublication,
+        };
+
+        AIFunction proposeTool = AIFunctionFactory.Create(
+            async (string key, string content) =>
+            {
+                await chat.StageAsync(CancellationToken.None).ConfigureAwait(false);
+
+                return "staged";
+            },
+            CovenantToolNames.ProposeCovenant,
+            "records a Campaign proposal");
+
+        List<IntelligenceEvent> frames = [];
+
+        await foreach (IntelligenceEvent frame in Wizard(chat, Gate(), registry, withCommitter: true, refusePublication: !failAfterStaging, tools: [proposeTool])
+            .StreamPromptAsync(Ping(sessionId) with { DisableMcpTools = false }, await InvocationAsync(), CancellationToken.None))
+        {
+            frames.Add(frame);
+        }
+
+        Assert.Null(chat.ToolFailure);
+
+        Assert.NotNull(chat.Staged);
+
+        IntelligenceEvent failure = Assert.Single(frames, frame => frame.Type is IntelligenceEventType.Error);
+
+        Assert.Equal(ErrorCodes.Hub.Error, failure.Data);
+
+        Assert.Equal(emitPartial, frames.Any(frame => frame.Type is IntelligenceEventType.Token && frame.Data == AssistantAnswer));
+
+        if (emitPartial && !refuseDiscard)
+        {
+            Assert.Contains("partial reply was dropped", failure.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        else
+        {
+            Assert.DoesNotContain("partial reply", failure.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.DoesNotContain(AssistantAnswer, failure.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(ProposedContent, failure.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(frames, frame => frame.Type is IntelligenceEventType.Result);
+
+        Assert.False(await _db!.Entries.AsNoTracking().AnyAsync(
+            entry => entry.SessionId == sessionId && entry.Content == AssistantAnswer));
+
+        Assert.Equal(refuseDiscard ? 1 : 0, await _db.Entries.AsNoTracking().CountAsync(
+            entry => entry.SessionId == sessionId && entry.Role == MessageRole.Assistant && entry.Content == string.Empty));
+
+        Assert.False(await ReadTaintAsync(sessionId));
+
         Assert.DoesNotContain(ProposedContent, await LaterProposedSectionAsync(), StringComparison.Ordinal);
     }
 
@@ -412,7 +494,8 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         CovenantDispatchGate gate,
         CovenantToolCapabilityRegistry registry,
         bool withCommitter,
-        bool refusePublication = false)
+        bool refusePublication = false,
+        IReadOnlyList<AITool>? tools = null)
     {
         ProviderSettings provider = new()
         {
@@ -424,6 +507,22 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         };
 
         GrimoireRepository repository = Repository();
+
+        if (tools is not null)
+        {
+            return WizardIntelligenceProviderFallbackTests.CreateCovenantStagingWizardWithTools(
+                new SingleLeaseChatClientFactory(chat, provider, ModelName),
+                gate,
+                registry,
+                repository,
+                refusePublication ? new PublicationRefusingCommitter(repository, chat) : repository,
+                tools,
+                null,
+                null,
+                WizardIntelligenceProviderFallbackTests.CreateCovenantStagingTurnPorts(
+                    new FixedCovenantConnectionSource(Connection()), OperationGate(), _authority),
+                provider);
+        }
 
         return WizardIntelligenceProviderFallbackTests.CreateCovenantStagingWizard(
             new SingleLeaseChatClientFactory(chat, provider, ModelName),
@@ -678,10 +777,17 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         {
             if (request.Outcome is not AssistantFinalizationOutcome.Committed)
             {
-                return inner.CommitTurnAsync(request, cancellationToken);
+                return chat.RefuseDiscard
+                    ? Task.FromResult(Result<TurnCommitReceipt>.Failure(PublicationRefusal))
+                    : inner.CommitTurnAsync(request, cancellationToken);
             }
 
             chat.PublicationRefusals++;
+
+            if (chat.CancelPublication)
+            {
+                throw new OperationCanceledException("The fixture interrupted publication while the caller remained connected.");
+            }
 
             return Task.FromResult(Result<TurnCommitReceipt>.Failure(PublicationRefusal));
         }
@@ -708,6 +814,14 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
         bool failAfterStaging,
         Func<CancellationToken, Task>? afterStaging = null) : IChatClient
     {
+        private int _streamCalls;
+
+        public bool EmitPartialStream { get; init; } = true;
+
+        public bool RefuseDiscard { get; init; }
+
+        public bool CancelPublication { get; init; }
+
         public int ProviderCalls { get; private set; }
 
         public int PublicationRefusals { get; set; }
@@ -728,6 +842,44 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             IEnumerable<MeAiChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
+        {
+            await StageAsync(cancellationToken).ConfigureAwait(false);
+
+            return failAfterStaging
+                ? throw new InvalidOperationException("The provider connection dropped mid-turn.")
+                : new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer));
+        }
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<MeAiChatMessage> messages,
+            ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+
+            if (Interlocked.Increment(ref _streamCalls) == 1)
+            {
+                yield return new ChatResponseUpdate(ChatRole.Assistant,
+                [
+                    new FunctionCallContent("proposal-call", CovenantToolNames.ProposeCovenant,
+                        new Dictionary<string, object?> { ["key"] = key, ["content"] = content }),
+                ]);
+
+                yield break;
+            }
+
+            if (EmitPartialStream)
+            {
+                yield return new ChatResponseUpdate(ChatRole.Assistant, answer);
+            }
+
+            if (failAfterStaging)
+            {
+                throw new InvalidOperationException("The provider connection dropped mid-turn.");
+            }
+        }
+
+        public async Task StageAsync(CancellationToken cancellationToken)
         {
             ProviderCalls++;
 
@@ -752,17 +904,7 @@ public sealed class CovenantProposalPublicationTests : IAsyncLifetime
             {
                 await afterStaging(cancellationToken).ConfigureAwait(false);
             }
-
-            return failAfterStaging
-                ? throw new InvalidOperationException("The provider connection dropped mid-turn.")
-                : new ChatResponse(new MeAiChatMessage(ChatRole.Assistant, answer));
         }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
-            IEnumerable<MeAiChatMessage> messages,
-            ChatOptions? options = null,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
     }
 
     /// <summary>

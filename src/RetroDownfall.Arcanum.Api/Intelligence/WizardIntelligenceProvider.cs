@@ -1183,7 +1183,8 @@ public sealed partial class WizardIntelligenceProvider(
                     "Streaming inference threw after start; exception type {ExceptionType}.",
                     singleMoveFailure.GetType().FullName);
 
-                yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
+                yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
+                    singleClassification.PartialReplyDropped);
             }
 
             yield break;
@@ -1344,7 +1345,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                     yield return ErrorFrame(new Error(
                         ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)));
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
+                        classification.PartialReplyDropped);
 
                     yield break;
                 }
@@ -1436,7 +1438,8 @@ public sealed partial class WizardIntelligenceProvider(
 
                     yield return ErrorFrame(new Error(
                         ErrorCodes.Hub.Error,
-                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)));
+                        BuildInferenceFailureMessage(candidateProvider, moveNextFailure)),
+                        classification.PartialReplyDropped);
 
                     yield break;
                 }
@@ -1532,7 +1535,8 @@ public sealed partial class WizardIntelligenceProvider(
                         candidateProvider.Name,
                         midStreamFailure.GetType().FullName);
 
-                    yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
+                    yield return ErrorFrame(new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage),
+                        classification.PartialReplyDropped);
                 }
 
                 if (classification.IsConnectivityFailure && !providerMarkedFailed)
@@ -1614,8 +1618,12 @@ public sealed partial class WizardIntelligenceProvider(
     /// back off from or retry correctly. <c>Data</c> doubles as the payload of other frame types,
     /// which is why the code is set here and only here.
     /// </remarks>
-    private static IntelligenceEvent ErrorFrame(Error error) =>
-        new(IntelligenceEventType.Error, error.Message, error.Code);
+    private static IntelligenceEvent ErrorFrame(Error error, bool partialReplyDropped = false) =>
+        new(IntelligenceEventType.Error,
+            partialReplyDropped
+                ? $"{error.Message} The partial reply was dropped because the turn ended before it could be committed."
+                : error.Message,
+            error.Code);
 
     /// <summary>
     /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
@@ -1679,11 +1687,25 @@ public sealed partial class WizardIntelligenceProvider(
         // Failed even when the caller cancels while the turn unwinds.
         bool streamFailureReported = false;
 
-        IntelligenceEvent FailureFrame(Error error)
+        async Task<IntelligenceEvent> FailureFrameAsync(Error error)
         {
             streamFailureReported = true;
 
-            return ErrorFrame(error);
+            if (streaming
+                && !grimoireTurn.IsFinalized
+                && streamAccumulator.Length > 0
+                && covenantScope?.StagedCommit() is { } stagedCommit)
+            {
+                // Resolve before emitting the terminal frame, including failures (such as schema
+                // validation) whose cleanup otherwise runs only after that frame in finally.
+                await grimoireTurnWriter.TryResolveInterruptedOnStreamExitAsync(
+                    grimoireTurn,
+                    streamAccumulator.ToString(),
+                    covenantScope.DerivedSensitivity,
+                    stagedCommit).ConfigureAwait(false);
+            }
+
+            return ErrorFrame(error, streaming && grimoireTurn.PartialReplyDropped);
         }
 
         bool publishedStreamAmbient = false;
@@ -1749,7 +1771,7 @@ public sealed partial class WizardIntelligenceProvider(
                         clientToolAvailability.Error);
                 }
 
-                yield return FailureFrame(clientToolAvailability.Error);
+                yield return await FailureFrameAsync(clientToolAvailability.Error);
 
                 yield break;
             }
@@ -1777,7 +1799,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 classification.BufferedTerminal = Result<PromptTurnResult>.Failure(unavailable);
 
-                yield return FailureFrame(unavailable);
+                yield return await FailureFrameAsync(unavailable);
 
                 yield break;
             }
@@ -1815,7 +1837,7 @@ public sealed partial class WizardIntelligenceProvider(
             {
                 classification.BufferedTerminal = Result<PromptTurnResult>.Failure(prepared.Error);
 
-                yield return FailureFrame(prepared.Error);
+                yield return await FailureFrameAsync(prepared.Error);
 
                 yield break;
             }
@@ -1837,7 +1859,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (replay.IsFailure)
                     {
-                        yield return FailureFrame(replay.Error);
+                        yield return await FailureFrameAsync(replay.Error);
                     }
                     else if (streaming)
                     {
@@ -1923,7 +1945,7 @@ public sealed partial class WizardIntelligenceProvider(
                 // Hub.Error, and a client racing two turns on one Session never sees its 409.
                 classification.BufferedTerminal = Result<PromptTurnResult>.Failure(begun.Error);
 
-                yield return FailureFrame(begun.Error);
+                yield return await FailureFrameAsync(begun.Error);
 
                 yield break;
             }
@@ -1955,7 +1977,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (begun.IsFailure)
             {
-                yield return FailureFrame(begun.Error);
+                yield return await FailureFrameAsync(begun.Error);
 
                 yield break;
             }
@@ -2003,7 +2025,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return FailureFrame(
+                yield return await FailureFrameAsync(
                     new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
             }
 
@@ -2277,7 +2299,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (streaming)
             {
-                yield return FailureFrame(streamAccountingBegin.Error);
+                yield return await FailureFrameAsync(streamAccountingBegin.Error);
             }
 
             await grimoireTurnWriter
@@ -2352,7 +2374,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                 if (streaming)
                 {
-                    yield return FailureFrame(streamRoutedSpell.Error);
+                    yield return await FailureFrameAsync(streamRoutedSpell.Error);
                 }
 
                 yield break;
@@ -2655,7 +2677,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (lateBegun.IsFailure)
             {
-                yield return FailureFrame(lateBegun.Error);
+                yield return await FailureFrameAsync(lateBegun.Error);
 
                 yield break;
             }
@@ -2709,7 +2731,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return FailureFrame(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
+                        yield return await FailureFrameAsync(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
                     }
 
                     await grimoireTurnWriter
@@ -2802,7 +2824,7 @@ public sealed partial class WizardIntelligenceProvider(
                     CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return FailureFrame(effectiveClientTools.Error);
+            yield return await FailureFrameAsync(effectiveClientTools.Error);
 
             yield break;
         }
@@ -2842,7 +2864,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return FailureFrame(referenceError);
+                        yield return await FailureFrameAsync(referenceError);
                     }
 
                     await grimoireTurnWriter
@@ -3005,7 +3027,7 @@ public sealed partial class WizardIntelligenceProvider(
 
                     if (streaming)
                     {
-                        yield return FailureFrame(boundaryError);
+                        yield return await FailureFrameAsync(boundaryError);
                     }
 
                     await grimoireTurnWriter
@@ -4291,7 +4313,7 @@ public sealed partial class WizardIntelligenceProvider(
                             [])).ConfigureAwait(false);
                 }
 
-                yield return FailureFrame(terminalInferenceError);
+                yield return await FailureFrameAsync(terminalInferenceError);
 
                 yield break;
             }
@@ -4518,7 +4540,7 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     else
                     {
-                        yield return FailureFrame(validationResult.Error);
+                        yield return await FailureFrameAsync(validationResult.Error);
                     }
 
                     yield break;
@@ -4553,7 +4575,7 @@ public sealed partial class WizardIntelligenceProvider(
                     {
                         if (structuredOutput.StrictMode)
                         {
-                            yield return FailureFrame(new Error(
+                            yield return await FailureFrameAsync(new Error(
                                 ErrorCodes.StructuredOutput.ValidationFailed,
                                 "Streamed response failed JSON schema validation after generation: "
                                     + string.Join("; ", streamValidation.Errors)));
@@ -4568,7 +4590,7 @@ public sealed partial class WizardIntelligenceProvider(
                 {
                     if (structuredOutput.StrictMode)
                     {
-                        yield return FailureFrame(new Error(
+                        yield return await FailureFrameAsync(new Error(
                             ErrorCodes.StructuredOutput.SchemaInvalid,
                             "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message));
 
@@ -4606,7 +4628,7 @@ public sealed partial class WizardIntelligenceProvider(
                 .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
                 .ConfigureAwait(false);
 
-            yield return FailureFrame(guardrailsStreamOutput.Error);
+            yield return await FailureFrameAsync(guardrailsStreamOutput.Error);
 
             yield break;
         }
@@ -4677,7 +4699,7 @@ public sealed partial class WizardIntelligenceProvider(
                     new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
             }
 
-            yield return FailureFrame(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
+            yield return await FailureFrameAsync(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
 
             yield break;
         }
@@ -4846,6 +4868,10 @@ public sealed partial class WizardIntelligenceProvider(
                 }
                 finally
                 {
+                    // An exception can bypass FailureFrameAsync while the caller is still connected.
+                    // Its outer error projection needs the disposition established by this cleanup.
+                    classification.PartialReplyDropped = grimoireTurn.PartialReplyDropped;
+
                     // Idempotent after the successful handoff; a necessary backstop for every path
                     // that exits before reaching it.
                     grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
@@ -8835,6 +8861,8 @@ public sealed partial class WizardIntelligenceProvider(
     private sealed class StreamFailureClassification
     {
         public bool IsConnectivityFailure { get; set; }
+
+        public bool PartialReplyDropped { get; set; }
 
         /// <summary>
         /// True once this provider attempt has committed (answer or reasoning content, actionable

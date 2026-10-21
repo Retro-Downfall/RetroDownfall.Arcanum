@@ -64,6 +64,8 @@ public sealed class GrimoireTurnWriter(
 
         public bool IsFinalized { get; internal set; }
 
+        internal bool PartialReplyDropped { get; set; }
+
         internal Func<MemoryDelegationProtection?>? OutputProtection { get; set; }
 
         internal ImmutableArray<SagaUseCoordinate> SagaUses { get; set; } = [];
@@ -265,6 +267,11 @@ public sealed class GrimoireTurnWriter(
                 {
                     await grimoire.DiscardAssistantEntryAsync(entryId, cancellationToken).ConfigureAwait(false);
                 }
+
+                // Record the disposition only after discard succeeds. The public failure frame can
+                // then explain the missing reply without exposing any of its content or claiming a
+                // failed cleanup removed it.
+                handle.PartialReplyDropped = !string.IsNullOrEmpty(streamedContent);
 
             }
 
@@ -1336,12 +1343,16 @@ public sealed class GrimoireTurnWriter(
 
                     if (discarded.IsSuccess)
                     {
+                        handle.PartialReplyDropped = !string.IsNullOrEmpty(finalText);
+
                         _ = await CompleteClaimAsync(handle, committed: false).ConfigureAwait(false);
                     }
                 }
                 else
                 {
                     await grimoire.DiscardAssistantEntryAsync(finalizeId, CancellationToken.None).ConfigureAwait(false);
+
+                    handle.PartialReplyDropped = !string.IsNullOrEmpty(finalText);
                 }
 
             }

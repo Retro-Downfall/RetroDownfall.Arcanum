@@ -10,7 +10,11 @@ using ModelContextProtocol;
 
 using ModelContextProtocol.Protocol;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Infrastructure.Mcp;
+
+using RetroDownfall.Arcanum.Tests.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Mcp;
 
@@ -52,6 +56,117 @@ public sealed class ChannelClientTransportTests
         Assert.Equal(MaxLineBytes, Encoding.UTF8.GetByteCount(line));
 
         Assert.EndsWith("\n", line, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("closed")]
+    [InlineData("oversized")]
+    [InlineData("cancelled")]
+    public async Task A_failed_send_releases_its_Covenant_capability_for_the_same_request_id(string failure)
+    {
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+
+        (Channel<string> toServer, Channel<string> fromServer) = CreateChannels();
+
+        ChannelClientTransport client = new(toServer.Writer, fromServer.Reader, MaxLineBytes, "covenant-send");
+
+        await using ITransport transport = await client.ConnectAsync();
+
+        await FailSendAsync(transport, toServer, failure);
+
+        Assert.Equal(0, registry.CountForTests);
+
+        JsonRpcRequest retry = CovenantRequest();
+
+        SessionAttachmentAmbientSend.BindSdkToolsCall("covenant-send", retry);
+
+        var grant = registry.TryTake("covenant-send", "7");
+
+        Assert.True(grant.IsSuccess, grant.Error.Message);
+
+        await grant.Value.Capability.DisposeAsync();
+
+        Assert.True(registry.Remove("covenant-send", "7", grant.Value.Nonce));
+    }
+
+    [Theory]
+    [InlineData("closed")]
+    [InlineData("oversized")]
+    [InlineData("cancelled")]
+    public async Task A_failed_duplicate_send_preserves_the_earlier_requests_Covenant_capability(string failure)
+    {
+        CovenantToolCapabilityRegistry registry = new();
+
+        using IDisposable staging = CovenantToolStagingAmbient.Push(Staging(registry));
+
+        (Channel<string> toServer, Channel<string> fromServer) = CreateChannels();
+
+        ChannelClientTransport client = new(toServer.Writer, fromServer.Reader, MaxLineBytes, "covenant-send");
+
+        await using ITransport transport = await client.ConnectAsync();
+
+        await transport.SendMessageAsync(CovenantRequest());
+
+        await FailSendAsync(transport, toServer, failure);
+
+        var grant = registry.TryTake("covenant-send", "7");
+
+        Assert.True(grant.IsSuccess, grant.Error.Message);
+
+        await grant.Value.Capability.DisposeAsync();
+
+        Assert.True(registry.Remove("covenant-send", "7", grant.Value.Nonce));
+    }
+
+    private static async Task FailSendAsync(ITransport transport, Channel<string> toServer, string failure)
+    {
+        JsonRpcRequest request = CovenantRequest();
+
+        using CancellationTokenSource cancellation = new();
+
+        if (failure == "closed")
+        {
+            toServer.Writer.Complete();
+
+            await Assert.ThrowsAsync<ChannelClosedException>(() => transport.SendMessageAsync(request));
+        }
+        else if (failure == "oversized")
+        {
+            request.Params!["pad"] = new string('p', MaxLineBytes);
+
+            await Assert.ThrowsAsync<McpLineSizeExceededException>(() => transport.SendMessageAsync(request));
+        }
+        else
+        {
+            cancellation.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => transport.SendMessageAsync(request, cancellation.Token));
+        }
+    }
+
+    private static JsonRpcRequest CovenantRequest() => new()
+    {
+        Method = "tools/call",
+        Id = new RequestId(7),
+        Params = new JsonObject { ["name"] = CovenantToolNames.ProposeCovenant, ["arguments"] = new JsonObject() },
+    };
+
+    private static CovenantToolStagingContext Staging(CovenantToolCapabilityRegistry registry)
+    {
+        CovenantTurnPlan plan = CovenantTask6Fixture.IntegrationPlan();
+
+        return new CovenantToolStagingContext(
+            new CovenantMutationCollector(Guid.NewGuid(), plan.Digest, CovenantTask6Fixture.BranchId),
+            CovenantCapabilityFixtures.Campaign(),
+            CovenantCapabilityFixtures.Admission(plan),
+            CovenantCapabilityFixtures.Materialization(),
+            new CovenantCapabilityFixtures.StubHeadProbe(),
+            true,
+            registry,
+            CancellationToken.None);
     }
 
     private static (Channel<string> ToServer, Channel<string> FromServer) CreateChannels() =>

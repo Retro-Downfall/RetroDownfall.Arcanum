@@ -6,6 +6,7 @@ using System.Threading.Channels;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using RetroDownfall.Arcanum.Core.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 
@@ -100,7 +101,7 @@ internal sealed class ChannelClientTransport(
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            SessionAttachmentAmbientSend.BindSdkToolsCall(_ambientConnectionKey, message);
+            CovenantToolCapabilityNonce? nonce = SessionAttachmentAmbientSend.BindSdkToolsCall(_ambientConnectionKey, message);
 
             try
             {
@@ -133,7 +134,8 @@ internal sealed class ChannelClientTransport(
             {
                 SessionAttachmentAmbientSend.UnbindFailedSdkToolsCall(
                     _ambientConnectionKey,
-                    message);
+                    message,
+                    nonce);
                 throw;
             }
         }

@@ -140,6 +140,38 @@ public sealed class CovenantToolCapabilityRegistryTests
     }
 
     [Fact]
+    public async Task Registering_after_expiry_reclaims_abandoned_capabilities_but_preserves_taken_ones()
+    {
+        CovenantToolCapabilityRegistry registry = NewRegistry(out FakeClock clock);
+
+        await using CovenantToolInvocationContext abandoned = Capability(out CovenantToolCapabilityNonce abandonedNonce);
+
+        await using CovenantToolInvocationContext running = Capability(out CovenantToolCapabilityNonce runningNonce);
+
+        await using CovenantToolInvocationContext replacement = Capability(out CovenantToolCapabilityNonce replacementNonce);
+
+        Assert.True(registry.TryRegister(Connection, "1", abandoned, abandonedNonce));
+
+        Assert.True(registry.TryRegister(Connection, "2", running, runningNonce));
+
+        Assert.True(registry.TryTake(Connection, "2").IsSuccess);
+
+        clock.Advance(TimeSpan.FromMinutes(11));
+
+        Assert.True(registry.TryRegister(Connection, "1", replacement, replacementNonce));
+
+        Assert.Equal(CovenantToolCapabilityState.Disposed, abandoned.State);
+
+        Assert.Equal(CovenantToolCapabilityState.Taken, running.State);
+
+        Assert.Equal(2, registry.CountForTests);
+
+        Assert.Same(replacement, registry.TryTake(Connection, "1").Value.Capability);
+
+        Assert.False(registry.TryRegister(Connection, "2", abandoned, abandonedNonce));
+    }
+
+    [Fact]
     public async Task Two_connections_keep_isolated_registrations_for_one_request_id()
     {
         CovenantToolCapabilityRegistry registry = NewRegistry(out _);
@@ -154,12 +186,7 @@ public sealed class CovenantToolCapabilityRegistryTests
         Assert.Same(second, registry.TryTake("connection-b", "1").Value.Capability);
     }
 
-    // SweepExpired() (below) is the only registry-side reclaim, and it has never had a production
-    // caller — only a failed-send unbind that was already wired for every other binding store
-    // (SessionAttachmentToolAmbient, ApplyPatchInvocationBinding, PersistedToolInvocationBinding,
-    // ApprenticeToolInvocationBinding) but stopped short of this registry. TryRegister is TryAdd-only,
-    // so a request id whose frame never reached the wire stayed permanently stranded on a live
-    // connection.
+    // A failed send releases immediately rather than retaining its request id until a TTL sweep.
     [Fact]
     public void A_failed_send_releases_its_registration_so_a_retry_can_register()
     {
@@ -170,13 +197,13 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         ArcanumJsonRpcRequest first = ToolsCall("7", CovenantToolNames.ProposeCovenant);
 
-        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, first);
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, first, out CovenantToolCapabilityNonce? nonce);
 
         Assert.Equal(1, registry.CountForTests);
 
         // Mirrors InProcessMcpTransport.WriteRequestAsync's catch block: the frame never reached the
         // wire, so no handler could ever have called TryTake for this id.
-        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, first);
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, first, nonce);
 
         Assert.Equal(0, registry.CountForTests);
 
@@ -200,7 +227,7 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         ArcanumJsonRpcRequest request = ToolsCall("7", CovenantToolNames.ProposeCovenant);
 
-        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, request);
+        _ = SessionAttachmentAmbientSend.ApplyAmbientBinding(Connection, request, out CovenantToolCapabilityNonce? nonce);
 
         Result<CovenantToolCapabilityGrant> taken = registry.TryTake(Connection, "7");
 
@@ -208,7 +235,7 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         // The send actually succeeded (a handler already took the capability); an unbind reaching
         // here late must not pull the id out from under the handler that is still draining it.
-        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, request);
+        SessionAttachmentAmbientSend.UnbindFailedToolsCall(Connection, request, nonce);
 
         Assert.Equal(CovenantToolCapabilityState.Taken, taken.Value.Capability.State);
 
@@ -296,7 +323,7 @@ public sealed class CovenantToolCapabilityRegistryTests
 
         try
         {
-            bool released = registry.ReleaseUnsent(Connection, "1");
+            bool released = registry.ReleaseUnsent(Connection, "1", nonce);
 
             Assert.NotNull(raced);
 
@@ -317,9 +344,8 @@ public sealed class CovenantToolCapabilityRegistryTests
     }
 
     // SweepExpired had the identical check-then-act shape ReleaseUnsent did -- a bare
-    // Capability.State read gating a later RemoveExact, not atomic with it. It has no production
-    // caller today (see the class remarks), so this test is what pins the shape rather than a caller
-    // exercising it. Same deterministic reproduction as the ReleaseUnsent regression test above: the
+    // Capability.State read gating a later RemoveExact, not atomic with it. The production
+    // sweep is also reached during registration. As in the ReleaseUnsent regression above, the
     // observer fires at the point in SweepExpired's control flow that means the same thing pre- and
     // post-fix (nobody holds a lock there either way), so a callback racing a TryTake from inside it
     // exercises exactly the gap a concurrent one could have landed in, with no thread timing involved.

@@ -18,38 +18,40 @@ internal static class SessionAttachmentAmbientSend
     /// <summary>
     /// SDK transport path: bind by <see cref="JsonRpcRequest.Id"/> or inject an opaque token into params.
     /// </summary>
-    public static void BindSdkToolsCall(string connectionKey, JsonRpcMessage message)
+    public static CovenantToolCapabilityNonce? BindSdkToolsCall(string connectionKey, JsonRpcMessage message)
     {
 
         if (message is not JsonRpcRequest { Method: "tools/call" } request)
         {
-            return;
+            return null;
         }
 
         string requestId = request.Id.ToString();
-        BindRequestContexts(connectionKey, requestId, ReadSdkToolName(request.Params));
+        CovenantToolCapabilityNonce? nonce = BindRequestContexts(connectionKey, requestId, ReadSdkToolName(request.Params));
 
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
-            return;
+            return nonce;
         }
 
         if (!string.IsNullOrEmpty(requestId))
         {
             SessionAttachmentToolAmbient.BindRequest(connectionKey, requestId, sessionId);
 
-            return;
+            return nonce;
         }
 
         string token = SessionAttachmentToolAmbient.CreateAndBindOpaqueToken(sessionId);
 
         request.Params = InjectOpaqueTokenIntoSdkParams(request.Params, token);
 
+        return nonce;
     }
 
     public static void UnbindFailedSdkToolsCall(
         string connectionKey,
-        JsonRpcMessage message)
+        JsonRpcMessage message,
+        CovenantToolCapabilityNonce? nonce)
     {
 
         if (message is not JsonRpcRequest { Method: "tools/call" } request)
@@ -59,7 +61,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = request.Id.ToString();
-        UnbindRequestContexts(connectionKey, requestId);
+        UnbindRequestContexts(connectionKey, requestId, nonce);
     }
 
     public static void MarkSdkToolsCallDispatched(
@@ -82,10 +84,18 @@ internal static class SessionAttachmentAmbientSend
     /// <summary>
     /// Raw in-process test harness path: bind by request id or inject opaque token into params.
     /// </summary>
-    public static ArcanumJsonRpcRequest ApplyAmbientBinding(string connectionKey, ArcanumJsonRpcRequest request)
+    public static ArcanumJsonRpcRequest ApplyAmbientBinding(string connectionKey, ArcanumJsonRpcRequest request) =>
+        ApplyAmbientBinding(connectionKey, request, out _);
+
+    public static ArcanumJsonRpcRequest ApplyAmbientBinding(
+        string connectionKey,
+        ArcanumJsonRpcRequest request,
+        out CovenantToolCapabilityNonce? nonce)
     {
 
         ArgumentNullException.ThrowIfNull(request);
+
+        nonce = null;
 
         if (!string.Equals(request.Method, "tools/call", StringComparison.Ordinal))
         {
@@ -93,7 +103,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = NormalizeArcanumRequestId(request.Id);
-        BindRequestContexts(connectionKey, requestId, ReadArcanumToolName(request.Params));
+        nonce = BindRequestContexts(connectionKey, requestId, ReadArcanumToolName(request.Params));
 
         if (SessionAttachmentToolAmbient.CurrentSessionId is not Guid sessionId)
         {
@@ -115,7 +125,8 @@ internal static class SessionAttachmentAmbientSend
 
     public static void UnbindFailedToolsCall(
         string connectionKey,
-        ArcanumJsonRpcRequest request)
+        ArcanumJsonRpcRequest request,
+        CovenantToolCapabilityNonce? nonce)
     {
 
         if (!string.Equals(
@@ -128,7 +139,7 @@ internal static class SessionAttachmentAmbientSend
         }
 
         string requestId = NormalizeArcanumRequestId(request.Id);
-        UnbindRequestContexts(connectionKey, requestId);
+        UnbindRequestContexts(connectionKey, requestId, nonce);
     }
 
     public static void MarkToolsCallDispatched(
@@ -148,17 +159,17 @@ internal static class SessionAttachmentAmbientSend
             NormalizeArcanumRequestId(request.Id));
     }
 
-    private static void BindRequestContexts(
+    private static CovenantToolCapabilityNonce? BindRequestContexts(
         string connectionKey,
         string requestId,
         string? toolName)
     {
         if (string.IsNullOrEmpty(requestId))
         {
-            return;
+            return null;
         }
 
-        BindCovenantStaging(connectionKey, requestId, toolName);
+        CovenantToolCapabilityNonce? nonce = BindCovenantStaging(connectionKey, requestId, toolName);
 
         if (ApplyPatchInvocationAmbient.Current
             is ApplyPatchInvocationContext patchContext)
@@ -191,6 +202,8 @@ internal static class SessionAttachmentAmbientSend
                     BudgetReservationId = DelegatedSpendAttribution.BudgetReservationId,
                 });
         }
+
+        return nonce;
     }
 
     /// <summary>
@@ -207,7 +220,7 @@ internal static class SessionAttachmentAmbientSend
     /// without it mints nothing, and the handler then fails closed exactly as it does for a turn that
     /// carries no capability at all.</para>
     /// </remarks>
-    private static void BindCovenantStaging(
+    private static CovenantToolCapabilityNonce? BindCovenantStaging(
         string connectionKey,
         string requestId,
         string? toolName)
@@ -217,14 +230,14 @@ internal static class SessionAttachmentAmbientSend
             || !CovenantToolNames.IsCovenantMutationTool(name)
             || CovenantToolStagingAmbient.Current is not { } staging)
         {
-            return;
+            return null;
         }
 
         bool retirement = string.Equals(name, CovenantToolNames.RetireCovenant, StringComparison.Ordinal);
 
         if (!retirement && !staging.CanStageProposal)
         {
-            return;
+            return null;
         }
 
         if (retirement != (staging.RetirementPreflight is not null))
@@ -233,7 +246,7 @@ internal static class SessionAttachmentAmbientSend
             // A proposal carrying retirement material, or a retirement carrying none, is a capability
             // the constructor would refuse anyway. Refusing here keeps the mint from ever producing one
             // whose shape contradicts the tool it authorizes.
-            return;
+            return null;
 
         }
 
@@ -261,25 +274,30 @@ internal static class SessionAttachmentAmbientSend
             // The capability's own invariants refused this turn's material — an unbound Campaign, a
             // plan the collector does not match. Mint nothing; the handler then fails closed on a
             // missing capability, which is the same answer with none of the pretence.
-            return;
+            return null;
         }
 
-        _ = staging.Registry.TryRegister(connectionKey, requestId, capability, nonce);
+        if (staging.Registry.TryRegister(connectionKey, requestId, capability, nonce))
+        {
+            return nonce;
+        }
 
+        // A duplicate never acquired the table entry; dispose only the capability minted for it.
+        _ = capability.TryReleaseUnsent();
+
+        return null;
     }
 
     private static void UnbindRequestContexts(
         string connectionKey,
-        string requestId)
+        string requestId,
+        CovenantToolCapabilityNonce? nonce)
     {
-        // BindCovenantStaging (above) only ever registers against the registry the turn's own
-        // staging carries, and unbind runs on the same request's send-then-fail path, so the
-        // ambient here is still the staging that minted whatever was registered for this id — if
-        // anything was. TryRegister is TryAdd-only, so a frame that never reached the wire would
-        // otherwise strand the id for the rest of the connection.
-        if (CovenantToolStagingAmbient.Current is { } staging)
+        // A refused duplicate owns no registration. Only the nonce returned by this send's
+        // successful bind may release a capability; an older request may still be awaiting its handler.
+        if (nonce is { } registeredNonce && CovenantToolStagingAmbient.Current is { } staging)
         {
-            _ = staging.Registry.ReleaseUnsent(connectionKey, requestId);
+            _ = staging.Registry.ReleaseUnsent(connectionKey, requestId, registeredNonce);
         }
 
         SessionAttachmentToolAmbient.UnbindRequest(

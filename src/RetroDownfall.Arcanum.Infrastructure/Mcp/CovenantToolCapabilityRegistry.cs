@@ -64,6 +64,8 @@ public sealed class CovenantToolCapabilityRegistry
 
     /// <summary>
     /// Installs one capability for one exact request, refusing a duplicate rather than replacing it.
+    /// Reclaims expired untaken registrations first. An idle registry retains them until its next
+    /// registration attempt; no background timer or handler cancellation is involved.
     /// </summary>
     public bool TryRegister(
         string connectionKey,
@@ -86,6 +88,8 @@ public sealed class CovenantToolCapabilityRegistry
                 nameof(nonce));
 
         }
+
+        _ = SweepExpired();
 
         return _byRequest.TryAdd(
             ComposeKey(connectionKey, requestId),
@@ -152,8 +156,8 @@ public sealed class CovenantToolCapabilityRegistry
     /// <summary>
     /// Releases one connection-and-request-id's registration when the frame that would have carried
     /// it to a handler never left the client — a failed transport send, before any handler could
-    /// have reached <see cref="TryTake"/> for this id. No nonce is required: the caller here is the
-    /// send path itself, not a handler that took the capability.
+    /// have reached <see cref="TryTake"/> for this id. The nonce identifies the registration this
+    /// send actually installed, so a refused duplicate cannot release an earlier call.
     /// </summary>
     /// <remarks>
     /// A no-op once the registration has been taken. The state check and the transition off
@@ -165,7 +169,7 @@ public sealed class CovenantToolCapabilityRegistry
     /// <see cref="SweepExpired"/>, so a handler that is still draining a capability it already took
     /// keeps its own bounded cancellation lifetime either way.
     /// </remarks>
-    public bool ReleaseUnsent(string connectionKey, string requestId)
+    public bool ReleaseUnsent(string connectionKey, string requestId, CovenantToolCapabilityNonce nonce)
     {
 
         if (string.IsNullOrWhiteSpace(connectionKey) || string.IsNullOrWhiteSpace(requestId))
@@ -176,6 +180,7 @@ public sealed class CovenantToolCapabilityRegistry
         string key = ComposeKey(connectionKey, requestId);
 
         if (!_byRequest.TryGetValue(key, out Registration? registration)
+            || !registration.Nonce.Equals(nonce)
             || !registration.Capability.TryReleaseUnsent())
         {
             return false;
