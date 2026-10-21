@@ -97,7 +97,7 @@ public static class UnicodeNfc
                 throw new ArgumentException("Text must contain valid Unicode scalar values.", nameof(value));
             }
 
-            AppendCanonicalDecomposition(rune.Value, destination, ref count, 0);
+            AppendCanonicalDecomposition(rune.Value, destination, ref count);
             remaining = remaining[charsConsumed..];
         }
 
@@ -107,38 +107,61 @@ public static class UnicodeNfc
     private static void AppendCanonicalDecomposition(
         int scalar,
         int[] destination,
-        ref int count,
-        int depth)
+        ref int count)
     {
-        if (depth > MaximumRecursiveExpansion)
-        {
-            throw new InvalidOperationException("Unicode 17 canonical decomposition exceeded its verified recursion bound.");
-        }
+        // A binary decomposition leaves at most one pending sibling per depth. Two extra
+        // slots also hold the first depth-five child, whose original bound check refuses it.
+        Span<(int Scalar, int Depth)> pending = stackalloc (int Scalar, int Depth)[MaximumRecursiveExpansion + 2];
 
-        if (TryDecomposeHangul(scalar, out int leading, out int vowel, out int trailing))
-        {
-            AddScalar(destination, ref count, leading);
-            AddScalar(destination, ref count, vowel);
+        pending[0] = (scalar, 0);
 
-            if (trailing != 0)
+        int pendingCount = 1;
+
+        try
+        {
+            while (pendingCount > 0)
             {
-                AddScalar(destination, ref count, trailing);
+                (int current, int depth) = pending[--pendingCount];
+
+                if (depth > MaximumRecursiveExpansion)
+                {
+                    throw new InvalidOperationException("Unicode 17 canonical decomposition exceeded its verified recursion bound.");
+                }
+
+                if (TryDecomposeHangul(current, out int leading, out int vowel, out int trailing))
+                {
+                    AddScalar(destination, ref count, leading);
+
+                    AddScalar(destination, ref count, vowel);
+
+                    if (trailing != 0)
+                    {
+                        AddScalar(destination, ref count, trailing);
+                    }
+
+                    continue;
+                }
+
+                if (!TryGetCanonicalDecomposition(current, out int first, out int second, out int length))
+                {
+                    AddScalar(destination, ref count, current);
+
+                    continue;
+                }
+
+                // The stack is LIFO: defer the second scalar so the first is fully expanded
+                // before it, preserving the recursive decomposition's canonical scalar order.
+                if (length == 2)
+                {
+                    pending[pendingCount++] = (second, depth + 1);
+                }
+
+                pending[pendingCount++] = (first, depth + 1);
             }
-
-            return;
         }
-
-        if (!TryGetCanonicalDecomposition(scalar, out int first, out int second, out int length))
+        finally
         {
-            AddScalar(destination, ref count, scalar);
-            return;
-        }
-
-        AppendCanonicalDecomposition(first, destination, ref count, depth + 1);
-
-        if (length == 2)
-        {
-            AppendCanonicalDecomposition(second, destination, ref count, depth + 1);
+            pending.Clear();
         }
     }
 

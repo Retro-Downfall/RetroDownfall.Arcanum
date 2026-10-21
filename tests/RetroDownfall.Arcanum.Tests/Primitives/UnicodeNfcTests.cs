@@ -19,6 +19,7 @@ public sealed class UnicodeNfcTests
     [InlineData("Å", "Å")]
     [InlineData("̈́", "̈́")]
     [InlineData("ཱི", "ཱི")]
+    [InlineData("α\u0313\u0300\u0345", "\u1f82")]
     [InlineData("̖́̀", "̖́̀")]
     [InlineData("́̀", "́̀")]
     [InlineData("̖A", "̖A")]
@@ -86,8 +87,8 @@ public sealed class UnicodeNfcTests
     public void Where_the_host_can_normalize_it_agrees_on_a_corpus_of_established_characters()
     {
         Skip.If(
-            AppContext.TryGetSwitch("System.Globalization.Invariant", out bool invariant) && invariant,
-            "Invariant globalization does not normalize.");
+            !string.Equals("e\u0301".Normalize(NormalizationForm.FormC), "\u00e9", StringComparison.Ordinal),
+            "Host globalization does not normalize.");
 
         string[] pieces =
         [
@@ -103,6 +104,61 @@ public sealed class UnicodeNfcTests
             string value = string.Concat(Enumerable.Range(0, random.Next(0, 12)).Select(_ => pieces[random.Next(pieces.Length)]));
 
             Assert.Equal(value.Normalize(NormalizationForm.FormC), UnicodeNfc.Normalize(value));
+        }
+    }
+
+    [Fact]
+    public void Every_canonical_decomposition_record_preserves_equivalence_and_scalar_order()
+    {
+        int visited = 0;
+
+        foreach (ulong record in CovenantUnicode17Tables.CanonicalDecompositions)
+        {
+            int scalar = checked((int)(record >> 13));
+
+            int offset = checked((int)((record >> 1) & 0x0fff));
+
+            int length = checked((int)(record & 1) + 1);
+
+            string original = char.ConvertFromUtf32(scalar);
+
+            string decomposition = char.ConvertFromUtf32(checked((int)CovenantUnicode17Tables.DecompositionScalars[offset]));
+
+            if (length == 2)
+            {
+                decomposition += char.ConvertFromUtf32(checked((int)CovenantUnicode17Tables.DecompositionScalars[offset + 1]));
+            }
+
+            string normalized = UnicodeNfc.Normalize(original);
+
+            Assert.Equal(UnicodeNfc.Normalize(decomposition), normalized);
+
+            Assert.Equal(normalized, UnicodeNfc.Normalize(normalized));
+
+            visited++;
+        }
+
+        Assert.Equal(2_081, visited);
+    }
+
+    [Fact]
+    public void Every_hangul_syllable_matches_its_ordered_algorithmic_jamo_sequence()
+    {
+        for (int index = 0; index < 11_172; index++)
+        {
+            string syllable = char.ConvertFromUtf32(0xac00 + index);
+
+            string jamo = char.ConvertFromUtf32(0x1100 + index / (21 * 28))
+                + char.ConvertFromUtf32(0x1161 + index % (21 * 28) / 28);
+
+            if (index % 28 != 0)
+            {
+                jamo += char.ConvertFromUtf32(0x11a7 + index % 28);
+            }
+
+            Assert.Equal(syllable, UnicodeNfc.Normalize(jamo));
+
+            Assert.Equal(syllable, UnicodeNfc.Normalize(syllable));
         }
     }
 }
