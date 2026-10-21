@@ -657,6 +657,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupPortableRecoveryReader.c
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreActiveEvidenceInspector.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCapacityPlanner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreConfigurationWriter.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.MarkerConnections.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreCovenantCoordinator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreDatabaseWorker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreDurablePublication.cs
@@ -747,6 +748,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairExecutor
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairJournal.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantSchemaRepairStartupRecovery.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantTurnHeadProbe.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/DeferredCampaignPathMarkerConnectionSource.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/GrimoireSchemaTransitionCoordinator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/GrimoireSchemaTransitionHostedService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Covenant/ICampaignPathMarkerLifecycle.FullInstallationReset.cs
@@ -1951,6 +1953,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellAtomicFile.c
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogContinuationCursor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellCatalogService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellDependencyResolver.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellDirectory.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellFileParser.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellFrontmatterValidator.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellMarkdownGenerator.cs
@@ -2277,6 +2280,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/PhysicalFileSystemBrowser.
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/PhysicalFileSystemWriter.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/PhysicalWorkspaceScanner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellPathPolicy.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellReadAuthority.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellScanner.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/SpellVersionPathPolicy.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Workspaces/WorkspacePathResolver.cs
