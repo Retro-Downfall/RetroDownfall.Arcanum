@@ -833,6 +833,7 @@ internal static partial class HostedGrimoireProducerInventory
         ["System.IO.File.ResolveLinkTarget"] = HostedProducerSiteKind.FileSystemRead,
         ["System.IO.FileStream.Length"] = HostedProducerSiteKind.FileSystemRead,
         ["System.IO.FileStream.Position setter"] = HostedProducerSiteKind.FileSystemEffect,
+        ["System.IO.FileStream.Seek"] = HostedProducerSiteKind.FileSystemEffect,
         ["System.IO.FileStream.Flush"] = HostedProducerSiteKind.FileSystemEffect,
         ["System.IO.FileStream.FlushAsync"] = HostedProducerSiteKind.FileSystemEffect,
         ["System.IO.FileStream.Read"] = HostedProducerSiteKind.FileSystemRead,
