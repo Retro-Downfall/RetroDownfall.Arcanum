@@ -23,7 +23,7 @@ public sealed partial class LongRestMaintenanceTests
 
     private sealed class FailingDiscovery(Exception failure) : ILongRunningOperationGenericRecoveryDiscovery
     {
-        public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(DateTimeOffset utcNow, int limit, CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(DateTimeOffset utcNow, int limit, CancellationToken cancellationToken = default, LongRunningOperationStartupPriority? startupPriority = null, (DateTimeOffset SortTime, Guid Id)? after = null) =>
             Task.FromException<IReadOnlyList<LongRunningOperation>>(failure);
     }
 

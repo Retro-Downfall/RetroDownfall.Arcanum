@@ -601,19 +601,35 @@ internal sealed partial class LongRunningOperationStore(
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
         DateTimeOffset utcNow,
         int limit,
-        CancellationToken cancellationToken = default) =>
-        FindExpiredAsync(utcNow, limit, excludeOwnerBoundRows: true, cancellationToken);
+        CancellationToken cancellationToken = default,
+        LongRunningOperationStartupPriority? startupPriority = null,
+        (DateTimeOffset SortTime, Guid Id)? after = null) =>
+        FindExpiredAsync(utcNow, limit, excludeOwnerBoundRows: true, cancellationToken, startupPriority, after);
 
     private Task<IReadOnlyList<LongRunningOperation>> FindExpiredAsync(
         DateTimeOffset utcNow,
         int limit,
         bool excludeOwnerBoundRows,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        LongRunningOperationStartupPriority? startupPriority = null,
+        (DateTimeOffset SortTime, Guid Id)? after = null) =>
         SqliteBusyRetry.ExecuteAsync<IReadOnlyList<LongRunningOperation>>(
             async () =>
             {
                 DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
                 await using DbCommand cmd = connection.CreateCommand();
+                if (startupPriority is not null and not LongRunningOperationStartupPriority.BeforeStateWrites
+                    and not LongRunningOperationStartupPriority.Readiness)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(startupPriority));
+                }
+
+                string[] priorityKinds = [.. LongRunningOperationRecoveryRegistry.Descriptors.Values
+                    .Where(static descriptor => descriptor.StartupPriority == LongRunningOperationStartupPriority.BeforeStateWrites)
+                    .Select(static descriptor => descriptor.Kind)];
+
+                string priorityParameters = string.Join(", ", priorityKinds.Select(static (_, index) => $"@priorityKind{index}"));
+
                 cmd.CommandText =
                     $"""
                     SELECT {SelectColumns}
@@ -633,11 +649,32 @@ internal sealed partial class LongRunningOperationStore(
                                 OR ("Kind" = @retentionFactory AND "CheckpointVersion" = @factoryOwnerVersion))
                           """
                         : string.Empty)
+                    + (startupPriority is null
+                        ? string.Empty
+                        : $" AND \"Kind\" {(startupPriority == LongRunningOperationStartupPriority.BeforeStateWrites ? "IN" : "NOT IN")} ({priorityParameters})")
+                    + (after is null
+                        ? string.Empty
+                        : " AND (COALESCE(\"LeaseExpiresAt\", \"CreatedAt\") > @afterTime OR (COALESCE(\"LeaseExpiresAt\", \"CreatedAt\") = @afterTime AND \"Id\" > @afterId))")
                     + """
 
                     ORDER BY COALESCE("LeaseExpiresAt", "CreatedAt"), "Id"
                     LIMIT @limit
                     """;
+                if (startupPriority is not null)
+                {
+                    for (int index = 0; index < priorityKinds.Length; index++)
+                    {
+                        Add(cmd, $"@priorityKind{index}", priorityKinds[index]);
+                    }
+                }
+
+                if (after is { } cursor)
+                {
+                    Add(cmd, "@afterTime", Format(cursor.SortTime));
+
+                    Add(cmd, "@afterId", cursor.Id.ToString("N"));
+                }
+
                 Add(cmd, "@running", (int)LongRunningOperationState.Running);
                 Add(cmd, "@waiting", (int)LongRunningOperationState.Waiting);
                 Add(cmd, "@cancelling", (int)LongRunningOperationState.Cancelling);

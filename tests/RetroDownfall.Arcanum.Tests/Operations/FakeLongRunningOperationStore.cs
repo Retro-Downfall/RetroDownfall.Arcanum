@@ -278,7 +278,9 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
     public async Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
         DateTimeOffset utcNow,
         int limit,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        LongRunningOperationStartupPriority? startupPriority = null,
+        (DateTimeOffset SortTime, Guid Id)? after = null) =>
         [
             .. (await FindExpiredAsync(utcNow, int.MaxValue, cancellationToken))
                 .Where(static operation => operation is not
@@ -290,6 +292,15 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
                     Kind: LongRunningOperationKinds.DataRetentionFactoryReset,
                     CheckpointVersion: 2,
                 })
+                .Where(operation => startupPriority is null
+                    || (LongRunningOperationRecoveryRegistry.Find(operation.Kind)?.StartupPriority
+                        ?? LongRunningOperationStartupPriority.Readiness) == startupPriority)
+                .Where(operation => after is not { } cursor
+                    || (operation.LeaseExpiresAt ?? operation.CreatedAt) > cursor.SortTime
+                    || ((operation.LeaseExpiresAt ?? operation.CreatedAt) == cursor.SortTime
+                        && string.CompareOrdinal(operation.Id.ToString("N"), cursor.Id.ToString("N")) > 0))
+                .OrderBy(static operation => operation.LeaseExpiresAt ?? operation.CreatedAt)
+                .ThenBy(static operation => operation.Id.ToString("N"), StringComparer.Ordinal)
                 .Take(limit),
         ];
 
@@ -567,9 +578,11 @@ internal sealed class PagingOnlyOperationStore(ILongRunningOperationStore inner)
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
         DateTimeOffset utcNow,
         int limit,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        LongRunningOperationStartupPriority? startupPriority = null,
+        (DateTimeOffset SortTime, Guid Id)? after = null) =>
         inner is ILongRunningOperationGenericRecoveryDiscovery discovery
-            ? discovery.FindExpiredForGenericRecoveryAsync(utcNow, limit, cancellationToken)
+            ? discovery.FindExpiredForGenericRecoveryAsync(utcNow, limit, cancellationToken, startupPriority, after)
             : throw OutsideItsScope();
 
     public Task<LongRunningOperation> CreateAsync(

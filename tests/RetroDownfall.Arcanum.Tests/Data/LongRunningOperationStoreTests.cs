@@ -1440,6 +1440,98 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(operationCount, handler.CallCount);
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconcileAsync_OwnedHeadDoesNotHideLaterExpiredWork(bool sameExpiry)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 10, 21, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation owned = await CreateAsync(store, now.AddMinutes(-10));
+
+        LongRunningOperation later = await CreateAsync(store, now.AddMinutes(-8));
+
+        _ = await store.TryAcquireLeaseAsync(owned.Id, "dead-host", now.AddMinutes(-10), sameExpiry ? now.AddMinutes(-7) : now.AddMinutes(-9));
+
+        _ = await store.TryAcquireLeaseAsync(later.Id, "dead-host", now.AddMinutes(-8), now.AddMinutes(-7));
+
+        if (sameExpiry && string.CompareOrdinal(owned.Id.ToString("N"), later.Id.ToString("N")) > 0)
+        {
+            (owned, later) = (later, owned);
+        }
+
+        LongRunningOperationOwnership ownership = new();
+
+        Assert.True(ownership.TryClaim(owned.Id, out _));
+
+        CompletingRecoveryHandler handler = new(owned.Kind);
+
+        LongRunningOperationReconciler reconciler = new(
+            store, [handler], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, ownership);
+
+        LongRunningOperationReconciliationSummary result = await reconciler.ReconcileAsync(
+            now, "startup-worker", maxOperations: 1, maxConcurrency: 1);
+
+        Assert.Equal(1, result.Skipped);
+
+        Assert.Equal(1, result.Completed);
+
+        Assert.Equal(LongRunningOperationState.Running, (await store.GetAsync(owned.Id))!.State);
+
+        Assert.Equal(LongRunningOperationState.Completed, (await store.GetAsync(later.Id))!.State);
+    }
+
+    [SkippableFact]
+    public async Task ReconcileAsync_PhaseFilteringPrecedesPageLimit()
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = new(2026, 10, 21, 12, 0, 0, TimeSpan.Zero);
+
+        LongRunningOperation ordinary = await CreateAsync(store, now.AddMinutes(-10));
+
+        LongRunningOperation backup = await store.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.BackupCreate,
+            LongRunningOperationRecoveryPolicy.AbandonSafely,
+            "Interrupted backup.",
+            now.AddMinutes(-8)));
+
+        _ = await store.TryAcquireLeaseAsync(ordinary.Id, "dead-host", now.AddMinutes(-10), now.AddMinutes(-9));
+
+        _ = await store.TryAcquireLeaseAsync(backup.Id, "dead-host", now.AddMinutes(-8), now.AddMinutes(-7));
+
+        List<string> order = [];
+
+        CompletingRecoveryHandler ordinaryHandler = new(ordinary.Kind, order);
+
+        CompletingRecoveryHandler backupHandler = new(backup.Kind, order);
+
+        LongRunningOperationReconciler reconciler = new(
+            store,
+            [ordinaryHandler, backupHandler],
+            TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance,
+            new LongRunningOperationOwnership());
+
+        LongRunningOperationReconciliationSummary result = await reconciler.ReconcileAsync(
+            now, "startup-worker", maxOperations: 1, maxConcurrency: 1);
+
+        Assert.Equal([backup.Kind, ordinary.Kind], order);
+
+        Assert.Equal(2, result.Completed);
+
+        Assert.Equal(LongRunningOperationState.Completed, (await store.GetAsync(backup.Id))!.State);
+
+        Assert.Equal(LongRunningOperationState.Completed, (await store.GetAsync(ordinary.Id))!.State);
+    }
+
     [SkippableFact]
     public async Task ReconcileAsync_UnsupportedOrCorruptCheckpoint_RequiresOperatorRepair()
     {
@@ -1973,7 +2065,7 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         return ids;
     }
 
-    private sealed class CompletingRecoveryHandler(string kind) : ILongRunningOperationRecoveryHandler
+    private sealed class CompletingRecoveryHandler(string kind, List<string>? order = null) : ILongRunningOperationRecoveryHandler
     {
         public string Kind => kind;
 
@@ -1986,6 +2078,9 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             CancellationToken cancellationToken)
         {
             CallCount++;
+
+            order?.Add(operation.Kind);
+
             return Task.FromResult(LongRunningOperationRecoveryResult.Completed());
         }
     }

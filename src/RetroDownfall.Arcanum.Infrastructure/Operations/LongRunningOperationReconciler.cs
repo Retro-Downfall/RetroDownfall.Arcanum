@@ -67,12 +67,8 @@ public sealed class LongRunningOperationReconciler
     /// ordinary durable workload appends to a tree that is about to be rolled back or replaced.
     /// </summary>
     /// <remarks>
-    /// The ordering is per-page. <see cref="ILongRunningOperationStore.FindExpiredAsync"/> has no
-    /// offset — it always returns the head of the expired set — so a backlog large enough to fill a
-    /// page with ordinary kinds can push a pre-state-write operation past the first phase, and it is
-    /// then recovered in the second. It is still recovered in the same pass, and still before the
-    /// host finishes starting; only its position relative to other kinds is best-effort. Making it
-    /// exact needs a kind-filtered expiry query, not a change here.
+    /// Discovery applies the phase predicate before its bounded page limit. A keyset cursor advances
+    /// past rows that remain expired after a skipped claim, so they cannot hide later work.
     /// </remarks>
     private static readonly LongRunningOperationStartupPriority[] StartupPhases =
     [
@@ -152,14 +148,6 @@ public sealed class LongRunningOperationReconciler
             .. LongRunningOperationRecoveryRegistry.KindsByStartupPriority.Where(kind => !owned.Contains(kind)),
         ];
     }
-
-    /// <summary>
-    /// Startup phase for a kind. An unregistered kind cannot claim the pre-state-write slot, so it
-    /// reconciles with ordinary work.
-    /// </summary>
-    private static LongRunningOperationStartupPriority PriorityOf(string kind) =>
-        LongRunningOperationRecoveryRegistry.Find(kind)?.StartupPriority
-        ?? LongRunningOperationStartupPriority.Readiness;
 
     public Task<LongRunningOperationReconciliationSummary> ReconcileNowAsync(
         string ownerId,
@@ -332,22 +320,34 @@ public sealed class LongRunningOperationReconciler
 
         foreach (LongRunningOperationStartupPriority phase in StartupPhases)
         {
+            (DateTimeOffset SortTime, Guid Id)? cursor = null;
+
             while (true)
             {
                 IReadOnlyList<LongRunningOperation> expired = await discovery
                     .FindExpiredForGenericRecoveryAsync(
                         utcNow,
                         pageSize,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        startupPriority: phase,
+                        after: cursor).ConfigureAwait(false);
+
+                if (expired.Count == 0)
+                {
+                    break;
+                }
+
+                LongRunningOperation last = expired[^1];
+
+                cursor = (last.LeaseExpiresAt ?? last.CreatedAt, last.Id);
 
                 LongRunningOperation[] page = expired
-                    .Where(operation => PriorityOf(operation.Kind) == phase)
                     .Where(operation => attempted.Add(operation.Id))
                     .ToArray();
 
                 if (page.Length == 0)
                 {
-                    break;
+                    continue;
                 }
 
                 examined += page.Length;

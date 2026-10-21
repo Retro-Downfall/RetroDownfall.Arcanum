@@ -13,7 +13,6 @@ Baseline: `8aba7832c6c8641ed1299a5df0f4bd572c5a165c`. Three independent source r
 | R7 | P2 | `Infrastructure/Operations/LongRunningOperationReconciler.cs`: phase filtering happens after a globally limited expiry page, skipping work. | Phase/kind filtering precedes bounded paging; page size one processes both earlier ordinary and later pre-state-write work in the same pass. |
 | R8 | P2 | `Api/OpenAiChatCompletionRequestValidator.cs`: null message elements dereference before validation. | Live and batch chat execution return typed invalid-request errors without invoking a provider. |
 | R9 | P2 | `Compendium.Ux/ViewModels/ConfigurationViewModel.cs`: an in-flight successful save clears dirty state for newer editor changes. | Only the actually saved revision becomes clean; edits made during save remain saveable and protected by close confirmation. |
-
 | R10 | P2 | Forge registers its sole `ArcanumApi` HttpClient with a 100-second timeout, including compaction and multipart uploads whose result is the long-running work. | Long operations use caller/host cancellation without an arbitrary whole-request timeout; ordinary short calls retain a bounded response-headers policy. |
 
 R1/R2 directly affect #73's adopted protected-transfer lifecycle (#90); R3 is related restore integrity. The initial umbrella source map did not establish these defects, but this deeper review supersedes its no-additional-gap conclusion until repairs are qualified. Existing separate Forge-memory and vector-rebuild expansion issues are still outside #73's capability scope.

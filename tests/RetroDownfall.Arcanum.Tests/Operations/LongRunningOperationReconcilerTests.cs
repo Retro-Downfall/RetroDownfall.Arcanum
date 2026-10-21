@@ -308,8 +308,10 @@ public sealed class LongRunningOperationReconcilerTests
     /// Requirement 9 / acceptance: restore-class recovery has to reach the state root before any
     /// ordinary durable workload writes to it.
     /// </summary>
-    [Fact]
-    public async Task Before_state_write_kinds_recover_ahead_of_ordinary_kinds()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(100)]
+    public async Task Before_state_write_kinds_recover_ahead_of_ordinary_kinds(int pageSize)
     {
         FakeTimeProvider time = new();
         FakeLongRunningOperationStore store = new(time);
@@ -353,7 +355,7 @@ public sealed class LongRunningOperationReconcilerTests
         _ = await reconciler.ReconcileAsync(
             time.GetUtcNow(),
             "test-owner",
-            maxOperations: 100,
+            maxOperations: pageSize,
             maxConcurrency: 1);
 
         Assert.Equal(
@@ -626,8 +628,10 @@ internal sealed class CancelsOnCompensationOperationStore(FakeLongRunningOperati
     public Task<IReadOnlyList<LongRunningOperation>> FindExpiredForGenericRecoveryAsync(
         DateTimeOffset utcNow,
         int limit,
-        CancellationToken cancellationToken = default) =>
-        inner.FindExpiredForGenericRecoveryAsync(utcNow, limit, cancellationToken);
+        CancellationToken cancellationToken = default,
+        LongRunningOperationStartupPriority? startupPriority = null,
+        (DateTimeOffset SortTime, Guid Id)? after = null) =>
+        inner.FindExpiredForGenericRecoveryAsync(utcNow, limit, cancellationToken, startupPriority, after);
 
     public Task<LongRunningOperationLeaseResult> TryAcquireLeaseAsync(
         Guid operationId,
