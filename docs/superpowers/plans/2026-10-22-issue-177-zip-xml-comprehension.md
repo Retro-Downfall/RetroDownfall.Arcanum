@@ -12,7 +12,13 @@
 
 ### D1. First-party bounded ZIP reader, not `ZipArchive`, not `DocumentFormat.OpenXml`
 
-- **`DocumentFormat.OpenXml` is rejected.** It covers only the OOXML half and nothing of ODF. It is large, it has a history of touching reflection, and it would need its own AOT probe before adoption.
+- **`DocumentFormat.OpenXml` was evaluated and declined by the operator (2026-10-22).**
+  - **The probe passed.** Version 3.5.1 (MIT) passed `./scripts/verify-aot-il-warnings.sh osx-arm64` with zero SDK warnings and extracted real files in a standalone Native AOT binary.
+  - **But it is costly.** It grew the shipping `osx-arm64` executable by 17.6 MB (140.0 to 157.6 MB, +12.6%).
+  - **And it gives little.** It covers only OOXML (no ODF, no Visio). Its part reader neither filters hidden content, nor processes markup compatibility, nor bounds depth. Its typed element matching silently drops text under schema-invalid parents. So it would contribute only package navigation, which this reader and `OpcPackageRelationships` already provide.
+  - **And it adds risk.** It would put a second ZIP parser (`System.IO.Packaging`) on the same untrusted bytes.
+  - **Revisit if Arcanum ever writes Office files.**
+- **Library policy across the epic.** The operator wants a parser per file type, using a library wherever it carries the hard part of a format. The survey of free and paid .NET options (2026-10-22) found none that does so for the ZIP+XML formats. The candidates for later slices are PdfPig (or the commercial Docotic.Pdf), MimeKitLite, Sylvan.Data.Excel and OpenMcdf.
 - **`System.IO.Compression.ZipArchive` is also rejected for reading.**
   - Its constructor materializes every central-directory record as a `ZipArchiveEntry` before any caller-visible count check. That makes the entry-count bound an after-the-fact check.
   - It honours ZIP64 and Deflate64.
@@ -189,7 +195,8 @@ Extractors throw `DocumentPackageRejectedException(DocumentPackageRejection)`, a
    - The reconciliation test for prior OOXML rows.
    - Per-family hosts are wired to the text container until Stage 3 replaces them. No new MIME is registered until its extractor lands; Stage 1A adds the registry shape only.
 2. **Stage 1B, container library (TDD, new files only).**
-   - Under `Infrastructure/Weave/Comprehension/`: `BoundedZipPackage`, `BoundedDocumentXml`, `OpcPackageRelationships`, `OpenDocumentManifest`, and `DocumentPackageRejectedException`/`DocumentPackageRejection`.
+   - Under `Infrastructure/Weave/Comprehension/`: `BoundedZipPackage`, `BoundedXmlReader`, `OpcPackageRelationships`, `OpenDocumentManifest`, and `DocumentPackageRejectedException`/`DocumentPackageRejection`.
+   - Extractors advance XML only through `BoundedXmlReader.Read()` and `SkipElement()`. `XmlReader` completes some text nodes lazily, so `Read()` forces `Value` inside its `XmlException` translation; a direct `Reader.Read()`, `Skip()` or early `Value` access would bypass it.
    - The test-side `ComprehensionPackageBuilder`, which builds valid packages and raw adversarial ZIP bytes.
    - Adversarial tests: entry count; ratio; understated length; overlapping entries; ZIP64; encryption flag; CFB; traversal; duplicate names; local/central mismatch; DTD and entities, including the manifest `Ignore` posture.
 3. **Stage 2, extractors (parallel, TDD, new files only).**
