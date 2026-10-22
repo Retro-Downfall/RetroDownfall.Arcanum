@@ -46,12 +46,12 @@ internal sealed class SpreadsheetWorksheetReader(
 
         projection.BeginSheet(name);
 
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return true;
         }
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             if (SpreadsheetXml.IsMain(xml.Reader, "sheetData"))
             {
@@ -83,9 +83,9 @@ internal sealed class SpreadsheetWorksheetReader(
 
         int mergeCellElements = 0;
 
-        if (SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
-            while (SpreadsheetXml.NextChildElement(xml, depth))
+            while (children.MoveNext())
             {
                 if (SpreadsheetXml.IsMain(xml.Reader, "cols"))
                 {
@@ -109,12 +109,12 @@ internal sealed class SpreadsheetWorksheetReader(
 
     private void ReadMergeCells(BoundedXmlReader xml, ref int mergeCellElements)
     {
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return;
         }
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             XmlReader reader = xml.Reader;
 
@@ -138,12 +138,12 @@ internal sealed class SpreadsheetWorksheetReader(
 
     private void ReadColumns(BoundedXmlReader xml, ref int columnElements)
     {
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return;
         }
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             XmlReader reader = xml.Reader;
 
@@ -179,12 +179,12 @@ internal sealed class SpreadsheetWorksheetReader(
 
     private bool ReadSheetData(BoundedXmlReader xml)
     {
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return true;
         }
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             if (SpreadsheetXml.IsMain(xml.Reader, "row"))
             {
@@ -217,9 +217,9 @@ internal sealed class SpreadsheetWorksheetReader(
 
         _previousColumn = 0;
 
-        if (SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
-            while (SpreadsheetXml.NextChildElement(xml, depth))
+            while (children.MoveNext())
             {
                 if (SpreadsheetXml.IsMain(xml.Reader, "c"))
                 {
@@ -265,7 +265,7 @@ internal sealed class SpreadsheetWorksheetReader(
 
         projection.BeginCell();
 
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return true;
         }
@@ -274,7 +274,7 @@ internal sealed class SpreadsheetWorksheetReader(
 
         bool inline = type == "inlineStr";
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             XmlReader reader = xml.Reader;
 

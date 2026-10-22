@@ -284,7 +284,8 @@ internal static class ExcelWorkbookFixtures
         string AfterSheetData = "",
         string? RelationshipId = null,
         string? Target = null,
-        string? Type = null);
+        string? Type = null,
+        Func<string, string>? WrapListing = null);
 
     public static string OfficeDocumentRelationship(string kind, bool strict = false) =>
         (strict ? "http://purl.oclc.org/ooxml/officeDocument/relationships/" : "http://schemas.openxmlformats.org/officeDocument/2006/relationships/") + kind;
@@ -317,7 +318,8 @@ internal static class ExcelWorkbookFixtures
         string extraWorkbookRelationships = "",
         string extraWorkbookXml = "",
         RawZipEntry[]? rawEntries = null,
-        string extraWorkbookXmlAfterSheets = "")
+        string extraWorkbookXmlAfterSheets = "",
+        Func<string, string>? wrapSheets = null)
     {
         string main = strict ? StrictMain : Main;
 
@@ -337,14 +339,18 @@ internal static class ExcelWorkbookFixtures
 
             string partName = sheet.PartName ?? $"xl/worksheets/sheet{index + 1}.xml";
 
-            sheetElements.Append($"<sheet name=\"{sheet.Name}\" sheetId=\"{index + 1}\"");
+            StringBuilder listing = new();
+
+            listing.Append($"<sheet name=\"{sheet.Name}\" sheetId=\"{index + 1}\"");
 
             if (sheet.State.Length > 0)
             {
-                sheetElements.Append($" state=\"{sheet.State}\"");
+                listing.Append($" state=\"{sheet.State}\"");
             }
 
-            sheetElements.Append($" r:id=\"{sheet.RelationshipId ?? $"rIdS{index + 1}"}\"/>");
+            listing.Append($" r:id=\"{sheet.RelationshipId ?? $"rIdS{index + 1}"}\"/>");
+
+            sheetElements.Append(sheet.WrapListing is null ? listing.ToString() : sheet.WrapListing(listing.ToString()));
 
             relationships.Append($"<Relationship Id=\"rIdS{index + 1}\" Type=\"{sheet.Type ?? OfficeDocumentRelationship(sheet.Kind, strict)}\" Target=\"{sheet.Target ?? $"/{partName}"}\"/>");
 
@@ -360,7 +366,9 @@ internal static class ExcelWorkbookFixtures
 
         relationships.Append(extraWorkbookRelationships);
 
-        entries.Add(("xl/workbook.xml", $"<workbook xmlns=\"{main}\" xmlns:r=\"{rel}\">{extraWorkbookXml}<sheets>{sheetElements}</sheets>{extraWorkbookXmlAfterSheets}</workbook>"));
+        string sheetsElement = $"<sheets>{sheetElements}</sheets>";
+
+        entries.Add(("xl/workbook.xml", $"<workbook xmlns=\"{main}\" xmlns:r=\"{rel}\">{extraWorkbookXml}{(wrapSheets is null ? sheetsElement : wrapSheets(sheetsElement))}{extraWorkbookXmlAfterSheets}</workbook>"));
 
         entries.Add(("xl/_rels/workbook.xml.rels", Relationships(relationships.ToString())));
 

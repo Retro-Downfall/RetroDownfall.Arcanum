@@ -57,7 +57,7 @@ internal sealed class SpreadsheetDocumentExtractor : ISessionAttachmentDocumentE
 
         SpreadsheetWorksheetReader worksheets = new(projection, sharedStrings, _limits, cancellationToken);
 
-        if (!SpreadsheetXml.EnterChildren(workbook, out int depth))
+        if (!SpreadsheetChildren.Enter(workbook, out SpreadsheetChildren children))
         {
             return ValueTask.CompletedTask;
         }
@@ -69,7 +69,7 @@ internal sealed class SpreadsheetDocumentExtractor : ISessionAttachmentDocumentE
         // read for one sheet only: a file whose sheets share one would make the extractor inflate and parse it again for each.
         HashSet<string> worksheetEntries = new(StringComparer.OrdinalIgnoreCase);
 
-        while (SpreadsheetXml.NextChildElement(workbook, depth))
+        while (children.MoveNext())
         {
             if (!SpreadsheetXml.IsMain(workbook.Reader, "sheets"))
             {
@@ -98,14 +98,14 @@ internal sealed class SpreadsheetDocumentExtractor : ISessionAttachmentDocumentE
 
         SpreadsheetXml.EnterRoot(xml, "workbook");
 
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return false;
         }
 
         bool anyWindow = false;
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             if (!SpreadsheetXml.IsMain(xml.Reader, "bookViews"))
             {
@@ -114,12 +114,12 @@ internal sealed class SpreadsheetDocumentExtractor : ISessionAttachmentDocumentE
                 continue;
             }
 
-            if (!SpreadsheetXml.EnterChildren(xml, out int viewsDepth))
+            if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren views))
             {
                 continue;
             }
 
-            while (SpreadsheetXml.NextChildElement(xml, viewsDepth))
+            while (views.MoveNext())
             {
                 XmlReader reader = xml.Reader;
 
@@ -195,12 +195,12 @@ internal sealed class SpreadsheetDocumentExtractor : ISessionAttachmentDocumentE
         ref int sheetsSeen,
         CancellationToken cancellationToken)
     {
-        if (!SpreadsheetXml.EnterChildren(workbook, out int depth))
+        if (!SpreadsheetChildren.Enter(workbook, out SpreadsheetChildren children))
         {
             return true;
         }
 
-        while (SpreadsheetXml.NextChildElement(workbook, depth))
+        while (children.MoveNext())
         {
             XmlReader reader = workbook.Reader;
 
