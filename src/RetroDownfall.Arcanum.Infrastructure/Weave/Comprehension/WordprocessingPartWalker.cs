@@ -165,7 +165,7 @@ internal sealed class WordprocessingPartWalker
 
             if (position == next)
             {
-                WalkChildren();
+                WalkStory();
 
                 next++;
 
@@ -176,7 +176,7 @@ internal sealed class WordprocessingPartWalker
 
             _output.BeginHold();
 
-            WalkChildren();
+            WalkStory();
 
             held[id] = _output.TakeHeld();
         }
@@ -657,15 +657,46 @@ internal sealed class WordprocessingPartWalker
 
     /// <summary>
     /// Walks a <c>w:txbxContent</c>. The text box stands apart from the text around it, on a line of its own on each side;
-    /// a box that projects nothing adds no line.
+    /// a box that projects nothing adds no line. A box is a story of its own (see <see cref="WalkStory"/>), and one anchored
+    /// in a field's instruction is part of that instruction: it is not shown, and nothing in it is read.
     /// </summary>
     private void WalkTextBoxContent()
     {
+        if (_fieldCodeLevels != 0)
+        {
+            _xml.SkipElement();
+
+            return;
+        }
+
         WordprocessingOutput.BlockMark mark = _output.BeginSeparatedBlock();
+
+        WalkStory();
+
+        _output.EndSeparatedBlock(mark);
+    }
+
+    /// <summary>
+    /// Walks the content of a story that stands apart from the text around it: a text box or one note. Word keeps each story's
+    /// complex fields apart (a field's begin, separate and end sit in one story), so the story starts with no field open and
+    /// the fields of the story it interrupts are set aside and restored once it ends. A field character in a story can then
+    /// neither end nor open a field in another, and a field left open in one never turns another story's text into code.
+    /// </summary>
+    private void WalkStory()
+    {
+        int fieldDepth = _fieldDepth;
+
+        ulong fieldCodeLevels = _fieldCodeLevels;
+
+        _fieldDepth = 0;
+
+        _fieldCodeLevels = 0;
 
         WalkChildren();
 
-        _output.EndSeparatedBlock(mark);
+        _fieldDepth = fieldDepth;
+
+        _fieldCodeLevels = fieldCodeLevels;
     }
 
     private void WalkRun()
