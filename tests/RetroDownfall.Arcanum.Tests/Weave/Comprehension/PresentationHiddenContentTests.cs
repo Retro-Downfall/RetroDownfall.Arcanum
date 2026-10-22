@@ -103,6 +103,154 @@ public sealed class PresentationHiddenContentTests
         Assert.Equal("Slide 1\nBefore\nAfter\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
     }
 
+    // ---------------------------------------------------------------- shape visibility does not depend on element order
+
+    private const string HiddenNonVisual = "<p:nvSpPr><p:cNvPr id=\"2\" name=\"x\" hidden=\"1\"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>";
+
+    private static string TextBody(string paragraphs) => $"<p:txBody><a:bodyPr/><a:lstStyle/>{paragraphs}</p:txBody>";
+
+    private static string AlternateContentOf(string content) =>
+        $"<mc:AlternateContent xmlns:mc=\"{PresentationDeck.Mc}\" xmlns:a14=\"http://schemas.microsoft.com/office/drawing/2010/main\">"
+        + $"<mc:Choice Requires=\"a14\">{content}</mc:Choice><mc:Fallback>{content}</mc:Fallback></mc:AlternateContent>";
+
+    [Fact]
+    public async Task Extract_TextBodyBeforeHiddenNonVisualProperties_IsNotProjected()
+    {
+        // The text arrives before the shape says it is hidden, so it must be held back until the shape has ended.
+        string shapes = $"<p:sp>{TextBody(Paragraph("TXBODYFIRSTLEAK"))}{HiddenNonVisual}<p:spPr/></p:sp>" + Shape(3, Paragraph("shown"));
+
+        Assert.Equal("Slide 1\nshown\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenNonVisualPropertiesInsideAlternateContent_HideTheShape()
+    {
+        // The wrapper, not the shape, is the parent of the non-visual properties; the shape is still the one hidden.
+        string shapes = $"<p:sp>{AlternateContentOf(HiddenNonVisual)}<p:spPr/>{TextBody(Paragraph("ACNVSPPRLEAK"))}</p:sp>" + Shape(3, Paragraph("shown"));
+
+        Assert.Equal("Slide 1\nshown\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenNonVisualPropertiesInsideAlternateContentAfterTheTextBody_HideTheShape()
+    {
+        string shapes = $"<p:sp>{TextBody(Paragraph("ACLATELEAK"))}{AlternateContentOf(HiddenNonVisual)}<p:spPr/></p:sp>" + Shape(3, Paragraph("shown"));
+
+        Assert.Equal("Slide 1\nshown\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenMarkerWrappedInAlternateContentInsideTheNonVisualProperties_HidesTheShape()
+    {
+        string wrapped = AlternateContentOf("<p:cNvPr id=\"2\" name=\"x\" hidden=\"1\"/>");
+
+        string shapes = $"<p:sp><p:nvSpPr>{wrapped}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/>{TextBody(Paragraph("WRAPPEDMARKERLEAK"))}</p:sp>"
+            + Shape(3, Paragraph("shown"));
+
+        Assert.Equal("Slide 1\nshown\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Theory]
+    [InlineData("sp", "nvSpPr")]
+    [InlineData("grpSp", "nvGrpSpPr")]
+    [InlineData("pic", "nvPicPr")]
+    [InlineData("graphicFrame", "nvGraphicFramePr")]
+    [InlineData("cxnSp", "nvCxnSpPr")]
+    public async Task Extract_HiddenShapeOfEveryKindWhoseTextComesFirst_IsExcluded(string shape, string nonVisual)
+    {
+        string hiddenShape =
+            $"<p:{shape}>{TextBody(Paragraph("TEXTFIRSTKINDLEAK"))}<p:{nonVisual}><p:cNvPr id=\"3\" name=\"Hidden\" hidden=\"1\"/></p:{nonVisual}></p:{shape}>";
+
+        string shapes = Shape(2, Paragraph("Before")) + hiddenShape + Shape(4, Paragraph("After"));
+
+        Assert.Equal("Slide 1\nBefore\nAfter\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenGroupWhoseNonVisualPropertiesComeLast_HidesEveryChild()
+    {
+        string inner = $"<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"6\" name=\"Inner\"/></p:nvGrpSpPr><p:grpSpPr/>{Shape(7, Paragraph("DEEPLATECHILD"))}</p:grpSp>";
+
+        string hiddenGroup =
+            "<p:grpSp>" + Shape(4, Paragraph("LATECHILD")) + inner
+            + "<p:nvGrpSpPr><p:cNvPr id=\"3\" name=\"Outer\" hidden=\"1\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:grpSp>";
+
+        string shapes = Shape(2, Paragraph("Before")) + hiddenGroup + Shape(8, Paragraph("After"));
+
+        Assert.Equal("Slide 1\nBefore\nAfter\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenRootGroupWhoseNonVisualPropertiesComeLast_HidesTheWholeShapeTree()
+    {
+        string slide = Slide(Shape(2, Paragraph("UNDERLATEHIDDENROOT"))).Replace(
+            "<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>",
+            string.Empty,
+            StringComparison.Ordinal).Replace(
+            "</p:spTree>",
+            "<p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\" hidden=\"1\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr></p:spTree>",
+            StringComparison.Ordinal);
+
+        Assert.Equal("Slide 1\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(slide)));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenTableWhoseNonVisualPropertiesComeLast_IsExcluded()
+    {
+        string table =
+            "<p:graphicFrame><p:xfrm/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr/><a:tblGrid/>"
+            + $"<a:tr h=\"1\"><a:tc>{TextBody(Paragraph("LATETABLELEAK")).Replace("p:txBody", "a:txBody", StringComparison.Ordinal)}<a:tcPr/></a:tc></a:tr>"
+            + "</a:tbl></a:graphicData></a:graphic>"
+            + "<p:nvGraphicFramePr><p:cNvPr id=\"4\" name=\"Table\" hidden=\"1\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr></p:graphicFrame>";
+
+        string shapes = Shape(2, Paragraph("Before")) + table + Shape(5, Paragraph("After"));
+
+        Assert.Equal("Slide 1\nBefore\nAfter\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenMarkerNestedInsideATextRun_HidesTheEnclosingShapeAndNothingMore()
+    {
+        // Not where the schema puts non-visual properties, so the most cautious reading wins: the shape holding it is hidden.
+        string paragraph =
+            "<a:p><a:r><a:t>NESTEDMARKERLEAK<p:nvSpPr><p:cNvPr id=\"9\" name=\"n\" hidden=\"1\"/></p:nvSpPr></a:t><a:x>STALETEXT</a:x></a:r></a:p>";
+
+        string shapes = Shape(2, paragraph) + Shape(3, Paragraph("shown"));
+
+        Assert.Equal("Slide 1\nshown\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenShapeLargerThanTheTextBuffer_DoesNotCostTheVisibleShapesAfterIt()
+    {
+        string huge = new('h', 300_000);
+
+        string shapes = Shape(2, Paragraph("Before"))
+            + Shape(3, Paragraph(huge), " hidden=\"1\"")
+            + $"<p:sp>{TextBody(Paragraph(huge))}{HiddenNonVisual}<p:spPr/></p:sp>"
+            + Shape(4, Paragraph("After"));
+
+        SessionAttachmentExtractionResult result = await PresentationDeck.ExtractAsync(PresentationDeck.Deck(Slide(shapes)));
+
+        Assert.Equal("Slide 1\nBefore\nAfter\n", result.Text);
+
+        Assert.False(result.WasTruncated);
+    }
+
+    [Fact]
+    public async Task Extract_VisibleShapeLargerThanTheTextBuffer_IsCutAtTheSinkCeilingAndReportsTruncation()
+    {
+        string shapes = Shape(2, Paragraph(new string('v', 300_000))) + Shape(3, Paragraph("AFTERTHECEILING"));
+
+        SessionAttachmentExtractionResult result = await PresentationDeck.ExtractAsync(PresentationDeck.Deck(Slide(shapes)));
+
+        Assert.True(result.WasTruncated);
+
+        Assert.Equal(262_144, result.Text.Length);
+
+        Assert.DoesNotContain("AFTERTHECEILING", result.Text, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Extract_HiddenGroup_HidesEveryChildAtAnyDepth()
     {

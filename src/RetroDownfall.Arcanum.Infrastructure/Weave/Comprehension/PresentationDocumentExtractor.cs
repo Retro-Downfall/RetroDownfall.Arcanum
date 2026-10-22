@@ -19,19 +19,31 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <para>
 /// A slide projects as <c>Slide n</c> followed by its text, where n is the 1-based position in the slide list (a
 /// hidden slide still counts). Text is DrawingML <c>a:t</c> inside a run or field of a paragraph of a text body; each
-/// paragraph and each <c>a:br</c> ends with a newline. Hidden slides (<c>show="0"</c>), hidden shapes and groups
-/// (<c>hidden</c> on the shape's <c>p:cNvPr</c>), table cells covered by a merge, the non-first branches of
-/// <c>mc:AlternateContent</c>, extension lists and custom data are excluded; alt text is never emitted.
+/// paragraph and each <c>a:br</c> ends with a newline. A table row projects as its cells joined by a tab and ends with
+/// a newline; the paragraphs and breaks of one cell are joined by single spaces, and a tab or line break typed into a
+/// cell becomes a space, so a cell can never forge a cell or row boundary. Hidden slides (<c>show="0"</c>), hidden
+/// shapes and groups (<c>hidden</c> on the shape's <c>p:cNvPr</c>), table cells covered by a merge, the non-first
+/// branches of <c>mc:AlternateContent</c>, extension lists and custom data are excluded; alt text is never emitted.
+/// A slide part may be named by only one slide list entry: a second mention is a format mismatch.
 /// </para>
 /// <para>
-/// Shape visibility is decided from the shape's non-visual properties, which the PresentationML schema places before
-/// its text body, so a hidden shape is skipped as a whole in a single forward pass without buffering. Equations,
-/// chart and SmartArt text, and colour or size tricks are not projected or detected.
+/// Shape visibility does not depend on the order of a shape's children. The text of a slide is held in a buffer of at
+/// most <see cref="MaximumBufferedCharacters"/> characters until the slide has been read to its end, and a shape or
+/// group whose non-visual properties carry a hidden <c>p:cNvPr</c> (directly, or inside <c>mc:AlternateContent</c>
+/// wrappers) discards the text held for it and for everything inside it, wherever in the shape the marker sits. Text
+/// beyond the buffer is cut and reported as truncation. Equations, chart and SmartArt text, and colour or size tricks
+/// are not projected or detected.
 /// </para>
 /// </remarks>
 internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocumentExtractor
 {
     internal const int MaximumSlides = 4096;
+
+    /// <summary>
+    /// The most characters held for one slide. It equals the default sink ceiling: text beyond it could never be
+    /// emitted, so it is dropped and the output is marked truncated.
+    /// </summary>
+    internal const int MaximumBufferedCharacters = 262_144;
 
     private const string PresentationNamespace = "http://schemas.openxmlformats.org/presentationml/2006/main";
 
@@ -136,6 +148,9 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
         List<string> slideEntries = [];
 
+        // Part names are case-insensitive in a package, so two spellings of one name are one slide part.
+        HashSet<string> distinctEntries = new(StringComparer.OrdinalIgnoreCase);
+
         if (reader.IsEmptyElement)
         {
             return slideEntries;
@@ -156,7 +171,7 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
                 // Only the first list is the slide order; a repeated one is not read for slides at all.
                 listSeen = true;
 
-                ReadSlideIds(xml, package, slideTargets, slideEntries);
+                ReadSlideIds(xml, package, slideTargets, slideEntries, distinctEntries);
             }
             else
             {
@@ -171,7 +186,8 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
         BoundedXmlReader xml,
         BoundedZipPackage package,
         Dictionary<string, string> slideTargets,
-        List<string> slideEntries)
+        List<string> slideEntries,
+        HashSet<string> distinctEntries)
     {
         XmlReader reader = xml.Reader;
 
@@ -210,6 +226,13 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
                     || OpcPackageRelationships.ResolveEntry(package, target) is not { } entry)
                 {
                     throw new DocumentPackageRejectedException(DocumentPackageRejection.MissingPart);
+                }
+
+                if (!distinctEntries.Add(entry))
+                {
+                    // Every mention would inflate and parse the part again: real producers give each position its own
+                    // part, and a list naming one part many times is a way to multiply the cost of a small package.
+                    throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
                 }
 
                 slideEntries.Add(entry);
@@ -287,7 +310,13 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
         NonVisual,
 
+        /// <summary>A shape, group, picture, connector or graphic frame: the unit that can be hidden.</summary>
+        Shape,
+
         AlternateContent,
+
+        /// <summary>The <c>mc:Choice</c> that is projected.</summary>
+        Choice,
 
         TextBody,
 
@@ -296,12 +325,17 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
         Run,
 
         Text,
+
+        TableRow,
+
+        TableCell,
     }
 
     /// <summary>
     /// A single forward pass over the children of one slide's root. It remembers what kind of element is open at each
-    /// depth, which is all the context the text rules need, so nothing is buffered or retained in proportion to the
-    /// document.
+    /// depth, which is all the context the text rules need. Everything it would write is held in a bounded buffer: the
+    /// slide is a frame, and so is each shape inside it, and a hidden marker anywhere in a shape discards the buffer back
+    /// to where that shape began, so a shape is shown or hidden as a whole whatever order its children come in.
     /// </summary>
     private sealed class SlideTextWalker(BoundedXmlReader xml, ISessionAttachmentDocumentTextSink output)
     {
@@ -311,51 +345,66 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
         private readonly bool[] _choiceTaken = new bool[BoundedXmlReader.MaximumDepth + 1];
 
-        private int _suppressedDepth = -1;
+        // One frame for the slide and at most one more per open element depth.
+        private readonly int[] _frameStart = new int[BoundedXmlReader.MaximumDepth + 2];
+
+        private readonly bool[] _frameStartedOverflowed = new bool[BoundedXmlReader.MaximumDepth + 2];
+
+        private char[] _buffer = [];
+
+        private int _length;
+
+        private bool _overflowed;
+
+        private int _frameCount = 1;
+
+        private int _hiddenFrame = -1;
 
         private int _textDepth = -1;
 
+        private int _cellDepth = -1;
+
+        private int _cellsInRow;
+
+        private bool _cellHasText;
+
+        private bool _cellBreakPending;
+
         private bool _advance = true;
 
-        /// <summary>Walks to the end of the slide. Returns false as soon as the sink refuses text.</summary>
+        /// <summary>Walks to the end of the slide and hands its visible text to the sink. Returns false when the sink stopped accepting text.</summary>
         public bool Walk()
         {
             while (true)
             {
                 if (_advance && !xml.Read())
                 {
-                    return true;
+                    return Complete();
                 }
 
                 _advance = true;
 
-                if (_suppressedDepth >= 0)
+                switch (_reader.NodeType)
                 {
-                    // Inside a hidden shape: only its end tag matters, and it is found by depth.
-                    if (_reader.NodeType == XmlNodeType.EndElement && _reader.Depth == _suppressedDepth)
-                    {
-                        _suppressedDepth = -1;
-                    }
+                    case XmlNodeType.Element:
+                        VisitElement();
 
-                    continue;
-                }
+                        break;
 
-                bool accepted = _reader.NodeType switch
-                {
-                    XmlNodeType.Element => VisitElement(),
-                    XmlNodeType.EndElement => VisitEndElement(),
-                    XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.Whitespace or XmlNodeType.SignificantWhitespace => VisitText(),
-                    _ => true,
-                };
+                    case XmlNodeType.EndElement:
+                        VisitEndElement();
 
-                if (!accepted)
-                {
-                    return false;
+                        break;
+
+                    case XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.Whitespace or XmlNodeType.SignificantWhitespace:
+                        VisitText();
+
+                        break;
                 }
             }
         }
 
-        private bool VisitElement()
+        private void VisitElement()
         {
             int depth = _reader.Depth;
 
@@ -366,18 +415,15 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
             if (namespaceUri == MarkupCompatibilityNamespace)
             {
                 VisitCompatibilityElement(depth);
-
-                return true;
             }
-
-            if (IsPresentationNamespace(namespaceUri))
+            else if (IsPresentationNamespace(namespaceUri))
             {
                 VisitPresentationElement(depth);
-
-                return true;
             }
-
-            return !IsDrawingNamespace(namespaceUri) || VisitDrawingElement(depth);
+            else if (IsDrawingNamespace(namespaceUri))
+            {
+                VisitDrawingElement(depth);
+            }
         }
 
         /// <summary>
@@ -397,6 +443,8 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                 case "Choice" when _path[depth - 1] == ElementKind.AlternateContent && !_choiceTaken[depth - 1]:
                     _choiceTaken[depth - 1] = true;
+
+                    _path[depth] = ElementKind.Choice;
 
                     break;
 
@@ -418,6 +466,16 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                     break;
 
+                case "sp" or "grpSp" or "graphicFrame" or "pic" or "cxnSp":
+                    if (!_reader.IsEmptyElement)
+                    {
+                        _path[depth] = ElementKind.Shape;
+
+                        PushFrame();
+                    }
+
+                    break;
+
                 case "txBody":
                     _path[depth] = ElementKind.TextBody;
 
@@ -428,20 +486,14 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                     break;
 
-                case "cNvPr" when _path[depth - 1] == ElementKind.NonVisual && IsTrue(_reader.GetAttribute("hidden", string.Empty)):
-                    // The shape is the element holding the non-visual container: two levels up from here.
-                    _suppressedDepth = depth - 2;
-
-                    if (_textDepth >= _suppressedDepth)
-                    {
-                        _textDepth = -1;
-                    }
+                case "cNvPr" when IsNonVisualProperty(depth) && IsTrue(_reader.GetAttribute("hidden", string.Empty)):
+                    HideCurrentShape();
 
                     break;
             }
         }
 
-        private bool VisitDrawingElement(int depth)
+        private void VisitDrawingElement(int depth)
         {
             ElementKind parent = _path[depth - 1];
 
@@ -462,6 +514,33 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                     break;
 
+                // A table nested in a cell, or a row in a row, is part of the outer cell or row and adds no boundaries.
+                case "tr" when _cellDepth < 0 && parent != ElementKind.TableRow:
+                    _path[depth] = ElementKind.TableRow;
+
+                    _cellsInRow = 0;
+
+                    break;
+
+                case "tc" when parent == ElementKind.TableRow:
+                    if (_cellsInRow++ > 0)
+                    {
+                        Write('\t');
+                    }
+
+                    if (!_reader.IsEmptyElement)
+                    {
+                        _path[depth] = ElementKind.TableCell;
+
+                        _cellDepth = depth;
+
+                        _cellHasText = false;
+
+                        _cellBreakPending = false;
+                    }
+
+                    break;
+
                 case "p" when parent == ElementKind.TextBody:
                     if (!_reader.IsEmptyElement)
                     {
@@ -470,7 +549,9 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
                         break;
                     }
 
-                    return output.TryAppend("\n");
+                    EndLine();
+
+                    break;
 
                 case "r" or "fld" when parent == ElementKind.Paragraph:
                     _path[depth] = ElementKind.Run;
@@ -485,31 +566,212 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
                     break;
 
                 case "br" when parent == ElementKind.Paragraph:
-                    return output.TryAppend("\n");
-            }
+                    EndLine();
 
-            return true;
+                    break;
+            }
         }
 
-        private bool VisitEndElement()
+        private void VisitEndElement()
         {
             switch (_path[_reader.Depth])
             {
                 case ElementKind.Text:
                     _textDepth = -1;
 
-                    return true;
+                    break;
 
                 case ElementKind.Paragraph:
-                    return output.TryAppend("\n");
+                    EndLine();
 
-                default:
-                    return true;
+                    break;
+
+                case ElementKind.TableCell:
+                    _cellDepth = -1;
+
+                    break;
+
+                case ElementKind.TableRow:
+                    // A row with no visible cell has no line; a covered cell is not a cell of the row.
+                    if (_cellsInRow > 0)
+                    {
+                        Write('\n');
+                    }
+
+                    break;
+
+                case ElementKind.Shape:
+                    PopFrame();
+
+                    break;
             }
         }
 
-        private bool VisitText() =>
-            _textDepth < 0 || _reader.Depth != _textDepth + 1 || output.TryAppend(_reader.Value);
+        private void VisitText()
+        {
+            if (_textDepth >= 0 && _reader.Depth == _textDepth + 1)
+            {
+                WriteText(_reader.Value);
+            }
+        }
+
+        /// <summary>
+        /// True when the element at <paramref name="depth"/> is a direct child of a shape's non-visual properties.
+        /// <c>mc:AlternateContent</c> and its projected <c>mc:Choice</c> are transparent wrappers on the way up.
+        /// </summary>
+        private bool IsNonVisualProperty(int depth)
+        {
+            int ancestor = depth - 1;
+
+            while (ancestor > 0 && _path[ancestor] is ElementKind.AlternateContent or ElementKind.Choice)
+            {
+                ancestor--;
+            }
+
+            return _path[ancestor] == ElementKind.NonVisual;
+        }
+
+        private void PushFrame()
+        {
+            _frameStart[_frameCount] = _length;
+
+            _frameStartedOverflowed[_frameCount] = _overflowed;
+
+            _frameCount++;
+        }
+
+        private void PopFrame()
+        {
+            _frameCount--;
+
+            if (_hiddenFrame == _frameCount)
+            {
+                _hiddenFrame = -1;
+            }
+        }
+
+        /// <summary>
+        /// Hides the shape whose non-visual properties are being read, which is the innermost open frame however many
+        /// compatibility wrappers sit between: everything held since it began is discarded and nothing more is kept for it.
+        /// </summary>
+        private void HideCurrentShape()
+        {
+            if (_hiddenFrame >= 0)
+            {
+                return;
+            }
+
+            int frame = _frameCount - 1;
+
+            _hiddenFrame = frame;
+
+            _length = _frameStart[frame];
+
+            // Overflow that began inside this shape went with its text; overflow from before it stays.
+            if (_overflowed && !_frameStartedOverflowed[frame])
+            {
+                _overflowed = false;
+            }
+        }
+
+        /// <summary>A paragraph or <c>a:br</c> ends a line, except in a table cell where it is a space before the cell's next text.</summary>
+        private void EndLine()
+        {
+            if (_cellDepth >= 0)
+            {
+                _cellBreakPending = true;
+            }
+            else
+            {
+                Write('\n');
+            }
+        }
+
+        private void WriteText(string value)
+        {
+            if (_cellDepth < 0)
+            {
+                Write(value);
+
+                return;
+            }
+
+            if (value.Length == 0)
+            {
+                return;
+            }
+
+            if (_cellBreakPending && _cellHasText)
+            {
+                Write(' ');
+            }
+
+            _cellBreakPending = false;
+
+            _cellHasText = true;
+
+            if (value.AsSpan().IndexOfAny('\t', '\r', '\n') < 0)
+            {
+                Write(value);
+
+                return;
+            }
+
+            // A tab or line break typed into a cell would read as a cell or row boundary of the projection.
+            foreach (char character in value)
+            {
+                Write(character is '\t' or '\r' or '\n' ? ' ' : character);
+            }
+        }
+
+        private void Write(char character) => Write(new ReadOnlySpan<char>(in character));
+
+        private void Write(ReadOnlySpan<char> text)
+        {
+            if (_hiddenFrame >= 0 || _overflowed || text.Length == 0)
+            {
+                return;
+            }
+
+            int room = MaximumBufferedCharacters - _length;
+
+            if (text.Length > room)
+            {
+                text = text[..room];
+
+                _overflowed = true;
+            }
+
+            if (_buffer.Length - _length < text.Length)
+            {
+                Array.Resize(ref _buffer, Math.Min(MaximumBufferedCharacters, Math.Max(_length + text.Length, Math.Max(256, _buffer.Length * 2))));
+            }
+
+            text.CopyTo(_buffer.AsSpan(_length));
+
+            _length += text.Length;
+        }
+
+        /// <summary>
+        /// Hands the slide's visible text to the sink once the whole slide is known; false when the sink stopped
+        /// accepting text. A hidden root has already emptied the buffer and cleared any overflow, so it writes nothing.
+        /// </summary>
+        private bool Complete()
+        {
+            if (_length > 0 && !output.TryAppend(_buffer.AsSpan(0, _length)))
+            {
+                return false;
+            }
+
+            if (!_overflowed)
+            {
+                return true;
+            }
+
+            output.MarkTruncated();
+
+            return false;
+        }
 
         /// <summary>Consumes the current element's subtree. The reader then sits on the next node, which is still to be visited.</summary>
         private void SkipCurrentElement()

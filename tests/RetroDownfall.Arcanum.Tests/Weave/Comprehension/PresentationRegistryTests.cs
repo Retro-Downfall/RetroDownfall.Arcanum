@@ -28,12 +28,12 @@ public sealed class PresentationRegistryTests
 
     private static string Slide(string shapes, string rootAttributes = "") => PresentationDeck.Slide(shapes, rootAttributes);
 
-    private static Task<SessionAttachmentExtractionResult> ExtractThroughRegistryAsync(byte[] bytes, string mimeType) =>
+    private static Task<SessionAttachmentExtractionResult> ExtractThroughRegistryAsync(byte[] bytes, string mimeType, long maximumBytes = 1024 * 1024) =>
         SessionAttachmentTextExtractor.ExtractDocumentAsync(
             new NoOpSessionAttachmentStore(readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes)),
             Record(mimeType, bytes.Length),
             Settings(),
-            1024 * 1024,
+            maximumBytes,
             CancellationToken.None);
 
     [Theory]
@@ -165,16 +165,12 @@ public sealed class PresentationRegistryTests
     [Fact]
     public async Task ExtractDocument_MoreSlidesThanTheProductionLimit_FailsWithTheStructureBoundsReason()
     {
-        List<(string Name, string Content)> entries = PresentationDeck.Entries(Slide(Shape(2, Paragraph("x"))));
-
-        PresentationDeck.Replace(
-            entries,
-            "ppt/presentation.xml",
-            PresentationDeck.Presentation(PresentationDeck.P, PresentationDeck.R, [.. Enumerable.Repeat("rId1", 4097)]));
+        string slide = Slide(Shape(2, Paragraph("x")));
 
         SessionAttachmentExtractionResult result = await ExtractThroughRegistryAsync(
-            PresentationDeck.Build(entries),
-            SessionAttachmentComprehensionPolicy.PowerPointPresentationMimeType);
+            PresentationDeck.Deck([.. Enumerable.Repeat(slide, 4097)]),
+            SessionAttachmentComprehensionPolicy.PowerPointPresentationMimeType,
+            maximumBytes: 8 * 1024 * 1024);
 
         Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
 
