@@ -2400,7 +2400,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs", "BackupSessionImporter", "ImportOneProtectedAsync(9)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(sourceDatabasePath,sourceGrimoireSecret,readOnly:true,cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupSessionImporter.cs", "BackupSessionImporter", "ImportOneProtectedAsync(10)", AcquisitionConstructKind.ProviderOpen, "BackupRestoreDatabaseWorker.OpenAsync", 4, "BackupRestoreDatabaseWorker.OpenAsync(sourceDatabasePath,sourceGrimoireSecret,readOnly:true,cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -3611,7 +3611,7 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "FindExpiredAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/LongRunningOperationStore.cs", "LongRunningOperationStore", "FindExpiredAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
@@ -4493,6 +4493,65 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireAcquisitionKind.ServingRawOrdinary,
             GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
             null),
+
+        // These exact Open calls retain filesystem directory handles for contained spell mutations.
+        // SpellDirectory.Open opens no database connection; broad Open discovery remains intentional,
+        // so every call has its own negative proof and a new neighboring call still needs review.
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "CreateAsync(3)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 3, "SpellDirectory.Open(workspaceRoot,spellsRoot,create:true)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.CreateAsync(3)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "UpdateAsync(4)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 2, "SpellDirectory.Open(workspaceRoot,workspaceSpell.DirectoryPath)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.UpdateAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "DeleteAsync(3)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 2, "SpellDirectory.Open(workspaceRoot,spellDirectory)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.DeleteAsync(3)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "CloneAsync(4)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 3, "SpellDirectory.Open(workspaceRoot,spellsRoot,create:true)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.CloneAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "CreateVersionAsync(4)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 2, "SpellDirectory.Open(workspaceRoot,workspaceSpell.DirectoryPath)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.CreateVersionAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "UpdateVersionAsync(5)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 2, "SpellDirectory.Open(workspaceRoot,workspaceSpell.DirectoryPath)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.UpdateVersionAsync(5)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "ActivateVersionAsync(4)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 2, "SpellDirectory.Open(workspaceRoot,workspaceSpell.DirectoryPath)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.ActivateVersionAsync(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "ImportCreateStagedAsync(4)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 3, "SpellDirectory.Open(workspaceRoot,spellsRoot,create:true)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.ImportCreateStagedAsync(4)", 0)),
         ]);
 
     private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> BindProofEvidence(

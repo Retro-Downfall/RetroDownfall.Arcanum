@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 519;
+    private const int ExpectedProductionAcquisitionCount = 527;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
@@ -1361,6 +1361,52 @@ public sealed class GrimoireConnectionAcquisitionInventoryTests
                 GrimoireAcquisitionKind.NonGrimoireCandidate)]);
 
         Assert.Contains(failures, failure => failure.Code == InventoryFailureCode.MissingNonServingProof);
+    }
+
+    [Fact]
+    public void Filesystem_spell_opens_need_exact_negative_proofs_and_do_not_hide_an_unreviewed_open()
+    {
+        GrimoireAcquisitionCatalogEntry[] reviewed =
+        [
+            .. GrimoireConnectionAcquisitionScanner.Catalog().Where(static entry =>
+                entry.Identity.CalleeOrConstructedType == "SpellDirectory.Open"),
+        ];
+
+        Assert.Equal(8, reviewed.Length);
+
+        Assert.All(reviewed, static entry =>
+        {
+            Assert.Equal(GrimoirePathAuthority.NotGrimoire, entry.PathAuthority);
+
+            Assert.Equal(GrimoireAcquisitionKind.NonGrimoireCandidate, entry.AcquisitionKind);
+
+            AssertExactProof(entry, GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+                ExactNonServingProofKind.NegativeNonDatabaseProof);
+        });
+
+        AcquisitionSource added = new(
+            "src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs",
+            """
+            sealed class SpellRepository
+            {
+                void Unreviewed(string workspaceRoot, string spellsRoot)
+                {
+                    using var directory = SpellDirectory.Open(workspaceRoot, spellsRoot, create: true);
+                }
+            }
+            """);
+
+        AcquisitionIdentity unreviewed = Assert.Single(GrimoireConnectionAcquisitionScanner.Discover([added]));
+
+        GrimoireAcquisitionCatalogEntry existing = Assert.Single(reviewed,
+            static entry => entry.Identity.EnclosingMember == "CreateAsync(3)");
+
+        InventoryFailure failure = Assert.Single(GrimoireConnectionAcquisitionScanner.Validate(
+            [existing.Identity, unreviewed], [existing]));
+
+        Assert.Equal(InventoryFailureCode.UncataloguedDiscovery, failure.Code);
+
+        Assert.Equal(unreviewed, failure.Identity);
     }
 
     [Fact]
