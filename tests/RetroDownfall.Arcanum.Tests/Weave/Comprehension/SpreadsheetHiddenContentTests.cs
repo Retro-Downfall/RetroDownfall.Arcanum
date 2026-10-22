@@ -100,6 +100,148 @@ public sealed class SpreadsheetHiddenContentTests
         Assert.Equal("Sheet: T\nkept\n", ExtractText(package));
     }
 
+    // ------------------------------------------------------------ cells that name a hidden row
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    public void Extract_CellWhoseReferenceNamesAHiddenRowOtherThanItsRow_IsHidden(string hidden)
+    {
+        // The row element says 1 and the cell says B2: a reader that places a cell by its own reference puts it in the hidden
+        // row 2, so either placement in a hidden row is enough to hide it (as for a merged range).
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}{Text("B2", "HIDDENROWLEAK")}</row>"
+            + $"<row r=\"2\" hidden=\"{hidden}\">{Text("A2", "hiddenrow")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_CellWhoseReferenceNamesAHiddenRowListedBeforeIt_IsHidden()
+    {
+        // Sensitivity: reading the hidden rows before the cells. A single streaming pass would reach row 3 after row 2.
+        string rows = $"<row r=\"2\" hidden=\"1\">{Text("A2", "hiddenrow")}</row>"
+            + $"<row r=\"3\">{Text("A3", "shown")}{Text("B2", "HIDDENROWLEAK")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_CellWhoseReferenceNamesAVisibleRowOtherThanItsRow_IsProjected()
+    {
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}{Text("B2", "second")}</row>"
+            + $"<row r=\"2\">{Text("A2", "third")}</row>"
+            + $"<row r=\"3\" hidden=\"1\">{Text("A3", "hiddenrow")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\tsecond\nthird\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_CellInAHiddenRowWhoseReferenceNamesAVisibleRow_StaysHidden()
+    {
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}</row>"
+            + $"<row r=\"2\" hidden=\"1\">{Text("A1", "HIDDENROWLEAK")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("false")]
+    public void Extract_RowThatIsNotHidden_DoesNotHideTheCellsThatNameIt(string hidden)
+    {
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}{Text("B2", "second")}</row>"
+            + $"<row r=\"2\" hidden=\"{hidden}\">{Text("A2", "third")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\tsecond\nthird\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_RowsWithoutNumbers_AreLocatedBySequenceWhenACellNamesAHiddenOne()
+    {
+        // Row 1 and 2 carry no number; the second is hidden, so the cell of the first that names B2 is hidden too.
+        string rows = $"<row>{Text("A1", "shown")}{Text("B2", "HIDDENROWLEAK")}</row>"
+            + $"<row hidden=\"1\">{Text("A2", "hiddenrow")}</row>"
+            + $"<row>{Text("A3", "third")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\nthird\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_TwoRowElementsWithTheSameNumberOfWhichOneIsHidden_HideBoth()
+    {
+        // A reader cannot tell which element the file means by row 2, so the hidden one decides.
+        string rows = $"<row r=\"2\" hidden=\"1\">{Text("A2", "hiddenrow")}</row>"
+            + $"<row r=\"2\">{Text("A2", "HIDDENROWLEAK")}</row>"
+            + $"<row r=\"3\">{Text("A3", "third")}</row>";
+
+        Assert.Equal("Sheet: S\nthird\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_CellsBeyondTheLastRow_AreHiddenWhenARowBeyondItIsHidden()
+    {
+        // Row numbers past 1,048,576 all saturate one beyond it, on the row element and on the cell reference alike.
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}{Text("B3000000", "HIDDENROWLEAK")}</row>"
+            + $"<row r=\"2000000\" hidden=\"1\">{Text("A2000000", "hiddenrow")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_LastAddressableRowThatIsHidden_HidesTheCellsThatNameIt()
+    {
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}{Text("B1048576", "HIDDENROWLEAK")}</row>"
+            + $"<row r=\"1048576\" hidden=\"1\">{Text("A1048576", "hiddenrow")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_CellWithoutAReference_IsNotAffectedByAHiddenRowElsewhere()
+    {
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}<c t=\"inlineStr\"><is><t>unreferenced</t></is></c></row>"
+            + $"<row r=\"2\" hidden=\"1\">{Text("A2", "hiddenrow")}</row>";
+
+        Assert.Equal("Sheet: S\nshown\tunreferenced\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_HiddenRowsOfOneSheet_DoNotAffectTheNextSheet()
+    {
+        // Sensitivity: clearing the previous sheet's hidden rows.
+        byte[] package = Xlsx(
+            new Sheet("First", $"<row r=\"1\">{Text("A1", "a")}{Text("B2", "HIDDENROWLEAK")}</row><row r=\"2\" hidden=\"1\">{Text("A2", "x")}</row>"),
+            new Sheet("Second", $"<row r=\"1\">{Text("A1", "b")}{Text("B2", "second sheet row 2")}</row>"));
+
+        Assert.Equal("Sheet: First\na\nSheet: Second\nb\tsecond sheet row 2\n", ExtractText(package));
+    }
+
+    [Fact]
+    public void Extract_CellThatNamesAHiddenRow_IsNeverResolvedSoNeverTruncates()
+    {
+        // The row test comes before shared string resolution, as the column test does.
+        SpreadsheetDocumentExtractor extractor = new(SpreadsheetLimits.Default with { SharedStrings = 1 });
+
+        string rows = $"<row r=\"1\">{Shared("A1", 0)}{Shared("B2", 1)}</row><row r=\"2\" hidden=\"1\">{Text("A2", "x")}</row>";
+
+        SessionAttachmentExtractionResult result = Extract(Xlsx([new Sheet("S", rows)], Si("kept") + Si("dropped")), extractor);
+
+        Assert.False(result.WasTruncated);
+
+        Assert.Equal("Sheet: S\nkept\n", result.Text);
+    }
+
+    [Fact]
+    public void Extract_HiddenRowDeclaredInsideAlternateContent_HidesTheCellsThatNameIt()
+    {
+        const string declarations = "xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" xmlns:x14ac=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac\"";
+
+        string rows = $"<row r=\"1\">{Text("A1", "shown")}{Text("B2", "HIDDENROWLEAK")}</row>"
+            + $"<mc:AlternateContent {declarations}><mc:Choice Requires=\"x14ac\"><row r=\"2\" hidden=\"1\">{Text("A2", "hiddenrow")}</row></mc:Choice></mc:AlternateContent>";
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
     // ------------------------------------------------------------ hidden columns
 
     [Theory]
