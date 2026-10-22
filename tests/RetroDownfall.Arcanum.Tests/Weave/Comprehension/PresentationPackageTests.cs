@@ -363,17 +363,77 @@ public sealed class PresentationPackageTests
         Assert.Empty(sink.Appends);
     }
 
-    [Fact]
-    public async Task Extract_SameSlideListedTwice_IsProjectedAtEachPosition()
+    [Theory]
+    [InlineData("rId1", "rId1")]
+    [InlineData("rId1", "rId2")]
+    public async Task Extract_SameSlidePartListedTwice_IsFormatMismatchBeforeAnySlideIsRead(string first, string second)
     {
+        // Real producers never share a slide part between positions; the second mention is refused whether it reuses
+        // the relationship id or a second relationship naming the same part, and nothing is projected first.
         List<(string Name, string Content)> entries = PresentationDeck.Entries(Slide(Shape(2, Paragraph("Repeated"))));
 
         PresentationDeck.Replace(
             entries,
             "ppt/presentation.xml",
-            PresentationDeck.Presentation(PresentationDeck.P, PresentationDeck.R, "rId1", "rId1"));
+            PresentationDeck.Presentation(PresentationDeck.P, PresentationDeck.R, first, second));
 
-        Assert.Equal("Slide 1\nRepeated\nSlide 2\nRepeated\n", await PresentationDeck.TextOfAsync(PresentationDeck.Build(entries)));
+        PresentationDeck.Replace(
+            entries,
+            PresentationRels,
+            PresentationDeck.Rels(
+                PresentationDeck.Rel("rId1", PresentationDeck.Type("slide"), "slides/slide1.xml"),
+                PresentationDeck.Rel("rId2", PresentationDeck.Type("slide"), "./SLIDES/slide1.xml")));
+
+        RecordingSink sink = new(_ => true);
+
+        DocumentPackageRejectedException exception = await Assert.ThrowsAsync<DocumentPackageRejectedException>(
+            () => new PresentationDocumentExtractor().ExtractAsync(PresentationDeck.Build(entries), sink, CancellationToken.None).AsTask());
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, exception.Rejection);
+
+        Assert.Empty(sink.Appends);
+    }
+
+    [Fact]
+    public void Extract_ManySlideListEntriesNamingOneLargeSlide_AreRefusedWithoutInflatingIt()
+    {
+        // One slide part just under the ratio floor, named by every one of 4,096 slide list entries. Each mention would
+        // cost a full inflate and parse of it, so the second mention must end the extraction before any slide is read.
+        string padding = Paragraph(new string('p', 1_000_000));
+
+        string hiddenSlide = Slide(Shape(2, padding, " hidden=\"1\""));
+
+        Assert.InRange(Encoding.UTF8.GetByteCount(hiddenSlide), 1_000_000, 1_048_576);
+
+        List<(string Name, string Content)> entries = PresentationDeck.Entries(hiddenSlide);
+
+        PresentationDeck.Replace(
+            entries,
+            "ppt/presentation.xml",
+            PresentationDeck.Presentation(PresentationDeck.P, PresentationDeck.R, [.. Enumerable.Repeat("rId1", PresentationDocumentExtractor.MaximumSlides)]));
+
+        byte[] deck = PresentationDeck.Build(entries);
+
+        Assert.InRange(deck.Length, 1, 32_768);
+
+        RecordingSink sink = new(_ => true);
+
+        PresentationDocumentExtractor extractor = new();
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        DocumentPackageRejectedException exception = Assert.Throws<DocumentPackageRejectedException>(
+            () => extractor.ExtractAsync(deck, sink, CancellationToken.None));
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, exception.Rejection);
+
+        Assert.Empty(sink.Appends);
+
+        // One inflate of the slide alone allocates at least its 1 MB; refusing at the second mention allocates a few
+        // hundred kilobytes for the slide list. Running into the aggregate bound instead allocates over 64 MiB.
+        Assert.True(allocated < 16L * 1024 * 1024, $"Refusing the shared slide allocated {allocated:N0} bytes.");
     }
 
     [Fact]
@@ -456,21 +516,13 @@ public sealed class PresentationPackageTests
     [Fact]
     public async Task Extract_TheDefaultSlideLimit_IsEnforcedOnTheSlideList()
     {
-        List<(string Name, string Content)> entries = PresentationDeck.Entries(VisibleSlide());
+        // Every slide is its own part: a slide part named twice is refused, so the limit is reached with distinct parts.
+        await PresentationDeck.AssertRejectedAsync(
+            DocumentPackageRejection.StructureBounds,
+            PresentationDeck.Deck([.. Enumerable.Repeat(VisibleSlide(), PresentationDocumentExtractor.MaximumSlides + 1)]));
 
-        PresentationDeck.Replace(
-            entries,
-            "ppt/presentation.xml",
-            PresentationDeck.Presentation(PresentationDeck.P, PresentationDeck.R, [.. Enumerable.Repeat("rId1", 4097)]));
-
-        await PresentationDeck.AssertRejectedAsync(DocumentPackageRejection.StructureBounds, PresentationDeck.Build(entries));
-
-        PresentationDeck.Replace(
-            entries,
-            "ppt/presentation.xml",
-            PresentationDeck.Presentation(PresentationDeck.P, PresentationDeck.R, [.. Enumerable.Repeat("rId1", 4096)]));
-
-        SessionAttachmentExtractionResult result = await PresentationDeck.ExtractAsync(PresentationDeck.Build(entries));
+        SessionAttachmentExtractionResult result = await PresentationDeck.ExtractAsync(
+            PresentationDeck.Deck([.. Enumerable.Repeat(VisibleSlide(), PresentationDocumentExtractor.MaximumSlides)]));
 
         Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
 
@@ -500,7 +552,15 @@ public sealed class PresentationPackageTests
 
         List<(string Name, string Content)> entries = PresentationDeck.Entries(truncated);
 
-        await PresentationDeck.AssertRejectedAsync(DocumentPackageRejection.MalformedXml, PresentationDeck.Build(entries));
+        RecordingSink sink = new(_ => true);
+
+        DocumentPackageRejectedException exception = await Assert.ThrowsAsync<DocumentPackageRejectedException>(
+            () => new PresentationDocumentExtractor().ExtractAsync(PresentationDeck.Build(entries), sink, CancellationToken.None).AsTask());
+
+        Assert.Equal(DocumentPackageRejection.MalformedXml, exception.Rejection);
+
+        // The slide's text is held until the slide has been read to its end, so a cut-off slide leaves only its header.
+        Assert.Equal(["Slide 1\n"], sink.Appends);
     }
 
     [Theory]
@@ -606,13 +666,10 @@ public sealed class PresentationPackageTests
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    [InlineData(5)]
     public async Task Extract_StopsAtOnceWhenTheSinkRefusesText(int acceptedAppends)
     {
-        // Appends in order: the slide header, "A", the line break, the end of the first paragraph, the empty paragraph.
-        // The second slide is malformed, so reading on after a refusal would surface as a rejection.
+        // Appends in order: the slide header, then the slide's whole text once it has been read. The second slide is
+        // malformed, so reading on after a refusal would surface as a rejection.
         string shape = Shape(2, "<a:p><a:r><a:t>A</a:t></a:r><a:br/></a:p><a:p/>");
 
         List<(string Name, string Content)> entries = PresentationDeck.Entries(Slide(shape), "<broken");
@@ -622,6 +679,11 @@ public sealed class PresentationPackageTests
         await new PresentationDocumentExtractor().ExtractAsync(PresentationDeck.Build(entries), sink, CancellationToken.None);
 
         Assert.Equal(acceptedAppends, sink.Appends.Count);
+
+        if (acceptedAppends == 2)
+        {
+            Assert.Equal("A\n\n\n", sink.Appends[1]);
+        }
     }
 
     [Fact]
@@ -688,7 +750,8 @@ public sealed class PresentationPackageTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => new PresentationDocumentExtractor().ExtractAsync(PresentationDeck.Deck(Slide(Shape(2, paragraphs))), sink, cancellation.Token).AsTask());
 
-        Assert.InRange(sink.Appends.Count, 2, 1000);
+        // The text is held until the slide has been read, so the cancelled slide leaves only its header behind.
+        Assert.Equal(["Slide 1\n"], sink.Appends);
     }
 
     [Fact]
@@ -708,7 +771,7 @@ public sealed class PresentationPackageTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => new PresentationDocumentExtractor().ExtractAsync(deck, sink, cancellation.Token).AsTask());
 
-        Assert.Equal(["Slide 1\n", "Visible", "\n"], sink.Appends);
+        Assert.Equal(["Slide 1\n", "Visible\n"], sink.Appends);
     }
 
     [Fact]

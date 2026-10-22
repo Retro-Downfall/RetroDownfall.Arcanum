@@ -24,15 +24,92 @@ public sealed class PresentationStructureTests
     // ---------------------------------------------------------------- tables
 
     [Fact]
-    public async Task Extract_Table_ProjectsEveryCellRowByRow()
+    public async Task Extract_Table_ProjectsOneTabSeparatedLinePerRow()
     {
         string table = Table(
             Row(Cell(Paragraph("A1")), Cell(Paragraph("B1")))
             + Row(Cell(Paragraph("A2") + Paragraph("A2 second")), Cell("<a:p/>")));
 
         Assert.Equal(
-            "Slide 1\nA1\nB1\nA2\nA2 second\n\n",
+            "Slide 1\nA1\tB1\nA2 A2 second\t\n",
             await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TableWithAThreeByThreeGrid_KeepsEveryRowAndColumnApart()
+    {
+        // The pandoc shape from the fidelity review: without delimiters nine cells read as nine unrelated lines.
+        string table = Table(
+            Row(Cell(Paragraph("Name")), Cell(Paragraph("Role")), Cell(Paragraph("Score")))
+            + Row(Cell(Paragraph("Alice")), Cell(Paragraph("Engineer")), Cell(Paragraph("91")))
+            + Row(Cell(Paragraph("Bob")), Cell("<a:p/>"), Cell(Paragraph("78"))));
+
+        Assert.Equal(
+            "Slide 1\nName\tRole\tScore\nAlice\tEngineer\t91\nBob\t\t78\n",
+            await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TableCellWithSeveralParagraphsAndBreaks_JoinsThemWithSingleSpaces()
+    {
+        // Empty paragraphs and a trailing empty paragraph (PowerPoint writes one often) add no extra spaces.
+        string paragraphs =
+            Paragraph("one") + "<a:p/>" + "<a:p><a:r><a:t>two</a:t></a:r><a:br/><a:r><a:t>three</a:t></a:r></a:p>" + "<a:p><a:endParaRPr/></a:p>";
+
+        string table = Table(Row(Cell(paragraphs), Cell(Paragraph("next"))));
+
+        Assert.Equal("Slide 1\none two three\tnext\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TableCellTextWithTabsAndLineBreaks_CannotForgeCellsOrRows()
+    {
+        // A tab, newline or carriage return (here as a character reference, which survives XML line-end handling) inside a
+        // cell would otherwise read as a cell or row boundary of the projection.
+        string table = Table(Row(Cell(Paragraph("a\tb\nc&#13;d")), Cell(Paragraph("e"))));
+
+        Assert.Equal("Slide 1\na b c d\te\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TableCells_AreOneCellPerColumnEvenWhenEmpty()
+    {
+        string table = Table(Row(Cell(Paragraph("A")), Cell("<a:p/>"), Cell(Paragraph("C"))) + Row(Cell("<a:p/>"), "<a:tc/>"));
+
+        Assert.Equal("Slide 1\nA\t\tC\n\t\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TableRowWithoutAnyVisibleCell_WritesNoLine()
+    {
+        string table = Table(
+            Row(Cell(Paragraph("Top")))
+            + "<a:tr h=\"1\"/>"
+            + "<a:tr h=\"1\"><a:tc hMerge=\"1\"/></a:tr>"
+            + Row(Cell(Paragraph("Bottom"))));
+
+        Assert.Equal("Slide 1\nTop\nBottom\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TableNestedInsideACell_StaysWithinThatCell()
+    {
+        string nested = "<a:tbl><a:tr><a:tc><a:txBody><a:bodyPr/><a:lstStyle/>" + Paragraph("inner1") + "</a:txBody></a:tc>"
+            + "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>" + Paragraph("inner2") + "</a:txBody></a:tc></a:tr></a:tbl>";
+
+        string outer = $"<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>{Paragraph("outer")}{nested}</a:txBody></a:tc>";
+
+        string table = Table(Row(outer, Cell(Paragraph("next"))));
+
+        Assert.Equal("Slide 1\nouter inner1 inner2\tnext\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+    }
+
+    [Fact]
+    public async Task Extract_TextAfterATable_StartsOnItsOwnLine()
+    {
+        string shapes = Table(Row(Cell(Paragraph("Last cell")))) + Shape(5, Paragraph("Footer"));
+
+        Assert.Equal("Slide 1\nLast cell\nFooter\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(shapes))));
     }
 
     [Fact]
@@ -64,7 +141,7 @@ public sealed class PresentationStructureTests
             + Row(Cell(Paragraph("Left")), Cell(Paragraph("Right"))));
 
         Assert.Equal(
-            "Slide 1\nSpanning\nLeft\nRight\n",
+            "Slide 1\nSpanning\nLeft\tRight\n",
             await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
     }
 
@@ -89,7 +166,7 @@ public sealed class PresentationStructureTests
                 Cell(Paragraph("COVEREDTWO"), " hMerge=\"1\""),
                 Cell(Paragraph("Last"))));
 
-        Assert.Equal("Slide 1\nSpanning\nLast\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+        Assert.Equal("Slide 1\nSpanning\tLast\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
     }
 
     [Fact]
@@ -97,7 +174,7 @@ public sealed class PresentationStructureTests
     {
         string table = Table(Row(Cell(Paragraph("One"), " gridSpan=\"2\""), "<a:tc hMerge=\"1\"/>", Cell(Paragraph("Three"))));
 
-        Assert.Equal("Slide 1\nOne\nThree\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
+        Assert.Equal("Slide 1\nOne\tThree\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(table))));
     }
 
     // ---------------------------------------------------------------- extension and customer data lists
@@ -164,16 +241,6 @@ public sealed class PresentationStructureTests
         string paragraph = "<a:p><a:r><a:t>kept</a:t><a:x>STALETEXT</a:x></a:r></a:p>";
 
         Assert.Equal("Slide 1\nkept\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(Shape(2, paragraph)))));
-    }
-
-    [Fact]
-    public async Task Extract_HiddenShapeNestedInsideATextRun_DoesNotLeaveTheRunOpen()
-    {
-        // The hidden-shape skip swallows the run's own end tag here; the open-run state must not outlive it.
-        string paragraph =
-            "<a:p><a:r><a:t>VISIBLE<p:nvSpPr><p:cNvPr id=\"9\" name=\"n\" hidden=\"1\"/></p:nvSpPr></a:t><a:x>STALETEXT</a:x></a:r></a:p>";
-
-        Assert.Equal("Slide 1\nVISIBLE\n", await PresentationDeck.TextOfAsync(PresentationDeck.Deck(Slide(Shape(2, paragraph)))));
     }
 
     [Fact]

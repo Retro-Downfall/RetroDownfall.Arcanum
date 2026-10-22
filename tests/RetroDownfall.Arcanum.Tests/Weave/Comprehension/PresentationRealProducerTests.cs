@@ -16,7 +16,7 @@ public sealed class PresentationRealProducerTests
     private const string FixtureName = "python-pptx-three-slides.pptx";
 
     private const string ExpectedText =
-        "Slide 1\nQuarterly review\nRevenue grew\nCosts fell\nSlide 3\nResults\nItem\nCount\nWidgets\n42\nFooter note\n";
+        "Slide 1\nQuarterly review\nRevenue grew\nCosts fell\nSlide 3\nResults\nItem\tCount\nWidgets\t42\nFooter note\n";
 
     [Fact]
     public void Fixture_CarriesEveryHiddenMarkerTheExtractionMustHonour()

@@ -18,7 +18,7 @@ What the deck contains, and what the tests assert about it:
 |---|---|---|
 | 1 | Title `Quarterly review`, body `Revenue grew` and `Costs fell`, speaker notes `SPEAKER NOTES ONE` | the title and both body paragraphs; the notes never appear |
 | 2 | Title `HIDDEN SLIDE TITLE`, body `HIDDEN SLIDE BODY`, root attribute `show="0"` set after creation | absent; it still counts, so the next slide is `Slide 3` |
-| 3 | Title `Results`, a 2x2 table (`Item`, `Count`, `Widgets`, `42`) whose `p:cNvPr` carries `descr="TABLE ALT TEXT"`, a visible text box `Footer note`, a text box `HIDDEN SHAPE TEXT` whose `p:cNvPr` has `hidden="1"`, speaker notes `SPEAKER NOTES THREE` | title, table cells row by row, footer; the hidden text box, alt text and notes never appear |
+| 3 | Title `Results`, a 2x2 table (`Item`, `Count`, `Widgets`, `42`) whose `p:cNvPr` carries `descr="TABLE ALT TEXT"`, a visible text box `Footer note`, a text box `HIDDEN SHAPE TEXT` whose `p:cNvPr` has `hidden="1"`, speaker notes `SPEAKER NOTES THREE` | title, the table as one line per row with its cells joined by a tab (`Item`, `Count` then `Widgets`, `42`), footer; the hidden text box, alt text and notes never appear |
 
 The deck also carries the default python-pptx slide master and eleven layouts, whose placeholder prompts (for example
 `Click to edit Master title style`) must not appear either, plus a printer settings part and a thumbnail that are never
