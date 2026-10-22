@@ -388,7 +388,8 @@ public sealed class SessionAttachmentComprehensionTests
 
             SessionAttachmentExtractionResult quarantined = await ExtractAsync("ARCCOMP1\nhello", host: host);
 
-            Assert.Equal(SessionAttachmentExtractionStatus.Failed, quarantined.Status);
+            // Quarantine defers other documents (never fails them) and still admits no second parser.
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, quarantined.Status);
 
             Assert.Equal(1, invocations);
 
@@ -435,7 +436,8 @@ public sealed class SessionAttachmentComprehensionTests
 
             SessionAttachmentExtractionResult quarantined = await ExtractAsync("ARCCOMP1\nhello", host: host);
 
-            Assert.Equal(SessionAttachmentExtractionStatus.Failed, quarantined.Status);
+            // Quarantine defers other documents (never fails them) and still admits no second parser.
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, quarantined.Status);
         }
         finally
         {

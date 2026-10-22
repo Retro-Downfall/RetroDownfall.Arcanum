@@ -19,6 +19,13 @@ internal enum SessionAttachmentExtractionStatus
     NotEligible,
 
     Failed,
+
+    /// <summary>
+    /// The attempt never reached this document: its parser family's slot was not acquired in time, or
+    /// the family is quarantined by an outstanding parser. Caused by other documents, so it is
+    /// transient and never terminal; no text, no durable extraction stamp.
+    /// </summary>
+    Deferred,
 }
 
 internal sealed record SessionAttachmentExtractionResult(

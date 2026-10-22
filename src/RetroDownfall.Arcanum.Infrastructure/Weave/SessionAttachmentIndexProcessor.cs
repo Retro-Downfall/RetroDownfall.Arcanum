@@ -135,6 +135,17 @@ internal sealed class SessionAttachmentIndexProcessor(
                     cancellationToken,
                     comprehension).ConfigureAwait(false);
 
+                if (extraction.Status == SessionAttachmentExtractionStatus.Deferred)
+                {
+                    // Other documents held this format's parser: nothing was read or parsed, so this is
+                    // neither the document's outcome nor an extraction. It takes the automatic retry
+                    // path and stamps no extraction time.
+                    await MarkWithoutIndexAsync(attachment, SessionAttachmentIndexStatus.Failed, request.Attempt,
+                        extraction.FailureReason, extractedAt: null, cancellationToken).ConfigureAwait(false);
+
+                    return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+                }
+
                 if (extraction.Status != SessionAttachmentExtractionStatus.Extracted)
                 {
                     SessionAttachmentIndexStatus status = extraction.Status == SessionAttachmentExtractionStatus.NotEligible
