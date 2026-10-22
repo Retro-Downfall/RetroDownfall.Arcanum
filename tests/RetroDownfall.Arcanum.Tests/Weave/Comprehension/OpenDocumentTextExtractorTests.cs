@@ -356,9 +356,10 @@ public sealed class OpenDocumentTextExtractorTests
     [Fact]
     public async Task Extract_Forms_AreExcluded()
     {
-        // Sensitivity: the office:forms exclusion.
+        // Sensitivity: the office:forms exclusion. The paragraph directly under office:forms (not valid, but hostile) is
+        // what tells the rule from the foreign-namespace rule that already covers form:form.
         byte[] package = Odt(
-            "<office:forms form:automatic-focus=\"false\"><form:form form:name=\"Standard\"><text:p>FORMMARKER</text:p></form:form></office:forms><text:p>Body</text:p>");
+            "<office:forms form:automatic-focus=\"false\"><text:p>DIRECTFORMMARKER</text:p><form:form form:name=\"Standard\"><text:p>FORMMARKER</text:p></form:form></office:forms><text:p>Body</text:p>");
 
         Assert.Equal("Body\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
