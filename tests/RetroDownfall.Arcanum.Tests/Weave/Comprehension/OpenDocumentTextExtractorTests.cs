@@ -193,6 +193,34 @@ public sealed class OpenDocumentTextExtractorTests
         Assert.Equal("Visible text after\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
+    [Theory]
+    [InlineData("variable-set", "none", false)]
+    [InlineData("user-field-get", "none", false)]
+    [InlineData("variable-get", "condition", false)]
+    [InlineData("variable-set", "value", true)]
+    [InlineData("variable-get", "formula", true)]
+    public async Task Extract_FieldWhoseDisplayIsNone_IsExcluded(string field, string display, bool shown)
+    {
+        // Sensitivity: the generalised text:display rule. A "display none" variable field keeps its value as content that
+        // is never rendered, which is a hiding place just like a hidden section.
+        byte[] package = Odt($"<text:p>Lead<text:{field} text:name=\"v\" text:display=\"{display}\">FIELDMARKER</text:{field}></text:p>");
+
+        Assert.Equal(shown ? "LeadFIELDMARKER\n" : "Lead\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableCellWhoseStyleHidesText_IsExcluded()
+    {
+        // Sensitivity: the table-cell family check in the general walker.
+        byte[] package = Odt(
+            "<table:table table:name=\"T\"><table:table-column/><table:table-row>"
+            + "<table:table-cell table:style-name=\"ce1\"><text:p>HIDDENCELLMARKER</text:p></table:table-cell>"
+            + "<table:table-cell table:style-name=\"ce2\"><text:p>Shown</text:p></table:table-cell></table:table-row></table:table>",
+            automaticStyles: Style("table-cell", "ce1", properties: HiddenText) + Style("table-cell", "ce2"));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
     [Fact]
     public async Task Extract_LegacyTextAnnotation_IsExcluded()
     {
@@ -339,6 +367,7 @@ public sealed class OpenDocumentTextExtractorTests
 
     [Theory]
     [InlineData("draw:style-name", "graphic", "<style:graphic-properties draw:display=\"none\"/>")]
+    [InlineData("draw:style-name", "graphic", "<style:graphic-properties draw:display=\"printer\"/>")]
     [InlineData("presentation:style-name", "presentation", "<style:graphic-properties draw:display=\"none\"/>")]
     [InlineData("draw:text-style-name", "paragraph", HiddenText)]
     public async Task Extract_ShapeWhoseStyleHidesIt_IsExcluded(string attribute, string family, string properties)
@@ -454,12 +483,18 @@ public sealed class OpenDocumentTextExtractorTests
         Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
-    [Fact]
-    public async Task Extract_DuplicateStyleDefinitions_HiddenWins()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_DuplicateStyleDefinitions_HiddenWinsInEitherOrder(bool hiddenFirst)
     {
+        string hidden = Style("paragraph", "P1", properties: HiddenText);
+
+        string visible = Style("paragraph", "P1", properties: VisibleText);
+
         byte[] package = Odt(
             "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
-            automaticStyles: Style("paragraph", "P1", properties: VisibleText) + Style("paragraph", "P1", properties: HiddenText));
+            automaticStyles: hiddenFirst ? hidden + visible : visible + hidden);
 
         Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
@@ -547,6 +582,23 @@ public sealed class OpenDocumentTextExtractorTests
             "STRAYTEXT<text:s/><text:tab/><text:line-break/><text:list>LISTSTRAY<text:list-item>ITEMSTRAY<text:p>Real</text:p></text:list-item></text:list>");
 
         Assert.Equal("Real\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ParagraphCutAtTheRetentionBound_LeavesNoLoneSurrogateEvenForASinkThatDoesNotTrim()
+    {
+        RecordingTextSink sink = new();
+
+        await new OpenDocumentTextExtractor().ExtractAsync(
+            Odt($"<text:p>{new string('x', 262_143)}\U0001F600tail</text:p>"),
+            sink,
+            CancellationToken.None);
+
+        Assert.True(sink.Truncated);
+
+        Assert.Equal(262_143, sink.Text.Length);
+
+        Assert.False(char.IsHighSurrogate(sink.Text[^1]));
     }
 
     [Fact]

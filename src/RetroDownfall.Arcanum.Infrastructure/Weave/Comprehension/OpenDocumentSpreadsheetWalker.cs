@@ -282,7 +282,10 @@ internal sealed class OpenDocumentSpreadsheetWalker(
             return end;
         }
 
-        if (!_hiddenColumns.AnyVisible(column, end))
+        string? cellStyle = _reader.GetAttribute("style-name", OpenDocumentNames.Table);
+
+        if (!_hiddenColumns.AnyVisible(column, end)
+            || (cellStyle is not null && styles.IsHidden(OpenDocumentStyleTable.Switch.Text, OpenDocumentStyleTable.TableCellFamily, cellStyle)))
         {
             xml.SkipElement();
 

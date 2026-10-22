@@ -314,6 +314,18 @@ public sealed class OpenDocumentSpreadsheetExtractorTests
     }
 
     [Fact]
+    public async Task Extract_CellWhoseStyleHidesItsText_IsExcluded()
+    {
+        // Sensitivity: the table-cell family check in the spreadsheet walker.
+        byte[] package = Ods(
+            Sheet("S", Row(Cell("A") + Cell("HIDDENCELLMARKER", " table:style-name=\"ce1\"") + Cell("C", " table:style-name=\"ce2\""))),
+            automaticStyles: Style("table-cell", "ce1", parent: "Default", properties: HiddenText) + Style("table-cell", "ce2", parent: "Default"),
+            commonStyles: Style("table-cell", "Default"));
+
+        Assert.Equal("Sheet: S\nA\tC\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_ShapesOnASheet_AreIncludedAfterTheHeader()
     {
         byte[] package = Ods(
@@ -482,6 +494,21 @@ public sealed class OpenDocumentSpreadsheetExtractorTests
         Assert.Equal("Sheet: S\nfirst\n".Length + 262_144, result.Text.Length);
 
         Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Extract_CellCutAtTheRetentionBound_LeavesNoLoneSurrogateEvenForASinkThatDoesNotTrim()
+    {
+        RecordingTextSink sink = new();
+
+        await new OpenDocumentSpreadsheetExtractor().ExtractAsync(
+            Ods(Sheet("S", Row(Cell(new string('x', 262_143) + "\U0001F600tail")))),
+            sink,
+            CancellationToken.None);
+
+        Assert.True(sink.Truncated);
+
+        Assert.False(char.IsHighSurrogate(sink.Text[^1]));
     }
 
     [Fact]

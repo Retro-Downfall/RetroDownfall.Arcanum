@@ -197,6 +197,25 @@ internal sealed class CancellingSink(CancellationTokenSource cancellation, int c
     }
 }
 
+/// <summary>A sink that records everything it is given and does no trimming of its own.</summary>
+internal sealed class RecordingTextSink : ISessionAttachmentDocumentTextSink
+{
+    private readonly System.Text.StringBuilder _text = new();
+
+    public string Text => _text.ToString();
+
+    public bool Truncated { get; private set; }
+
+    public bool TryAppend(ReadOnlySpan<char> text)
+    {
+        _text.Append(text);
+
+        return true;
+    }
+
+    public void MarkTruncated() => Truncated = true;
+}
+
 public sealed class OpenDocumentPackageTests
 {
     private const string Marker = "INJECTEDMARKER";
@@ -602,6 +621,47 @@ public sealed class OpenDocumentPackageTests
             embedding);
 
         Assert.Equal("Fine\n", await TextOfAsync<OpenDocumentTextExtractor>(raw.ToBytes()));
+    }
+
+    [Fact]
+    public async Task Extract_ManifestDeclaredMacroAndObjectParts_WithGarbageDeflateData_AreNeverInflated()
+    {
+        // The ODF counterpart of a macro-enabled OOXML variant: macros (Basic, Scripts) and embedded objects are declared by
+        // the manifest, carry bomb-sized declarations and garbage deflate data, and must never be opened.
+        string[] declared = ["Basic/Standard/Module1.xml", "Basic/script-lc.xml", "Scripts/python/evil.py", "Object 1/content.xml", "Pictures/photo.png"];
+
+        string extra = string.Concat(declared.Select(name => $"<manifest:file-entry manifest:full-path=\"{name}\" manifest:media-type=\"application/octet-stream\"/>"));
+
+        List<RawZipEntry> entries =
+        [
+            RawZipEntry.Stored("mimetype", TextMime),
+            RawZipEntry.Deflated("META-INF/manifest.xml", ManifestPart(TextMime, declareStyles: false, extraEntries: extra)),
+            RawZipEntry.Deflated("content.xml", ContentPart("text", "<text:p>Fine</text:p>")),
+        ];
+
+        foreach (string name in declared)
+        {
+            RawZipEntry entry = RawZipEntry.Deflated(name, "placeholder");
+
+            entry.DataAreaBytes = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+
+            entry.UncompressedSize = 30_000_000;
+
+            entries.Add(entry);
+        }
+
+        Assert.Equal("Fine\n", await TextOfAsync<OpenDocumentTextExtractor>(RawZipPackage.Of([.. entries]).ToBytes()));
+    }
+
+    [Fact]
+    public async Task Extract_ExternalReferences_AreNeverFollowedOrEmitted()
+    {
+        byte[] package = Odt(
+            "<text:p>Lead <text:a xlink:type=\"simple\" xlink:href=\"file:///etc/passwd\">linked</text:a>"
+            + "<draw:frame><draw:object xlink:href=\"https://example.invalid/EXTERNALMARKER\"/></draw:frame>"
+            + "<draw:frame><draw:image xlink:href=\"https://example.invalid/EXTERNALMARKER.png\"/></draw:frame></text:p>");
+
+        Assert.Equal("Lead linked\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     // ---------------------------------------------------------------- bounds on retained state and output

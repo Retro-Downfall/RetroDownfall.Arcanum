@@ -38,6 +38,8 @@ internal sealed class OpenDocumentStyleTable
 
     internal const string TableFamily = "table";
 
+    internal const string TableCellFamily = "table-cell";
+
     internal const string DrawingPageFamily = "drawing-page";
 
     private const sbyte Unspecified = 0;
@@ -53,6 +55,8 @@ internal sealed class OpenDocumentStyleTable
     private readonly Dictionary<(string Family, string Name), StyleEntry> _automatic = [];
 
     private readonly Dictionary<string, StyleEntry> _defaults = [];
+
+    private readonly HashSet<string> _hiddenLayers = [];
 
     private int _count;
 
@@ -121,6 +125,51 @@ internal sealed class OpenDocumentStyleTable
     }
 
     /// <summary>
+    /// Reads the layers of the <c>draw:layer-set</c> under the <c>office:master-styles</c> element the reader is on, then
+    /// moves past its end. A layer that is not shown on screen (<c>draw:display</c> of <c>none</c> or <c>printer</c>)
+    /// hides every shape placed on it.
+    /// </summary>
+    public void ReadMasterStyles(BoundedXmlReader xml)
+    {
+        XmlReader reader = xml.Reader;
+
+        if (reader.IsEmptyElement)
+        {
+            xml.Read();
+
+            return;
+        }
+
+        xml.Read();
+
+        while (!reader.EOF)
+        {
+            if (reader.NodeType == XmlNodeType.EndElement)
+            {
+                xml.Read();
+
+                return;
+            }
+
+            if (reader.NodeType == XmlNodeType.Element && reader.NamespaceURI == OpenDocumentNames.Draw && reader.LocalName == "layer-set")
+            {
+                ReadLayerSet(xml);
+            }
+            else if (reader.NodeType == XmlNodeType.Element)
+            {
+                xml.SkipElement();
+            }
+            else
+            {
+                xml.Read();
+            }
+        }
+    }
+
+    /// <summary>True when shapes on the layer called <paramref name="name"/> are not shown on screen.</summary>
+    public bool IsLayerHidden(string? name) => name is not null && _hiddenLayers.Contains(name);
+
+    /// <summary>
     /// True when the style <paramref name="name"/> of <paramref name="family"/> hides content for <paramref name="hiding"/>.
     /// A missing or unknown name falls back to the family's default style (and, for paragraphs, to the common
     /// <c>Standard</c> style, which Writer applies to a paragraph that names none).
@@ -141,6 +190,51 @@ internal sealed class OpenDocumentStyleTable
             && hiding == Switch.Text
             && Find(ParagraphFamily, StandardParagraphStyle) is { } standard
             && Resolve(standard, hiding);
+    }
+
+    private void ReadLayerSet(BoundedXmlReader xml)
+    {
+        XmlReader reader = xml.Reader;
+
+        if (reader.IsEmptyElement)
+        {
+            xml.Read();
+
+            return;
+        }
+
+        xml.Read();
+
+        while (!reader.EOF)
+        {
+            if (reader.NodeType == XmlNodeType.EndElement)
+            {
+                xml.Read();
+
+                return;
+            }
+
+            if (reader.NodeType != XmlNodeType.Element)
+            {
+                xml.Read();
+
+                continue;
+            }
+
+            if (reader.NamespaceURI == OpenDocumentNames.Draw
+                && reader.LocalName == "layer"
+                && reader.GetAttribute("name", OpenDocumentNames.Draw) is { } name
+                && reader.GetAttribute("display", OpenDocumentNames.Draw) is "none" or "printer")
+            {
+                Count();
+
+                CheckLength(name);
+
+                _hiddenLayers.Add(name);
+            }
+
+            xml.SkipElement();
+        }
     }
 
     private void ReadStyle(BoundedXmlReader xml, bool automatic)

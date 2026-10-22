@@ -147,6 +147,38 @@ public sealed class OpenDocumentPresentationExtractorTests
         Assert.Equal("Slide 1\nVisible\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
     }
 
+    [Theory]
+    [InlineData("secret", false)]
+    [InlineData("printonly", false)]
+    [InlineData("screenonly", true)]
+    [InlineData("layout", true)]
+    [InlineData("undeclared", true)]
+    public async Task Extract_ShapeOnAHiddenLayer_IsExcluded(string layer, bool shown)
+    {
+        // Sensitivity: layer visibility from draw:layer-set (a layer that is not shown on screen hides its shapes).
+        string styles = StylesPart(string.Empty).Replace(
+            "<office:master-styles/>",
+            "<office:master-styles><draw:layer-set><draw:layer draw:name=\"layout\"/><draw:layer draw:name=\"secret\" draw:display=\"none\"/>"
+            + "<draw:layer draw:name=\"printonly\" draw:display=\"printer\"/><draw:layer draw:name=\"screenonly\" draw:display=\"screen\"/></draw:layer-set></office:master-styles>",
+            StringComparison.Ordinal);
+
+        byte[] package = Package(
+            PresentationMime,
+            ContentPart("presentation", Page($"<draw:frame draw:layer=\"{layer}\"><draw:text-box><text:p>LAYERMARKER</text:p></draw:text-box></draw:frame>")),
+            styles);
+
+        Assert.Equal(shown ? "Slide 1\nLAYERMARKER\n" : "Slide 1\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_LayerSetInContentXml_IsHonouredToo()
+    {
+        string content = ContentPart("presentation", Page("<draw:frame draw:layer=\"secret\"><draw:text-box><text:p>LAYERMARKER</text:p></draw:text-box></draw:frame>"))
+            .Replace("<office:body>", "<office:master-styles><draw:layer-set><draw:layer draw:name=\"secret\" draw:display=\"none\"/></draw:layer-set></office:master-styles><office:body>", StringComparison.Ordinal);
+
+        Assert.Equal("Slide 1\n", await TextOfAsync<OpenDocumentPresentationExtractor>(Package(PresentationMime, content)));
+    }
+
     [Fact]
     public async Task Extract_AlternativeTextAnnotationsAndEmbeddedObjects_AreNotProjected()
     {

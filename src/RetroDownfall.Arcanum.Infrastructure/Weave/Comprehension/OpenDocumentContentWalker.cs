@@ -254,7 +254,7 @@ internal sealed class OpenDocumentContentWalker(
             case OpenDocumentNames.Text:
                 return name is "tracked-changes" or "hidden-text" or "annotation"
                     || name.EndsWith("-source", StringComparison.Ordinal)
-                    || (name == "section" && IsHiddenSection());
+                    || _reader.GetAttribute("display", OpenDocumentNames.Text) is "none" or "condition";
 
             case OpenDocumentNames.Office:
                 return name is "annotation" or "forms";
@@ -266,7 +266,8 @@ internal sealed class OpenDocumentContentWalker(
                 return name == "notes";
 
             case OpenDocumentNames.Table:
-                return name is "covered-table-cell" or "title" or "desc";
+                return name is "covered-table-cell" or "title" or "desc"
+                    || (name == "table-cell" && IsHiddenByStyle(OpenDocumentStyleTable.Switch.Text, OpenDocumentStyleTable.TableCellFamily, _reader.GetAttribute("style-name", OpenDocumentNames.Table)));
 
             case OpenDocumentNames.Draw:
                 return name is "image" or "object" or "object-ole" or "plugin" or "applet" or "floating-frame"
@@ -277,9 +278,6 @@ internal sealed class OpenDocumentContentWalker(
         }
     }
 
-    private bool IsHiddenSection() =>
-        _reader.GetAttribute("display", OpenDocumentNames.Text) is "none" or "condition";
-
     private bool IsHiddenShape()
     {
         if (_reader.GetAttribute("display", OpenDocumentNames.Draw) is "none" or "printer")
@@ -287,7 +285,8 @@ internal sealed class OpenDocumentContentWalker(
             return true;
         }
 
-        return IsHiddenByStyle(OpenDocumentStyleTable.Switch.Graphic, OpenDocumentStyleTable.GraphicFamily, _reader.GetAttribute("style-name", OpenDocumentNames.Draw))
+        return styles.IsLayerHidden(_reader.GetAttribute("layer", OpenDocumentNames.Draw))
+            || IsHiddenByStyle(OpenDocumentStyleTable.Switch.Graphic, OpenDocumentStyleTable.GraphicFamily, _reader.GetAttribute("style-name", OpenDocumentNames.Draw))
             || IsHiddenByStyle(OpenDocumentStyleTable.Switch.Graphic, OpenDocumentStyleTable.PresentationFamily, _reader.GetAttribute("style-name", OpenDocumentNames.Presentation))
             || IsHiddenByStyle(OpenDocumentStyleTable.Switch.Text, OpenDocumentStyleTable.ParagraphFamily, _reader.GetAttribute("text-style-name", OpenDocumentNames.Draw));
     }

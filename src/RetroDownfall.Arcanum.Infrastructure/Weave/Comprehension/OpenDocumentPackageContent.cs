@@ -147,9 +147,14 @@ internal sealed class OpenDocumentPackageContent
             {
                 styles.ReadContainer(xml, automatic: false);
             }
+            else if (IsOffice(reader, "master-styles"))
+            {
+                // Only the layer visibility is read; master pages themselves are page furniture, never projected.
+                styles.ReadMasterStyles(xml);
+            }
             else
             {
-                // Master pages, the part's own automatic styles and settings are page furniture, never projected.
+                // The part's own automatic styles and settings are page furniture, never projected.
                 xml.SkipElement();
             }
         }
@@ -185,6 +190,10 @@ internal sealed class OpenDocumentPackageContent
                 else if (IsOffice(reader, "styles"))
                 {
                     styles.ReadContainer(xml, automatic: false);
+                }
+                else if (IsOffice(reader, "master-styles"))
+                {
+                    styles.ReadMasterStyles(xml);
                 }
                 else if (IsOffice(reader, "body"))
                 {
