@@ -12,15 +12,28 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// </summary>
 /// <remarks>
 /// <para>
-/// A style is judged by walking its parent chain through the common styles (at most <see cref="MaximumParentHops"/>
-/// hops, so a cycle or an over-deep chain is a <see cref="DocumentPackageRejection.StructureBounds"/> refusal) to the first style that
-/// states the switch, then to the family's <c>style:default-style</c>. An explicit "visible" therefore overrides a
-/// hidden parent. Each answer is cached on the style, so a reference costs one lookup after its first use.
+/// A style definition is judged by walking its parent chain through the common styles (at most
+/// <see cref="MaximumParentHops"/> hops, so a cycle or an over-deep chain is a
+/// <see cref="DocumentPackageRejection.StructureBounds"/> refusal) to the first style that states the switch, then to
+/// the family's <c>style:default-style</c>. An explicit "visible" therefore overrides a hidden parent. Each answer is
+/// cached on the style, so a reference costs one lookup after its first use.
 /// </para>
 /// <para>
-/// Retained state obeys fixed caps: <see cref="MaximumStyles"/> styles in all and <see cref="MaximumNameLength"/>
-/// characters per retained name. When a name is defined twice in one table the definitions merge and "hidden" wins,
-/// so a duplicate can never reveal text a consumer that picks either definition would hide.
+/// When a name is defined twice in one table every definition is kept and judged on its own, and "hidden" wins: the
+/// style is hidden when any definition, or the parent chain of any definition (a parent defined twice being judged the
+/// same way), resolves hidden, so a duplicate can never reveal text a consumer that picks either definition would hide.
+/// </para>
+/// <para>
+/// A style may carry <c>style:map</c> children, which make it a conditional style: in the context a condition names, a
+/// consumer formats the paragraph (or cell) with the style named by <c>style:apply-style-name</c> instead. The
+/// conditions are not evaluated. A style is therefore also hidden when any map target of its own, or of a style in its
+/// parent chain, resolves hidden (the target looked up among the automatic and the common styles alike). A target is
+/// judged as a plain style, by its own switches and parents: a consumer applies it once, so a map on a target is not
+/// followed.
+/// </para>
+/// <para>
+/// Retained state obeys fixed caps: <see cref="MaximumStyles"/> entries in all, a style definition and a map target
+/// each being one, and <see cref="MaximumNameLength"/> characters per retained name.
 /// </para>
 /// </remarks>
 internal sealed class OpenDocumentStyleTable
@@ -62,6 +75,8 @@ internal sealed class OpenDocumentStyleTable
     private readonly HashSet<string> _hiddenLayers = [];
 
     private int _count;
+
+    private int _maps;
 
     /// <summary>The display switches a style can state.</summary>
     internal enum Switch
@@ -183,7 +198,7 @@ internal sealed class OpenDocumentStyleTable
     {
         if (name is not null && Find(family, name) is { } style)
         {
-            return Resolve(style, hiding);
+            return IsStyleHidden(style, hiding);
         }
 
         if (_defaults.TryGetValue(family, out StyleEntry? defaultStyle) && defaultStyle.Display[(int)hiding] == Hidden)
@@ -194,8 +209,12 @@ internal sealed class OpenDocumentStyleTable
         return family == ParagraphFamily
             && hiding == Switch.Text
             && _common.GetValueOrDefault((ParagraphFamily, StandardParagraphStyle)) is { } standard
-            && Resolve(standard, hiding);
+            && IsStyleHidden(standard, hiding);
     }
+
+    /// <summary>True when the style itself, or (when the table holds conditional styles) any style it maps to, resolves hidden.</summary>
+    private bool IsStyleHidden(StyleEntry style, Switch hiding) =>
+        Resolve(style, hiding, 0) || (_maps > 0 && ResolveMapTargets(style, hiding, 0));
 
     private void ReadLayerSet(BoundedXmlReader xml)
     {
@@ -271,7 +290,8 @@ internal sealed class OpenDocumentStyleTable
 
         if (table.TryGetValue((family, name), out StyleEntry? existing))
         {
-            existing.Merge(entry);
+            // Every definition is kept: each is judged on its own and the style is hidden when any of them is.
+            existing.AddDuplicate(entry);
 
             return;
         }
@@ -305,7 +325,7 @@ internal sealed class OpenDocumentStyleTable
     }
 
     /// <summary>Reads the property children of the style element the reader is on, then moves past its end.</summary>
-    private static StyleEntry ReadProperties(BoundedXmlReader xml, string family, string? parent)
+    private StyleEntry ReadProperties(BoundedXmlReader xml, string family, string? parent)
     {
         XmlReader reader = xml.Reader;
 
@@ -359,6 +379,17 @@ internal sealed class OpenDocumentStyleTable
                         entry.State(Switch.Page, reader.GetAttribute("visibility", OpenDocumentNames.Presentation), "hidden", null, "visible");
 
                         break;
+
+                    case "map" when reader.GetAttribute("apply-style-name", OpenDocumentNames.Style) is { } target:
+                        Count();
+
+                        CheckLength(target);
+
+                        _maps++;
+
+                        entry.AddMap(target);
+
+                        break;
                 }
             }
 
@@ -373,7 +404,11 @@ internal sealed class OpenDocumentStyleTable
             ? automatic
             : _common.GetValueOrDefault((family, name));
 
-    private bool Resolve(StyleEntry style, Switch hiding)
+    /// <summary>
+    /// True when any definition of the style (the head of its list of duplicates) resolves hidden for
+    /// <paramref name="hiding"/>. <paramref name="depth"/> is the number of parent hops taken to reach it.
+    /// </summary>
+    private bool Resolve(StyleEntry style, Switch hiding, int depth)
     {
         int index = (int)hiding;
 
@@ -382,42 +417,105 @@ internal sealed class OpenDocumentStyleTable
             return style.Resolved[index] == Hidden;
         }
 
-        bool hidden = Walk(style, hiding);
+        bool hidden = false;
+
+        for (StyleEntry? definition = style; definition is not null && !hidden; definition = definition.Next)
+        {
+            hidden = ResolveDefinition(definition, hiding, depth);
+        }
 
         style.Resolved[index] = hidden ? Hidden : Visible;
 
         return hidden;
     }
 
-    private bool Walk(StyleEntry style, Switch hiding)
+    /// <summary>One definition: its own statement of the switch, else its parent's answer, else the family's default style.</summary>
+    private bool ResolveDefinition(StyleEntry definition, Switch hiding, int depth)
     {
-        StyleEntry? current = style;
+        sbyte stated = definition.Display[(int)hiding];
 
-        int hops = 0;
-
-        while (current is not null)
+        if (stated != Unspecified)
         {
-            sbyte stated = current.Display[(int)hiding];
-
-            if (stated != Unspecified)
-            {
-                return stated == Hidden;
-            }
-
-            if (current.Parent is null)
-            {
-                break;
-            }
-
-            if (++hops > MaximumParentHops)
-            {
-                throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
-            }
-
-            current = _common.GetValueOrDefault((style.Family, current.Parent));
+            return stated == Hidden;
         }
 
-        return _defaults.TryGetValue(style.Family, out StyleEntry? defaultStyle) && defaultStyle.Display[(int)hiding] == Hidden;
+        if (definition.Parent is not null)
+        {
+            CheckDepth(depth);
+
+            if (_common.GetValueOrDefault((definition.Family, definition.Parent)) is { } parent)
+            {
+                return Resolve(parent, hiding, depth + 1);
+            }
+        }
+
+        return _defaults.TryGetValue(definition.Family, out StyleEntry? defaultStyle) && defaultStyle.Display[(int)hiding] == Hidden;
+    }
+
+    /// <summary>
+    /// True when a map target of any definition of the style, or of any style in its parent chain, resolves hidden.
+    /// A target is judged as a plain style (<see cref="Resolve"/>), so a map on a target is not followed.
+    /// </summary>
+    private bool ResolveMapTargets(StyleEntry style, Switch hiding, int depth)
+    {
+        int index = (int)hiding;
+
+        if (style.MapsResolved[index] != Unspecified)
+        {
+            return style.MapsResolved[index] == Hidden;
+        }
+
+        bool hidden = false;
+
+        for (StyleEntry? definition = style; definition is not null && !hidden; definition = definition.Next)
+        {
+            hidden = AnyMapTargetHidden(definition, hiding) || ParentMapTargetsHidden(definition, hiding, depth);
+        }
+
+        style.MapsResolved[index] = hidden ? Hidden : Visible;
+
+        return hidden;
+    }
+
+    private bool AnyMapTargetHidden(StyleEntry definition, Switch hiding)
+    {
+        if (definition.Maps is null)
+        {
+            return false;
+        }
+
+        foreach (string target in definition.Maps)
+        {
+            if ((_automatic.GetValueOrDefault((definition.Family, target)) is { } automatic && Resolve(automatic, hiding, 0))
+                || (_common.GetValueOrDefault((definition.Family, target)) is { } common && Resolve(common, hiding, 0)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool ParentMapTargetsHidden(StyleEntry definition, Switch hiding, int depth)
+    {
+        if (definition.Parent is null)
+        {
+            return false;
+        }
+
+        CheckDepth(depth);
+
+        return _common.GetValueOrDefault((definition.Family, definition.Parent)) is { } parent
+            && ResolveMapTargets(parent, hiding, depth + 1);
+    }
+
+    /// <summary>Refuses a parent chain that would need more than <see cref="MaximumParentHops"/> hops, which a cycle always does.</summary>
+    private static void CheckDepth(int depth)
+    {
+        if (depth >= MaximumParentHops)
+        {
+            throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
+        }
     }
 
     private void Count()
@@ -440,11 +538,21 @@ internal sealed class OpenDocumentStyleTable
     {
         public string Family { get; } = family;
 
-        public string? Parent { get; private set; } = parent;
+        public string? Parent { get; } = parent;
 
         public sbyte[] Display { get; } = new sbyte[4];
 
+        /// <summary>The cached answer of <see cref="Resolve"/> for each switch; kept on the first definition of a name.</summary>
         public sbyte[] Resolved { get; } = new sbyte[4];
+
+        /// <summary>The cached answer of <see cref="ResolveMapTargets"/> for each switch; kept on the first definition of a name.</summary>
+        public sbyte[] MapsResolved { get; } = new sbyte[4];
+
+        /// <summary>The names this definition's <c>style:map</c> children apply, or null when it has none.</summary>
+        public List<string>? Maps { get; private set; }
+
+        /// <summary>The next definition of the same name, or null.</summary>
+        public StyleEntry? Next { get; private set; }
 
         /// <summary>Records a switch value: a hidden token marks it hidden, a visible token marks it visible, anything else leaves it unstated.</summary>
         public void State(Switch hiding, string? value, string hiddenToken, string? secondHiddenToken, string visibleToken, string? secondVisibleToken = null)
@@ -464,10 +572,19 @@ internal sealed class OpenDocumentStyleTable
             }
         }
 
+        public void AddMap(string target) => (Maps ??= []).Add(target);
+
+        /// <summary>Adds another definition of the same name; the order of definitions does not matter.</summary>
+        public void AddDuplicate(StyleEntry other)
+        {
+            other.Next = Next;
+
+            Next = other;
+        }
+
+        /// <summary>Folds another default style of the same family into this one: "hidden" wins.</summary>
         public void Merge(StyleEntry other)
         {
-            Parent ??= other.Parent;
-
             for (int index = 0; index < Display.Length; index++)
             {
                 if (other.Display[index] > Display[index])
