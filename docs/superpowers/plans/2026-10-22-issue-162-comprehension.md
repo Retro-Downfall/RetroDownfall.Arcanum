@@ -31,7 +31,7 @@
 - [x] Add the Comprehension public configuration opt-in and update the five owning documents; keep #161 open and the feature off by default.
 - [x] Run independent review, fix validated findings with regression tests, and restore each original refusal separately to prove the four path tests are independently sensitive.
 - [x] Complete focused local boundary, source-authority, packaging and runtime checks before candidate freeze.
-- [ ] Freeze candidate SHA/tree and perform full CI qualification: runtime/coverage, all source-analysis partitions, Native AOT/shipping/provider gates across shipping platforms.
+- [ ] Freeze the final candidate SHA/tree and complete focused qualification, including a fresh macOS Native AOT diagnostic and shipping/provider check. The operator explicitly waived the whole CI gate for this first foundation change on 2026-10-22; full coverage, the complete source-fixture matrix and Windows lanes are outside this delivery boundary.
 - [ ] After exact-candidate terminal green, integrate the qualified commit with expected-head checks, push `memory-enhancement`, verify ref/tree equality, and mark only #162 completed.
 
 ## Review focus
@@ -50,4 +50,4 @@ An uncooperative pure parser must not hold the single-reader queue indefinitely;
 - Full production-source discovery passed with zero diagnostics. The reviewed capsule manifest has 6,863 rows; five additions and one replacement are explained entirely by edited sources, with zero unexplained rows and all classifier invariants passing. The source checker is unchanged.
 - Source archive packaging: 37 passed against the staged final implementation. Both standard whitespace and repository blank-line checks passed.
 - macOS shipping Native AOT publish and its exact-apphost provider-contract smoke passed during development; final platform evidence must bind to the frozen candidate.
-- Full platform CI remains required before integration. Its exact SHA, run, delivery ref/tree proof and completion evidence will be recorded in #162 without changing the qualified source tree.
+- Qualification amendment, 2026-10-22: the operator explicitly stated that the whole CI gate is not required for this first change. Full CI run 39778749160 was dispatched for implementation commit `7b1ccf1df01b058c9f05132510c3b3230320c544` and cancellation was requested after that instruction; it is not qualification evidence. Delivery uses the focused checks above plus fresh final-candidate macOS Native AOT diagnostics and shipping/provider proof. Windows, full runtime coverage and the complete source-analysis fixture matrix are intentionally not claimed. Exact final SHA, delivery ref/tree equality and completion evidence will be recorded in #162 without changing the qualified source tree.
