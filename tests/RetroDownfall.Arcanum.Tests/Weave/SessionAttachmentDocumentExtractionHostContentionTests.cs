@@ -224,6 +224,146 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
     }
 
     [Fact]
+    public async Task ExtractAsync_CallerQueuedBeforeItsFamilyIsQuarantined_IsDeferredPromptly()
+    {
+        byte[] poison = "ARCCOMP1\npoison"u8.ToArray();
+
+        using ManualResetEventSlim release = new(false);
+
+        int healthyParses = 0;
+
+        SessionAttachmentDocumentExtractionHost host = new(
+            (bytes, output, cancellationToken) =>
+            {
+                if (bytes.Span.SequenceEqual(poison))
+                {
+                    // An uncooperative parser: it ignores cancellation, so its overrun quarantines the family.
+                    release.Wait(TimeSpan.FromSeconds(30));
+
+                    return ValueTask.CompletedTask;
+                }
+
+                Interlocked.Increment(ref healthyParses);
+
+                return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
+            },
+            TimeSpan.FromMilliseconds(200),
+            slotWait: TimeSpan.FromSeconds(20));
+
+        try
+        {
+            Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, poison);
+
+            await Task.Delay(50);
+
+            // Queued for the slot while the parser still runs within its budget.
+            Task<SessionAttachmentExtractionResult> queued = ExtractAsync(host, Healthy);
+
+            SessionAttachmentExtractionResult overran = await overrunning.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal("Document extraction exceeded its deadline.", overran.FailureReason);
+
+            Stopwatch sinceQuarantine = Stopwatch.StartNew();
+
+            SessionAttachmentExtractionResult released = await queued.WaitAsync(TimeSpan.FromSeconds(15));
+
+            sinceQuarantine.Stop();
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, released.Status);
+
+            Assert.Equal(SessionAttachmentDocumentExtractionHost.BusyReason, released.FailureReason);
+
+            // Quarantine releases a queued caller as it refuses a later one, not after the whole slot wait.
+            Assert.True(
+                sinceQuarantine.Elapsed < TimeSpan.FromSeconds(2),
+                $"A caller queued before the quarantine waited {sinceQuarantine.Elapsed} after it.");
+
+            Assert.Equal(0, Volatile.Read(ref healthyParses));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        SessionAttachmentExtractionResult recovered = await EventuallyExtractedAsync(host);
+
+        Assert.Equal("healthy", recovered.Text);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_WithoutWaitingForTheSlot_IsDeferredAtOnceWhileAnotherDocumentHoldsIt()
+    {
+        TaskCompletionSource<ReadOnlyMemory<byte>> heldRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource readEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The production slot wait: a caller that does wait would sit here for thirty seconds.
+        SessionAttachmentDocumentExtractionHost host = new(
+            new ComprehensionTextContainerExtractor().ExtractAsync,
+            TimeSpan.FromSeconds(5));
+
+        Task<SessionAttachmentExtractionResult> holder = host.ExtractAsync(
+            _ =>
+            {
+                readEntered.TrySetResult();
+
+                return heldRead.Task;
+            },
+            Healthy.Length,
+            1024,
+            CancellationToken.None);
+
+        try
+        {
+            await readEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            int reads = 0;
+
+            Stopwatch refusal = Stopwatch.StartNew();
+
+            SessionAttachmentExtractionResult deferred = await host.ExtractAsync(
+                    _ =>
+                    {
+                        Interlocked.Increment(ref reads);
+
+                        return Task.FromResult<ReadOnlyMemory<byte>>(Healthy);
+                    },
+                    Healthy.Length,
+                    1024,
+                    CancellationToken.None,
+                    waitForSlot: false)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            refusal.Stop();
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, deferred.Status);
+
+            Assert.Equal(SessionAttachmentDocumentExtractionHost.BusyReason, deferred.FailureReason);
+
+            Assert.Equal(0, reads);
+
+            Assert.True(refusal.Elapsed < TimeSpan.FromSeconds(2), $"An immediate slot request waited {refusal.Elapsed}.");
+        }
+        finally
+        {
+            heldRead.TrySetResult(Healthy);
+        }
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, (await holder.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+
+        // A free slot is taken at once without waiting.
+        SessionAttachmentExtractionResult free = await host.ExtractAsync(
+                _ => Task.FromResult<ReadOnlyMemory<byte>>(Healthy),
+                Healthy.Length,
+                1024,
+                CancellationToken.None,
+                waitForSlot: false)
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, free.Status);
+    }
+
+    [Fact]
     public async Task ExtractAsync_CallerCancellationWhileWaitingForTheSlot_PropagatesAndLeaksNoSlot()
     {
         TaskCompletionSource<ReadOnlyMemory<byte>> heldRead = new(TaskCreationOptions.RunContinuationsAsynchronously);

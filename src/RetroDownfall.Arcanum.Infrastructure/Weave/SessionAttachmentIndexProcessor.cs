@@ -16,10 +16,16 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
+/// <summary>How one dequeued request ended.</summary>
+/// <param name="SpendsAttempt">
+/// Whether the automatic retry, when <paramref name="ShouldRetry"/> asks for one, carries the next attempt
+/// number. Only a busy deferral keeps its number: it read and parsed nothing, so it was not an attempt.
+/// </param>
 internal sealed record SessionAttachmentIndexOutcome(
     SessionAttachmentIndexDisposition Disposition,
     SessionAttachmentIndexStatus Status,
-    bool ShouldRetry)
+    bool ShouldRetry,
+    bool SpendsAttempt = true)
 {
     /// <summary>The one shape a maintenance deferral takes, so it cannot be spelled two ways.</summary>
     /// <remarks>
@@ -34,6 +40,21 @@ internal sealed record SessionAttachmentIndexOutcome(
             SessionAttachmentIndexDisposition.DeferredForMaintenance,
             SessionAttachmentIndexStatus.Pending,
             ShouldRetry: false);
+
+    /// <summary>The one shape a deferral for a busy parser family takes.</summary>
+    /// <remarks>
+    /// The unit held its lease to the end and wrote its durable row, so it is concluded and gives back its
+    /// pending queue identity. The row stays <see cref="SessionAttachmentIndexStatus.Pending"/>: the
+    /// automatic retry lives only in memory, and a pending row is what reconciliation re-selects when that
+    /// retry is lost to a restart, a full queue or a gate toggle. The retry backoff and the pending-identity
+    /// de-duplication keep the two from looping. Nothing was read or parsed, so no attempt is spent.
+    /// </remarks>
+    internal static SessionAttachmentIndexOutcome DeferredForBusyFamily { get; } =
+        new(
+            SessionAttachmentIndexDisposition.Concluded,
+            SessionAttachmentIndexStatus.Pending,
+            ShouldRetry: true,
+            SpendsAttempt: false);
 }
 
 internal sealed class SessionAttachmentIndexProcessor(
@@ -127,23 +148,27 @@ internal sealed class SessionAttachmentIndexProcessor(
         {
             if (isDocument)
             {
+                // This runs inside the work lease, so it never queues for its family's slot: a slot held by
+                // other documents' parses would hold maintenance's stage-one drain behind them. A busy family
+                // is a deferral instead, retried after the backoff with the lease given back.
                 SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
                     attachments,
                     attachment,
                     runtimeSettings,
                     ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes),
                     cancellationToken,
-                    comprehension).ConfigureAwait(false);
+                    comprehension,
+                    waitForSlot: false).ConfigureAwait(false);
 
                 if (extraction.Status == SessionAttachmentExtractionStatus.Deferred)
                 {
                     // Other documents held this format's parser: nothing was read or parsed, so this is
-                    // neither the document's outcome nor an extraction. It takes the automatic retry
-                    // path and stamps no extraction time.
-                    await MarkWithoutIndexAsync(attachment, SessionAttachmentIndexStatus.Failed, request.Attempt,
+                    // neither the document's outcome nor an extraction. The row stays pending with the
+                    // busy reason and no extraction time, so it is never durably terminal.
+                    await MarkWithoutIndexAsync(attachment, SessionAttachmentIndexStatus.Pending, request.Attempt,
                         extraction.FailureReason, extractedAt: null, cancellationToken).ConfigureAwait(false);
 
-                    return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+                    return SessionAttachmentIndexOutcome.DeferredForBusyFamily;
                 }
 
                 if (extraction.Status != SessionAttachmentExtractionStatus.Extracted)

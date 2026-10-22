@@ -12,6 +12,8 @@ using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Covenant;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -139,13 +141,14 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
             Assert.Equal(SessionAttachmentIndexDisposition.Concluded, deferred.Disposition);
 
-            Assert.Equal(SessionAttachmentIndexStatus.Failed, deferred.Status);
+            Assert.Equal(SessionAttachmentIndexStatus.Pending, deferred.Status);
 
             Assert.True(deferred.ShouldRetry, "Contention on a healthy document must take the retry path.");
 
             SessionAttachmentIndexState transient = await _index!.GetStateAsync(healthy.Id, CancellationToken.None);
 
-            Assert.Equal(SessionAttachmentIndexStatus.Failed, transient.Status);
+            // Never durably terminal: a pending row is what reconciliation re-selects if the retry is lost.
+            Assert.Equal(SessionAttachmentIndexStatus.Pending, transient.Status);
 
             Assert.Null(transient.ExtractedAt);
 
@@ -155,7 +158,10 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
             Assert.True(service.QueueReader.TryRead(out SessionAttachmentIndexRequest? retried));
 
-            Assert.Equal(1, retried!.Attempt);
+            // The deferral read and parsed nothing, so its retry spends no attempt.
+            Assert.Equal(0, retried!.Attempt);
+
+            Assert.Equal(0, transient.AttemptCount);
 
             Assert.Equal(0, extractor.HealthyParses);
 
@@ -235,6 +241,267 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
     }
 
     /// <summary>
+    /// A deferral is never terminal in durable state: the automatic retry lives in memory, so a host
+    /// that stops during its backoff must find the document again by reconciliation after a restart.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessOneAsync_DeferredDocument_HostStopsDuringTheBackoff_IsIndexedAfterARestart()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord healthy = await _attachments!.PersistNewAsync(
+            sessionId, null, null, "healthy", "healthy.arccomp", Encoding.UTF8.GetBytes("ARCCOMP1\nhealthy document"),
+            SessionAttachmentComprehensionPolicy.MimeType, SessionAttachmentKind.Binary);
+
+        byte[] poison = Encoding.UTF8.GetBytes("ARCCOMP1\npoison");
+
+        PoisonAwareExtractor extractor = new(poison);
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+
+        SignallingNeverTimeProvider retryTime = new();
+
+        using (SessionAttachmentIndexingService service = CreateService(host, retryTime))
+        {
+            try
+            {
+                _ = await host.ExtractAsync(
+                    _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None);
+
+                using CancellationTokenSource stopping = new();
+
+                Task<SessionAttachmentIndexOutcome> processing = service.ProcessOneAsync(
+                    Dequeue(service, new SessionAttachmentIndexRequest(healthy.Id, sessionId)),
+                    stopping.Token);
+
+                // The deferred attempt concluded and its automatic retry waits out its backoff when the host stops.
+                await retryTime.Scheduled.WaitAsync(TimeSpan.FromSeconds(10));
+
+                await stopping.CancelAsync();
+
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing);
+            }
+            finally
+            {
+                extractor.Release();
+            }
+        }
+
+        await extractor.PoisonFinished.WaitAsync(TimeSpan.FromSeconds(5));
+
+        SessionAttachmentIndexState stopped = await _index!.GetStateAsync(healthy.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, stopped.Status);
+
+        Assert.Null(stopped.ExtractedAt);
+
+        Assert.Equal(SessionAttachmentDocumentExtractionHost.BusyReason, stopped.FailureReason);
+
+        // A busy deferral read and parsed nothing, so it spent no attempt.
+        Assert.Equal(0, stopped.AttemptCount);
+
+        // The restart: a fresh service, whose only way back to the document is reconciliation.
+        using SessionAttachmentIndexingService restarted = CreateService(host, new ImmediateTimeProvider());
+
+        Assert.Equal(
+            SessionAttachmentIndexDisposition.Concluded,
+            await restarted.ReconcileAndEnqueueAsync(_settings.ResolveEmbeddings(), CancellationToken.None));
+
+        Assert.True(
+            restarted.QueueReader.TryRead(out SessionAttachmentIndexRequest? requeued),
+            "Reconciliation did not re-queue a document whose only attempt was deferred.");
+
+        Assert.Equal(healthy.Id, requeued!.AttachmentId);
+
+        SessionAttachmentIndexOutcome final = await ProcessUntilConcludedAsync(restarted, requeued);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, final.Status);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await _index.GetStateAsync(healthy.Id, CancellationToken.None)).Status);
+    }
+
+    /// <summary>
+    /// The retry of a deferral is a best-effort enqueue. When other attachments fill the queue during its
+    /// backoff the write is refused, and reconciliation, which the queue-full warning names, recovers it.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessOneAsync_DeferredDocument_RetryFindsTheQueueFull_IsRecoveredByReconciliation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord healthy = await _attachments!.PersistNewAsync(
+            sessionId, null, null, "healthy", "healthy.arccomp", Encoding.UTF8.GetBytes("ARCCOMP1\nhealthy document"),
+            SessionAttachmentComprehensionPolicy.MimeType, SessionAttachmentKind.Binary);
+
+        byte[] poison = Encoding.UTF8.GetBytes("ARCCOMP1\npoison");
+
+        PoisonAwareExtractor extractor = new(poison);
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+
+        ImmediateTimeProvider retryTime = new();
+
+        using SessionAttachmentIndexingService service = CreateService(host, retryTime);
+
+        int filled = 0;
+
+        retryTime.OnDelay = () =>
+        {
+            while (service.TryEnqueue(new SessionAttachmentIndexRequest(Guid.NewGuid(), sessionId)))
+            {
+                filled++;
+            }
+        };
+
+        try
+        {
+            _ = await host.ExtractAsync(
+                _ => Task.FromResult<ReadOnlyMemory<byte>>(poison), poison.Length, 1024, CancellationToken.None);
+
+            SessionAttachmentIndexOutcome deferred = await service.ProcessOneAsync(
+                Dequeue(service, new SessionAttachmentIndexRequest(healthy.Id, sessionId)),
+                CancellationToken.None);
+
+            Assert.True(deferred.ShouldRetry);
+        }
+        finally
+        {
+            retryTime.OnDelay = null;
+
+            extractor.Release();
+        }
+
+        await extractor.PoisonFinished.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(filled > 0, "Other attachments must have filled the queue during the backoff.");
+
+        int healthyRetries = 0;
+
+        while (service.QueueReader.TryRead(out SessionAttachmentIndexRequest? other))
+        {
+            healthyRetries += other.AttachmentId == healthy.Id ? 1 : 0;
+        }
+
+        Assert.Equal(0, healthyRetries);
+
+        Assert.Equal(
+            SessionAttachmentIndexDisposition.Concluded,
+            await service.ReconcileAndEnqueueAsync(_settings.ResolveEmbeddings(), CancellationToken.None));
+
+        SessionAttachmentIndexRequest? recovered = null;
+
+        while (service.QueueReader.TryRead(out SessionAttachmentIndexRequest? candidate))
+        {
+            recovered ??= candidate.AttachmentId == healthy.Id ? candidate : null;
+        }
+
+        Assert.True(recovered is not null, "Reconciliation did not recover a deferred document whose retry found the queue full.");
+
+        SessionAttachmentIndexOutcome final = await ProcessUntilConcludedAsync(service, recovered);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, final.Status);
+    }
+
+    /// <summary>
+    /// The indexer takes a family slot only when it is free. Queueing for it inside the work lease would
+    /// hold maintenance's stage-one drain behind other documents' parses, past its five-second bound.
+    /// </summary>
+    [SkippableFact]
+    public async Task ProcessOneAsync_SameFamilyContention_DoesNotHoldTheWorkLeaseAgainstAMaintenanceDrain()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord healthy = await _attachments!.PersistNewAsync(
+            sessionId, null, null, "healthy", "healthy.arccomp", Encoding.UTF8.GetBytes("ARCCOMP1\nhealthy document"),
+            SessionAttachmentComprehensionPolicy.MimeType, SessionAttachmentKind.Binary);
+
+        byte[] slow = Encoding.UTF8.GetBytes("ARCCOMP1\nslow");
+
+        // The production family shape: a five-second document budget and the default slot wait.
+        SessionAttachmentDocumentExtractionHost host = new(
+            new SlowExtractor(slow, TimeSpan.FromMilliseconds(4500)).ExtractAsync,
+            TimeSpan.FromSeconds(5));
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        SignallingNeverTimeProvider retryTime = new();
+
+        using SessionAttachmentIndexingService service = CreateService(host, retryTime, gate);
+
+        // Two same-family extractions elsewhere (turns, pins), each well within its own budget.
+        Task<SessionAttachmentExtractionResult>[] holders =
+        [
+            Task.Run(() => host.ExtractAsync(_ => Task.FromResult<ReadOnlyMemory<byte>>(slow), slow.Length, 1024, CancellationToken.None)),
+            Task.Run(async () =>
+            {
+                await Task.Delay(50);
+
+                return await host.ExtractAsync(_ => Task.FromResult<ReadOnlyMemory<byte>>(slow), slow.Length, 1024, CancellationToken.None);
+            }),
+        ];
+
+        await Task.Delay(200);
+
+        using CancellationTokenSource stopping = new();
+
+        Task<SessionAttachmentIndexOutcome> processing = service.ProcessOneAsync(
+            Dequeue(service, new SessionAttachmentIndexRequest(healthy.Id, sessionId)),
+            stopping.Token);
+
+        await Task.Delay(300);
+
+        // A maintenance transition (backup, encryption, erasure, reset) begins while the family is busy.
+        Result<IGrimoireClosingOwner> begun = gate.BeginOrResumeExclusive(
+            new CovenantExclusiveRecoveryOwner(
+                Guid.NewGuid(),
+                CovenantExclusiveOperation.CovenantReset,
+                new CovenantDigest(Enumerable.Repeat((byte)7, 32).ToArray())));
+
+        Assert.True(begun.IsSuccess, begun.IsFailure ? begun.Error.Message : null);
+
+        Result drained;
+
+        await using (IGrimoireClosingOwner closing = begun.Value)
+        {
+            try
+            {
+                drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(60));
+            }
+            finally
+            {
+                _ = await gate.AbortClosingAsync(closing, static _ => ValueTask.FromResult(true), CancellationToken.None);
+            }
+        }
+
+        await stopping.CancelAsync();
+
+        try
+        {
+            _ = await processing.WaitAsync(TimeSpan.FromSeconds(60));
+        }
+        catch (OperationCanceledException)
+        {
+            // Stopped in the retry backoff, after the lease was given back.
+        }
+
+        await Task.WhenAll(holders).WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.True(drained.IsSuccess, drained.IsFailure ? drained.Error.Code + " " + drained.Error.Message : null);
+
+        SessionAttachmentIndexState state = await _index!.GetStateAsync(healthy.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, state.Status);
+
+        Assert.Equal(SessionAttachmentDocumentExtractionHost.BusyReason, state.FailureReason);
+    }
+
+    /// <summary>
     /// Runs a dequeued request through the real dequeue path, following the service's own automatic
     /// retries, until an attempt concludes without asking for another.
     /// </summary>
@@ -296,7 +563,8 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
     private SessionAttachmentIndexingService CreateService(
         SessionAttachmentDocumentExtractionHost comprehension,
-        TimeProvider retryTime)
+        TimeProvider retryTime,
+        GrimoireConnectionAdmissionGate? gate = null)
     {
         ServiceCollection services = new();
 
@@ -319,7 +587,7 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
         return new SessionAttachmentIndexingService(
             services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
             new TestOptionsMonitor<ArcanumSettings>(_settings),
-            new GrimoireConnectionAdmissionGate(TimeProvider.System),
+            gate ?? new GrimoireConnectionAdmissionGate(TimeProvider.System),
             retryTime,
             NullLogger<SessionAttachmentIndexingService>.Instance);
     }
@@ -360,10 +628,49 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
         }
     }
 
+    /// <summary>A cooperative parser that takes a fixed time on one payload and reads everything else normally.</summary>
+    private sealed class SlowExtractor(byte[] slow, TimeSpan duration) : ISessionAttachmentDocumentExtractor
+    {
+        public async ValueTask ExtractAsync(
+            ReadOnlyMemory<byte> bytes,
+            ISessionAttachmentDocumentTextSink output,
+            CancellationToken cancellationToken)
+        {
+            if (bytes.Span.SequenceEqual(slow))
+            {
+                await Task.Delay(duration, cancellationToken);
+
+                _ = output.TryAppend("slow".AsSpan());
+
+                return;
+            }
+
+            await new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
+        }
+    }
+
+    /// <summary>A retry backoff that never elapses on its own, and says when it was scheduled.</summary>
+    private sealed class SignallingNeverTimeProvider : TimeProvider
+    {
+        private readonly TaskCompletionSource _scheduled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Scheduled => _scheduled.Task;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            _scheduled.TrySetResult();
+
+            return new NoopTimer();
+        }
+    }
+
     /// <summary>Completes every retry delay at once, recording what was scheduled.</summary>
     private sealed class ImmediateTimeProvider : TimeProvider
     {
         private readonly List<TimeSpan> _delays = [];
+
+        /// <summary>Runs as each delay is scheduled, before it elapses.</summary>
+        internal Action? OnDelay { get; set; }
 
         internal IReadOnlyList<TimeSpan> Delays
         {
@@ -383,21 +690,23 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
                 _delays.Add(dueTime);
             }
 
+            OnDelay?.Invoke();
+
             ThreadPool.QueueUserWorkItem(_ => callback(state));
 
             return new NoopTimer();
         }
+    }
 
-        private sealed class NoopTimer : ITimer
+    private sealed class NoopTimer : ITimer
+    {
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+        public void Dispose()
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-
-            public void Dispose()
-            {
-            }
-
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class ConstantWeaveService : IWeaveService

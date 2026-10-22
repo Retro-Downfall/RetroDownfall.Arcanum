@@ -21,9 +21,10 @@ internal enum SessionAttachmentExtractionStatus
     Failed,
 
     /// <summary>
-    /// The attempt never reached this document: its parser family's slot was not acquired in time, or
-    /// the family is quarantined by an outstanding parser. Caused by other documents, so it is
-    /// transient and never terminal; no text, no durable extraction stamp.
+    /// The attempt never reached this document: its parser family's slot was not acquired in time, was
+    /// not free for a caller that does not wait, or the family is quarantined by an outstanding parser.
+    /// Caused by other documents, so it is transient and never terminal; no text, no durable extraction
+    /// stamp, and an indexing row stays pending.
     /// </summary>
     Deferred,
 }
@@ -60,7 +61,8 @@ internal static class SessionAttachmentTextExtractor
         ArcanumSettings settings,
         long maxBytes,
         CancellationToken cancellationToken,
-        SessionAttachmentDocumentExtractionHost? host = null)
+        SessionAttachmentDocumentExtractionHost? host = null,
+        bool waitForSlot = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -90,7 +92,8 @@ internal static class SessionAttachmentTextExtractor
                 token => store.ReadBytesAsync(record, token),
                 record.ByteLength,
                 maxBytes,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                waitForSlot).ConfigureAwait(false);
     }
 
     private const int StreamingCharacterBufferSize = 4096;

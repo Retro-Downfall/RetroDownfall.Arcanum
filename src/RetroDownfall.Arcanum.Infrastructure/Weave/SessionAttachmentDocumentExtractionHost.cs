@@ -11,13 +11,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// <summary>
 /// Bounds parser waiting and retained text for a closed, reviewed in-process format. One slot per
 /// parser family serializes its invocations. Waiting for that slot is bounded separately and is never
-/// charged to the waiting document: a slot not acquired in time, or a family quarantined by an
-/// outstanding parser, is <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller
-/// treats as terminal. Once the slot is held, the document's own budget covers its snapshot read and
-/// its parse, and expiry of that budget is a terminal failure. Snapshot reads remain awaited inside
-/// the caller's admission and receive cancellation from that budget. A parser still running after its
-/// budget quarantines its family until it ends. This limits abandoned pure computation; it does not
-/// claim to preempt a parser or police its private allocations.
+/// charged to the waiting document: a slot not acquired in time, a slot not free for a caller that
+/// asked not to wait, or a family quarantined by an outstanding parser, is
+/// <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller treats as terminal. A
+/// quarantine refuses later callers at once and releases the callers already queued for the slot.
+/// Once the slot is held, the document's own budget covers its snapshot read and its parse, and expiry
+/// of that budget is a terminal failure. Snapshot reads remain awaited inside the caller's admission and
+/// receive cancellation from that budget. A parser still running after its budget quarantines its
+/// family until it ends. This limits abandoned pure computation; it does not claim to preempt a parser
+/// or police its private allocations.
 /// </summary>
 internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
@@ -41,28 +43,51 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
 
     private bool _quarantined;
 
+    /// <summary>
+    /// Cancelled when the family is quarantined, releasing every caller queued for the slot before it.
+    /// Each quarantine replaces it, so a caller that queues after the family recovers waits on a fresh one.
+    /// </summary>
+    private CancellationTokenSource _quarantineSignal = new();
+
     internal async Task<SessionAttachmentExtractionResult> ExtractAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool waitForSlot = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         // Contention belongs to other documents. A quarantined family refuses at once rather than
-        // queueing behind a parser that may never end; otherwise the slot wait is bounded on its own
-        // clock. Neither refusal has read or parsed this document, so neither is its outcome.
+        // queueing behind a parser that may never end, and its quarantine releases a caller already
+        // queued. Otherwise the slot wait is bounded on its own clock, and a caller that must not wait
+        // takes the slot only when it is free. No refusal has read or parsed this document, so none is
+        // its outcome.
+        CancellationToken quarantine;
+
         lock (_gate)
         {
             if (_quarantined)
             {
                 return Deferred();
             }
+
+            quarantine = _quarantineSignal.Token;
         }
 
-        if (!await _serial.WaitAsync(_slotWait, cancellationToken).ConfigureAwait(false))
+        using (CancellationTokenSource slotWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, quarantine))
         {
-            return Deferred();
+            try
+            {
+                if (!await _serial.WaitAsync(waitForSlot ? _slotWait : TimeSpan.Zero, slotWait.Token).ConfigureAwait(false))
+                {
+                    return Deferred();
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return Deferred();
+            }
         }
 
         // The document's own budget starts only now that it holds the slot. The snapshot read and the
@@ -179,10 +204,7 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             {
                 sink.Close();
 
-                lock (_gate)
-                {
-                    _quarantined = !invocation.IsCompleted;
-                }
+                QuarantineWhileRunning(invocation);
 
                 RequestCancellation(cancellation);
 
@@ -192,10 +214,7 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             {
                 sink.Close();
 
-                lock (_gate)
-                {
-                    _quarantined = !invocation.IsCompleted;
-                }
+                QuarantineWhileRunning(invocation);
 
                 RequestCancellation(cancellation);
 
@@ -208,6 +227,34 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             {
                 _serial.Release();
             }
+        }
+    }
+
+    /// <summary>
+    /// Quarantines the family while the abandoned invocation still runs, and releases the callers queued for
+    /// its slot: they would otherwise wait out the whole slot wait behind a parser that may never end. The
+    /// release runs their continuations on the thread pool, not on this caller's thread. The released source
+    /// owns no timer and is not disposed, since a caller may still be linking to its token.
+    /// </summary>
+    private void QuarantineWhileRunning(Task invocation)
+    {
+        CancellationTokenSource? queued = null;
+
+        lock (_gate)
+        {
+            _quarantined = !invocation.IsCompleted;
+
+            if (_quarantined)
+            {
+                queued = _quarantineSignal;
+
+                _quarantineSignal = new CancellationTokenSource();
+            }
+        }
+
+        if (queued is not null)
+        {
+            _ = queued.CancelAsync();
         }
     }
 

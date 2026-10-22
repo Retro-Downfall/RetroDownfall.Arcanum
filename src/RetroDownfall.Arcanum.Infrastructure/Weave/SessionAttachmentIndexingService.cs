@@ -452,7 +452,10 @@ internal sealed class SessionAttachmentIndexingService : BackgroundService, ISes
         {
             await Task.Delay(AutomaticRetryDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
 
-            _ = TryEnqueue(request with { Attempt = NextAttempt(request.Attempt) });
+            _ = TryEnqueue(request with
+            {
+                Attempt = outcome.SpendsAttempt ? NextAttempt(request.Attempt) : request.Attempt,
+            });
         }
 
         return outcome;
