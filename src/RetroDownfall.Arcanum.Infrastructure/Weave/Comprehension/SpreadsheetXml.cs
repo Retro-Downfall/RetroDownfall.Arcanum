@@ -108,10 +108,12 @@ internal static class SpreadsheetXml
 
     /// <summary>
     /// Reads the text content of the text element the reader is on (<c>t</c> or <c>v</c>), handing each text node to
-    /// <paramref name="target"/> and skipping any element nested inside. Returns false when the target stopped the read,
-    /// in which case the reader must be abandoned.
+    /// <paramref name="target"/> and skipping any element nested inside. The text is decoded as an <c>ST_Xstring</c>
+    /// (<see cref="SpreadsheetXstringDecoder"/>) unless <paramref name="decodeEscapes"/> is false, which a value that is
+    /// parsed rather than shown needs. Returns false when the target stopped the read, in which case the reader must be
+    /// abandoned.
     /// </summary>
-    public static bool ReadText(BoundedXmlReader xml, ISpreadsheetTextTarget target)
+    public static bool ReadText(BoundedXmlReader xml, ISpreadsheetTextTarget target, bool decodeEscapes = true)
     {
         if (!EnterChildren(xml, out int depth))
         {
@@ -119,6 +121,8 @@ internal static class SpreadsheetXml
         }
 
         XmlReader reader = xml.Reader;
+
+        SpreadsheetXstringDecoder? decoder = null;
 
         while (true)
         {
@@ -128,14 +132,29 @@ internal static class SpreadsheetXml
                 case XmlNodeType.CDATA:
                 case XmlNodeType.Whitespace:
                 case XmlNodeType.SignificantWhitespace:
-                    if (!target.Append(reader.Value))
+                    string text = reader.Value;
+
+                    bool accepted;
+
+                    if (decodeEscapes && (decoder is not null || text.Contains('_')))
+                    {
+                        decoder ??= new SpreadsheetXstringDecoder();
+
+                        accepted = decoder.Write(text, target);
+                    }
+                    else
+                    {
+                        accepted = target.Append(text);
+                    }
+
+                    if (!accepted)
                     {
                         return false;
                     }
 
                     if (!xml.Read())
                     {
-                        return true;
+                        return decoder is null || decoder.Finish(target);
                     }
 
                     break;
@@ -146,11 +165,11 @@ internal static class SpreadsheetXml
                 case XmlNodeType.EndElement when reader.Depth == depth:
                     xml.Read();
 
-                    return true;
+                    return decoder is null || decoder.Finish(target);
                 default:
                     if (!xml.Read())
                     {
-                        return true;
+                        return decoder is null || decoder.Finish(target);
                     }
 
                     break;
@@ -167,7 +186,7 @@ internal static class SpreadsheetXml
         SpreadsheetTextBuffer buffer = new(capacity, stopWhenFull: false);
 
         // A buffer that is not stopWhenFull never stops the read, so the element is always consumed to its end.
-        _ = ReadText(xml, buffer);
+        _ = ReadText(xml, buffer, decodeEscapes: false);
 
         return buffer.Overflowed ? null : buffer.ToString();
     }

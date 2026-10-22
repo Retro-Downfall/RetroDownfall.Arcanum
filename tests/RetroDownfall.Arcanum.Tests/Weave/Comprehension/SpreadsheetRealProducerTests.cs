@@ -16,9 +16,9 @@ public sealed class SpreadsheetRealProducerTests
         string text = ExtractText(ReadFixture("Excel", "openpyxl-basic.xlsx"));
 
         // Column C and row 3 are hidden; B4 is a formula with no cached value (nothing); the date is its serial number;
-        // the multi-line cell keeps its line break; the hidden and veryHidden sheets are absent.
+        // the multi-line cell folds its line break to a space so it stays one row; the hidden and veryHidden sheets are absent.
         Assert.Equal(
-            "Sheet: Visible\nName\tScore\tNotes\nAlpha\t42\tkept\nTotal\t45306\nFlag\tTRUE\nMulti\nline\nSheet: Second\nBeta\tgap\n",
+            "Sheet: Visible\nName\tScore\tNotes\nAlpha\t42\tkept\nTotal\t45306\nFlag\tTRUE\nMulti line\nSheet: Second\nBeta\tgap\n",
             text);
 
         foreach (string marker in new[] { "HIDDENCOLUMNTEXT", "HIDDENROWTEXT", "HIDDENSHEETTEXT", "VERYHIDDENSHEETTEXT", "COMMENTTEXT", "B2+B3" })

@@ -74,13 +74,13 @@ public sealed class SpreadsheetSharedStringsTests
     }
 
     [Fact]
-    public void Extract_SharedStringText_KeepsWhitespaceAndEntitiesExactly()
+    public void Extract_SharedStringText_KeepsSpacesAndEntitiesExactly()
     {
         byte[] package = Xlsx(
-            [new Sheet("S", Row(Shared("A1", 0)) + Row(Shared("A2", 1)))],
-            "<si><t xml:space=\"preserve\">  a &amp; b  </t></si><si><t>line1\nline2</t></si>");
+            [new Sheet("S", Row(Shared("A1", 0)))],
+            "<si><t xml:space=\"preserve\">  a &amp; b  </t></si>");
 
-        Assert.Equal("Sheet: S\n  a & b  \nline1\nline2\n", ExtractText(package));
+        Assert.Equal("Sheet: S\n  a & b  \n", ExtractText(package));
     }
 
     [Fact]

@@ -3,8 +3,8 @@ using System.Xml;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 /// <summary>
-/// Reads one worksheet part and writes its visible cells to the projection. Formulas are never read: only the cached
-/// value of a cell is projected.
+/// Reads one worksheet part and writes its visible cells to the projection: not those of a hidden row or column, and not
+/// those merged away under another cell. Formulas are never read: only the cached value of a cell is projected.
 /// </summary>
 internal sealed class SpreadsheetWorksheetReader(
     SpreadsheetProjection projection,
@@ -18,18 +18,27 @@ internal sealed class SpreadsheetWorksheetReader(
 
     private readonly SpreadsheetHiddenColumns _hiddenColumns = new();
 
+    private readonly SpreadsheetMergedCells _mergedCells = new(limits);
+
     private long _cells;
 
     private int _previousColumn;
 
+    private int _previousRow;
+
+    private int _row;
+
     /// <summary>
-    /// Reads <paramref name="part"/> as the sheet <paramref name="name"/>. The part is read twice: the first pass collects
-    /// the hidden columns wherever their <c>cols</c> elements sit (and proves the part well-formed), the second projects
-    /// the cells. Returns false when the sink is full.
+    /// Reads <paramref name="part"/> as the sheet <paramref name="name"/>. The part, inflated once, is parsed twice: the
+    /// first pass collects the hidden columns and the merged ranges wherever their <c>cols</c> and <c>mergeCells</c>
+    /// elements sit (the schema puts <c>mergeCells</c> after the cells it hides) and proves the part well-formed, the
+    /// second projects the cells. Returns false when the sink is full.
     /// </summary>
     public bool Read(ReadOnlyMemory<byte> part, string name)
     {
-        ReadHiddenColumns(part);
+        ReadHiddenColumnsAndMergedRanges(part);
+
+        _previousRow = 0;
 
         using BoundedXmlReader xml = BoundedXmlReader.Create(part, cancellationToken);
 
@@ -60,15 +69,19 @@ internal sealed class SpreadsheetWorksheetReader(
         return true;
     }
 
-    private void ReadHiddenColumns(ReadOnlyMemory<byte> part)
+    private void ReadHiddenColumnsAndMergedRanges(ReadOnlyMemory<byte> part)
     {
         _hiddenColumns.Clear();
+
+        _mergedCells.Clear();
 
         using BoundedXmlReader xml = BoundedXmlReader.Create(part, cancellationToken);
 
         SpreadsheetXml.EnterRoot(xml, "worksheet");
 
         int columnElements = 0;
+
+        int mergeCellElements = 0;
 
         if (SpreadsheetXml.EnterChildren(xml, out int depth))
         {
@@ -78,6 +91,10 @@ internal sealed class SpreadsheetWorksheetReader(
                 {
                     ReadColumns(xml, ref columnElements);
                 }
+                else if (SpreadsheetXml.IsMain(xml.Reader, "mergeCells"))
+                {
+                    ReadMergeCells(xml, ref mergeCellElements);
+                }
                 else
                 {
                     xml.SkipElement();
@@ -86,6 +103,37 @@ internal sealed class SpreadsheetWorksheetReader(
         }
 
         _hiddenColumns.Seal();
+
+        _mergedCells.Seal();
+    }
+
+    private void ReadMergeCells(BoundedXmlReader xml, ref int mergeCellElements)
+    {
+        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        {
+            return;
+        }
+
+        while (SpreadsheetXml.NextChildElement(xml, depth))
+        {
+            XmlReader reader = xml.Reader;
+
+            if (!SpreadsheetXml.IsMain(reader, "mergeCell"))
+            {
+                xml.SkipElement();
+
+                continue;
+            }
+
+            if (++mergeCellElements > limits.MergedRanges)
+            {
+                throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
+            }
+
+            _mergedCells.Add(SpreadsheetXml.Attribute(reader, "ref"));
+
+            xml.SkipElement();
+        }
     }
 
     private void ReadColumns(BoundedXmlReader xml, ref int columnElements)
@@ -156,6 +204,8 @@ internal sealed class SpreadsheetWorksheetReader(
 
     private bool ReadRow(BoundedXmlReader xml)
     {
+        _row = ResolveRowNumber(xml.Reader);
+
         if (SpreadsheetXml.IsTrue(SpreadsheetXml.Attribute(xml.Reader, "hidden")))
         {
             xml.SkipElement();
@@ -192,7 +242,7 @@ internal sealed class SpreadsheetWorksheetReader(
     {
         string? type = SpreadsheetXml.Attribute(xml.Reader, "t");
 
-        int column = ParseColumn(SpreadsheetXml.Attribute(xml.Reader, "r"));
+        int column = ParseCellReference(SpreadsheetXml.Attribute(xml.Reader, "r"), out int referenceRow);
 
         if (column == 0)
         {
@@ -206,7 +256,7 @@ internal sealed class SpreadsheetWorksheetReader(
             throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
         }
 
-        if (_hiddenColumns.IsHidden(column))
+        if (_hiddenColumns.IsHidden(column) || IsMergedAway(referenceRow, column))
         {
             xml.SkipElement();
 
@@ -294,11 +344,39 @@ internal sealed class SpreadsheetWorksheetReader(
     }
 
     /// <summary>
-    /// The column number (1..16384) of an A1-style cell reference such as <c>C5</c>, or 0 when the reference is absent
-    /// or malformed: ASCII letters, in either case, naming a column no higher than XFD, then optional digits and nothing else.
+    /// The row number a <c>row</c> element places its cells on: its <c>r</c> attribute, or the row after the previous one
+    /// when that is absent or not a row number. A number past the last row saturates one beyond it.
     /// </summary>
-    private static int ParseColumn(string? reference)
+    private int ResolveRowNumber(XmlReader row)
     {
+        if (!SpreadsheetXml.TryParseDigits(SpreadsheetXml.Attribute(row, "r"), out long number) || number == 0)
+        {
+            number = (long)_previousRow + 1;
+        }
+
+        _previousRow = (int)Math.Min(number, SpreadsheetLimits.MaximumRow + 1);
+
+        return _previousRow;
+    }
+
+    /// <summary>
+    /// True when Excel hides the cell under a merge. The row it sits on is the row element's; a cell reference that names
+    /// another row is placed by that row as well, and merged away if either places it inside a merged range, since a
+    /// reader cannot tell which one the file means.
+    /// </summary>
+    private bool IsMergedAway(int referenceRow, int column) =>
+        _mergedCells.IsMergedAway(_row, column) || (referenceRow != 0 && referenceRow != _row && _mergedCells.IsMergedAway(referenceRow, column));
+
+    /// <summary>
+    /// The column number (1..16384) of an A1-style cell reference such as <c>C5</c>, or 0 when the reference is absent
+    /// or malformed: ASCII letters, in either case, naming a column no higher than XFD, then optional digits and nothing
+    /// else. <paramref name="row"/> is the row the digits name (a number past the last row saturates one beyond it), or 0
+    /// when there are no digits, the row is 0, or the column is 0.
+    /// </summary>
+    private static int ParseCellReference(string? reference, out int row)
+    {
+        row = 0;
+
         if (string.IsNullOrEmpty(reference))
         {
             return 0;
@@ -320,13 +398,19 @@ internal sealed class SpreadsheetWorksheetReader(
             index++;
         }
 
+        int number = 0;
+
         for (; index < reference.Length; index++)
         {
             if (reference[index] is < '0' or > '9')
             {
                 return 0;
             }
+
+            number = Math.Min((number * 10) + (reference[index] - '0'), SpreadsheetLimits.MaximumRow + 1);
         }
+
+        row = column == 0 ? 0 : number;
 
         return column;
     }

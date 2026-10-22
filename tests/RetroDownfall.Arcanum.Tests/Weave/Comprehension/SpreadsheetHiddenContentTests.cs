@@ -437,4 +437,108 @@ public sealed class SpreadsheetHiddenContentTests
 
         Assert.Equal("Sheet: Data\ncells\n", ExtractText(package));
     }
+
+    // ------------------------------------------------------------ hidden workbook window
+
+    [Theory]
+    [InlineData("hidden")]
+    [InlineData("veryHidden")]
+    [InlineData("HIDDEN")]
+    [InlineData("VeryHidden")]
+    public void Extract_WorkbookWhoseOnlyWindowIsHidden_ProjectsNothing(string visibility)
+    {
+        // Excel opens such a workbook with no window: nothing of it is on a reader's screen until it is unhidden.
+        byte[] package = Xlsx(
+            [new Sheet("S", Row(Text("A1", "HIDDEN_WINDOW_LEAK")))],
+            sharedStringItems: null,
+            extraWorkbookXml: $"<bookViews><workbookView visibility=\"{visibility}\"/></bookViews>");
+
+        SessionAttachmentExtractionResult result = Extract(package);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
+
+        Assert.Empty(result.Text);
+    }
+
+    [Fact]
+    public void Extract_WorkbookWhoseEveryWindowIsHidden_ProjectsNothing()
+    {
+        byte[] package = Xlsx(
+            [new Sheet("S", Row(Text("A1", "HIDDEN_WINDOW_LEAK")))],
+            sharedStringItems: null,
+            extraWorkbookXml: "<bookViews><workbookView visibility=\"hidden\"/><workbookView visibility=\"veryHidden\"/></bookViews>");
+
+        Assert.Empty(Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_BookViewsAfterTheSheets_StillHideTheWorkbook()
+    {
+        // The schema puts bookViews first; a part that lists them after the sheets is read the same way.
+        byte[] package = Xlsx(
+            [new Sheet("S", Row(Text("A1", "HIDDEN_WINDOW_LEAK")))],
+            sharedStringItems: null,
+            extraWorkbookXmlAfterSheets: "<bookViews><workbookView visibility=\"hidden\"/></bookViews>");
+
+        Assert.Empty(Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_WindowsDeclaredInMoreThanOneBookViewsElement_AreJudgedTogether()
+    {
+        byte[] hiddenThenVisible = Xlsx(
+            [new Sheet("S", Row(Text("A1", "shown")))],
+            sharedStringItems: null,
+            extraWorkbookXml: "<bookViews><workbookView visibility=\"hidden\"/></bookViews>",
+            extraWorkbookXmlAfterSheets: "<bookViews><workbookView/></bookViews>");
+
+        byte[] allHidden = Xlsx(
+            [new Sheet("S", Row(Text("A1", "HIDDEN_WINDOW_LEAK")))],
+            sharedStringItems: null,
+            extraWorkbookXml: "<bookViews><workbookView visibility=\"hidden\"/></bookViews>",
+            extraWorkbookXmlAfterSheets: "<bookViews><workbookView visibility=\"veryHidden\"/></bookViews>");
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(hiddenThenVisible));
+
+        Assert.Empty(Extract(allHidden).Text);
+    }
+
+    [Fact]
+    public void Extract_WorkbookWithAVisibleWindowAmongHiddenOnes_IsProjected()
+    {
+        byte[] package = Xlsx(
+            [new Sheet("S", Row(Text("A1", "shown")))],
+            sharedStringItems: null,
+            extraWorkbookXml: "<bookViews><workbookView visibility=\"hidden\"/><workbookView/><workbookView visibility=\"veryHidden\"/></bookViews>");
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(package));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" visibility=\"visible\"")]
+    [InlineData(" visibility=\"unrecognized\"")]
+    [InlineData(" activeTab=\"1\"")]
+    public void Extract_WorkbookWindowThatIsNotHidden_IsProjected(string attributes)
+    {
+        byte[] package = Xlsx(
+            [new Sheet("S", Row(Text("A1", "shown")))],
+            sharedStringItems: null,
+            extraWorkbookXml: $"<bookViews><workbookView{attributes}/></bookViews>");
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(package));
+    }
+
+    [Theory]
+    [InlineData("<bookViews/>")]
+    [InlineData("<bookViews xmlns=\"urn:decoy\"><workbookView visibility=\"hidden\"/></bookViews>")]
+    [InlineData("<bookViews><decoy visibility=\"hidden\"/></bookViews>")]
+    [InlineData("<workbookView visibility=\"hidden\"/>")]
+    public void Extract_WorkbookWithNoWindowDeclared_IsProjected(string bookViews)
+    {
+        // No workbookView in the main namespace under bookViews: nothing says the workbook is hidden.
+        byte[] package = Xlsx([new Sheet("S", Row(Text("A1", "shown")))], sharedStringItems: null, extraWorkbookXml: bookViews);
+
+        Assert.Equal("Sheet: S\nshown\n", ExtractText(package));
+    }
 }
