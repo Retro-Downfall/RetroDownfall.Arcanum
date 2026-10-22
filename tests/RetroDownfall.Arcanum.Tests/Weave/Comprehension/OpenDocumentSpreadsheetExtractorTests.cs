@@ -415,12 +415,61 @@ public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper outp
     [InlineData("", "")]
     [InlineData("Tab&#9;and&#10;newline", "Tab and newline")]
     [InlineData("Line&#13;&#10;Sheet: Fake", "Line  Sheet: Fake")]
+    [InlineData("Line&#x2028;Sheet: Fake", "Line Sheet: Fake")]
+    [InlineData("Para&#x2029;Sheet: Fake", "Para Sheet: Fake")]
+    [InlineData("Next&#x85;Sheet: Fake", "Next Sheet: Fake")]
+    [InlineData("C1&#x80;&#x9F;end", "C1  end")]
     [InlineData("Ünïcode ✓", "Ünïcode ✓")]
     public async Task Extract_SheetName_HasControlCharactersReplacedBySpaces(string rawName, string expectedName)
     {
         byte[] package = Ods(Sheet(rawName, Row(Cell("v"))));
 
         Assert.Equal($"Sheet: {expectedName}\nv\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData("&#x2028;")]
+    [InlineData("&#x2029;")]
+    [InlineData("&#x85;")]
+    [InlineData("&#x80;")]
+    [InlineData("&#x9F;")]
+    public async Task Extract_CellText_FoldsUnicodeLineBreaksAndC1ControlsToSingleSpaces(string lineBreak)
+    {
+        // A row is one line: a cell cannot carry a break a Unicode-aware line splitter would act on, so it cannot forge a header.
+        byte[] package = Ods(Sheet("S", Row(Cell($"a{lineBreak}Sheet: Forged{lineBreak}b") + Cell($"c{lineBreak}d"))));
+
+        Assert.Equal("Sheet: S\na Sheet: Forged b\tc d\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_CellTextLineBreaks_CollapseWithTheWhitespaceAroundThem()
+    {
+        byte[] package = Ods(Sheet("S", Row(Cell("a &#x2028; &#x85;b&#x2029;&#x2029;c") + Cell("&#x2028;lead") + Cell("trail&#x85;"))));
+
+        Assert.Equal("Sheet: S\na b c\tlead\ttrail\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_StringValueFallback_FoldsUnicodeLineBreaksToSingleSpaces()
+    {
+        byte[] package = Ods(
+            Sheet(
+                "S",
+                Row("<table:table-cell office:value-type=\"string\" office:string-value=\"x&#x2028;Sheet: Forged&#x85;y\"/>" + Cell("next"))));
+
+        Assert.Equal("Sheet: S\nx Sheet: Forged y\tnext\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_CellStyleWhoseConditionalTargetHidesText_HidesTheCell()
+    {
+        // Calc writes conditional formatting as style:map on the cell's style; conditions are not evaluated.
+        byte[] package = Ods(
+            Sheet("S", Row(Cell("HIDDENCELLMARKER", " table:style-name=\"ce1\"") + Cell("v"))),
+            automaticStyles: Style("table-cell", "ce1", properties: "<style:map style:condition=\"cell-content()&gt;5\" style:apply-style-name=\"Secret\" style:base-cell-address=\"S.A1\"/>"),
+            commonStyles: Style("table-cell", "Secret", properties: HiddenText));
+
+        Assert.Equal("Sheet: S\nv\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
     }
 
     // ---------------------------------------------------------------- rows past the last sheet row

@@ -803,6 +803,34 @@ public sealed class OpenDocumentPackageTests
     }
 
     [Fact]
+    public async Task Extract_ConditionalStyleTargetsCountAgainstTheStyleCap_ExactlyTheMaximumIsAcceptedAndOneMoreIsStructureBounds()
+    {
+        // One style holding style:map children: each retained target is one more entry against the same cap.
+        string mapped(int maps) => Style(
+            "paragraph",
+            "P1",
+            properties: string.Concat(Enumerable.Range(0, maps).Select(index => $"<style:map style:condition=\"table()\" style:apply-style-name=\"t{index}\"/>")));
+
+        byte[] atLimit = Odt("<text:p>Shown</text:p>", automaticStyles: mapped(OpenDocumentStyleTable.MaximumStyles - 1));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(atLimit));
+
+        byte[] overLimit = Odt("<text:p>Shown</text:p>", automaticStyles: mapped(OpenDocumentStyleTable.MaximumStyles));
+
+        await RejectedAsync<OpenDocumentTextExtractor>(overLimit, DocumentPackageRejection.StructureBounds);
+    }
+
+    [Fact]
+    public async Task Extract_ConditionalStyleTargetNameLongerThanTheRetentionBound_IsStructureBounds()
+    {
+        byte[] package = Odt(
+            "<text:p>x</text:p>",
+            automaticStyles: Style("paragraph", "P1", properties: $"<style:map style:condition=\"table()\" style:apply-style-name=\"{new string('n', OpenDocumentStyleTable.MaximumNameLength + 1)}\"/>"));
+
+        await RejectedAsync<OpenDocumentTextExtractor>(package, DocumentPackageRejection.StructureBounds);
+    }
+
+    [Fact]
     public async Task Extract_StyleCountSpansBothStyleParts()
     {
         string common = string.Concat(Enumerable.Range(0, 40_000).Select(index => Style("text", $"c{index}")));

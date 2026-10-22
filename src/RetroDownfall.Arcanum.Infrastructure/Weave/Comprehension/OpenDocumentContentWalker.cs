@@ -30,9 +30,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// as a consumer does (a LibreOffice content control shows its value).
 /// </para>
 /// <para>
+/// Only text inside paragraph content is projected: a <c>text:p</c> or <c>text:h</c> and its inline descendants.
+/// Characters directly inside a block container belong to no paragraph and are never projected, wherever the container
+/// sits, even when it is anchored in a paragraph (a text box, table, row, list, section, shape or image map).
+/// </para>
+/// <para>
 /// Notes (<c>text:note</c>) are taken out of the paragraph flow whole: their bodies are kept and written by
 /// <see cref="EmitNotes"/> after everything else, footnotes then endnotes, each class in document order. A table row
-/// is its non-empty cells joined by tabs and ended by a newline, a cell being its paragraphs joined by single spaces;
+/// is its non-empty cells joined by tabs and ended by a newline, a cell being its paragraphs joined by single spaces
+/// with every control character and U+2028 and U+2029 folded to a space, so a cell can never break its row's line;
 /// inside a spreadsheet cell a table flattens into the cell's text.
 /// </para>
 /// </remarks>
@@ -193,14 +199,18 @@ internal sealed class OpenDocumentContentWalker(
         return _capture.ToString();
     }
 
-    /// <summary>Collapses every run of space, tab, carriage return and line feed to one space and trims the result.</summary>
+    /// <summary>
+    /// Collapses every run of whitespace to one space and trims the result. Whitespace here is what one spreadsheet
+    /// cell folds: space, tab, carriage return and line feed, and with them every control character and the line and
+    /// paragraph separators U+2028 and U+2029 (<see cref="IsCellLineBreak"/>).
+    /// </summary>
     internal static string CollapseWhitespace(string value)
     {
         StringBuilder collapsed = new(value.Length);
 
         foreach (char current in value)
         {
-            if (current is ' ' or '\t' or '\r' or '\n')
+            if (current is ' ' or '\t' or '\r' or '\n' || IsCellLineBreak(current))
             {
                 if (collapsed.Length > 0 && collapsed[^1] != ' ')
                 {
@@ -215,6 +225,14 @@ internal sealed class OpenDocumentContentWalker(
 
         return collapsed.ToString().TrimEnd(' ');
     }
+
+    /// <summary>
+    /// True for a character that would break a line for some consumer but that OpenDocument whitespace processing does
+    /// not touch: any control character (the C1 ones, NEL among them, can be written in XML) and the line and paragraph
+    /// separators U+2028 and U+2029. A cell and a sheet name fold each to a space, as an xlsx cell does, so a row stays
+    /// one line whichever line splitter reads it.
+    /// </summary>
+    internal static bool IsCellLineBreak(char value) => char.IsControl(value) || value is '\u2028' or '\u2029';
 
     private static void DropDanglingHighSurrogate(StringBuilder text)
     {
@@ -251,7 +269,7 @@ internal sealed class OpenDocumentContentWalker(
                     break;
 
                 case XmlNodeType.Text or XmlNodeType.Whitespace or XmlNodeType.SignificantWhitespace or XmlNodeType.CDATA:
-                    if (_paragraphLevel > 0)
+                    if (_paragraphLevel > 0 && _inlineContent)
                     {
                         AppendText(_reader.Value);
                     }
@@ -321,8 +339,11 @@ internal sealed class OpenDocumentContentWalker(
 
         bool wasInline = _inlineContent;
 
-        // Only a text element, or a foreign element a paragraph's content let through, keeps its children inline.
-        _inlineContent = wasInline && (_reader.NamespaceURI == OpenDocumentNames.Text || !IsOpenDocumentNamespace(_reader.NamespaceURI));
+        // Only an inline text element, or a foreign element a paragraph's content let through, keeps its children inline.
+        // A block container (a text box, table, list, shape and the like) anchored in the paragraph does not: characters
+        // directly in it belong to no paragraph, so none of them is text a consumer shows.
+        _inlineContent = wasInline
+            && (_reader.NamespaceURI == OpenDocumentNames.Text ? !IsTextBlockContainer(_reader.LocalName) : !IsOpenDocumentNamespace(_reader.NamespaceURI));
 
         DispatchElement();
 
@@ -358,7 +379,7 @@ internal sealed class OpenDocumentContentWalker(
 
                     return;
 
-                case "s" when _paragraphLevel > 0:
+                case "s" when _paragraphLevel > 0 && _inlineContent:
                     AppendRun(' ', (int)OpenDocumentNames.ParseCount(_reader.GetAttribute("c", OpenDocumentNames.Text), MaximumSpaceRun));
 
                     _ignoreLeadingSpace = false;
@@ -367,7 +388,7 @@ internal sealed class OpenDocumentContentWalker(
 
                     return;
 
-                case "tab" when _paragraphLevel > 0:
+                case "tab" when _paragraphLevel > 0 && _inlineContent:
                     Append(_mode == Mode.Cell ? ' ' : '\t');
 
                     _ignoreLeadingSpace = false;
@@ -376,7 +397,7 @@ internal sealed class OpenDocumentContentWalker(
 
                     return;
 
-                case "line-break" when _paragraphLevel > 0:
+                case "line-break" when _paragraphLevel > 0 && _inlineContent:
                     Append(_mode == Mode.Cell ? ' ' : '\n');
 
                     _ignoreLeadingSpace = false;
@@ -879,8 +900,9 @@ internal sealed class OpenDocumentContentWalker(
     /// <summary>
     /// Skips an inline element whose text is hidden, but still honours a <c>text:hidden-paragraph</c> field inside it:
     /// Writer decides whether a paragraph is hidden from the field alone, not from whether the characters that carry
-    /// the field are hidden too. The search goes through inline text elements only; a paragraph, note or frame inside
-    /// has its own paragraph and its own fields.
+    /// the field are hidden too. The search goes through inline text elements and through the foreign elements a
+    /// paragraph's content lets through (unless they ask not to be processed); a paragraph, note or frame inside has
+    /// its own paragraph and its own fields.
     /// </summary>
     private void SkipHiddenInline()
     {
@@ -909,7 +931,7 @@ internal sealed class OpenDocumentContentWalker(
 
                     break;
 
-                case XmlNodeType.Element when _reader.NamespaceURI == OpenDocumentNames.Text && _reader.LocalName is not ("p" or "h" or "note" or "list" or "section"):
+                case XmlNodeType.Element when IsSearchedInsideHiddenInline():
                     SkipHiddenInline();
 
                     break;
@@ -926,6 +948,15 @@ internal sealed class OpenDocumentContentWalker(
             }
         }
     }
+
+    /// <summary>
+    /// True for an element inside hidden inline content that can hold a <c>text:hidden-paragraph</c> field of the
+    /// paragraph itself: an inline text element, or a foreign element that is transparent in paragraph content.
+    /// </summary>
+    private bool IsSearchedInsideHiddenInline() =>
+        _reader.NamespaceURI == OpenDocumentNames.Text
+            ? _reader.LocalName is not ("p" or "h" or "note" or "list" or "section")
+            : !IsOpenDocumentNamespace(_reader.NamespaceURI) && _reader.GetAttribute("process-content", OpenDocumentNames.Office) != "false";
 
     private bool IsExcluded()
     {
@@ -965,6 +996,11 @@ internal sealed class OpenDocumentContentWalker(
                     || _reader.GetAttribute("process-content", OpenDocumentNames.Office) == "false";
         }
     }
+
+    /// <summary>The text elements that hold blocks of paragraphs rather than inline content.</summary>
+    private static bool IsTextBlockContainer(string localName) =>
+        localName is "list" or "list-item" or "list-header" or "numbered-paragraph" or "section" or "table-of-content" or "illustration-index"
+            or "table-index" or "object-index" or "user-index" or "alphabetical-index" or "bibliography" or "index-body" or "index-title";
 
     private static bool IsOpenDocumentNamespace(string uri) =>
         uri.StartsWith("urn:oasis:names:tc:opendocument:xmlns:", StringComparison.Ordinal)
@@ -1183,7 +1219,7 @@ internal sealed class OpenDocumentContentWalker(
     {
         foreach (char current in value)
         {
-            if (current is ' ' or '\t' or '\r' or '\n')
+            if (current is ' ' or '\t' or '\r' or '\n' || (_mode == Mode.Cell && IsCellLineBreak(current)))
             {
                 if (!_ignoreLeadingSpace)
                 {

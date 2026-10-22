@@ -18,8 +18,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <para>
 /// A cell with a numeric, date, time or boolean value shows that value, so it projects its raw value attribute (see
 /// <see cref="OpenDocumentCellValue"/>) and never its cached paragraph; any other cell's text is its paragraphs joined
-/// by single spaces. Formulas are attributes and are never read. A covered (merged-away) cell contributes no text but
-/// still occupies its column index.
+/// by single spaces. A cell's text and a sheet's name carry no control character and no U+2028 or U+2029: each folds to
+/// a space, so a row stays one line and a name cannot forge a header. Formulas are attributes and are never read. A
+/// covered (merged-away) cell contributes no text but still occupies its column index.
 /// </para>
 /// <para>
 /// Rows are counted the way columns are: a row positioned at or past <see cref="MaximumRows"/> is on no sheet and is
@@ -452,18 +453,21 @@ internal sealed class OpenDocumentSpreadsheetWalker(
     private bool IsTable(string localName) =>
         _reader.LocalName == localName && _reader.NamespaceURI == OpenDocumentNames.Table;
 
-    /// <summary>Replaces control characters, which would let a sheet name forge a line of the projection, with spaces.</summary>
+    /// <summary>
+    /// Replaces control characters (C0 and C1) and the line and paragraph separators U+2028 and U+2029, which would let
+    /// a sheet name forge a line of the projection, with spaces.
+    /// </summary>
     private static string Sanitize(string name)
     {
         foreach (char current in name)
         {
-            if (current < ' ')
+            if (OpenDocumentContentWalker.IsCellLineBreak(current))
             {
                 return string.Create(name.Length, name, static (span, source) =>
                 {
                     for (int index = 0; index < source.Length; index++)
                     {
-                        span[index] = source[index] < ' ' ? ' ' : source[index];
+                        span[index] = OpenDocumentContentWalker.IsCellLineBreak(source[index]) ? ' ' : source[index];
                     }
                 });
             }

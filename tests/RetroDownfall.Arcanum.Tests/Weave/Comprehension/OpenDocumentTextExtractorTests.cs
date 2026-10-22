@@ -635,6 +635,212 @@ public sealed class OpenDocumentTextExtractorTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_DuplicateAutomaticStyleDefinitionsWithDifferentParents_AreHiddenWhenEitherParentIsHidden(bool hiddenParentFirst)
+    {
+        string plain = Style("paragraph", "P1", parent: "Plain");
+
+        string secret = Style("paragraph", "P1", parent: "Secret");
+
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: hiddenParentFirst ? secret + plain : plain + secret,
+            commonStyles: Style("paragraph", "Secret", properties: HiddenText) + Style("paragraph", "Plain"));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_DuplicateCommonStyleDefinitionsWithDifferentParents_AreHiddenWhenEitherParentIsHidden(bool hiddenParentFirst)
+    {
+        string plain = Style("paragraph", "Body", parent: "Plain");
+
+        string secret = Style("paragraph", "Body", parent: "Secret");
+
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            commonStyles: (hiddenParentFirst ? secret + plain : plain + secret)
+                + Style("paragraph", "Secret", properties: HiddenText) + Style("paragraph", "Plain"));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_DuplicateStyleDefinitionsWhereOneStatesVisibleAndTheOtherInheritsHidden_AreHidden(bool visibleFirst)
+    {
+        // Each definition is judged on its own and hidden wins: the one that inherits a hidden parent hides the style
+        // even though the other states "visible".
+        string visible = Style("paragraph", "P1", properties: VisibleText);
+
+        string inherits = Style("paragraph", "P1", parent: "Secret");
+
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: visibleFirst ? visible + inherits : inherits + visible,
+            commonStyles: Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_ParentDefinedTwice_HidesItsInheritorsWhenEitherDefinitionResolvesHidden(bool hiddenFirst)
+    {
+        // Child inherits Mid, which is defined twice: once stating "visible", once inheriting a hidden parent.
+        string visible = Style("paragraph", "Mid", properties: VisibleText);
+
+        string inherits = Style("paragraph", "Mid", parent: "Secret");
+
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Child\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            commonStyles: Style("paragraph", "Child", parent: "Mid") + (hiddenFirst ? inherits + visible : visible + inherits)
+                + Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_DuplicateStyleDefinitionsThatAllResolveVisible_StayVisible()
+    {
+        // Sensitivity: hidden wins only over definitions that really resolve hidden. An explicit "visible" still
+        // overrides a hidden parent within one definition, and an unstated definition inherits a visible parent.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">Shown</text:p>",
+            automaticStyles: Style("paragraph", "P1", parent: "Secret", properties: VisibleText) + Style("paragraph", "P1", parent: "Plain"),
+            commonStyles: Style("paragraph", "Secret", properties: HiddenText) + Style("paragraph", "Plain"));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_DuplicatedStylesAlongALongParentChain_ResolveWithoutRepeatingWork()
+    {
+        // Every level of a 32-hop chain is defined twice, so a resolution that re-walked each duplicate's parent would
+        // do 2^32 steps; the answer for each style is computed once.
+        const int levels = 32;
+
+        string chain = string.Concat(Enumerable.Range(0, levels).Select(index =>
+            Style("paragraph", $"s{index}", parent: $"s{index + 1}") + Style("paragraph", $"s{index}", parent: $"s{index + 1}")))
+            + Style("paragraph", $"s{levels}", properties: VisibleText);
+
+        byte[] package = Odt("<text:p text:style-name=\"s0\">Shown</text:p>", commonStyles: chain);
+
+        Assert.Equal("Shown\n", await Task.Run(async () => await TextOfAsync<OpenDocumentTextExtractor>(package)).WaitAsync(TimeSpan.FromSeconds(30)));
+    }
+
+    // ---------------------------------------------------------------- conditional paragraph styles (style:map)
+
+    private static string Map(string target, string condition = "table()") =>
+        $"<style:map style:condition=\"{condition}\" style:apply-style-name=\"{target}\"/>";
+
+    [Fact]
+    public async Task Extract_ParagraphStyleWhoseConditionalTargetIsHidden_IsHiddenInEveryContext()
+    {
+        // Conditions are not evaluated: in the context the condition names a consumer formats the paragraph with the
+        // target style, so a paragraph is hidden when its style or any style it maps to hides text.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">OUTSIDEMARKER</text:p>"
+            + "<table:table table:name=\"T\"><table:table-column/><table:table-row><table:table-cell><text:p text:style-name=\"Body\">CONDITIONALMARKER</text:p></table:table-cell></table:table-row></table:table>"
+            + "<text:p>Shown</text:p>",
+            commonStyles: Style("paragraph", "Body", properties: Map("Secret")) + Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ParagraphStyleWhoseConditionalTargetsAreAllVisible_StaysVisible()
+    {
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">Shown</text:p>",
+            commonStyles: Style("paragraph", "Body", properties: Map("Plain") + Map("Missing", "section()") + Map("Explicit", "footnote()"))
+                + Style("paragraph", "Plain")
+                + Style("paragraph", "Explicit", parent: "Secret", properties: VisibleText)
+                + Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ConditionalTargetThatInheritsHidden_HidesTheParagraph()
+    {
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            commonStyles: Style("paragraph", "Body", properties: Map("Plain") + Map("Middle", "text-box()"))
+                + Style("paragraph", "Plain")
+                + Style("paragraph", "Middle", parent: "Secret")
+                + Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ConditionalTargetInTheOtherStyleTable_IsJudgedToo()
+    {
+        // The target is named, not located: a hidden automatic style of that name counts as well as a common one.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("paragraph", "Secret", properties: HiddenText),
+            commonStyles: Style("paragraph", "Body", properties: Map("Secret")));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_AutomaticStyleWhoseCommonParentIsConditional_IsHiddenWhenAConditionalTargetIsHidden()
+    {
+        // A consumer formats the paragraph with the common style an automatic style derives from, so that style's
+        // conditions apply, however many levels up it sits.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p text:style-name=\"P2\">HIDDENDEEPMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("paragraph", "P1", parent: "Body") + Style("paragraph", "P2", parent: "Mid"),
+            commonStyles: Style("paragraph", "Body", properties: Map("Secret"))
+                + Style("paragraph", "Mid", parent: "Body")
+                + Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_UnstyledParagraphWhoseStandardStyleHasAHiddenConditionalTarget_IsHidden()
+    {
+        byte[] package = Odt(
+            "<text:p>HIDDENMARKER</text:p><text:p text:style-name=\"Other\">Shown</text:p>",
+            commonStyles: Style("paragraph", "Standard", properties: Map("Secret"))
+                + Style("paragraph", "Other")
+                + Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ConditionalTargetOfADuplicateStyleDefinition_IsJudged()
+    {
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("paragraph", "P1") + Style("paragraph", "P1", properties: Map("Secret")),
+            commonStyles: Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ConditionalStylesThatNameEachOther_AreNotACycleAndDoNotHang()
+    {
+        // A target is formatted as a plain style, so its own conditions are not applied and a cycle of conditions ends at once.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"A\">Shown</text:p>",
+            commonStyles: Style("paragraph", "A", properties: Map("B")) + Style("paragraph", "B", properties: Map("A")));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
     [InlineData("always")]
     [InlineData("screen")]
     public async Task Extract_ShapeStyleThatStatesDisplayAlwaysOrScreen_OverridesAHiddenParentStyle(string display)
@@ -803,6 +1009,30 @@ public sealed class OpenDocumentTextExtractorTests
         Assert.Equal("Lead\nBoxed\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
+    // ---------------------------------------------------------------- characters outside paragraph content belong to no paragraph
+
+    [Theory]
+    [InlineData("<draw:frame><draw:text-box>STRAYBOXMARKER<text:s/><text:tab/><text:line-break/><text:p>Boxed</text:p>STRAYBOXTAIL</draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><text:p>Boxed</text:p><text:line-break/><text:s/><text:tab/></draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><table:table table:name=\"T\"><table:table-column/>STRAYTABLEMARKER<table:table-row>STRAYROWMARKER<table:table-cell office:value-type=\"string\"><text:p>Boxed</text:p></table:table-cell>STRAYROWTAIL</table:table-row>STRAYTABLETAIL</table:table></draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><table:table table:name=\"T\"><table:table-column/><table:table-row><table:table-cell office:value-type=\"string\">STRAYCELLMARKER<text:s/><text:tab/><text:p>Boxed</text:p>STRAYCELLTAIL</table:table-cell></table:table-row></table:table></draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><text:list>STRAYLISTMARKER<text:s/><text:list-item>STRAYITEMMARKER<text:tab/><text:p>Boxed</text:p>STRAYITEMTAIL</text:list-item>STRAYLISTTAIL</text:list></draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><text:list><text:list-header>STRAYHEADERMARKER<text:p>Boxed</text:p></text:list-header></text:list></draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><text:section text:name=\"S1\">STRAYSECTIONMARKER<text:line-break/><text:p>Boxed</text:p>STRAYSECTIONTAIL</text:section></draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:image-map><draw:area-rectangle svg:x=\"0cm\" svg:y=\"0cm\" svg:width=\"1cm\" svg:height=\"1cm\" xlink:href=\"#a\">STRAYMAPMARKER</draw:area-rectangle>STRAYMAPTAIL</draw:image-map><draw:text-box><text:p>Boxed</text:p></draw:text-box></draw:frame>")]
+    [InlineData("<draw:custom-shape>STRAYSHAPEMARKER<text:s/><text:p>Boxed</text:p>STRAYSHAPETAIL</draw:custom-shape>")]
+    [InlineData("<draw:g>STRAYGROUPMARKER<draw:custom-shape><text:p>Boxed</text:p></draw:custom-shape>STRAYGROUPTAIL</draw:g>")]
+    [InlineData("<text:list>STRAYDIRECTLISTMARKER<text:list-item>STRAYDIRECTITEMMARKER<text:p>Boxed</text:p></text:list-item></text:list>")]
+    [InlineData("<text:section text:name=\"S1\">STRAYDIRECTSECTIONMARKER<text:p>Boxed</text:p></text:section>")]
+    public async Task Extract_CharactersDirectlyInsideABlockContainerAnchoredInAParagraph_AreNotProjected(string anchored)
+    {
+        // The container belongs to the paragraph it is anchored in, but characters directly in it belong to no paragraph
+        // at all, so a consumer shows none of them; the text after the container is the outer paragraph's own again.
+        byte[] package = Odt($"<text:p>Lead{anchored}End</text:p>");
+
+        Assert.Equal("Lead\nBoxed\nEnd\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
     // ---------------------------------------------------------------- text:hidden-paragraph inside hidden text
 
     [Theory]
@@ -857,6 +1087,51 @@ public sealed class OpenDocumentTextExtractorTests
         // The field belongs to the paragraph of the text box, not to the paragraph the hidden span sits in.
         byte[] package = Odt(
             "<text:p>Kept<text:span text:style-name=\"T1\"><draw:frame><draw:text-box><text:p>INNERMARKER<text:hidden-paragraph text:condition=\"1\"/></text:p></draw:text-box></draw:frame></text:span></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Kept\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData("span")]
+    [InlineData("a")]
+    [InlineData("meta")]
+    [InlineData("meta-field")]
+    public async Task Extract_HiddenParagraphFieldInsideAForeignElementInsideHiddenText_StillDropsTheParagraph(string element)
+    {
+        // A foreign element in paragraph content is transparent, so the field it wraps is as effective as one directly in the span.
+        byte[] package = Odt(
+            $"<text:p>HIDDENPARAMARKER<text:{element} text:style-name=\"T1\"><x:w {Elsewhere}><text:hidden-paragraph text:condition=\"ooow:1\"/></x:w></text:{element}></text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldDeepInsideForeignElementsInsideHiddenText_StillDropsTheParagraph()
+    {
+        byte[] package = Odt(
+            $"<text:p>HIDDENPARAMARKER<text:span text:style-name=\"T1\">x<x:w {Elsewhere}><text:a xlink:href=\"u\"><x:v><text:span>y<x:u><text:hidden-paragraph text:condition=\"1\"/></x:u></text:span></x:v></text:a></x:w></text:span></text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldInsideAForeignElementThatAsksNotToBeProcessedInsideHiddenText_KeepsTheParagraph()
+    {
+        byte[] package = Odt(
+            $"<text:p>Kept<text:span text:style-name=\"T1\"><x:w {Elsewhere} office:process-content=\"false\"><text:hidden-paragraph text:condition=\"1\"/></x:w></text:span></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Kept\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldInsideAForeignElementInsideHiddenTextThatIsExplicitlyNotHidden_KeepsTheParagraph()
+    {
+        byte[] package = Odt(
+            $"<text:p>Kept<text:span text:style-name=\"T1\"><x:w {Elsewhere}><text:hidden-paragraph text:condition=\"1\" text:is-hidden=\"false\"/></x:w></text:span></text:p>",
             automaticStyles: Style("text", "T1", properties: HiddenText));
 
         Assert.Equal("Kept\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
@@ -1105,6 +1380,17 @@ public sealed class OpenDocumentTextExtractorTests
             + "<table:table-rows>" + Row(Cell("r1") + Cell("r2")) + "</table:table-rows></table:table>");
 
         Assert.Equal("h1\th2\ng1\tg2\nr1\tr2\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData("&#x2028;")]
+    [InlineData("&#x2029;")]
+    [InlineData("&#x85;")]
+    public async Task Extract_TableCellText_FoldsUnicodeLineBreaksToSingleSpaces(string lineBreak)
+    {
+        byte[] package = Odt(Table(Row(Cell($"a{lineBreak}Sheet: Forged{lineBreak}b") + Cell("next"))));
+
+        Assert.Equal("a Sheet: Forged b\tnext\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]
