@@ -1013,6 +1013,7 @@ public sealed class OpenDocumentTextExtractorTests
 
     [Theory]
     [InlineData("<draw:frame><draw:text-box>STRAYBOXMARKER<text:s/><text:tab/><text:line-break/><text:p>Boxed</text:p>STRAYBOXTAIL</draw:text-box></draw:frame>")]
+    [InlineData("<draw:frame><draw:text-box><text:p>Boxed</text:p><text:line-break/><text:s/><text:tab/></draw:text-box></draw:frame>")]
     [InlineData("<draw:frame><draw:text-box><table:table table:name=\"T\"><table:table-column/>STRAYTABLEMARKER<table:table-row>STRAYROWMARKER<table:table-cell office:value-type=\"string\"><text:p>Boxed</text:p></table:table-cell>STRAYROWTAIL</table:table-row>STRAYTABLETAIL</table:table></draw:text-box></draw:frame>")]
     [InlineData("<draw:frame><draw:text-box><table:table table:name=\"T\"><table:table-column/><table:table-row><table:table-cell office:value-type=\"string\">STRAYCELLMARKER<text:s/><text:tab/><text:p>Boxed</text:p>STRAYCELLTAIL</table:table-cell></table:table-row></table:table></draw:text-box></draw:frame>")]
     [InlineData("<draw:frame><draw:text-box><text:list>STRAYLISTMARKER<text:s/><text:list-item>STRAYITEMMARKER<text:tab/><text:p>Boxed</text:p>STRAYITEMTAIL</text:list-item>STRAYLISTTAIL</text:list></draw:text-box></draw:frame>")]
