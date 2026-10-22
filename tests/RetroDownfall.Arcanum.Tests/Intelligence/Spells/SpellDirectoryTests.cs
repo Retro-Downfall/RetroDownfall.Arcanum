@@ -2,6 +2,7 @@ using RetroDownfall.Arcanum.Infrastructure.Intelligence.Spells;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence.Spells;
 
+[Collection("ProcessEnvironment")]
 public sealed class SpellDirectoryTests
 {
     [Fact]
