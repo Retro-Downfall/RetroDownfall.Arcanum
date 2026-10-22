@@ -221,7 +221,8 @@ internal sealed class TapestryStore(
             literals.Add("'" + mimeType + "'");
         }
 
-        return "lower(trim(substr(s.\"MimeType\", 1, instr(s.\"MimeType\" || ';', ';') - 1))) IN ("
+        return SessionAttachmentDocumentMimeSql.NormalizedExpression("s.\"MimeType\"")
+            + " IN ("
             + string.Join(", ", literals)
             + ")";
     }

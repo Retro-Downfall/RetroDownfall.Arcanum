@@ -153,9 +153,13 @@ public static class SessionAttachmentTurnService
                             $"Attachment '{attachmentId}' is not a bound attachment for this session.");
                     }
 
+                    // A Comprehension document is durably Binary; the same current-settings policy that
+                    // MaterializeReferenceAsync applies decides whether it is deferred to extraction.
                     if (record.Kind is not SessionAttachmentKind.Text
 
-                        and not SessionAttachmentKind.Image)
+                        and not SessionAttachmentKind.Image
+
+                        && !SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
 
                     {
                         return new SessionAttachmentTurnPreparation(
@@ -462,11 +466,11 @@ public static class SessionAttachmentTurnService
                         $"Attachment '{ResolveReferenceLabel(record, record.Id.ToString())}' could not be extracted for model context.");
                 }
 
-                string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+                string text = SessionAttachmentToolInjection.BoundExtractedText(extraction, maxTextBytes, out bool truncated);
 
                 contents.Add(
                     new TextContent(SessionAttachmentToolInjection.FormatComprehensionData(
-                        record, ResolveReferenceLabel(record, "attachment"), text))
+                        record, ResolveReferenceLabel(record, "attachment"), text, truncated))
                     {
                         AdditionalProperties = ExplicitAttachmentContextProperties(),
                     });

@@ -354,7 +354,7 @@ internal sealed class DivinationService(
             && !SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue))
         {
             eligible =
-                $"lower(trim(substr(s.MimeType, 1, instr(s.MimeType || ';', ';') - 1))) NOT IN ({SessionAttachmentDocumentMimeSql.ParameterList})";
+                $"{SessionAttachmentDocumentMimeSql.NormalizedExpression("s.MimeType")} NOT IN ({SessionAttachmentDocumentMimeSql.ParameterList})";
 
             foreach (KeyValuePair<string, string> documentMime in SessionAttachmentDocumentMimeSql.Parameters)
             {
