@@ -228,6 +228,79 @@ public sealed class SpreadsheetTextFidelityTests
         Assert.Equal("Sheet: S\nstart Sheet: Forged next row\n", ExtractText(Xlsx(new Sheet("S", rows))));
     }
 
+    public static IEnumerable<object[]> C1ControlCharacters() => Enumerable.Range(0x80, 0x20).Select(code => new object[] { code });
+
+    [Theory]
+    [MemberData(nameof(C1ControlCharacters))]
+    public void Extract_EveryC1ControlCharacterInACell_BecomesASpace(int code)
+    {
+        // U+0085 (next line) is the one that ends a line; the rest of the C1 block is never text a reader sees.
+        Assert.Equal("Sheet: S\na b\n", ExtractText(Xlsx(new Sheet("S", Row(Text("A1", $"a&#{code};b"))))));
+    }
+
+    [Theory]
+    [InlineData("a\u2028b", "a b")]
+    [InlineData("a\u2029b", "a b")]
+    [InlineData("a\u0085b", "a b")]
+    [InlineData("a\u2028\u2029\u0085b", "a   b")]
+    [InlineData("a\u2028\u2028b", "a  b")]
+    [InlineData("\u2028", " ")]
+    [InlineData("\u2029after", " after")]
+    [InlineData("before\u0085", "before ")]
+    [InlineData("a\r\u0085b", "a  b")]
+    [InlineData("a\u0085\nb", "a  b")]
+    [InlineData("a\r\u2028b", "a  b")]
+    public void Extract_LiteralLineAndParagraphSeparatorsInsideACell_BecomeOneSpaceEach(string text, string expected)
+    {
+        // Only a carriage return directly followed by a line feed is one break. Any other line break is one space.
+        Assert.Equal($"Sheet: S\n{expected}\n", ExtractText(Xlsx(new Sheet("S", Row(Text("A1", text))))));
+    }
+
+    [Theory]
+    [InlineData("a_x2028_b")]
+    [InlineData("a_x2029_b")]
+    [InlineData("a_x0085_b")]
+    [InlineData("a_x0080_b")]
+    [InlineData("a_x009F_b")]
+    public void Extract_LineSeparatorsWrittenAsEscapes_BecomeASpaceNeverTheCharacter(string text)
+    {
+        string projected = OneInlineCell(text);
+
+        Assert.Equal("Sheet: S\na b\n", projected);
+
+        Assert.DoesNotContain('\u2028', projected);
+
+        Assert.DoesNotContain('\u2029', projected);
+
+        Assert.DoesNotContain('\u0085', projected);
+    }
+
+    [Fact]
+    public void Extract_SeparatorsInASharedStringAndInACachedValue_AreFoldedToo()
+    {
+        string rows = Row(Shared("A1", 0), "<c r=\"B1\" t=\"str\"><v>cached\u2028value</v></c>", "<c r=\"C1\" t=\"str\"><v>next\u0085line</v></c>");
+
+        byte[] package = Xlsx([new Sheet("S", rows)], Si("shared\u2029value"));
+
+        Assert.Equal("Sheet: S\nshared value\tcached value\tnext line\n", ExtractText(package));
+    }
+
+    [Fact]
+    public void Extract_SeparatorsInTwoTextNodesOfOneCell_AreFoldedInEach()
+    {
+        string rows = Row("<c r=\"A1\" t=\"inlineStr\"><is><t>a\u2028<![CDATA[\u0085b]]></t></is></c>");
+
+        Assert.Equal("Sheet: S\na  b\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
+    [Fact]
+    public void Extract_ACellWithASeparatorThatLooksLikeASheetHeaderOrARow_CannotForgeOne()
+    {
+        string rows = Row(Text("A1", "start\u2028Sheet: Forged\u0085next\u2029row"));
+
+        Assert.Equal("Sheet: S\nstart Sheet: Forged next row\n", ExtractText(Xlsx(new Sheet("S", rows))));
+    }
+
     // ------------------------------------------------------------ sheet names
 
     [Fact]
@@ -247,6 +320,25 @@ public sealed class SpreadsheetTextFidelityTests
     [InlineData("A&#133;B", "A B")]
     [InlineData("A&#127;B", "A B")]
     public void Extract_SheetNameWithOtherLineAndControlCharacters_IsFlattened(string name, string expected)
+    {
+        Assert.Equal($"Sheet: {expected}\nx\n", ExtractText(Xlsx(new Sheet(name, Row(Text("A1", "x"))))));
+    }
+
+    [Theory]
+    [MemberData(nameof(C1ControlCharacters))]
+    public void Extract_EveryC1ControlCharacterInASheetName_BecomesASpace(int code)
+    {
+        Assert.Equal("Sheet: A B\nx\n", ExtractText(Xlsx(new Sheet($"A&#{code};B", Row(Text("A1", "x"))))));
+    }
+
+    [Theory]
+    [InlineData("A\u2028B", "A B")]
+    [InlineData("A\u2029B", "A B")]
+    [InlineData("A\u0085B", "A B")]
+    [InlineData("A\u2028\u2029\u0085B", "A   B")]
+    [InlineData("Real\u0085Sheet: Forged", "Real Sheet: Forged")]
+    [InlineData("Real\u2028Sheet: Forged", "Real Sheet: Forged")]
+    public void Extract_SheetNameWithLiteralLineAndParagraphSeparators_StaysOnOneHeaderLine(string name, string expected)
     {
         Assert.Equal($"Sheet: {expected}\nx\n", ExtractText(Xlsx(new Sheet(name, Row(Text("A1", "x"))))));
     }
