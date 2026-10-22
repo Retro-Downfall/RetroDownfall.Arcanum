@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Use the TDD workflow for each owned change (watch every new test fail for the expected reason before writing production code) and independent review before integration. Run the blank-line formatter on every new or edited `.cs` file.
 
-**Goal:** Deliver issue #177 (under #164 and #161) to `memory-enhancement`: `.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp` and `.vsdx`, plus the text-only macro-enabled variants `.docm`, `.xlsm`, `.pptm` and `.vsdm`, become bounded untrusted DATA text through the #162 Comprehension seam. All four model-context paths are covered: retrieval, `attach_session_file`/refresh, per-turn reference, and durable pin. The feature stays behind `Features.Comprehension` and `Features.AttachmentRetrieval`, both default off.
+**Goal:** Deliver issue #177 (under #164 and #161) to `general-enhancements` (the operator moved integration off `memory-enhancement` on 2026-10-22): `.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp` and `.vsdx`, plus the text-only macro-enabled variants `.docm`, `.xlsm`, `.pptm` and `.vsdm`, become bounded untrusted DATA text through the #162 Comprehension seam. All four model-context paths are covered: retrieval, `attach_session_file`/refresh, per-turn reference, and durable pin. The feature stays behind `Features.Comprehension` and `Features.AttachmentRetrieval`, both default off.
 
 **Architecture:** A closed Core format registry replaces the single container MIME. Each MIME carries a human-readable source-format label. One extraction host per parser family binds a concrete method group at construction, so per-format quarantine and the hosted-producer analysis both see a closed set of extractors. The extractors share a first-party bounded ZIP reader, hardened forward-only `XmlReader` settings, and OPC relationship and ODF manifest resolution. Each extractor is pure: bytes in, bounded sink out.
 
@@ -215,7 +215,7 @@ Extractors throw `DocumentPackageRejectedException(DocumentPackageRejection)`, a
    - Admission input catalog and digest.
    - Formatter.
 5. **Review.** Independent adversarial reviews (security bounds, format correctness against real files, TDD sensitivity, docs), then fix waves.
-6. **Qualification and delivery.** Focused suites once; the AOT IL gate; local Native AOT run against Ollama; `--no-ff` merge into `memory-enhancement`; push; mark #177 complete; fast-forward `main` after the Ollama run.
+6. **Qualification and delivery.** Focused suites once; the AOT IL gate; local Native AOT run against Ollama; `--no-ff` merge into `general-enhancements`; push; mark #177 complete; fast-forward `main` after the Ollama run.
 
 ## Required test evidence (acceptance mapping)
 
