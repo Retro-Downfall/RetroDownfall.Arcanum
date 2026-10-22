@@ -439,10 +439,11 @@ public sealed class VisioDrawingExtractorRejectionTests
     }
 
     [Fact]
-    public void Extract_OnePagePartReferencedByManyPages_IsReadEachTimeSoTheAggregateInflationBoundStopsIt()
+    public void Extract_OnePagePartReferencedByManyPages_IsFormatMismatchBeforeItIsReadAgain()
     {
-        // The page part is ~2 MB of skipped padding (incompressible, so under the ratio bound). 40 pages that all point at it
-        // would inflate 80 MB if every reference were honoured, past the 64 MiB aggregate bound, which is not cached around.
+        // The page part is ~2 MB of skipped padding. 40 pages that all point at it would have been inflated and parsed 40
+        // times (past the 64 MiB aggregate bound); real producers never share a page part, so the second reference is refused
+        // as soon as it is met, before the part is read again or the second page is named.
         Random random = new(11);
 
         string padding = string.Create(2_000_000, random, static (span, source) =>
@@ -462,7 +463,63 @@ public sealed class VisioDrawingExtractorRejectionTests
             .Replace("visio/pages/pages.xml", pages)
             .Build();
 
-        Assert.Equal(DocumentPackageRejection.ExpansionBounds, VisioFixture.Reject(package));
+        BoundedDocumentTextSink sink = new(262_144, CancellationToken.None);
+
+        DocumentPackageRejectedException exception = Assert.Throws<DocumentPackageRejectedException>(
+            () => new VisioDrawingExtractor().ExtractAsync(package, sink, CancellationToken.None));
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, exception.Rejection);
+
+        Assert.Equal("Page: P0\nBody\n", sink.Complete().Text);
+    }
+
+    [Theory]
+    [InlineData("page1.xml", "page1.xml")]
+    [InlineData("page1.xml", "PAGE1.XML")]
+    [InlineData("page1.xml", "/visio/pages/page1.xml")]
+    [InlineData("page 1.xml", "page%201.xml")]
+    public void Extract_TwoPagesNamingOnePartThroughDifferentRelationships_IsFormatMismatch(string first, string second)
+    {
+        byte[] package = new VisioPackageBuilder()
+            .AddPage("One", VisioFixture.Shape(1, "Body"))
+            .AddPage("Two", VisioFixture.Shape(1, "Other"))
+            .Replace("visio/pages/page 1.xml", VisioFixture.Xml("PageContents", "<Shapes>" + VisioFixture.Shape(1, "Body") + "</Shapes>"))
+            .Replace(
+                "visio/pages/_rels/pages.xml.rels",
+                VisioPackageBuilder.Rels(
+                    ("rId1", VisioFixture.VisioRelationshipPrefix + "page", first, false),
+                    ("rId2", VisioFixture.VisioRelationshipPrefix + "page", second, false)))
+            .Build();
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, VisioFixture.Reject(package));
+    }
+
+    [Fact]
+    public void Extract_APageHiddenFromTheInterfaceThatSharesAPartWithAVisiblePage_IsFormatMismatch()
+    {
+        byte[] package = new VisioPackageBuilder()
+            .AddPage("Shown", VisioFixture.Shape(1, "Body"))
+            .AddPage("Hidden", VisioFixture.Shape(1, "HIDDEN"), pageSheet: VisioFixture.Cell("UIVisibility", "1"))
+            .Replace(
+                "visio/pages/_rels/pages.xml.rels",
+                VisioPackageBuilder.Rels(
+                    ("rId1", VisioFixture.VisioRelationshipPrefix + "page", "page1.xml", false),
+                    ("rId2", VisioFixture.VisioRelationshipPrefix + "page", "page1.xml", false)))
+            .Build();
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, VisioFixture.Reject(package));
+    }
+
+    [Fact]
+    public void Extract_PagesNamingTheirOwnPartsEach_AreUnaffectedBySharingChecks()
+    {
+        byte[] package = new VisioPackageBuilder()
+            .AddPage("One", VisioFixture.Shape(1, "A"))
+            .AddPage("Two", VisioFixture.Shape(1, "B"))
+            .AddPage("Three", VisioFixture.Shape(1, "C"), pageSheet: VisioFixture.Cell("UIVisibility", "1"))
+            .Build();
+
+        Assert.Equal("Page: One\nA\nPage: Two\nB\n", VisioFixture.Extract(package).Text);
     }
 
     // ---------------------------------------------------------------- cancellation

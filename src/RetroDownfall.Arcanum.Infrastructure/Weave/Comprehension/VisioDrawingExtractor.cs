@@ -11,15 +11,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// The package is walked only through relationships (root, document, pages, masters, then each page and master part);
 /// nothing is found by scanning. Shape data, user cells, hyperlinks, foreign data, comments, windows, document
 /// properties, macros and every external target are never read. Hidden content (D8) is excluded: <c>HideText</c>,
-/// shapes on an invisible layer, locally deleted shapes and guides, and pages hidden from the Visio user interface.
-/// Text a shape inherits from its master is projected once per instance, where the instance appears; master parts are
-/// never projected on their own.
+/// the own text of a group whose <c>DisplayMode</c> hides the group shape, shapes on an invisible layer, locally deleted
+/// shapes and guides, and pages hidden from the Visio user interface. Text a shape inherits from its master is projected
+/// once per instance, where the instance appears, and so are the master's hiding cells (<c>HideText</c>, <c>DisplayMode</c>
+/// and layer membership) when the instance does not state its own; master parts are never projected on their own.
 /// </para>
 /// <para>
 /// Documented simplifications: background pages are projected like any other page; any invisible layer a shape lists
 /// (or a layer-membership formula with no cached value, on a page that has an invisible layer) hides the shape and all
-/// of its sub-shapes; a master shape's own layer membership is not applied to its instances; a shape with neither a
-/// <c>Master</c> nor a <c>MasterShape</c> attribute inherits nothing, even inside an instantiated group.
+/// of its sub-shapes, whether the shape states its membership or inherits it from its master shape; a shape with neither a
+/// <c>Master</c> nor a <c>MasterShape</c> attribute inherits nothing, even inside an instantiated group; a top-level
+/// instance (a <c>Master</c> and no <c>MasterShape</c>) inherits only when its master has exactly one top-level shape;
+/// <c>DisplayMode</c> is read on groups only.
+/// </para>
+/// <para>
+/// Every page and every master has a part of its own: a part named by more than one Page element, or by more than one
+/// Master element, is refused as a format mismatch before it is read again.
 /// </para>
 /// <para>
 /// Reading is forward-only. A top-level shape and its sub-shapes are buffered until the shape ends, so a hiding cell

@@ -126,6 +126,97 @@ public sealed class VisioDrawingExtractorHiddenContentTests
         Assert.Equal("Page: P\nShown\n", VisioFixture.Extract(package).Text);
     }
 
+    // ---------------------------------------------------------------- group display mode
+
+    [Fact]
+    public void Extract_GroupWhoseDisplayModeIsZero_ExcludesTheGroupTextButKeepsItsSubShapes()
+    {
+        // DisplayMode 0 (visGrpDispModeNone) hides the group shape and text; the members are still drawn.
+        byte[] package = Page(VisioFixture.Shape(
+            1,
+            "HIDDEN-GROUP-DISPLAYMODE",
+            type: "Group",
+            cells: VisioFixture.Cell("DisplayMode", "0"),
+            children: VisioFixture.Shape(2, "Child")) + VisioFixture.Shape(3, "After"));
+
+        Assert.Equal("Page: P\nChild\nAfter\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("2")]
+    public void Extract_GroupWhoseDisplayModeDisplaysTheGroup_KeepsTheGroupText(string value)
+    {
+        byte[] package = Page(VisioFixture.Shape(
+            1,
+            "Group text",
+            type: "Group",
+            cells: VisioFixture.Cell("DisplayMode", value),
+            children: VisioFixture.Shape(2, "Child")));
+
+        Assert.Equal("Page: P\nGroup text\nChild\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_DisplayModeCellThatArrivesAfterTheTextAndSubShapes_StillHidesOnlyTheGroupText()
+    {
+        const string Group = "<Shape ID='1' Type='Group'><Text>HIDDEN-GROUP</Text><Shapes><Shape ID='2' Type='Shape'><Text>Child</Text></Shape></Shapes><Cell N='DisplayMode' V='0'/></Shape>";
+
+        Assert.Equal("Page: P\nChild\n", VisioFixture.Extract(Page(Group)).Text);
+    }
+
+    [Theory]
+    [InlineData("<Cell N='DisplayMode' V='maybe'/>")]
+    [InlineData("<Cell N='DisplayMode' F='GUARD(1)'/>")]
+    [InlineData("<Cell N='DisplayMode' V='' F='=Width&gt;1'/>")]
+    public void Extract_DisplayModeThatIsUnparsableOrAnUnevaluatedFormula_ExcludesTheGroupTextConservatively(string cell)
+    {
+        byte[] package = Page($"<Shape ID='1' Type='Group'>{cell}<Text>HIDDEN-UNKNOWN</Text><Shapes><Shape ID='2' Type='Shape'><Text>Child</Text></Shape></Shapes></Shape>");
+
+        Assert.Equal("Page: P\nChild\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Theory]
+    [InlineData("<Cell N='DisplayMode' F='Inh'/>")]
+    [InlineData("<Cell N='DisplayMode' V=''/>")]
+    [InlineData("<Cell N='DisplayMode'/>")]
+    public void Extract_DisplayModeCellThatSpecifiesNothing_DoesNotHide(string cell)
+    {
+        byte[] package = Page($"<Shape ID='1' Type='Group'>{cell}<Text>Shown</Text></Shape>");
+
+        Assert.Equal("Page: P\nShown\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_DuplicateDisplayModeCells_AnyZeroWins()
+    {
+        byte[] package = Page(VisioFixture.Shape(
+            1,
+            "HIDDEN-DUPLICATE",
+            type: "Group",
+            cells: VisioFixture.Cell("DisplayMode", "0") + VisioFixture.Cell("DisplayMode", "1")));
+
+        Assert.Equal("Page: P\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_DisplayModeZeroOnAShapeThatIsNotAGroup_DoesNotHideItsText()
+    {
+        // DisplayMode is a Group Properties cell: it says how a group and its members show, and means nothing to a plain shape.
+        byte[] package = Page(VisioFixture.Shape(1, "Shown", cells: VisioFixture.Cell("DisplayMode", "0")));
+
+        Assert.Equal("Page: P\nShown\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_DisplayModeInsideASectionRow_IsNotAGroupDisplayModeCell()
+    {
+        // Action tags have their own DisplayMode cell inside a Section row; only a direct cell of the group is the group's.
+        byte[] package = Page($"<Shape ID='1' Type='Group'><Section N='Actions'><Row N='Tag'><Cell N='DisplayMode' V='0'/></Row></Section><Text>Shown</Text></Shape>");
+
+        Assert.Equal("Page: P\nShown\n", VisioFixture.Extract(package).Text);
+    }
+
     // ---------------------------------------------------------------- layers
 
     [Fact]

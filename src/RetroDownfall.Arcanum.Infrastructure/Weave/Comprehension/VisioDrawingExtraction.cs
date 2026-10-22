@@ -98,6 +98,10 @@ internal sealed class VisioDrawingExtraction(
 
         VisioChildScan scan = VisioXml.BeginChildren(xml);
 
+        // Every page has a part of its own. Case and one percent-unescape are folded as the lookup does, so a part cannot be
+        // named under two spellings; a part that a second Page element names is refused before it is read again.
+        HashSet<string> pageParts = new(StringComparer.OrdinalIgnoreCase);
+
         int pages = 0;
 
         while (VisioXml.NextChild(xml, ref scan))
@@ -114,14 +118,14 @@ internal sealed class VisioDrawingExtraction(
                 throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
             }
 
-            if (!ReadPage(xml, pageEntries))
+            if (!ReadPage(xml, pageEntries, pageParts))
             {
                 return;
             }
         }
     }
 
-    private bool ReadPage(BoundedXmlReader xml, Dictionary<string, string> pageEntries)
+    private bool ReadPage(BoundedXmlReader xml, Dictionary<string, string> pageEntries, HashSet<string> pageParts)
     {
         XmlReader reader = xml.Reader;
 
@@ -155,18 +159,25 @@ internal sealed class VisioDrawingExtraction(
             }
         }
 
+        // A hidden page is never read, but the part it names still counts: sharing it with another page is as malformed.
+        string? entry = relationshipId is not null && pageEntries.TryGetValue(relationshipId, out string? target)
+            ? OpcPackageRelationships.ResolveEntry(_package, target)
+            : null;
+
+        if (entry is not null && !pageParts.Add(entry))
+        {
+            throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
+        }
+
         if (hiddenFromInterface)
         {
             return true;
         }
 
-        if (relationshipId is null || !pageEntries.TryGetValue(relationshipId, out string? target))
+        if (entry is null)
         {
             throw new DocumentPackageRejectedException(DocumentPackageRejection.MissingPart);
         }
-
-        string entry = OpcPackageRelationships.ResolveEntry(_package, target)
-            ?? throw new DocumentPackageRejectedException(DocumentPackageRejection.MissingPart);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -362,15 +373,16 @@ internal sealed class VisioDrawingExtraction(
 
         bool inheritsFromMaster = master >= 0 && (hasOwnMaster || hasMasterShape);
 
+        // DisplayMode is a Group Properties cell: it says how a group and its members show, and means nothing to a plain shape.
+        bool isGroup = reader.GetAttribute("Type") == "Group";
+
         int shapeStart = _pending.Length;
 
         int ownStart = 0;
 
         int ownEnd = 0;
 
-        bool? hideCell = null;
-
-        bool layerHidden = false;
+        ShapeCells cells = default;
 
         VisioChildScan scan = VisioXml.BeginChildren(xml);
 
@@ -380,13 +392,13 @@ internal sealed class VisioDrawingExtraction(
         {
             if (VisioXml.IsElement(reader, "Cell"))
             {
-                ReadShapeCell(xml, ref hideCell, ref layerHidden);
+                ReadShapeCell(xml, ref cells);
             }
             else if (VisioXml.IsElement(reader, "Text") && !textSeen)
             {
                 textSeen = true;
 
-                if (layerHidden)
+                if (cells.LayerHidden)
                 {
                     xml.SkipElement();
 
@@ -409,7 +421,7 @@ internal sealed class VisioDrawingExtraction(
 
                 ownEnd = _pending.Length;
             }
-            else if (VisioXml.IsElement(reader, "Shapes") && !layerHidden)
+            else if (VisioXml.IsElement(reader, "Shapes") && !cells.LayerHidden)
             {
                 if (!ReadShapes(xml, topLevel: false, master))
                 {
@@ -422,6 +434,25 @@ internal sealed class VisioDrawingExtraction(
             }
         }
 
+        VisioMasterLookup inherited = default;
+
+        bool layerHidden = cells.LayerHidden;
+
+        if (!layerHidden && inheritsFromMaster && NeedsMaster(cells, textSeen, isGroup))
+        {
+            inherited = _masters.Lookup(master, masterShape);
+
+            if (inherited.Unretained)
+            {
+                output.MarkTruncated();
+
+                return false;
+            }
+
+            // Layer membership is inherited like any other cell: the master shape's, unless the shape has a cell of its own.
+            layerHidden = !cells.LayerSpecified && VisioXml.ListsInvisibleLayer(inherited.LayerMembers, _layers);
+        }
+
         if (layerHidden)
         {
             // The shape and everything under it was on an invisible layer: drop whatever was buffered for it.
@@ -429,22 +460,9 @@ internal sealed class VisioDrawingExtraction(
         }
         else
         {
-            VisioMasterLookup inherited = default;
-
-            if (inheritsFromMaster && (!textSeen || hideCell is null))
-            {
-                inherited = _masters.Lookup(master, masterShape);
-
-                if (inherited.Unretained)
-                {
-                    output.MarkTruncated();
-
-                    return false;
-                }
-            }
-
-            // HideText is inherited like any other cell; the shape's own cell, even a false one, overrides the master's.
-            bool hideText = hideCell ?? inherited.Hide;
+            // HideText is inherited like any other cell; the shape's own cell, even a false one, overrides the master's. So is
+            // a group's DisplayMode, where 0 hides the group shape and its own text but not its sub-shapes.
+            bool hideText = (cells.HideText ?? inherited.Hide) || (isGroup && (cells.GroupHidden ?? inherited.HideGroup));
 
             if (textSeen)
             {
@@ -469,7 +487,17 @@ internal sealed class VisioDrawingExtraction(
         return !topLevel || Flush();
     }
 
-    private void ReadShapeCell(BoundedXmlReader xml, ref bool? hideCell, ref bool layerHidden)
+    /// <summary>
+    /// True when something the shape has not said itself could come from its master shape: its text, its HideText, its group
+    /// DisplayMode, or (on a page with an invisible layer) its layer membership. Otherwise the master is not consulted.
+    /// </summary>
+    private bool NeedsMaster(in ShapeCells cells, bool textSeen, bool isGroup) =>
+        !textSeen
+        || cells.HideText is null
+        || (isGroup && cells.GroupHidden is null)
+        || (_layers is not null && !cells.LayerSpecified);
+
+    private void ReadShapeCell(BoundedXmlReader xml, ref ShapeCells cells)
     {
         XmlReader reader = xml.Reader;
 
@@ -482,12 +510,27 @@ internal sealed class VisioDrawingExtraction(
             if (value != VisioCellValue.Unspecified)
             {
                 // Duplicates cannot un-hide: any cell that hides wins.
-                hideCell = (hideCell ?? false) || VisioXml.Hides(value);
+                cells.HideText = (cells.HideText ?? false) || VisioXml.Hides(value);
             }
         }
-        else if (name == "LayerMember" && VisioXml.LayerMemberHides(reader, _layers))
+        else if (name == "DisplayMode")
         {
-            layerHidden = true;
+            VisioCellValue value = VisioXml.ReadBooleanCell(reader);
+
+            if (value != VisioCellValue.Unspecified)
+            {
+                // Duplicates cannot un-hide here either.
+                cells.GroupHidden = (cells.GroupHidden ?? false) || VisioXml.HidesGroup(value);
+            }
+        }
+        else if (name == "LayerMember" && VisioXml.ReadLayerMember(reader) is { } members)
+        {
+            cells.LayerSpecified = true;
+
+            if (VisioXml.ListsInvisibleLayer(members, _layers))
+            {
+                cells.LayerHidden = true;
+            }
         }
 
         xml.SkipElement();
@@ -511,5 +554,21 @@ internal sealed class VisioDrawingExtraction(
         {
             _pending.Clear();
         }
+    }
+
+    /// <summary>What the cells a shape states itself say. A cell it does not state leaves its field null or false, so the master's applies.</summary>
+    private struct ShapeCells
+    {
+        /// <summary>HideText: true when a cell hides (or cannot be read), false when every cell shows, null when none was given.</summary>
+        public bool? HideText;
+
+        /// <summary>DisplayMode of a group, with the same reading: true when a cell hides the group shape and text.</summary>
+        public bool? GroupHidden;
+
+        /// <summary>A LayerMember cell that gave a value, which stands in for the master's membership.</summary>
+        public bool LayerSpecified;
+
+        /// <summary>A LayerMember cell listed an invisible layer of the page (or could not be read on a page that has one).</summary>
+        public bool LayerHidden;
     }
 }

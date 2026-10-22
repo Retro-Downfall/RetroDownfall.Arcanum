@@ -105,14 +105,43 @@ public sealed class VisioDrawingExtractorMasterTests
     }
 
     [Fact]
-    public void Extract_MasterWithSeveralTopLevelShapes_UsesTheFirst()
+    public void Extract_MasterWithSeveralTopLevelShapes_LendsNothingToATopLevelInstance()
+    {
+        // With several top-level shapes there is no one shape the instance stands for: it inherits nothing for itself.
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "FIRST") + VisioFixture.Shape(6, "SECOND"))
+            .AddPage("P", Instance(1, master: 2) + Instance(2, master: 2, text: "Own"))
+            .Build();
+
+        Assert.Equal("Page: P\nOwn\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterWithSeveralTopLevelShapes_StillLendsToSubShapesThroughMasterShape()
     {
         byte[] package = new VisioPackageBuilder()
             .AddMaster(2, VisioFixture.Shape(5, "FIRST") + VisioFixture.Shape(6, "SECOND"))
-            .AddPage("P", Instance(1, master: 2))
+            .AddPage("P", Instance(1, master: 2, children: SubShape(2, masterShape: 6) + SubShape(3, masterShape: 5)))
             .Build();
 
-        Assert.Equal("Page: P\nFIRST\n", VisioFixture.Extract(package).Text);
+        Assert.Equal("Page: P\nSECOND\nFIRST\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterWithSeveralTopLevelShapes_LendsNoHidingCellToATopLevelInstanceEither()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"));
+
+        string master =
+            VisioFixture.Shape(5, "FIRST", cells: VisioFixture.Cell("HideText", "1") + VisioFixture.Cell("LayerMember", "0"))
+            + VisioFixture.Shape(6, "SECOND");
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, master)
+            .AddPage("P", Instance(1, master: 2, text: "Own"), pageSheet: layers)
+            .Build();
+
+        Assert.Equal("Page: P\nOwn\n", VisioFixture.Extract(package).Text);
     }
 
     [Fact]
@@ -124,6 +153,23 @@ public sealed class VisioDrawingExtractorMasterTests
             .Build();
 
         Assert.Equal("Page: P\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterWhoseOnlyLiveTopLevelShapeSitsBesideADeletedOrGuideOne_LendsThatShape()
+    {
+        // A deleted shape and a guide are not drawn, so they are not top-level shapes the instance could stand for.
+        string master =
+            VisioFixture.Shape(4, "DELETED-FIRST", attributes: "Del='1'")
+            + VisioFixture.Shape(5, "GUIDE", type: "Guide")
+            + VisioFixture.Shape(6, "THE-LIVE-SHAPE");
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, master)
+            .AddPage("P", Instance(1, master: 2))
+            .Build();
+
+        Assert.Equal("Page: P\nTHE-LIVE-SHAPE\n", VisioFixture.Extract(package).Text);
     }
 
     // ---------------------------------------------------------------- sub-shapes of an instantiated group
@@ -329,17 +375,173 @@ public sealed class VisioDrawingExtractorMasterTests
     }
 
     [Fact]
-    public void Extract_LayerMembershipOfTheMasterShapeIsNotAppliedToTheInstance()
+    public void Extract_InstanceWithoutALayerMemberCell_InheritsTheInvisibleLayerOfItsMasterShape()
     {
-        // Documented simplification: layers are the page's; the master's own LayerMember names the master's layers.
         string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"));
 
         byte[] package = new VisioPackageBuilder()
-            .AddMaster(2, VisioFixture.Shape(5, "Master label", cells: VisioFixture.Cell("LayerMember", "0")))
-            .AddPage("P", Instance(1, master: 2), pageSheet: layers)
+            .AddMaster(2, VisioFixture.Shape(5, "MASTER-ON-HIDDEN-LAYER", cells: VisioFixture.Cell("LayerMember", "0")))
+            .AddPage("P", Instance(1, master: 2) + VisioFixture.Shape(3, "Kept"), pageSheet: layers)
             .Build();
 
-        Assert.Equal("Page: P\nMaster label\n", VisioFixture.Extract(package).Text);
+        Assert.Equal("Page: P\nKept\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_InstanceWithItsOwnTextOnAnInheritedInvisibleLayer_IsHiddenToo()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"), VisioFixture.LayerRow(1, "Shown", "1"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "Master", cells: VisioFixture.Cell("LayerMember", "1;0")))
+            .AddPage("P", Instance(1, master: 2, text: "HIDDEN-OWN-TEXT") + VisioFixture.Shape(3, "Kept"), pageSheet: layers)
+            .Build();
+
+        Assert.Equal("Page: P\nKept\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_InstanceThatSetsItsOwnLayerMember_OverridesTheMastersLayerMembership()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"), VisioFixture.LayerRow(1, "Shown", "1"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "Master label", cells: VisioFixture.Cell("LayerMember", "0")))
+            .AddPage("P", Instance(1, master: 2, text: "Own", cells: VisioFixture.Cell("LayerMember", "1")), pageSheet: layers)
+            .Build();
+
+        Assert.Equal("Page: P\nOwn\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_InstanceWhoseLayerMemberSpecifiesNothing_StillInheritsTheMastersLayerMembership()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "MASTER-ON-HIDDEN-LAYER", cells: VisioFixture.Cell("LayerMember", "0")))
+            .AddPage("P", Instance(1, master: 2, cells: "<Cell N='LayerMember' V='' F='Inh'/>") + VisioFixture.Shape(3, "Kept"), pageSheet: layers)
+            .Build();
+
+        Assert.Equal("Page: P\nKept\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterShapeOnAVisibleLayerOrOnAPageWithoutInvisibleLayers_ShowsTheInstance()
+    {
+        string visible = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"), VisioFixture.LayerRow(1, "Shown", "1"));
+
+        string none = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Shown", "1"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "Master label", cells: VisioFixture.Cell("LayerMember", "1")))
+            .AddMaster(3, VisioFixture.Shape(5, "Other label", cells: VisioFixture.Cell("LayerMember", "0")))
+            .AddPage("One", Instance(1, master: 2), pageSheet: visible)
+            .AddPage("Two", Instance(1, master: 3), pageSheet: none)
+            .Build();
+
+        Assert.Equal("Page: One\nMaster label\nPage: Two\nOther label\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterShapeLayerMemberFormulaWithoutAValue_HidesTheInstanceConservativelyOnlyWhenThePageHasAnInvisibleLayer()
+    {
+        string withInvisible = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"));
+
+        string withoutInvisible = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Fine", "1"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "MAYBE-HIDDEN", cells: "<Cell N='LayerMember' F='GUARD(1)'/>"))
+            .AddPage("One", Instance(1, master: 2), pageSheet: withInvisible)
+            .AddPage("Two", Instance(1, master: 2), pageSheet: withoutInvisible)
+            .Build();
+
+        Assert.Equal("Page: One\nPage: Two\nMAYBE-HIDDEN\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterGroupOnAnInvisibleLayer_HidesTheWholeInstanceSubtree()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"));
+
+        string masterGroup = VisioFixture.Shape(
+            10,
+            "HIDDEN-GROUP",
+            type: "Group",
+            cells: VisioFixture.Cell("LayerMember", "0"),
+            children: VisioFixture.Shape(11, "HIDDEN-MEMBER"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(3, masterGroup)
+            .AddPage("P", Instance(1, master: 3, children: SubShape(2, masterShape: 11)) + VisioFixture.Shape(4, "Kept"), pageSheet: layers)
+            .Build();
+
+        Assert.Equal("Page: P\nKept\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_SubShapeInheritingAnInvisibleLayerFromItsMasterShape_IsHiddenWhileTheGroupAndSiblingsStay()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"));
+
+        string masterGroup = VisioFixture.Shape(
+            10,
+            "Group label",
+            type: "Group",
+            children: VisioFixture.Shape(11, "HIDDEN-MEMBER", cells: VisioFixture.Cell("LayerMember", "0")) + VisioFixture.Shape(12, "Member B"));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(3, masterGroup)
+            .AddPage("P", Instance(1, master: 3, children: SubShape(2, masterShape: 11) + SubShape(3, masterShape: 12)), pageSheet: layers)
+            .Build();
+
+        Assert.Equal("Page: P\nGroup label\nMember B\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterLayerMemberLongerThanTheRetentionBound_HidesConservativelyOnlyWhenThePageHasAnInvisibleLayer()
+    {
+        string withInvisible = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"), VisioFixture.LayerRow(1, "Shown", "1"));
+
+        string withoutInvisible = VisioFixture.LayerSection(VisioFixture.LayerRow(1, "Shown", "1"));
+
+        // 600 entries naming only the visible layer 1: far beyond the length kept per master shape, so it is not known to be safe.
+        string longMembership = string.Join(';', Enumerable.Repeat("1", 600));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "LONG-MEMBERSHIP", cells: VisioFixture.Cell("LayerMember", longMembership)))
+            .AddMaster(3, VisioFixture.Shape(5, "Short membership", cells: VisioFixture.Cell("LayerMember", "1;1;1")))
+            .AddPage("One", Instance(1, master: 2) + Instance(2, master: 3), pageSheet: withInvisible)
+            .AddPage("Two", Instance(1, master: 2), pageSheet: withoutInvisible)
+            .Build();
+
+        Assert.Equal("Page: One\nShort membership\nPage: Two\nLONG-MEMBERSHIP\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterLayerMembershipBeyondTheTotalRetentionBudget_HidesConservativelyOnceTheBudgetIsSpent()
+    {
+        string layers = VisioFixture.LayerSection(VisioFixture.LayerRow(0, "Hidden", "0"), VisioFixture.LayerRow(1, "Shown", "1"));
+
+        // Each member keeps 400 characters of visible-layer membership; 200 of them pass the 65,536-character budget.
+        string membership = string.Join(';', Enumerable.Repeat("1", 200));
+
+        string members = string.Concat(Enumerable.Range(1, 200).Select(id => VisioFixture.Shape(id, $"Member {id}", cells: VisioFixture.Cell("LayerMember", membership))));
+
+        string masterGroup = VisioFixture.Shape(500, type: "Group", children: members);
+
+        string instanceMembers = string.Concat(Enumerable.Range(1, 200).Select(id => SubShape(1000 + id, masterShape: id)));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(3, masterGroup)
+            .AddPage("P", Instance(1, master: 3, children: instanceMembers), pageSheet: layers)
+            .Build();
+
+        string text = VisioFixture.Extract(package).Text;
+
+        Assert.StartsWith("Page: P\nMember 1\nMember 2\n", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Member 200\n", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -352,6 +554,95 @@ public sealed class VisioDrawingExtractorMasterTests
             .Build();
 
         Assert.Equal("Page: P\n", VisioFixture.Extract(package).Text);
+    }
+
+    // ---------------------------------------------------------------- group display mode through the master
+
+    [Fact]
+    public void Extract_GroupInstanceInheritingDisplayModeZeroFromItsMaster_DoesNotEmitTheInheritedGroupText()
+    {
+        string masterGroup = VisioFixture.Shape(
+            10,
+            "HIDDEN-MASTER-GROUP-TEXT",
+            type: "Group",
+            cells: VisioFixture.Cell("DisplayMode", "0"),
+            children: VisioFixture.Shape(11, "Member"));
+
+        string instance = VisioFixture.Shape(
+            1,
+            null,
+            type: "Group",
+            attributes: "Master='3'",
+            children: SubShape(2, masterShape: 11));
+
+        byte[] package = new VisioPackageBuilder().AddMaster(3, masterGroup).AddPage("P", instance).Build();
+
+        Assert.Equal("Page: P\nMember\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_GroupInstanceWithItsOwnTextAndAnInheritedDisplayModeZero_HidesItsOwnTextButKeepsItsSubShapes()
+    {
+        string masterGroup = VisioFixture.Shape(
+            10,
+            "Master group",
+            type: "Group",
+            cells: VisioFixture.Cell("DisplayMode", "0"),
+            children: VisioFixture.Shape(11, "Member"));
+
+        string instance = VisioFixture.Shape(
+            1,
+            "HIDDEN-OWN-GROUP-TEXT",
+            type: "Group",
+            attributes: "Master='3'",
+            children: SubShape(2, masterShape: 11));
+
+        byte[] package = new VisioPackageBuilder().AddMaster(3, masterGroup).AddPage("P", instance).Build();
+
+        Assert.Equal("Page: P\nMember\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_GroupInstanceThatSetsDisplayModeShown_ShowsItsOwnTextButDoesNotRecoverAHiddenMastersText()
+    {
+        // Same conservative simplification as HideText: a hiding master's text is not retained.
+        string masterGroup = VisioFixture.Shape(
+            10,
+            "HIDDEN-MASTER-LABEL",
+            type: "Group",
+            cells: VisioFixture.Cell("DisplayMode", "0"));
+
+        string inheriting = VisioFixture.Shape(1, null, type: "Group", attributes: "Master='3'", cells: VisioFixture.Cell("DisplayMode", "1"));
+
+        string own = VisioFixture.Shape(2, "Own", type: "Group", attributes: "Master='3'", cells: VisioFixture.Cell("DisplayMode", "2"));
+
+        byte[] package = new VisioPackageBuilder().AddMaster(3, masterGroup).AddPage("P", inheriting + own).Build();
+
+        Assert.Equal("Page: P\nOwn\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterGroupDisplayModeThatArrivesAfterTheMasterText_IsStillHonoured()
+    {
+        const string MasterGroup = "<Shape ID='10' Type='Group'><Text>HIDDEN-LATE-MASTER</Text><Cell N='DisplayMode' V='0'/></Shape>";
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(3, MasterGroup)
+            .AddPage("P", VisioFixture.Shape(1, null, type: "Group", attributes: "Master='3'") + VisioFixture.Shape(2, "Kept"))
+            .Build();
+
+        Assert.Equal("Page: P\nKept\n", VisioFixture.Extract(package).Text);
+    }
+
+    [Fact]
+    public void Extract_MasterShapeThatIsNotAGroupWithDisplayModeZero_StillLendsItsText()
+    {
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "Label", cells: VisioFixture.Cell("DisplayMode", "0")))
+            .AddPage("P", Instance(1, master: 2))
+            .Build();
+
+        Assert.Equal("Page: P\nLabel\n", VisioFixture.Extract(package).Text);
     }
 
     // ---------------------------------------------------------------- the masters graph
@@ -503,6 +794,72 @@ public sealed class VisioDrawingExtractorMasterTests
             .Build();
 
         Assert.Equal(DocumentPackageRejection.MalformedXml, VisioFixture.Reject(package));
+    }
+
+    [Theory]
+    [InlineData("master1.xml", "master1.xml")]
+    [InlineData("master1.xml", "MASTER1.XML")]
+    [InlineData("master1.xml", "/visio/masters/master1.xml")]
+    [InlineData("master 1.xml", "master%201.xml")]
+    public void Extract_TwoMastersNamingOnePart_IsFormatMismatchEvenWithoutInstances(string first, string second)
+    {
+        // Real producers give every master its own part; a shared one would be re-parsed per master ID.
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "One"))
+            .AddMaster(3, VisioFixture.Shape(5, "Two"))
+            .AddPage("P", VisioFixture.Shape(1, "Own"))
+            .Replace("visio/masters/master 1.xml", VisioFixture.Xml("MasterContents", "<Shapes>" + VisioFixture.Shape(5, "One") + "</Shapes>"))
+            .Replace(
+                "visio/masters/_rels/masters.xml.rels",
+                VisioPackageBuilder.Rels(
+                    ("rId1", VisioFixture.VisioRelationshipPrefix + "master", first, false),
+                    ("rId2", VisioFixture.VisioRelationshipPrefix + "master", second, false)))
+            .Build();
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, VisioFixture.Reject(package));
+    }
+
+    [Fact]
+    public void Extract_ManyMastersNamingOnePart_IsFormatMismatchInsteadOfParsingThePartPerMaster()
+    {
+        // 600 master IDs that all point at one ~100 KB part, each instantiated once: parsing per master would inflate it 600 times.
+        Random random = new(7);
+
+        string padding = string.Concat(Enumerable.Range(0, 100_000 / 8).Select(_ => random.Next().ToString("x8")));
+
+        string masterShape = VisioFixture.Shape(
+            5,
+            "Label",
+            cells: VisioFixture.Cell("HideText", "1") + $"<Section N='User'><Row N='pad'><Cell N='Value' V='{padding}'/></Row></Section>");
+
+        string masters = VisioFixture.Xml("Masters", string.Concat(Enumerable.Range(1, 600).Select(id => $"<Master ID='{id}' NameU='M{id}'><PageSheet/><Rel r:id='rId1'/></Master>")));
+
+        string instances = string.Concat(Enumerable.Range(1, 600).Select(id => Instance(id, master: id)));
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, masterShape)
+            .AddPage("P", instances)
+            .Replace("visio/masters/masters.xml", masters)
+            .Build();
+
+        Assert.Equal(DocumentPackageRejection.FormatMismatch, VisioFixture.Reject(package));
+    }
+
+    [Fact]
+    public void Extract_MastersWithoutAResolvableRelationship_AreNotMistakenForSharingAPart()
+    {
+        // Two Master elements that name no part share nothing; only an instance that needs one is refused, as MissingPart.
+        string masters = VisioFixture.Xml(
+            "Masters",
+            "<Master ID='2' NameU='A'><PageSheet/></Master><Master ID='3' NameU='B'><PageSheet/><Rel r:id='rId99'/></Master>");
+
+        byte[] package = new VisioPackageBuilder()
+            .AddMaster(2, VisioFixture.Shape(5, "Label"))
+            .AddPage("P", VisioFixture.Shape(1, "Own"))
+            .Replace("visio/masters/masters.xml", masters)
+            .Build();
+
+        Assert.Equal("Page: P\nOwn\n", VisioFixture.Extract(package).Text);
     }
 
     [Fact]
