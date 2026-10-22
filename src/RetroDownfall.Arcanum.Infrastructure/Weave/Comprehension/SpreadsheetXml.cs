@@ -11,7 +11,8 @@ internal interface ISpreadsheetTextTarget
 /// <summary>
 /// SpreadsheetML reading helpers over <see cref="BoundedXmlReader"/>. Every read advances the reader only through
 /// <see cref="BoundedXmlReader.Read"/> and <see cref="BoundedXmlReader.SkipElement"/>; elements are matched by local
-/// name plus namespace URI (transitional or strict), never by prefix.
+/// name plus namespace URI (transitional or strict), never by prefix. The children of every container are enumerated with
+/// <see cref="SpreadsheetChildren"/>, which resolves <c>mc:AlternateContent</c> before a caller sees an element.
 /// </summary>
 internal static class SpreadsheetXml
 {
@@ -62,8 +63,9 @@ internal static class SpreadsheetXml
     }
 
     /// <summary>
-    /// With the reader on an element start, steps past its start tag. Returns true when the element has content to
-    /// iterate with <see cref="NextChildElement"/>; false for an empty element, which is consumed.
+    /// With the reader on a text element's start (<c>t</c> or <c>v</c>), steps past its start tag. Returns true when the
+    /// element has content; false for an empty element, which is consumed. A container of child elements is entered with
+    /// <see cref="SpreadsheetChildren.Enter"/> instead, which resolves markup compatibility.
     /// </summary>
     public static bool EnterChildren(BoundedXmlReader xml, out int depth)
     {
@@ -74,36 +76,6 @@ internal static class SpreadsheetXml
         xml.Read();
 
         return hasChildren;
-    }
-
-    /// <summary>
-    /// Positions the reader on the next child element of the element entered at <paramref name="parentDepth"/>,
-    /// passing over text, whitespace and any grandchildren the caller left behind. Returns false, with the parent's
-    /// end tag consumed, when there are no more children.
-    /// </summary>
-    public static bool NextChildElement(BoundedXmlReader xml, int parentDepth)
-    {
-        XmlReader reader = xml.Reader;
-
-        while (true)
-        {
-            if (reader.NodeType == XmlNodeType.Element && reader.Depth == parentDepth + 1)
-            {
-                return true;
-            }
-
-            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == parentDepth)
-            {
-                xml.Read();
-
-                return false;
-            }
-
-            if (!xml.Read())
-            {
-                return false;
-            }
-        }
     }
 
     /// <summary>
@@ -246,12 +218,12 @@ internal static class SpreadsheetXml
     /// </summary>
     public static bool ReadRichText(BoundedXmlReader xml, ISpreadsheetTextTarget target)
     {
-        if (!EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return true;
         }
 
-        while (NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             if (IsMain(xml.Reader, "t"))
             {
@@ -278,12 +250,12 @@ internal static class SpreadsheetXml
 
     private static bool ReadRun(BoundedXmlReader xml, ISpreadsheetTextTarget target)
     {
-        if (!EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return true;
         }
 
-        while (NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             if (IsMain(xml.Reader, "t"))
             {

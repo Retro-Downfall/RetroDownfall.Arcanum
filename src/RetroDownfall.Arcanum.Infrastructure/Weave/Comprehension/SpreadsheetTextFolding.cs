@@ -5,8 +5,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <summary>
 /// Folds the characters that would break the projection's shape: it writes one line per row and one tab per boundary
 /// between cells, so a cell's text (and a sheet's name) must not carry a line break, a tab or any control character. Each
-/// such character, the line and paragraph separators U+2028 and U+2029 included, becomes one space; a carriage return
-/// directly followed by a line feed is one break and becomes one space.
+/// such character becomes one space: the C0 controls and DEL, the whole C1 block (U+0080 to U+009F, which holds the next
+/// line U+0085), and the line and paragraph separators U+2028 and U+2029. A carriage return directly followed by a line
+/// feed is one break and becomes one space.
 /// </summary>
 internal static class SpreadsheetTextFolding
 {

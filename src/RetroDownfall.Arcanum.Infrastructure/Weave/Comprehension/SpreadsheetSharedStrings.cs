@@ -32,12 +32,12 @@ internal sealed class SpreadsheetSharedStrings
 
         int remainingCharacters = limits.SharedStringCharacters;
 
-        if (!SpreadsheetXml.EnterChildren(xml, out int depth))
+        if (!SpreadsheetChildren.Enter(xml, out SpreadsheetChildren children))
         {
             return new SpreadsheetSharedStrings(strings, overflowed: false);
         }
 
-        while (SpreadsheetXml.NextChildElement(xml, depth))
+        while (children.MoveNext())
         {
             if (!SpreadsheetXml.IsMain(xml.Reader, "si"))
             {
