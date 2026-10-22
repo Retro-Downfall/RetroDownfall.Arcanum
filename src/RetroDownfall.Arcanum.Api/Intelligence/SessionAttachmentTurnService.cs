@@ -466,7 +466,7 @@ public static class SessionAttachmentTurnService
 
                 contents.Add(
                     new TextContent(SessionAttachmentToolInjection.FormatComprehensionData(
-                        ResolveReferenceLabel(record, "attachment"), text))
+                        record, ResolveReferenceLabel(record, "attachment"), text))
                     {
                         AdditionalProperties = ExplicitAttachmentContextProperties(),
                     });

@@ -4,6 +4,8 @@ using System.Text;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
@@ -17,9 +19,7 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
     TimeSpan timeout,
     int maximumCharacters = 262_144)
 {
-    internal static SessionAttachmentDocumentExtractionHost Default { get; } = new(
-        new ComprehensionTextContainerExtractor().ExtractAsync,
-        TimeSpan.FromSeconds(5));
+    internal static SessionAttachmentDocumentExtractionHost Default => SessionAttachmentDocumentExtractors.TextContainerHost;
 
     private readonly object _gate = new();
 
@@ -119,6 +119,12 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
                     cancellation.Token.ThrowIfCancellationRequested();
 
                     return sink.Complete();
+                }
+                catch (DocumentPackageRejectedException rejected)
+                {
+                    // A closed, code-owned rejection: fixed status and reason, no entry or part names.
+                    // It is an ordinary outcome, so the format is not quarantined by it.
+                    return rejected.ToResult();
                 }
                 catch (Exception)
                 {
@@ -326,6 +332,24 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
             }
 
             return true;
+        }
+    }
+
+    public void MarkTruncated()
+    {
+        lock (_gate)
+        {
+            if (_truncated)
+            {
+                return;
+            }
+
+            _truncated = true;
+
+            if (_text.Length > 0 && char.IsHighSurrogate(_text[^1]))
+            {
+                _text.Length--;
+            }
         }
     }
 

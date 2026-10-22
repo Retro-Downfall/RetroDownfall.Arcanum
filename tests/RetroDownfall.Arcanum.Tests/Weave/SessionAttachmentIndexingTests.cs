@@ -1260,6 +1260,182 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 1, CancellationToken.None));
     }
 
+    public static TheoryData<string> OfficeDocumentMimeTypes()
+    {
+        TheoryData<string> data = [];
+
+        foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
+        {
+            if (format.MimeType != SessionAttachmentComprehensionPolicy.MimeType)
+            {
+                data.Add(format.MimeType);
+            }
+        }
+
+        data.Add(" Application/Vnd.OpenXMLFormats-OfficeDocument.WordprocessingML.Document ; charset=binary");
+
+        return data;
+    }
+
+    [SkippableTheory]
+
+    [MemberData(nameof(OfficeDocumentMimeTypes))]
+
+    public async Task ComprehensionEnabled_ReconcilesPreFeatureIneligibleOfficeBinaryOnlyWhenBothGatesAreOn(string mimeType)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord office = await PersistBinaryAsync(sessionId, "office", "office.bin", mimeType);
+
+        SessionAttachmentRecord other = await PersistBinaryAsync(sessionId, "other", "other.pdf", "application/pdf");
+
+        SessionAttachmentIndexProcessor processor = CreateProcessor(new FakeWeaveService());
+
+        foreach (SessionAttachmentRecord record in new[] { office, other })
+        {
+            Assert.Equal(SessionAttachmentIndexStatus.NotEligible, (await processor
+                .ProcessUnderOpenAdmissionAsync(new(record.Id, sessionId), CancellationToken.None)).Status);
+
+            Assert.Null((await _index!.GetStateAsync(record.Id, CancellationToken.None))!.ExtractedAt);
+        }
+
+        Assert.Empty(await _index!.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+
+        _settings.Features.AttachmentRetrieval = false;
+
+        _settings.Features.Comprehension = true;
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+
+        _settings.Features.AttachmentRetrieval = true;
+
+        SessionAttachmentIndexRequest request = Assert.Single(
+            await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+
+        Assert.Equal(office.Id, request.AttachmentId);
+    }
+
+    [SkippableTheory]
+
+    [MemberData(nameof(OfficeDocumentMimeTypes))]
+
+    public async Task ComprehensionDisabled_AfterIndexingSuppressesStoredOfficeDocumentRetrieval(string mimeType)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord office = await PersistBinaryAsync(sessionId, "office", "office.bin", mimeType);
+
+        await SeedPublishedChunksAsync(office, 1, CreateVector(Dimensions));
+
+        SessionAttachmentRetrievedChunk hit = Assert.Single(await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None));
+
+        Assert.Equal("office sentinel 0", hit.Content);
+
+        _settings.Features.Comprehension = false;
+
+        Assert.Empty(await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None));
+    }
+
+    [SkippableTheory]
+
+    [MemberData(nameof(OfficeDocumentMimeTypes))]
+
+    public async Task ComprehensionDisabled_OfficeDocumentsCannotConsumeTextRetrievalSlots(string mimeType)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord office = await PersistBinaryAsync(sessionId, "office", "office.bin", mimeType);
+
+        // More chunks than the default retrieval ceiling, each an exact match for the query, so any
+        // that survived the gate would take every slot before the ordinary text could be scored.
+        await SeedPublishedChunksAsync(office, 8, CreateVector(Dimensions));
+
+        SessionAttachmentRecord text = await PersistAsync(sessionId, "ordinary", "ordinary.txt", "text/plain", "ordinary text survives");
+
+        FakeWeaveService weave = new()
+        {
+            EmbeddingForText = content =>
+            {
+                float[] vector = CreateVector(Dimensions);
+
+                if (content == "ordinary text survives")
+                {
+                    vector[0] = 0.8f;
+
+                    vector[1] = 0.6f;
+                }
+
+                return vector;
+            },
+        };
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
+            new(text.Id, sessionId), CancellationToken.None)).Status);
+
+        Assert.Equal(5, (await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None)).Length);
+
+        _settings.Features.Comprehension = false;
+
+        SessionAttachmentRetrievedChunk[] hits = await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None);
+
+        Assert.Equal("ordinary text survives", Assert.Single(hits).Content);
+    }
+
+    private Task<SessionAttachmentRecord> PersistBinaryAsync(
+        Guid sessionId,
+        string logicalKey,
+        string fileName,
+        string mimeType) =>
+        _attachments!.PersistNewAsync(sessionId, null, null, logicalKey, fileName,
+            "PK\u0003\u0004package"u8.ToArray(), mimeType, SessionAttachmentKind.Binary);
+
+    /// <summary>
+    /// Publishes chunks for an attachment without extraction, so a stored chunk exists for a format whose
+    /// extractor is not under test. The chunk carries the attachment's MIME, as indexing does.
+    /// </summary>
+    private async Task SeedPublishedChunksAsync(SessionAttachmentRecord attachment, int count, float[] vector)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        await _index!.SetPendingAsync(attachment, 1, CancellationToken.None);
+
+        SessionAttachmentIndexCheckpoint checkpoint = await _index.BeginReplaceAsync(
+            attachment, Dimensions, "test-pipeline", now, CancellationToken.None);
+
+        SessionAttachmentTextChunk[] chunks =
+        [
+            .. Enumerable.Range(0, count).Select(static index => new SessionAttachmentTextChunk(
+                index, index * 20, (index * 20) + 17, index + 1, index + 1, "office sentinel " + index)),
+        ];
+
+        await _index.AppendReplaceBatchAsync(
+            attachment,
+            checkpoint.GenerationId,
+            chunks,
+            [.. chunks.Select(_ => new Embedding<float>(vector))],
+            Dimensions,
+            now,
+            now,
+            CancellationToken.None);
+
+        await _index.CompleteReplaceAsync(
+            attachment, checkpoint.GenerationId, count, now, now, 1, CancellationToken.None);
+    }
+
     [SkippableTheory]
 
     [InlineData(true)]

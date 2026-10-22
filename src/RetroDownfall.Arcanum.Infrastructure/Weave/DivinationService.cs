@@ -353,9 +353,13 @@ internal sealed class DivinationService(
             && scopeTableName == "session_attachment_chunks"
             && !SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue))
         {
-            eligible = "lower(trim(substr(s.MimeType, 1, instr(s.MimeType || ';', ';') - 1))) <> @documentMime";
+            eligible =
+                $"lower(trim(substr(s.MimeType, 1, instr(s.MimeType || ';', ';') - 1))) NOT IN ({SessionAttachmentDocumentMimeSql.ParameterList})";
 
-            AddParameter(cmd, "@documentMime", SessionAttachmentComprehensionPolicy.MimeType);
+            foreach (KeyValuePair<string, string> documentMime in SessionAttachmentDocumentMimeSql.Parameters)
+            {
+                AddParameter(cmd, documentMime.Key, documentMime.Value);
+            }
         }
 
         // Table/column names are internal constants owned by the calling feature's retrieval code

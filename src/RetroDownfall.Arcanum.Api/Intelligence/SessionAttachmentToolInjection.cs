@@ -18,11 +18,24 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentToolInjection
 {
-    internal const string ComprehensionDataNotice =
-        "UNTRUSTED DATA; " + SessionAttachmentComprehensionPolicy.FormatName + "; layout not preserved";
+    /// <summary>
+    /// The untrusted-data notice for a Comprehension document, naming the source format of the record
+    /// so a reader can tell what was extracted. A record outside the registry is never framed as a document.
+    /// </summary>
+    internal static string ComprehensionDataNotice(SessionAttachmentRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
 
-    internal static string FormatComprehensionData(string label, string text) =>
-        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice, text);
+        if (!SessionAttachmentComprehensionPolicy.TryGetFormat(record.MimeType, out SessionAttachmentComprehensionFormat? format))
+        {
+            throw new InvalidOperationException("Only a registered Comprehension document can be framed as document data.");
+        }
+
+        return "UNTRUSTED DATA; " + format.FormatName + "; layout not preserved";
+    }
+
+    internal static string FormatComprehensionData(SessionAttachmentRecord record, string label, string text) =>
+        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice(record), text);
 
     /// <summary>
     /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
@@ -122,7 +135,7 @@ public static class SessionAttachmentToolInjection
 
             contents =
             [
-                new TextContent(FormatComprehensionData(FrameLabel(record), text))
+                new TextContent(FormatComprehensionData(record, FrameLabel(record), text))
                 {
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
                 },
@@ -238,7 +251,7 @@ public static class SessionAttachmentToolInjection
 
             contents =
             [
-                new TextContent(FormatComprehensionData(label, text))
+                new TextContent(FormatComprehensionData(record, label, text))
                 {
                     AdditionalProperties = RefreshedContextProperties(),
                 },

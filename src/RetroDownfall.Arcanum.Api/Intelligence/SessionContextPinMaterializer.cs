@@ -937,7 +937,7 @@ public sealed class SessionContextPinMaterializer(
 
             materialized = materialized with
             {
-                Diagnostic = SessionAttachmentToolInjection.ComprehensionDataNotice
+                Diagnostic = SessionAttachmentToolInjection.ComprehensionDataNotice(record)
                     + (materialized.Diagnostic is null ? "." : ". " + materialized.Diagnostic),
             };
         }

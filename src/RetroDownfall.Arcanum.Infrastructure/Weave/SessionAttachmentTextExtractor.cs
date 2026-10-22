@@ -63,12 +63,22 @@ internal static class SessionAttachmentTextExtractor
                 SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
         }
 
+        SessionAttachmentDocumentExtractionHost? selected = host
+            ?? SessionAttachmentDocumentExtractors.For(record.MimeType);
+
+        if (selected is null)
+        {
+            // An eligible record always has a host: the registry and the host table close over the same MIME types.
+            return new SessionAttachmentExtractionResult(
+                SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
+        }
+
         if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
         {
             return SessionAttachmentDocumentExtractionHost.Failed("Document input exceeds its byte ceiling.");
         }
 
-        return await (host ?? SessionAttachmentDocumentExtractionHost.Default)
+        return await selected
             .ExtractAsync(
                 token => store.ReadBytesAsync(record, token),
                 record.ByteLength,
