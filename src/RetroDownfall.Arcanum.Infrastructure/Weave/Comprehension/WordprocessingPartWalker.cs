@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Xml;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -12,15 +13,23 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <remarks>
 /// <para>
 /// Every handler consumes the element it is called on, including its end tag, and leaves the reader on the node that
-/// follows. Text is emitted only from <c>w:t</c> content and a fixed set of run characters, so character data that is
-/// not text content (property values, instructions, stray text) can never reach the output.
+/// follows. Text is emitted only from <c>w:t</c> and <c>m:t</c> content and a fixed set of run characters, so character
+/// data that is not text content (property values, instructions, stray text) can never reach the output. Children are
+/// enumerated through <see cref="WordprocessingChildren"/>, so <c>mc:AlternateContent</c> is already resolved wherever it
+/// occurs and no handler ever sees it.
 /// </para>
 /// <para>
-/// Hiding is decided before a run's content is read: a run's <c>w:rPr</c>, a paragraph's <c>w:pPr</c> and a drawing's
-/// <c>wp:docPr</c> must each precede the content they govern, and a package that places them later is refused rather
-/// than emitted before its flag is known. A run is hidden by its own <c>vanish</c> (either value wins), otherwise by any
-/// of its character style, its paragraph's style, its table's style or the document defaults. Word treats <c>vanish</c> as a toggle
-/// property across style levels; that exclusive-or is deliberately not modelled, so this union only ever hides more.
+/// Hiding is decided before a run's content is read: a run's <c>w:rPr</c>, a paragraph's <c>w:pPr</c>, a table row's
+/// <c>w:trPr</c> and a table cell's <c>w:tcPr</c> must each precede the content they govern, and a package that places them
+/// later is refused rather than emitted before its flag is known. A drawing is the one exception: its hidden flags (the
+/// anchor's attribute, <c>wp:docPr</c>) may come before or after its graphic, so its text is held until the drawing ends.
+/// A run is hidden by its own <c>vanish</c> (either value wins), otherwise by any of its character style, its paragraph's
+/// style, its table's style or the document defaults. Word treats <c>vanish</c> as a toggle property across style levels;
+/// that exclusive-or is deliberately not modelled, so this union only ever hides more.
+/// </para>
+/// <para>
+/// A footnote or endnote reference is recorded only where the reference itself is shown (not deleted, hidden, in field
+/// code or in a hidden drawing), so the notes projected after the body are exactly the ones a reader can reach.
 /// </para>
 /// </remarks>
 internal sealed class WordprocessingPartWalker
@@ -28,8 +37,8 @@ internal sealed class WordprocessingPartWalker
     /// <summary>Complex fields nest this deep at most; one bit per level tracks whether the level is still field code.</summary>
     internal const int MaximumFieldDepth = 64;
 
-    /// <summary>An <c>mc:Choice</c> that requires more prefixes than this is treated as one Word would not take.</summary>
-    internal const int MaximumRequiredPrefixes = 16;
+    /// <summary>A body may show this many note references at most (repeats included).</summary>
+    internal const int MaximumNoteReferences = 65_536;
 
     private readonly BoundedXmlReader _xml;
 
@@ -37,7 +46,9 @@ internal sealed class WordprocessingPartWalker
 
     private readonly WordprocessingStyleSheet _styles;
 
-    private readonly ISessionAttachmentDocumentTextSink _output;
+    private readonly WordprocessingOutput _output;
+
+    private readonly List<long> _noteReferences = [];
 
     private int _fieldDepth;
 
@@ -47,6 +58,14 @@ internal sealed class WordprocessingPartWalker
 
     private bool _tableHidden;
 
+    private int _mathDepth;
+
+    private int _displayMathDepth;
+
+    private bool _inRow;
+
+    private int _rowCells;
+
     public WordprocessingPartWalker(BoundedXmlReader xml, WordprocessingStyleSheet styles, ISessionAttachmentDocumentTextSink output)
     {
         _xml = xml;
@@ -55,40 +74,162 @@ internal sealed class WordprocessingPartWalker
 
         _styles = styles;
 
-        _output = output;
+        _output = new WordprocessingOutput(output);
 
         _paragraphHidden = styles.IsParagraphStyleHidden(null);
     }
 
-    /// <summary>True once the sink refused text; the caller must stop.</summary>
-    public bool Stopped { get; private set; }
+    /// <summary>True once the sink refused text or held text overflowed; the caller must stop.</summary>
+    public bool Stopped => _output.Stopped;
 
-    /// <summary>Walks the part whose root element the reader is positioned on.</summary>
-    public void Walk() => WalkChildren();
+    /// <summary>The footnotes a shown reference in the walked body reaches, in first-reference order.</summary>
+    public IReadOnlyList<int> ReferencedFootnotes => DistinctReferences(endnotes: false);
+
+    /// <summary>The endnotes a shown reference in the walked body reaches, in first-reference order.</summary>
+    public IReadOnlyList<int> ReferencedEndnotes => DistinctReferences(endnotes: true);
 
     /// <summary>
-    /// Walks a footnotes or endnotes part whose root element the reader is positioned on. Only <paramref name="noteName"/>
-    /// children are read, and separator notes (the rules between the body and its notes) are skipped.
+    /// Walks the main part whose root element the reader is positioned on. Only <c>w:body</c> is the main story; the
+    /// document background and anything else beside it is a page fill or furniture, never flowing text.
     /// </summary>
-    public void WalkNotes(string noteName)
+    public void Walk()
     {
         if (!WordprocessingXml.EnterElement(_xml))
         {
             return;
         }
 
-        while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            if (IsWordprocessingElement("body"))
+            {
+                WalkChildren();
+            }
+            else
+            {
+                _xml.SkipElement();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Walks a footnotes or endnotes part whose root element the reader is positioned on, projecting the
+    /// <paramref name="noteName"/> notes whose ids are in <paramref name="referenced"/>, in that order. Separator notes
+    /// are skipped, and so is every note nothing shown references (still read, so a malformed part is refused).
+    /// </summary>
+    /// <remarks>
+    /// A note that is met in its turn streams straight to the sink. One met before its turn (the part lists notes in a
+    /// different order than they were first referenced) is held, bounded, until the notes before it have been projected.
+    /// </remarks>
+    public void WalkNotes(string noteName, IReadOnlyList<int> referenced)
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        Dictionary<int, int> positions = new(referenced.Count);
+
+        for (int index = 0; index < referenced.Count; index++)
+        {
+            positions[referenced[index]] = index;
+        }
+
+        Dictionary<int, string> held = [];
+
+        HashSet<int> met = [];
+
+        int next = 0;
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
         {
             if (!IsWordprocessingElement(noteName)
-                || _reader.GetAttribute("type", _reader.NamespaceURI) is "separator" or "continuationSeparator" or "continuationNotice")
+                || _reader.GetAttribute("type", _reader.NamespaceURI) is "separator" or "continuationSeparator" or "continuationNotice"
+                || !TryReadId(out int id)
+                || !positions.TryGetValue(id, out int position))
             {
                 _xml.SkipElement();
 
                 continue;
             }
 
+            if (!met.Add(id))
+            {
+                // Which of two notes with one id a reader would see is not specified.
+                throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
+            }
+
+            _output.Reset();
+
+            if (position == next)
+            {
+                WalkChildren();
+
+                next++;
+
+                EmitReleasedNotes(referenced, held, ref next);
+
+                continue;
+            }
+
+            _output.BeginHold();
+
             WalkChildren();
+
+            held[id] = _output.TakeHeld();
         }
+
+        // Referenced notes the part lacks leave gaps; everything held behind them goes out now, in order.
+        for (; !Stopped && next < referenced.Count; next++)
+        {
+            if (held.Remove(referenced[next], out string? text))
+            {
+                _output.EmitHeld(text);
+            }
+        }
+    }
+
+    private void EmitReleasedNotes(IReadOnlyList<int> referenced, Dictionary<int, string> held, ref int next)
+    {
+        while (!Stopped && next < referenced.Count && held.Remove(referenced[next], out string? text))
+        {
+            _output.EmitHeld(text);
+
+            next++;
+        }
+    }
+
+    private bool TryReadId(out int id) =>
+        int.TryParse(_reader.GetAttribute("id", _reader.NamespaceURI), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out id);
+
+    private List<int> DistinctReferences(bool endnotes)
+    {
+        long kind = endnotes ? 1 : 0;
+
+        HashSet<int> seen = [];
+
+        List<int> ordered = [];
+
+        foreach (long reference in _noteReferences)
+        {
+            if ((reference >> 32) != kind)
+            {
+                continue;
+            }
+
+            int id = unchecked((int)(uint)(reference & uint.MaxValue));
+
+            if (seen.Add(id))
+            {
+                ordered.Add(id);
+            }
+        }
+
+        return ordered;
     }
 
     private void WalkChildren()
@@ -98,7 +239,9 @@ internal sealed class WordprocessingPartWalker
             return;
         }
 
-        while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
         {
             HandleElement();
         }
@@ -130,19 +273,33 @@ internal sealed class WordprocessingPartWalker
 
                     return;
 
+                case "tr":
+                    WalkRow();
+
+                    return;
+
+                case "tc":
+                    WalkCell();
+
+                    return;
+
+                case "txbxContent":
+                    WalkTextBoxContent();
+
+                    return;
+
                 case "del" or "moveFrom" or "delText" or "instrText" or "delInstrText" or "rPr" or "pPr" or "sectPr" or "sdtPr" or "rt":
                     _xml.SkipElement();
 
                     return;
             }
         }
-        else if (namespaceUri == WordprocessingXml.MarkupCompatibilityNamespace)
+        else if (WordprocessingXml.IsMath(namespaceUri))
         {
-            // A stray mc:Choice or mc:Fallback, like any other markup-compatibility element, is not a content namespace
-            // and is skipped below.
-            if (_reader.LocalName == "AlternateContent")
+            // Math elements mean something only inside an equation; a stray one is not text a reader sees.
+            if (_mathDepth > 0 || _reader.LocalName is "oMath" or "oMathPara")
             {
-                WalkAlternateContent();
+                WalkMathElement();
 
                 return;
             }
@@ -174,6 +331,8 @@ internal sealed class WordprocessingPartWalker
             }
         }
 
+        // A stray mc:Choice or mc:Fallback (one outside an mc:AlternateContent), like any other element Word does not
+        // understand, is not a content namespace and is skipped here.
         if (!WordprocessingXml.IsContentNamespace(namespaceUri))
         {
             _xml.SkipElement();
@@ -200,7 +359,9 @@ internal sealed class WordprocessingPartWalker
 
             bool contentSeen = false;
 
-            while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+            WordprocessingChildren children = new(_xml);
+
+            while (!Stopped && children.MoveNext())
             {
                 if (IsWordprocessingElement("tblPr"))
                 {
@@ -246,7 +407,9 @@ internal sealed class WordprocessingPartWalker
 
         if (WordprocessingXml.EnterElement(_xml))
         {
-            while (WordprocessingXml.NextChildElement(_xml))
+            WordprocessingChildren children = new(_xml);
+
+            while (children.MoveNext())
             {
                 if (IsWordprocessingElement("tblStyle"))
                 {
@@ -262,6 +425,171 @@ internal sealed class WordprocessingPartWalker
         return styled ? hidden : _styles.IsTableStyleHidden(null);
     }
 
+    /// <summary>
+    /// Walks a <c>w:tr</c>: its cells joined by a tab and ended by a newline (a space inside a cell, for a nested table).
+    /// A row that is tracked-deleted (<c>w:trPr/w:del</c>) is not text and leaves nothing behind. The row properties come
+    /// first, as in the schema; range markup before them is excused, anything else is not.
+    /// </summary>
+    private void WalkRow()
+    {
+        bool enclosingInRow = _inRow;
+
+        int enclosingCells = _rowCells;
+
+        _inRow = true;
+
+        _rowCells = 0;
+
+        bool deleted = false;
+
+        if (WordprocessingXml.EnterElement(_xml))
+        {
+            bool propertiesSeen = false;
+
+            bool contentSeen = false;
+
+            WordprocessingChildren children = new(_xml);
+
+            while (!Stopped && children.MoveNext())
+            {
+                if (deleted || WordprocessingXml.IsRangeMarkup(_reader.NamespaceURI, _reader.LocalName) || IsWordprocessingElement("tblPrEx"))
+                {
+                    _xml.SkipElement();
+                }
+                else if (IsWordprocessingElement("trPr"))
+                {
+                    if (propertiesSeen || contentSeen)
+                    {
+                        throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
+                    }
+
+                    propertiesSeen = true;
+
+                    deleted = ReadTrackedDeletion("del");
+                }
+                else
+                {
+                    contentSeen = true;
+
+                    HandleElement();
+                }
+            }
+        }
+
+        _inRow = enclosingInRow;
+
+        _rowCells = enclosingCells;
+
+        if (!deleted)
+        {
+            EndRowMark();
+        }
+    }
+
+    /// <summary>
+    /// Walks a <c>w:tc</c>. A cell that is tracked-deleted (<c>w:tcPr/w:cellDel</c>) is not text and leaves no tab behind.
+    /// Outside any row a cell is only a wrapper, and its paragraphs keep their own lines.
+    /// </summary>
+    private void WalkCell()
+    {
+        bool deleted = false;
+
+        bool begun = false;
+
+        if (WordprocessingXml.EnterElement(_xml))
+        {
+            bool propertiesSeen = false;
+
+            bool contentSeen = false;
+
+            WordprocessingChildren children = new(_xml);
+
+            while (!Stopped && children.MoveNext())
+            {
+                if (deleted)
+                {
+                    _xml.SkipElement();
+                }
+                else if (IsWordprocessingElement("tcPr"))
+                {
+                    if (propertiesSeen || contentSeen)
+                    {
+                        throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
+                    }
+
+                    propertiesSeen = true;
+
+                    deleted = ReadTrackedDeletion("cellDel");
+                }
+                else
+                {
+                    contentSeen = true;
+
+                    BeginCell(ref begun);
+
+                    HandleElement();
+                }
+            }
+        }
+
+        if (!deleted)
+        {
+            BeginCell(ref begun);
+        }
+
+        if (begun && _inRow)
+        {
+            _output.ExitCell();
+        }
+    }
+
+    /// <summary>Starts the cell once it is known not to be deleted: the tab that separates it from the cell before it, then its text.</summary>
+    private void BeginCell(ref bool begun)
+    {
+        if (begun)
+        {
+            return;
+        }
+
+        begun = true;
+
+        if (!_inRow)
+        {
+            return;
+        }
+
+        if (_rowCells++ > 0 && _fieldCodeLevels == 0)
+        {
+            _output.CellBoundary();
+        }
+
+        _output.EnterCell();
+    }
+
+    /// <summary>
+    /// Reads <c>w:trPr</c> or <c>w:tcPr</c> and returns whether it carries a direct child named
+    /// <paramref name="deletionName"/> (<c>del</c> for a row, <c>cellDel</c> for a cell). The recorded previous properties
+    /// of a tracked change are skipped unread.
+    /// </summary>
+    private bool ReadTrackedDeletion(string deletionName)
+    {
+        bool deleted = false;
+
+        if (WordprocessingXml.EnterElement(_xml))
+        {
+            WordprocessingChildren children = new(_xml);
+
+            while (children.MoveNext())
+            {
+                deleted |= IsWordprocessingElement(deletionName);
+
+                _xml.SkipElement();
+            }
+        }
+
+        return deleted;
+    }
+
     private void WalkParagraph()
     {
         bool enclosingHidden = _paragraphHidden;
@@ -272,7 +600,9 @@ internal sealed class WordprocessingPartWalker
         {
             int index = 0;
 
-            while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+            WordprocessingChildren children = new(_xml);
+
+            while (!Stopped && children.MoveNext())
             {
                 if (IsWordprocessingElement("pPr"))
                 {
@@ -294,7 +624,7 @@ internal sealed class WordprocessingPartWalker
 
         _paragraphHidden = enclosingHidden;
 
-        Emit("\n");
+        EndParagraphMark();
     }
 
     /// <summary>
@@ -309,7 +639,9 @@ internal sealed class WordprocessingPartWalker
 
         if (WordprocessingXml.EnterElement(_xml))
         {
-            while (WordprocessingXml.NextChildElement(_xml))
+            WordprocessingChildren children = new(_xml);
+
+            while (children.MoveNext())
             {
                 if (IsWordprocessingElement("pStyle"))
                 {
@@ -325,6 +657,19 @@ internal sealed class WordprocessingPartWalker
         return styled ? hidden : _styles.IsParagraphStyleHidden(null);
     }
 
+    /// <summary>
+    /// Walks a <c>w:txbxContent</c>. The text box stands apart from the text around it, on a line of its own on each side;
+    /// a box that projects nothing adds no line.
+    /// </summary>
+    private void WalkTextBoxContent()
+    {
+        WordprocessingOutput.BlockMark mark = _output.BeginSeparatedBlock();
+
+        WalkChildren();
+
+        _output.EndSeparatedBlock(mark);
+    }
+
     private void WalkRun()
     {
         if (!WordprocessingXml.EnterElement(_xml))
@@ -336,7 +681,9 @@ internal sealed class WordprocessingPartWalker
 
         int index = 0;
 
-        while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
         {
             if (IsWordprocessingElement("rPr"))
             {
@@ -346,6 +693,13 @@ internal sealed class WordprocessingPartWalker
                 }
 
                 hidden = IsRunHidden(WordprocessingXml.ReadRunProperties(_xml, _styles));
+            }
+            else if (WordprocessingXml.IsMath(_reader.NamespaceURI) && _reader.LocalName == "rPr")
+            {
+                // A math run's own properties (m:rPr) come first, ahead of the Word run properties. They format; they hide nothing.
+                _xml.SkipElement();
+
+                continue;
             }
             else
             {
@@ -362,7 +716,9 @@ internal sealed class WordprocessingPartWalker
 
     private void HandleRunChild(bool hidden)
     {
-        if (WordprocessingXml.IsWordprocessing(_reader.NamespaceURI))
+        string namespaceUri = _reader.NamespaceURI;
+
+        if (WordprocessingXml.IsWordprocessing(namespaceUri))
         {
             string localName = _reader.LocalName;
 
@@ -397,8 +753,31 @@ internal sealed class WordprocessingPartWalker
                         EmitAndSkip("-");
 
                         return;
+
+                    case "footnoteReference":
+                        RecordNoteReference(endnote: false);
+
+                        return;
+
+                    case "endnoteReference":
+                        RecordNoteReference(endnote: true);
+
+                        return;
                 }
             }
+        }
+        else if (_mathDepth > 0 && WordprocessingXml.IsMath(namespaceUri) && _reader.LocalName == "t")
+        {
+            if (hidden)
+            {
+                _xml.SkipElement();
+            }
+            else
+            {
+                WalkText();
+            }
+
+            return;
         }
 
         if (hidden)
@@ -409,6 +788,25 @@ internal sealed class WordprocessingPartWalker
         }
 
         HandleElement();
+    }
+
+    /// <summary>
+    /// Notes a footnote or endnote reference mark that is shown (the caller has ruled out a hidden run), and consumes it.
+    /// The mark itself projects nothing. A reference in field code is not shown, and one without a numeric id reaches no note.
+    /// </summary>
+    private void RecordNoteReference(bool endnote)
+    {
+        if (_fieldCodeLevels == 0 && TryReadId(out int id))
+        {
+            if (_noteReferences.Count >= MaximumNoteReferences)
+            {
+                throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
+            }
+
+            _noteReferences.Add(((endnote ? 1L : 0L) << 32) | (uint)id);
+        }
+
+        _xml.SkipElement();
     }
 
     /// <summary>
@@ -498,102 +896,41 @@ internal sealed class WordprocessingPartWalker
     }
 
     /// <summary>
-    /// Projects an <c>mc:AlternateContent</c>. Only the first <c>mc:Choice</c> is ever a candidate: later choices and the
-    /// <c>mc:Fallback</c> repeat the same content. It is projected only when every namespace it requires is one Word
-    /// understands; otherwise Word would show the fallback instead, and neither is projected (a guess in either direction
-    /// could surface text the reader never sees).
-    /// </summary>
-    private void WalkAlternateContent()
-    {
-        if (!WordprocessingXml.EnterElement(_xml))
-        {
-            return;
-        }
-
-        bool decided = false;
-
-        while (!Stopped && WordprocessingXml.NextChildElement(_xml))
-        {
-            if (!decided
-                && _reader.LocalName == "Choice"
-                && _reader.NamespaceURI == WordprocessingXml.MarkupCompatibilityNamespace)
-            {
-                decided = true;
-
-                if (RequiresOnlyNamespacesWordUnderstands())
-                {
-                    WalkChildren();
-
-                    continue;
-                }
-            }
-
-            _xml.SkipElement();
-        }
-    }
-
-    /// <summary>
-    /// Evaluates <c>mc:Choice/@Requires</c>: a whitespace-separated list of prefixes, each resolved through the namespace
-    /// declarations in scope. A missing, empty or over-long list, an unbound prefix, or any namespace Word does not read
-    /// means the choice would not be taken.
-    /// </summary>
-    private bool RequiresOnlyNamespacesWordUnderstands()
-    {
-        ReadOnlySpan<char> rest = _reader.GetAttribute("Requires");
-
-        int prefixes = 0;
-
-        while (true)
-        {
-            rest = rest.TrimStart();
-
-            if (rest.IsEmpty)
-            {
-                return prefixes > 0;
-            }
-
-            int end = rest.IndexOfAny(" \t\r\n");
-
-            ReadOnlySpan<char> prefix = end < 0 ? rest : rest[..end];
-
-            rest = end < 0 ? default : rest[end..];
-
-            if (++prefixes > MaximumRequiredPrefixes)
-            {
-                return false;
-            }
-
-            string? namespaceUri = _reader.LookupNamespace(prefix.ToString());
-
-            if (namespaceUri is null || !WordprocessingXml.IsUnderstoodByWord(namespaceUri))
-            {
-                return false;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Walks a <c>wp:inline</c> or <c>wp:anchor</c>. Its <c>wp:docPr</c> carries the hidden flag and precedes the graphic,
-    /// so everything after a hidden <c>docPr</c> is skipped; a graphic that arrives before any <c>docPr</c> would be
-    /// emitted before its flag is known, which the format does not allow.
+    /// Walks a <c>wp:inline</c> or <c>wp:anchor</c>. A drawing is hidden by its anchor's own <c>hidden</c> attribute (an
+    /// inline has none) or by <c>wp:docPr</c>, which precedes the graphic in the schema but is not required to by this
+    /// walk: the drawing's text is held until the drawing ends, and dropped (with everything it changed) if any flag hid it.
+    /// Layout and extension children carry no text and are skipped like any other element that is not content.
     /// </summary>
     private void WalkDrawingObject()
     {
+        bool hidden = _reader.LocalName == "anchor" && WordprocessingXml.IsTruthyFlag(_reader.GetAttribute("hidden"));
+
+        if (hidden)
+        {
+            _xml.SkipElement();
+
+            return;
+        }
+
         if (!WordprocessingXml.EnterElement(_xml))
         {
             return;
         }
 
-        bool docPrSeen = false;
+        int references = _noteReferences.Count;
 
-        bool hidden = false;
+        int fieldDepth = _fieldDepth;
 
-        while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+        ulong fieldCodeLevels = _fieldCodeLevels;
+
+        _output.BeginHold();
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
         {
             if (WordprocessingXml.IsWordprocessingDrawing(_reader.NamespaceURI) && _reader.LocalName == "docPr")
             {
-                docPrSeen = true;
-
                 hidden |= WordprocessingXml.IsTruthyFlag(_reader.GetAttribute("hidden"));
 
                 _xml.SkipElement();
@@ -602,19 +939,22 @@ internal sealed class WordprocessingPartWalker
             {
                 _xml.SkipElement();
             }
-            else if (!docPrSeen)
-            {
-                if (!WordprocessingXml.IsDrawingLayoutElement(_reader.NamespaceURI, _reader.LocalName))
-                {
-                    throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
-                }
-
-                _xml.SkipElement();
-            }
             else
             {
                 HandleElement();
             }
+        }
+
+        _output.EndHold(keep: !hidden);
+
+        if (hidden)
+        {
+            // What a hidden drawing held never happened: not its references, not the fields it opened or closed.
+            _noteReferences.RemoveRange(references, _noteReferences.Count - references);
+
+            _fieldDepth = fieldDepth;
+
+            _fieldCodeLevels = fieldCodeLevels;
         }
     }
 
@@ -636,7 +976,9 @@ internal sealed class WordprocessingPartWalker
 
         int index = 0;
 
-        while (!Stopped && WordprocessingXml.NextChildElement(_xml))
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
         {
             if (_reader.LocalName == "cNvPr" && _reader.NamespaceURI == containerNamespace)
             {
@@ -662,6 +1004,185 @@ internal sealed class WordprocessingPartWalker
         }
     }
 
+    // ---------------------------------------------------------------- Office Math
+
+    /// <summary>
+    /// Walks one element of an equation (or an <c>m:oMath</c> / <c>m:oMathPara</c> itself). Equations project as the
+    /// linear text of their <c>m:t</c> elements; property elements (anything named <c>*Pr</c>) format and hide nothing and
+    /// are skipped, and the few properties that do hide part of an equation are honoured (see <see cref="WalkMathHiding"/>).
+    /// </summary>
+    private void WalkMathElement()
+    {
+        string localName = _reader.LocalName;
+
+        switch (localName)
+        {
+            case "oMathPara":
+                WalkDisplayMath();
+
+                return;
+
+            case "oMath":
+                WalkEquation();
+
+                return;
+
+            case "r":
+                WalkRun();
+
+                return;
+
+            case "rad" or "nary" or "phant":
+                WalkMathHiding(localName);
+
+                return;
+        }
+
+        if (localName.EndsWith("Pr", StringComparison.Ordinal))
+        {
+            _xml.SkipElement();
+
+            return;
+        }
+
+        WalkChildren();
+    }
+
+    /// <summary>An <c>m:oMathPara</c>: a display equation, its own paragraph.</summary>
+    private void WalkDisplayMath()
+    {
+        WordprocessingOutput.BlockMark mark = _output.BeginSeparatedBlock();
+
+        _displayMathDepth++;
+
+        WalkChildren();
+
+        _displayMathDepth--;
+
+        _output.EndSeparatedBlock(mark);
+    }
+
+    /// <summary>An <c>m:oMath</c>: inline text, or, inside a display, one equation on a line of its own.</summary>
+    private void WalkEquation()
+    {
+        bool display = _displayMathDepth > 0;
+
+        WordprocessingOutput.BlockMark mark = display ? _output.BeginSeparatedBlock() : default;
+
+        _mathDepth++;
+
+        WalkChildren();
+
+        _mathDepth--;
+
+        if (display)
+        {
+            _output.EndSeparatedBlock(mark);
+        }
+    }
+
+    /// <summary>
+    /// Walks a radical, an n-ary operator or a phantom, whose properties can hide part of it: a radical's
+    /// <c>m:degHide</c> its degree, an operator's <c>m:subHide</c> / <c>m:supHide</c> its lower and upper limits, and a
+    /// phantom's <c>m:show</c> set off all of it. The properties come first, as in the schema; a package that places them
+    /// later, or twice, is refused rather than emitted before the flag is known.
+    /// </summary>
+    private void WalkMathHiding(string name)
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        string propertiesName = name + "Pr";
+
+        string firstPart = name == "rad" ? "deg" : "sub";
+
+        bool hideFirst = false;
+
+        bool hideSecond = false;
+
+        bool hideAll = false;
+
+        bool propertiesSeen = false;
+
+        bool contentSeen = false;
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            bool isMath = WordprocessingXml.IsMath(_reader.NamespaceURI);
+
+            if (isMath && _reader.LocalName == propertiesName)
+            {
+                if (propertiesSeen || contentSeen)
+                {
+                    throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
+                }
+
+                propertiesSeen = true;
+
+                ReadMathHidingProperties(name, ref hideFirst, ref hideSecond, ref hideAll);
+
+                continue;
+            }
+
+            contentSeen = true;
+
+            bool hiddenPart = isMath && ((hideFirst && _reader.LocalName == firstPart) || (hideSecond && _reader.LocalName == "sup"));
+
+            if (hideAll || hiddenPart)
+            {
+                _xml.SkipElement();
+            }
+            else
+            {
+                HandleElement();
+            }
+        }
+    }
+
+    private void ReadMathHidingProperties(string name, ref bool hideFirst, ref bool hideSecond, ref bool hideAll)
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        WordprocessingChildren children = new(_xml);
+
+        while (children.MoveNext())
+        {
+            if (WordprocessingXml.IsMath(_reader.NamespaceURI))
+            {
+                bool on = WordprocessingXml.IsOn(_reader.GetAttribute("val", _reader.NamespaceURI));
+
+                switch (name, _reader.LocalName)
+                {
+                    case ("rad", "degHide") or ("nary", "subHide"):
+                        hideFirst |= on;
+
+                        break;
+
+                    case ("nary", "supHide"):
+                        hideSecond |= on;
+
+                        break;
+
+                    case ("phant", "show"):
+                        hideAll |= !on;
+
+                        break;
+                }
+            }
+
+            _xml.SkipElement();
+        }
+    }
+
+    // ---------------------------------------------------------------- output
+
     /// <summary>Emits a character a run element stands for, then consumes the element unless the sink has stopped.</summary>
     private void EmitAndSkip(string text)
     {
@@ -680,9 +1201,23 @@ internal sealed class WordprocessingPartWalker
             return;
         }
 
-        if (!_output.TryAppend(text))
+        _output.Append(text);
+    }
+
+    /// <summary>A paragraph mark is code like any other character while a field's instruction is open.</summary>
+    private void EndParagraphMark()
+    {
+        if (!Stopped && _fieldCodeLevels == 0)
         {
-            Stopped = true;
+            _output.EndParagraph();
+        }
+    }
+
+    private void EndRowMark()
+    {
+        if (!Stopped && _fieldCodeLevels == 0)
+        {
+            _output.EndRow();
         }
     }
 }

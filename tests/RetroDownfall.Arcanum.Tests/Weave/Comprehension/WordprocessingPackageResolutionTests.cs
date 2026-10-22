@@ -533,7 +533,7 @@ public sealed class WordprocessingPackageResolutionTests
 
         string text = WordprocessingFixtures.Extract(package);
 
-        Assert.Equal("linkfieldbox\nvml\n\ncontrol\n", text);
+        Assert.Equal("linkfield\nbox\nvml\n\ncontrol\n", text);
 
         Assert.DoesNotContain(marker, text);
     }
@@ -652,7 +652,7 @@ public sealed class WordprocessingPackageResolutionTests
     public void Extract_CancellationBetweenParts_IsObservedBeforeTheNotesAreRead()
     {
         byte[] package = WordprocessingFixtures.Package(
-            WordprocessingFixtures.Document(WordprocessingFixtures.P("body")),
+            WordprocessingFixtures.Document("<w:p>" + WordprocessingFixtures.R("body") + WordprocessingFixtures.FootnoteReference(1) + "</w:p>"),
             footnotesXml: WordprocessingFixtures.Footnotes("<w:footnote w:id=\"1\">" + WordprocessingFixtures.P("note") + "</w:footnote>"));
 
         using CancellationTokenSource cancellation = new();

@@ -44,10 +44,24 @@ public sealed class WordprocessingRealProducerTests
         Assert.Equal(
             "Quarterly Report\n"
             + "The quick brown fox jumps over the lazy dog. A second sentence follows with a link.\n"
-            + "Item\nCount\nApples\n3\nPears\n12\n"
+            + "Item\tCount\nApples\t3\nPears\t12\n"
             + "First point\nSecond point\n"
             + "Closing paragraph with an accented word: café.\n"
             + " The footnote explains the first sentence.\n",
+            text);
+    }
+
+    [Fact]
+    public void PandocDocxWithEquations_ProjectsTheInlineAndTheDisplayEquationText()
+    {
+        // pandoc writes $...$ as m:oMath inside the paragraph and $$...$$ as m:oMathPara in a paragraph of its own.
+        string text = WordprocessingFixtures.Extract(Read("pandoc-math.docx"));
+
+        Assert.Equal(
+            "Energy equation E=mc2 holds.\n"
+            + "Display math:\n"
+            + "a2+b2=c2\n"
+            + "After math.\n",
             text);
     }
 

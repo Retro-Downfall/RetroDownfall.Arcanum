@@ -10,7 +10,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// by its root element; <c>[Content_Types].xml</c> is not consulted. Only parts reached through the main part's
 /// relationships are read, and only the styles, footnotes and endnotes parts at that: comments, headers, footers,
 /// macros, embeddings and every unreferenced entry are never opened or inflated. External relationships are never
-/// followed. The work is synchronous and pure.
+/// followed. The notes parts project only the notes the body shows a reference to, after the body, footnotes first,
+/// each in the order it was first referenced. The work is synchronous and pure.
 /// </remarks>
 internal sealed class WordprocessingDocumentExtractor : ISessionAttachmentDocumentExtractor
 {
@@ -43,23 +44,25 @@ internal sealed class WordprocessingDocumentExtractor : ISessionAttachmentDocume
             return ValueTask.CompletedTask;
         }
 
-        if (WalkNotes(package, relationships, "footnotes", "footnote", styles, output, cancellationToken))
+        if (WalkNotes(package, relationships, "footnotes", "footnote", body.ReferencedFootnotes, styles, output, cancellationToken))
         {
-            WalkNotes(package, relationships, "endnotes", "endnote", styles, output, cancellationToken);
+            WalkNotes(package, relationships, "endnotes", "endnote", body.ReferencedEndnotes, styles, output, cancellationToken);
         }
 
         return ValueTask.CompletedTask;
     }
 
     /// <summary>
-    /// Projects one notes part, when the document relates one. Returns false once the sink has refused text, so the caller
-    /// reads no further part.
+    /// Projects the referenced notes of one notes part, when the document relates one. The part is read whether or not
+    /// anything references it, so a part that is absent, of another kind or malformed is refused all the same. Returns
+    /// false once the sink has refused text, so the caller reads no further part.
     /// </summary>
     private static bool WalkNotes(
         BoundedZipPackage package,
         IReadOnlyList<OpcRelationship> relationships,
         string partName,
         string noteName,
+        IReadOnlyList<int> referenced,
         WordprocessingStyleSheet styles,
         ISessionAttachmentDocumentTextSink output,
         CancellationToken cancellationToken)
@@ -79,7 +82,7 @@ internal sealed class WordprocessingDocumentExtractor : ISessionAttachmentDocume
 
         WordprocessingPartWalker notes = new(xml, styles, output);
 
-        notes.WalkNotes(noteName);
+        notes.WalkNotes(noteName, referenced);
 
         return !notes.Stopped;
     }

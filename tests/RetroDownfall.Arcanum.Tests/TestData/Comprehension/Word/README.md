@@ -45,3 +45,16 @@ timeout 30 pandoc pandoc-revisions.md -f markdown -t docx -o pandoc-revisions.do
 
 What it pins: a real `w:ins` (kept) and `w:del` with `w:delText` (excluded), comment range anchors and a
 `w:commentReference` in the body, and a `word/comments.xml` whose text must never reach the output.
+
+## pandoc-math.docx (source: pandoc-math.md)
+
+- Tool: pandoc 3.12.1, markdown to docx with its default reference document.
+- Command:
+
+```sh
+timeout 30 pandoc pandoc-math.md -f markdown -t docx -o pandoc-math.docx
+```
+
+What it pins: Office Math as a real producer writes it: an inline `m:oMath` between two runs of a paragraph (with an
+`m:sSup` superscript and an `m:rPr` that must not be read as text), and a display equation as `m:oMathPara` (with an
+`m:oMathParaPr`) alone in its own paragraph.
