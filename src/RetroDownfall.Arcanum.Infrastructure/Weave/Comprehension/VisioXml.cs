@@ -96,6 +96,12 @@ internal static class VisioXml
     /// <summary>True when a layer's Visible cell makes the layer invisible, conservatively including an unreadable value.</summary>
     public static bool IsInvisible(VisioCellValue value) => value is VisioCellValue.False or VisioCellValue.Unknown;
 
+    /// <summary>
+    /// True when a group's DisplayMode cell hides the group shape and its text: the value 0 (<c>visGrpDispModeNone</c>),
+    /// conservatively including an unreadable value. The values 1 and 2 display the group behind or in front of its members.
+    /// </summary>
+    public static bool HidesGroup(VisioCellValue value) => value is VisioCellValue.False or VisioCellValue.Unknown;
+
     public static bool TryParseIndex(string? value, out int index) =>
         int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out index);
 
@@ -135,27 +141,29 @@ internal static class VisioXml
     }
 
     /// <summary>
-    /// True when the LayerMember cell the reader is on puts its shape on an invisible layer: its cached <c>V</c> lists one,
-    /// or it has no cached value but a local formula (anything other than <c>Inh</c>) that could resolve to one. Without any
-    /// invisible layer on the page (<paramref name="layers"/> null) nothing can hide.
+    /// What a layer membership says when it cannot be read: not a layer index, so <see cref="ListsInvisibleLayer"/> takes it
+    /// to name an invisible layer whenever the page has one. A membership that was not retained is represented by it too.
     /// </summary>
-    public static bool LayerMemberHides(XmlReader reader, VisioLayerSet? layers)
-    {
-        if (layers is null)
-        {
-            return false;
-        }
+    internal const string UnknownLayerMembership = "?";
 
+    /// <summary>
+    /// Reads the LayerMember cell the reader is on: the cached <c>V</c> (a semicolon-separated list of layer indices), or
+    /// <see cref="UnknownLayerMembership"/> when there is no cached value but a local formula (anything other than
+    /// <c>Inh</c>, the inherited-formula marker) that could resolve to any layer. Null says nothing, so the cell does not
+    /// override the membership the shape inherits from its master.
+    /// </summary>
+    public static string? ReadLayerMember(XmlReader reader)
+    {
         string? members = reader.GetAttribute("V");
 
         if (!string.IsNullOrEmpty(members))
         {
-            return ListsInvisibleLayer(members, layers);
+            return members;
         }
 
         string? formula = reader.GetAttribute("F");
 
-        return !string.IsNullOrEmpty(formula) && formula != "Inh";
+        return string.IsNullOrEmpty(formula) || formula == "Inh" ? null : UnknownLayerMembership;
     }
 
     /// <summary>

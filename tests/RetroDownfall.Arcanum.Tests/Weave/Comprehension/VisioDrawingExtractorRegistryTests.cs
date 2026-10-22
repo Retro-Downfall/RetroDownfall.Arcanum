@@ -176,15 +176,16 @@ public sealed class VisioDrawingExtractorRegistryTests
                 return [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, .. new byte[600]];
 
             case "too-many-pages":
-                // One page part listed once per page: the package stays small while the page count passes the bound.
+                // Hidden pages that name no part (a part may be named by one page only): the package stays small while the page count passes the bound.
                 return page.Replace(
                     "visio/pages/pages.xml",
-                    VisioFixture.Xml("Pages", string.Concat(Enumerable.Repeat("<Page ID='0' Name='P'><Rel r:id='rId1'/></Page>", VisioDrawingExtractor.MaximumPages + 1)))).Build();
+                    VisioFixture.Xml("Pages", string.Concat(Enumerable.Repeat("<Page ID='0' Name='P'><PageSheet><Cell N='UIVisibility' V='1'/></PageSheet></Page>", VisioDrawingExtractor.MaximumPages + 1)))).Build();
 
             case "too-many-masters":
+                // Masters that name no part (a part may be named by one master only): the package stays small while the master count passes the bound.
                 return page.AddMaster(1, string.Empty).Replace(
                     "visio/masters/masters.xml",
-                    VisioFixture.Xml("Masters", string.Concat(Enumerable.Repeat("<Master ID='1'><Rel r:id='rId1'/></Master>", VisioDrawingExtractor.MaximumMasters + 1)))).Build();
+                    VisioFixture.Xml("Masters", string.Concat(Enumerable.Range(1, VisioDrawingExtractor.MaximumMasters + 1).Select(id => $"<Master ID='{id}'/>")))).Build();
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(kind));
