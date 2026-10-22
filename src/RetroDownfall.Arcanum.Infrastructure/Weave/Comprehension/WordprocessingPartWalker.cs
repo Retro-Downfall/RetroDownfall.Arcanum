@@ -163,8 +163,6 @@ internal sealed class WordprocessingPartWalker
                 throw new DocumentPackageRejectedException(DocumentPackageRejection.FormatMismatch);
             }
 
-            _output.Reset();
-
             if (position == next)
             {
                 WalkChildren();
@@ -1048,18 +1046,14 @@ internal sealed class WordprocessingPartWalker
         WalkChildren();
     }
 
-    /// <summary>An <c>m:oMathPara</c>: a display equation, its own paragraph.</summary>
+    /// <summary>An <c>m:oMathPara</c>: a display equation, its own paragraph. Each equation in it stands on a line of its own (see <see cref="WalkEquation"/>).</summary>
     private void WalkDisplayMath()
     {
-        WordprocessingOutput.BlockMark mark = _output.BeginSeparatedBlock();
-
         _displayMathDepth++;
 
         WalkChildren();
 
         _displayMathDepth--;
-
-        _output.EndSeparatedBlock(mark);
     }
 
     /// <summary>An <c>m:oMath</c>: inline text, or, inside a display, one equation on a line of its own.</summary>

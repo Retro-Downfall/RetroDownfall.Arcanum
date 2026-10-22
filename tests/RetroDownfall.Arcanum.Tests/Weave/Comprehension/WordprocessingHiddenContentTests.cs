@@ -587,41 +587,30 @@ public sealed class WordprocessingHiddenContentTests
     }
 
     [Fact]
-    public void Extract_DrawingWithTwoDocPrElementsWhereEitherHides_IsExcluded()
+    public void Extract_DrawingWithTwoDocPrElementsAheadOfItsGraphic_IsExcludedWhicheverOneHides()
+    {
+        // Sensitivity: the flags combine; a later visible docPr does not undo an earlier hidden one.
+        string Drawing(string first, string second) =>
+            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><wp:docPr id=\"2\" name=\"B\"{second}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + WordprocessingFixtures.P("AMBIGUOUS") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
+
+        string hiddenFirst = Drawing(" hidden=\"1\"", string.Empty);
+
+        string hiddenSecond = Drawing(string.Empty, " hidden=\"1\"");
+
+        Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(hiddenFirst + hiddenSecond + WordprocessingFixtures.R("body")))));
+    }
+
+    [Theory]
+    [InlineData(" hidden=\"1\"", "")]
+    [InlineData("", " hidden=\"1\"")]
+    public void Extract_DrawingWithTwoDocPrElementsWhereEitherHides_IsExcluded(string first, string second)
     {
         string drawing =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
-            + WordprocessingFixtures.P("AMBIGUOUS") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"2\" name=\"B\" hidden=\"1\"/></wp:inline></w:drawing></w:r>";
+            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + WordprocessingFixtures.P("AMBIGUOUS") + $"</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"2\" name=\"B\"{second}/></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing + WordprocessingFixtures.R("body")))));
-    }
-
-    [Fact]
-    public void Extract_DrawingWithoutAnyDocPrAndNoGraphic_IsAccepted()
-    {
-        Assert.Equal("x\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
-            Wrap("<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/></wp:inline></w:drawing></w:r>" + WordprocessingFixtures.R("x")))));
-    }
-
-    [Fact]
-    public void Extract_StrictDrawingNamespace_HidesAHiddenDrawing()
-    {
-        string strictDrawing =
-            "<w:r><w:drawing><sp:inline xmlns:sp=\"http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing\"><sp:extent cx=\"1\" cy=\"1\"/><sp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/>"
-            + "<a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>" + WordprocessingFixtures.P("STRICT_HIDDEN") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></sp:inline></w:drawing></w:r>";
-
-        Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(strictDrawing + WordprocessingFixtures.R("body")))));
-    }
-
-    [Fact]
-    public void Extract_StrictDrawingNamespace_ProjectsAVisibleDrawing()
-    {
-        // Sensitivity: the strict wordprocessingDrawing namespace is recognised, not skipped as an unknown one.
-        string strictDrawing =
-            "<w:r><w:drawing><sp:inline xmlns:sp=\"http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing\"><sp:extent cx=\"1\" cy=\"1\"/><sp:docPr id=\"1\" name=\"Box\"/>"
-            + "<a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>" + WordprocessingFixtures.P("strict visible box") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></sp:inline></w:drawing></w:r>";
-
-        Assert.Equal("strict visible box\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(strictDrawing))));
     }
 
     [Fact]

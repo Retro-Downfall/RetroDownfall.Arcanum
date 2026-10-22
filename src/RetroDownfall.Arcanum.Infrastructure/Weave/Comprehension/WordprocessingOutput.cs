@@ -42,9 +42,6 @@ internal sealed class WordprocessingOutput(ISessionAttachmentDocumentTextSink si
     /// <summary>True once the sink refused text or the hold overflowed; the walk must stop.</summary>
     public bool Stopped { get; private set; }
 
-    /// <summary>Starts again as at the start of a part: the line is empty and nothing is owed.</summary>
-    public void Reset() => _state = State.Initial;
-
     /// <summary>
     /// Appends projected text. Outside a cell it goes out as it is (after a newline if one is owed and the line is not
     /// empty); inside a cell it goes out after the space that is owed, with tabs and newlines folded to spaces.

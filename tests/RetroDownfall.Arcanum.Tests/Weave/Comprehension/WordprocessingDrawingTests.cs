@@ -203,6 +203,19 @@ public sealed class WordprocessingDrawingTests
     }
 
     [Fact]
+    public void Extract_DroppedDrawing_LeavesTheLineStateAsItFoundIt()
+    {
+        // The dropped drawing wrote a line of its own; the text box after it must still start on a new line.
+        string dropped =
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + WordprocessingFixtures.P("DROPPED") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/></wp:inline></w:drawing></w:r>";
+
+        string paragraph = "<w:p>" + WordprocessingFixtures.R("before ") + dropped + VmlBox("box") + "</w:p>";
+
+        Assert.Equal("before \nbox\n\n", Extract(paragraph));
+    }
+
+    [Fact]
     public void Extract_DrawingNestedInAHiddenDrawing_IsDroppedWithIt_AndOneInAVisibleDrawingIsDecidedAlone()
     {
         string hiddenInner = Inline(string.Empty, " hidden=\"1\"", "HIDDEN_INNER");
