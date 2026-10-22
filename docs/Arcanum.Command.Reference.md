@@ -219,7 +219,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/fork alternative` | Fork before the selected answer and regenerate. |
 | `/fork at [<entry-id>]` | Fork through the supplied or selected transcript entry. |
 | `/branch parent`, `/branch child` | Open the visible parent or newest child branch. |
-| `/attach <path>` | Stage a local text file or image for the next turn. |
+| `/attach <path>` | Stage a local text file or image for the next turn. Neither `/attach` nor `@path` stages a Comprehension document (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, their macro-enabled variants, or `.arccomp`) as text: the file stays unstaged, and the status line says to store it with `arcanum attachment add <path>` and reference it with `arcanum run --attachment <id>` or `/attachments add <name>`. |
 | `@path` | Inline-stage a text or image attachment in a message. |
 | `/attachments` | List bound session attachments. |
 | `/attachments add <name> [vN]` | Stage a prior attachment version as a reference. |
