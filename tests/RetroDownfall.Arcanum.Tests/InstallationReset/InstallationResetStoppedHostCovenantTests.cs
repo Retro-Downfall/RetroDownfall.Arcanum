@@ -66,7 +66,7 @@ namespace RetroDownfall.Arcanum.Tests.InstallationReset;
 /// <see cref="CliApplicationFactory.ConfigureCliServices"/>, over a real SQLCipher Grimoire, the real
 /// maintenance lock, the real active store and the real stopped-host data service. The only
 /// substitutions are the ones the CLI harness always makes (an in-memory operating-system credential
-/// store and an installed-startup probe) and a no-op daemon mutation.
+/// store and an installed-startup probe), a refused host transport and a no-op daemon mutation.
 ///
 /// <para>The switch is varied because the question is whether it matters. It does not: neither the
 /// installation-reset graph nor the Covenant gate the planner leases from reads it, so a family the
@@ -668,6 +668,8 @@ public sealed partial class InstallationResetStoppedHostCovenantTests : IDisposa
         });
 
         CliApplicationFactory.ConfigureCliServices(services, configuration);
+
+        ConfigureStoppedHostTransport(services);
 
         services.RemoveAll<IOsCredentialStore>();
 
