@@ -578,6 +578,57 @@ public sealed class UtcInstantPersistenceBoundaryTests
         Assert.Equal("GrimoireEntitySql.Format(id)", violation.Value);
     }
 
+    [Theory]
+    [InlineData("(DateTimeOffset SortTime, Guid Id)?", "SortTime", true)]
+    [InlineData("(string SortTime, Guid Id)?", "SortTime", false)]
+    [InlineData("(Guid SortTime, Guid Id)?", "SortTime", false)]
+    [InlineData("(DateTimeOffset SortTime, Guid Id)?", "Missing", false)]
+    [InlineData("(DateTimeOffset SortTime, string SortTime)?", "SortTime", false)]
+    public void Per_binding_guard_resolves_the_named_tuple_cursor_type_before_selecting_a_formatter(
+        string tupleType, string member, bool allowed)
+    {
+        string source = $$"""
+            using Microsoft.Data.Sqlite;
+
+            internal static class Fixture
+            {
+                internal static void Read(SqliteCommand cmd, {{tupleType}} after)
+                {
+                    cmd.CommandText = "SELECT Id FROM Entries WHERE CreatedAt > @afterTime;";
+
+                    if (after is { } cursor)
+                    {
+                        Add(cmd, "@afterTime", Format(cursor.{{member}}));
+                    }
+                }
+
+                private static string Format(DateTimeOffset value) => UtcInstantText.Format(value);
+
+                private static string Format(Guid value) => value.ToString("N");
+
+                private static string Format(string value) => value;
+
+                private static void Add(SqliteCommand cmd, string name, object value) => cmd.Parameters.AddWithValue(name, value);
+            }
+            """;
+
+        IReadOnlyList<InstantBindingViolation> violations = FindInstantBindingViolations(
+            [new ProductionSource("Fixture.cs", source)]);
+
+        if (allowed)
+        {
+            Assert.Empty(violations);
+        }
+        else
+        {
+            InstantBindingViolation violation = Assert.Single(violations);
+
+            Assert.Equal("@afterTime", violation.ParameterName);
+
+            Assert.Equal("Format(cursor." + member + ")", violation.Value);
+        }
+    }
+
     [Fact]
     public void Per_binding_guard_rejects_a_timestamp_named_string_member_passed_to_a_shared_formatter()
     {
@@ -2690,6 +2741,19 @@ public sealed class UtcInstantPersistenceBoundaryTests
             }
 
             string? ownerType = InferExpressionType(member.Expression, binding, memberTypes);
+
+            if (ownerType is not null
+                && SyntaxFactory.ParseTypeName(NormalizeType(ownerType)!) is TupleTypeSyntax tuple)
+            {
+                TupleElementSyntax[] elements =
+                [
+                    .. tuple.Elements.Where(element => element.Identifier.ValueText == member.Name.Identifier.ValueText),
+                ];
+
+                // A tuple cursor's declared element type selects the formatter overload. Missing or
+                // ambiguous names remain unproven; the member's spelling alone never implies an instant.
+                return elements.Length == 1 ? elements[0].Type.ToString() : null;
+            }
 
             if (ownerType is not null
                 && memberTypes.TryGetValue(
