@@ -1065,7 +1065,7 @@ internal sealed partial class ArcanumInternalToolServer
                 {
                     Name = "attach_session_file",
                     Description =
-                        "Re-attach a bound session attachment (text or image) into the next model turn by logical name. Uses the current session only; optional version selects a specific revision (latest when omitted). Content is injected multimodally after the tool result — do not expect image bytes in the tool text.",
+                        "Re-attach a bound session attachment (text, image, or an eligible document) into the next model turn by logical name. With Comprehension enabled, eligible documents are attached as extracted text. Uses the current session only; optional version selects a specific revision (latest when omitted). Content is injected multimodally after the tool result — do not expect image bytes in the tool text.",
                     InputSchema = _attachSessionFileSchema,
                 });
 

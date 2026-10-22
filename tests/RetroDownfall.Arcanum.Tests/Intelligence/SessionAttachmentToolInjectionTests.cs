@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Sanctum;
 using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 using RetroDownfall.Arcanum.Tests.Support;
 using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -583,6 +584,203 @@ public sealed class SessionAttachmentToolInjectionTests
             Assert.Equal("image/png", data.MediaType);
 
             Assert.True(data.Data.Span.SequenceEqual(pngBytes));
+        }
+        finally
+        {
+            SessionAttachmentToolAmbient.CurrentSessionId = null;
+        }
+    }
+
+    /// <summary>
+    /// The tool accepts an image before the post-tool path judges it against the turn's model and Scrying
+    /// settings. When that judgement refuses it, the model is told so and why, never that content is coming.
+    /// </summary>
+    [Fact]
+    public async Task ProcessSingleToolCall_AttachSessionFile_ImageRefusedByScrying_SaysItWasNotAttachedAndWhy()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] pngBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+        FakeSessionAttachmentStore store = new();
+
+        store.Records.Add(
+            new SessionAttachmentRecord(
+                Guid.NewGuid(),
+                sessionId,
+                null,
+                null,
+                SessionAttachmentState.Bound,
+                "shot.png",
+                "shot.png",
+                1,
+                "rel/shot.png",
+                "abc",
+                "image/png",
+                pngBytes.Length,
+                SessionAttachmentKind.Image,
+                DateTimeOffset.UtcNow));
+
+        store.BytesByLogical["shot.png"] = pngBytes;
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await AttachThroughFakeToolAsync(
+            new ArcanumSettings { Features = new FeatureSettings { Attachments = true, Scrying = false } },
+            store,
+            sessionId,
+            "shot.png",
+            "Attached 'shot.png' v1 (Image, 8 bytes). Content will be injected into the next model turn.");
+
+        Assert.Null(processed.AdditionalContextContents);
+
+        Assert.False(processed.Failed);
+
+        Assert.Equal(
+            "Not attached: 'shot.png' v1. Scrying is disabled; image attachments cannot be re-attached.",
+            processed.ResultText);
+    }
+
+    [Fact]
+    public async Task ProcessSingleToolCall_AttachSessionFile_SameVersionTwiceInATurn_SaysItIsAlreadyInContext()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        FakeSessionAttachmentStore store = new();
+
+        store.Records.Add(
+            new SessionAttachmentRecord(
+                Guid.NewGuid(),
+                sessionId,
+                null,
+                null,
+                SessionAttachmentState.Bound,
+                "notes.txt",
+                "notes.txt",
+                1,
+                "rel/notes.txt",
+                "abc",
+                "text/plain",
+                5,
+                SessionAttachmentKind.Text,
+                DateTimeOffset.UtcNow));
+
+        store.BytesByLogical["notes.txt"] = Encoding.UTF8.GetBytes("hello");
+
+        ArcanumSettings settings = new() { Features = new FeatureSettings { Attachments = true } };
+
+        const string accepted = "Attached 'notes.txt' v1 (Text, 5 bytes). Content will be injected into the next model turn.";
+
+        ToolExecutionPipeline.ProcessedToolCall first = await AttachThroughFakeToolAsync(settings, store, sessionId, "notes.txt", accepted);
+
+        Assert.NotNull(first.AdditionalContextContents);
+
+        Assert.Equal(accepted, first.ResultText);
+
+        ToolExecutionPipeline.ProcessedToolCall second = await AttachThroughFakeToolAsync(settings, store, sessionId, "notes.txt", accepted);
+
+        Assert.Null(second.AdditionalContextContents);
+
+        Assert.Equal("Not attached: 'notes.txt' v1. It is already in this turn's context.", second.ResultText);
+    }
+
+    [Fact]
+    public async Task MaterializeAttachAsync_BusyDocumentFamily_SaysItWasNotAttachedAndToTryAgain()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("ARCCOMP1\nbusy sentinel");
+
+        SessionAttachmentRecord record = ComprehensionRecord(sessionId) with { ByteLength = bytes.Length };
+
+        NoOpSessionAttachmentStore store = new(
+            readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes),
+            logicalLookup: (_, _, _) => record);
+
+        TaskCompletionSource<ReadOnlyMemory<byte>> heldRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource readEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SessionAttachmentDocumentExtractionHost host = new(
+            new ComprehensionTextContainerExtractor().ExtractAsync,
+            TimeSpan.FromSeconds(5),
+            slotWait: TimeSpan.FromMilliseconds(50));
+
+        // Another document holds the family's slot through a snapshot read that has not returned.
+        Task<SessionAttachmentExtractionResult> holder = host.ExtractAsync(
+            _ =>
+            {
+                readEntered.TrySetResult();
+
+                return heldRead.Task;
+            },
+            bytes.Length,
+            1024,
+            CancellationToken.None);
+
+        try
+        {
+            await readEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            SessionAttachmentToolInjection.AttachMaterialization busy = await SessionAttachmentToolInjection.MaterializeAttachAsync(
+                store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null, CancellationToken.None, host);
+
+            Assert.Null(busy.Contents);
+
+            Assert.Equal(
+                "Not attached: 'document.arcc' v1. Document extraction is temporarily busy. Try attaching it again shortly.",
+                busy.NotAttachedMessage);
+        }
+        finally
+        {
+            heldRead.TrySetResult(bytes);
+        }
+
+        _ = await holder.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // The deferral consumed nothing: the same version attaches once the family is free.
+        SessionAttachmentToolInjection.AttachMaterialization retried = await SessionAttachmentToolInjection.MaterializeAttachAsync(
+            store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null, CancellationToken.None, host);
+
+        Assert.Null(retried.NotAttachedMessage);
+
+        Assert.Contains("busy sentinel", Assert.IsType<TextContent>(Assert.Single(retried.Contents!)).Text, StringComparison.Ordinal);
+    }
+
+    private static async Task<ToolExecutionPipeline.ProcessedToolCall> AttachThroughFakeToolAsync(
+        ArcanumSettings settings,
+        FakeSessionAttachmentStore store,
+        Guid sessionId,
+        string logicalName,
+        string toolResult)
+    {
+        ToolExecutionPipeline pipeline = CreatePipeline(settings, store);
+
+        ChatOptions chatOptions = new()
+        {
+            Tools = [AIFunctionFactory.Create(() => toolResult, "attach_session_file")],
+        };
+
+        SessionAttachmentToolAmbient.CurrentSessionId = sessionId;
+
+        try
+        {
+            return await pipeline.ProcessSingleToolCallAsync(
+                new FunctionCallContent(
+                    "call_attach_" + Guid.NewGuid().ToString("N"),
+                    "attach_session_file",
+                    new Dictionary<string, object?> { ["logicalName"] = logicalName }),
+                new PingRequest("hi", WorkingDirectory: "/tmp"),
+                chatOptions,
+                activeSpell: null,
+                sessionId: sessionId.ToString("D"),
+                turnContext: new ToolExecutionPipeline.TurnContext(),
+                suppressInvocationFailures: false,
+                cancellationToken: CancellationToken.None);
         }
         finally
         {

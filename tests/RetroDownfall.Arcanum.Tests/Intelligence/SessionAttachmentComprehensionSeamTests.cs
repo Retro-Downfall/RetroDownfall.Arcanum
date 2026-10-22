@@ -117,9 +117,14 @@ public sealed class SessionAttachmentComprehensionSeamTests
         Assert.Equal("explicitAttachment", injected.AdditionalProperties!["arcanum.context_source"]);
     }
 
+    /// <summary>
+    /// The gates are judged once, by the turn's settings, where the post-tool materializer runs. The tool server
+    /// cannot see the turn's settings, so it judges a registry document by its format alone and leaves the gates
+    /// to that one decision; the model is told the document was not attached, with the existing refusal.
+    /// </summary>
     [Theory]
     [MemberData(nameof(GateCombinationsWithAGateOff))]
-    public async Task AttachSessionFile_WithAGateOff_KeepsTheExistingRefusal(bool retrievalEnabled, bool comprehensionEnabled)
+    public async Task AttachSessionFile_WithAGateOff_IsNotAttachedWithTheExistingRefusal(bool retrievalEnabled, bool comprehensionEnabled)
     {
         SessionAttachmentTurnBudget.BeginTurn();
 
@@ -138,17 +143,118 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
         await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, settings);
 
-        McpToolsCallResultWire wire = await harness.CallToolAsync(sessionId, record.LogicalKey);
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(sessionId, record.LogicalKey);
 
-        Assert.True(wire.IsError);
+        Assert.Null(processed.AdditionalContextContents);
 
-        Assert.Equal(TextOnlyRefusal, wire.Content[0].Text);
+        Assert.False(processed.Failed, processed.ResultText);
+
+        Assert.Equal("Not attached: 'document.bin' v1. " + TextOnlyRefusal, processed.ResultText);
+    }
+
+    public static TheoryData<string, string> UnextractableDocuments() => new()
+    {
+        { "PK\u0003\u0004 not really a package", "Document package is not a valid ZIP container." },
+        { "\u00D0\u00CF\u0011\u00E0\u00A1\u00B1\u001A\u00E1 OLE2 EncryptedPackage", "Encrypted document packages are not supported." },
+    };
+
+    /// <summary>
+    /// The tool accepts a registry document before anything extracts it. When extraction then yields nothing, the
+    /// model is told the document was not attached and the code-owned reason, never that content is coming.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(UnextractableDocuments))]
+    public async Task AttachSessionFile_UnextractableDocument_TellsTheModelItWasNotAttachedAndWhy(string payload, string reason)
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = System.Text.Encoding.Latin1.GetBytes(payload);
+
+        SessionAttachmentRecord record = ComprehensionSeamDocuments.Record(sessionId, SessionAttachmentComprehensionPolicy.WordDocumentMimeType, bytes.Length);
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, BothGates());
 
         ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(sessionId, record.LogicalKey);
 
-        Assert.True(processed.Failed);
+        Assert.Null(processed.AdditionalContextContents);
+
+        Assert.False(processed.Failed, processed.ResultText);
+
+        Assert.Equal("Not attached: 'document.bin' v1. " + reason, processed.ResultText);
+    }
+
+    [Fact]
+    public async Task AttachSessionFile_PackageWithoutItsParts_TellsTheModelItWasNotAttachedAndWhy()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = ComprehensionPackageBuilder.Build(("notes.txt", "not a document part"));
+
+        SessionAttachmentRecord record = ComprehensionSeamDocuments.Record(sessionId, SessionAttachmentComprehensionPolicy.WordDocumentMimeType, bytes.Length);
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, BothGates());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(sessionId, record.LogicalKey);
 
         Assert.Null(processed.AdditionalContextContents);
+
+        Assert.Equal("Not attached: 'document.bin' v1. Document package is missing a required part.", processed.ResultText);
+    }
+
+    /// <summary>
+    /// A configuration reload between the turn's start and the tool call: the tool and the materializer must
+    /// still decide alike, by the turn's settings.
+    /// </summary>
+    [Fact]
+    public async Task AttachSessionFile_GateTurnedOnAfterTheTurnBegan_FollowsTheTurnSettings()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        string mimeType = SessionAttachmentComprehensionPolicy.WordDocumentMimeType;
+
+        byte[] bytes = ComprehensionSeamDocuments.Bytes(mimeType);
+
+        SessionAttachmentRecord record = ComprehensionSeamDocuments.Record(sessionId, mimeType, bytes.Length);
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, BothGates(), requestSettings: RetrievalOnly());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(sessionId, record.LogicalKey);
+
+        Assert.Null(processed.AdditionalContextContents);
+
+        Assert.Equal("Not attached: 'document.bin' v1. " + TextOnlyRefusal, processed.ResultText);
+    }
+
+    [Fact]
+    public async Task AttachSessionFile_GateTurnedOffAfterTheTurnBegan_FollowsTheTurnSettings()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        string mimeType = SessionAttachmentComprehensionPolicy.WordDocumentMimeType;
+
+        byte[] bytes = ComprehensionSeamDocuments.Bytes(mimeType);
+
+        SessionAttachmentRecord record = ComprehensionSeamDocuments.Record(sessionId, mimeType, bytes.Length);
+
+        string expected = await ExtractedTextAsync(record, bytes, BothGates());
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, RetrievalOnly(), requestSettings: BothGates());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(sessionId, record.LogicalKey);
+
+        Assert.False(processed.Failed, processed.ResultText);
+
+        TextContent injected = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(processed.AdditionalContextContents)));
+
+        Assert.Contains(expected, injected.Text, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -382,6 +488,12 @@ public sealed class SessionAttachmentComprehensionSeamTests
             Features = new FeatureSettings { Attachments = true, AttachmentRetrieval = true, Comprehension = true },
         };
 
+    private static ArcanumSettings RetrievalOnly() =>
+        new()
+        {
+            Features = new FeatureSettings { Attachments = true, AttachmentRetrieval = true, Comprehension = false },
+        };
+
     /// <summary>What the registry host extracts from the package, so a path's output is compared with the extractor, not a literal.</summary>
     private static async Task<string> ExtractedTextAsync(SessionAttachmentRecord record, byte[] bytes, ArcanumSettings settings)
     {
@@ -439,10 +551,13 @@ public sealed class SessionAttachmentComprehensionSeamTests
                 toolOutputCapBytes: 64 * 1024);
         }
 
+        /// <param name="settings">The host's current settings, which the tool server reads.</param>
+        /// <param name="requestSettings">The turn's settings snapshot, which the pipeline reads; the host's when omitted.</param>
         public static async Task<AttachToolHarness> CreateAsync(
             SessionAttachmentRecord record,
             byte[] bytes,
-            ArcanumSettings settings)
+            ArcanumSettings settings,
+            ArcanumSettings? requestSettings = null)
         {
             NoOpSessionAttachmentStore store = new(
                 record,
@@ -490,7 +605,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
             await transport.StartAsync();
 
             ToolExecutionPipeline pipeline = new(
-                new TestOptionsSnapshot<ArcanumSettings>(settings),
+                new TestOptionsSnapshot<ArcanumSettings>(requestSettings ?? settings),
                 new AllowingWard(),
                 new AllowAllSanctumGuard(),
                 store,

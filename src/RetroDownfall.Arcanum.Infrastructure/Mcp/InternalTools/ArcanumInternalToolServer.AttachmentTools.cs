@@ -3,8 +3,6 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -17,6 +15,12 @@ namespace RetroDownfall.Arcanum.Infrastructure.Mcp;
 /// </summary>
 internal sealed partial class ArcanumInternalToolServer
 {
+    /// <summary>
+    /// The refusal for an attachment whose content never reaches a model turn: a Binary attachment outside the
+    /// Comprehension registry, or a registry document while a Comprehension gate is off for the turn.
+    /// </summary>
+    internal const string AttachmentNotInjectableMessage =
+        "The selected attachment can be downloaded or exported, but its content cannot be injected into a model turn.";
 
     private async Task<McpToolsCallResultWire> ExecuteRefreshSessionFileAsync(
         JsonElement arguments,
@@ -109,7 +113,6 @@ internal sealed partial class ArcanumInternalToolServer
         JsonElement arguments,
         CancellationToken cancellationToken)
     {
-
         AttachSessionFileParams? args;
 
         try
@@ -157,23 +160,15 @@ internal sealed partial class ArcanumInternalToolServer
             }
 
             // A Comprehension document is durably Binary, so the kind alone would refuse it before the
-            // post-tool materializer ever ran. The same current-settings policy the materializer applies
-            // decides, so the tool accepts exactly what the materializer can then extract.
-            ArcanumSettings settings = scope.ServiceProvider.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue
-                ?? new ArcanumSettings();
-
-            if (record.Kind is not SessionAttachmentKind.Text
-
-                and not SessionAttachmentKind.Image
-
-                && !SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
-
+            // post-tool materializer ever ran. The tool judges a registry document by its format alone and
+            // leaves the gates to the materializer, which judges them by the turn's settings snapshot. This
+            // server cannot see that snapshot, so judging the gates here too could disagree with it after a
+            // configuration reload mid-turn. When the materializer injects nothing, it tells the model why.
+            if (record.Kind is not SessionAttachmentKind.Text and not SessionAttachmentKind.Image
+                && !(record.Kind == SessionAttachmentKind.Binary
+                    && SessionAttachmentComprehensionPolicy.TryGetFormat(record.MimeType, out _)))
             {
-
-                return ToolError(
-
-                    "The selected attachment can be downloaded or exported, but its content cannot be injected into a model turn.");
-
+                return ToolError(AttachmentNotInjectableMessage);
             }
 
             string text =
@@ -193,7 +188,6 @@ internal sealed partial class ArcanumInternalToolServer
 
             return ToolError("An internal error occurred during tool execution.");
         }
-
     }
 
     private static string BuildMissingAttachmentMessage(
@@ -201,7 +195,6 @@ internal sealed partial class ArcanumInternalToolServer
         int? version,
         IReadOnlyList<SessionAttachmentRecord> bound)
     {
-
         StringBuilder sb = new();
 
         sb.Append("No session attachment named '");
@@ -240,7 +233,5 @@ internal sealed partial class ArcanumInternalToolServer
         }
 
         return sb.ToString();
-
     }
-
 }

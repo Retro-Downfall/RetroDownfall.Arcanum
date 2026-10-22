@@ -161,6 +161,15 @@ internal sealed class RunAttachmentStager(
                     $"The --with path '{requestedPath}' cannot be staged because it is {notRegularReason}.");
             }
 
+            // A Comprehension document is a package, not text, so it is refused by its name before a byte of it
+            // is read, with the route Command Center names (ComprehensionDocumentPaths).
+            if (ComprehensionDocumentPaths.IsComprehensionDocument(fullPath))
+            {
+                return Failure(
+                    $"The --with path '{requestedPath}' cannot be staged because it is "
+                    + $"{ComprehensionDocumentPaths.Reason}; {ComprehensionDocumentPaths.Guidance}.");
+            }
+
             string relativePath = Path.GetRelativePath(
                 fullWorkingDirectory,
                 fullPath);

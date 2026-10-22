@@ -32,6 +32,32 @@ public sealed class AttachSessionFileToolTests
         Assert.Contains(tools.Tools, static t => t.Name == "attach_session_file");
     }
 
+    /// <summary>
+    /// The model learns from the description what it may attach. Eligible Comprehension documents arrive as
+    /// extracted text, so a description naming only text and images would keep the model from asking for them.
+    /// </summary>
+    [Fact]
+    public async Task ToolsList_AttachSessionFileDescription_SaysEligibleDocumentsArriveAsExtractedText()
+    {
+        await using TestMcpSession session = await CreateSessionAsync(attachmentsToolEnabled: true);
+
+        JsonRpcResponse response = await session.SendRequestAsync("tools/list", null);
+
+        McpToolsListResultWire tools = JsonSerializer.Deserialize(
+            response.Result!.Value,
+            McpJsonSerializerContext.Default.McpToolsListResultWire)!;
+
+        string description = tools.Tools.Single(static t => t.Name == "attach_session_file").Description!;
+
+        Assert.DoesNotContain("(text or image)", description, StringComparison.Ordinal);
+
+        Assert.Contains("documents", description, StringComparison.Ordinal);
+
+        Assert.Contains("extracted text", description, StringComparison.Ordinal);
+
+        Assert.Contains("Comprehension", description, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ToolsList_DoesNotAdvertiseAttachSessionFile_WhenDisabled()
     {

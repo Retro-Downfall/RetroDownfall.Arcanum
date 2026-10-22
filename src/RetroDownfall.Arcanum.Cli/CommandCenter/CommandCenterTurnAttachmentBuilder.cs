@@ -5,7 +5,6 @@ using RetroDownfall.Arcanum.Cli.Commands;
 using RetroDownfall.Arcanum.Cli.Services;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
-using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -29,17 +28,11 @@ internal static partial class CommandCenterTurnAttachmentBuilder
 
     private const int FileReadBufferBytes = 81920;
 
-    /// <summary>Why a Comprehension document is never staged: it is a package, not text.</summary>
-    private const string ComprehensionReason = "a Comprehension document, which is never sent as inline text";
+    /// <summary>Why a Comprehension document is never staged, worded once for every CLI path that refuses one.</summary>
+    private const string ComprehensionReason = ComprehensionDocumentPaths.Reason;
 
-    /// <summary>
-    /// The supported route for a Comprehension document: store it as a session attachment, then reference
-    /// the stored attachment, so the server's Comprehension rules (hidden content included) decide what the
-    /// model reads.
-    /// </summary>
-    private const string ComprehensionGuidance =
-        "store it with \"arcanum attachment add <path>\" and reference it by the attachment's id with "
-        + "\"arcanum run --attachment <id>\" (in Command Center, \"/attachments add <name>\")";
+    /// <summary>The supported route for a Comprehension document, worded once for every CLI path.</summary>
+    private const string ComprehensionGuidance = ComprehensionDocumentPaths.Guidance;
 
     /// <summary>
     /// Resolves <c>@path</c> tokens and pre-staged <c>/attach</c> paths into the turn's attachments. Only
@@ -286,15 +279,9 @@ internal static partial class CommandCenterTurnAttachmentBuilder
             clearPre);
     }
 
-    /// <summary>
-    /// Whether the file's extension maps to a document the Comprehension registry reads. The decision is the
-    /// shared detector's and the shared registry's, so no second extension list exists here, and it is made
-    /// from the name alone: the file is not opened, so a document is refused without a byte of it being read.
-    /// </summary>
+    /// <summary>Whether the file is a Comprehension document, decided by its name alone (<see cref="ComprehensionDocumentPaths"/>).</summary>
     private static bool IsComprehensionDocument(string fullPath) =>
-        SessionAttachmentComprehensionPolicy.TryGetFormat(
-            AttachmentMimeDetector.Detect(ReadOnlySpan<byte>.Empty, Path.GetFileName(fullPath)),
-            out _);
+        ComprehensionDocumentPaths.IsComprehensionDocument(fullPath);
 
     private static void AddInlineToken(Dictionary<string, List<Match>> inlineTokens, string fullPath, Match match)
     {
