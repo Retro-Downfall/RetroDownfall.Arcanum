@@ -53,6 +53,7 @@ public sealed class OpenDocumentTextExtractorTests
     [InlineData("a <text:span>  b</text:span>", "a b")]
     [InlineData("<text:span> </text:span>a", "a")]
     [InlineData("a <text:a xlink:href=\"x\"> b</text:a>", "a b")]
+    [InlineData("a<text:span xml:space=\"preserve\"> </text:span>b", "a b")]
     public async Task Extract_WhitespaceCollapsesAcrossInlineElementBoundaries(string paragraph, string expected)
     {
         byte[] package = Odt($"<text:p>{paragraph}</text:p>");
@@ -190,6 +191,26 @@ public sealed class OpenDocumentTextExtractorTests
             + " text<office:annotation-end office:name=\"__Annotation__1\"/> after</text:p>");
 
         Assert.Equal("Visible text after\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_LegacyTextAnnotation_IsExcluded()
+    {
+        // Sensitivity: the text:annotation exclusion (the pre-1.2 spelling of a comment).
+        byte[] package = Odt("<text:p>Visible<text:annotation><text:p>LEGACYNOTEMARKER</text:p></text:annotation> end</text:p>");
+
+        Assert.Equal("Visible end\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableTitleAndDescription_AreExcluded()
+    {
+        // Sensitivity: the table:title / table:desc exclusion (accessibility text is not rendered).
+        byte[] package = Odt(
+            "<table:table table:name=\"T\"><table:title><text:p>TABLETITLEMARKER</text:p></table:title><table:desc><text:p>TABLEDESCMARKER</text:p></table:desc>"
+            + "<table:table-column/><table:table-row><table:table-cell><text:p>Cell</text:p></table:table-cell></table:table-row></table:table>");
+
+        Assert.Equal("Cell\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]

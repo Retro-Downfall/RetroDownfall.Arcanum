@@ -257,7 +257,7 @@ internal sealed class OpenDocumentContentWalker(
                     || (name == "section" && IsHiddenSection());
 
             case OpenDocumentNames.Office:
-                return name is "annotation" or "forms" or "binary-data";
+                return name is "annotation" or "forms";
 
             case OpenDocumentNames.Svg:
                 return name is "title" or "desc";
@@ -316,8 +316,6 @@ internal sealed class OpenDocumentContentWalker(
         }
 
         _ignoreLeadingSpace = true;
-
-        _hiddenParagraph = false;
 
         _paragraphLevel++;
 

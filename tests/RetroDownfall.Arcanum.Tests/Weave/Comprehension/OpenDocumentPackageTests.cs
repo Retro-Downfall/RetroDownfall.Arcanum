@@ -411,14 +411,19 @@ public sealed class OpenDocumentPackageTests
     }
 
     [Theory]
-    [InlineData("content")]
-    [InlineData("styles")]
-    public async Task Extract_AnyDocumentTypeInAContentPart_IsMalformedXml(string part)
+    [InlineData("content", true)]
+    [InlineData("styles", true)]
+    [InlineData("content", false)]
+    [InlineData("styles", false)]
+    public async Task Extract_AnyDocumentTypeInAContentPart_IsMalformedXml(string part, bool withEntity)
     {
-        // Sensitivity: content.xml and styles.xml keep DtdProcessing.Prohibit.
-        string doctype = $"<!DOCTYPE office:document-{part} [<!ENTITY x \"{Marker}\">]>";
+        // Sensitivity: content.xml and styles.xml keep DtdProcessing.Prohibit. A bare DOCTYPE (no entity) is accepted by
+        // Ignore, so the second pair of rows is what tells Prohibit from Ignore; the first pair tells either from Parse.
+        string doctype = withEntity
+            ? $"<!DOCTYPE office:document-{part} [<!ENTITY x \"{Marker}\">]>"
+            : $"<!DOCTYPE office:document-{part}>";
 
-        string content = ContentPart("text", "<text:p>&x;</text:p>");
+        string content = ContentPart("text", withEntity ? "<text:p>&x;</text:p>" : "<text:p>Body</text:p>");
 
         string styles = StylesPart(string.Empty);
 
@@ -507,6 +512,15 @@ public sealed class OpenDocumentPackageTests
     {
         string content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
             + $"<office:document-content {Namespaces}><office:text><text:p>x</text:p></office:text></office:document-content>";
+
+        await RejectedAsync<OpenDocumentTextExtractor>(Package(TextMime, content), DocumentPackageRejection.FormatMismatch);
+    }
+
+    [Fact]
+    public async Task Extract_MoreThanOneBody_IsFormatMismatch()
+    {
+        string content = ContentPart("text", "<text:p>first</text:p>")
+            .Replace("</office:body>", "</office:body><office:body><office:text><text:p>SECONDMARKER</text:p></office:text></office:body>", StringComparison.Ordinal);
 
         await RejectedAsync<OpenDocumentTextExtractor>(Package(TextMime, content), DocumentPackageRejection.FormatMismatch);
     }
@@ -658,16 +672,18 @@ public sealed class OpenDocumentPackageTests
     }
 
     [Fact]
-    public async Task Extract_ParagraphLongerThanTheRetentionBound_IsMarkedTruncatedWithoutExceedingTheSink()
+    public async Task Extract_ParagraphLongerThanTheRetentionBound_IsCutAtTheBoundAndMarkedTruncated()
     {
+        // The sink is larger than the bound, so only the extractor's own retention bound can produce this result.
         string giant = new('x', 300_000);
 
         SessionAttachmentExtractionResult result = await ExtractAsync<OpenDocumentTextExtractor>(
-            Odt($"<text:p>First</text:p><text:p>{giant}</text:p><text:p>NEVERREACHED</text:p>"));
+            Odt($"<text:p>First</text:p><text:p>{giant}</text:p><text:p>NEVERREACHED</text:p>"),
+            capacity: 1_000_000);
 
         Assert.True(result.WasTruncated);
 
-        Assert.Equal(262_144, result.Text.Length);
+        Assert.Equal("First\n".Length + 262_144, result.Text.Length);
 
         Assert.StartsWith("First\nxxxx", result.Text, StringComparison.Ordinal);
 

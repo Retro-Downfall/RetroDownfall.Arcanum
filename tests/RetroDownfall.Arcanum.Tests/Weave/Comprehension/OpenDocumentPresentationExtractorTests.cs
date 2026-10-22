@@ -60,9 +60,9 @@ public sealed class OpenDocumentPresentationExtractorTests
     public async Task Extract_PresentationLevelDeclarations_AreNotProjected()
     {
         byte[] package = Odp(
-            "<presentation:header-decl presentation:name=\"hdr1\">HEADERDECLMARKER</presentation:header-decl>"
-            + "<presentation:footer-decl presentation:name=\"ftr1\">FOOTERDECLMARKER</presentation:footer-decl>"
-            + "<presentation:date-time-decl presentation:name=\"dtd1\" presentation:source=\"fixed\">DATEDECLMARKER</presentation:date-time-decl>"
+            "<presentation:header-decl presentation:name=\"hdr1\"><text:p>HEADERDECLMARKER</text:p></presentation:header-decl>"
+            + "<presentation:footer-decl presentation:name=\"ftr1\"><text:p>FOOTERDECLMARKER</text:p></presentation:footer-decl>"
+            + "<presentation:date-time-decl presentation:name=\"dtd1\" presentation:source=\"fixed\"><text:p>DATEDECLMARKER</text:p></presentation:date-time-decl>"
             + "<presentation:settings presentation:full-screen=\"true\"><presentation:show presentation:name=\"SHOWMARKER\" presentation:pages=\"1\"/></presentation:settings>"
             + Page(Frame("Text")));
 

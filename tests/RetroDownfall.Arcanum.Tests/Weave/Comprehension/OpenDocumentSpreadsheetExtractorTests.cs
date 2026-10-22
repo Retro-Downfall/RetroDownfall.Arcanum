@@ -280,7 +280,7 @@ public sealed class OpenDocumentSpreadsheetExtractorTests
         byte[] package = Ods(
             Sheet(
                 "S",
-                "<table:title>TITLEMARKER</table:title><table:desc>DESCMARKER</table:desc>"
+                "<table:title><text:p>TITLEMARKER</text:p></table:title><table:desc><text:p>DESCMARKER</text:p></table:desc>"
                 + Row(
                     "<table:table-cell office:value-type=\"string\"><office:annotation><dc:creator>AUTHORMARKER</dc:creator><text:p>NOTEMARKER</text:p></office:annotation><text:p>Visible</text:p></table:table-cell>")));
 
@@ -468,16 +468,18 @@ public sealed class OpenDocumentSpreadsheetExtractorTests
     }
 
     [Fact]
-    public async Task Extract_CellLongerThanTheRetentionBound_IsMarkedTruncated()
+    public async Task Extract_CellLongerThanTheRetentionBound_IsCutAtTheBoundAndMarkedTruncated()
     {
+        // The sink is larger than the bound, so only the extractor's own retention bound can produce this result.
         string giant = new('x', 300_000);
 
         SessionAttachmentExtractionResult result = await ExtractAsync<OpenDocumentSpreadsheetExtractor>(
-            Ods(Sheet("S", Row(Cell("first")) + Row(Cell(giant)) + Row(Cell("NEVERREACHED")))));
+            Ods(Sheet("S", Row(Cell("first")) + Row(Cell(giant)) + Row(Cell("NEVERREACHED")))),
+            capacity: 1_000_000);
 
         Assert.True(result.WasTruncated);
 
-        Assert.StartsWith("Sheet: S\nfirst\nxxxx", result.Text, StringComparison.Ordinal);
+        Assert.Equal("Sheet: S\nfirst\n".Length + 262_144, result.Text.Length);
 
         Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
     }
