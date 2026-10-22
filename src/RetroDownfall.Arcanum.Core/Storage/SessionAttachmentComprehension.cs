@@ -73,8 +73,9 @@ public static class SessionAttachmentComprehensionPolicy
         new ReadOnlyCollection<string>([.. Formats.Select(static format => format.MimeType)]);
 
     /// <summary>
-    /// Resolves a stored or declared MIME type, ignoring parameters, surrounding whitespace and case,
-    /// to its registry entry. A MIME outside the registry resolves to nothing.
+    /// Resolves a stored or declared MIME type, ignoring parameters, surrounding space, tab, CR and LF, and
+    /// ASCII case (<see cref="NormalizeMimeType"/>), to its registry entry. A MIME outside the registry
+    /// resolves to nothing.
     /// </summary>
     public static bool TryGetFormat(
         string mimeType,
@@ -84,7 +85,7 @@ public static class SessionAttachmentComprehensionPolicy
 
         foreach (SessionAttachmentComprehensionFormat candidate in Formats)
         {
-            if (string.Equals(candidate.MimeType, normalized, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate.MimeType, normalized, StringComparison.Ordinal))
             {
                 format = candidate;
 
@@ -105,14 +106,34 @@ public static class SessionAttachmentComprehensionPolicy
         && record.Kind == SessionAttachmentKind.Binary
         && TryGetFormat(record.MimeType, out _);
 
+    /// <summary>
+    /// The one normalisation of a stored or declared MIME type: parameters are cut at the first semicolon,
+    /// only space, tab, CR and LF are trimmed from the ends, and A-Z fold to a-z. Nothing else is touched, so a
+    /// no-break space, a form feed or a non-ASCII letter stays part of the value. SQLite's
+    /// <c>lower(trim(substr(...), ' ' || char(9) || char(10) || char(13)))</c> does exactly this, and
+    /// <c>SessionAttachmentDocumentMimeSql</c> in Infrastructure spells it for every statement that classifies a MIME,
+    /// so C# and SQL read a spelling as the same registry type or both read it as none.
+    /// </summary>
     public static string NormalizeMimeType(string mimeType)
     {
         ArgumentNullException.ThrowIfNull(mimeType);
 
         int separator = mimeType.IndexOf(';', StringComparison.Ordinal);
 
-        return (separator < 0 ? mimeType : mimeType[..separator]).Trim();
+        ReadOnlySpan<char> media = (separator < 0 ? mimeType.AsSpan() : mimeType.AsSpan(0, separator)).Trim(AsciiTrimCharacters);
+
+        return string.Create(media.Length, media, static (destination, source) =>
+        {
+            for (int index = 0; index < source.Length; index++)
+            {
+                char character = source[index];
+
+                destination[index] = character is >= 'A' and <= 'Z' ? (char)(character | 0x20) : character;
+            }
+        });
     }
+
+    private static ReadOnlySpan<char> AsciiTrimCharacters => " \t\r\n";
 }
 
 /// <summary>

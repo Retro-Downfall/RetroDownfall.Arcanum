@@ -221,7 +221,7 @@ internal sealed class SessionAttachmentIndexRepository(
                   AND a.SessionId IS NOT NULL
                   AND (s.AttachmentId IS NULL OR s.Status IN ('Pending', 'Stale')
                        OR (@comprehensionEnabled = 1 AND a.Kind = 'Binary'
-                           AND lower(trim(substr(a.MimeType, 1, instr(a.MimeType || ';', ';') - 1))) IN ({SessionAttachmentDocumentMimeSql.ParameterList})
+                           AND {SessionAttachmentDocumentMimeSql.NormalizedExpression("a.MimeType")} IN ({SessionAttachmentDocumentMimeSql.ParameterList})
                            AND s.Status = 'NotEligible' AND s.ExtractedAt IS NULL))
                 ORDER BY a.CreatedAt, a.Id
                 LIMIT @limit

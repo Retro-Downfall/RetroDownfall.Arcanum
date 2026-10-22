@@ -75,8 +75,7 @@ internal sealed class SessionAttachmentRetrievalService(
             // document text after Comprehension was switched off.
             return SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue)
                 ? chunks
-                : chunks.Where(static chunk => !SessionAttachmentComprehensionPolicy.SupportedMimeTypes.Contains(
-                    SessionAttachmentComprehensionPolicy.NormalizeMimeType(chunk.MimeType), StringComparer.OrdinalIgnoreCase)).ToArray();
+                : chunks.Where(static chunk => !SessionAttachmentComprehensionPolicy.TryGetFormat(chunk.MimeType, out _)).ToArray();
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
