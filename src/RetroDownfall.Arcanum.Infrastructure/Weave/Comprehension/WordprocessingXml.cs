@@ -33,11 +33,18 @@ internal static class WordprocessingXml
 
     internal const string StrictDrawingMlNamespace = "http://purl.oclc.org/ooxml/drawingml/main";
 
+    internal const string MathNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+
+    internal const string StrictMathNamespace = "http://purl.oclc.org/ooxml/officeDocument/math";
+
     /// <summary>
-    /// The namespaces Word itself reads, which is what decides an <c>mc:Choice</c> (a choice is taken only when every
-    /// namespace it requires is understood). A choice that requires anything else is one Word would not take.
+    /// The namespaces this extractor understands, which is what decides an <c>mc:Choice</c> (a choice is taken only when
+    /// every namespace it requires is understood; otherwise the fallback is). Understanding a namespace means that what a
+    /// choice written against it holds is either read here (WordprocessingML, the drawing containers, VML, Office Math) or
+    /// is non-text markup that is skipped without losing anything the fallback would have shown. The emoji extension
+    /// (<c>w16se</c>) is deliberately absent: its choice holds no text, and its fallback holds the character.
     /// </summary>
-    private static readonly HashSet<string> NamespacesWordUnderstands = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> NamespacesUnderstood = new(StringComparer.Ordinal)
     {
         TransitionalNamespace,
 
@@ -59,6 +66,10 @@ internal static class WordprocessingXml
 
         VectorMarkupNamespace,
 
+        MathNamespace,
+
+        StrictMathNamespace,
+
         "urn:schemas-microsoft-com:office:office",
 
         "urn:schemas-microsoft-com:office:word",
@@ -72,8 +83,6 @@ internal static class WordprocessingXml
         "http://schemas.microsoft.com/office/word/2012/wordml",
 
         "http://schemas.microsoft.com/office/word/2006/wordml",
-
-        "http://schemas.microsoft.com/office/word/2015/wordml/symex",
 
         "http://schemas.microsoft.com/office/word/2016/wordml/cid",
 
@@ -95,6 +104,10 @@ internal static class WordprocessingXml
     internal static bool IsWordprocessingDrawing(string namespaceUri) =>
         namespaceUri == TransitionalDrawingNamespace || namespaceUri == StrictDrawingNamespace;
 
+    /// <summary>True for the transitional or the strict Office Math namespace.</summary>
+    internal static bool IsMath(string namespaceUri) =>
+        namespaceUri == MathNamespace || namespaceUri == StrictMathNamespace;
+
     /// <summary>
     /// True for the namespaces whose elements can lead to document text: WordprocessingML, the drawing containers that
     /// hold text boxes (DrawingML, <c>wps</c>, <c>wpc</c>) and VML. The <c>wp</c> drawing containers and the <c>wpg</c> groups
@@ -110,8 +123,8 @@ internal static class WordprocessingXml
         || namespaceUri == WordprocessingCanvasNamespace
         || namespaceUri == VectorMarkupNamespace;
 
-    /// <summary>True when Word reads this namespace, so an <c>mc:Choice</c> that requires it can be taken.</summary>
-    internal static bool IsUnderstoodByWord(string namespaceUri) => NamespacesWordUnderstands.Contains(namespaceUri);
+    /// <summary>True when this extractor understands the namespace, so an <c>mc:Choice</c> that requires it can be taken.</summary>
+    internal static bool IsUnderstood(string namespaceUri) => NamespacesUnderstood.Contains(namespaceUri);
 
     /// <summary>
     /// True for an attribute that turns a feature on unless it says otherwise: absent is off, an explicit "0" or "false"
@@ -128,7 +141,7 @@ internal static class WordprocessingXml
 
     /// <summary>
     /// Enters the element the reader is on. Returns false when it was empty (and has been consumed); otherwise leaves the
-    /// reader on its first child node and the caller loops with <see cref="NextChildElement"/>.
+    /// reader on its first child node and the caller loops with <see cref="WordprocessingChildren.MoveNext"/>.
     /// </summary>
     internal static bool EnterElement(BoundedXmlReader xml)
     {
@@ -140,40 +153,10 @@ internal static class WordprocessingXml
     }
 
     /// <summary>
-    /// Moves to the next child element of the container being walked. Returns false once the container's end tag has been
-    /// consumed. The caller must consume each child it is handed (read it, or skip it) before calling again.
-    /// </summary>
-    internal static bool NextChildElement(BoundedXmlReader xml)
-    {
-        XmlReader reader = xml.Reader;
-
-        while (true)
-        {
-            switch (reader.NodeType)
-            {
-                case XmlNodeType.Element:
-                    return true;
-
-                case XmlNodeType.EndElement:
-                    xml.Read();
-
-                    return false;
-
-                case XmlNodeType.None:
-                    return false;
-
-                default:
-                    xml.Read();
-
-                    break;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Reads the <c>w:rPr</c> the reader is on and consumes it. Only its direct children count: <c>vanish</c> and
-    /// <c>specVanish</c> hide (unless switched off), <c>rStyle</c> names the character style, and everything else, a
-    /// tracked change's recorded previous properties included, is skipped unread.
+    /// Reads the <c>w:rPr</c> the reader is on and consumes it. Only its direct children count (those of a selected
+    /// <c>mc:AlternateContent</c> branch included): <c>vanish</c> and <c>specVanish</c> hide (unless switched off),
+    /// <c>rStyle</c> names the character style, and everything else, a tracked change's recorded previous properties
+    /// included, is skipped unread.
     /// </summary>
     internal static WordprocessingRunFormatting ReadRunProperties(BoundedXmlReader xml, WordprocessingStyleSheet styles)
     {
@@ -187,7 +170,9 @@ internal static class WordprocessingXml
 
         if (EnterElement(xml))
         {
-            while (NextChildElement(xml))
+            WordprocessingChildren children = new(xml);
+
+            while (children.MoveNext())
             {
                 if (IsWordprocessing(reader.NamespaceURI))
                 {
@@ -211,12 +196,6 @@ internal static class WordprocessingXml
 
         return new WordprocessingRunFormatting(direct, styled ? styleHidden : styles.IsCharacterStyleHidden(null));
     }
-
-    /// <summary>The layout children a <c>wp:inline</c> or <c>wp:anchor</c> may carry before its <c>wp:docPr</c>.</summary>
-    internal static bool IsDrawingLayoutElement(string namespaceUri, string localName) =>
-        IsWordprocessingDrawing(namespaceUri)
-        && localName is "simplePos" or "positionH" or "positionV" or "extent" or "effectExtent"
-            or "wrapNone" or "wrapSquare" or "wrapTight" or "wrapThrough" or "wrapTopAndBottom";
 
     /// <summary>
     /// True for the WordprocessingML range markup elements (bookmarks, comment ranges and the move and custom XML revision

@@ -13,7 +13,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// derived style can switch a hidden base back on. Only <c>w:style</c> children that are <c>w:rPr</c> count: property
 /// containers such as <c>w:pPr</c> (whose <c>w:rPr</c> formats the paragraph mark) are skipped. Which cells a table
 /// style's conditional formats (<c>w:tblStylePr</c>) reach is not modelled, so a conditional <c>vanish</c> anywhere in the
-/// chain hides the whole table. Numbering styles are not read.
+/// chain hides the whole table. Numbering styles are not read. Every container is read through
+/// <see cref="WordprocessingChildren"/>, so an <c>mc:AlternateContent</c> around or inside a style's properties is resolved
+/// before the properties are interpreted.
 /// </para>
 /// <para>
 /// Retention is bounded: at most <see cref="MaximumStyles"/> styles of all kinds and <see cref="MaximumRetainedCharacters"/>
@@ -107,7 +109,9 @@ internal sealed class WordprocessingStyleSheet
 
         if (WordprocessingXml.EnterElement(xml))
         {
-            while (WordprocessingXml.NextChildElement(xml))
+            WordprocessingChildren children = new(xml);
+
+            while (children.MoveNext())
             {
                 if (WordprocessingXml.IsWordprocessing(reader.NamespaceURI))
                 {
@@ -163,7 +167,9 @@ internal sealed class WordprocessingStyleSheet
 
         if (WordprocessingXml.EnterElement(xml))
         {
-            while (WordprocessingXml.NextChildElement(xml))
+            WordprocessingChildren children = new(xml);
+
+            while (children.MoveNext())
             {
                 if (WordprocessingXml.IsWordprocessing(reader.NamespaceURI) && reader.LocalName == "rPrDefault")
                 {
@@ -188,7 +194,9 @@ internal sealed class WordprocessingStyleSheet
 
         if (WordprocessingXml.EnterElement(xml))
         {
-            while (WordprocessingXml.NextChildElement(xml))
+            WordprocessingChildren children = new(xml);
+
+            while (children.MoveNext())
             {
                 if (WordprocessingXml.IsWordprocessing(reader.NamespaceURI) && reader.LocalName == "rPr")
                 {
@@ -241,7 +249,9 @@ internal sealed class WordprocessingStyleSheet
 
         if (WordprocessingXml.EnterElement(xml))
         {
-            while (WordprocessingXml.NextChildElement(xml))
+            WordprocessingChildren children = new(xml);
+
+            while (children.MoveNext())
             {
                 if (WordprocessingXml.IsWordprocessing(reader.NamespaceURI))
                 {

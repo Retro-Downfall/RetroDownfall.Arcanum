@@ -244,12 +244,13 @@ public sealed class WordprocessingHiddenContentTests
     }
 
     [Fact]
-    public void Extract_AlternateContentWithOnlyAFallback_ProjectsNothing()
+    public void Extract_AlternateContentWithOnlyAFallback_ProjectsTheFallback()
     {
+        // Sensitivity: never neither. With no choice to take, the fallback is what a reader sees.
         string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
-            Wrap("<mc:AlternateContent><mc:Fallback>" + WordprocessingFixtures.R("ONLY_FALLBACK") + "</mc:Fallback></mc:AlternateContent>" + WordprocessingFixtures.R("body"))));
+            Wrap("<mc:AlternateContent><mc:Fallback>" + WordprocessingFixtures.R("only fallback ") + "</mc:Fallback></mc:AlternateContent>" + WordprocessingFixtures.R("body"))));
 
-        Assert.Equal("body\n", text);
+        Assert.Equal("only fallback body\n", text);
     }
 
     [Fact]
@@ -271,16 +272,16 @@ public sealed class WordprocessingHiddenContentTests
     }
 
     [Fact]
-    public void Extract_AlternateContentWhoseFirstChoiceRequiresAnUnknownPrefix_ProjectsNothing()
+    public void Extract_AlternateContentWhoseOnlyChoiceRequiresAnUnknownPrefix_ProjectsTheFallbackAndNotTheChoice()
     {
-        // Sensitivity: evaluating mc:Choice/@Requires. Word cannot take this choice, so it shows the fallback instead;
-        // projecting the choice would surface text the reader never sees, and projecting the fallback would be a guess.
+        // Sensitivity: evaluating mc:Choice/@Requires. Word cannot take this choice, so it shows the fallback; projecting
+        // the choice would surface text the reader never sees.
         string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
             Wrap(
                 "<mc:AlternateContent><mc:Choice Requires=\"bogus\">" + WordprocessingFixtures.R("HIDDEN_CHOICE") + "</mc:Choice>"
-                + "<mc:Fallback>" + WordprocessingFixtures.R("fallback") + "</mc:Fallback></mc:AlternateContent>" + WordprocessingFixtures.R("body"))));
+                + "<mc:Fallback>" + WordprocessingFixtures.R("fallback ") + "</mc:Fallback></mc:AlternateContent>" + WordprocessingFixtures.R("body"))));
 
-        Assert.Equal("body\n", text);
+        Assert.Equal("fallback body\n", text);
     }
 
     [Theory]
@@ -292,15 +293,33 @@ public sealed class WordprocessingHiddenContentTests
     [InlineData("<mc:Choice Requires=\"   \">")]
     [InlineData("<mc:Choice>")]
     [InlineData("<mc:Choice Requires=\"w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14\">")]
-    public void Extract_ChoiceThatWordCouldNotTake_ProjectsNothingFromTheAlternateContent(string choiceStart)
+    public void Extract_ChoiceThatCouldNotBeTaken_IsSkippedAndTheNextChoiceThatCanBeIsProjected(string choiceStart)
     {
         string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
             Wrap(
                 "<mc:AlternateContent>" + choiceStart + WordprocessingFixtures.R("HIDDEN_CHOICE") + "</mc:Choice>"
-                + "<mc:Choice Requires=\"w14\">" + WordprocessingFixtures.R("SECOND_CHOICE") + "</mc:Choice>"
+                + "<mc:Choice Requires=\"w14\">" + WordprocessingFixtures.R("second choice ") + "</mc:Choice>"
                 + "<mc:Fallback>" + WordprocessingFixtures.R("FALLBACK") + "</mc:Fallback></mc:AlternateContent>" + WordprocessingFixtures.R("body"))));
 
-        Assert.Equal("body\n", text);
+        Assert.Equal("second choice body\n", text);
+    }
+
+    [Theory]
+    [InlineData("<mc:Choice Requires=\"foo\" xmlns:foo=\"urn:not:a:word:namespace\">")]
+    [InlineData("<mc:Choice Requires=\"wps\" xmlns:wps=\"urn:rebound:to:something:else\">")]
+    [InlineData("<mc:Choice Requires=\"wps foo\" xmlns:foo=\"urn:not:a:word:namespace\">")]
+    [InlineData("<mc:Choice Requires=\"w14 undeclared\">")]
+    [InlineData("<mc:Choice Requires=\"\">")]
+    [InlineData("<mc:Choice>")]
+    [InlineData("<mc:Choice Requires=\"w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14 w14\">")]
+    public void Extract_NoChoiceThatCanBeTaken_ProjectsTheFallbackAndNeverBoth(string choiceStart)
+    {
+        string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
+            Wrap(
+                "<mc:AlternateContent>" + choiceStart + WordprocessingFixtures.R("HIDDEN_CHOICE") + "</mc:Choice>"
+                + "<mc:Fallback>" + WordprocessingFixtures.R("fallback ") + "</mc:Fallback></mc:AlternateContent>" + WordprocessingFixtures.R("body"))));
+
+        Assert.Equal("fallback body\n", text);
     }
 
     [Theory]
@@ -365,17 +384,40 @@ public sealed class WordprocessingHiddenContentTests
         "http://schemas.microsoft.com/office/word/2010/wordml",
         "http://schemas.microsoft.com/office/word/2012/wordml",
         "http://schemas.microsoft.com/office/word/2006/wordml",
-        "http://schemas.microsoft.com/office/word/2015/wordml/symex",
         "http://schemas.microsoft.com/office/word/2016/wordml/cid",
         "http://schemas.microsoft.com/office/word/2018/wordml",
         "http://schemas.microsoft.com/office/word/2018/wordml/cex",
         "http://schemas.microsoft.com/office/drawing/2010/main",
         "http://schemas.microsoft.com/office/drawing/2014/main",
         "http://schemas.microsoft.com/office/drawing/2016/SVG/main",
+        "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "http://purl.oclc.org/ooxml/officeDocument/math",
         "urn:schemas-microsoft-com:vml",
         "urn:schemas-microsoft-com:office:office",
         "urn:schemas-microsoft-com:office:word",
     ];
+
+    public static TheoryData<string> NamespacesNotUnderstood() =>
+    [
+        // The emoji extension: its choice holds no text, and the fallback holds the character.
+        "http://schemas.microsoft.com/office/word/2015/wordml/symex",
+        "http://schemas.microsoft.com/office/word/2023/wordml/word16du",
+        "http://schemas.microsoft.com/office/word/2016/wordml/chartex",
+        "urn:schemas-microsoft-com:office:excel",
+        "http://schemas.openxmlformats.org/wordprocessingml/2006/mainX",
+    ];
+
+    [Theory]
+    [MemberData(nameof(NamespacesNotUnderstood))]
+    public void Extract_ChoiceRequiringANamespaceTheExtractorDoesNotUnderstand_ProjectsTheFallback(string namespaceUri)
+    {
+        string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
+            Wrap(
+                $"<mc:AlternateContent><mc:Choice Requires=\"req\" xmlns:req=\"{namespaceUri}\">" + WordprocessingFixtures.R("CHOICE") + "</mc:Choice>"
+                + "<mc:Fallback>" + WordprocessingFixtures.R("fallback") + "</mc:Fallback></mc:AlternateContent>")));
+
+        Assert.Equal("fallback\n", text);
+    }
 
     [Theory]
     [MemberData(nameof(NamespacesWordUnderstands))]
@@ -523,64 +565,74 @@ public sealed class WordprocessingHiddenContentTests
     }
 
     [Fact]
-    public void Extract_DrawingWhoseGraphicPrecedesItsDocPr_IsFormatMismatch()
+    public void Extract_DrawingWhoseHiddenDocPrFollowsItsGraphic_IsExcluded()
     {
-        // A graphic before wp:docPr would be emitted before its hidden flag is known; the order is part of the format.
+        // Sensitivity: a drawing's text is held until the drawing ends, so a hidden flag that arrives after the graphic
+        // still hides it. Nothing is emitted before the flag is known, and the order is not a reason to refuse the file.
         string reordered =
             "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("REORDERED") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/></wp:inline></w:drawing></w:r>";
 
-        Assert.Equal(DocumentPackageRejection.FormatMismatch, WordprocessingFixtures.Rejection(WordprocessingFixtures.Docx(Wrap(reordered))));
+        Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(reordered + WordprocessingFixtures.R("body")))));
     }
 
     [Fact]
-    public void Extract_DrawingWithoutAnyDocPrAndNoGraphic_IsAccepted()
+    public void Extract_DrawingWhoseVisibleDocPrFollowsItsGraphic_ProjectsTheTextBox()
     {
-        Assert.Equal("x\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
-            Wrap("<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/></wp:inline></w:drawing></w:r>" + WordprocessingFixtures.R("x")))));
+        string reordered =
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + WordprocessingFixtures.P("late flag") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\"/></wp:inline></w:drawing></w:r>";
+
+        Assert.Equal("late flag\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(reordered))));
     }
 
     [Fact]
-    public void Extract_StrictDrawingNamespace_HidesAHiddenDrawing()
+    public void Extract_DrawingWithTwoDocPrElementsAheadOfItsGraphic_IsExcludedWhicheverOneHides()
     {
-        string strictDrawing =
-            "<w:r><w:drawing><sp:inline xmlns:sp=\"http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing\"><sp:extent cx=\"1\" cy=\"1\"/><sp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/>"
-            + "<a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>" + WordprocessingFixtures.P("STRICT_HIDDEN") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></sp:inline></w:drawing></w:r>";
+        // Sensitivity: the flags combine; a later visible docPr does not undo an earlier hidden one.
+        string Drawing(string first, string second) =>
+            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><wp:docPr id=\"2\" name=\"B\"{second}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + WordprocessingFixtures.P("AMBIGUOUS") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
-        Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(strictDrawing + WordprocessingFixtures.R("body")))));
+        string hiddenFirst = Drawing(" hidden=\"1\"", string.Empty);
+
+        string hiddenSecond = Drawing(string.Empty, " hidden=\"1\"");
+
+        Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(hiddenFirst + hiddenSecond + WordprocessingFixtures.R("body")))));
+    }
+
+    [Theory]
+    [InlineData(" hidden=\"1\"", "")]
+    [InlineData("", " hidden=\"1\"")]
+    public void Extract_DrawingWithTwoDocPrElementsWhereEitherHides_IsExcluded(string first, string second)
+    {
+        string drawing =
+            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + WordprocessingFixtures.P("AMBIGUOUS") + $"</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"2\" name=\"B\"{second}/></wp:inline></w:drawing></w:r>";
+
+        Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing + WordprocessingFixtures.R("body")))));
     }
 
     [Fact]
-    public void Extract_StrictDrawingNamespace_ProjectsAVisibleDrawing()
+    public void Extract_ForeignElementBeforeADrawingsDocPr_IsSkippedAndTheDrawingProjected()
     {
-        // Sensitivity: the strict wordprocessingDrawing namespace is recognised, not skipped as an unknown one.
-        string strictDrawing =
-            "<w:r><w:drawing><sp:inline xmlns:sp=\"http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing\"><sp:extent cx=\"1\" cy=\"1\"/><sp:docPr id=\"1\" name=\"Box\"/>"
-            + "<a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>" + WordprocessingFixtures.P("strict visible box") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></sp:inline></w:drawing></w:r>";
-
-        Assert.Equal("strict visible box\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(strictDrawing))));
-    }
-
-    [Fact]
-    public void Extract_ForeignElementBeforeADrawingsDocPr_IsFormatMismatch()
-    {
-        // wp:extent is a layout element; an element of the same name in another namespace is not.
+        // wp:extent is a layout element; an element of the same name in another namespace is an extension Word ignores.
         string drawing =
             "<w:r><w:drawing><wp:inline><f:extent xmlns:f=\"urn:foreign\" cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
-            + WordprocessingFixtures.P("EMITTED_EARLY") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
+            + WordprocessingFixtures.P("foreign neighbour") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
-        Assert.Equal(DocumentPackageRejection.FormatMismatch, WordprocessingFixtures.Rejection(WordprocessingFixtures.Docx(Wrap(drawing))));
+        Assert.Equal("foreign neighbour\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing))));
     }
 
     [Fact]
     public void Extract_DocPrInAnotherNamespace_IsNotTheDrawingsDocPr()
     {
-        // A look-alike hidden flag cannot hide a drawing; with no real wp:docPr first, the drawing is refused instead.
+        // A look-alike hidden flag cannot hide a drawing.
         string drawing =
             "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><f:docPr xmlns:f=\"urn:foreign\" id=\"1\" name=\"Box\" hidden=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
-            + WordprocessingFixtures.P("FOREIGN_DOCPR") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
+            + WordprocessingFixtures.P("look-alike flag") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
-        Assert.Equal(DocumentPackageRejection.FormatMismatch, WordprocessingFixtures.Rejection(WordprocessingFixtures.Docx(Wrap(drawing))));
+        Assert.Equal("look-alike flag\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing))));
     }
 
     // ---------------------------------------------------------------- hidden vector shapes
@@ -656,7 +708,7 @@ public sealed class WordprocessingHiddenContentTests
         string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
             Wrap(WordprocessingFixtures.R("before ") + group + WordprocessingFixtures.R("after"))));
 
-        Assert.Equal("before visible child\nafter\n", text);
+        Assert.Equal("before \nvisible child\nafter\n", text);
     }
 
     [Theory]

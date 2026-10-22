@@ -570,7 +570,7 @@ public sealed class WordprocessingVanishTests
 
         string text = Extract(Table(WordprocessingFixtures.P("HIDDEN_OUTER") + inner + "<w:p/>", "HiddenTable") + WordprocessingFixtures.P("shown"), styles);
 
-        Assert.Equal("\n\n\nshown\n", text);
+        Assert.Equal("\nshown\n", text);
     }
 
     [Fact]
@@ -580,7 +580,7 @@ public sealed class WordprocessingVanishTests
 
         string text = Extract(Table(WordprocessingFixtures.P("outer") + Table(WordprocessingFixtures.P("HIDDEN_INNER"), "HiddenTable") + WordprocessingFixtures.P("outer after")), styles);
 
-        Assert.Equal("outer\n\nouter after\n", text);
+        Assert.Equal("outer outer after\n", text);
     }
 
     [Fact]
@@ -673,7 +673,7 @@ public sealed class WordprocessingVanishTests
 
         string box = "<w:p><w:r><w:rPr><w:vanish w:val=\"0\"/></w:rPr><w:pict><v:shape><v:textbox><w:txbxContent>" + WordprocessingFixtures.P("HIDDEN_BOX") + "</w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>";
 
-        Assert.Equal("\n\n", Extract(Table(box, "HiddenTable"), styles));
+        Assert.Equal("\n", Extract(Table(box, "HiddenTable"), styles));
     }
 
     [Fact]

@@ -35,6 +35,12 @@ internal static class WordprocessingFixtures
 
     public const string VbaProjectType = "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
 
+    public const string MathNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+
+    public const string StrictMathNamespace = "http://purl.oclc.org/ooxml/officeDocument/math";
+
+    public const string SymbolExtensionNamespace = "http://schemas.microsoft.com/office/word/2015/wordml/symex";
+
     public static string Namespaces(string wordNamespace = WordNamespace) =>
         $"xmlns:w=\"{wordNamespace}\" "
         + "xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" "
@@ -46,6 +52,9 @@ internal static class WordprocessingFixtures
         + "xmlns:wp14=\"http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing\" "
         + "xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\" "
         + "xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" "
+        + $"xmlns:w16se=\"{SymbolExtensionNamespace}\" "
+        + "xmlns:w16du=\"http://schemas.microsoft.com/office/word/2023/wordml/word16du\" "
+        + $"xmlns:m=\"{MathNamespace}\" "
         + "xmlns:v=\"urn:schemas-microsoft-com:vml\" "
         + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"";
 
@@ -64,6 +73,12 @@ internal static class WordprocessingFixtures
 
     /// <summary>A paragraph holding one plain run.</summary>
     public static string P(string text) => $"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>";
+
+    /// <summary>A run holding a footnote reference mark.</summary>
+    public static string FootnoteReference(int id) => $"<w:r><w:footnoteReference w:id=\"{id}\"/></w:r>";
+
+    /// <summary>A run holding an endnote reference mark.</summary>
+    public static string EndnoteReference(int id) => $"<w:r><w:endnoteReference w:id=\"{id}\"/></w:r>";
 
     /// <summary>A run with optional run properties.</summary>
     public static string R(string text, string? properties = null) =>
@@ -317,7 +332,7 @@ public sealed class WordprocessingDocumentExtractorTests
             { "body paragraph", "<w:p><w:r><w:t>aaaaaaaa<<" },
             { "table cell", "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>aaaaaaaa<<" },
             { "alternate content", "<w:p><mc:AlternateContent><mc:Choice Requires=\"w14\"><w:r><w:t>aaaaaaaa<<" },
-            { "drawing", "<w:p><w:r><w:drawing><wp:inline><wp:docPr id=\"1\" name=\"b\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>aaaaaaaa<<" },
+            { "drawing", "<w:p><w:r><w:drawing><wp:inline><wp:docPr id=\"1\" name=\"b\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>aaaaaaaa</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><<" },
             { "vml text box", "<w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>aaaaaaaa<<" },
             { "hyperlink", "<w:p><w:hyperlink><w:r><w:t>aaaaaaaa<<" },
             { "content control", "<w:sdt><w:sdtContent><w:p><w:r><w:t>aaaaaaaa<<" },
@@ -328,7 +343,8 @@ public sealed class WordprocessingDocumentExtractorTests
     public void Extract_OutputCeilingReached_ReadsNothingFurther(string location, string unfinishedBody)
     {
         // Sensitivity: every walk loop honours Stopped. The text after the stop point is not even well-formed, so reading
-        // one node more would fail the extraction instead of truncating it.
+        // one node more would fail the extraction instead of truncating it. A drawing's text is held until the drawing
+        // ends (its hidden flag may come late), so that case stops once the drawing is complete.
         string main = $"<w:document {WordprocessingFixtures.Namespaces()}><w:body>{unfinishedBody}";
 
         SessionAttachmentExtractionResult result = WordprocessingFixtures.ExtractResult(WordprocessingFixtures.Package(main), maximumCharacters: 4);
@@ -371,10 +387,12 @@ public sealed class WordprocessingDocumentExtractorTests
     {
         string footnotes = $"<w:footnotes {WordprocessingFixtures.Namespaces()}><w:footnote w:id=\"1\"><w:p><w:r><w:t>aaaaaaaa<<";
 
-        SessionAttachmentExtractionResult result = WordprocessingFixtures.ExtractResult(
-            WordprocessingFixtures.Package(WordprocessingFixtures.Document(string.Empty), footnotesXml: footnotes), maximumCharacters: 4);
+        string body = "<w:p>" + WordprocessingFixtures.FootnoteReference(1) + "</w:p>";
 
-        Assert.Equal("aaaa", result.Text);
+        SessionAttachmentExtractionResult result = WordprocessingFixtures.ExtractResult(
+            WordprocessingFixtures.Package(WordprocessingFixtures.Document(body), footnotesXml: footnotes), maximumCharacters: 4);
+
+        Assert.Equal("\naaa", result.Text);
 
         Assert.True(result.WasTruncated);
     }
@@ -384,10 +402,12 @@ public sealed class WordprocessingDocumentExtractorTests
     {
         string footnotes = $"<w:footnotes {WordprocessingFixtures.Namespaces()}><w:footnote w:id=\"1\"><w:p><w:r><w:t>aaaa</w:t></w:r></w:p></w:footnote><w:footnote w:id=\"2\"><w:p><w:r><w:t>b</w:t></w:r></w:p></w:footnote><<";
 
-        SessionAttachmentExtractionResult result = WordprocessingFixtures.ExtractResult(
-            WordprocessingFixtures.Package(WordprocessingFixtures.Document(string.Empty), footnotesXml: footnotes), maximumCharacters: 4);
+        string body = "<w:p>" + WordprocessingFixtures.FootnoteReference(1) + WordprocessingFixtures.FootnoteReference(2) + "</w:p>";
 
-        Assert.Equal("aaaa", result.Text);
+        SessionAttachmentExtractionResult result = WordprocessingFixtures.ExtractResult(
+            WordprocessingFixtures.Package(WordprocessingFixtures.Document(body), footnotesXml: footnotes), maximumCharacters: 4);
+
+        Assert.Equal("\naaa", result.Text);
 
         Assert.True(result.WasTruncated);
     }
@@ -403,7 +423,7 @@ public sealed class WordprocessingDocumentExtractorTests
             + "<w:tr><w:tc>" + WordprocessingFixtures.P("C") + "</w:tc><w:tc>" + WordprocessingFixtures.P("D") + "</w:tc></w:tr></w:tbl>"
             + WordprocessingFixtures.P("after")));
 
-        Assert.Equal("A\nB\nC\nD\nafter\n", text);
+        Assert.Equal("A\tB\nC\tD\nafter\n", text);
     }
 
     [Fact]
@@ -413,7 +433,7 @@ public sealed class WordprocessingDocumentExtractorTests
             "<w:tbl><w:tr><w:tc>" + WordprocessingFixtures.P("outer")
             + "<w:tbl><w:tr><w:tc>" + WordprocessingFixtures.P("inner") + "</w:tc></w:tr></w:tbl><w:p/></w:tc></w:tr></w:tbl>"));
 
-        Assert.Equal("outer\ninner\n\n", text);
+        Assert.Equal("outer inner\n", text);
     }
 
     [Fact]
