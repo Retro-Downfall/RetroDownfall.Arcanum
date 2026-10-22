@@ -1375,7 +1375,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 "Attachment exceeds the single-memory read protocol boundary; use OpenReadAsync.");
         }
 
-        byte[] output = GC.AllocateUninitializedArray<byte>((int)record.ByteLength);
+        byte[] output = new byte[(int)record.ByteLength];
 
         try
         {

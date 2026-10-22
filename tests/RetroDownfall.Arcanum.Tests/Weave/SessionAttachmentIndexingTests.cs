@@ -14,6 +14,8 @@ using RetroDownfall.Arcanum.Api.Tower;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 
+using RetroDownfall.Arcanum.Core.Intelligence;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -25,6 +27,8 @@ using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Data;
+
+using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 using RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -100,7 +104,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         _index = new SessionAttachmentIndexRepository(
             _db,
-            new WeaveIndexAvailability());
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
     }
@@ -1035,9 +1040,294 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
     [SkippableFact]
 
+    public async Task ComprehensionAttempt_UsesOneConfigurationSnapshotAcrossEligibilityAndExtraction()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistDocumentAsync(sessionId, "stable attempt snapshot");
+
+        SessionAttachmentIndexProcessor processor = new(new SwitchingComprehensionOptions(_settings),
+            new FakeWeaveService(), _attachments!, _index!, NullLogger<SessionAttachmentIndexProcessor>.Instance);
+
+        SessionAttachmentIndexOutcome outcome = await processor.ProcessUnderOpenAdmissionAsync(
+            new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.Equal("stable attempt snapshot", Assert.Single(
+            await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None)).Content);
+    }
+
+    private sealed class SwitchingComprehensionOptions(ArcanumSettings enabled) : IOptionsMonitor<ArcanumSettings>
+    {
+        private int _reads;
+
+        public ArcanumSettings CurrentValue => ++_reads <= 2 ? enabled : CreateSettings();
+
+        public ArcanumSettings Get(string? name) => CurrentValue;
+
+        public IDisposable? OnChange(Action<ArcanumSettings, string?> listener) => null;
+    }
+
+    [SkippableFact]
+
+    public async Task ProcessAsync_ComprehensionDocument_ReachesRetrievedModelContext()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistDocumentAsync(sessionId, "retrievable document sentinel");
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(new FakeWeaveService())
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        SessionAttachmentRetrievedChunk[] hits = await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None);
+
+        SessionAttachmentRetrievedChunk hit = Assert.Single(hits);
+
+        Assert.Equal("retrievable document sentinel", hit.Content);
+
+        Assert.Equal(attachment.ContentSha256, hit.ContentSha256);
+
+        string prompt = SystemPromptBuilder.Build(new PingRequest("read the document", SessionId: sessionId),
+            codexContent: null, sessionAttachmentContext: hits);
+
+        Assert.Contains("retrievable document sentinel", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("UNTRUSTED DATA", prompt, StringComparison.Ordinal);
+
+        Assert.Contains("Comprehension text container; layout not preserved", prompt, StringComparison.Ordinal);
+
+        Assert.Equal(SessionAttachmentKind.Binary, (await _attachments!.GetByIdAsync(attachment.Id))!.Kind);
+    }
+
+    [SkippableFact]
+
+    public async Task ComprehensionDisabled_PreservesExistingTextAndRejectsDocumentWithoutEmbedding()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistDocumentAsync(sessionId, "invisible document sentinel");
+
+        FakeWeaveService weave = new();
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave)
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.NotEligible, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        SessionAttachmentRecord text = await PersistAsync(sessionId, "ordinary", "ordinary.txt", "text/plain", "ordinary text");
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await CreateProcessor(weave)
+            .ProcessUnderOpenAdmissionAsync(new(text.Id, sessionId), CancellationToken.None)).Status);
+
+        SessionAttachmentRetrievedChunk[] hits = await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None);
+
+        Assert.Equal("ordinary text", Assert.Single(hits).Content);
+    }
+
+    [SkippableFact]
+
+    public async Task ComprehensionDisabled_AfterIndexingSuppressesDocumentRetrieval()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistDocumentAsync(sessionId, "previously indexed document sentinel");
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await CreateProcessor(new FakeWeaveService())
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None)).Status);
+
+        _settings.Features.Comprehension = false;
+
+        Assert.Empty(await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None));
+    }
+
+    private Task<SessionAttachmentRecord> PersistDocumentAsync(Guid sessionId, string text) =>
+        _attachments!.PersistNewAsync(sessionId, null, null, "document", "document.arccomp",
+            Encoding.UTF8.GetBytes("ARCCOMP1\n" + text), "application/vnd.arcanum.comprehension-text", SessionAttachmentKind.Binary);
+
+    [SkippableFact]
+
+    public async Task ComprehensionDisabled_DocumentsCannotConsumeTextRetrievalSlots()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord document = await PersistDocumentAsync(sessionId, new string('x', 20_000));
+
+        SessionAttachmentRecord text = await PersistAsync(sessionId, "ordinary", "ordinary.txt", "text/plain", "ordinary text survives");
+
+        FakeWeaveService weave = new()
+        {
+            EmbeddingForText = content =>
+            {
+                float[] vector = CreateVector(Dimensions);
+
+                if (content == "ordinary text survives")
+                {
+                    vector[0] = 0.8f;
+
+                    vector[1] = 0.6f;
+                }
+
+                return vector;
+            },
+        };
+
+        SessionAttachmentIndexProcessor processor = CreateProcessor(weave);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await processor.ProcessUnderOpenAdmissionAsync(
+            new(document.Id, sessionId), CancellationToken.None)).Status);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await processor.ProcessUnderOpenAdmissionAsync(
+            new(text.Id, sessionId), CancellationToken.None)).Status);
+
+        _settings.Features.Comprehension = false;
+
+        SessionAttachmentRetrievedChunk[] hits = await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None);
+
+        Assert.Equal("ordinary text survives", Assert.Single(hits).Content);
+    }
+
+    [SkippableFact]
+
+    public async Task ComprehensionEnabled_ReconcilesPreFeatureIneligibleBinaryButNotEmptyDocuments()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord old = await PersistDocumentAsync(sessionId, "old attachment sentinel");
+
+        SessionAttachmentIndexProcessor processor = CreateProcessor(new FakeWeaveService());
+
+        Assert.Equal(SessionAttachmentIndexStatus.NotEligible, (await processor
+            .ProcessUnderOpenAdmissionAsync(new(old.Id, sessionId), CancellationToken.None)).Status);
+
+        Assert.Null((await _index!.GetStateAsync(old.Id, CancellationToken.None))!.ExtractedAt);
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 1, CancellationToken.None));
+
+        _settings.Features.Comprehension = true;
+
+        SessionAttachmentIndexRequest request = Assert.Single(
+            await _index.ReconcileAndFindPendingAsync(Dimensions, 1, CancellationToken.None));
+
+        Assert.Equal(old.Id, request.AttachmentId);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await processor
+            .ProcessUnderOpenAdmissionAsync(request, CancellationToken.None)).Status);
+
+        SessionAttachmentRecord empty = await PersistDocumentAsync(sessionId, string.Empty);
+
+        SessionAttachmentIndexOutcome emptyOutcome = await processor
+            .ProcessUnderOpenAdmissionAsync(new(empty.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.NotEligible, emptyOutcome.Status);
+
+        Assert.False(emptyOutcome.ShouldRetry);
+
+        Assert.NotNull((await _index.GetStateAsync(empty.Id, CancellationToken.None))!.ExtractedAt);
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 1, CancellationToken.None));
+    }
+
+    [SkippableTheory]
+
+    [InlineData(true)]
+
+    [InlineData(false)]
+
+    public async Task ComprehensionEnabled_MalformedDocumentIsTerminalWithoutEmbedding(bool providerAvailable)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await _attachments!.PersistNewAsync(sessionId, null, null,
+            "broken", "broken.arccomp", "ARCCOMP"u8.ToArray(),
+            "application/vnd.arcanum.comprehension-text", SessionAttachmentKind.Binary);
+
+        FakeWeaveService weave = new() { IsAvailable = providerAvailable };
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave)
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        Assert.InRange((await _index!.GetStateAsync(attachment.Id, CancellationToken.None))!.FailureReason!.Length, 1, 256);
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+    }
+
+    [SkippableFact]
+
+    public async Task ComprehensionEnabled_ValidDocumentRetriesUnavailableEmbeddingProvider()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistDocumentAsync(sessionId, "valid but provider unavailable");
+
+        FakeWeaveService weave = new() { IsAvailable = false };
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
+            new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        Assert.Equal("The embedding provider is unavailable.",
+            (await _index!.GetStateAsync(attachment.Id, CancellationToken.None)).FailureReason);
+    }
+
+    [SkippableFact]
+
     public async Task ProcessAsync_UnsupportedBinary_MarksNotEligibleWithoutEmbedding()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
 
         Guid sessionId = Guid.NewGuid();
 
@@ -1053,11 +1343,26 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
-        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave).ProcessUnderOpenAdmissionAsync(
+        int reads = 0;
+
+        ISessionAttachmentStore noRead = new NoOpSessionAttachmentStore(record: attachment,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                throw new InvalidOperationException("Unsupported input must not reach extraction.");
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Unsupported input must not be streamed."));
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave, noRead).ProcessUnderOpenAdmissionAsync(
             new SessionAttachmentIndexRequest(attachment.Id, sessionId),
             CancellationToken.None);
 
         Assert.Equal(SessionAttachmentIndexStatus.NotEligible, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, reads);
 
         Assert.Equal(0, weave.EmbedBatchCallCount);
 
@@ -1396,9 +1701,11 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
 
         public int OutputDimensions { get; init; } = Dimensions;
 
+        public Func<string, float[]>? EmbeddingForText { get; init; }
+
         public int EmbedBatchCallCount { get; private set; }
 
-        public bool IsAvailable => true;
+        public bool IsAvailable { get; init; } = true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(
             string text,
@@ -1426,7 +1733,7 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             }
 
             Embedding<float>[] generated = texts
-                .Select(_ => new Embedding<float>(CreateVector(OutputDimensions)))
+                .Select(text => new Embedding<float>(EmbeddingForText?.Invoke(text) ?? CreateVector(OutputDimensions)))
                 .ToArray();
 
             return Result<Embedding<float>[]>.Success(generated);

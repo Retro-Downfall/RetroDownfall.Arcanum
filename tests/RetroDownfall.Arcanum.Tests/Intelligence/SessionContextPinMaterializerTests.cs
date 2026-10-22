@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Core.Configuration;
 
 using System.Security.Cryptography;
 
@@ -18,6 +19,115 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("Grimoire")]
 public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) : IAsyncLifetime
 {
+    [Theory]
+    [InlineData(false, "application/vnd.arcanum.comprehension-text")]
+    [InlineData(true, "application/pdf")]
+    public async Task Comprehension_ineligible_pin_is_unsupported_without_reading(bool enabled, string mimeType)
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = new(
+            Guid.NewGuid(), sessionId, null, null, SessionAttachmentState.Bound,
+            "document", "document.arcc", 1, "missing/document.arcc", "document-hash",
+            mimeType, 10, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+        SessionContextPinRecord pin = new(
+            Guid.NewGuid(), sessionId, SessionContextPinKind.Attachment,
+            record.Id.ToString("D"), "document", record.ContentSha256, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                throw new InvalidOperationException("Ineligible bytes must not be read.");
+            });
+
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { AttachmentRetrieval = true, Comprehension = enabled },
+        };
+
+        SessionContextPinMaterialization result = await new SessionContextPinMaterializer(
+                new StaticPinStore(pin), store, CreateSessions(), new TestOptionsSnapshot<ArcanumSettings>(settings))
+            .MaterializeAsync(sessionId, _workspace, CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Unsupported", text, StringComparison.Ordinal);
+
+        Assert.Equal(0, reads);
+    }
+
+    [Fact]
+    public async Task Comprehension_pin_materializes_stored_document_with_source_provenance()
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes("ARCCOMP1\nPinned document sentinel ``` fence");
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = new(
+            Guid.NewGuid(), sessionId, null, null, SessionAttachmentState.Bound,
+            "document", "document.arcc", 3, "missing/document.arcc", "document-hash",
+            "application/vnd.arcanum.comprehension-text", bytes.Length, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+        SessionContextPinRecord pin = new(
+            Guid.NewGuid(), sessionId, SessionContextPinKind.Attachment,
+            record.Id.ToString("D"), "document", record.ContentSha256, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(bytes);
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."));
+
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { AttachmentRetrieval = true, Comprehension = true },
+        };
+
+        SessionContextPinMaterializer materializer = new(
+            new StaticPinStore(pin), store, CreateSessions(), new TestOptionsSnapshot<ArcanumSettings>(settings));
+
+        SessionContextPinMaterialization result = await materializer.MaterializeAsync(
+            sessionId, _workspace, CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Current", text, StringComparison.Ordinal);
+
+        Assert.Contains("Pinned document sentinel ``` fence", text, StringComparison.Ordinal);
+
+        Assert.Contains("UNTRUSTED SESSION CONTEXT DATA", text, StringComparison.Ordinal);
+
+        Assert.Contains("Comprehension text container", text, StringComparison.Ordinal);
+
+        Assert.Contains("layout not preserved", text, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("````data", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ARCCOMP1", text, StringComparison.Ordinal);
+
+        ContextPinMaterializedItem item = Assert.Single(result.Items!);
+
+        Assert.Equal(record.Id.ToString("N"), item.SourceId);
+
+        Assert.Equal(3, item.VersionOrdinal);
+
+        Assert.Equal("document-hash", item.ContentHash);
+
+        Assert.Equal(1, reads);
+    }
+
     private string _dbPath = string.Empty;
 
     private string _workspace = string.Empty;
@@ -809,7 +919,8 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         SessionContextPinMaterializer materializer = new(
             new StaticPinStore(pin),
             new NoOpSessionAttachmentStore(attachment),
-            CreateSessions());
+            CreateSessions(),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
         SessionContextPinMaterialization result = await materializer.MaterializeAsync(
             sessionId,
@@ -976,7 +1087,8 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             SessionContextPinMaterializer materializer = new(
                 new StaticPinStore(pin),
                 lookupStore,
-                CreateSessions());
+                CreateSessions(),
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
             SessionContextPinMaterialization result = await materializer.MaterializeAsync(
                 pinningSessionId,
@@ -996,7 +1108,8 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         SessionContextPinMaterialization owned = await new SessionContextPinMaterializer(
                 new StaticPinStore(byIdPin with { SessionId = ownerSessionId }),
                 store,
-                CreateSessions())
+                CreateSessions(),
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()))
             .MaterializeAsync(ownerSessionId, _workspace, CancellationToken.None);
 
         string ownedText = Assert.IsType<TextContent>(Assert.Single(owned.Contents)).Text;
@@ -1288,7 +1401,8 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             new NoOpSessionAttachmentStore(
                 attachment,
                 readBytes: (_, _) => throw new IOException(canary)),
-            CreateSessions());
+            CreateSessions(),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
         SessionContextPinMaterialization result = await materializer.MaterializeAsync(
             sessionId,
@@ -1387,7 +1501,8 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         SessionContextPinMaterialization result = await new SessionContextPinMaterializer(
                 new StaticPinStore(pins),
                 store,
-                CreateSessions())
+                CreateSessions(),
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()))
             .MaterializeAsync(sessionId, _workspace, CancellationToken.None);
 
         Assert.Equal(1, result.OmittedCount);
@@ -1601,7 +1716,11 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 
     private SessionContextPinMaterializer Create(
         params SessionContextPinRecord[] pins) =>
-        new(new StaticPinStore(pins), new NoOpSessionAttachmentStore(), CreateSessions());
+        new(
+            new StaticPinStore(pins),
+            new NoOpSessionAttachmentStore(),
+            CreateSessions(),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
     private ISessionRepository CreateSessions() =>
         new SessionRepository(

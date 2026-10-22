@@ -6,6 +6,10 @@ using System.Runtime.CompilerServices;
 
 using System.Text;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 internal enum SessionAttachmentExtractionStatus
@@ -43,6 +47,35 @@ internal sealed class SessionAttachmentExtractionException(
 
 internal static class SessionAttachmentTextExtractor
 {
+    public static async Task<SessionAttachmentExtractionResult> ExtractDocumentAsync(
+        ISessionAttachmentStore store,
+        SessionAttachmentRecord record,
+        ArcanumSettings settings,
+        long maxBytes,
+        CancellationToken cancellationToken,
+        SessionAttachmentDocumentExtractionHost? host = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
+        {
+            return new SessionAttachmentExtractionResult(
+                SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
+        }
+
+        if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
+        {
+            return SessionAttachmentDocumentExtractionHost.Failed("Document input exceeds its byte ceiling.");
+        }
+
+        return await (host ?? SessionAttachmentDocumentExtractionHost.Default)
+            .ExtractAsync(
+                token => store.ReadBytesAsync(record, token),
+                record.ByteLength,
+                maxBytes,
+                cancellationToken).ConfigureAwait(false);
+    }
+
     private const int StreamingCharacterBufferSize = 4096;
 
     private static readonly UTF8Encoding StrictUtf8 = new(

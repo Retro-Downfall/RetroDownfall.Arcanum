@@ -20,6 +20,144 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class SessionAttachmentToolInjectionTests
 {
     [Fact]
+    public Task Comprehension_attach_materializes_only_stored_document_bytes() =>
+        AssertComprehensionMaterializationAsync(refresh: false);
+
+    [Fact]
+    public Task Comprehension_refresh_materializes_only_stored_document_bytes() =>
+        AssertComprehensionMaterializationAsync(refresh: true);
+
+    [Theory]
+    [InlineData(false, "BADCOMP1\nsecret")]
+    [InlineData(true, "BADCOMP1\nsecret")]
+    [InlineData(false, "ARCCOMP1\n")]
+    [InlineData(true, "ARCCOMP1\n")]
+    public async Task Comprehension_failed_or_empty_extraction_does_not_consume_inject_once(
+        bool refresh, string invalidContainer)
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes(invalidContainer);
+
+        SessionAttachmentRecord record = ComprehensionRecord(sessionId) with { ByteLength = bytes.Length };
+
+        NoOpSessionAttachmentStore store = new(
+            readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes),
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."),
+            logicalLookup: (_, _, _) => record);
+
+        Task<IReadOnlyList<AIContent>?> MaterializeAsync() => refresh
+            ? SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+                store, record, ComprehensionSettings(), null)
+            : SessionAttachmentToolInjection.TryBuildContentsAsync(
+                store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null);
+
+        Assert.Null(await MaterializeAsync());
+
+        bytes = Encoding.UTF8.GetBytes("ARCCOMP1\nvalid retry sentinel");
+
+        record = record with { ByteLength = bytes.Length };
+
+        IReadOnlyList<AIContent>? retry = await MaterializeAsync();
+
+        string text = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(retry))).Text;
+
+        Assert.Contains("valid retry sentinel", text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("secret", text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false, true, "application/vnd.arcanum.comprehension-text")]
+    [InlineData(true, false, "application/vnd.arcanum.comprehension-text")]
+    [InlineData(true, true, "application/pdf")]
+    public async Task Comprehension_ineligible_binary_is_refused_before_reading(
+        bool enabled, bool retrievalEnabled, string mimeType)
+    {
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = ComprehensionRecord(sessionId) with { MimeType = mimeType };
+
+        NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) => throw new InvalidOperationException("Ineligible bytes must not be read."),
+            openRead: (_, _) => throw new InvalidOperationException("Ineligible stream must not be opened."));
+
+        ArcanumSettings settings = ComprehensionSettings(enabled, retrievalEnabled);
+
+        Assert.Null(await SessionAttachmentToolInjection.TryBuildContentsAsync(
+            store, sessionId, record.LogicalKey, null, settings, null));
+
+        Assert.Null(await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+            store, record, settings, null));
+    }
+
+    private static async Task AssertComprehensionMaterializationAsync(bool refresh)
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        Guid sessionId = Guid.NewGuid();
+
+        byte[] bytes = Encoding.UTF8.GetBytes("ARCCOMP1\nStored document sentinel ``` malicious fence");
+
+        SessionAttachmentRecord record = ComprehensionRecord(sessionId) with { ByteLength = bytes.Length };
+
+        int reads = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (actual, _) =>
+            {
+                Assert.Equal(record.Id, actual.Id);
+
+                reads++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(bytes);
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."));
+
+        IReadOnlyList<AIContent>? contents = refresh
+            ? await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+                store, record, ComprehensionSettings(), null)
+            : await SessionAttachmentToolInjection.TryBuildContentsAsync(
+                store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null);
+
+        TextContent content = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(contents)));
+
+        Assert.Contains("Stored document sentinel ``` malicious fence", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("UNTRUSTED", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("DATA", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("Comprehension text container", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("layout not preserved", content.Text, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("````", content.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ARCCOMP1", content.Text, StringComparison.Ordinal);
+
+        Assert.Equal(refresh ? "refreshedFile" : "explicitAttachment", content.AdditionalProperties!["arcanum.context_source"]);
+
+        Assert.Equal(1, reads);
+    }
+
+    private static ArcanumSettings ComprehensionSettings(bool enabled = true, bool retrievalEnabled = true) =>
+        new()
+        {
+            Features = new FeatureSettings { Attachments = true, AttachmentRetrieval = retrievalEnabled, Comprehension = enabled },
+        };
+
+    private static SessionAttachmentRecord ComprehensionRecord(Guid sessionId) =>
+        new(
+            Guid.NewGuid(), sessionId, null, null, SessionAttachmentState.Bound,
+            "document", "document.arcc", 1, "missing/document.arcc", "document-hash",
+            "application/vnd.arcanum.comprehension-text", 1, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+    [Fact]
 
     public async Task Binary_attachment_is_never_read_or_injected_as_text()
 

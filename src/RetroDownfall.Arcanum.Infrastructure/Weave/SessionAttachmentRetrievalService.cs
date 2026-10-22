@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Core.Weave;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
@@ -64,10 +66,17 @@ internal sealed class SessionAttachmentRetrievalService(
 
             }
 
-            return await index.GetRetrievedChunksAsync(
+            SessionAttachmentRetrievedChunk[] chunks = await index.GetRetrievedChunksAsync(
                 sessionId,
                 search.Value,
                 cancellationToken).ConfigureAwait(false);
+
+            // Recheck after the search: a live configuration change must not release already stored
+            // document text after Comprehension was switched off.
+            return SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue)
+                ? chunks
+                : chunks.Where(static chunk => !SessionAttachmentComprehensionPolicy.SupportedMimeTypes.Contains(
+                    SessionAttachmentComprehensionPolicy.NormalizeMimeType(chunk.MimeType), StringComparer.OrdinalIgnoreCase)).ToArray();
 
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

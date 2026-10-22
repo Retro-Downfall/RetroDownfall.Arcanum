@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -17,6 +18,12 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentToolInjection
 {
+    internal const string ComprehensionDataNotice =
+        "UNTRUSTED DATA; " + SessionAttachmentComprehensionPolicy.FormatName + "; layout not preserved";
+
+    internal static string FormatComprehensionData(string label, string text) =>
+        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice, text);
+
     /// <summary>
     /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
     /// inject-once, Scrying/vision for images, and size limits (images are rejected, never truncated).
@@ -57,17 +64,17 @@ public static class SessionAttachmentToolInjection
             return null;
         }
 
-        if (record.Kind is not SessionAttachmentKind.Text
+        bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings);
 
-            and not SessionAttachmentKind.Image)
-
+        if (record.Kind is not SessionAttachmentKind.Text and not SessionAttachmentKind.Image
+            && !isDocument)
         {
             return null;
         }
 
-        ReadOnlyMemory<byte> bytes = await store
-            .ReadBytesAsync(record, cancellationToken)
-            .ConfigureAwait(false);
+        ReadOnlyMemory<byte> bytes = isDocument
+            ? ReadOnlyMemory<byte>.Empty
+            : await store.ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
 
         List<AIContent> contents;
 
@@ -91,6 +98,31 @@ public static class SessionAttachmentToolInjection
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
                 },
                 new DataContent(bytes, mime)
+                {
+                    AdditionalProperties = ExplicitAttachmentContextProperties(),
+                },
+            ];
+        }
+        else if (isDocument)
+        {
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+            SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor
+                .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (extraction.Status != SessionAttachmentExtractionStatus.Extracted
+                || string.IsNullOrWhiteSpace(extraction.Text))
+            {
+                return null;
+            }
+
+            string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+
+            contents =
+            [
+                new TextContent(FormatComprehensionData(FrameLabel(record), text))
                 {
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
                 },
@@ -154,16 +186,17 @@ public static class SessionAttachmentToolInjection
             return null;
         }
 
-        if (record.Kind is not SessionAttachmentKind.Text
+        bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings);
 
-            and not SessionAttachmentKind.Image)
-
+        if (record.Kind is not SessionAttachmentKind.Text and not SessionAttachmentKind.Image
+            && !isDocument)
         {
             return null;
         }
 
-        ReadOnlyMemory<byte> bytes = await store.ReadBytesAsync(record, cancellationToken)
-            .ConfigureAwait(false);
+        ReadOnlyMemory<byte> bytes = isDocument
+            ? ReadOnlyMemory<byte>.Empty
+            : await store.ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
         string label = RefreshedFrameLabel(record);
         List<AIContent> contents;
 
@@ -181,6 +214,31 @@ public static class SessionAttachmentToolInjection
                     AdditionalProperties = RefreshedContextProperties(),
                 },
                 new DataContent(bytes, record.MimeType)
+                {
+                    AdditionalProperties = RefreshedContextProperties(),
+                },
+            ];
+        }
+        else if (isDocument)
+        {
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+            SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor
+                .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (extraction.Status != SessionAttachmentExtractionStatus.Extracted
+                || string.IsNullOrWhiteSpace(extraction.Text))
+            {
+                return null;
+            }
+
+            string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+
+            contents =
+            [
+                new TextContent(FormatComprehensionData(label, text))
                 {
                     AdditionalProperties = RefreshedContextProperties(),
                 },

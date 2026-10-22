@@ -28,7 +28,7 @@ public sealed class SettingDescriptorCoverageTests
     [Fact]
     public void Editable_descriptor_count_matches_the_documented_total()
     {
-        Assert.Equal(170, SettingDescriptors.All.Count);
+        Assert.Equal(171, SettingDescriptors.All.Count);
     }
 
     /// <summary>

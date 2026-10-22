@@ -6,6 +6,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -435,7 +436,9 @@ public static class SessionAttachmentTurnService
                 return new SessionAttachmentReferenceMaterialization(contents, ErrorMessage: null);
             }
 
-            if (record.Kind != SessionAttachmentKind.Text)
+            bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings);
+
+            if (record.Kind != SessionAttachmentKind.Text && !isDocument)
             {
                 return new SessionAttachmentReferenceMaterialization(
                     [],
@@ -444,6 +447,32 @@ public static class SessionAttachmentTurnService
 
             long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
                 ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+            if (isDocument)
+            {
+                SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor
+                    .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (extraction.Status != SessionAttachmentExtractionStatus.Extracted
+                    || string.IsNullOrWhiteSpace(extraction.Text))
+                {
+                    return new SessionAttachmentReferenceMaterialization(
+                        [],
+                        $"Attachment '{ResolveReferenceLabel(record, record.Id.ToString())}' could not be extracted for model context.");
+                }
+
+                string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+
+                contents.Add(
+                    new TextContent(SessionAttachmentToolInjection.FormatComprehensionData(
+                        ResolveReferenceLabel(record, "attachment"), text))
+                    {
+                        AdditionalProperties = ExplicitAttachmentContextProperties(),
+                    });
+
+                return new SessionAttachmentReferenceMaterialization(contents, ErrorMessage: null);
+            }
 
             long readLength = Math.Min(
                 record.ByteLength,

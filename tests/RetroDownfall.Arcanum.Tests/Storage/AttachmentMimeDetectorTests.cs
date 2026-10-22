@@ -149,6 +149,34 @@ public sealed class AttachmentMimeDetectorTests
 
     }
 
+    [Theory]
+    [InlineData("document.arccomp")]
+    [InlineData("document.bin")]
+    [InlineData("document")]
+    public void Detect_recognizes_closed_container_intake(string fileName)
+    {
+        string mimeType = AttachmentMimeDetector.Detect("ARCCOMP1\npayload"u8, fileName);
+
+        Assert.Equal(SessionAttachmentComprehensionPolicy.MimeType, mimeType);
+
+        Assert.Equal(SessionAttachmentKind.Binary, SessionAttachmentContentPolicy.Classify(mimeType));
+    }
+
+    [Fact]
+    public void Detect_arccomp_extension_preserves_document_identity_for_malformed_input()
+    {
+        Assert.Equal(SessionAttachmentComprehensionPolicy.MimeType,
+            AttachmentMimeDetector.Detect("malformed container"u8, "document.arccomp"));
+    }
+
+    [Theory]
+    [InlineData("notes.txt", "text/plain")]
+    [InlineData("notes.md", "text/markdown")]
+    public void Detect_container_looking_plain_text_keeps_existing_textual_extension(string fileName, string expected)
+    {
+        Assert.Equal(expected, AttachmentMimeDetector.Detect("ARCCOMP1\nordinary notes"u8, fileName));
+    }
+
     private static byte[] CreateBitmap()
     {
 

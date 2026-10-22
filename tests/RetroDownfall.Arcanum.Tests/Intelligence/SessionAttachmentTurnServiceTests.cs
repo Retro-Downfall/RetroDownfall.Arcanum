@@ -11,6 +11,95 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class SessionAttachmentTurnServiceTests
 {
+    [Theory]
+    [InlineData(false, "application/vnd.arcanum.comprehension-text")]
+    [InlineData(true, "application/pdf")]
+    public async Task Comprehension_ineligible_reference_is_refused_before_reading(bool enabled, string mimeType)
+    {
+        SessionAttachmentRecord record = new(
+            Guid.NewGuid(), Guid.NewGuid(), null, null, SessionAttachmentState.Bound,
+            "document", "document.arcc", 1, "missing/document.arcc", "document-hash",
+            mimeType, 10, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        RetroDownfall.Arcanum.Tests.Fixtures.NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                throw new InvalidOperationException("Ineligible bytes must not be read.");
+            });
+
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { AttachmentRetrieval = true, Comprehension = enabled },
+        };
+
+        SessionAttachmentReferenceMaterialization result = await SessionAttachmentTurnService.MaterializeReferenceAsync(
+            record, store, settings, "model", CancellationToken.None);
+
+        Assert.Empty(result.Contents);
+
+        Assert.Equal($"Attachment '{record.Id}' cannot be injected into model context.", result.ErrorMessage);
+
+        Assert.Equal(0, reads);
+    }
+
+    [Fact]
+    public async Task Comprehension_reference_materializes_stored_document_as_untrusted_data()
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes("ARCCOMP1\nReferenced document sentinel ``` fence");
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = new(
+            Guid.NewGuid(), sessionId, null, null, SessionAttachmentState.Bound,
+            "document", "document.arcc", 1, "missing/document.arcc", "document-hash",
+            "application/vnd.arcanum.comprehension-text", bytes.Length, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        RetroDownfall.Arcanum.Tests.Fixtures.NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(bytes);
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."));
+
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { AttachmentRetrieval = true, Comprehension = true },
+        };
+
+        SessionAttachmentReferenceMaterialization result = await SessionAttachmentTurnService.MaterializeReferenceAsync(
+            record, store, settings, "model", CancellationToken.None);
+
+        Assert.Null(result.ErrorMessage);
+
+        TextContent content = Assert.IsType<TextContent>(Assert.Single(result.Contents));
+
+        Assert.Contains("Referenced document sentinel ``` fence", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("UNTRUSTED", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("DATA", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("DATA; Comprehension text container; layout not preserved", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains("````", content.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("ARCCOMP1", content.Text, StringComparison.Ordinal);
+
+        Assert.Equal("explicitAttachment", content.AdditionalProperties!["arcanum.context_source"]);
+
+        Assert.Equal(1, reads);
+    }
+
     private const string PersistFailureCanary =
         "CANARY_ATTACHMENT_PATH_AND_FILE_CONTENT";
 

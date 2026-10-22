@@ -139,7 +139,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             _attachmentsRoot,
             TestEncryptedBlobStore.Create());
 
-        _index = new SessionAttachmentIndexRepository(_db, new WeaveIndexAvailability());
+        _index = new SessionAttachmentIndexRepository(
+            _db, new WeaveIndexAvailability(), new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
 

@@ -38,6 +38,9 @@ public sealed record FeatureSettings
 
     public bool AttachmentRetrieval { get; set; }
 
+    /// <summary>Opt-in bounded document extraction; requires AttachmentRetrieval. Defaults off.</summary>
+    public bool Comprehension { get; set; }
+
     public bool Saga { get; set; }
 
     public bool SagaExtraction { get; set; }

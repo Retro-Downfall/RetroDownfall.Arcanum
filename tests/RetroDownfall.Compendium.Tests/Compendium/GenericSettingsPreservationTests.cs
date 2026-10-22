@@ -26,6 +26,34 @@ public sealed class GenericSettingsPreservationTests : IDisposable
     }
 
     [Fact]
+    public async Task Editing_comprehension_gate_preserves_its_independent_opt_in()
+    {
+        await SeedAsync(new ArcanumSettings());
+
+        ConfigurationViewModel vm = CreateViewModel();
+
+        await WaitForLoadAsync(vm);
+
+        GenericSettingFieldViewModel gate = Field(vm, ConfigSection.Features, "features.comprehension");
+
+        Assert.False(gate.BoolValue);
+
+        gate.BoolValue = true;
+
+        ArcanumSettings published = vm.BuildSettings();
+
+        Assert.True(published.Features.Comprehension);
+
+        Assert.False(published.Features.AttachmentRetrieval);
+
+        Assert.False(SessionAttachmentComprehensionPolicy.IsEnabled(published));
+
+        Field(vm, ConfigSection.Features, "features.attachmentRetrieval").BoolValue = true;
+
+        Assert.True(SessionAttachmentComprehensionPolicy.IsEnabled(vm.BuildSettings()));
+    }
+
+    [Fact]
     public async Task Editing_long_rest_gate_preserves_its_independent_opt_in()
     {
         await SeedAsync(new ArcanumSettings());

@@ -988,6 +988,35 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     [Fact]
+    [Trait("Category", "HostedProducerProductionAnalysis")]
+    public void ProductionAttachmentExtractionRetainsItsExactAdmittedLifetime()
+    {
+        // Keep the real production compilations, bindings, premises and refusal rules. Selecting one
+        // service makes extraction-shape regressions diagnosable without traversing unrelated roots.
+        HostedProducerDiscovery<HostedProducerSite> scoped = HostedGrimoireProducerInventory.DiscoverProductionSites(
+            HostedProducerProductionPartition.Primary, ["SessionAttachmentIndexingService"]);
+
+        Assert.NotEmpty(scoped.Items);
+
+        Assert.All(scoped.Items, static site => Assert.Equal("SessionAttachmentIndexingService", site.RootType));
+
+        Assert.Contains(scoped.Items, static site =>
+            site.Callee == "RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentStore.OpenReadAsync");
+
+        Assert.Contains(scoped.Items, static site =>
+            site.SourcePath.EndsWith("/Data/SessionAttachmentStore.cs", StringComparison.Ordinal)
+            && site.Member == "ReadBytesAsync"
+            && site.Callee == "System.IO.Stream.ReadAsync");
+
+        Assert.True(
+            scoped.Diagnostics.Count == 0,
+            string.Join(
+                global::System.Environment.NewLine,
+                scoped.Diagnostics.Select(static diagnostic =>
+                    $"{diagnostic.Code}: {diagnostic.Identity}: {diagnostic.Detail}")));
+    }
+
+    [Fact]
     public void OnlyTheProductionEntryAndTheClosedWorldFixturesRequestPremises()
     {
         System.Reflection.MethodInfo[] discoveries = [.. typeof(HostedGrimoireProducerInventory)

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
@@ -187,6 +188,24 @@ internal sealed class TapestryStore(
     /// </summary>
     internal const int LeafPageSize = 512;
 
+    // Comprehension contributes to flat attachment retrieval only. Its output must never enter a
+    // summary corpus, where a feature toggle could no longer distinguish it from ordinary text.
+    private const string DocumentMimePredicate =
+        "lower(trim(substr(s.\"MimeType\", 1, instr(s.\"MimeType\" || ';', ';') - 1))) = '"
+        + SessionAttachmentComprehensionPolicy.MimeType + "'";
+
+    private const string DocumentGenerationLeaves =
+        """
+        SELECT 1
+        FROM "tapestry_nodes" documentNode
+        INNER JOIN "session_attachment_chunks" s ON s."ChunkId" = documentNode."SourceId"
+        WHERE documentNode."GenerationId" = g."GenerationId"
+          AND documentNode."NodeKind" = 'Leaf'
+        """ + " AND " + DocumentMimePredicate;
+
+    private const string DocumentFreeGenerationPredicate =
+        "(g.\"ScopeKind\" <> 'SessionAttachment' OR NOT EXISTS (" + DocumentGenerationLeaves + "))";
+
     /// <summary>
     /// Where each scope kind's leaves live: the corpus table, its id and label columns, the predicate that
     /// puts a row in one scope (written against the alias <c>s</c>), and the table its already-imprinted
@@ -217,7 +236,7 @@ internal sealed class TapestryStore(
                 "\"session_attachment_chunks\"",
                 "\"ChunkId\"",
                 "\"OriginalFileName\"",
-                "s.\"SessionId\" = @scopeId AND s.\"RetrievalScope\" IS NOT NULL",
+                "s.\"SessionId\" = @scopeId AND s.\"RetrievalScope\" IS NOT NULL AND NOT (" + DocumentMimePredicate + ")",
                 "\"session_attachment_embeddings\"",
                 "\"ChunkId\""),
 
@@ -589,8 +608,9 @@ internal sealed class TapestryStore(
         command.CommandText =
             $"""
             SELECT {GenerationColumns}
-            FROM "tapestry_generations"
+            FROM "tapestry_generations" g
             WHERE "ScopeKind" = @scopeKind AND "ScopeId" = @scopeId AND "Status" = 'Complete'
+              AND {DocumentFreeGenerationPredicate}
             ORDER BY "CompletedAt" DESC
             LIMIT 1
             """;
@@ -1161,7 +1181,7 @@ internal sealed class TapestryStore(
         await using DbCommand command = connection.CreateCommand();
 
         command.CommandText =
-            """
+            $"""
             SELECT n."Content", n."ContentHash", e."Embedding"
             FROM "tapestry_nodes" n
             INNER JOIN "tapestry_generations" g ON g."GenerationId" = n."GenerationId"
@@ -1169,6 +1189,7 @@ internal sealed class TapestryStore(
             WHERE g."ScopeKind" = @scopeKind
               AND g."ScopeId" = @scopeId
               AND g."Status" = 'Complete'
+              AND {DocumentFreeGenerationPredicate}
               AND n."NodeKind" = 'Summary'
               AND n."ChildMembershipHash" = @membershipHash
               AND n."Content" IS NOT NULL
@@ -1210,6 +1231,29 @@ internal sealed class TapestryStore(
         string[] nodeIds = [.. hits.Select(static hit => hit.NodeId)];
 
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        if (generation.ScopeKind == TapestryScopeKind.SessionAttachment)
+        {
+            // A captured generation can outlive its lookup. Refuse every node when a known document
+            // leaf contaminates the generation: a mixed summary cannot be safely split into sources.
+            // Missing ordinary-text sources retain their existing stale-leaf behavior.
+            await using DbCommand documentGuard = connection.CreateCommand();
+
+            documentGuard.CommandText =
+                $"""
+                SELECT 1 FROM "tapestry_generations" g
+                WHERE g."GenerationId" = @generationId
+                  AND EXISTS ({DocumentGenerationLeaves})
+                LIMIT 1
+                """;
+
+            AddParameter(documentGuard, "@generationId", generation.GenerationId);
+
+            if (await documentGuard.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null)
+            {
+                return [];
+            }
+        }
 
         Dictionary<string, HydratedNode> hydrated = new(StringComparer.Ordinal);
 

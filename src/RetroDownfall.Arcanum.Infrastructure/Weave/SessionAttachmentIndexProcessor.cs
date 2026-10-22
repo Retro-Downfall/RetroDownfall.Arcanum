@@ -41,7 +41,8 @@ internal sealed class SessionAttachmentIndexProcessor(
     IWeaveService weave,
     ISessionAttachmentStore attachments,
     ISessionAttachmentIndexWriter index,
-    ILogger<SessionAttachmentIndexProcessor> logger)
+    ILogger<SessionAttachmentIndexProcessor> logger,
+    SessionAttachmentDocumentExtractionHost? comprehension = null)
 {
     private const int AutomaticEmbeddingBatchSize = 64;
 
@@ -63,7 +64,9 @@ internal sealed class SessionAttachmentIndexProcessor(
     {
         ArgumentNullException.ThrowIfNull(workLease);
 
-        EmbeddingSettings embeddings = options.CurrentValue.ResolveEmbeddings();
+        ArcanumSettings runtimeSettings = options.CurrentValue;
+
+        EmbeddingSettings embeddings = runtimeSettings.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.AttachmentRetrievalEnabled)
         {
@@ -88,7 +91,9 @@ internal sealed class SessionAttachmentIndexProcessor(
             request.Attempt,
             cancellationToken).ConfigureAwait(false);
 
-        if (attachment.Kind != SessionAttachmentKind.Text)
+        bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(attachment, runtimeSettings);
+
+        if (attachment.Kind != SessionAttachmentKind.Text && !isDocument)
         {
             await MarkWithoutIndexAsync(
                 attachment,
@@ -103,7 +108,7 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         DateTimeOffset extractedAt = DateTimeOffset.UtcNow;
 
-        if (!weave.IsAvailable)
+        if (!weave.IsAvailable && !isDocument)
         {
             await MarkWithoutIndexAsync(
                 attachment,
@@ -120,7 +125,44 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         try
         {
-            stream = await attachments.OpenReadAsync(attachment, cancellationToken).ConfigureAwait(false);
+            if (isDocument)
+            {
+                SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
+                    attachments,
+                    attachment,
+                    runtimeSettings,
+                    ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes),
+                    cancellationToken,
+                    comprehension).ConfigureAwait(false);
+
+                if (extraction.Status != SessionAttachmentExtractionStatus.Extracted)
+                {
+                    SessionAttachmentIndexStatus status = extraction.Status == SessionAttachmentExtractionStatus.NotEligible
+                        ? SessionAttachmentIndexStatus.NotEligible
+                        : SessionAttachmentIndexStatus.Failed;
+
+                    await MarkWithoutIndexAsync(attachment, status, request.Attempt, extraction.FailureReason,
+                        extractedAt, cancellationToken).ConfigureAwait(false);
+
+                    return Concluded(status, shouldRetry: false);
+                }
+
+                // Deterministic document failures are terminal even while the provider is down.
+                // Only an extracted document may enter the existing provider retry path.
+                if (!weave.IsAvailable)
+                {
+                    await MarkWithoutIndexAsync(attachment, SessionAttachmentIndexStatus.Failed, request.Attempt,
+                        "The embedding provider is unavailable.", extractedAt, cancellationToken).ConfigureAwait(false);
+
+                    return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: true);
+                }
+
+                stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(extraction.Text), writable: false);
+            }
+            else
+            {
+                stream = await attachments.OpenReadAsync(attachment, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -157,7 +199,7 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         string pipelineFingerprint = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{IndexPipelineVersion}:{chunkSize}:{overlap}");
+            $"{(isDocument ? "comprehension-v1" : IndexPipelineVersion)}:{chunkSize}:{overlap}");
 
         SessionAttachmentIndexCheckpoint checkpoint = await index.BeginReplaceAsync(
             attachment,
@@ -328,7 +370,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                 SessionAttachmentTextExtractor
                     .ReadChunksAsync(
                         stream,
-                        attachment.MimeType,
+                        isDocument ? "text/plain" : attachment.MimeType,
                         attachment.OriginalFileName,
                         chunkSize,
                         overlap,

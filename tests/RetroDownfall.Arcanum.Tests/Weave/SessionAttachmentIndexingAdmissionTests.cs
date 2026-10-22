@@ -111,7 +111,8 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         _index = new SessionAttachmentIndexRepository(
             _db,
-            new WeaveIndexAvailability());
+            new WeaveIndexAvailability(),
+            new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
     }
@@ -179,6 +180,114 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
         Assert.False(gate.WorkLeaseIsHeld);
 
         Assert.NotEmpty(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task ExecuteAsync_DocumentDeadline_DurablyFailsPoisonWithoutBlockingHealthyText()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord poison = await _attachments!.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            "poison",
+            "poison.arccomp",
+            Encoding.UTF8.GetBytes("ARCCOMP1\npoison document"),
+            "application/vnd.arcanum.comprehension-text",
+            SessionAttachmentKind.Binary);
+
+        SessionAttachmentRecord healthy = await PersistAsync(sessionId, "healthy text after a document deadline");
+
+        StalledDocumentExtractor extractor = new();
+
+        SessionAttachmentDocumentExtractionHost comprehension = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+
+        TaskCompletionSource<bool> healthyCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWeaveService weave = new();
+
+        ObservingScopeFactory scopes = BuildScopeFactory(weave, comprehension);
+
+        scopes.OnScopeDisposed = () =>
+        {
+            if (weave.EmbedBatchCallCount == 1)
+            {
+                healthyCompleted.TrySetResult(true);
+            }
+
+            return ValueTask.CompletedTask;
+        };
+
+        ImmediateTimeProvider retryTime = new(static () => { });
+
+        using SessionAttachmentIndexingService service = CreateService(
+            scopes,
+            OpenGate(),
+            timeProvider: retryTime);
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(poison.Id, sessionId, Attempt: 7)));
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(healthy.Id, sessionId)));
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await healthyCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(extractor.Started.IsCompletedSuccessfully);
+
+            // The format remains quarantined because its parser ignores cancellation. Ordinary text
+            // must still have crossed the same single-reader worker while that invocation is alive.
+            Assert.False(extractor.Finished.IsCompleted);
+        }
+        finally
+        {
+            extractor.Release();
+
+            if (extractor.Started.IsCompletedSuccessfully)
+            {
+                await extractor.Finished.WaitAsync(TimeSpan.FromSeconds(10));
+            }
+
+            using CancellationTokenSource stop = new(TimeSpan.FromSeconds(10));
+
+            await service.StopAsync(stop.Token);
+        }
+
+        SessionAttachmentIndexState failed = await _index!.GetStateAsync(poison.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, failed.Status);
+
+        Assert.Equal(7, failed.AttemptCount);
+
+        Assert.Contains("deadline", failed.FailureReason, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(poison.Id, CancellationToken.None));
+
+        Assert.Empty(retryTime.Delays);
+
+        Assert.Empty(service.DeferredRequests);
+
+        Assert.Equal(0, service.QueueReader.Count);
+
+        SessionAttachmentIndexState indexed = await _index.GetStateAsync(healthy.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, indexed.Status);
+
+        Assert.Equal(0, indexed.AttemptCount);
+
+        Assert.Null(indexed.FailureReason);
+
+        SessionAttachmentIndexedChunk chunk = Assert.Single(
+            await _index.GetChunksForAttachmentAsync(healthy.Id, CancellationToken.None));
+
+        Assert.Equal("healthy text after a document deadline", chunk.Content);
     }
 
     [SkippableFact]
@@ -1492,7 +1601,9 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             logger ?? NullLogger<SessionAttachmentIndexingService>.Instance);
 
     /// <summary>A container holding exactly what one indexing scope resolves.</summary>
-    private ObservingScopeFactory BuildScopeFactory(IWeaveService weave)
+    private ObservingScopeFactory BuildScopeFactory(
+        IWeaveService weave,
+        SessionAttachmentDocumentExtractionHost? comprehension = null)
     {
         ServiceCollection services = new();
 
@@ -1509,6 +1620,11 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         services.AddSingleton<ILogger<SessionAttachmentIndexProcessor>>(
             NullLogger<SessionAttachmentIndexProcessor>.Instance);
+
+        if (comprehension is not null)
+        {
+            services.AddSingleton(comprehension);
+        }
 
         services.AddSingleton<SessionAttachmentIndexProcessor>();
 
@@ -1672,6 +1788,40 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             if (onDisposing is not null)
             {
                 await onDisposing();
+            }
+        }
+    }
+
+    /// <summary>A poisoned parser that cannot finish until the test explicitly releases it.</summary>
+    private sealed class StalledDocumentExtractor : ISessionAttachmentDocumentExtractor
+    {
+        private readonly TaskCompletionSource<bool> _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource<bool> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource<bool> _finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Started => _started.Task;
+
+        internal Task Finished => _finished.Task;
+
+        internal void Release() => _release.TrySetResult(true);
+
+        public async ValueTask ExtractAsync(
+            ReadOnlyMemory<byte> bytes,
+            ISessionAttachmentDocumentTextSink output,
+            CancellationToken cancellationToken)
+        {
+            _started.TrySetResult(true);
+
+            try
+            {
+                // Deliberately disregard the host's token to prove its deadline releases the queue.
+                await _release.Task;
+            }
+            finally
+            {
+                _finished.TrySetResult(true);
             }
         }
     }

@@ -1,10 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
@@ -28,7 +31,8 @@ public sealed record ContextPinMaterializedItem(
 public sealed class SessionContextPinMaterializer(
     ISessionContextPinStore pins,
     ISessionAttachmentStore attachments,
-    ISessionRepository sessions)
+    ISessionRepository sessions,
+    IOptionsSnapshot<ArcanumSettings> settings)
 {
     private const string StartMarker = "[UNTRUSTED SESSION CONTEXT DATA]";
 
@@ -900,7 +904,11 @@ public sealed class SessionContextPinMaterializer(
                 "Image attachment pins remain selected but require an explicit attachment reference for a vision-capable turn.");
         }
 
-        if (record.Kind != SessionAttachmentKind.Text)
+        ArcanumSettings currentSettings = settings.Value;
+
+        bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, currentSettings);
+
+        if (record.Kind != SessionAttachmentKind.Text && !isDocument)
         {
             return new(
                 SessionContextPinStatus.Unsupported,
@@ -908,8 +916,37 @@ public sealed class SessionContextPinMaterializer(
                 "This attachment kind is not supported for implicit text materialization.");
         }
 
-        ReadOnlyMemory<byte> source = await attachments.ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
-        MaterializedPin materialized = FromText(Encoding.UTF8.GetString(source.Span), byteLimit);
+        MaterializedPin materialized;
+
+        if (isDocument)
+        {
+            long maxTextBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(
+                ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+            SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor
+                .ExtractDocumentAsync(attachments, record, currentSettings, maxTextBytes, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (extraction.Status != SessionAttachmentExtractionStatus.Extracted
+                || string.IsNullOrWhiteSpace(extraction.Text))
+            {
+                return new(SessionContextPinStatus.Error, null, "Document text extraction failed or produced no text.");
+            }
+
+            materialized = FromText(extraction.Text, byteLimit);
+
+            materialized = materialized with
+            {
+                Diagnostic = SessionAttachmentToolInjection.ComprehensionDataNotice
+                    + (materialized.Diagnostic is null ? "." : ". " + materialized.Diagnostic),
+            };
+        }
+        else
+        {
+            ReadOnlyMemory<byte> source = await attachments.ReadBytesAsync(record, cancellationToken).ConfigureAwait(false);
+
+            materialized = FromText(Encoding.UTF8.GetString(source.Span), byteLimit);
+        }
 
         return materialized with
         {

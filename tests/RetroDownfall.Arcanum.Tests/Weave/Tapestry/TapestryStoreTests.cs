@@ -204,7 +204,11 @@ public sealed class TapestryStoreTests : IAsyncLifetime
     /// it would orphan every attachment-scoped generation and rebuild the tree at provider cost. The
     /// scope this case builds is therefore keyed by the chunk's spelling, exactly as the store keys it.
     /// </remarks>
-    private async Task SeedAttachmentChunkAsync(string sessionId, string chunkId, string content)
+    private async Task SeedAttachmentChunkAsync(
+        string sessionId,
+        string chunkId,
+        string content,
+        string mimeType = "text/plain")
     {
         string attachmentId = Guid.NewGuid().ToString("D").ToUpperInvariant();
 
@@ -214,12 +218,15 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                 ("Id", "SessionId", "EntryId", "PendingTurnId", "State", "LogicalKey",
                  "OriginalFileName", "Version", "RelativePath", "ContentSha256", "MimeType",
                  "ByteLength", "Kind", "CreatedAt")
-            VALUES (@attachmentId, @sessionId, NULL, NULL, 'Bound', 'notes', 'notes.md', 1,
-                    'notes.md', 'ATTACHMENT-HASH', 'text/plain', 16, 'Text',
+            VALUES (@attachmentId, @sessionId, NULL, NULL, 'Bound', @logicalKey, 'notes.md', 1,
+                    'notes.md', 'ATTACHMENT-HASH', @mimeType, 16, @kind,
                     '2026-01-01T00:00:00Z')
             """,
             ("@attachmentId", attachmentId),
-            ("@sessionId", sessionId.ToUpperInvariant()));
+            ("@sessionId", sessionId.ToUpperInvariant()),
+            ("@mimeType", mimeType),
+            ("@kind", mimeType == "text/plain" ? "Text" : "Binary"),
+            ("@logicalKey", chunkId));
 
         await ExecuteAsync(
             """
@@ -228,15 +235,17 @@ public sealed class TapestryStoreTests : IAsyncLifetime
                  OriginalFileName, MimeType, ContentSha256, ChunkIndex, CharacterStart, CharacterEnd,
                  StartLine, EndLine, Content, EmbeddingDimension, ExtractedAt, IndexedAt,
                  RetrievalScope)
-            VALUES (@chunkId, 'generation-1', @sessionId, @attachmentId, 'notes', 1, 'notes.md',
-                    'text/plain', 'ATTACHMENT-HASH', 0, 0, 16, 1, 1, @content, @dimensions,
+            VALUES (@chunkId, 'generation-1', @sessionId, @attachmentId, @logicalKey, 1, 'notes.md',
+                    @mimeType, 'ATTACHMENT-HASH', 0, 0, 16, 1, 1, @content, @dimensions,
                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'Latest')
             """,
             ("@chunkId", chunkId),
             ("@sessionId", sessionId),
             ("@attachmentId", attachmentId),
             ("@content", content),
-            ("@dimensions", TestDimensions));
+            ("@dimensions", TestDimensions),
+            ("@mimeType", mimeType),
+            ("@logicalKey", chunkId));
     }
 
     private Task RetireAttachmentChunkAsync(string chunkId) =>
@@ -700,6 +709,111 @@ public sealed class TapestryStoreTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Empty(hydrated);
+    }
+
+    [SkippableTheory]
+    [InlineData("application/vnd.arcanum.comprehension-text")]
+    [InlineData(" Application/Vnd.Arcanum.Comprehension-Text ; charset=utf-8")]
+    public async Task Corpus_excludes_Comprehension_document_chunks(string mimeType)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string sessionId = Guid.NewGuid().ToString("D");
+
+        TapestryScope scope = new(TapestryScopeKind.SessionAttachment, sessionId);
+
+        await SeedAttachmentChunkAsync(sessionId, "text-chunk", "ordinary text");
+
+        await SeedAttachmentChunkAsync(sessionId, "document-chunk", "document secret", mimeType);
+
+        TapestryCorpusIdentity identity = await _store!.GetCorpusIdentityAsync(scope, 100, CancellationToken.None);
+
+        Assert.Equal(1, identity.LeafCount);
+
+        TapestryLeafSource leaf = Assert.Single(await EnumerateLeavesAsync(scope));
+
+        Assert.Equal("text-chunk", leaf.SourceId);
+
+        Assert.Equal("ordinary text", leaf.Content);
+    }
+
+    [SkippableFact]
+    public async Task Comprehension_document_generation_is_refused_by_current_lookup()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string sessionId = Guid.NewGuid().ToString("D");
+
+        TapestryScope scope = new(TapestryScopeKind.SessionAttachment, sessionId);
+
+        await SeedAttachmentChunkAsync(
+            sessionId, "document-chunk", "document secret", "application/vnd.arcanum.comprehension-text");
+
+        _ = await PublishAttachmentTreeAsync(scope, ("document-chunk", "document secret"));
+
+        Assert.Null(await _store!.GetCurrentGenerationAsync(scope, CancellationToken.None));
+    }
+
+    [SkippableFact]
+    public async Task Comprehension_mixed_summary_generation_is_refused_even_for_text_hits()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string sessionId = Guid.NewGuid().ToString("D");
+
+        TapestryScope scope = new(TapestryScopeKind.SessionAttachment, sessionId);
+
+        await SeedAttachmentChunkAsync(sessionId, "text-chunk", "ordinary text");
+
+        await SeedAttachmentChunkAsync(
+            sessionId, "document-chunk", "document secret", "application/vnd.arcanum.comprehension-text");
+
+        // Represents an already-published generation or one captured before the source feature was
+        // disabled. Hydration must independently refuse it, including hits on its ordinary text.
+        TapestryGeneration captured = await PublishAttachmentTreeAsync(
+            scope, ("text-chunk", "ordinary text"), ("document-chunk", "document secret"));
+
+        Assert.Empty(await _store!.HydrateRetrievedNodesAsync(
+            captured,
+            [("attachment-leaf-0", 0.9f), ("attachment-summary", 0.8f)],
+            TapestryRetrievalMode.CollapsedTree,
+            CancellationToken.None));
+
+        Assert.Null(await _store.GetCurrentGenerationAsync(scope, CancellationToken.None));
+
+        Assert.Null(await _store.TryGetReusableSummaryAsync(scope, "mixed-membership", CancellationToken.None));
+    }
+
+    private async Task<TapestryGeneration> PublishAttachmentTreeAsync(
+        TapestryScope scope,
+        params (string SourceId, string Content)[] sources)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        string generationId = await _store!.BeginGenerationAsync(
+            scope, SphericalKMeans.AlgorithmVersion, "settings-1", "fast", TapestryHash.SummaryRecipeVersion,
+            TestDimensions, "old-document-corpus", now, CancellationToken.None);
+
+        TapestryNodeWrite[] leaves = [.. sources.Select((source, index) =>
+            LeafIn(scope, generationId, $"attachment-leaf-{index}", source.SourceId, source.Content))];
+
+        TapestryNodeWrite summary = Summary(
+            generationId, "attachment-summary", "summary containing document secret", "mixed-membership", sources.Length);
+
+        summary = summary with { Node = summary.Node with { ScopeKind = scope.Kind, ScopeId = scope.Id } };
+
+        await _store.AppendNodesAsync([.. leaves, summary], CancellationToken.None);
+
+        await _store.SetParentAsync(
+            generationId, summary.Node.NodeId, [.. leaves.Select(static leaf => leaf.Node.NodeId)], CancellationToken.None);
+
+        await _store.PublishGenerationAsync(
+            generationId, 2, leaves.Length + 1, 1, TapestryTerminalReason.SingleRoot, now, CancellationToken.None);
+
+        return new TapestryGeneration(
+            generationId, scope.Kind, scope.Id, TapestryGenerationStatus.Complete, SphericalKMeans.AlgorithmVersion,
+            "settings-1", "fast", TapestryHash.SummaryRecipeVersion, TestDimensions, "old-document-corpus",
+            2, leaves.Length + 1, 1, TapestryTerminalReason.SingleRoot, now, now);
     }
 
     [SkippableFact]

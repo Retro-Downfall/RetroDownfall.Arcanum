@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.LongRest;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.LongRest;
@@ -346,8 +347,19 @@ internal sealed class DivinationService(
 
         string eligible = saga ? $"m.\"RetiredAtUtc\" IS NULL AND {LongRestRecallSql.Eligible("m", longRest)}" : "1 = 1";
 
+        // Apply the opt-out before scoring/top-K so stored document chunks cannot displace ordinary
+        // text after Comprehension is disabled. Attachment chunks carry their immutable source MIME.
+        if (blobTableName == "session_attachment_embeddings"
+            && scopeTableName == "session_attachment_chunks"
+            && !SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue))
+        {
+            eligible = "lower(trim(substr(s.MimeType, 1, instr(s.MimeType || ';', ';') - 1))) <> @documentMime";
+
+            AddParameter(cmd, "@documentMime", SessionAttachmentComprehensionPolicy.MimeType);
+        }
+
         // Table/column names are internal constants owned by the calling feature's retrieval code
-        // (never user input); only scopeFilterValue is a bound parameter.
+        // (never user input); scope values and document MIME are bound parameters.
         cmd.CommandText =
             $"""
             SELECT e."{primaryKeyColumn}", e."{embeddingColumn}"

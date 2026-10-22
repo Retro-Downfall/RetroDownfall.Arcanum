@@ -62,6 +62,7 @@ public static class AttachmentMimeDetector
             [".cff"] = "text/yaml",
             [".html"] = "text/html",
             [".htm"] = "text/html",
+            [".arccomp"] = SessionAttachmentComprehensionPolicy.MimeType,
             [".pdf"] = "application/pdf",
             [".doc"] = "application/msword",
             [".docx"] = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -117,10 +118,18 @@ public static class AttachmentMimeDetector
             return "image/bmp";
         }
 
-        return ExtensionMimeTypes.TryGetValue(
-            Path.GetExtension(fileName ?? string.Empty).ToLowerInvariant(),
-            out string? mimeType)
-            ? mimeType
+        if (ExtensionMimeTypes.TryGetValue(
+                Path.GetExtension(fileName ?? string.Empty).ToLowerInvariant(),
+                out string? mimeType))
+        {
+            return mimeType;
+        }
+
+        // Recognize the closed container for unknown filenames while preserving established text
+        // classifications. A text file beginning with this marker remains ordinary text, including
+        // when Comprehension is off. The extractor validates the complete format after opt-in.
+        return bytes.StartsWith("ARCCOMP1\n"u8)
+            ? SessionAttachmentComprehensionPolicy.MimeType
             : "application/octet-stream";
     }
 

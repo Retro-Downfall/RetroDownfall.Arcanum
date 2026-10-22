@@ -539,6 +539,7 @@ R	src/RetroDownfall.Arcanum.Core/Storage/ProtectedArtifactReadContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/ProtectedArtifactTransferContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SanctumBreachDetails.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SanctumBreachRecord.cs
+R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentComprehension.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentContentPolicy.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentPathSanitizer.cs
 R	src/RetroDownfall.Arcanum.Core/Storage/SessionAttachmentToolAmbient.cs
@@ -2229,6 +2230,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/DivinationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/EmbeddingsResetService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/LongRestHierarchyBuilder.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SagaCurationService.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentExtractionHost.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexDisposition.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexProcessor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexRepository.cs

@@ -12,6 +12,10 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 using Microsoft.Extensions.AI;
 
+using Microsoft.Extensions.Options;
+
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -113,7 +117,8 @@ internal interface ISessionAttachmentIndexWriter
 
 internal sealed class SessionAttachmentIndexRepository(
     ArcanumDbContext db,
-    WeaveIndexAvailability availability) : ISessionAttachmentIndexWriter
+    WeaveIndexAvailability availability,
+    IOptionsMonitor<ArcanumSettings> options) : ISessionAttachmentIndexWriter
 {
     /// <summary>The accelerator's mirror of the chunk embeddings, which no schema file installs.</summary>
     private const string VectorMirrorTable = "session_attachment_embeddings_vec";
@@ -123,6 +128,8 @@ internal sealed class SessionAttachmentIndexRepository(
         int maxAttachments,
         CancellationToken cancellationToken)
     {
+        bool comprehensionEnabled = SessionAttachmentComprehensionPolicy.IsEnabled(options.CurrentValue);
+
         DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken)
@@ -211,12 +218,19 @@ internal sealed class SessionAttachmentIndexRepository(
                 LEFT JOIN session_attachment_index_state s ON s.AttachmentId = a.Id
                 WHERE a.State = 'Bound'
                   AND a.SessionId IS NOT NULL
-                  AND (s.AttachmentId IS NULL OR s.Status IN ('Pending', 'Stale'))
+                  AND (s.AttachmentId IS NULL OR s.Status IN ('Pending', 'Stale')
+                       OR (@comprehensionEnabled = 1 AND a.Kind = 'Binary'
+                           AND lower(trim(substr(a.MimeType, 1, instr(a.MimeType || ';', ';') - 1))) = @documentMime
+                           AND s.Status = 'NotEligible' AND s.ExtractedAt IS NULL))
                 ORDER BY a.CreatedAt, a.Id
                 LIMIT @limit
                 """;
 
             AddParameter(pending, "@limit", Math.Max(1, maxAttachments));
+
+            AddParameter(pending, "@comprehensionEnabled", comprehensionEnabled ? 1 : 0);
+
+            AddParameter(pending, "@documentMime", SessionAttachmentComprehensionPolicy.MimeType);
 
             await using DbDataReader reader = await pending.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
