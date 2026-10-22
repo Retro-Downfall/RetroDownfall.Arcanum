@@ -22,8 +22,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// </para>
 /// <para>
 /// Hidden content (plan decision D8) is dropped by skipping its subtree: tracked changes, annotations, hidden text,
-/// hidden or conditional sections, index templates, alternative text, forms, speaker notes, covered cells, embedded
-/// objects, and anything whose paragraph, text or shape style resolves to hidden.
+/// hidden or conditional sections, index templates, script fields, alternative text, forms, speaker notes, covered
+/// cells, embedded objects, and anything whose paragraph, text or shape style resolves to hidden.
 /// </para>
 /// </remarks>
 internal sealed class OpenDocumentContentWalker(
@@ -252,7 +252,7 @@ internal sealed class OpenDocumentContentWalker(
         switch (_reader.NamespaceURI)
         {
             case OpenDocumentNames.Text:
-                return name is "tracked-changes" or "hidden-text" or "annotation"
+                return name is "tracked-changes" or "hidden-text" or "annotation" or "script"
                     || name.EndsWith("-source", StringComparison.Ordinal)
                     || _reader.GetAttribute("display", OpenDocumentNames.Text) is "none" or "condition";
 

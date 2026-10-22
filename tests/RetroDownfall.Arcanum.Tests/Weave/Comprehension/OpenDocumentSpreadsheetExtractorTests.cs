@@ -6,11 +6,13 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
+using Xunit.Abstractions;
+
 using static RetroDownfall.Arcanum.Tests.Weave.Comprehension.OpenDocumentFixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension;
 
-public sealed class OpenDocumentSpreadsheetExtractorTests
+public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper output)
 {
     // ---------------------------------------------------------------- projection (plan D9)
 
@@ -392,6 +394,8 @@ public sealed class OpenDocumentSpreadsheetExtractorTests
         Assert.Equal("Sheet: Big\na\tb\tc\tREPEATED\nx\ty\n", result.Text);
 
         Assert.False(result.WasTruncated);
+
+        output.WriteLine($"Repeat fixture: {allocated} bytes allocated, {watch.Elapsed.TotalMilliseconds:F1} ms.");
 
         Assert.True(allocated < 4 * 1024 * 1024, $"Extraction allocated {allocated} bytes.");
 

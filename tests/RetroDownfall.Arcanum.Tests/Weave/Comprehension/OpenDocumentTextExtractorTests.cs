@@ -339,6 +339,18 @@ public sealed class OpenDocumentTextExtractorTests
     }
 
     [Fact]
+    public async Task Extract_ScriptField_IsExcludedAndTheTextAroundItIsKept()
+    {
+        // Sensitivity: the text:script exclusion. The element's content is script source (or a link to one), which no
+        // reader sees as document text, so it is a place to hide instructions.
+        byte[] package = Odt(
+            "<text:p>Lead<text:script>SCRIPTMARKER</text:script> end</text:p>"
+            + "<text:p>Next<text:script xlink:href=\"https://example.invalid/SCRIPTLINKMARKER.js\"><text:p>SCRIPTPARAGRAPHMARKER</text:p></text:script></text:p>");
+
+        Assert.Equal("Lead end\nNext\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_ImageAlternativeTextAndEmbeddedObjects_AreNotProjected()
     {
         byte[] package = Odt(
