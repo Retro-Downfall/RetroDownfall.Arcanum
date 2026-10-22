@@ -52,7 +52,7 @@ public sealed class OpenDocumentRealProducerTests
             + "Tabbed\tcolumns\there\n"
             + "First line\nSecond line after a break\n"
             + "Linked words\n"
-            + "Cell A1\nCell B1\nCell A2\nCell B2\n"
+            + "Cell A1\tCell B1\nCell A2\tCell B2\n"
             + "Closing paragraph.\n",
             text);
 
@@ -125,7 +125,7 @@ public sealed class OpenDocumentRealProducerTests
             + "Costs held flat  year on year\n"
             + "Callout\n"
             + "Slide 3\n"
-            + "Region\nSales\nNorth\n41\n",
+            + "Region\tSales\nNorth\t41\n",
             text);
 
         AssertNoMarkers(

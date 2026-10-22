@@ -5,12 +5,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <summary>
 /// The hiding-relevant slice of an OpenDocument package's styles: for each named style only its parent and the four
 /// display switches that can hide content. Common styles come from <c>office:styles</c> and automatic styles from
-/// <c>office:automatic-styles</c>; an automatic style shadows a common one of the same family and name.
+/// <c>office:automatic-styles</c>. They are two name spaces: an element's own style name is looked up among the
+/// automatic styles first and then among the common ones, but <c>style:parent-style-name</c> (which ODF says can
+/// never name an automatic style) and the common <c>Standard</c> paragraph style are looked up among the common
+/// styles only, so an automatic style that shares a name with its parent neither stands in for it nor is its own parent.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A style is judged by walking its parent chain (at most <see cref="MaximumParentHops"/> hops, so a cycle or an
-/// over-deep chain is a <see cref="DocumentPackageRejection.StructureBounds"/> refusal) to the first style that
+/// A style is judged by walking its parent chain through the common styles (at most <see cref="MaximumParentHops"/>
+/// hops, so a cycle or an over-deep chain is a <see cref="DocumentPackageRejection.StructureBounds"/> refusal) to the first style that
 /// states the switch, then to the family's <c>style:default-style</c>. An explicit "visible" therefore overrides a
 /// hidden parent. Each answer is cached on the style, so a reference costs one lookup after its first use.
 /// </para>
@@ -190,7 +193,7 @@ internal sealed class OpenDocumentStyleTable
 
         return family == ParagraphFamily
             && hiding == Switch.Text
-            && Find(ParagraphFamily, StandardParagraphStyle) is { } standard
+            && _common.GetValueOrDefault((ParagraphFamily, StandardParagraphStyle)) is { } standard
             && Resolve(standard, hiding);
     }
 
@@ -411,7 +414,7 @@ internal sealed class OpenDocumentStyleTable
                 throw new DocumentPackageRejectedException(DocumentPackageRejection.StructureBounds);
             }
 
-            current = Find(style.Family, current.Parent);
+            current = _common.GetValueOrDefault((style.Family, current.Parent));
         }
 
         return _defaults.TryGetValue(style.Family, out StyleEntry? defaultStyle) && defaultStyle.Display[(int)hiding] == Hidden;
