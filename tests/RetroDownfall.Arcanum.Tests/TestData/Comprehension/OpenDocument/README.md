@@ -43,7 +43,7 @@ header and footer carry text, and `content.xml` with the automatic styles LibreO
 - `handmade-doctype-manifest.ods` is the same package with the OpenOffice `DOCTYPE` that `textutil` writes added to the
   manifest.
 - The visible sheet `Inventory` has a collapsed column (`table:visibility="collapse"`), a collapsed row, a filtered row,
-  a formula cell (`table:formula` plus its cached text), a merged cell with a comment followed by a covered cell, a
+  a formula cell (`table:formula` plus its cached value: the extractor projects the `office:value` attribute, never the `text:p` that caches it), a merged cell with a comment followed by a covered cell, a
   two-paragraph cell, and LibreOffice's trailing `table:number-rows-repeated="1048567"` row of 1,024 repeated empty
   cells. The second sheet `Archive` has `table:display="false"` in its table style.
 

@@ -941,6 +941,14 @@ public sealed class OpenDocumentTextExtractorTests
     }
 
     [Fact]
+    public async Task Extract_NoteCitationOutsideANote_IsNotProjected()
+    {
+        byte[] package = Odt("<text:p>Lead<text:note-citation>LOOSECITATIONMARKER</text:note-citation> end</text:p>");
+
+        Assert.Equal("Lead end\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_NumberLabelCache_IsNotProjected()
     {
         byte[] package = Odt(
