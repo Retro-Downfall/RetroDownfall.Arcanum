@@ -18,11 +18,15 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentToolInjection
 {
+    /// <summary>The words that tell a reader the extractor could not retain the whole document.</summary>
+    internal const string TruncatedNoticeSuffix = "; truncated at the extraction limit";
+
     /// <summary>
     /// The untrusted-data notice for a Comprehension document, naming the source format of the record
     /// so a reader can tell what was extracted. A record outside the registry is never framed as a document.
+    /// A partial extraction says so, so the text is never read as the whole document.
     /// </summary>
-    internal static string ComprehensionDataNotice(SessionAttachmentRecord record)
+    internal static string ComprehensionDataNotice(SessionAttachmentRecord record, bool truncated = false)
     {
         ArgumentNullException.ThrowIfNull(record);
 
@@ -31,11 +35,34 @@ public static class SessionAttachmentToolInjection
             throw new InvalidOperationException("Only a registered Comprehension document can be framed as document data.");
         }
 
-        return "UNTRUSTED DATA; " + format.FormatName + "; layout not preserved";
+        return "UNTRUSTED DATA; " + format.FormatName + "; layout not preserved"
+            + (truncated ? TruncatedNoticeSuffix : string.Empty);
     }
 
-    internal static string FormatComprehensionData(SessionAttachmentRecord record, string label, string text) =>
-        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice(record), text);
+    internal static string FormatComprehensionData(
+        SessionAttachmentRecord record,
+        string label,
+        string text,
+        bool truncated = false) =>
+        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice(record, truncated), text);
+
+    /// <summary>
+    /// The extracted text bounded to the per-item byte ceiling, and whether it is partial: the extractor
+    /// reported a truncation, or the ceiling cut it. Either way the frame has to say so.
+    /// </summary>
+    internal static string BoundExtractedText(
+        SessionAttachmentExtractionResult extraction,
+        long maxTextBytes,
+        out bool truncated)
+    {
+        ArgumentNullException.ThrowIfNull(extraction);
+
+        byte[] encoded = Encoding.UTF8.GetBytes(extraction.Text);
+
+        truncated = extraction.WasTruncated || (maxTextBytes > 0 && encoded.Length > maxTextBytes);
+
+        return DecodeTextWithByteBound(encoded, maxTextBytes);
+    }
 
     /// <summary>
     /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
@@ -131,11 +158,11 @@ public static class SessionAttachmentToolInjection
                 return null;
             }
 
-            string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+            string text = BoundExtractedText(extraction, maxTextBytes, out bool truncated);
 
             contents =
             [
-                new TextContent(FormatComprehensionData(record, FrameLabel(record), text))
+                new TextContent(FormatComprehensionData(record, FrameLabel(record), text, truncated))
                 {
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
                 },
@@ -247,11 +274,11 @@ public static class SessionAttachmentToolInjection
                 return null;
             }
 
-            string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+            string text = BoundExtractedText(extraction, maxTextBytes, out bool truncated);
 
             contents =
             [
-                new TextContent(FormatComprehensionData(record, label, text))
+                new TextContent(FormatComprehensionData(record, label, text, truncated))
                 {
                     AdditionalProperties = RefreshedContextProperties(),
                 },

@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
@@ -154,9 +156,17 @@ internal sealed partial class ArcanumInternalToolServer
                 return ToolError(BuildMissingAttachmentMessage(logicalName, args.Version, bound));
             }
 
+            // A Comprehension document is durably Binary, so the kind alone would refuse it before the
+            // post-tool materializer ever ran. The same current-settings policy the materializer applies
+            // decides, so the tool accepts exactly what the materializer can then extract.
+            ArcanumSettings settings = scope.ServiceProvider.GetService<IOptionsMonitor<ArcanumSettings>>()?.CurrentValue
+                ?? new ArcanumSettings();
+
             if (record.Kind is not SessionAttachmentKind.Text
 
-                and not SessionAttachmentKind.Image)
+                and not SessionAttachmentKind.Image
+
+                && !SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
 
             {
 
