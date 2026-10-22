@@ -24,7 +24,11 @@ internal sealed class OpenDocumentTextExtractor : ISessionAttachmentDocumentExtr
 
         using BoundedXmlReader xml = content.OpenBody("text", cancellationToken);
 
-        new OpenDocumentContentWalker(xml, content.Styles, output).WalkElement();
+        OpenDocumentContentWalker walker = new(xml, content.Styles, output);
+
+        walker.WalkElement();
+
+        walker.EmitNotes();
 
         return ValueTask.CompletedTask;
     }

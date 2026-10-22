@@ -139,7 +139,7 @@ public sealed class OpenDocumentTextExtractorTests
             + "  </table:table>\n"
             + "  <text:p>After</text:p>\n");
 
-        Assert.Equal("One\nTwo\nCell A1\nCell B1\nAfter\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+        Assert.Equal("One\nTwo\nCell A1\tCell B1\nAfter\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]
@@ -160,13 +160,14 @@ public sealed class OpenDocumentTextExtractorTests
     }
 
     [Fact]
-    public async Task Extract_FootnoteIsIncludedInlineWithItsCitationAndBody()
+    public async Task Extract_Footnote_IsTakenOutOfTheParagraphAndFollowsTheBody()
     {
+        // The note leaves the paragraph it is anchored in whole and is written after the body, as Word notes are.
         byte[] package = Odt(
             "<text:p>Body<text:note text:id=\"ftn1\" text:note-class=\"footnote\"><text:note-citation>1</text:note-citation>"
-            + "<text:note-body><text:p>Footnote text</text:p></text:note-body></text:note> continues.</text:p>");
+            + "<text:note-body><text:p>Footnote text</text:p></text:note-body></text:note> continues.</text:p><text:p>Next</text:p>");
 
-        Assert.Equal("Body1\nFootnote text\ncontinues.\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+        Assert.Equal("Body continues.\nNext\nFootnote text\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]
@@ -365,17 +366,18 @@ public sealed class OpenDocumentTextExtractorTests
     }
 
     [Fact]
-    public async Task Extract_ElementsOfANamespaceTheFormatDoesNotWalk_AreSkippedWithTheirText()
+    public async Task Extract_ElementsOfANamespaceTheFormatDoesNotWalk_AreSkippedWithTheirTextUnlessTheyAreInsideAParagraph()
     {
-        // Sensitivity: only the OpenDocument content namespaces are walked. A consumer ignores a foreign element and its
-        // content, so text tucked into one is invisible to a reader and must not reach the model.
+        // Sensitivity: outside a paragraph's own content a consumer ignores a foreign element and its content, so text
+        // tucked into a block-level one is invisible to a reader and must not reach the model. Inside a paragraph the
+        // content of an element the consumer does not know is processed (see the foreign-element tests below).
         byte[] package = Odt(
-            "<text:p>Lead<x:note xmlns:x=\"urn:elsewhere\">FOREIGNMARKER</x:note> end</text:p>"
+            "<text:p>Lead<x:note xmlns:x=\"urn:elsewhere\">INLINEFOREIGN</x:note> end</text:p>"
             + "<x:wrapper xmlns:x=\"urn:elsewhere\"><text:p>WRAPPEDMARKER</text:p></x:wrapper>"
-            + "<text:p>Plain<bare xmlns=\"\">NONAMESPACEMARKER</bare></text:p>"
+            + "<text:p>Plain<bare xmlns=\"\">INLINEBARE</bare></text:p>"
             + "<text:p>Meta<dc:creator>DCMARKER</dc:creator></text:p>");
 
-        Assert.Equal("Lead end\nPlain\nMeta\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+        Assert.Equal("LeadINLINEFOREIGN end\nPlainINLINEBARE\nMeta\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]
@@ -640,9 +642,9 @@ public sealed class OpenDocumentTextExtractorTests
         byte[] package = Odt(
             "<text:p>Lead<draw:frame draw:style-name=\"Shown1\"><draw:text-box><text:p>SHOWNSHAPE</text:p></draw:text-box></draw:frame>"
             + "<draw:frame draw:style-name=\"Hidden1\"><draw:text-box><text:p>HIDDENSHAPE</text:p></draw:text-box></draw:frame></text:p>",
-            automaticStyles: Style("graphic", "Base", properties: "<style:graphic-properties draw:display=\"none\"/>")
-                + Style("graphic", "Shown1", parent: "Base", properties: $"<style:graphic-properties draw:display=\"{display}\"/>")
-                + Style("graphic", "Hidden1", parent: "Base"));
+            automaticStyles: Style("graphic", "Shown1", parent: "Base", properties: $"<style:graphic-properties draw:display=\"{display}\"/>")
+                + Style("graphic", "Hidden1", parent: "Base"),
+            commonStyles: Style("graphic", "Base", properties: "<style:graphic-properties draw:display=\"none\"/>"));
 
         Assert.Equal("Lead\nSHOWNSHAPE\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
@@ -684,6 +686,466 @@ public sealed class OpenDocumentTextExtractorTests
             ("styles.xml", "<office:document-styles><unclosed>"));
 
         Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    // ---------------------------------------------------------------- style name spaces
+
+    [Fact]
+    public async Task Extract_ParentStyleName_ResolvesAmongCommonStylesNotToAnAutomaticNamesake()
+    {
+        // ODF keeps automatic and common styles in separate name spaces and a parent is always a common style. The
+        // automatic "Body" must not stand in for the hidden common "Body" that P1 really inherits from.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("paragraph", "P1", parent: "Body") + Style("paragraph", "Body"),
+            commonStyles: Style("paragraph", "Body", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_AutomaticStyleNamedLikeItsCommonParent_IsNotACycle()
+    {
+        // LibreOffice writes exactly this: an automatic style whose parent is the common style of the same name.
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">Shown</text:p>",
+            automaticStyles: Style("paragraph", "Body", parent: "Body", properties: "<style:paragraph-properties fo:margin-top=\"0cm\"/>"),
+            commonStyles: Style("paragraph", "Body"));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_AutomaticStyleNamedLikeItsCommonParent_StillInheritsTheCommonParentsHiding()
+    {
+        byte[] package = Odt(
+            "<text:p text:style-name=\"Body\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("paragraph", "Body", parent: "Body"),
+            commonStyles: Style("paragraph", "Body", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_AutomaticStyleNamedStandard_DoesNotReplaceTheCommonStandardStyleOfUnstyledParagraphs()
+    {
+        // A paragraph that names no style gets the common "Standard" style, whatever the automatic styles are called.
+        byte[] package = Odt(
+            "<text:p>HIDDENMARKER</text:p><text:p text:style-name=\"Standard\">Shown</text:p>",
+            automaticStyles: Style("paragraph", "Standard", properties: VisibleText),
+            commonStyles: Style("paragraph", "Standard", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    // ---------------------------------------------------------------- draw:frame holds alternative representations of one object
+
+    [Theory]
+    [InlineData("image")]
+    [InlineData("object")]
+    [InlineData("object-ole")]
+    [InlineData("plugin")]
+    [InlineData("applet")]
+    [InlineData("floating-frame")]
+    public async Task Extract_FrameWhoseFirstRepresentationIsEmbeddedContent_ProjectsNoTextFromALaterTextBox(string element)
+    {
+        // A consumer renders only the first content child of a frame, so a text box placed behind it is never shown.
+        byte[] package = Odt(
+            $"<text:p>Lead<draw:frame draw:name=\"F1\"><draw:{element} xlink:href=\"Pictures/a\"/><draw:text-box><text:p>ALTERNATIVEMARKER</text:p></draw:text-box></draw:frame></text:p>");
+
+        Assert.Equal("Lead\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_FrameWithTwoTextBoxes_ProjectsOnlyTheFirst()
+    {
+        byte[] package = Odt(
+            "<text:p>Lead<draw:frame><draw:text-box><text:p>Shown</text:p></draw:text-box><draw:text-box><text:p>SECONDBOXMARKER</text:p></draw:text-box></draw:frame></text:p>");
+
+        Assert.Equal("Lead\nShown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_FrameWhoseTextBoxIsFollowedByAnImage_ProjectsTheTextBox()
+    {
+        byte[] package = Odt(
+            "<text:p>Lead<draw:frame><draw:text-box><text:p>Shown</text:p></draw:text-box><draw:image xlink:href=\"Pictures/a.png\"><text:p>IMAGEMARKER</text:p></draw:image></draw:frame></text:p>");
+
+        Assert.Equal("Lead\nShown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_FrameChildrenThatAreNotRepresentations_DoNotTakeTheFirstPlace()
+    {
+        byte[] package = Odt(
+            "<text:p>Lead<draw:frame><svg:title>TITLEMARKER</svg:title><office:event-listeners/><draw:text-box><text:p>Shown</text:p></draw:text-box></draw:frame></text:p>");
+
+        Assert.Equal("Lead\nShown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_FrameWhoseFirstRepresentationIsATable_ProjectsTheTableAndNotALaterTextBox()
+    {
+        byte[] package = Odt(
+            "<draw:frame><table:table table:name=\"T\"><table:table-column/><table:table-row><table:table-cell><text:p>Cell</text:p></table:table-cell></table:table-row></table:table>"
+            + "<draw:text-box><text:p>LATERBOXMARKER</text:p></draw:text-box></draw:frame>");
+
+        Assert.Equal("Cell\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TextDirectlyInsideAFrame_IsNotProjected()
+    {
+        // Only a frame's content child shows text; characters between its children belong to no paragraph.
+        byte[] package = Odt(
+            "<text:p>Lead<draw:frame>STRAYFRAMEMARKER<draw:text-box><text:p>Boxed</text:p></draw:text-box></draw:frame></text:p>");
+
+        Assert.Equal("Lead\nBoxed\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    // ---------------------------------------------------------------- text:hidden-paragraph inside hidden text
+
+    [Theory]
+    [InlineData("span")]
+    [InlineData("a")]
+    [InlineData("meta")]
+    [InlineData("meta-field")]
+    public async Task Extract_HiddenParagraphFieldInsideHiddenText_StillDropsTheParagraph(string element)
+    {
+        // Writer decides from the field alone, whether or not the characters carrying it are themselves hidden.
+        byte[] package = Odt(
+            $"<text:p>HIDDENPARAMARKER<text:{element} text:style-name=\"T1\"><text:hidden-paragraph text:condition=\"ooow:1\"/></text:{element}></text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldDeepInsideHiddenText_StillDropsTheParagraph()
+    {
+        byte[] package = Odt(
+            "<text:p>HIDDENPARAMARKER<text:span text:style-name=\"T1\">x<text:a xlink:href=\"u\"><text:span><text:hidden-paragraph text:condition=\"1\"/></text:span></text:a></text:span></text:p><text:p>Shown</text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldInsideHiddenTextThatIsExplicitlyNotHidden_KeepsTheParagraph()
+    {
+        byte[] package = Odt(
+            "<text:p>Kept<text:span text:style-name=\"T1\"><text:hidden-paragraph text:condition=\"1\" text:is-hidden=\"false\"/></text:span></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Kept\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldInsideHiddenTextOfANestedParagraph_DropsOnlyThatParagraph()
+    {
+        byte[] package = Odt(
+            "<text:p>Outer<draw:frame><draw:text-box><text:p>INNERMARKER<text:span text:style-name=\"T1\"><text:hidden-paragraph text:condition=\"1\"/></text:span></text:p>"
+            + "<text:p>Inner kept</text:p></draw:text-box></draw:frame></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Outer\nInner kept\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldOfAParagraphInsideHiddenText_DoesNotDropTheOuterParagraph()
+    {
+        // The field belongs to the paragraph of the text box, not to the paragraph the hidden span sits in.
+        byte[] package = Odt(
+            "<text:p>Kept<text:span text:style-name=\"T1\"><draw:frame><draw:text-box><text:p>INNERMARKER<text:hidden-paragraph text:condition=\"1\"/></text:p></draw:text-box></draw:frame></text:span></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Kept\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    // ---------------------------------------------------------------- foreign elements inside paragraph content
+
+    private const string Loext = "xmlns:loext=\"urn:org:documentfoundation:names:experimental:office:xmlns:loext:1.0\"";
+
+    private const string Elsewhere = "xmlns:x=\"urn:elsewhere\"";
+
+    [Fact]
+    public async Task Extract_ForeignElementInsideAParagraph_ProjectsItsVisibleText()
+    {
+        // A LibreOffice content control: the field's value is visible text in Writer.
+        byte[] package = Odt(
+            $"<text:p {Loext}>Customer: <loext:content-control loext:showing-place-holder=\"false\">Contoso Ltd</loext:content-control> signed.</text:p>");
+
+        Assert.Equal("Customer: Contoso Ltd signed.\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ForeignElementsNestedInsideInlineElementsAndEachOther_ProjectTheirText()
+    {
+        byte[] package = Odt($"<text:p>A<text:span><x:a {Elsewhere}>B<x:b>C</x:b></x:a></text:span>D</text:p><text:p>Plain<bare xmlns=\"\">Bare</bare></text:p>");
+
+        Assert.Equal("ABCD\nPlainBare\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenTextInsideAForeignElementInsideAParagraph_IsStillHidden()
+    {
+        byte[] package = Odt(
+            $"<text:p>A<x:w {Elsewhere}><text:span text:style-name=\"T1\">HIDDENMARKER</text:span><text:hidden-text text:condition=\"x\">HIDDENFIELD</text:hidden-text>B</x:w></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("AB\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ForeignElementOutsideParagraphContent_StaysSkipped()
+    {
+        // Outside a paragraph's own content a consumer does not interpret a foreign element: body level, directly in a
+        // text box, and directly in a table cell are all block context.
+        byte[] package = Odt(
+            $"<x:w {Elsewhere}><text:p>BODYWRAPMARKER</text:p></x:w>"
+            + $"<text:p>Lead<draw:frame><draw:text-box><x:w {Elsewhere}><text:p>BOXWRAPMARKER</text:p></x:w><text:p>Boxed</text:p></draw:text-box></draw:frame></text:p>"
+            + $"<table:table table:name=\"T\"><table:table-column/><table:table-row><table:table-cell><x:w {Elsewhere}><text:p>CELLWRAPMARKER</text:p></x:w><text:p>Cell</text:p></table:table-cell></table:table-row></table:table>");
+
+        Assert.Equal("Lead\nBoxed\nCell\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ForeignElementThatAsksNotToBeProcessed_IsSkipped()
+    {
+        byte[] package = Odt($"<text:p>Lead<x:w {Elsewhere} office:process-content=\"false\">PROCESSMARKER</x:w> end</text:p>");
+
+        Assert.Equal("Lead end\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ElementsOfOtherOpenDocumentNamespacesInsideAParagraph_StayWithTheMetadataTheyAre()
+    {
+        byte[] package = Odt(
+            "<text:p>Meta<dc:creator>DCMARKER</dc:creator><meta:initial-creator>METAMARKER</meta:initial-creator>"
+            + "<style:text-properties>STYLEMARKER</style:text-properties>"
+            + "<script:event-listener xmlns:script=\"urn:oasis:names:tc:opendocument:xmlns:script:1.0\">SCRIPTMARKER</script:event-listener></text:p>");
+
+        Assert.Equal("Meta\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    // ---------------------------------------------------------------- notes and cached labels
+
+    [Fact]
+    public async Task Extract_NoteCitation_IsALabelTheConsumerRegeneratesAndIsNotProjected()
+    {
+        byte[] package = Odt(
+            "<text:p>Body<text:note text:id=\"ftn1\" text:note-class=\"footnote\"><text:note-citation>CITATIONMARKER</text:note-citation>"
+            + "<text:note-body><text:p>Footnote text</text:p></text:note-body></text:note> continues.</text:p>");
+
+        Assert.Equal("Body continues.\nFootnote text\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NumberLabelCache_IsNotProjected()
+    {
+        byte[] package = Odt(
+            "<text:h text:outline-level=\"1\"><text:number>NUMBERMARKER</text:number>Title</text:h>"
+            + "<text:list><text:list-item><text:p><text:number>LISTNUMBERMARKER</text:number>Item</text:p></text:list-item></text:list>");
+
+        Assert.Equal("Title\nItem\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_Notes_FollowTheBodyFootnotesThenEndnotesEachInDocumentOrder()
+    {
+        byte[] package = Odt(
+            "<text:p>One" + Note("endnote", "end one") + Note("footnote", "foot one") + "</text:p>"
+            + "<text:p>Two" + Note("footnote", "foot two") + Note("endnote", "end two") + "</text:p>");
+
+        Assert.Equal("One\nTwo\nfoot one\nfoot two\nend one\nend two\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NoteBody_ProjectsOneLinePerParagraphAndHonoursHiddenContent()
+    {
+        byte[] package = Odt(
+            "<text:p>Body<text:note text:note-class=\"footnote\"><text:note-citation>1</text:note-citation><text:note-body>"
+            + "<text:p>First</text:p><text:p text:style-name=\"P1\">HIDDENNOTEPARAGRAPH</text:p><text:p>Second <text:span text:style-name=\"T1\">HIDDENNOTETEXT</text:span>end</text:p>"
+            + "</text:note-body></text:note></text:p>",
+            automaticStyles: Style("paragraph", "P1", properties: HiddenText) + Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Body\nFirst\nSecond end\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NoteAnchoredInAParagraphThatAFieldHides_IsDroppedWithIt()
+    {
+        byte[] package = Odt(
+            "<text:p>HIDDENPARAMARKER" + Note("footnote", "HIDDENNOTEMARKER") + "<text:hidden-paragraph text:condition=\"1\"/></text:p>"
+            + "<text:p>Shown" + Note("footnote", "kept note") + "</text:p>");
+
+        Assert.Equal("Shown\nkept note\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NoteInsideHiddenText_IsDropped()
+    {
+        byte[] package = Odt(
+            "<text:p>Shown<text:span text:style-name=\"T1\">" + Note("footnote", "HIDDENNOTEMARKER") + "</text:span></text:p>",
+            automaticStyles: Style("text", "T1", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ParagraphDirectlyInsideANote_IsNotProjected()
+    {
+        byte[] package = Odt("<text:p>Lead<text:note text:note-class=\"footnote\"><text:p>NOTEPARAMARKER</text:p></text:note></text:p>");
+
+        Assert.Equal("Lead\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NoteInsideATableCell_StaysOutOfTheRowAndFollowsTheBody()
+    {
+        byte[] package = Odt(
+            "<table:table table:name=\"T\"><table:table-column/><table:table-row>"
+            + "<table:table-cell><text:p>A" + Note("footnote", "cell note") + "</text:p></table:table-cell>"
+            + "<table:table-cell><text:p>B</text:p></table:table-cell></table:table-row></table:table><text:p>After</text:p>");
+
+        Assert.Equal("A\tB\nAfter\ncell note\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NoteInsideANote_IsProjectedAfterTheBodyAndAfterItsOuterNote()
+    {
+        byte[] package = Odt(
+            "<text:p>Body<text:note text:note-class=\"footnote\"><text:note-citation>1</text:note-citation><text:note-body>"
+            + "<text:p>Outer note" + Note("footnote", "inner note") + "</text:p></text:note-body></text:note></text:p>");
+
+        Assert.Equal("Body\nOuter note\ninner note\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NotesBeyondTheRetentionBound_AreDroppedAndTheOutputIsMarkedTruncated()
+    {
+        string big = new('n', 100_000);
+
+        SessionAttachmentExtractionResult result = await ExtractAsync<OpenDocumentTextExtractor>(
+            Odt("<text:p>Body" + Note("footnote", big) + Note("footnote", big) + Note("footnote", big) + "</text:p>"),
+            capacity: 1_000_000);
+
+        Assert.True(result.WasTruncated);
+
+        Assert.Equal("Body\n".Length + (2 * 100_001), result.Text.Length);
+    }
+
+    // ---------------------------------------------------------------- table rows
+
+    [Fact]
+    public async Task Extract_TableRows_ProjectTheirCellsJoinedByTabsEachRowOnItsOwnLine()
+    {
+        byte[] package = Odt(
+            "<text:p>Before</text:p>"
+            + Table(
+                Row(Cell("Name") + Cell("Role") + Cell("Score")),
+                Row(Cell("Alice") + Cell("Engineer") + Cell("91")))
+            + "<text:p>After</text:p>");
+
+        Assert.Equal("Before\nName\tRole\tScore\nAlice\tEngineer\t91\nAfter\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableCellWithSeveralParagraphsTabsAndLineBreaks_JoinsThemWithSingleSpaces()
+    {
+        byte[] package = Odt(
+            Table(Row(
+                "<table:table-cell><text:p>one</text:p><text:p/><text:p>two<text:tab/>three<text:line-break/>four</text:p></table:table-cell>"
+                + Cell("next"))));
+
+        Assert.Equal("one two three four\tnext\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_EmptyTableCells_KeepTheirPlaceInTheRowButTrailingOnesAndEmptyRowsAddNothing()
+    {
+        byte[] package = Odt(
+            Table(
+                Row(Cell("a") + Empty() + Cell("c")),
+                Row(Empty() + Cell("b") + Empty()),
+                Row(Empty() + Empty()),
+                Row(Cell("d"))));
+
+        Assert.Equal("a\t\tc\n\tb\nd\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_CoveredAndHiddenTableCells_AreNotCellsOfTheRow()
+    {
+        byte[] package = Odt(
+            Table(Row(
+                "<table:table-cell table:number-columns-spanned=\"2\"><text:p>Merged</text:p></table:table-cell><table:covered-table-cell><text:p>COVEREDMARKER</text:p></table:covered-table-cell>"
+                + "<table:table-cell table:style-name=\"ce1\"><text:p>HIDDENCELLMARKER</text:p></table:table-cell>"
+                + Cell("next"))),
+            automaticStyles: Style("table-cell", "ce1", properties: HiddenText));
+
+        Assert.Equal("Merged\tnext\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableHeaderRowsAndRowGroups_ProjectLikeOtherRows()
+    {
+        byte[] package = Odt(
+            "<table:table table:name=\"T\"><table:table-column table:number-columns-repeated=\"2\"/>"
+            + "<table:table-header-rows>" + Row(Cell("h1") + Cell("h2")) + "</table:table-header-rows>"
+            + "<table:table-row-group>" + Row(Cell("g1") + Cell("g2")) + "</table:table-row-group>"
+            + "<table:table-rows>" + Row(Cell("r1") + Cell("r2")) + "</table:table-rows></table:table>");
+
+        Assert.Equal("h1\th2\ng1\tg2\nr1\tr2\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableNestedInACell_FlattensIntoThatCell()
+    {
+        byte[] package = Odt(
+            Table(Row(
+                "<table:table-cell><text:p>outer</text:p>" + Table(Row(Cell("in1") + Cell("in2")), Row(Cell("in3"))) + "</table:table-cell>"
+                + Cell("next")))
+            + "<text:p>After</text:p>");
+
+        Assert.Equal("outer in1 in2 in3\tnext\nAfter\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableInATextBoxAnchoredInAParagraph_ProjectsItsRowsBetweenTheParagraphLines()
+    {
+        byte[] package = Odt(
+            "<text:p>Before<draw:frame><draw:text-box>" + Table(Row(Cell("a") + Cell("b")), Row(Cell("c") + Cell("d"))) + "</draw:text-box></draw:frame>After</text:p>");
+
+        Assert.Equal("Before\na\tb\nc\td\nAfter\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenParagraphFieldInATableCell_DropsOnlyThatParagraphOfTheCell()
+    {
+        byte[] package = Odt(
+            Table(Row(
+                "<table:table-cell><text:p>HIDDENPARAMARKER<text:hidden-paragraph text:condition=\"1\"/></text:p><text:p>kept</text:p></table:table-cell>"
+                + Cell("next"))));
+
+        Assert.Equal("kept\tnext\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableCellLongerThanTheRetentionBound_IsCutAtTheBoundAndMarkedTruncated()
+    {
+        SessionAttachmentExtractionResult result = await ExtractAsync<OpenDocumentTextExtractor>(
+            Odt(Table(Row(Cell("first") + Cell(new string('x', 300_000)))) + "<text:p>NEVERREACHED</text:p>"),
+            capacity: 1_000_000);
+
+        Assert.True(result.WasTruncated);
+
+        Assert.StartsWith("first\txxxx", result.Text, StringComparison.Ordinal);
+
+        // The row, not just the cell, is bounded: cells are joined before anything is written.
+        Assert.Equal(262_144, result.Text.Length);
+
+        Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
     }
 
     // ---------------------------------------------------------------- text nodes
@@ -745,4 +1207,16 @@ public sealed class OpenDocumentTextExtractorTests
 
         Assert.False(char.IsHighSurrogate(result.Text[^1]));
     }
+
+    private static string Note(string noteClass, string text) =>
+        $"<text:note text:note-class=\"{noteClass}\"><text:note-citation>1</text:note-citation><text:note-body><text:p>{text}</text:p></text:note-body></text:note>";
+
+    private static string Table(params string[] rows) =>
+        "<table:table table:name=\"T\"><table:table-column table:number-columns-repeated=\"3\"/>" + string.Concat(rows) + "</table:table>";
+
+    private static string Row(string cells) => $"<table:table-row>{cells}</table:table-row>";
+
+    private static string Cell(string text) => $"<table:table-cell office:value-type=\"string\"><text:p>{text}</text:p></table:table-cell>";
+
+    private static string Empty() => "<table:table-cell/>";
 }

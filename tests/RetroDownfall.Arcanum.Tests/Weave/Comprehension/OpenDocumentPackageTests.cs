@@ -820,10 +820,11 @@ public sealed class OpenDocumentPackageTests
     public async Task Extract_ParentChainOfThirtyTwoHopsResolvesAndOneMoreIsStructureBounds(int hops, bool rejected)
     {
         // Style s0 inherits from s1 ... s<hops>, and the last one is hidden. A chain of exactly 32 hops still reaches it.
+        // Parents are common styles, so the whole chain lives in office:styles.
         string chain = string.Concat(Enumerable.Range(0, hops).Select(index => Style("paragraph", $"s{index}", parent: $"s{index + 1}")))
             + Style("paragraph", $"s{hops}", properties: HiddenText);
 
-        byte[] package = Odt("<text:p text:style-name=\"s0\">HIDDENMARKER</text:p><text:p>Shown</text:p>", automaticStyles: chain);
+        byte[] package = Odt("<text:p text:style-name=\"s0\">HIDDENMARKER</text:p><text:p>Shown</text:p>", commonStyles: chain);
 
         if (rejected)
         {
@@ -840,7 +841,7 @@ public sealed class OpenDocumentPackageTests
     {
         byte[] package = Odt(
             "<text:p text:style-name=\"a\">x</text:p>",
-            automaticStyles: Style("paragraph", "a", parent: "b") + Style("paragraph", "b", parent: "a"));
+            commonStyles: Style("paragraph", "a", parent: "b") + Style("paragraph", "b", parent: "a"));
 
         await RejectedAsync<OpenDocumentTextExtractor>(package, DocumentPackageRejection.StructureBounds);
     }

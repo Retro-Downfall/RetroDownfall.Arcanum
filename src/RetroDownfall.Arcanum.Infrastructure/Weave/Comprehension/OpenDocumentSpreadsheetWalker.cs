@@ -16,8 +16,14 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// asking whether any column a repeated cell covers is visible is a binary search, not a scan.
 /// </para>
 /// <para>
-/// A cell's text is its paragraphs joined by single spaces. Formulas are attributes and are never read. A covered
-/// (merged-away) cell contributes no text but still occupies its column index.
+/// A cell with a numeric, date, time or boolean value shows that value, so it projects its raw value attribute (see
+/// <see cref="OpenDocumentCellValue"/>) and never its cached paragraph; any other cell's text is its paragraphs joined
+/// by single spaces. Formulas are attributes and are never read. A covered (merged-away) cell contributes no text but
+/// still occupies its column index.
+/// </para>
+/// <para>
+/// Rows are counted the way columns are: a row positioned at or past <see cref="MaximumRows"/> is on no sheet and is
+/// hidden, and hidden rows and the rows of collapsed groups still occupy their indexes.
 /// </para>
 /// </remarks>
 internal sealed class OpenDocumentSpreadsheetWalker(
@@ -27,6 +33,9 @@ internal sealed class OpenDocumentSpreadsheetWalker(
 {
     /// <summary>The widest sheet: column indexes at or past this are not columns, so cells there are hidden.</summary>
     internal const int MaximumColumns = 16_384;
+
+    /// <summary>The tallest sheet: row indexes at or past this are not rows, so rows there are hidden.</summary>
+    internal const long MaximumRows = 1_048_576;
 
     private readonly XmlReader _reader = xml.Reader;
 
@@ -39,6 +48,8 @@ internal sealed class OpenDocumentSpreadsheetWalker(
     private int _columnElements;
 
     private long _columnIndex;
+
+    private long _rowIndex;
 
     private bool _rowsSeen;
 
@@ -81,6 +92,8 @@ internal sealed class OpenDocumentSpreadsheetWalker(
                 xml.SkipElement();
             }
         }
+
+        _content.EmitNotes();
     }
 
     private void ProcessSheet()
@@ -101,6 +114,8 @@ internal sealed class OpenDocumentSpreadsheetWalker(
         _columnElements = 0;
 
         _columnIndex = 0;
+
+        _rowIndex = 0;
 
         _rowsSeen = false;
 
@@ -157,7 +172,7 @@ internal sealed class OpenDocumentSpreadsheetWalker(
                 case "table-row-group":
                     if (IsCollapsedGroup())
                     {
-                        xml.SkipElement();
+                        CountCollapsedRows();
                     }
                     else
                     {
@@ -212,11 +227,71 @@ internal sealed class OpenDocumentSpreadsheetWalker(
         xml.SkipElement();
     }
 
+    /// <summary>
+    /// Walks a collapsed row group, then moves past it. Its rows are never shown, but they still occupy row indexes, so
+    /// the rows after the group are placed exactly where a consumer places them.
+    /// </summary>
+    private void CountCollapsedRows()
+    {
+        if (_reader.IsEmptyElement)
+        {
+            xml.Read();
+
+            return;
+        }
+
+        xml.Read();
+
+        while (!Stopped && !_reader.EOF && _reader.NodeType != XmlNodeType.EndElement)
+        {
+            if (_reader.NodeType != XmlNodeType.Element)
+            {
+                xml.Read();
+
+                continue;
+            }
+
+            if (IsTable("table-row"))
+            {
+                EnterRow();
+
+                xml.SkipElement();
+            }
+            else if (IsTable("table-row-group") || IsTable("table-rows") || IsTable("table-header-rows"))
+            {
+                CountCollapsedRows();
+            }
+            else
+            {
+                xml.SkipElement();
+            }
+        }
+
+        xml.Read();
+    }
+
+    /// <summary>
+    /// Counts the row the reader is on, with its repeat count, as occupying row indexes (saturating at the last row)
+    /// and returns true when its first row lies on the sheet.
+    /// </summary>
+    private bool EnterRow()
+    {
+        long repeat = OpenDocumentNames.ParseCount(_reader.GetAttribute("number-rows-repeated", OpenDocumentNames.Table), OpenDocumentNames.MaximumRepeat);
+
+        bool onSheet = _rowIndex < MaximumRows;
+
+        _rowIndex = Math.Min(_rowIndex + repeat, MaximumRows);
+
+        return onSheet;
+    }
+
     private void ProcessRow()
     {
         _rowsSeen = true;
 
-        if (_reader.GetAttribute("visibility", OpenDocumentNames.Table) is "collapse" or "filter")
+        bool onSheet = EnterRow();
+
+        if (!onSheet || _reader.GetAttribute("visibility", OpenDocumentNames.Table) is "collapse" or "filter")
         {
             xml.SkipElement();
 
@@ -275,7 +350,15 @@ internal sealed class OpenDocumentSpreadsheetWalker(
 
         long end = column + repeat;
 
-        if (_reader.IsEmptyElement)
+        string? valueType = _reader.GetAttribute("value-type", OpenDocumentNames.Office);
+
+        bool valueCell = OpenDocumentCellValue.IsValueType(valueType);
+
+        string? value = valueCell ? OpenDocumentCellValue.Read(_reader, valueType!) : null;
+
+        string? stringValue = valueType == "string" ? _reader.GetAttribute("string-value", OpenDocumentNames.Office) : null;
+
+        if (_reader.IsEmptyElement && value is null && stringValue is null)
         {
             xml.Read();
 
@@ -292,7 +375,7 @@ internal sealed class OpenDocumentSpreadsheetWalker(
             return end;
         }
 
-        string text = _content.Capture(cell: true);
+        string text = valueCell ? _content.CaptureValueCell(value) : _content.Capture(cell: true, fallback: stringValue);
 
         if (text.Length > 0)
         {

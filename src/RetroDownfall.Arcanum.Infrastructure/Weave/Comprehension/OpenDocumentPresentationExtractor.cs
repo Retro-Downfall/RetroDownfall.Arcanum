@@ -31,7 +31,11 @@ internal sealed class OpenDocumentPresentationExtractor : ISessionAttachmentDocu
 
         using BoundedXmlReader xml = content.OpenBody("presentation", cancellationToken);
 
-        WalkPages(xml, content.Styles, new OpenDocumentContentWalker(xml, content.Styles, output));
+        OpenDocumentContentWalker walker = new(xml, content.Styles, output);
+
+        WalkPages(xml, content.Styles, walker);
+
+        walker.EmitNotes();
 
         return ValueTask.CompletedTask;
     }

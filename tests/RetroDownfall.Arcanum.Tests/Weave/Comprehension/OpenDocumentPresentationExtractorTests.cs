@@ -43,7 +43,7 @@ public sealed class OpenDocumentPresentationExtractorTests
                 + "<table:table-cell><text:p>C1</text:p></table:table-cell><table:table-cell><text:p>C2</text:p></table:table-cell></table:table-row></table:table></draw:frame>"
                 + Frame("Four")));
 
-        Assert.Equal("Slide 1\nOne\nTwo\nThree\nC1\nC2\nFour\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+        Assert.Equal("Slide 1\nOne\nTwo\nThree\nC1\tC2\nFour\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
     }
 
     [Fact]
@@ -93,6 +93,50 @@ public sealed class OpenDocumentPresentationExtractorTests
         Assert.Equal("Slide 1\nSlide text\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
     }
 
+    [Fact]
+    public async Task Extract_FrameWithTwoTextBoxes_ProjectsOnlyTheFirst()
+    {
+        // The children of a frame are alternative representations of one object; only the first is rendered.
+        byte[] package = Odp(
+            "<draw:page draw:name=\"p1\"><draw:frame><draw:text-box><text:p>Shown</text:p></draw:text-box>"
+            + "<draw:text-box><text:p>SECONDBOXMARKER</text:p></draw:text-box></draw:frame></draw:page>");
+
+        Assert.Equal("Slide 1\nShown\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_FrameWhoseFirstRepresentationIsAnImage_ProjectsNoTextFromALaterTextBox()
+    {
+        byte[] package = Odp(
+            Page("<draw:frame><draw:image xlink:href=\"Pictures/a.png\"/><draw:text-box><text:p>ALTERNATIVEMARKER</text:p></draw:text-box></draw:frame>" + Frame("Real")));
+
+        Assert.Equal("Slide 1\nReal\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_TableRows_ProjectTheirCellsJoinedByTabsEachRowOnItsOwnLine()
+    {
+        byte[] package = Odp(
+            Page(
+                "<draw:frame><table:table table:name=\"T\"><table:table-column table:number-columns-repeated=\"3\"/>"
+                + "<table:table-row><table:table-cell><text:p>Name</text:p></table:table-cell><table:table-cell><text:p>Role</text:p></table:table-cell><table:table-cell><text:p>Score</text:p></table:table-cell></table:table-row>"
+                + "<table:table-row><table:table-cell><text:p>Alice</text:p></table:table-cell><table:table-cell><text:p>Engineer</text:p><text:p>Lead</text:p></table:table-cell><table:table-cell><text:p>91</text:p></table:table-cell></table:table-row>"
+                + "</table:table></draw:frame>"
+                + Frame("After")));
+
+        Assert.Equal("Slide 1\nName\tRole\tScore\nAlice\tEngineer Lead\t91\nAfter\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_NotesInShapes_FollowTheLastSlide()
+    {
+        byte[] package = Odp(
+            Page("<draw:frame><draw:text-box><text:p>One<text:note text:note-class=\"footnote\"><text:note-citation>1</text:note-citation><text:note-body><text:p>Note text</text:p></text:note-body></text:note></text:p></draw:text-box></draw:frame>")
+            + Page(Frame("Two")));
+
+        Assert.Equal("Slide 1\nOne\nSlide 2\nTwo\nNote text\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+    }
+
     // ---------------------------------------------------------------- hidden content (plan D8)
 
     [Fact]
@@ -107,9 +151,9 @@ public sealed class OpenDocumentPresentationExtractorTests
             + Page(Frame("five"))
             + Page(Frame("six"), " draw:style-name=\"dp4\""),
             automaticStyles: Style("drawing-page", "dp1", properties: VisiblePage)
-                + Style("drawing-page", "dp2", properties: HiddenPage)
                 + Style("drawing-page", "dp3", parent: "dp2")
-                + Style("drawing-page", "dp4", parent: "dp2", properties: VisiblePage));
+                + Style("drawing-page", "dp4", parent: "dp2", properties: VisiblePage),
+            commonStyles: Style("drawing-page", "dp2", properties: HiddenPage));
 
         // Page 6 derives from the hidden style but states presentation:visibility="visible" itself, which wins.
         Assert.Equal("Slide 1\none\nSlide 3\nthree\nSlide 5\nfive\nSlide 6\nsix\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
