@@ -108,20 +108,24 @@ internal static class WordprocessingXml
     internal static bool IsMath(string namespaceUri) =>
         namespaceUri == MathNamespace || namespaceUri == StrictMathNamespace;
 
+    /// <summary>True for the transitional or the strict DrawingML namespace (<c>a:graphic</c>, <c>a:graphicData</c>).</summary>
+    internal static bool IsDrawingMl(string namespaceUri) =>
+        namespaceUri == TransitionalDrawingMlNamespace || namespaceUri == StrictDrawingMlNamespace;
+
     /// <summary>
-    /// True for the namespaces whose elements can lead to document text: WordprocessingML, the drawing containers that
-    /// hold text boxes (DrawingML, <c>wps</c>, <c>wpc</c>) and VML. The <c>wp</c> drawing containers and the <c>wpg</c> groups
-    /// (the only <c>wpg</c> elements that lead to text) are handled before this question is asked. An element from any other
-    /// namespace is one Word does not understand; a conforming package marks such namespaces <c>mc:Ignorable</c> and Word
-    /// drops the element together with its content, so its subtree is never walked.
+    /// True for the <c>uri</c> of an <c>a:graphicData</c> that holds shapes with text boxes: a Word 2010 shape, group or
+    /// canvas. The uri names the loader Word runs over the graphic data, so graphic data of any other kind (a picture, a
+    /// chart, a diagram, an unknown kind), and graphic data with no uri, is never drawn as text.
     /// </summary>
-    internal static bool IsContentNamespace(string namespaceUri) =>
-        IsWordprocessing(namespaceUri)
-        || namespaceUri == TransitionalDrawingMlNamespace
-        || namespaceUri == StrictDrawingMlNamespace
-        || namespaceUri == WordprocessingShapeNamespace
-        || namespaceUri == WordprocessingCanvasNamespace
-        || namespaceUri == VectorMarkupNamespace;
+    internal static bool IsTextBearingGraphicKind(string? uri) =>
+        uri is WordprocessingShapeNamespace or WordprocessingGroupNamespace or WordprocessingCanvasNamespace;
+
+    /// <summary>
+    /// True for the VML elements that draw a shape, whose <c>v:textbox</c> Word shows, and the group that holds them. A shape
+    /// type (<c>v:shapetype</c>) is a template other shapes refer to, never drawn itself, and is not among them.
+    /// </summary>
+    internal static bool IsVectorShape(string localName) =>
+        localName is "shape" or "rect" or "roundrect" or "oval" or "line" or "polyline" or "curve" or "arc" or "image" or "group";
 
     /// <summary>True when this extractor understands the namespace, so an <c>mc:Choice</c> that requires it can be taken.</summary>
     internal static bool IsUnderstood(string namespaceUri) => NamespacesUnderstood.Contains(namespaceUri);
@@ -208,15 +212,6 @@ internal static class WordprocessingXml
             or "moveFromRangeStart" or "moveFromRangeEnd" or "moveToRangeStart" or "moveToRangeEnd"
             or "customXmlInsRangeStart" or "customXmlInsRangeEnd" or "customXmlDelRangeStart" or "customXmlDelRangeEnd"
             or "customXmlMoveFromRangeStart" or "customXmlMoveFromRangeEnd" or "customXmlMoveToRangeStart" or "customXmlMoveToRangeEnd";
-
-    /// <summary>
-    /// True for the drawing elements whose first child may be a <c>cNvPr</c> carrying a hidden flag: a shape
-    /// (<c>wps:wsp</c>) or a group (<c>wpg:wgp</c>, <c>wpg:grpSp</c>). The outermost shape's flag is on <c>wp:docPr</c>; a
-    /// shape inside a group says it here.
-    /// </summary>
-    internal static bool IsDrawingShapeContainer(string namespaceUri, string localName) =>
-        (namespaceUri == WordprocessingShapeNamespace && localName == "wsp")
-        || (namespaceUri == WordprocessingGroupNamespace && localName is "wgp" or "grpSp");
 
     /// <summary>
     /// True when a VML <c>style</c> attribute declares <c>visibility:hidden</c> or <c>display:none</c> (names and values

@@ -23,8 +23,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// a newline; the paragraphs and breaks of one cell are joined by single spaces, and a tab or line break typed into a
 /// cell becomes a space, so a cell can never forge a cell or row boundary. Hidden slides (<c>show="0"</c>), hidden
 /// shapes and groups (<c>hidden</c> on the shape's <c>p:cNvPr</c>), table cells covered by a merge, the non-first
-/// branches of <c>mc:AlternateContent</c>, extension lists and custom data are excluded; alt text is never emitted.
-/// A slide part may be named by only one slide list entry: a second mention is a format mismatch.
+/// branches of <c>mc:AlternateContent</c>, extension lists and elements, and custom data are excluded; alt text is never
+/// emitted. A slide part may be named by only one slide list entry: a second mention is a format mismatch.
+/// </para>
+/// <para>
+/// Text is read only where a viewer gets it: a text body that is a direct child of a shape (a transparent
+/// <c>mc:AlternateContent</c> wrapper aside) or of a table cell, and a table only as <c>a:graphicData</c> of the table
+/// kind. Graphic data of any other kind (a chart, a diagram, an object, an unknown kind, no kind), elements from a
+/// namespace the extractor does not read, and a text body or table placed anywhere else (shape properties, non-visual
+/// properties, the shape tree, a paragraph) are skipped or ignored, whatever paragraphs they hold.
 /// </para>
 /// <para>
 /// Shape visibility does not depend on the order of a shape's children. The text of a slide is held in a buffer of at
@@ -52,6 +59,10 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
     private const string DrawingNamespace = "http://schemas.openxmlformats.org/drawingml/2006/main";
 
     private const string StrictDrawingNamespace = "http://purl.oclc.org/ooxml/drawingml/main";
+
+    private const string TableGraphicUri = "http://schemas.openxmlformats.org/drawingml/2006/table";
+
+    private const string StrictTableGraphicUri = "http://purl.oclc.org/ooxml/drawingml/table";
 
     private const string MarkupCompatibilityNamespace = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 
@@ -304,6 +315,8 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
     private static bool IsDrawingNamespace(string namespaceUri) =>
         namespaceUri == DrawingNamespace || namespaceUri == StrictDrawingNamespace;
 
+    private static bool IsTableGraphicUri(string? uri) => uri is TableGraphicUri or StrictTableGraphicUri;
+
     private enum ElementKind : byte
     {
         Other,
@@ -319,6 +332,15 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
         Choice,
 
         TextBody,
+
+        /// <summary>The <c>a:graphicData</c> of the table kind, the only graphic data that holds text a viewer reads.</summary>
+        TableData,
+
+        /// <summary>An <c>a:tbl</c> in table graphic data.</summary>
+        Table,
+
+        /// <summary>An <c>a:tc</c> met inside a table cell: its text is part of the outer cell's.</summary>
+        NestedCell,
 
         Paragraph,
 
@@ -424,6 +446,12 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
             {
                 VisitDrawingElement(depth);
             }
+            else
+            {
+                // An element from a namespace the extractor does not read (an extension container, a custom wrapper) is not
+                // text a viewer sees, whatever it holds.
+                SkipCurrentElement();
+            }
         }
 
         /// <summary>
@@ -476,12 +504,12 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                     break;
 
-                case "txBody":
+                case "txBody" when CanHoldTextBody(depth):
                     _path[depth] = ElementKind.TextBody;
 
                     break;
 
-                case "extLst" or "custDataLst":
+                case "extLst" or "custDataLst" or "ext":
                     SkipCurrentElement();
 
                     break;
@@ -499,13 +527,32 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
             switch (_reader.LocalName)
             {
-                case "txBody":
+                case "txBody" when CanHoldTextBody(depth):
                     _path[depth] = ElementKind.TextBody;
 
                     break;
 
-                case "extLst":
+                case "extLst" or "ext":
                     SkipCurrentElement();
+
+                    break;
+
+                // Graphic data is drawn according to its kind: a table is read, and a chart, a diagram, an object or a kind
+                // nothing here knows is not text a viewer gets from the slide's markup.
+                case "graphicData":
+                    if (IsTableGraphicUri(_reader.GetAttribute("uri", string.Empty)))
+                    {
+                        _path[depth] = ElementKind.TableData;
+                    }
+                    else
+                    {
+                        SkipCurrentElement();
+                    }
+
+                    break;
+
+                case "tbl" when parent == ElementKind.TableData:
+                    _path[depth] = ElementKind.Table;
 
                     break;
 
@@ -514,8 +561,8 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                     break;
 
-                // A table nested in a cell, or a row in a row, is part of the outer cell or row and adds no boundaries.
-                case "tr" when _cellDepth < 0 && parent != ElementKind.TableRow:
+                // A table nested in a cell is part of the outer cell and adds no boundaries; a row outside a table is no row.
+                case "tr" when _cellDepth < 0 && parent == ElementKind.Table:
                     _path[depth] = ElementKind.TableRow;
 
                     _cellsInRow = 0;
@@ -538,6 +585,11 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
 
                         _cellBreakPending = false;
                     }
+
+                    break;
+
+                case "tc" when _cellDepth >= 0:
+                    _path[depth] = ElementKind.NestedCell;
 
                     break;
 
@@ -619,7 +671,18 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
         /// True when the element at <paramref name="depth"/> is a direct child of a shape's non-visual properties.
         /// <c>mc:AlternateContent</c> and its projected <c>mc:Choice</c> are transparent wrappers on the way up.
         /// </summary>
-        private bool IsNonVisualProperty(int depth)
+        private bool IsNonVisualProperty(int depth) => ParentThroughCompatibility(depth) == ElementKind.NonVisual;
+
+        /// <summary>
+        /// True when the element at <paramref name="depth"/> sits where a text body is drawn: directly in a shape, or in a table
+        /// cell. A text body anywhere else (shape properties, non-visual properties, a paragraph, the shape tree itself) is
+        /// not drawn.
+        /// </summary>
+        private bool CanHoldTextBody(int depth) =>
+            ParentThroughCompatibility(depth) is ElementKind.Shape or ElementKind.TableCell or ElementKind.NestedCell;
+
+        /// <summary>The kind of the element's parent, looking through the <c>mc:AlternateContent</c> and <c>mc:Choice</c> wrappers between them.</summary>
+        private ElementKind ParentThroughCompatibility(int depth)
         {
             int ancestor = depth - 1;
 
@@ -628,7 +691,7 @@ internal sealed class PresentationDocumentExtractor : ISessionAttachmentDocument
                 ancestor--;
             }
 
-            return _path[ancestor] == ElementKind.NonVisual;
+            return _path[ancestor];
         }
 
         private void PushFrame()

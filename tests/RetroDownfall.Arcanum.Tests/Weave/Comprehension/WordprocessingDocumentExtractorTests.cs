@@ -332,7 +332,7 @@ public sealed class WordprocessingDocumentExtractorTests
             { "body paragraph", "<w:p><w:r><w:t>aaaaaaaa<<" },
             { "table cell", "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>aaaaaaaa<<" },
             { "alternate content", "<w:p><mc:AlternateContent><mc:Choice Requires=\"w14\"><w:r><w:t>aaaaaaaa<<" },
-            { "drawing", "<w:p><w:r><w:drawing><wp:inline><wp:docPr id=\"1\" name=\"b\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>aaaaaaaa</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><<" },
+            { "drawing", "<w:p><w:r><w:drawing><wp:inline><wp:docPr id=\"1\" name=\"b\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>aaaaaaaa</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><<" },
             { "vml text box", "<w:p><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>aaaaaaaa<<" },
             { "hyperlink", "<w:p><w:hyperlink><w:r><w:t>aaaaaaaa<<" },
             { "content control", "<w:sdt><w:sdtContent><w:p><w:r><w:t>aaaaaaaa<<" },

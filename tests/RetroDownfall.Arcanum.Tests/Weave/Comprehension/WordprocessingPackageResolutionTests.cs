@@ -522,7 +522,7 @@ public sealed class WordprocessingPackageResolutionTests
             $"<w:p w:rsidR=\"{marker}\"><w:pPr><w:pStyle w:val=\"{marker}\"/></w:pPr><w:bookmarkStart w:id=\"1\" w:name=\"{marker}\"/>"
             + $"<w:hyperlink r:id=\"{marker}\" w:anchor=\"{marker}\" w:tooltip=\"{marker}\"><w:r w:rsidR=\"{marker}\"><w:rPr><w:rFonts w:ascii=\"{marker}\"/><w:lang w:val=\"{marker}\"/></w:rPr><w:t>link</w:t></w:r></w:hyperlink>"
             + $"<w:fldSimple w:instr=\" {marker} \"><w:r><w:t>field</w:t></w:r></w:fldSimple>"
-            + $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"{marker}\" descr=\"{marker}\" title=\"{marker}\"/><a:graphic><a:graphicData uri=\"{marker}\"><wps:wsp><wps:txbx><w:txbxContent>"
+            + $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"{marker}\" descr=\"{marker}\" title=\"{marker}\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:cNvPr id=\"2\" name=\"{marker}\" descr=\"{marker}\" title=\"{marker}\"/><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("box") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
             + $"<w:r><w:pict><v:shape alt=\"{marker}\" title=\"{marker}\" o:spid=\"{marker}\" xmlns:o=\"urn:schemas-microsoft-com:office:office\"><v:textbox><w:txbxContent>" + WordprocessingFixtures.P("vml") + "</w:txbxContent></v:textbox></v:shape></w:pict></w:r>"
             + $"</w:p><w:sdt><w:sdtPr><w:alias w:val=\"{marker}\"/><w:tag w:val=\"{marker}\"/></w:sdtPr><w:sdtContent>" + WordprocessingFixtures.P("control") + "</w:sdtContent></w:sdt>";
