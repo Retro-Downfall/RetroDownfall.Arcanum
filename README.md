@@ -33,7 +33,7 @@ Arcanum remembers things about you and your projects across conversations. Its d
 | What it is | What it does |
 |------------|--------------|
 | **Grimoire** | The encrypted local store that holds conversations, files, history, and notes |
-| **Comprehension** *(IN DEVELOPMENT on `general-enhancements`)* | Turns supported document attachments into bounded, untrusted text for existing context and retrieval paths; reads Word, Excel, PowerPoint, OpenDocument, and Visio files (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, and the macro-enabled variants as text only) with Arcanum's own bounded parsers, leaving out hidden text, comments, and speaker notes; PDF, older binary Office formats, and OCR are planned separately |
+| **Comprehension** *(IN DEVELOPMENT on `general-enhancements`)* | Turns supported document attachments into bounded, untrusted text for existing context and retrieval paths; reads Word, Excel, PowerPoint, OpenDocument, and Visio files (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, and the macro-enabled variants as text only) with Arcanum's own bounded parsers (for files up to the 1 MiB attachment limit), leaving out hidden text, comments, and speaker notes; PDF, older binary Office formats, and OCR are planned separately |
 | **Session history** | An ordered record of each conversation, including which files or links were shared |
 | **Workspace search (the Eye of the World)** | Indexes a folder on your computer, so Arcanum can retrieve anything — even hundreds of files at once |
 | **Saga** | Auto-extracts recurring topics and lessons from past conversations |
