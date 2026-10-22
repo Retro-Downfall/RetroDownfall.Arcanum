@@ -40,6 +40,8 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Tests.Weave.Comprehension;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 [Collection("Grimoire")]
@@ -1113,6 +1115,224 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Equal(SessionAttachmentKind.Binary, (await _attachments!.GetByIdAsync(attachment.Id))!.Kind);
     }
 
+    public static TheoryData<string> ComprehensionFormats => ComprehensionFormatFixtures.MimeTypes;
+
+    [SkippableTheory]
+    [MemberData(nameof(ComprehensionFormats))]
+    public async Task ProcessAsync_ComprehensionFormat_ReachesRetrievedModelContext(string mimeType)
+    {
+        // Sensitivity: the registry. A format missing from SessionAttachmentComprehensionPolicy.Formats is neither
+        // eligible for the processor nor selected by the retrieval SQL, so exactly that format's row fails here.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        ComprehensionFormatFixture fixture = ComprehensionFormatFixtures.For(mimeType);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await PersistFormatAsync(sessionId, fixture);
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(new FakeWeaveService())
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        SessionAttachmentIndexedChunk[] stored = [.. await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None)];
+
+        Assert.NotEmpty(stored);
+
+        fixture.AssertSurfaces(string.Concat(stored.Select(chunk => chunk.Content)));
+
+        SessionAttachmentRetrievedChunk[] hits = await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None);
+
+        SessionAttachmentRetrievedChunk hit = Assert.Single(hits);
+
+        Assert.Equal(fixture.MimeType, hit.MimeType);
+
+        Assert.Equal(attachment.ContentSha256, hit.ContentSha256);
+
+        fixture.AssertSurfaces(hit.Content);
+
+        string prompt = SystemPromptBuilder.Build(new PingRequest("read the document", SessionId: sessionId),
+            codexContent: null, sessionAttachmentContext: hits);
+
+        fixture.AssertSurfaces(prompt);
+
+        Assert.Contains("UNTRUSTED DATA", prompt, StringComparison.Ordinal);
+
+        Assert.Contains(fixture.RetrievalFraming, prompt, StringComparison.Ordinal);
+
+        Assert.Equal(SessionAttachmentKind.Binary, (await _attachments!.GetByIdAsync(attachment.Id))!.Kind);
+
+        Assert.Equal(fixture.MimeType, (await _attachments.GetByIdAsync(attachment.Id))!.MimeType);
+    }
+
+    /// <summary>
+    /// Packages that resolve <c>NotEligible</c> because they are encrypted: an OpenDocument package whose manifest
+    /// carries <c>manifest:encryption-data</c>, and an OLE2 compound file where a password-protected OOXML or Visio
+    /// package would be a ZIP.
+    /// </summary>
+    public static TheoryData<string, string> EncryptedPackages => new()
+    {
+        { SessionAttachmentComprehensionPolicy.OpenDocumentTextMimeType, "odf" },
+
+        { SessionAttachmentComprehensionPolicy.OpenDocumentSpreadsheetMimeType, "odf" },
+
+        { SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType, "odf" },
+
+        { SessionAttachmentComprehensionPolicy.WordDocumentMimeType, "ole2" },
+
+        { SessionAttachmentComprehensionPolicy.ExcelWorkbookMimeType, "ole2" },
+
+        { SessionAttachmentComprehensionPolicy.PowerPointPresentationMimeType, "ole2" },
+
+        { SessionAttachmentComprehensionPolicy.VisioDrawingMimeType, "ole2" },
+    };
+
+    private static byte[] EncryptedPackage(string mimeType, string kind)
+    {
+        if (kind == "ole2")
+        {
+            return [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, .. new byte[600]];
+        }
+
+        string manifest = OpenDocumentFixtures.ManifestPart(
+            mimeType,
+            declareStyles: false,
+            extraEntries: "<manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\">"
+                + "<manifest:encryption-data manifest:checksum-type=\"SHA1/1K\" manifest:checksum=\"CIPHERTEXTMARKER\"/></manifest:file-entry>");
+
+        return ComprehensionPackageBuilder.Build(
+            ("mimetype", mimeType),
+            ("META-INF/manifest.xml", manifest),
+            ("content.xml", "CIPHERTEXTMARKER ciphertext that is not XML"));
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(EncryptedPackages))]
+    public async Task ProcessAsync_EncryptedDocumentPackage_IsNotEligibleStampedAndNeverRequeued(string mimeType, string kind)
+    {
+        // Sensitivity: the Encrypted mapping to NotEligible plus the extraction stamp the processor writes for a
+        // document outcome. Without the stamp the pre-feature reconciliation rule would re-queue the row for ever.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await _attachments!.PersistNewAsync(
+            sessionId, null, null, "document", "locked", EncryptedPackage(mimeType, kind), mimeType, SessionAttachmentKind.Binary);
+
+        FakeWeaveService weave = new();
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave)
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.NotEligible, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        SessionAttachmentIndexState state = (await _index!.GetStateAsync(attachment.Id, CancellationToken.None))!;
+
+        Assert.Equal(SessionAttachmentIndexStatus.NotEligible, state.Status);
+
+        Assert.Equal("Encrypted document packages are not supported.", state.FailureReason);
+
+        Assert.NotNull(state.ExtractedAt);
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// A well-formed package stored under another family's MIME. Each row names the MIME the bytes were stored
+    /// under, the format the bytes really are, and the closed reason the processor records.
+    /// </summary>
+    public static TheoryData<string, string, string> MismatchedPackages
+    {
+        get
+        {
+            const string mismatch = "Document package does not match its declared format.";
+
+            const string missing = "Document package is missing a required part.";
+
+            return new TheoryData<string, string, string>
+            {
+                { SessionAttachmentComprehensionPolicy.WordDocumentMimeType, SessionAttachmentComprehensionPolicy.ExcelWorkbookMimeType, mismatch },
+
+                { SessionAttachmentComprehensionPolicy.ExcelWorkbookMimeType, SessionAttachmentComprehensionPolicy.WordDocumentMimeType, mismatch },
+
+                { SessionAttachmentComprehensionPolicy.PowerPointPresentationMimeType, SessionAttachmentComprehensionPolicy.WordDocumentMimeType, mismatch },
+
+                { SessionAttachmentComprehensionPolicy.WordMacroEnabledDocumentMimeType, SessionAttachmentComprehensionPolicy.PowerPointPresentationMimeType, mismatch },
+
+                { SessionAttachmentComprehensionPolicy.OpenDocumentTextMimeType, SessionAttachmentComprehensionPolicy.OpenDocumentSpreadsheetMimeType, mismatch },
+
+                { SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType, SessionAttachmentComprehensionPolicy.OpenDocumentTextMimeType, mismatch },
+
+                { SessionAttachmentComprehensionPolicy.OpenDocumentTextMimeType, SessionAttachmentComprehensionPolicy.WordDocumentMimeType, missing },
+
+                { SessionAttachmentComprehensionPolicy.WordDocumentMimeType, SessionAttachmentComprehensionPolicy.OpenDocumentTextMimeType, missing },
+
+                { SessionAttachmentComprehensionPolicy.VisioDrawingMimeType, SessionAttachmentComprehensionPolicy.WordDocumentMimeType, missing },
+
+                { SessionAttachmentComprehensionPolicy.WordDocumentMimeType, SessionAttachmentComprehensionPolicy.VisioDrawingMimeType, missing },
+            };
+        }
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(MismatchedPackages))]
+    public async Task ProcessAsync_PackageStoredUnderAnotherFormatsMime_FailsWithAClosedReasonAndIsNeverRetried(
+        string storedMimeType,
+        string actualMimeType,
+        string expectedReason)
+    {
+        // Sensitivity: the main-part and manifest format checks. Without them a renamed package would be parsed as
+        // the wrong family and either indexed as unrelated text or fail with an opaque error.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _settings.Features.Comprehension = true;
+
+        ComprehensionFormatFixture actual = ComprehensionFormatFixtures.For(actualMimeType);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = await _attachments!.PersistNewAsync(
+            sessionId, null, null, "document", "renamed" + actual.Extension, actual.Package, storedMimeType, SessionAttachmentKind.Binary);
+
+        FakeWeaveService weave = new();
+
+        SessionAttachmentIndexOutcome outcome = await CreateProcessor(weave)
+            .ProcessUnderOpenAdmissionAsync(new(attachment.Id, sessionId), CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        SessionAttachmentIndexState state = (await _index!.GetStateAsync(attachment.Id, CancellationToken.None))!;
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, state.Status);
+
+        Assert.Equal(expectedReason, state.FailureReason);
+
+        Assert.DoesNotContain(actual.VisibleSentinel, state.FailureReason, StringComparison.Ordinal);
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        Assert.Empty(await CreateRetrievalService().SearchAsync(
+            sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None));
+    }
+
     [SkippableFact]
 
     public async Task ComprehensionDisabled_PreservesExistingTextAndRejectsDocumentWithoutEmbedding()
@@ -1165,6 +1385,10 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
         Assert.Empty(await CreateRetrievalService().SearchAsync(
             sessionId, new Embedding<float>(CreateVector(Dimensions)), false, CancellationToken.None));
     }
+
+    private Task<SessionAttachmentRecord> PersistFormatAsync(Guid sessionId, ComprehensionFormatFixture fixture) =>
+        _attachments!.PersistNewAsync(sessionId, null, null, "document", fixture.FileName,
+            fixture.Package, fixture.MimeType, SessionAttachmentKind.Binary);
 
     private Task<SessionAttachmentRecord> PersistDocumentAsync(Guid sessionId, string text) =>
         _attachments!.PersistNewAsync(sessionId, null, null, "document", "document.arccomp",

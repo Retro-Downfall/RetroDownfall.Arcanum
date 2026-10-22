@@ -100,6 +100,56 @@ public sealed class SessionAttachmentTurnServiceTests
         Assert.Equal(1, reads);
     }
 
+    public static TheoryData<string> ComprehensionFormats => ComprehensionFormatFixtures.MimeTypes;
+
+    [Theory]
+    [MemberData(nameof(ComprehensionFormats))]
+    public async Task Comprehension_format_reference_materializes_only_the_visible_text_as_untrusted_data(string mimeType)
+    {
+        // Sensitivity: the registry. A format missing from SessionAttachmentComprehensionPolicy.Formats is refused
+        // before reading, so exactly that format's row fails here.
+        ComprehensionFormatFixture fixture = ComprehensionFormatFixtures.For(mimeType);
+
+        SessionAttachmentRecord record = new(
+            Guid.NewGuid(), Guid.NewGuid(), null, null, SessionAttachmentState.Bound,
+            "document", fixture.FileName, 1, "missing/" + fixture.FileName, "document-hash",
+            fixture.MimeType, fixture.Package.Length, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        RetroDownfall.Arcanum.Tests.Fixtures.NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(fixture.Package);
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."));
+
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { AttachmentRetrieval = true, Comprehension = true },
+        };
+
+        SessionAttachmentReferenceMaterialization result = await SessionAttachmentTurnService.MaterializeReferenceAsync(
+            record, store, settings, "model", CancellationToken.None);
+
+        Assert.Null(result.ErrorMessage);
+
+        TextContent content = Assert.IsType<TextContent>(Assert.Single(result.Contents));
+
+        fixture.AssertSurfaces(content.Text);
+
+        Assert.Contains("UNTRUSTED", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains(fixture.DataFraming, content.Text, StringComparison.Ordinal);
+
+        Assert.Equal("explicitAttachment", content.AdditionalProperties!["arcanum.context_source"]);
+
+        Assert.Equal(1, reads);
+    }
+
     private const string PersistFailureCanary =
         "CANARY_ATTACHMENT_PATH_AND_FILE_CONTENT";
 

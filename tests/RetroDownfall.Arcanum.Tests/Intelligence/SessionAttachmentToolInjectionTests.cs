@@ -145,6 +145,76 @@ public sealed class SessionAttachmentToolInjectionTests
         Assert.Equal(1, reads);
     }
 
+    public static TheoryData<string, bool> ComprehensionFormatsByPath
+    {
+        get
+        {
+            TheoryData<string, bool> data = [];
+
+            foreach (ComprehensionFormatFixture fixture in ComprehensionFormatFixtures.All)
+            {
+                data.Add(fixture.MimeType, false);
+
+                data.Add(fixture.MimeType, true);
+            }
+
+            return data;
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(ComprehensionFormatsByPath))]
+    public async Task Comprehension_format_attach_and_refresh_materialize_only_the_visible_text_as_untrusted_data(
+        string mimeType, bool refresh)
+    {
+        // Sensitivity: the registry. A format missing from SessionAttachmentComprehensionPolicy.Formats is refused
+        // before reading, so exactly that format's attach and refresh rows fail here.
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        ComprehensionFormatFixture fixture = ComprehensionFormatFixtures.For(mimeType);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = ComprehensionRecord(sessionId) with
+        {
+            MimeType = fixture.MimeType,
+            OriginalFileName = fixture.FileName,
+            ByteLength = fixture.Package.Length,
+        };
+
+        int reads = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (actual, _) =>
+            {
+                Assert.Equal(record.Id, actual.Id);
+
+                reads++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(fixture.Package);
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."));
+
+        IReadOnlyList<AIContent>? contents = refresh
+            ? await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+                store, record, ComprehensionSettings(), null)
+            : await SessionAttachmentToolInjection.TryBuildContentsAsync(
+                store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null);
+
+        TextContent content = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(contents)));
+
+        fixture.AssertSurfaces(content.Text);
+
+        Assert.Contains("UNTRUSTED", content.Text, StringComparison.Ordinal);
+
+        Assert.Contains(fixture.DataFraming, content.Text, StringComparison.Ordinal);
+
+        Assert.Equal(refresh ? "refreshedFile" : "explicitAttachment", content.AdditionalProperties!["arcanum.context_source"]);
+
+        Assert.Equal(1, reads);
+    }
+
     private static ArcanumSettings ComprehensionSettings(bool enabled = true, bool retrievalEnabled = true) =>
         new()
         {

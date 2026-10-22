@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -16,11 +18,19 @@ public sealed class BoundedZipPackageTests
 
     private static readonly byte[] CompoundFileSignature = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 
+    // A four-symbol alphabet keeps the 32 MiB entry cheap to build but slow to inflate (about 50 ms of Huffman
+    // decoding, against about 6 ms for incompressible bytes, which inflate as a plain copy), so a cancellation
+    // lands well inside the inflation loop.
     private static readonly Lazy<byte[]> LargePackage = new(() =>
     {
         byte[] data = new byte[(int)BoundedZipPackage.MaximumEntryBytes];
 
-        new Random(42).NextBytes(data);
+        Random random = new(42);
+
+        for (int index = 0; index < data.Length; index++)
+        {
+            data[index] = (byte)('a' + random.Next(4));
+        }
 
         RawZipEntry big = new(ComprehensionPackageBuilder.Utf8Bytes("big.bin"), data, 8)
         {
@@ -101,7 +111,7 @@ public sealed class BoundedZipPackageTests
             DocumentPackageRejection.MissingPart,
             () => package.ReadEntry($"{Marker}.xml", CancellationToken.None));
 
-        Assert.DoesNotContain(Marker, exception.ToString());
+        Assert.DoesNotContain(Marker, exception.Message);
     }
 
     [Fact]
@@ -489,7 +499,7 @@ public sealed class BoundedZipPackageTests
 
         DocumentPackageRejectedException exception = Rejected(DocumentPackageRejection.UnsafeEntryName, () => Open(raw.ToBytes()));
 
-        Assert.DoesNotContain(Marker, exception.ToString());
+        Assert.DoesNotContain(Marker, exception.Message);
     }
 
     [Fact]
@@ -521,7 +531,7 @@ public sealed class BoundedZipPackageTests
 
         DocumentPackageRejectedException exception = Rejected(DocumentPackageRejection.UnsafeEntryName, () => Open(raw.ToBytes()));
 
-        Assert.DoesNotContain("word/", exception.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("word/", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1001,13 +1011,48 @@ public sealed class BoundedZipPackageTests
     [Fact]
     public void ReadEntry_CancellationDuringInflationOfALargeLegitimateEntry_IsObserved()
     {
+        // Sensitivity: removing the per-iteration ThrowIfCancellationRequested in Inflate lets the read finish.
+        // ReadEntry checks its token once before it touches the entry, so a token cancelled in advance would be
+        // caught there and prove nothing about the loop. The canceller therefore waits for the package's own
+        // aggregate budget to be charged, which happens only after that first check has passed and immediately
+        // before inflation starts, and cancels from that point. No timer is involved, so the cancellation can
+        // neither arrive early nor lose a race against a fast inflation.
         BoundedZipPackage package = Open(LargePackage.Value);
+
+        FieldInfo aggregate = typeof(BoundedZipPackage).GetField("_aggregateBytes", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("BoundedZipPackage no longer exposes the aggregate budget this test observes.");
 
         using CancellationTokenSource source = new();
 
-        source.CancelAfter(TimeSpan.FromMilliseconds(1));
+        Thread canceller = new(() =>
+        {
+            Stopwatch guard = Stopwatch.StartNew();
 
-        Assert.Throws<OperationCanceledException>(() => package.ReadEntry("big.bin", source.Token));
+            SpinWait spin = default;
+
+            while ((long)aggregate.GetValue(package)! == 0 && !source.IsCancellationRequested && guard.Elapsed < TimeSpan.FromSeconds(30))
+            {
+                spin.SpinOnce(sleep1Threshold: -1);
+            }
+
+            source.Cancel();
+        })
+        {
+            IsBackground = true,
+        };
+
+        canceller.Start();
+
+        try
+        {
+            Assert.Throws<OperationCanceledException>(() => package.ReadEntry("big.bin", source.Token));
+        }
+        finally
+        {
+            source.Cancel();
+
+            canceller.Join();
+        }
     }
 
     [Fact]

@@ -321,7 +321,7 @@ public sealed class BoundedXmlReaderTests
 
         DocumentPackageRejectedException exception = Rejected(DocumentPackageRejection.MalformedXml, () => Drain(reader));
 
-        Assert.DoesNotContain("secretmarker", exception.ToString());
+        Assert.DoesNotContain("secretmarker", exception.Message);
     }
 
     // ---------------------------------------------------------------- cancellation

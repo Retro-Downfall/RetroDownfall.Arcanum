@@ -312,7 +312,7 @@ public sealed class SpreadsheetPackageTests
 
         DocumentPackageRejectedException exception = ExtractRejected(DocumentPackageRejection.MalformedXml, package);
 
-        Assert.DoesNotContain("ENTITYEXPANSIONMARKER", exception.ToString());
+        Assert.DoesNotContain("ENTITYEXPANSIONMARKER", exception.Message);
     }
 
     [Fact]

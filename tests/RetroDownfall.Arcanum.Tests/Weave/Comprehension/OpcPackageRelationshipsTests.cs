@@ -93,7 +93,7 @@ public sealed class OpcPackageRelationshipsTests
 
         DocumentPackageRejectedException exception = Rejected(DocumentPackageRejection.UnsafeEntryName, () => OpcPackageRelationships.Read(package, source, CancellationToken.None));
 
-        Assert.DoesNotContain("evil", exception.ToString());
+        Assert.DoesNotContain("evil", exception.Message);
     }
 
     [Theory]

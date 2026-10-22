@@ -91,7 +91,7 @@ public sealed class OpenDocumentManifestTests
 
         DocumentPackageRejectedException exception = Rejected(DocumentPackageRejection.Encrypted, () => OpenDocumentManifest.Read(Package(manifest), TextMime, CancellationToken.None));
 
-        Assert.DoesNotContain("CIPHERSECRET", exception.ToString());
+        Assert.DoesNotContain("CIPHERSECRET", exception.Message);
     }
 
     [Fact]

@@ -38,6 +38,8 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Tests.Weave.Comprehension;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
@@ -288,6 +290,215 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
             await _index.GetChunksForAttachmentAsync(healthy.Id, CancellationToken.None));
 
         Assert.Equal("healthy text after a document deadline", chunk.Content);
+    }
+
+    /// <summary>
+    /// A <c>.docx</c> whose main part declares an expansion the bounded reader refuses without inflating a byte. Each
+    /// bomb trips exactly one check. The ratio bomb declares 2 MiB over a few compressed bytes, far past 200:1 above
+    /// the 1 MiB floor. The size bomb declares 33 MiB over 256 KiB, a ratio of 132:1 that passes the ratio check but
+    /// sits past the 32 MiB per-entry ceiling.
+    /// </summary>
+    public static TheoryData<string, uint> ZipBombDeclarations => new()
+    {
+        { "ratio", 2 },
+
+        { "size", 33 },
+    };
+
+    private static byte[] ZipBombDocx(uint declaredMebibytes)
+    {
+        RawZipEntry document = RawZipEntry.Deflated("word/document.xml", "<w:document/>");
+
+        if (declaredMebibytes > 32)
+        {
+            document.DataAreaBytes = new byte[256 * 1024];
+        }
+
+        document.UncompressedSize = declaredMebibytes * 1024 * 1024;
+
+        return RawZipPackage.Of(
+            RawZipEntry.Deflated(
+                "_rels/.rels",
+                WordprocessingFixtures.Relationships(
+                    WordprocessingFixtures.Relationship("rId1", WordprocessingFixtures.OfficeDocumentType, "word/document.xml"))),
+            document).ToBytes();
+    }
+
+    private Task<SessionAttachmentRecord> PersistFormatAsync(
+        Guid sessionId,
+        string logicalKey,
+        string fileName,
+        string mimeType,
+        byte[] bytes) =>
+        _attachments!.PersistNewAsync(
+            sessionId,
+            null,
+            null,
+            logicalKey,
+            fileName,
+            bytes,
+            mimeType,
+            SessionAttachmentKind.Binary);
+
+    [SkippableTheory]
+    [MemberData(nameof(ZipBombDeclarations))]
+    public async Task ExecuteAsync_ZipBombDocx_FailsPoisonWithoutBlockingHealthyWorkbookAndDocument(
+        string kind,
+        uint declaredMebibytes)
+    {
+        // Sensitivity: the ratio and per-entry checks in BoundedZipPackage.ReadEntry. Without them the bomb is
+        // inflated or reported through another reason, and the exact code-owned reason below no longer matches.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.NotEmpty(kind);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        ComprehensionFormatFixture workbook = ComprehensionFormatFixtures.For(SessionAttachmentComprehensionPolicy.ExcelWorkbookMimeType);
+
+        ComprehensionFormatFixture document = ComprehensionFormatFixtures.For(SessionAttachmentComprehensionPolicy.WordDocumentMimeType);
+
+        SessionAttachmentRecord poison = await PersistFormatAsync(
+            sessionId,
+            "poison",
+            "poison.docx",
+            SessionAttachmentComprehensionPolicy.WordDocumentMimeType,
+            ZipBombDocx(declaredMebibytes));
+
+        SessionAttachmentRecord healthyWorkbook = await PersistFormatAsync(
+            sessionId, "workbook", workbook.FileName, workbook.MimeType, workbook.Package);
+
+        SessionAttachmentRecord healthyDocument = await PersistFormatAsync(
+            sessionId, "document", document.FileName, document.MimeType, document.Package);
+
+        TaskCompletionSource<bool> healthyCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        FakeWeaveService weave = new();
+
+        // The registry's own hosts parse these packages: no host is injected, so a Word, a spreadsheet and a Word
+        // document cross the real extractors behind the single-reader worker.
+        ObservingScopeFactory scopes = BuildScopeFactory(weave);
+
+        scopes.OnScopeDisposed = () =>
+        {
+            if (weave.EmbedBatchCallCount == 2)
+            {
+                healthyCompleted.TrySetResult(true);
+            }
+
+            return ValueTask.CompletedTask;
+        };
+
+        ImmediateTimeProvider retryTime = new(static () => { });
+
+        using SessionAttachmentIndexingService service = CreateService(
+            scopes,
+            OpenGate(),
+            timeProvider: retryTime);
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(poison.Id, sessionId, Attempt: 7)));
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(healthyWorkbook.Id, sessionId)));
+
+        Assert.True(service.TryEnqueue(new SessionAttachmentIndexRequest(healthyDocument.Id, sessionId)));
+
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            await healthyCompleted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            using CancellationTokenSource stop = new(TimeSpan.FromSeconds(10));
+
+            await service.StopAsync(stop.Token);
+        }
+
+        SessionAttachmentIndexState failed = await _index!.GetStateAsync(poison.Id, CancellationToken.None)
+            ?? throw new InvalidOperationException("The poison attachment has no index state.");
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, failed.Status);
+
+        Assert.Equal(7, failed.AttemptCount);
+
+        Assert.Equal("Document package exceeds its expansion bounds.", failed.FailureReason);
+
+        Assert.NotNull(failed.ExtractedAt);
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(poison.Id, CancellationToken.None));
+
+        Assert.Empty(retryTime.Delays);
+
+        Assert.Empty(service.DeferredRequests);
+
+        Assert.Equal(0, service.QueueReader.Count);
+
+        Assert.Empty(await _index.ReconcileAndFindPendingAsync(Dimensions, 10, CancellationToken.None));
+
+        foreach ((SessionAttachmentRecord record, ComprehensionFormatFixture fixture) in new[]
+        {
+            (healthyWorkbook, workbook),
+            (healthyDocument, document),
+        })
+        {
+            SessionAttachmentIndexState indexed = await _index.GetStateAsync(record.Id, CancellationToken.None)
+                ?? throw new InvalidOperationException("The healthy attachment has no index state.");
+
+            Assert.Equal(SessionAttachmentIndexStatus.Indexed, indexed.Status);
+
+            Assert.Equal(0, indexed.AttemptCount);
+
+            Assert.Null(indexed.FailureReason);
+
+            SessionAttachmentIndexedChunk[] chunks = [.. await _index.GetChunksForAttachmentAsync(record.Id, CancellationToken.None)];
+
+            Assert.NotEmpty(chunks);
+
+            fixture.AssertSurfaces(string.Concat(chunks.Select(chunk => chunk.Content)));
+        }
+    }
+
+    [SkippableTheory]
+    [MemberData(nameof(ZipBombDeclarations))]
+    public async Task ProcessOneAsync_ZipBombDocx_ConcludesFailedAndIsNeverRetried(string kind, uint declaredMebibytes)
+    {
+        // Sensitivity: the deterministic-rejection branch of the processor. A bomb that reported ShouldRetry would be
+        // re-run with backoff for ever.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.NotEmpty(kind);
+
+        _settings.Features.Comprehension = true;
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord poison = await PersistFormatAsync(
+            sessionId,
+            "poison",
+            "poison.docx",
+            SessionAttachmentComprehensionPolicy.WordDocumentMimeType,
+            ZipBombDocx(declaredMebibytes));
+
+        FakeWeaveService weave = new();
+
+        using SessionAttachmentIndexingService service = CreateService(BuildScopeFactory(weave), OpenGate());
+
+        SessionAttachmentIndexOutcome outcome = await service.ProcessOneAsync(
+            new SessionAttachmentIndexRequest(poison.Id, sessionId),
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexDisposition.Concluded, outcome.Disposition);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.False(outcome.ShouldRetry);
+
+        Assert.Equal(0, weave.EmbedBatchCallCount);
+
+        Assert.Equal("Document package exceeds its expansion bounds.", (await _index!.GetStateAsync(poison.Id, CancellationToken.None))!.FailureReason);
     }
 
     [SkippableFact]

@@ -26,6 +26,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 
 [Collection("ApiHost")]
@@ -135,6 +137,167 @@ public sealed class SessionAttachmentComprehensionIntakeTests
         Assert.NotEqual(first.ContentSha256, second.ContentSha256);
 
         await AssertStoredDocumentAsync(factory, second, "updated payload");
+    }
+
+    [SkippableTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MultipartSnapshot_NamedOfficePackages_AreBinaryWithTheirRegistryMimeAndExtractToTheirVisibleText(bool comprehension)
+    {
+        // Sensitivity: the extension map in AttachmentMimeDetector. A format missing from it is stored as
+        // application/octet-stream and its row fails on the MIME, whatever the feature flags say.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = comprehension ? ComprehensionOn : ComprehensionOff,
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        foreach (ComprehensionFormatFixture fixture in ComprehensionFormatFixtures.All)
+        {
+            SessionAttachmentDto created = await UploadAsync(client, sessionId, fixture.FileName, fixture.Package, fixture.MimeType);
+
+            Assert.Equal(fixture.MimeType, created.MimeType);
+
+            Assert.Equal(SessionAttachmentKind.Binary, created.Kind);
+
+            using IServiceScope scope = factory.Services.CreateScope();
+
+            ISessionAttachmentStore store = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
+
+            SessionAttachmentRecord record = await store.GetByIdAsync(created.Id)
+                ?? throw new InvalidOperationException("The uploaded attachment was not stored.");
+
+            Assert.Equal(fixture.MimeType, record.MimeType);
+
+            Assert.Equal(SessionAttachmentKind.Binary, record.Kind);
+
+            ArcanumSettings settings = scope.ServiceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+            Assert.Equal(comprehension, SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings));
+
+            ArcanumSettings optedIn = settings with
+            {
+                Features = settings.Features with { AttachmentRetrieval = true, Comprehension = true },
+            };
+
+            Assert.True(SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, optedIn));
+
+            SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
+                store, record, optedIn, 1024 * 1024, CancellationToken.None);
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Extracted, extraction.Status);
+
+            fixture.AssertSurfaces(extraction.Text);
+        }
+    }
+
+    [SkippableFact]
+    public async Task MultipartSnapshot_OfficePackagesUploadedUnderABinName_AreOctetStreamNeverEligibleAndNeverExtracted()
+    {
+        // Sensitivity: sniffing. A package is classified by its file name only; its bytes and a declared Content-Type
+        // naming the registry MIME never grant eligibility, so a renamed file cannot reach a parser.
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            SettingsOverride = ComprehensionOn,
+        };
+
+        HttpClient client = factory.CreateAuthenticatedClient();
+
+        Guid sessionId = await CreateSessionAsync(client);
+
+        foreach (ComprehensionFormatFixture fixture in ComprehensionFormatFixtures.All)
+        {
+            string renamed = Path.GetFileNameWithoutExtension(fixture.FileName) + ".bin";
+
+            SessionAttachmentDto created = await UploadAsync(client, sessionId, renamed, fixture.Package, fixture.MimeType);
+
+            Assert.Equal("application/octet-stream", created.MimeType);
+
+            Assert.Equal(SessionAttachmentKind.Binary, created.Kind);
+
+            using IServiceScope scope = factory.Services.CreateScope();
+
+            ISessionAttachmentStore realStore = scope.ServiceProvider.GetRequiredService<ISessionAttachmentStore>();
+
+            SessionAttachmentRecord record = await realStore.GetByIdAsync(created.Id)
+                ?? throw new InvalidOperationException("The uploaded attachment was not stored.");
+
+            Assert.Equal("application/octet-stream", record.MimeType);
+
+            ArcanumSettings settings = scope.ServiceProvider.GetRequiredService<IOptions<ArcanumSettings>>().Value;
+
+            ArcanumSettings optedIn = settings with
+            {
+                Features = settings.Features with { AttachmentRetrieval = true, Comprehension = true },
+            };
+
+            Assert.False(SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, optedIn));
+
+            NoOpSessionAttachmentStore store = new(
+                readBytes: (_, _) => throw new InvalidOperationException("A renamed package must never be read."),
+                openRead: (_, _) => throw new InvalidOperationException("A renamed package must never be streamed."));
+
+            SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
+                store, record, optedIn, 1024 * 1024, CancellationToken.None);
+
+            Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, extraction.Status);
+
+            Assert.Empty(extraction.Text);
+        }
+    }
+
+    private static ArcanumSettings ComprehensionOff(ArcanumSettings settings) =>
+        settings with
+        {
+            Features = settings.Features with { AttachmentRetrieval = false, Comprehension = false },
+        };
+
+    /// <summary>Attachment retrieval needs a configured embedding provider before it validates; the test provider is enough.</summary>
+    private static ArcanumSettings ComprehensionOn(ArcanumSettings settings) =>
+        settings with
+        {
+            Features = settings.Features with { AttachmentRetrieval = true, Comprehension = true },
+
+            Integrations = settings.Integrations with
+            {
+                Embeddings = settings.Integrations.Embeddings with
+                {
+                    Provider = "test",
+
+                    Model = "mistral:latest",
+
+                    Dimensions = 64,
+                },
+            },
+        };
+
+    private static async Task<SessionAttachmentDto> UploadAsync(
+        HttpClient client,
+        Guid sessionId,
+        string fileName,
+        byte[] bytes,
+        string declaredMimeType)
+    {
+        using MultipartFormDataContent form = new();
+
+        using ByteArrayContent file = new(bytes);
+
+        file.Headers.ContentType = new MediaTypeHeaderValue(declaredMimeType);
+
+        form.Add(file, "file", fileName);
+
+        using HttpResponseMessage response = await client.PostAsync($"/api/sessions/{sessionId:D}/attachments", form);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        return await ReadAttachmentAsync(response);
     }
 
     private static async Task AssertStoredDocumentAsync(

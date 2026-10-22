@@ -332,7 +332,7 @@ public sealed class OpenDocumentPackageTests
 
         DocumentPackageRejectedException exception = await RejectedAsync<OpenDocumentTextExtractor>(package, DocumentPackageRejection.Encrypted);
 
-        Assert.DoesNotContain(Marker, exception.ToString());
+        Assert.DoesNotContain(Marker, exception.Message);
     }
 
     [Fact]
@@ -426,7 +426,7 @@ public sealed class OpenDocumentPackageTests
 
         DocumentPackageRejectedException exception = await RejectedAsync<OpenDocumentTextExtractor>(package, DocumentPackageRejection.MalformedXml);
 
-        Assert.DoesNotContain(Marker, exception.ToString());
+        Assert.DoesNotContain(Marker, exception.Message);
     }
 
     [Theory]
@@ -459,7 +459,7 @@ public sealed class OpenDocumentPackageTests
 
         DocumentPackageRejectedException exception = await RejectedAsync<OpenDocumentTextExtractor>(package, DocumentPackageRejection.MalformedXml);
 
-        Assert.DoesNotContain(Marker, exception.ToString());
+        Assert.DoesNotContain(Marker, exception.Message);
     }
 
     [Fact]

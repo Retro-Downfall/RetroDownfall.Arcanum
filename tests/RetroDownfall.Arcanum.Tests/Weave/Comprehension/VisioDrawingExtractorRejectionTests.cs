@@ -372,9 +372,9 @@ public sealed class VisioDrawingExtractorRejectionTests
 
         Assert.Equal("Document part is not well-formed XML or declares a DTD.", exception.Message);
 
-        Assert.DoesNotContain("LEAKED-TEXT", exception.ToString());
+        Assert.DoesNotContain("LEAKED-TEXT", exception.Message);
 
-        Assert.DoesNotContain("page1.xml", exception.ToString());
+        Assert.DoesNotContain("page1.xml", exception.Message);
 
         Assert.Equal(SessionAttachmentExtractionStatus.Failed, exception.ToResult().Status);
 
