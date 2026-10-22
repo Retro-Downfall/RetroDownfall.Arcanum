@@ -9,17 +9,31 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// Bounds parser waiting and retained text for a closed, reviewed in-process format. Snapshot reads
-/// remain awaited inside the caller's admission and receive cancellation from the total deadline.
-/// A parser still running after timeout quarantines its format until it ends. This limits abandoned
-/// pure computation; it does not claim to preempt a parser or police its private allocations.
+/// Bounds parser waiting and retained text for a closed, reviewed in-process format. One slot per
+/// parser family serializes its invocations. Waiting for that slot is bounded separately and is never
+/// charged to the waiting document: a slot not acquired in time, or a family quarantined by an
+/// outstanding parser, is <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller
+/// treats as terminal. Once the slot is held, the document's own budget covers its snapshot read and
+/// its parse, and expiry of that budget is a terminal failure. Snapshot reads remain awaited inside
+/// the caller's admission and receive cancellation from that budget. A parser still running after its
+/// budget quarantines its family until it ends. This limits abandoned pure computation; it does not
+/// claim to preempt a parser or police its private allocations.
 /// </summary>
 internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
     TimeSpan timeout,
-    int maximumCharacters = 262_144)
+    int maximumCharacters = 262_144,
+    TimeSpan? slotWait = null)
 {
+    /// <summary>The one code-owned reason a deferred attempt carries, whichever contention caused it.</summary>
+    internal const string BusyReason = "Document extraction is temporarily busy.";
+
+    /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
+    internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
+
     internal static SessionAttachmentDocumentExtractionHost Default => SessionAttachmentDocumentExtractors.TextContainerHost;
+
+    private readonly TimeSpan _slotWait = slotWait ?? DefaultSlotWait;
 
     private readonly object _gate = new();
 
@@ -35,29 +49,27 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        long started = Stopwatch.GetTimestamp();
-
+        // Contention belongs to other documents. A quarantined family refuses at once rather than
+        // queueing behind a parser that may never end; otherwise the slot wait is bounded on its own
+        // clock. Neither refusal has read or parsed this document, so neither is its outcome.
         lock (_gate)
         {
             if (_quarantined)
             {
-                return Failed("Document extraction is quarantined while a prior invocation is outstanding.");
+                return Deferred();
             }
         }
 
-        if (!await _serial.WaitAsync(timeout, cancellationToken).ConfigureAwait(false))
+        if (!await _serial.WaitAsync(_slotWait, cancellationToken).ConfigureAwait(false))
         {
-            return Failed("Document extraction exceeded its deadline while awaiting the format.");
+            return Deferred();
         }
 
-        TimeSpan remaining = timeout - Stopwatch.GetElapsedTime(started);
+        // The document's own budget starts only now that it holds the slot. The snapshot read and the
+        // parse share it, and its expiry is charged to this document alone.
+        long started = Stopwatch.GetTimestamp();
 
-        if (remaining <= TimeSpan.Zero)
-        {
-            _serial.Release();
-
-            return Failed("Document extraction exceeded its deadline.");
-        }
+        TimeSpan remaining = timeout;
 
         bool parserOwnsSlot = false;
 
@@ -213,6 +225,9 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
 
     internal static SessionAttachmentExtractionResult Failed(string reason) => new(
         SessionAttachmentExtractionStatus.Failed, string.Empty, WasTruncated: false, reason);
+
+    internal static SessionAttachmentExtractionResult Deferred() => new(
+        SessionAttachmentExtractionStatus.Deferred, string.Empty, WasTruncated: false, BusyReason);
 }
 
 internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDocumentExtractor
