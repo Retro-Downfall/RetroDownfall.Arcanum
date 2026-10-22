@@ -190,13 +190,14 @@ public sealed class WordprocessingDrawingTests
     // ---------------------------------------------------------------- a drawing's text is held until the drawing ends
 
     [Fact]
-    public void Extract_HiddenFlagAfterTheGraphic_DiscardsTheBreakAndTheFieldStateTheDrawingTouched()
+    public void Extract_HiddenFlagAfterTheGraphic_DiscardsTheBreak_AndAFieldBegunInItsBoxLeavesLaterTextVisible()
     {
-        // A field that begins inside a drawing that turns out hidden must not leave later text in field code.
+        // A field that begins inside a drawing that turns out hidden must not leave later text in field code (a text box is
+        // a story of its own, so its fields end with it whether or not the drawing is shown).
         string box = "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:t>HIDDEN</w:t></w:r></w:p>";
 
         string drawing =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>" + box
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>" + box
             + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("before after\n", Extract("<w:p>" + WordprocessingFixtures.R("before ") + drawing + WordprocessingFixtures.R("after") + "</w:p>"));
@@ -207,7 +208,7 @@ public sealed class WordprocessingDrawingTests
     {
         // The dropped drawing wrote a line of its own; the text box after it must still start on a new line.
         string dropped =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("DROPPED") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/></wp:inline></w:drawing></w:r>";
 
         string paragraph = "<w:p>" + WordprocessingFixtures.R("before ") + dropped + VmlBox("box") + "</w:p>";
@@ -221,7 +222,7 @@ public sealed class WordprocessingDrawingTests
         string hiddenInner = Inline(string.Empty, " hidden=\"1\"", "HIDDEN_INNER");
 
         string visibleOuter =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"9\" name=\"Outer\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent><w:p>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"9\" name=\"Outer\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent><w:p>"
             + WordprocessingFixtures.R("outer ") + hiddenInner + WordprocessingFixtures.R("text") + "</w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("outer text\n\n", Extract("<w:p>" + visibleOuter + "</w:p>"));

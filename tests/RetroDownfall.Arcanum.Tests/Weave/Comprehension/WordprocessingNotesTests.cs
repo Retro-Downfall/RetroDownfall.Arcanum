@@ -206,7 +206,7 @@ public sealed class WordprocessingNotesTests
     {
         // A drawing's text is decided when the drawing ends, so a reference inside it counts only if the drawing is shown.
         string Drawing(string flagFirst, string flagLast, int id) =>
-            "<w:p><w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/>" + flagFirst + "<a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:p><w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/>" + flagFirst + "<a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + "<w:p>" + FootRef(id) + "</w:p></w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic>" + flagLast + "</wp:inline></w:drawing></w:r></w:p>";
 
         string hiddenFirst = Drawing("<wp:docPr id=\"1\" name=\"b\" hidden=\"1\"/>", string.Empty, 1);

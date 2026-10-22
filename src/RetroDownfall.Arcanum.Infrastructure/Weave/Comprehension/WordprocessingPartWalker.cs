@@ -31,6 +31,20 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// A footnote or endnote reference is recorded only where the reference itself is shown (not deleted, hidden, in field
 /// code or in a hidden drawing), so the notes projected after the body are exactly the ones a reader can reach.
 /// </para>
+/// <para>
+/// Complex fields are scoped to the story that holds them. A text box and each note are stories of their own: they start
+/// with no field open and give the fields of the story they interrupt back when they end (see <see cref="WalkStory"/>), so
+/// a field character in one story never ends, opens or turns to code a field in another. A text box anchored in a field's
+/// instruction is part of that instruction and is not shown.
+/// </para>
+/// <para>
+/// Drawings and pictures are not walked wholesale. Their text is reached only by the chain Word follows to a text box (see
+/// <see cref="WalkDrawingFrame"/> and <see cref="WalkVectorFrame"/>): a drawing object, <c>a:graphic</c>, graphic data of a
+/// text-bearing kind, a shape, group or canvas, and its <c>w:txbxContent</c>; or a picture, a VML shape and its
+/// <c>v:textbox</c>. Everything off that chain (shape properties, extension lists, graphic data of any other kind, a shape
+/// type, a paragraph placed where no text box is) is skipped with its subtree, and drawing markup met outside a drawing or
+/// picture is skipped too, because Word never renders any of it.
+/// </para>
 /// </remarks>
 internal sealed class WordprocessingPartWalker
 {
@@ -286,52 +300,39 @@ internal sealed class WordprocessingPartWalker
 
                     return;
 
+                case "drawing":
+                    WalkDrawingFrame();
+
+                    return;
+
+                case "pict":
+                    WalkVectorFrame(allowDrawing: false);
+
+                    return;
+
+                case "object":
+                    WalkVectorFrame(allowDrawing: true);
+
+                    return;
+
                 case "del" or "moveFrom" or "delText" or "instrText" or "delInstrText" or "rPr" or "pPr" or "sectPr" or "sdtPr" or "rt":
                     _xml.SkipElement();
 
                     return;
             }
         }
-        else if (WordprocessingXml.IsMath(namespaceUri))
+        else if (WordprocessingXml.IsMath(namespaceUri) && (_mathDepth > 0 || _reader.LocalName is "oMath" or "oMathPara"))
         {
             // Math elements mean something only inside an equation; a stray one is not text a reader sees.
-            if (_mathDepth > 0 || _reader.LocalName is "oMath" or "oMathPara")
-            {
-                WalkMathElement();
-
-                return;
-            }
-        }
-        else if (WordprocessingXml.IsWordprocessingDrawing(namespaceUri))
-        {
-            if (_reader.LocalName is "inline" or "anchor")
-            {
-                WalkDrawingObject();
-
-                return;
-            }
-        }
-        else if (WordprocessingXml.IsDrawingShapeContainer(namespaceUri, _reader.LocalName))
-        {
-            WalkDrawingShape();
+            WalkMathElement();
 
             return;
         }
-        else if (namespaceUri == WordprocessingXml.VectorMarkupNamespace)
-        {
-            string? style = _reader.GetAttribute("style");
 
-            if (style is not null && WordprocessingXml.DeclaresHiddenShape(style))
-            {
-                _xml.SkipElement();
-
-                return;
-            }
-        }
-
-        // A stray mc:Choice or mc:Fallback (one outside an mc:AlternateContent), like any other element Word does not
-        // understand, is not a content namespace and is skipped here.
-        if (!WordprocessingXml.IsContentNamespace(namespaceUri))
+        // Only WordprocessingML is walked generically. A stray mc:Choice or mc:Fallback (one outside an mc:AlternateContent),
+        // drawing or vector markup met outside the drawing or picture that frames it (see WalkDrawingFrame and
+        // WalkVectorFrame), and any other element Word does not understand are skipped with their subtree.
+        if (!WordprocessingXml.IsWordprocessing(namespaceUri))
         {
             _xml.SkipElement();
 
@@ -924,11 +925,56 @@ internal sealed class WordprocessingPartWalker
         }
     }
 
+    // ---------------------------------------------------------------- drawings and pictures
+
+    /// <summary>
+    /// The container whose children <see cref="WalkDrawingChild"/> chooses among: the graphic data of a text-bearing kind, a
+    /// drawing group, or a canvas.
+    /// </summary>
+    private enum DrawingContainer : byte
+    {
+        GraphicData,
+
+        Group,
+
+        Canvas,
+    }
+
+    /// <summary>
+    /// Walks a <c>w:drawing</c>, which holds one drawing object: only <c>wp:inline</c> and <c>wp:anchor</c> lead anywhere.
+    /// Text in a drawing is read only from the text boxes of the shapes it draws, and only by following the chain Word
+    /// itself follows (drawing object, <c>a:graphic</c>, <c>a:graphicData</c> of a text-bearing kind, shape, group or
+    /// canvas, <c>wps:txbx</c>, <c>w:txbxContent</c>). Everything off that chain (shape properties, extension lists,
+    /// graphic data of any other kind, a paragraph placed where no text box is) is skipped with its subtree, whatever it
+    /// contains: Word never renders it.
+    /// </summary>
+    private void WalkDrawingFrame()
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            if (WordprocessingXml.IsWordprocessingDrawing(_reader.NamespaceURI) && _reader.LocalName is "inline" or "anchor")
+            {
+                WalkDrawingObject();
+            }
+            else
+            {
+                _xml.SkipElement();
+            }
+        }
+    }
+
     /// <summary>
     /// Walks a <c>wp:inline</c> or <c>wp:anchor</c>. A drawing is hidden by its anchor's own <c>hidden</c> attribute (an
     /// inline has none) or by <c>wp:docPr</c>, which precedes the graphic in the schema but is not required to by this
     /// walk: the drawing's text is held until the drawing ends, and dropped (with everything it changed) if any flag hid it.
-    /// Layout and extension children carry no text and are skipped like any other element that is not content.
+    /// Layout and extension children carry no text and are skipped; only <c>a:graphic</c> is followed.
     /// </summary>
     private void WalkDrawingObject()
     {
@@ -948,10 +994,6 @@ internal sealed class WordprocessingPartWalker
 
         int references = _noteReferences.Count;
 
-        int fieldDepth = _fieldDepth;
-
-        ulong fieldCodeLevels = _fieldCodeLevels;
-
         _output.BeginHold();
 
         WordprocessingChildren children = new(_xml);
@@ -964,13 +1006,13 @@ internal sealed class WordprocessingPartWalker
 
                 _xml.SkipElement();
             }
-            else if (hidden)
+            else if (!hidden && IsDrawingMlElement("graphic"))
             {
-                _xml.SkipElement();
+                WalkGraphic();
             }
             else
             {
-                HandleElement();
+                _xml.SkipElement();
             }
         }
 
@@ -978,23 +1020,94 @@ internal sealed class WordprocessingPartWalker
 
         if (hidden)
         {
-            // What a hidden drawing held never happened: not its references, not the fields it opened or closed.
+            // What a hidden drawing held never happened: not its note references either. Its text boxes are stories of their
+            // own, so it leaves no field state behind.
             _noteReferences.RemoveRange(references, _noteReferences.Count - references);
+        }
+    }
 
-            _fieldDepth = fieldDepth;
+    /// <summary>Walks an <c>a:graphic</c>: its <c>a:graphicData</c> is followed when it is of a kind that holds text boxes.</summary>
+    private void WalkGraphic()
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
 
-            _fieldCodeLevels = fieldCodeLevels;
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            if (IsDrawingMlElement("graphicData") && WordprocessingXml.IsTextBearingGraphicKind(_reader.GetAttribute("uri")))
+            {
+                WalkDrawingContainer(DrawingContainer.GraphicData);
+            }
+            else
+            {
+                _xml.SkipElement();
+            }
+        }
+    }
+
+    private bool IsDrawingMlElement(string localName) =>
+        _reader.LocalName == localName && WordprocessingXml.IsDrawingMl(_reader.NamespaceURI);
+
+    /// <summary>Walks the children of graphic data, a group or a canvas, following only the shapes, groups and canvases Word draws there.</summary>
+    private void WalkDrawingContainer(DrawingContainer container)
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            WalkDrawingChild(container);
         }
     }
 
     /// <summary>
-    /// Walks a shape or group inside a drawing. When it has a <c>cNvPr</c> that is hidden, that element is its first child
-    /// (as in the schema) and everything after it is skipped; one that arrives later would be read after text may have
-    /// been emitted, which the format does not allow.
+    /// Walks the element the reader is on when it is something Word draws inside <paramref name="parent"/>, and skips it
+    /// otherwise: graphic data holds a shape (<c>wps:wsp</c>), a group (<c>wpg:wgp</c>) or a canvas (<c>wpc:wpc</c>); a group
+    /// holds shapes and nested groups (<c>wpg:grpSp</c>); a canvas holds shapes and groups.
+    /// </summary>
+    private void WalkDrawingChild(DrawingContainer parent)
+    {
+        string namespaceUri = _reader.NamespaceURI;
+
+        string localName = _reader.LocalName;
+
+        if (namespaceUri == WordprocessingXml.WordprocessingShapeNamespace && localName == "wsp")
+        {
+            WalkDrawingShape();
+        }
+        else if (namespaceUri == WordprocessingXml.WordprocessingGroupNamespace && localName == (parent == DrawingContainer.Group ? "grpSp" : "wgp"))
+        {
+            WalkDrawingShape();
+        }
+        else if (namespaceUri == WordprocessingXml.WordprocessingCanvasNamespace && localName == "wpc" && parent == DrawingContainer.GraphicData)
+        {
+            WalkDrawingContainer(DrawingContainer.Canvas);
+        }
+        else
+        {
+            _xml.SkipElement();
+        }
+    }
+
+    /// <summary>
+    /// Walks a shape (<c>wps:wsp</c>) or a group (<c>wpg:wgp</c>, <c>wpg:grpSp</c>) inside a drawing. When it has a
+    /// <c>cNvPr</c> that is hidden, that element is its first child (as in the schema) and everything after it is skipped;
+    /// one that arrives later would be read after text may have been emitted, which the format does not allow. A shape is
+    /// followed only into its text box; a group only into the shapes and groups it holds.
     /// </summary>
     private void WalkDrawingShape()
     {
         string containerNamespace = _reader.NamespaceURI;
+
+        bool shape = _reader.LocalName == "wsp";
 
         if (!WordprocessingXml.EnterElement(_xml))
         {
@@ -1024,12 +1137,127 @@ internal sealed class WordprocessingPartWalker
             {
                 _xml.SkipElement();
             }
+            else if (!shape)
+            {
+                WalkDrawingChild(DrawingContainer.Group);
+            }
+            else if (_reader.LocalName == "txbx" && _reader.NamespaceURI == WordprocessingXml.WordprocessingShapeNamespace)
+            {
+                WalkTextBoxHost();
+            }
             else
             {
-                HandleElement();
+                _xml.SkipElement();
             }
 
             index++;
+        }
+    }
+
+    /// <summary>Walks a <c>wps:txbx</c> or a <c>v:textbox</c>, which holds one thing that is text: its <c>w:txbxContent</c>.</summary>
+    private void WalkTextBoxHost()
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            if (IsWordprocessingElement("txbxContent"))
+            {
+                WalkTextBoxContent();
+            }
+            else
+            {
+                _xml.SkipElement();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Walks a <c>w:pict</c> or a <c>w:object</c> (which may also hold a <c>w:drawing</c>, when <paramref name="allowDrawing"/>
+    /// is set). Text is read only from the text box of a shape Word draws (<c>v:shape</c> and its kin, at most nested in
+    /// <c>v:group</c>); a shape type (<c>v:shapetype</c>) is a template that is never drawn itself, and everything else in
+    /// the picture is skipped with its subtree.
+    /// </summary>
+    private void WalkVectorFrame(bool allowDrawing)
+    {
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            if (IsVectorShape())
+            {
+                WalkVectorShape();
+            }
+            else if (allowDrawing && IsWordprocessingElement("drawing"))
+            {
+                WalkDrawingFrame();
+            }
+            else
+            {
+                _xml.SkipElement();
+            }
+        }
+    }
+
+    private bool IsVectorShape() =>
+        _reader.NamespaceURI == WordprocessingXml.VectorMarkupNamespace && WordprocessingXml.IsVectorShape(_reader.LocalName);
+
+    private bool IsVectorTextBox() =>
+        _reader.NamespaceURI == WordprocessingXml.VectorMarkupNamespace && _reader.LocalName == "textbox";
+
+    /// <summary>
+    /// True when a VML element's <c>style</c> declares it hidden. Names are matched ignoring case, the same way for every
+    /// element a text box can be reached through.
+    /// </summary>
+    private bool IsHiddenVectorElement() =>
+        _reader.GetAttribute("style") is { } style && WordprocessingXml.DeclaresHiddenShape(style);
+
+    /// <summary>
+    /// Walks a VML shape or group. One whose <c>style</c> hides it is skipped whole. A shape is followed only into its
+    /// <c>v:textbox</c>, a group only into the shapes (and groups) it holds.
+    /// </summary>
+    private void WalkVectorShape()
+    {
+        if (IsHiddenVectorElement())
+        {
+            _xml.SkipElement();
+
+            return;
+        }
+
+        bool group = _reader.LocalName == "group";
+
+        if (!WordprocessingXml.EnterElement(_xml))
+        {
+            return;
+        }
+
+        WordprocessingChildren children = new(_xml);
+
+        while (!Stopped && children.MoveNext())
+        {
+            if (group && IsVectorShape())
+            {
+                WalkVectorShape();
+            }
+            else if (!group && IsVectorTextBox() && !IsHiddenVectorElement())
+            {
+                WalkTextBoxHost();
+            }
+            else
+            {
+                _xml.SkipElement();
+            }
         }
     }
 

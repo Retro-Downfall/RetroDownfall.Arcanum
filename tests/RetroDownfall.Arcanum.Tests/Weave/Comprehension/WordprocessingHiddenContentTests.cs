@@ -219,7 +219,7 @@ public sealed class WordprocessingHiddenContentTests
         string text = WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(
             Wrap(
                 "<w:r><mc:AlternateContent>"
-                + "<mc:Choice Requires=\"wps\"><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"b\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+                + "<mc:Choice Requires=\"wps\"><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"b\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
                 + WordprocessingFixtures.P("shared box text") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></mc:Choice>"
                 + "<mc:Fallback><w:pict><v:shape><v:textbox><w:txbxContent>" + WordprocessingFixtures.P("shared box text") + "</w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback>"
                 + "</mc:AlternateContent></w:r>")));
@@ -358,11 +358,11 @@ public sealed class WordprocessingHiddenContentTests
     public void Extract_DrawingGroupsAndCanvases_ProjectTheirTextBoxes()
     {
         string group =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Group\"/><a:graphic><a:graphicData><wpg:wgp><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Group\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingGroup\"><wpg:wgp><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("in group") + "</w:txbxContent></wps:txbx></wps:wsp></wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
         string canvas =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"2\" name=\"Canvas\"/><a:graphic><a:graphicData><wpc:wpc><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"2\" name=\"Canvas\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas\"><wpc:wpc><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("in canvas") + "</w:txbxContent></wps:txbx></wps:wsp></wpc:wpc></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("in group\n\nin canvas\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(group) + Wrap(canvas))));
@@ -445,7 +445,7 @@ public sealed class WordprocessingHiddenContentTests
     public void Extract_DrawingLayoutElementBeforeItsDocPr_IsAccepted(string layoutElement)
     {
         string drawing =
-            $"<w:r><w:drawing><wp:anchor><wp:{layoutElement}/><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            $"<w:r><w:drawing><wp:anchor><wp:{layoutElement}/><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("HIDDEN_BOX") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>";
 
         Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing + WordprocessingFixtures.R("body")))));
@@ -455,7 +455,7 @@ public sealed class WordprocessingHiddenContentTests
     public void Extract_StrictDrawingMlGraphic_ProjectsItsTextBox()
     {
         string drawing =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"/><s:graphic xmlns:s=\"http://purl.oclc.org/ooxml/drawingml/main\"><s:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"/><s:graphic xmlns:s=\"http://purl.oclc.org/ooxml/drawingml/main\"><s:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("strict box") + "</w:txbxContent></wps:txbx></wps:wsp></s:graphicData></s:graphic></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("strict box\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing))));
@@ -510,7 +510,7 @@ public sealed class WordprocessingHiddenContentTests
     // ---------------------------------------------------------------- hidden drawings
 
     private static string Drawing(string container, string docPrAttributes, string boxText) =>
-        $"<w:r><w:drawing><wp:{container}><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"{docPrAttributes}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+        $"<w:r><w:drawing><wp:{container}><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"{docPrAttributes}/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
         + WordprocessingFixtures.P(boxText)
         + $"</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:{container}></w:drawing></w:r>";
 
@@ -549,7 +549,7 @@ public sealed class WordprocessingHiddenContentTests
         string anchor =
             "<w:r><w:drawing><wp:anchor><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"column\"><wp:posOffset>0</wp:posOffset></wp:positionH>"
             + "<wp:positionV relativeFrom=\"paragraph\"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx=\"1\" cy=\"1\"/><wp:effectExtent l=\"0\" t=\"0\" r=\"0\" b=\"0\"/><wp:wrapSquare wrapText=\"bothSides\"/>"
-            + "<wp:docPr id=\"2\" name=\"Hidden\" hidden=\"1\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            + "<wp:docPr id=\"2\" name=\"Hidden\" hidden=\"1\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("HIDDEN_ANCHORED") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>";
 
         Assert.Equal("shown\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(anchor + WordprocessingFixtures.R("shown")))));
@@ -570,7 +570,7 @@ public sealed class WordprocessingHiddenContentTests
         // Sensitivity: a drawing's text is held until the drawing ends, so a hidden flag that arrives after the graphic
         // still hides it. Nothing is emitted before the flag is known, and the order is not a reason to refuse the file.
         string reordered =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("REORDERED") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\" hidden=\"1\"/></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(reordered + WordprocessingFixtures.R("body")))));
@@ -580,7 +580,7 @@ public sealed class WordprocessingHiddenContentTests
     public void Extract_DrawingWhoseVisibleDocPrFollowsItsGraphic_ProjectsTheTextBox()
     {
         string reordered =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("late flag") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"1\" name=\"Box\"/></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("late flag\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(reordered))));
@@ -591,7 +591,7 @@ public sealed class WordprocessingHiddenContentTests
     {
         // Sensitivity: the flags combine; a later visible docPr does not undo an earlier hidden one.
         string Drawing(string first, string second) =>
-            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><wp:docPr id=\"2\" name=\"B\"{second}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><wp:docPr id=\"2\" name=\"B\"{second}/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("AMBIGUOUS") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
         string hiddenFirst = Drawing(" hidden=\"1\"", string.Empty);
@@ -607,7 +607,7 @@ public sealed class WordprocessingHiddenContentTests
     public void Extract_DrawingWithTwoDocPrElementsWhereEitherHides_IsExcluded(string first, string second)
     {
         string drawing =
-            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            $"<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"A\"{first}/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("AMBIGUOUS") + $"</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic><wp:docPr id=\"2\" name=\"B\"{second}/></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("body\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing + WordprocessingFixtures.R("body")))));
@@ -618,7 +618,7 @@ public sealed class WordprocessingHiddenContentTests
     {
         // wp:extent is a layout element; an element of the same name in another namespace is an extension Word ignores.
         string drawing =
-            "<w:r><w:drawing><wp:inline><f:extent xmlns:f=\"urn:foreign\" cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><f:extent xmlns:f=\"urn:foreign\" cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Box\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("foreign neighbour") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("foreign neighbour\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing))));
@@ -629,7 +629,7 @@ public sealed class WordprocessingHiddenContentTests
     {
         // A look-alike hidden flag cannot hide a drawing.
         string drawing =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><f:docPr xmlns:f=\"urn:foreign\" id=\"1\" name=\"Box\" hidden=\"1\"/><a:graphic><a:graphicData><wps:wsp><wps:txbx><w:txbxContent>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><f:docPr xmlns:f=\"urn:foreign\" id=\"1\" name=\"Box\" hidden=\"1\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp><wps:txbx><w:txbxContent>"
             + WordprocessingFixtures.P("look-alike flag") + "</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
         Assert.Equal("look-alike flag\n\n", WordprocessingFixtures.Extract(WordprocessingFixtures.Docx(Wrap(drawing))));
@@ -690,7 +690,7 @@ public sealed class WordprocessingHiddenContentTests
         + "</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>";
 
     private static string GroupDrawing(string groupContent, string groupProperties = "") =>
-        "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Group\"/><a:graphic><a:graphicData>"
+        "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Group\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingGroup\">"
         + $"<wpg:wgp>{groupProperties}<wpg:cNvGrpSpPr/><wpg:grpSpPr/>{groupContent}</wpg:wgp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
 
     private static string ShapeProperties(string attributes = "") => $"<wps:cNvPr id=\"2\" name=\"Shape\"{attributes}/>";
@@ -767,7 +767,7 @@ public sealed class WordprocessingHiddenContentTests
     public void Extract_HiddenShapeInsideACanvas_IsExcluded()
     {
         string canvas =
-            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Canvas\"/><a:graphic><a:graphicData><wpc:wpc>"
+            "<w:r><w:drawing><wp:inline><wp:extent cx=\"1\" cy=\"1\"/><wp:docPr id=\"1\" name=\"Canvas\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas\"><wpc:wpc>"
             + GroupedBox(ShapeProperties(" hidden=\"1\""), "HIDDEN_ON_CANVAS")
             + GroupedBox(ShapeProperties(), "visible on canvas")
             + "</wpc:wpc></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>";
