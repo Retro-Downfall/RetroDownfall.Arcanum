@@ -47,6 +47,15 @@ public sealed class OpenDocumentTextExtractorTests
         Assert.Equal("Hello world again\nsecond\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
+    [Fact]
+    public async Task Extract_TabsAndNewlinesInsideText_BecomeSingleSpaces()
+    {
+        // Sensitivity: a collapsed run is written as a space, not as the first whitespace character that started it.
+        byte[] package = Odt("<text:p>one\ttwo\nthree\r\nfour&#9;five&#10;six&#13;seven</text:p>");
+
+        Assert.Equal("one two three four five six seven\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
     [Theory]
     [InlineData("a <text:span> </text:span>b", "a b")]
     [InlineData("a<text:span> </text:span>b", "a b")]
@@ -80,6 +89,7 @@ public sealed class OpenDocumentTextExtractorTests
     [InlineData("65", 64)]
     [InlineData("1000000", 64)]
     [InlineData("99999999999999999999", 64)]
+    [InlineData(" 3 ", 3)]
     [InlineData("0", 1)]
     [InlineData("-3", 1)]
     [InlineData("junk", 1)]
@@ -89,6 +99,21 @@ public sealed class OpenDocumentTextExtractorTests
         byte[] package = Odt($"<text:p>x<text:s text:c=\"{count}\"/>y</text:p>");
 
         Assert.Equal("x" + new string(' ', expectedSpaces) + "y\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData("<text:s/> b", "  b")]
+    [InlineData("<text:tab/> b", "\t b")]
+    [InlineData("a <text:s/> b", "a   b")]
+    [InlineData("a <text:tab/> b", "a \t b")]
+    [InlineData("a <text:line-break/> b", "a \n b")]
+    public async Task Extract_SpaceTabAndLineBreak_EndTheLeadingWhitespaceRuleSoTheNextTextKeepsItsSpace(string paragraph, string expected)
+    {
+        // Sensitivity: each of text:s, text:tab and text:line-break clears the "ignore leading space" state, as the
+        // reference ODF importer does; without that the space that follows the element would be swallowed.
+        byte[] package = Odt($"<text:p>{paragraph}</text:p>");
+
+        Assert.Equal(expected + "\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]
@@ -339,6 +364,20 @@ public sealed class OpenDocumentTextExtractorTests
     }
 
     [Fact]
+    public async Task Extract_ElementsOfANamespaceTheFormatDoesNotWalk_AreSkippedWithTheirText()
+    {
+        // Sensitivity: only the OpenDocument content namespaces are walked. A consumer ignores a foreign element and its
+        // content, so text tucked into one is invisible to a reader and must not reach the model.
+        byte[] package = Odt(
+            "<text:p>Lead<x:note xmlns:x=\"urn:elsewhere\">FOREIGNMARKER</x:note> end</text:p>"
+            + "<x:wrapper xmlns:x=\"urn:elsewhere\"><text:p>WRAPPEDMARKER</text:p></x:wrapper>"
+            + "<text:p>Plain<bare xmlns=\"\">NONAMESPACEMARKER</bare></text:p>"
+            + "<text:p>Meta<dc:creator>DCMARKER</dc:creator></text:p>");
+
+        Assert.Equal("Lead end\nPlain\nMeta\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_ScriptField_IsExcludedAndTheTextAroundItIsKept()
     {
         // Sensitivity: the text:script exclusion. The element's content is script source (or a link to one), which no
@@ -361,6 +400,22 @@ public sealed class OpenDocumentTextExtractorTests
             + "</text:p>");
 
         Assert.Equal("Lead\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData("image")]
+    [InlineData("object")]
+    [InlineData("object-ole")]
+    [InlineData("plugin")]
+    [InlineData("applet")]
+    [InlineData("floating-frame")]
+    public async Task Extract_EmbeddedContentElements_NeverContributeText(string element)
+    {
+        // Sensitivity: every draw element that embeds foreign content is skipped whole, whatever it carries inside.
+        byte[] package = Odt(
+            $"<text:p>Lead<draw:frame><draw:{element} xlink:href=\"./Object 1\"><text:p>EMBEDDEDMARKER</text:p><office:binary-data>BINARYMARKER</office:binary-data></draw:{element}></draw:frame> end</text:p>");
+
+        Assert.Equal("Lead end\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Theory]
@@ -519,15 +574,76 @@ public sealed class OpenDocumentTextExtractorTests
         Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
+    private const string HiddenDefaultParagraphStyle = "<style:default-style style:family=\"paragraph\"><style:text-properties text:display=\"none\"/></style:default-style>";
+
+    private const string VisibleDefaultParagraphStyle = "<style:default-style style:family=\"paragraph\"><style:text-properties text:display=\"true\"/></style:default-style>";
+
     [Fact]
-    public async Task Extract_HiddenDefaultParagraphStyle_HidesUnstyledParagraphsButNotOnesThatOverrideIt()
+    public async Task Extract_HiddenDefaultParagraphStyle_HidesUnstyledParagraphsAndInheritorsButNotOnesThatOverrideIt()
+    {
+        // P2 names a style that states nothing, so it inherits the hidden family default; P1 states display "true".
+        byte[] package = Odt(
+            "<text:p>HIDDENMARKER</text:p><text:p text:style-name=\"P1\">Shown</text:p><text:p text:style-name=\"P2\">HIDDENINHERITOR</text:p>",
+            automaticStyles: Style("paragraph", "P1", properties: VisibleText) + Style("paragraph", "P2"),
+            commonStyles: HiddenDefaultParagraphStyle);
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_DuplicateDefaultStyles_HiddenWinsInEitherOrder(bool hiddenFirst)
     {
         byte[] package = Odt(
             "<text:p>HIDDENMARKER</text:p><text:p text:style-name=\"P1\">Shown</text:p>",
             automaticStyles: Style("paragraph", "P1", properties: VisibleText),
-            commonStyles: "<style:default-style style:family=\"paragraph\"><style:text-properties text:display=\"none\"/></style:default-style>");
+            commonStyles: hiddenFirst ? HiddenDefaultParagraphStyle + VisibleDefaultParagraphStyle : VisibleDefaultParagraphStyle + HiddenDefaultParagraphStyle);
 
         Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenDefaultStyleDeclaredAmongTheAutomaticStyles_IsHonouredToo()
+    {
+        // A default style belongs in office:styles, but a consumer may honour one found elsewhere, and hidden wins.
+        byte[] package = Odt(
+            "<text:p>HIDDENMARKER</text:p><text:p text:style-name=\"P1\">Shown</text:p>",
+            automaticStyles: HiddenDefaultParagraphStyle + Style("paragraph", "P1", properties: VisibleText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Extract_DuplicateStyleDefinitions_KeepTheParentOfWhicheverStatesOne(bool parentFirst)
+    {
+        string withParent = Style("paragraph", "P1", parent: "Secret");
+
+        string withoutParent = Style("paragraph", "P1");
+
+        byte[] package = Odt(
+            "<text:p text:style-name=\"P1\">HIDDENMARKER</text:p><text:p>Shown</text:p>",
+            automaticStyles: parentFirst ? withParent + withoutParent : withoutParent + withParent,
+            commonStyles: Style("paragraph", "Secret", properties: HiddenText));
+
+        Assert.Equal("Shown\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
+    }
+
+    [Theory]
+    [InlineData("always")]
+    [InlineData("screen")]
+    public async Task Extract_ShapeStyleThatStatesDisplayAlwaysOrScreen_OverridesAHiddenParentStyle(string display)
+    {
+        byte[] package = Odt(
+            "<text:p>Lead<draw:frame draw:style-name=\"Shown1\"><draw:text-box><text:p>SHOWNSHAPE</text:p></draw:text-box></draw:frame>"
+            + "<draw:frame draw:style-name=\"Hidden1\"><draw:text-box><text:p>HIDDENSHAPE</text:p></draw:text-box></draw:frame></text:p>",
+            automaticStyles: Style("graphic", "Base", properties: "<style:graphic-properties draw:display=\"none\"/>")
+                + Style("graphic", "Shown1", parent: "Base", properties: $"<style:graphic-properties draw:display=\"{display}\"/>")
+                + Style("graphic", "Hidden1", parent: "Base"));
+
+        Assert.Equal("Lead\nSHOWNSHAPE\n", await TextOfAsync<OpenDocumentTextExtractor>(package));
     }
 
     [Fact]

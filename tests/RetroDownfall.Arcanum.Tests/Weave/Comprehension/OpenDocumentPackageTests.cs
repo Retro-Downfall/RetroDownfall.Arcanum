@@ -477,6 +477,10 @@ public sealed class OpenDocumentPackageTests
     [InlineData("<text:p>unclosed")]
     [InlineData("<text:p>&undefined;</text:p>")]
     [InlineData("<text:p></text:q>")]
+    [InlineData("<text:p text:style-name=\"&undefined;\">x</text:p>")]
+    [InlineData("<text:p text:style-name=\"x\" text:style-name=\"y\">x</text:p>")]
+    [InlineData("<text:p zz:foo=\"1\">x</text:p>")]
+    [InlineData("<text:p>&#x1;</text:p>")]
     public async Task Extract_MalformedContent_IsMalformedXml(string body)
     {
         await RejectedAsync<OpenDocumentTextExtractor>(Odt(body), DocumentPackageRejection.MalformedXml);
@@ -748,6 +752,25 @@ public sealed class OpenDocumentPackageTests
         Assert.StartsWith("First\nxxxx", result.Text, StringComparison.Ordinal);
 
         Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Extract_AfterARetentionOverflow_NothingMoreIsWrittenEvenToASinkThatKeepsAccepting()
+    {
+        // The sink contract says appends fail after MarkTruncated, but the extractor must not depend on that: this sink
+        // accepts everything, so only the extractor's own stop keeps the later paragraph out.
+        RecordingTextSink sink = new();
+
+        await new OpenDocumentTextExtractor().ExtractAsync(
+            Odt($"<text:p>{new string('x', 300_000)}</text:p><text:p>NEVERREACHED</text:p>"),
+            sink,
+            CancellationToken.None);
+
+        Assert.True(sink.Truncated);
+
+        Assert.Equal(262_144, sink.Text.Length);
+
+        Assert.DoesNotContain("NEVERREACHED", sink.Text, StringComparison.Ordinal);
     }
 
     [Fact]

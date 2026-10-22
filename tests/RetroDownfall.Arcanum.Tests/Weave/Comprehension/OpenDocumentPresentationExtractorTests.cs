@@ -70,6 +70,17 @@ public sealed class OpenDocumentPresentationExtractorTests
     }
 
     [Fact]
+    public async Task Extract_ElementNamedPageInAnotherNamespace_IsNotASlide()
+    {
+        // Sensitivity: slides are matched by local name plus the drawing namespace, never by local name alone.
+        byte[] package = Odp(
+            "<x:page xmlns:x=\"urn:elsewhere\"><draw:frame><draw:text-box><text:p>FOREIGNMARKER</text:p></draw:text-box></draw:frame></x:page>"
+            + Page(Frame("Real")));
+
+        Assert.Equal("Slide 1\nReal\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_MasterPageContentInStylesXml_IsNotProjected()
     {
         string styles = StylesPart(string.Empty).Replace(
@@ -93,12 +104,15 @@ public sealed class OpenDocumentPresentationExtractorTests
             + Page(Frame("HIDDENSLIDE"), " draw:style-name=\"dp2\"")
             + Page(Frame("three"), " draw:style-name=\"dp1\"")
             + Page(Frame("HIDDENDERIVED"), " draw:style-name=\"dp3\"")
-            + Page(Frame("five")),
+            + Page(Frame("five"))
+            + Page(Frame("six"), " draw:style-name=\"dp4\""),
             automaticStyles: Style("drawing-page", "dp1", properties: VisiblePage)
                 + Style("drawing-page", "dp2", properties: HiddenPage)
-                + Style("drawing-page", "dp3", parent: "dp2"));
+                + Style("drawing-page", "dp3", parent: "dp2")
+                + Style("drawing-page", "dp4", parent: "dp2", properties: VisiblePage));
 
-        Assert.Equal("Slide 1\none\nSlide 3\nthree\nSlide 5\nfive\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
+        // Page 6 derives from the hidden style but states presentation:visibility="visible" itself, which wins.
+        Assert.Equal("Slide 1\none\nSlide 3\nthree\nSlide 5\nfive\nSlide 6\nsix\n", await TextOfAsync<OpenDocumentPresentationExtractor>(package));
     }
 
     [Fact]

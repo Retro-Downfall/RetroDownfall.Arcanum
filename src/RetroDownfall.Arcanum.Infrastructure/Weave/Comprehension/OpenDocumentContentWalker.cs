@@ -23,7 +23,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <para>
 /// Hidden content (plan decision D8) is dropped by skipping its subtree: tracked changes, annotations, hidden text,
 /// hidden or conditional sections, index templates, script fields, alternative text, forms, speaker notes, covered
-/// cells, embedded objects, and anything whose paragraph, text or shape style resolves to hidden.
+/// cells, embedded objects, elements of any namespace the content does not use (foreign markup), and anything whose
+/// paragraph, text or shape style resolves to hidden.
 /// </para>
 /// </remarks>
 internal sealed class OpenDocumentContentWalker(
@@ -274,7 +275,9 @@ internal sealed class OpenDocumentContentWalker(
                     || IsHiddenShape();
 
             default:
-                return false;
+                // Foreign and metadata namespaces (and elements in none) carry nothing a reader sees: a consumer ignores
+                // a foreign element together with its content, so text inside one is hidden text.
+                return true;
         }
     }
 

@@ -113,8 +113,10 @@ internal sealed class OpenDocumentStyleTable
             {
                 ReadStyle(xml, automatic);
             }
-            else if (reader.NamespaceURI == OpenDocumentNames.Style && reader.LocalName == "default-style" && !automatic)
+            else if (reader.NamespaceURI == OpenDocumentNames.Style && reader.LocalName == "default-style")
             {
+                // A default style belongs in office:styles; one found among the automatic styles is still read, so a
+                // consumer that honours it can never be shown text this reader would have projected.
                 ReadDefaultStyle(xml);
             }
             else

@@ -58,6 +58,21 @@ public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper outp
     }
 
     [Fact]
+    public async Task Extract_ParagraphNestedInACellParagraph_StaysOnTheSameLine()
+    {
+        // Sensitivity: inside a cell a nested paragraph (a text box or footnote anchored in the cell's paragraph) is
+        // separated by spaces, never by newlines, so the row stays one line.
+        byte[] package = Ods(
+            Sheet(
+                "S",
+                Row(
+                    "<table:table-cell><text:p>Before<draw:frame><draw:text-box><text:p>Boxed</text:p></draw:text-box></draw:frame>After</text:p></table:table-cell>"
+                    + Cell("next"))));
+
+        Assert.Equal("Sheet: S\nBefore Boxed After\tnext\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_ListAndTextBoxInsideACell_AreJoinedIntoTheCellText()
     {
         byte[] package = Ods(
@@ -93,12 +108,37 @@ public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper outp
         byte[] package = Ods(
             Sheet("Hidden", Row(Cell("HIDDENSHEET")), " table:style-name=\"ta2\"")
             + Sheet("Shown", Row(Cell("v")), " table:style-name=\"ta1\"")
-            + Sheet("Derived", Row(Cell("HIDDENDERIVED")), " table:style-name=\"ta3\""),
+            + Sheet("Derived", Row(Cell("HIDDENDERIVED")), " table:style-name=\"ta3\"")
+            + Sheet("Reshown", Row(Cell("again")), " table:style-name=\"ta4\""),
             automaticStyles: Style("table", "ta1", properties: "<style:table-properties table:display=\"true\"/>")
                 + Style("table", "ta2", properties: "<style:table-properties table:display=\"false\"/>")
-                + Style("table", "ta3", parent: "ta2"));
+                + Style("table", "ta3", parent: "ta2")
+                + Style("table", "ta4", parent: "ta2", properties: "<style:table-properties table:display=\"true\"/>"));
 
-        Assert.Equal("Sheet: Shown\nv\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+        // The last sheet derives from the hidden style but states table:display="true" itself, which wins.
+        Assert.Equal("Sheet: Shown\nv\nSheet: Reshown\nagain\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_HiddenColumnsOfOneSheet_DoNotHideCellsOfTheNextSheet()
+    {
+        // Sensitivity: the per-sheet reset of the hidden column ranges.
+        byte[] package = Ods(
+            Sheet("One", "<table:table-column/><table:table-column table:visibility=\"collapse\"/>" + Row(Cell("A") + Cell("HIDDENMARKER")))
+            + Sheet("Two", Row(Cell("a2") + Cell("b2"))));
+
+        Assert.Equal("Sheet: One\nA\nSheet: Two\na2\tb2\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ColumnIndexOfOneSheet_DoesNotShiftTheColumnsOfTheNextSheet()
+    {
+        // Sensitivity: the per-sheet reset of the column index. Sheet Two's collapsed column is column 1.
+        byte[] package = Ods(
+            Sheet("One", "<table:table-column table:number-columns-repeated=\"3\"/>" + Row(Cell("1")))
+            + Sheet("Two", "<table:table-column/><table:table-column table:visibility=\"collapse\"/>" + Row(Cell("A") + Cell("HIDDENMARKER"))));
+
+        Assert.Equal("Sheet: One\n1\nSheet: Two\nA\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
     }
 
     [Theory]
@@ -257,6 +297,18 @@ public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper outp
     }
 
     [Fact]
+    public async Task Extract_RepeatCountsThatWouldWrapTheColumnIndexAround_StayBeyondTheLastColumn()
+    {
+        // Sensitivity: the repeat ceiling. Four saturated counts must not sum past the range of a long and wrap back to column 1.
+        const string huge = " table:number-columns-repeated=\"99999999999999999999\"";
+
+        byte[] package = Ods(
+            Sheet("S", Row(Cell("a") + Empty(huge) + Empty(huge) + Empty(huge) + Empty(huge) + Cell("WRAPPEDMARKER"))));
+
+        Assert.Equal("Sheet: S\na\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
     public async Task Extract_RowWhoseCellsAreAllHidden_ProducesNoRowAndNoHeader()
     {
         byte[] package = Ods(
@@ -287,6 +339,21 @@ public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper outp
                     "<table:table-cell office:value-type=\"string\"><office:annotation><dc:creator>AUTHORMARKER</dc:creator><text:p>NOTEMARKER</text:p></office:annotation><text:p>Visible</text:p></table:table-cell>")));
 
         Assert.Equal("Sheet: S\nVisible\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
+    }
+
+    [Fact]
+    public async Task Extract_ElementsNamedLikeSheetStructureInAnotherNamespace_AreNotStructure()
+    {
+        // Sensitivity: sheets, columns and cells are matched by local name plus the table namespace, never by local name
+        // alone. The foreign column would hide column 0 if it counted; the foreign sheet and cell would add text.
+        byte[] package = Ods(
+            "<x:table xmlns:x=\"urn:elsewhere\"><x:table-row><x:table-cell><text:p>FOREIGNSHEET</text:p></x:table-cell></x:table-row></x:table>"
+            + Sheet(
+                "S",
+                "<x:table-column xmlns:x=\"urn:elsewhere\" table:visibility=\"collapse\"/>"
+                + Row("<x:table-cell xmlns:x=\"urn:elsewhere\"><text:p>FOREIGNCELL</text:p></x:table-cell>" + Cell("real"))));
+
+        Assert.Equal("Sheet: S\nreal\n", await TextOfAsync<OpenDocumentSpreadsheetExtractor>(package));
     }
 
     [Fact]
@@ -496,6 +563,39 @@ public sealed class OpenDocumentSpreadsheetExtractorTests(ITestOutputHelper outp
         Assert.True(result.WasTruncated);
 
         Assert.Equal("Sheet: S\nfirst\n".Length + 262_144, result.Text.Length);
+
+        Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Extract_CellWhoseParagraphsTogetherExceedTheRetentionBound_IsCutAtTheBoundAndMarkedTruncated()
+    {
+        // Each paragraph is under the bound; only the cell-level capture bound can cut their sum.
+        SessionAttachmentExtractionResult result = await ExtractAsync<OpenDocumentSpreadsheetExtractor>(
+            Ods(Sheet("S", Row($"<table:table-cell><text:p>{new string('x', 200_000)}</text:p><text:p>{new string('y', 200_000)}</text:p></table:table-cell>" + Cell("NEVERREACHED")))),
+            capacity: 1_000_000);
+
+        Assert.True(result.WasTruncated);
+
+        Assert.Equal("Sheet: S\n".Length + 262_144, result.Text.Length);
+
+        Assert.StartsWith("Sheet: S\nxxxx", result.Text, StringComparison.Ordinal);
+
+        Assert.Contains("x y", result.Text, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Extract_ShapeTextLongerThanTheRetentionBound_IsCutAtTheBoundAndMarkedTruncated()
+    {
+        SessionAttachmentExtractionResult result = await ExtractAsync<OpenDocumentSpreadsheetExtractor>(
+            Ods(Sheet("S", $"<table:shapes><draw:custom-shape><text:p>{new string('x', 300_000)}</text:p></draw:custom-shape></table:shapes>" + Row(Cell("NEVERREACHED")))),
+            capacity: 1_000_000);
+
+        Assert.True(result.WasTruncated);
+
+        Assert.Equal("Sheet: S\n".Length + 262_144, result.Text.Length);
 
         Assert.DoesNotContain("NEVERREACHED", result.Text, StringComparison.Ordinal);
     }
