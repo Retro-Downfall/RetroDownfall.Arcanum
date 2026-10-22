@@ -21,7 +21,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <para>
 /// <see cref="ReadEntry"/> then bounds inflation: the declared size, the inflation ratio and the running
 /// aggregate are checked before a byte is inflated, and inflation itself is bounded by the bytes actually
-/// produced, so an understated declared length cannot make the reader allocate or decompress past it.
+/// produced, so an understated declared length cannot make the reader allocate or decompress past it. The
+/// running aggregate is charged on every read, re-reads included, and is bounded twice: by the absolute
+/// aggregate cap, and by the same 200:1 ratio applied to the package as a whole (above the same 1 MiB
+/// floor), so a small package cannot fund many inflations of one part.
 /// </para>
 /// <para>
 /// Every refusal is a <see cref="DocumentPackageRejectedException"/> with a closed
@@ -75,8 +78,6 @@ internal sealed class BoundedZipPackage
 
     private const int CancellationEntryInterval = 1024;
 
-    private const int InitialInflateBufferBytes = 64 * 1024;
-
     private const int InflateChunkBytes = 64 * 1024;
 
     private static readonly byte[] CompoundFileSignature = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
@@ -89,15 +90,24 @@ internal sealed class BoundedZipPackage
 
     private readonly Dictionary<string, Entry> _entries;
 
+    private readonly long _expansionBudget;
+
     private long _aggregateBytes;
 
-    private BoundedZipPackage(byte[] array, int offset, Dictionary<string, Entry> entries)
+    private BoundedZipPackage(byte[] array, int offset, int length, Dictionary<string, Entry> entries)
     {
         _array = array;
 
         _offset = offset;
 
         _entries = entries;
+
+        // The per-entry ratio, applied to the whole extraction: what one extraction may inflate is funded by
+        // the bytes of the package it was handed (never their backing array), never less than the ratio floor
+        // and never more than the absolute aggregate cap.
+        _expansionBudget = Math.Min(
+            MaximumAggregateBytes,
+            Math.Max(CompressionRatioFloorBytes, (long)length * MaximumCompressionRatio));
     }
 
     /// <summary>Validates <paramref name="bytes"/> as a bounded ZIP package; throws a closed rejection if it is not one.</summary>
@@ -166,7 +176,7 @@ internal sealed class BoundedZipPackage
 
         ValidateLocalRecords(span, entries, centralDirectoryOffset, cancellationToken);
 
-        return new BoundedZipPackage(array, offset, entries);
+        return new BoundedZipPackage(array, offset, bytes.Length, entries);
     }
 
     /// <summary>True when the package has an entry (file or directory) of this name, compared case-insensitively.</summary>
@@ -197,7 +207,7 @@ internal sealed class BoundedZipPackage
             throw Rejection(DocumentPackageRejection.ExpansionBounds);
         }
 
-        if (_aggregateBytes + declared > MaximumAggregateBytes)
+        if (_aggregateBytes + declared > _expansionBudget)
         {
             throw Rejection(DocumentPackageRejection.ExpansionBounds);
         }
@@ -506,11 +516,10 @@ internal sealed class BoundedZipPackage
 
     private ReadOnlyMemory<byte> Inflate(Entry entry, int declared, CancellationToken cancellationToken)
     {
-        // One byte past the declared length is the most this reader will ever produce or hold: reading it proves
-        // the stream outruns its header, and it is all an understated length can make the buffer grow to.
-        long limit = (long)declared + 1;
-
-        byte[] buffer = new byte[Math.Min(declared, InitialInflateBufferBytes)];
+        // The declared length has already passed the per-entry cap, the ratio and the expansion budget, so the
+        // buffer is allocated once at that length plus one probe byte. One byte past the declared length is the
+        // most this reader will ever produce or hold: reading it proves the stream outruns its header.
+        byte[] buffer = new byte[declared + 1];
 
         int used = 0;
 
@@ -520,14 +529,9 @@ internal sealed class BoundedZipPackage
 
         try
         {
-            while (used < limit)
+            while (used < buffer.Length)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
-                if (used == buffer.Length)
-                {
-                    Array.Resize(ref buffer, (int)Math.Min(Math.Max((long)buffer.Length * 2, InitialInflateBufferBytes), limit));
-                }
 
                 int read = inflater.Read(buffer, used, Math.Min(buffer.Length - used, InflateChunkBytes));
 
