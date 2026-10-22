@@ -29,7 +29,13 @@ public sealed class SpreadsheetBoundsTests
 
         Assert.Equal(1_048_576, limits.SharedStrings);
 
+        Assert.Equal(65_536, limits.MergedRanges);
+
+        Assert.Equal(16_777_216L, limits.MergeEventMoves);
+
         Assert.Equal(16384, SpreadsheetLimits.MaximumColumn);
+
+        Assert.Equal(1_048_576, SpreadsheetLimits.MaximumRow);
     }
 
     // ------------------------------------------------------------ sheets
@@ -393,6 +399,89 @@ public sealed class SpreadsheetBoundsTests
         new SpreadsheetDocumentExtractor().ExtractAsync(Xlsx(new Sheet("Big", rows.ToString())), sink, CancellationToken.None);
 
         Assert.Equal(expected.ToString(), sink.Complete().Text);
+    }
+
+    // ------------------------------------------------------------ one worksheet part, many sheets
+
+    [Theory]
+    [InlineData("/xl/worksheets/sheet1.xml")]
+    [InlineData("/XL/Worksheets/SHEET1.xml")]
+    [InlineData("worksheets/sheet1.xml")]
+    [InlineData("/xl/worksheets/../worksheets/sheet1.xml")]
+    [InlineData("/xl/%77orksheets/sheet1.xml")]
+    public void Extract_TwoVisibleSheetsPointingAtOneWorksheetPart_IsFormatMismatch(string secondTarget)
+    {
+        // Real producers give every sheet a part of its own; sharing one is how a tiny file makes the extractor read it again and again.
+        byte[] package = Xlsx(
+            new Sheet("One", Row(Text("A1", "first"))),
+            new Sheet("Two", Row(Text("A1", "second")), Target: secondTarget));
+
+        ExtractRejected(DocumentPackageRejection.FormatMismatch, package);
+    }
+
+    [Fact]
+    public void Extract_TwoVisibleSheetsWithTheSameRelationshipId_IsFormatMismatch()
+    {
+        byte[] package = Xlsx(
+            new Sheet("One", Row(Text("A1", "first"))),
+            new Sheet("Two", Row(Text("A1", "second")), RelationshipId: "rIdS1"));
+
+        ExtractRejected(DocumentPackageRejection.FormatMismatch, package);
+    }
+
+    [Fact]
+    public void Extract_SheetsWithTheirOwnWorksheetParts_AreAllRead()
+    {
+        byte[] package = Xlsx(
+            new Sheet("One", Row(Text("A1", "first"))),
+            new Sheet("Two", Row(Text("A1", "second"))),
+            new Sheet("Three", Row(Text("A1", "third"))));
+
+        Assert.Equal("Sheet: One\nfirst\nSheet: Two\nsecond\nSheet: Three\nthird\n", ExtractText(package));
+    }
+
+    [Fact]
+    public void Extract_ManySheetsPointingAtOneMebibyteWorksheetPart_IsRefusedAfterReadingItOnce()
+    {
+        // Exactly 1 MiB inflated is the largest part no ratio check applies to. 4,096 sheets over it used to be read until the
+        // 64 MiB aggregate ran out: 64 inflations and parses of a 23 KiB package. The second reference must refuse instead.
+        StringBuilder sheets = new();
+
+        for (int index = 0; index < SpreadsheetLimits.Default.Sheets; index++)
+        {
+            sheets.Append("<sheet name=\"S").Append(index).Append("\" sheetId=\"").Append(index + 1).Append("\" r:id=\"rIdS1\"/>");
+        }
+
+        string prefix = $"<worksheet xmlns=\"{Main}\"><sheetData>";
+
+        const string filler = "<row hidden=\"1\"/>";
+
+        const string suffix = "</sheetData></worksheet>";
+
+        const int target = 1024 * 1024;
+
+        int fillers = (target - prefix.Length - suffix.Length) / filler.Length;
+
+        string worksheet = prefix + string.Concat(Enumerable.Repeat(filler, fillers)) + new string(' ', target - prefix.Length - suffix.Length - (fillers * filler.Length)) + suffix;
+
+        Assert.Equal(target, worksheet.Length);
+
+        byte[] package = ComprehensionPackageBuilder.Build(
+            ("_rels/.rels", Relationships($"<Relationship Id=\"rId1\" Type=\"{OfficeDocumentRelationship("officeDocument")}\" Target=\"xl/workbook.xml\"/>")),
+            ("xl/workbook.xml", $"<workbook xmlns=\"{Main}\" xmlns:r=\"{Rel}\"><sheets>{sheets}</sheets></workbook>"),
+            ("xl/_rels/workbook.xml.rels", Relationships($"<Relationship Id=\"rIdS1\" Type=\"{OfficeDocumentRelationship("worksheet")}\" Target=\"worksheets/sheet1.xml\"/>")),
+            ("xl/worksheets/sheet1.xml", worksheet));
+
+        Assert.True(package.Length < 64 * 1024, $"The package is {package.Length} bytes.");
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+
+        ExtractRejected(DocumentPackageRejection.FormatMismatch, package);
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // One inflation and two parses of the part cost a few MiB; the old behaviour allocated well over 100 MiB.
+        Assert.True(allocated < 32L * 1024 * 1024, $"The extraction allocated {allocated / 1048576.0:F1} MiB.");
     }
 
     // ------------------------------------------------------------ helpers

@@ -7,8 +7,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 /// <summary>
 /// Writes the spreadsheet projection to the bounded sink: <c>Sheet: &lt;name&gt;</c> once a sheet produces its first
 /// non-empty row, then each non-empty row as its non-empty cell values joined by a tab and ended by a newline. Cell text
-/// arrives in chunks and is streamed through, so no cell is ever materialized here. Every write that the sink refuses
-/// returns false so the caller stops reading.
+/// arrives in chunks and is streamed through, so no cell is ever materialized here. A line break, a tab or any other
+/// control character inside a cell, or in the sheet's name, becomes a space so the one-line-per-row shape holds
+/// (<see cref="SpreadsheetTextFolding"/>). Every write that the sink refuses returns false so the caller stops reading.
 /// </summary>
 internal sealed class SpreadsheetProjection(ISessionAttachmentDocumentTextSink output) : ISpreadsheetTextTarget
 {
@@ -20,15 +21,19 @@ internal sealed class SpreadsheetProjection(ISessionAttachmentDocumentTextSink o
 
     private bool _cellStarted;
 
+    private bool _afterCarriageReturn;
+
     public void BeginSheet(string name)
     {
-        _sheetName = name;
+        _sheetName = SpreadsheetTextFolding.Fold(name);
 
         _headerWritten = false;
 
         _rowHasCells = false;
 
         _cellStarted = false;
+
+        _afterCarriageReturn = false;
     }
 
     public void BeginRow()
@@ -36,13 +41,25 @@ internal sealed class SpreadsheetProjection(ISessionAttachmentDocumentTextSink o
         _rowHasCells = false;
 
         _cellStarted = false;
+
+        _afterCarriageReturn = false;
     }
 
-    public void BeginCell() => _cellStarted = false;
+    public void BeginCell()
+    {
+        _cellStarted = false;
 
-    /// <summary>Appends a chunk of the current cell's text. Empty chunks are ignored, so an empty cell leaves no trace.</summary>
+        _afterCarriageReturn = false;
+    }
+
+    /// <summary>
+    /// Appends a chunk of the current cell's text, folded. Empty chunks are ignored, so an empty cell leaves no trace; so is
+    /// the line feed that completes a carriage return the previous chunk ended with.
+    /// </summary>
     public bool Append(string text)
     {
+        text = SpreadsheetTextFolding.Fold(text, ref _afterCarriageReturn);
+
         if (text.Length == 0)
         {
             return true;

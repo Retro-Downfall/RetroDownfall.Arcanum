@@ -162,16 +162,15 @@ public sealed class SpreadsheetProjectionTests
     }
 
     [Fact]
-    public void Extract_TextValues_KeepWhitespaceEntitiesAndCdataExactly()
+    public void Extract_TextValues_KeepSpacesEntitiesAndCdataExactly()
     {
         byte[] package = Xlsx(new Sheet(
             "S",
             Row("<c r=\"A1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">  padded  </t></is></c>")
             + Row("<c r=\"A2\" t=\"inlineStr\"><is><t>a &amp; b &lt; c &#233;</t></is></c>")
-            + Row("<c r=\"A3\" t=\"inlineStr\"><is><t><![CDATA[<raw> & text]]></t></is></c>")
-            + Row("<c r=\"A4\" t=\"inlineStr\"><is><t>first\nsecond</t></is></c>")));
+            + Row("<c r=\"A3\" t=\"inlineStr\"><is><t><![CDATA[<raw> & text]]></t></is></c>")));
 
-        Assert.Equal("Sheet: S\n  padded  \na & b < c é\n<raw> & text\nfirst\nsecond\n", ExtractText(package));
+        Assert.Equal("Sheet: S\n  padded  \na & b < c é\n<raw> & text\n", ExtractText(package));
     }
 
     [Fact]
@@ -317,7 +316,8 @@ internal static class ExcelWorkbookFixtures
         (string Name, string Content)[]? extraEntries = null,
         string extraWorkbookRelationships = "",
         string extraWorkbookXml = "",
-        RawZipEntry[]? rawEntries = null)
+        RawZipEntry[]? rawEntries = null,
+        string extraWorkbookXmlAfterSheets = "")
     {
         string main = strict ? StrictMain : Main;
 
@@ -360,7 +360,7 @@ internal static class ExcelWorkbookFixtures
 
         relationships.Append(extraWorkbookRelationships);
 
-        entries.Add(("xl/workbook.xml", $"<workbook xmlns=\"{main}\" xmlns:r=\"{rel}\">{extraWorkbookXml}<sheets>{sheetElements}</sheets></workbook>"));
+        entries.Add(("xl/workbook.xml", $"<workbook xmlns=\"{main}\" xmlns:r=\"{rel}\">{extraWorkbookXml}<sheets>{sheetElements}</sheets>{extraWorkbookXmlAfterSheets}</workbook>"));
 
         entries.Add(("xl/_rels/workbook.xml.rels", Relationships(relationships.ToString())));
 
