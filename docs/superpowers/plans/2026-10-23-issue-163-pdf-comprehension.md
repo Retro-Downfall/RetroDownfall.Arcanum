@@ -61,7 +61,7 @@
   2. Authenticated snapshot read under the caller's admission.
   3. Await `IDocumentExtractionWorker.RunAsync` **inline**: no `Task.Run`, no quarantine, because the runner kills the process tree.
 - **The worker interface is the reviewed seam:** one Vocabulary entry as `ProviderCall`. The runner and parser are not traversed by the hosted-producer analysis.
-- **Indexer:** isolated extraction runs inside `workLease.TryBeginExternalEffectGroup`. A refusal is `DeferredForMaintenance`. The worker call is linked to the lease's `MaintenanceRevocation`, so maintenance kills the worker and the document returns as `Deferred` (durably `Pending`, retried) instead of blocking the drain.
+- **Indexer:** isolated extraction runs inside `workLease.TryBeginExternalEffectGroup`. A refusal is `DeferredForMaintenance`. The worker call is linked to the lease's `MaintenanceRevocation`, so maintenance kills the worker and the document returns as `Deferred` (durably `Pending`, retried) instead of blocking the drain. **Delivered differently under the production gate: see Delivery notes, decision 6.**
 - **Registry:** `application/pdf`, label "PDF document", `.pdf` mapped by the existing detector. The `%PDF-` magic already detects it.
 
 ### D4. Policies (from #163 and the operator)
@@ -90,3 +90,44 @@
   - the AOT IL gate.
 - **Qualification:** a local Native AOT run against Ollama with real PDFs, which proves the worker re-launches the real AOT binary under the real sandbox.
 - **Delivery:** `--no-ff` merge into `general-enhancements`, push, close #163, fast-forward `main` after the Ollama run.
+
+## Delivery notes
+
+Recorded at the documentation pass from the four stage reports and a re-read of the code on `claude/163-docs`. DESIGN §10.2.5, §11.7, §11.15, §13.1, §21.4, §21.5 and §21.8 carry the resulting behaviour; this section records why.
+
+### Stage-2 decisions made without a spec
+
+1. **One abstract host base.** `SessionAttachmentDocumentHost` (private-protected constructor, abstract `ExtractAsync`, the shared `BusyReason`, `DefaultSlotWait`, `Failed` and `Deferred`) is what `SessionAttachmentDocumentExtractors.For` returns. The in-process host keeps its parse as a non-virtual `ExtractInProcessAsync`; the isolated host adds `ExtractIsolatedAsync(..., revocation)`. Interactive callers go through the abstraction. The indexer names each host by its concrete type, so the worker call is reachable only from inside the effect group and the hosted-producer analysis can tell the two paths apart.
+2. **`Page <n>` headings.** The isolated host projects each page that has text as `Page <n>`, a line break, the text, a line break, with `BeginPage(n)` called before the heading. The heading makes pages visible on every path (attach, refresh, reference, pin) as well as in the stored `StartLine`/`EndLine` columns. Retrieval always renders `pages A-B`, never `page N`.
+3. **Whitespace-only pages emit nothing.** A page with no non-whitespace character gets no heading, and its number is never reused, so the surviving numbers are the document's own page positions.
+4. **Five-second snapshot read.** Once the family slot is held, the authenticated snapshot read has its own 5 s budget (`DefaultReadTimeout`); the worker has its own 10 s wall clock. An overrun is terminal `Failed` with its own fixed reason.
+5. **PDF reasons live in the format-generic host.** The password, malformed and bounds reasons sit in `SessionAttachmentIsolatedDocumentHost`, not in the PDF-specific code. If a second isolated format ever arrives they move.
+6. **Maintenance ruling (operator).** The spec said maintenance kills the worker and the document returns `Deferred`. Under the production admission gate that link cannot fire: the gate deliberately does not cancel a lease whose effect group is open and delivers revocation only when the group releases. The link is kept, since it works for any lease that does signal. The operator accepted the consequence and chose to document it, over changing the gate contract or shortening the wall clock below the checkpoint: a drain landing during an in-flight PDF worker (at most 10 s after a snapshot read of at most 5 s) can outlast the 5 s stage-one checkpoint and report the retryable `Grimoire.WorkDrainTimeout`; no new worker starts once maintenance is pending (the effect group is refused before anything is read); and when the group closes with maintenance pending the document stands down as `DeferredForMaintenance`, with no attempt spent and no index generation written. A real-gate test pins this. The other two options were an interruptible effect group (a gate contract change) and a wall clock under 5 s.
+7. **Managed-host behaviour.** The worker is sized for the Native AOT binary. A managed apphost (DevHost, `dotnet run`) gets a cleared environment, so it cannot find a Homebrew-installed runtime; the production profile grants no `/opt/homebrew`; the managed runtime needs more than 64 descriptors; and Homebrew's compression library links Homebrew brotli, so under the jail Flate content can decode to nothing and the PDF reads as `NoText`. In practice a managed host fails closed, usually with `PDF extraction failed.`. Re-checked in the documentation pass: the built Cli apphost started with no `DOTNET_ROOT` exits 131 ("You must install .NET to run this application"). Only the test vehicle (`UseExecutableForTests`) grants extra roots and 256 descriptors. The AOT behaviour was checked with a stand-alone AOT PdfPig probe binary under the real jail, deny-network, a cleared environment and 16 descriptors, not through the worker mode itself, so the local Native AOT qualification run stays required.
+
+### Where delivery departs from the issue text
+
+- **Cycles.** There is no first-party visited-object set. Termination rests on PdfPig's nesting ceiling (pinned at 256), strict parsing, and the pinned nightly turning its stack overflows into exceptions. A cyclic page tree yields zero pages (`NoText`); a self-invoking form or a reference chain past the ceiling is `Malformed`. Reproduced in the documentation pass: stable 0.1.16 ends the process with an uncatchable stack overflow (exit 134) on `cyclic-ref-chain.pdf` and `cyclic-xobject-ab.pdf`; the pinned nightly raises exceptions.
+- **Malformed cross-reference table.** PdfPig rebuilds a broken cross-reference table by scanning even with lenient parsing off, so `bad-startxref.pdf` and `bad-xref-offsets.pdf` are extracted. Only an unreadable trailer, a missing `/Root`, truncation, or a non-PDF is `Malformed`.
+- **Empty owner password.** PdfPig also tries the empty string as the owner password, so a file with a real user password and an empty owner password opens. Pinned by the `*-owner-empty` fixtures; closing it needs a PdfPig change or reading the encryption dictionary here.
+- **Decode damage looks like a scan.** A stream PdfPig cannot decode silently yields no text, so it resolves `NotEligible`, not `Failed`.
+- **Frame.** The truncated flag travels in the status token (`extracted-truncated`) rather than as a separate field.
+- **Self-deadline.** The worker's own deadline exit (code 5) maps to the deadline reason, not the generic failure.
+- **Output cap.** The 2 MiB cap in D2 is the runner's total, split evenly between the streams, so stdout holds 1 MiB, still above the largest legal frame (786,688 bytes: three bytes per UTF-16 unit of the 262,144 ceiling plus 256).
+- **Added beyond the brief.** A `DenyNetwork` child is refused when the jail is not applied; the sink caps page marks at 2,000 and truncates rather than misattributing; a pages-unit extraction without a mark at offset 0 is terminal `Failed` (`Document page provenance is unavailable.`); pages-unit formats use pipeline fingerprint `comprehension-v2`; `ChildProcessEnvironmentScrubber` throws for a profile with no case of its own.
+- **Dependency record.** Package id `PdfPig`, Apache-2.0, version `0.1.17-alpha-202610200037-ad829`, referenced by Infrastructure only; probe result in D1.
+
+### Checked by hand in the documentation pass
+
+The built Cli apphost run as `__comprehension-worker pdf` with `DOTNET_ROOT` set wrote the expected frames for `multi-page.pdf` (`extracted`, four pages, the second empty), `image-only.pdf` and `whitespace-only.pdf` (`no-text`), `encrypted-rc4-password.pdf` (`password-required`), `garbage.pdf` (`malformed`) and `encrypted-rc4-empty.pdf` (`extracted`), each with exit 0 and empty stderr; extra, wrong or missing arguments exit 2. A shell shows that a `set -m` job keeps the shell's stdin while an unmonitored background job reads nothing.
+
+### Left for the gate stage and later
+
+- Admission input catalog and digest, hosted-producer manifest and headroom (four `Pdf/` sources from stage 1 and five Infrastructure files from stage 2).
+- `.github/workflows/ci.yml` Windows lane filters: add `CappedChildProcessRunnerStandardInputTests` and the new worker tests. The Windows route (broker double hop, the Windows-only tests) has not been run on Windows.
+- `FamiliarProcessRunner.cs` line 14 still says its runner "has no stdin".
+- Optional `Arcanum.ConstraintInventory.json` entries (64 KiB stdin chunk, 2 s writer grace, worker limits).
+- Worker stderr is discarded and nothing is logged; the registry is static and has no logger.
+- `UseExecutableForTests` and `UseSubstituteForTests` are test-only seams in production types.
+- Real-producer PDFs pad every line to 80 columns, so about 53 such pages reach the 262,144 ceiling; trimming trailing whitespace is a later decision.
+- Move to the first stable PdfPig that carries the cycle fixes.
