@@ -11,6 +11,8 @@ public sealed class PdfExtractionLimitsTests
 
         Assert.Equal(2000, limits.MaxPages);
 
+        Assert.Equal(100_000, limits.MaxObjects);
+
         Assert.Equal(250_000, limits.MaxLettersPerPage);
 
         Assert.Equal(2_000_000, limits.MaxLettersPerDocument);
@@ -19,15 +21,17 @@ public sealed class PdfExtractionLimitsTests
     }
 
     [Theory]
-    [InlineData(0, 1, 1, 1, "maxPages")]
-    [InlineData(1, 0, 1, 1, "maxLettersPerPage")]
-    [InlineData(1, 1, 0, 1, "maxLettersPerDocument")]
-    [InlineData(1, 1, 1, 0, "maxOutputCharacters")]
-    [InlineData(-1, 1, 1, 1, "maxPages")]
-    public void Constructor_RefusesABoundBelowOne(int maxPages, int perPage, int perDocument, int output, string parameter)
+    [InlineData(0, 1, 1, 1, 1, "maxPages")]
+    [InlineData(1, 0, 1, 1, 1, "maxObjects")]
+    [InlineData(1, 1, 0, 1, 1, "maxLettersPerPage")]
+    [InlineData(1, 1, 1, 0, 1, "maxLettersPerDocument")]
+    [InlineData(1, 1, 1, 1, 0, "maxOutputCharacters")]
+    [InlineData(-1, 1, 1, 1, 1, "maxPages")]
+    [InlineData(1, -1, 1, 1, 1, "maxObjects")]
+    public void Constructor_RefusesABoundBelowOne(int maxPages, int maxObjects, int perPage, int perDocument, int output, string parameter)
     {
         ArgumentOutOfRangeException error = Assert.Throws<ArgumentOutOfRangeException>(
-            () => new PdfExtractionLimits(maxPages, perPage, perDocument, output));
+            () => new PdfExtractionLimits(maxPages, maxObjects, perPage, perDocument, output));
 
         Assert.Equal(parameter, error.ParamName);
     }
@@ -35,9 +39,11 @@ public sealed class PdfExtractionLimitsTests
     [Fact]
     public void Constructor_AcceptsTheSmallestBounds()
     {
-        PdfExtractionLimits limits = new(1, 1, 1, 1);
+        PdfExtractionLimits limits = new(1, 1, 1, 1, 1);
 
         Assert.Equal(1, limits.MaxPages);
+
+        Assert.Equal(1, limits.MaxObjects);
 
         Assert.Equal(1, limits.MaxLettersPerPage);
 

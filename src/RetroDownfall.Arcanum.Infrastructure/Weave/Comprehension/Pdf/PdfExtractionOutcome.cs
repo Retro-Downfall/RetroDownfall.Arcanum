@@ -18,7 +18,7 @@ internal enum PdfExtractionKind
     /// <summary>The bytes are not a PDF the parser can read (truncated, damaged, garbage, empty).</summary>
     Malformed,
 
-    /// <summary>The document declares or shows more pages or glyphs than the bounds allow.</summary>
+    /// <summary>The document declares or shows more pages, objects or glyphs than the bounds allow.</summary>
     Bounds,
 }
 

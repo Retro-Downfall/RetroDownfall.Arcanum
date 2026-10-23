@@ -73,6 +73,11 @@ internal sealed class PdfTextExtractor
 
     private static PdfExtractionOutcome ExtractPages(PdfDocument document, PdfExtractionLimits limits, CancellationToken cancellationToken)
     {
+        if (document.Structure.CrossReferenceTable.ObjectOffsets.Count > limits.MaxObjects)
+        {
+            return PdfExtractionOutcome.Without(PdfExtractionKind.Bounds);
+        }
+
         int pageCount = document.NumberOfPages;
 
         if (pageCount > limits.MaxPages)

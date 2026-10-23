@@ -48,7 +48,7 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
     /// <summary>The bytes are not a PDF the strict parser can read.</summary>
     internal const string MalformedReason = "The PDF document is malformed.";
 
-    /// <summary>The document declares or shows more pages or glyphs than the extractor's bounds allow.</summary>
+    /// <summary>The document declares or shows more pages, objects or glyphs than the extractor's bounds allow.</summary>
     internal const string BoundsReason = "The PDF document exceeds its extraction bounds.";
 
     /// <summary>The worker call or its verdict failed in a way no other reason describes.</summary>

@@ -223,7 +223,7 @@ public sealed class ComprehensionWorkerFrameTests
     {
         PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(
             PdfFixtures.Read("astral-plane.pdf"),
-            new PdfExtractionLimits(2000, 250_000, 2_000_000, ceiling),
+            new PdfExtractionLimits(2000, 100_000, 250_000, 2_000_000, ceiling),
             CancellationToken.None);
 
         Assert.True(outcome.Truncated);

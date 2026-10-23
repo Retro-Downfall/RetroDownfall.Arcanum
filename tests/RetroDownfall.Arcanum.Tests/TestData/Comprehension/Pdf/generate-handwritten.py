@@ -855,11 +855,38 @@ write("bad-xref-offsets.pdf", build({
     5: FONT,
 }, xref_shift=7))
 
+
+# ---- cross-reference data that lists fewer objects than the file writes. PdfPig does not build a table from a scan: it keeps
+# what the table lists (nothing, when there is no usable table) and finds any other object by scanning the file when it looks
+# for it. The extractor's object bound counts the table PdfPig holds, so these count two and none; the input ceiling is what
+# limits the objects a scan can find (README.md). The trailer is left as it was, so it still says /Size 6.
+def partial_table_doc(listed):
+    """The five-object document whose table lists only the first `listed` entries; 0 removes the table and keeps the trailer."""
+    data = build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"4 0 R"),
+        4: stream(b"", show(b"SHORT-TABLE-TEXT")),
+        5: FONT,
+    })
+    head, marker, rest = data.partition(b"xref\n0 6\n")
+    assert marker and b"/Size 6 /Root 1 0 R" in rest
+    entries, trailer = rest[: 6 * 20], rest[6 * 20 :]
+    if listed == 0:
+        return head + trailer.replace(b"startxref\n%d\n" % len(head), b"startxref\n0\n")
+    return head + b"xref\n0 %d\n" % listed + entries[: listed * 20] + trailer
+
+
+write("xref-short-table.pdf", partial_table_doc(3))
+write("xref-no-table.pdf", partial_table_doc(0))
+
 # ---- a PDF 1.5 file whose catalog, page tree, page and font live in a compressed object stream, found only through the
 # cross-reference STREAM. With an intact stream it extracts; with the stream's entries garbled there is nothing for a
 # repair scan to find (the objects are not written as "n 0 obj" at top level), so no reader can open it.
-def xref_stream_doc(garble, encrypt=None):
-    """encrypt: an /Encrypt dictionary the cross-reference stream's dictionary names (object 8), or None."""
+def xref_stream_doc(garble, encrypt=None, padding=0):
+    """encrypt: an /Encrypt dictionary the cross-reference stream's dictionary names (object 8), or None.
+    padding: this many more entries, compressed objects 8 and up that name slot 0 of the object stream and are never read;
+    the stream is then Flate encoded, which keeps a table of a hundred thousand entries a kilobyte or so."""
     font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
     members = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
@@ -901,16 +928,28 @@ def xref_stream_doc(garble, encrypt=None):
         entries[8] = (1, offsets[8], 0)
         size = 9
         trailer_entries = b" " + trailer_id + b" /Encrypt 8 0 R"
+    assert not (padding and (encrypt or garble))
+    for number in range(size, size + padding):
+        entries[number] = (2, 6, 0)
+    size += padding
     data = b"".join(struct.pack(">BHB", *entries[number]) for number in range(size))
     if garble:
         data = bytes(byte ^ 0x5A for byte in data)
-    out += b"7 0 obj\n<< /Type /XRef /Size %d /W [1 2 1] /Root 1 0 R%s /Length %d >>\nstream\n" % (size, trailer_entries, len(data)) + data + b"\nendstream\nendobj\n"
+    filter_entry = b""
+    if padding:
+        data = zlib.compress(data, 9)
+        filter_entry = b" /Filter /FlateDecode"
+    out += b"7 0 obj\n<< /Type /XRef /Size %d /W [1 2 1] /Root 1 0 R%s%s /Length %d >>\nstream\n" % (size, trailer_entries, filter_entry, len(data)) + data + b"\nendstream\nendobj\n"
     out += b"startxref\n%d\n%%%%EOF\n" % offsets[7]
     return bytes(out)
 
 
 write("xref-stream.pdf", xref_stream_doc(garble=False))
 write("xref-stream-garbled.pdf", xref_stream_doc(garble=True))
+# The same file with its cross-reference stream listing more objects, so it declares exactly the production object bound
+# (100,000: 7 real ones and 99,993 more) and one over it. The real objects are the seven above, so the first still extracts.
+write("xref-stream-at-object-bound.pdf", xref_stream_doc(garble=False, padding=99_993))
+write("xref-stream-over-object-bound.pdf", xref_stream_doc(garble=False, padding=99_994))
 # Certificate security again, declared where a PDF 1.5 file keeps its trailer entries: the cross-reference stream's dictionary.
 write("encrypted-pubsec-xref-stream.pdf", xref_stream_doc(garble=False, encrypt=pubsec_dict))
 

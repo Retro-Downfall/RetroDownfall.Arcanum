@@ -158,11 +158,56 @@ a PdfPig change or reading the encryption dictionary ourselves.
 | `missing-root.pdf` | the trailer has no `/Root` |
 | `xref-stream-garbled.pdf` | `xref-stream.pdf` with the entries of its cross-reference stream garbled: the objects it indexes are inside an object stream, so there is nothing for a repair scan to find |
 
-`bad-startxref.pdf` and `bad-xref-offsets.pdf` have a wrong `startxref` and cross-reference offsets. PdfPig rebuilds the
-table by scanning even with lenient parsing off, so they are `Extracted` (`BROKEN-XREF-TEXT`), not `Malformed`. A damaged
-cross-reference table is therefore `Failed` only when the parser cannot rebuild it: a table whose objects are written at
-top level is repaired by scanning, while `xref-stream-garbled.pdf` (objects inside an object stream), an unreadable trailer
-and a missing `/Root` are not.
+`bad-startxref.pdf` and `bad-xref-offsets.pdf` have a wrong `startxref` and cross-reference offsets. PdfPig finds
+the objects by scanning even with lenient parsing off (it builds no table from the scan, see the object bound below), so they
+are `Extracted` (`BROKEN-XREF-TEXT`), not `Malformed`. A damaged cross-reference table is therefore `Failed` only when the
+parser cannot recover: objects written at top level are found by scanning, while `xref-stream-garbled.pdf` (objects inside an
+object stream), an unreadable trailer and a missing `/Root` are not.
+
+### Declared objects (the object bound)
+
+`PdfExtractionLimits.MaxObjects` is checked right after the open, before the page tree is counted or any page is read. The
+count is `Structure.CrossReferenceTable.ObjectOffsets.Count` of the opened document: the entries the cross-reference data
+lists as in use. Measured on the pinned nightly:
+
+- An object stored inside an object stream is a type 2 entry of the cross-reference stream and is counted. `xref-stream.pdf`
+  lists seven: three written at top level, four (catalog, page tree, page, font) that exist only inside the object stream.
+- Free entries are not counted, and the trailer's `/Size` is not the count: `xref-stream.pdf` says `/Size 8` (entry 0 is free)
+  and `contents-free-entry.pdf` lists six against `/Size 8`. A file chooses `/Size` freely, so using it would refuse a small
+  honest file for a number it wrote and still miss a hostile one that wrote a small number.
+- `bad-xref-offsets.pdf` lists five objects at offsets that are wrong by 7. PdfPig keeps the offsets as written and still reads
+  the objects, so the five are counted. `bad-startxref.pdf` has a wrong `startxref`; PdfPig finds the table anyway (five).
+- PdfPig does not build a table from a scan. With no usable table it holds an empty one and finds each object by scanning the
+  file when it looks for it; with a short table it keeps what the table lists and scans for the rest. The count is therefore
+  what the cross-reference data lists, and an object the file writes but the data does not list is not counted
+  (`xref-short-table.pdf`, `xref-no-table.pdf`; pinned as a known limitation). A scan cannot find an object stored inside an
+  object stream (`xref-stream-garbled.pdf`), and an object written out takes 13 bytes at the least (`n g obj` and `endobj`), so
+  the 1 MiB intake ceiling holds at most 80,659 of them. The input ceiling, not the object bound, limits what a scan can find,
+  and that is fewer than the default below.
+- The count is read after the open, which has already read the table. The bound limits what is traversed afterwards; the
+  worker's memory, CPU and wall-clock limits bound the parser while it opens.
+
+| File | Shows | Outcome |
+| --- | --- | --- |
+| `xref-short-table.pdf` | five objects written; the table lists the first two; the trailer still says `/Size 6` | `Extracted` (`SHORT-TABLE-TEXT`); counts 2 |
+| `xref-no-table.pdf` | the same five objects with no table (the trailer stays, `startxref` is 0) | `Extracted` (`SHORT-TABLE-TEXT`); counts 0 |
+| `xref-stream-at-object-bound.pdf` | `xref-stream.pdf` whose Flate-encoded cross-reference stream lists 99,993 more compressed objects, none of them read: 100,000 in all, in 1,032 bytes | `Extracted` (`XREF-STREAM-TEXT`) |
+| `xref-stream-over-object-bound.pdf` | the same with one more entry: 100,001 | `Bounds` |
+
+**Choosing the default (100,000).** Declared objects, counted on the pinned nightly on 2026-10-23:
+
+| Documents | Size | Declared objects |
+| --- | --- | --- |
+| the committed real-producer fixtures | 9,751 to 40,742 bytes | 11 (`cups-text.pdf`, `webkit-float.pdf`, `webkit-ligatures.pdf`, `webkit-rotated.pdf`) to 40 (`cups-multi.pdf`, ten pages); `quartz-hebrew.pdf` 16, `webkit-rtl-runs.pdf` 22, `webkit-rtl-numbers.pdf` 25 |
+| the other committed fixtures, the object-bound pair aside | 0 to 400,660 bytes | at most 35 (`xobject-fan-out.pdf`, a chain of 30 forms), except `deep-pages-1k.pdf` with 1,004 (a page tree 1,000 deep) |
+| text through `cupsfilter` (Quartz): 18,800 numbered lines of six to fourteen words, not committed | 1,012,404 bytes | 1,607 on 509 pages (1.6 per KiB) |
+| a page of links through WebKit (`generate-macos.swift webkit`): a table of 500 rows of six hyperlinked cells, 3,000 link annotations, not committed | 1,037,431 bytes | 9,012 on 3 pages (8.9 per KiB), the densest realistic file found |
+| the 1,912 readable PDFs of at most 1 MiB that macOS, Xcode and the command line tools ship (icons, manuals, licence lists, dictionaries) | up to 731 KB | median 11, 99th percentile 95, largest 2,975 (a 61-page, 550 KB acknowledgments file: 5.5 per KiB) |
+
+The default leaves the densest 1 MiB document measured (9,012) a factor of eleven inside it, and is above the 80,659 objects
+a 1 MiB file can write out, so a file whose objects are all written out never reaches it. Only a cross-reference stream
+that lists objects stored in object streams can declare more, which `xref-stream-over-object-bound.pdf` does in 1,032 bytes.
+Raise the bound only for a measured legitimate document that needs it.
 
 ### Page content that refers to an undefined object
 

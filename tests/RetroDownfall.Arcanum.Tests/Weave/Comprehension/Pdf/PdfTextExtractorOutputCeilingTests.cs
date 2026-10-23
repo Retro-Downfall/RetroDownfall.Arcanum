@@ -11,7 +11,7 @@ public sealed class PdfTextExtractorOutputCeilingTests
     private static PdfExtractionOutcome Extract(string fileName, int ceiling) =>
         new PdfTextExtractor().Extract(
             PdfFixtures.Read(fileName),
-            new PdfExtractionLimits(2000, 250_000, 2_000_000, ceiling),
+            new PdfExtractionLimits(2000, 100_000, 250_000, 2_000_000, ceiling),
             CancellationToken.None);
 
     [Fact]
@@ -108,7 +108,7 @@ public sealed class PdfTextExtractorOutputCeilingTests
         // if it were read, so reading it shows up as Bounds.
         PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(
             PdfFixtures.Read("astral-multi-page.pdf"),
-            new PdfExtractionLimits(2000, 7, 2_000_000, 3),
+            new PdfExtractionLimits(2000, 100_000, 7, 2_000_000, 3),
             CancellationToken.None);
 
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
