@@ -58,6 +58,10 @@ internal sealed class SessionAttachmentExtractionException(
 
 internal static class SessionAttachmentTextExtractor
 {
+    /// <summary>
+    /// Extracts a registry document through <paramref name="host"/>, or the registry's host for its MIME type, whichever way
+    /// that host parses it. The interactive paths (attach, refresh, reference, pin) come here.
+    /// </summary>
     public static async Task<SessionAttachmentExtractionResult> ExtractDocumentAsync(
         ISessionAttachmentStore store,
         SessionAttachmentRecord record,
@@ -71,26 +75,18 @@ internal static class SessionAttachmentTextExtractor
 
         if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
         {
-            return new SessionAttachmentExtractionResult(
-                SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
+            return NotEligibleDocument();
         }
 
         SessionAttachmentDocumentHost? selected = host
             ?? SessionAttachmentDocumentExtractors.For(record.MimeType);
 
-        if (selected is null)
+        if (RefuseBeforeReading(record, maxBytes, selected is not null) is { } refused)
         {
-            // An eligible record always has a host: the registry and the host table close over the same MIME types.
-            return new SessionAttachmentExtractionResult(
-                SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
+            return refused;
         }
 
-        if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
-        {
-            return SessionAttachmentDocumentHost.Failed("Document input exceeds its byte ceiling.");
-        }
-
-        return await selected
+        return await selected!
             .ExtractAsync(
                 token => store.ReadBytesAsync(record, token),
                 record.ByteLength,
@@ -98,6 +94,98 @@ internal static class SessionAttachmentTextExtractor
                 cancellationToken,
                 waitForSlot).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// <see cref="ExtractDocumentAsync"/> through an in-process host named by its own type, so this call reaches the
+    /// in-process parse alone. The indexer uses it outside any effect group.
+    /// </summary>
+    internal static async Task<SessionAttachmentExtractionResult> ExtractInProcessDocumentAsync(
+        ISessionAttachmentStore store,
+        SessionAttachmentRecord record,
+        ArcanumSettings settings,
+        long maxBytes,
+        CancellationToken cancellationToken,
+        SessionAttachmentDocumentExtractionHost? host,
+        bool waitForSlot)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
+        {
+            return NotEligibleDocument();
+        }
+
+        if (RefuseBeforeReading(record, maxBytes, host is not null) is { } refused)
+        {
+            return refused;
+        }
+
+        return await host!
+            .ExtractInProcessAsync(
+                token => store.ReadBytesAsync(record, token),
+                record.ByteLength,
+                maxBytes,
+                cancellationToken,
+                waitForSlot).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <see cref="ExtractDocumentAsync"/> through an isolated host named by its own type, so this call reaches the worker
+    /// alone. The indexer uses it inside an effect group, with the work lease's <paramref name="revocation"/>.
+    /// </summary>
+    internal static async Task<SessionAttachmentExtractionResult> ExtractIsolatedDocumentAsync(
+        ISessionAttachmentStore store,
+        SessionAttachmentRecord record,
+        ArcanumSettings settings,
+        long maxBytes,
+        CancellationToken cancellationToken,
+        SessionAttachmentIsolatedDocumentHost host,
+        bool waitForSlot,
+        CancellationToken revocation)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
+        {
+            return NotEligibleDocument();
+        }
+
+        if (RefuseBeforeReading(record, maxBytes, hasHost: true) is { } refused)
+        {
+            return refused;
+        }
+
+        return await host
+            .ExtractIsolatedAsync(
+                token => store.ReadBytesAsync(record, token),
+                record.ByteLength,
+                maxBytes,
+                cancellationToken,
+                waitForSlot,
+                revocation).ConfigureAwait(false);
+    }
+
+    /// <summary>The refusal of an eligible document before any byte is read, or <see langword="null"/> when it may be read.</summary>
+    private static SessionAttachmentExtractionResult? RefuseBeforeReading(SessionAttachmentRecord record, long maxBytes, bool hasHost)
+    {
+        if (!hasHost)
+        {
+            // An eligible record always has a host: the registry and the host table close over the same MIME types.
+            return NotEligibleDocument();
+        }
+
+        if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
+        {
+            return SessionAttachmentDocumentHost.Failed("Document input exceeds its byte ceiling.");
+        }
+
+        return null;
+    }
+
+    private static SessionAttachmentExtractionResult NotEligibleDocument() => new(
+        SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
 
     private const int StreamingCharacterBufferSize = 4096;
 

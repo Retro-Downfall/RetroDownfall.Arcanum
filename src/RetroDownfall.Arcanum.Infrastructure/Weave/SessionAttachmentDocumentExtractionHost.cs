@@ -311,7 +311,6 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             // Completion raced the timeout; the invocation has already ended.
         }
     }
-
 }
 
 internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDocumentExtractor

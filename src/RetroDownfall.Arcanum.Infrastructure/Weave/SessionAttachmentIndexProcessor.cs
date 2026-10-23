@@ -168,17 +168,59 @@ internal sealed class SessionAttachmentIndexProcessor(
         {
             if (isDocument)
             {
-                // This runs inside the work lease, so it never queues for its family's slot: a slot held by
-                // other documents' parses would hold maintenance's stage-one drain behind them. A busy family
-                // is a deferral instead, retried after the backoff with the lease given back.
-                SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
-                    attachments,
-                    attachment,
-                    runtimeSettings,
-                    ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes),
-                    cancellationToken,
-                    comprehension,
-                    waitForSlot: false).ConfigureAwait(false);
+                long maxDocumentBytes = ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
+
+                SessionAttachmentDocumentHost? documentHost = comprehension
+                    ?? SessionAttachmentDocumentExtractors.For(attachment.MimeType);
+
+                SessionAttachmentExtractionResult extraction;
+
+                // Either way this runs inside the work lease, so it never queues for its family's slot: a slot held by
+                // other documents' parses would hold maintenance's stage-one drain behind them. A busy family is a
+                // deferral instead, retried after the backoff with the lease given back. The two hosts are reached by
+                // their own types, so the worker process can be reached only from inside an effect group.
+                if (documentHost is SessionAttachmentIsolatedDocumentHost isolatedHost)
+                {
+                    // A worker process is an external effect, so it runs inside an effect group of this lease: maintenance
+                    // that already owns admission refuses it before anything is read, and nothing is spent. The worker is
+                    // linked to the lease's revocation, so a lease that revokes an open group kills it and the document is
+                    // deferred. The gate itself waits through an open group and signals revocation only once it closes,
+                    // so maintenance that arrived while the worker ran is seen here, and the document stands down unspent
+                    // instead of writing an index generation maintenance is waiting to take the Grimoire from.
+                    if (!workLease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? extractionGroup))
+                    {
+                        return SessionAttachmentIndexOutcome.DeferredForMaintenance;
+                    }
+
+                    await using (IGrimoireExternalEffectGroup extractionEffect = extractionGroup!)
+                    {
+                        extraction = await SessionAttachmentTextExtractor.ExtractIsolatedDocumentAsync(
+                            attachments,
+                            attachment,
+                            runtimeSettings,
+                            maxDocumentBytes,
+                            cancellationToken,
+                            isolatedHost,
+                            waitForSlot: false,
+                            workLease.MaintenanceRevocation).ConfigureAwait(false);
+                    }
+
+                    if (workLease.MaintenanceRevocation.IsCancellationRequested)
+                    {
+                        return SessionAttachmentIndexOutcome.DeferredForMaintenance;
+                    }
+                }
+                else
+                {
+                    extraction = await SessionAttachmentTextExtractor.ExtractInProcessDocumentAsync(
+                        attachments,
+                        attachment,
+                        runtimeSettings,
+                        maxDocumentBytes,
+                        cancellationToken,
+                        documentHost as SessionAttachmentDocumentExtractionHost,
+                        waitForSlot: false).ConfigureAwait(false);
+                }
 
                 if (extraction.Status == SessionAttachmentExtractionStatus.Deferred)
                 {

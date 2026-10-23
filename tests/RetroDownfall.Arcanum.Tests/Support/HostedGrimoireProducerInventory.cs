@@ -793,6 +793,10 @@ internal static partial class HostedGrimoireProducerInventory
         ["RetroDownfall.Arcanum.Infrastructure.Daemons.IDaemonJob.RunAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpClient.GetToolsAsync"] = HostedProducerSiteKind.ProviderCall,
         ["RetroDownfall.Arcanum.Infrastructure.Mcp.IMcpClient.InitializeAsync"] = HostedProducerSiteKind.ProviderCall,
+        // The one reviewed seam to the jailed document worker process: the implementation owns the child, its limits and its
+        // teardown, and returns only after the child is gone, so it is a provider call behind an effect group and the runner
+        // behind it is not traversed.
+        ["RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.IDocumentExtractionWorker.RunAsync"] = HostedProducerSiteKind.ProviderCall,
         ["RetroDownfall.Arcanum.Infrastructure.Weave.TapestryWeaver.WeaveAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Mcp.IMcpConnectionManager.StartAsync"] = (HostedProducerSiteKind)3,
         ["RetroDownfall.Arcanum.Core.Mcp.IMcpConnectionManager.StopAllAsync"] = (HostedProducerSiteKind)3,
