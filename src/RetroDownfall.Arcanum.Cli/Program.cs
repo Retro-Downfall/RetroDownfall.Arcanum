@@ -10,7 +10,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 namespace RetroDownfall.Arcanum.Cli;
 

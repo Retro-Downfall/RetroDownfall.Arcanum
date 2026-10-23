@@ -2,11 +2,15 @@ using System.Diagnostics;
 
 using System.Text;
 
+using RetroDownfall.Arcanum.Core.Configuration;
+
 using RetroDownfall.Arcanum.Core.Sanctum;
 
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
@@ -17,7 +21,9 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension;
 /// <summary>
 /// How the process worker reads its runner's result, and the code-owned launch it hands the runner: every outcome becomes
 /// either the frame's verdict or one of the four fixed reasons of the worker kind's profile, and nothing the child, the
-/// runtime or the OS said reaches one. Every worker kind has a profile and runs only under the jail.
+/// runtime or the OS said reaches one. The <c>EveryWorkerFormat_</c> tests guard every worker kind, those still to come
+/// included: each has a profile, runs only under the jail, is run by the worker mode with its own extractor under its own
+/// self-deadline, input ceiling and output bound, and is projected by the isolated host with its own heading and reasons.
 /// </summary>
 public sealed class ProcessDocumentExtractionWorkerMappingTests
 {
@@ -81,9 +87,9 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
         Assert.Null(result.FailureReason);
 
-        PdfExtractionOutcome outcome = Assert.IsType<PdfExtractionOutcome>(result.Outcome);
+        DocumentExtractionOutcome outcome = Assert.IsType<DocumentExtractionOutcome>(result.Outcome);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["PAGE ONE", string.Empty, "PAGE THREE é\U0001F600"], outcome.Pages);
 
@@ -221,7 +227,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
         Assert.Equal(launch.Executable, startInfo.FileName);
 
-        Assert.Equal([ComprehensionWorkerEntry.ModeArgument, ComprehensionWorkerEntry.PdfFormatArgument], startInfo.ArgumentList);
+        Assert.Equal([ComprehensionWorkerEntry.ModeArgument, "pdf"], startInfo.ArgumentList);
 
         Assert.False(startInfo.UseShellExecute);
 
@@ -359,12 +365,12 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
         Assert.Equal(2L * 1024 * 1024, DocumentWorkerProfile.Pdf.TotalOutputCapBytes);
 
         // The worker gives up on its own before the host has to kill it.
-        Assert.True(DocumentWorkerProfile.Pdf.SelfDeadline < DocumentWorkerProfile.Pdf.WallClock);
+        Assert.Equal(TimeSpan.FromSeconds(8), DocumentWorkerProfile.Pdf.SelfDeadline);
 
-        Assert.Equal(ComprehensionWorkerEntry.SelfDeadline, DocumentWorkerProfile.Pdf.SelfDeadline);
+        Assert.Equal("pdf", DocumentWorkerProfile.Pdf.FormatArgument);
 
-        // The host refuses a document the worker would refuse at stdin, and decodes a frame against the extractor's own ceiling.
-        Assert.Equal(ComprehensionWorkerEntry.InputCeilingBytes, DocumentWorkerProfile.Pdf.InputCeilingBytes);
+        // The worker reads at most the attachment intake ceiling, and both ends hold a frame to the extractor's own ceiling.
+        Assert.Equal(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes, DocumentWorkerProfile.Pdf.InputCeilingBytes);
 
         Assert.Equal(PdfExtractionLimits.Default.MaxOutputCharacters, DocumentWorkerProfile.Pdf.MaxOutputCharacters);
 
@@ -448,6 +454,152 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
         Assert.Equal(profile.MaxFileSizeBytes, request.MaxFileSizeBytes);
     }
 
+    [Theory]
+    [MemberData(nameof(WorkerFormats))]
+    public void EveryWorkerFormat_TheWorkerModeTakesItsArgumentAndRunsItsOwnExtractor(string formatName)
+    {
+        // The binary the host re-launches must be able to run the kind it is launched for: its argument names its profile,
+        // the kind has an extractor of its own in the worker mode, and an empty document is a verdict in a frame the host
+        // accepts, never a usage error or a crash.
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(Enum.Parse<DocumentWorkerFormat>(formatName));
+
+        Assert.True(DocumentWorkerProfile.TryForArgument(profile.FormatArgument, out DocumentWorkerProfile? named));
+
+        Assert.Equal(profile, named);
+
+        Assert.NotNull(ComprehensionWorkerEntry.ExtractorFor(profile.Format));
+
+        (ComprehensionWorkerExitCode code, byte[] written) = RunWorker(profile, [], extract: null);
+
+        Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
+
+        Assert.True(ComprehensionWorkerFrame.Decode(written, profile.MaxOutputCharacters).IsValid, "The worker wrote a frame its host refuses.");
+    }
+
+    [Theory]
+    [MemberData(nameof(WorkerFormats))]
+    public void EveryWorkerFormat_TheWorkerEndsAtItsProfilesSelfDeadlineBeforeItsWallClock(string formatName)
+    {
+        // An extraction that never returns is ended by the worker itself at its kind's own deadline: not sooner, which would
+        // cut a healthy document short, and not at or after the wall clock, where the host would have to kill it.
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(Enum.Parse<DocumentWorkerFormat>(formatName));
+
+        Stopwatch elapsed = Stopwatch.StartNew();
+
+        (ComprehensionWorkerExitCode code, byte[] written) = RunWorker(profile, [], static (_, cancellationToken) =>
+        {
+            cancellationToken.WaitHandle.WaitOne(TimeSpan.FromSeconds(60));
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText);
+        });
+
+        elapsed.Stop();
+
+        Assert.Equal(ComprehensionWorkerExitCode.Deadline, code);
+
+        Assert.Empty(written);
+
+        Assert.InRange(elapsed.Elapsed, profile.SelfDeadline - TimeSpan.FromMilliseconds(50), profile.WallClock - TimeSpan.FromTicks(1));
+    }
+
+    [Theory]
+    [MemberData(nameof(WorkerFormats))]
+    public void EveryWorkerFormat_TheWorkerReadsItsProfilesInputCeilingAndRefusesOneBytePast(string formatName)
+    {
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(Enum.Parse<DocumentWorkerFormat>(formatName));
+
+        int extractions = 0;
+
+        DocumentExtractionOutcome Extract(ReadOnlyMemory<byte> bytes, CancellationToken cancellationToken)
+        {
+            extractions++;
+
+            Assert.Equal(profile.InputCeilingBytes, bytes.Length);
+
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.Malformed);
+        }
+
+        Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, RunWorker(profile, new byte[profile.InputCeilingBytes], Extract).Code);
+
+        (ComprehensionWorkerExitCode code, byte[] written) = RunWorker(profile, new byte[profile.InputCeilingBytes + 1], Extract);
+
+        Assert.Equal(ComprehensionWorkerExitCode.InputTooLarge, code);
+
+        Assert.Empty(written);
+
+        Assert.Equal(1, extractions);
+    }
+
+    [Theory]
+    [MemberData(nameof(WorkerFormats))]
+    public void EveryWorkerFormat_TheWorkerWritesNoVerdictOverItsProfilesOutputBound(string formatName)
+    {
+        // The host decodes every frame against the kind's output bound; the worker holds its extractor to the same bound, so
+        // a verdict past it is never written, whatever the extractor returned.
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(Enum.Parse<DocumentWorkerFormat>(formatName));
+
+        string atTheBound = new('A', profile.MaxOutputCharacters);
+
+        (ComprehensionWorkerExitCode code, byte[] written) = RunWorker(
+            profile,
+            [],
+            (_, _) => new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, [atTheBound], Truncated: true));
+
+        Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
+
+        Assert.True(ComprehensionWorkerFrame.Decode(written, profile.MaxOutputCharacters).IsValid, "The worker wrote a frame its host refuses.");
+
+        (code, written) = RunWorker(
+            profile,
+            [],
+            (_, _) => new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, [atTheBound + "A"], Truncated: false));
+
+        Assert.Equal(ComprehensionWorkerExitCode.Fault, code);
+
+        Assert.Empty(written);
+    }
+
+    [Theory]
+    [MemberData(nameof(WorkerFormats))]
+    public async Task EveryWorkerFormat_TheIsolatedHostProjectsWithItsProfilesHeadingAndReasons(string formatName)
+    {
+        // The pages of a kind are headed with its own heading, a heading its page text draws is escaped as its own, and each
+        // verdict without text ends with its own reason: nothing another kind words reaches this kind's documents.
+        DocumentWorkerFormat format = Enum.Parse<DocumentWorkerFormat>(formatName);
+
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(format);
+
+        SessionAttachmentExtractionResult extracted = await ExtractWithHostAsync(
+            format,
+            new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["ALPHA", string.Empty, $"see {profile.HeadingOpening} 9]"], false));
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, extracted.Status);
+
+        Assert.Equal(
+            $"{profile.HeadingOpening} 1]\nALPHA\n{profile.HeadingOpening} 3]\nsee {profile.EscapedHeadingOpening} 9]\n",
+            extracted.Text);
+
+        Assert.Equal("\\" + profile.HeadingOpening, profile.EscapedHeadingOpening);
+
+        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(profile.HeadingOpening.Length + 10, 3)], extracted.Pages);
+
+        foreach ((DocumentExtractionKind kind, string reason) in new[]
+        {
+            (DocumentExtractionKind.PasswordRequired, profile.PasswordRequiredReason),
+            (DocumentExtractionKind.Malformed, profile.MalformedReason),
+            (DocumentExtractionKind.Bounds, profile.BoundsReason),
+        })
+        {
+            SessionAttachmentExtractionResult failed = await ExtractWithHostAsync(format, DocumentExtractionOutcome.Without(kind));
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Failed, failed.Status);
+
+            Assert.Equal(reason, failed.FailureReason);
+        }
+    }
+
     [Fact]
     public void For_AFormatWithoutAProfile_IsRefused()
     {
@@ -459,6 +611,44 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
             .RunAsync((DocumentWorkerFormat)int.MaxValue, "%PDF-1.7"u8.ToArray(), CancellationToken.None));
+    }
+
+    [Fact]
+    public void PdfProfile_HoldsThePdfHeadingAndVerdictReasonsByteForByte()
+    {
+        Assert.Equal("[PDF page", DocumentWorkerProfile.Pdf.HeadingOpening);
+
+        Assert.Equal("\\[PDF page", DocumentWorkerProfile.Pdf.EscapedHeadingOpening);
+
+        Assert.Equal("Password-protected PDFs are not supported.", DocumentWorkerProfile.Pdf.PasswordRequiredReason);
+
+        Assert.Equal("The PDF document is malformed.", DocumentWorkerProfile.Pdf.MalformedReason);
+
+        Assert.Equal("The PDF document exceeds its extraction bounds.", DocumentWorkerProfile.Pdf.BoundsReason);
+    }
+
+    [Fact]
+    public void TryForArgument_NamesAKindOnlyByItsExactArgument()
+    {
+        Assert.True(DocumentWorkerProfile.TryForArgument("pdf", out DocumentWorkerProfile? pdf));
+
+        Assert.Same(DocumentWorkerProfile.Pdf, pdf);
+
+        foreach (string argument in new[] { "PDF", " pdf", "pdf ", string.Empty, "docx" })
+        {
+            Assert.False(DocumentWorkerProfile.TryForArgument(argument, out DocumentWorkerProfile? none));
+
+            Assert.Null(none);
+        }
+    }
+
+    [Fact]
+    public void WorkerFormats_HaveDistinctArguments()
+    {
+        // The argument is all the re-launched binary learns of its kind, so no two kinds may share one.
+        DocumentWorkerFormat[] formats = Enum.GetValues<DocumentWorkerFormat>();
+
+        Assert.Equal(formats.Length, formats.Select(static format => DocumentWorkerProfile.For(format).FormatArgument).Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -526,6 +716,40 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
             (await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter()).RunAsync(DocumentWorkerFormat.Pdf, bytes, CancellationToken.None)).FailureReason);
     }
 
+    /// <summary>The worker mode, in this process, re-launched with <paramref name="profile"/>'s argument.</summary>
+    private static (ComprehensionWorkerExitCode Code, byte[] Written) RunWorker(
+        DocumentWorkerProfile profile,
+        byte[] input,
+        Func<ReadOnlyMemory<byte>, CancellationToken, DocumentExtractionOutcome>? extract)
+    {
+        using MemoryStream stdin = new(input, writable: false);
+
+        using MemoryStream stdout = new();
+
+        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(
+            [ComprehensionWorkerEntry.ModeArgument, profile.FormatArgument],
+            stdin,
+            stdout,
+            extract);
+
+        return (code, stdout.ToArray());
+    }
+
+    /// <summary>An isolated host of <paramref name="format"/> whose worker gives <paramref name="outcome"/> as its verdict.</summary>
+    private static Task<SessionAttachmentExtractionResult> ExtractWithHostAsync(DocumentWorkerFormat format, DocumentExtractionOutcome outcome)
+    {
+        byte[] snapshot = "snapshot"u8.ToArray();
+
+        SessionAttachmentIsolatedDocumentHost host = new(new VerdictWorker(format, DocumentWorkerResult.Completed(outcome)), format);
+
+        return host.ExtractAsync(
+            _ => Task.FromResult<ReadOnlyMemory<byte>>(snapshot),
+            snapshot.Length,
+            1024,
+            CancellationToken.None,
+            waitForSlot: false);
+    }
+
     private static void AssertFailed(string reason, CappedChildProcessRunResult run)
     {
         DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(run, DocumentWorkerProfile.Pdf);
@@ -537,7 +761,8 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
     private static string ValidFrame() =>
         Encoding.UTF8.GetString(ComprehensionWorkerFrame.Encode(
-            new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["PAGE ONE", string.Empty, "PAGE THREE é\U0001F600"], Truncated: true)));
+            new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["PAGE ONE", string.Empty, "PAGE THREE é\U0001F600"], Truncated: true),
+            DocumentWorkerProfile.Pdf.MaxOutputCharacters));
 
     /// <summary>A run whose stdout is the raw bytes the worker wrote, as the runner hands them back for this caller.</summary>
     private static CappedChildProcessRunResult Run(
@@ -560,7 +785,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
     private sealed class RecordingWorker : IDocumentExtractionWorker
     {
-        public DocumentWorkerResult Result { get; } = DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText));
+        public DocumentWorkerResult Result { get; } = DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText));
 
         public byte[]? Bytes { get; private set; }
 
@@ -575,6 +800,17 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
             Token = cancellationToken;
 
             return Task.FromResult(Result);
+        }
+    }
+
+    /// <summary>A worker that gives one verdict, and only for the kind it was made for.</summary>
+    private sealed class VerdictWorker(DocumentWorkerFormat expected, DocumentWorkerResult result) : IDocumentExtractionWorker
+    {
+        public Task<DocumentWorkerResult> RunAsync(DocumentWorkerFormat format, ReadOnlyMemory<byte> bytes, CancellationToken cancellationToken)
+        {
+            Assert.Equal(expected, format);
+
+            return Task.FromResult(result);
         }
     }
 

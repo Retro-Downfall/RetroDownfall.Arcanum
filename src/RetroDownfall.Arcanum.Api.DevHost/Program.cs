@@ -10,7 +10,7 @@ using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 using Serilog;
 
 if (SandboxExecHelper.TryHandle(args, typeof(Program)))

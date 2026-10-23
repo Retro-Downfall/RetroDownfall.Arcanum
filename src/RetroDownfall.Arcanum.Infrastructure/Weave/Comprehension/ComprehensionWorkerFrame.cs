@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
+namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 /// <summary>
 /// The closed set of reasons a worker frame is refused. A defect names which rule failed and never carries any of the
@@ -40,14 +40,15 @@ internal enum ComprehensionWorkerFrameDefect
 /// <summary>The result of decoding one worker frame.</summary>
 /// <param name="Outcome">The decoded outcome, or <see langword="null"/> when the frame was refused.</param>
 /// <param name="Defect">Which rule refused the frame, or <see cref="ComprehensionWorkerFrameDefect.None"/>.</param>
-internal sealed record ComprehensionWorkerFrameResult(PdfExtractionOutcome? Outcome, ComprehensionWorkerFrameDefect Defect)
+internal sealed record ComprehensionWorkerFrameResult(DocumentExtractionOutcome? Outcome, ComprehensionWorkerFrameDefect Defect)
 {
     /// <summary>True when the frame decoded. A refused frame is a protocol failure, not a document verdict.</summary>
     public bool IsValid => Defect == ComprehensionWorkerFrameDefect.None;
 }
 
 /// <summary>
-/// The versioned wire frame the comprehension worker writes to stdout and the host validates before it believes any of it.
+/// The versioned wire frame the comprehension worker writes to stdout and the host validates before it believes any of it:
+/// one grammar for every worker kind, both ends bounded by the kind's output ceiling.
 /// </summary>
 /// <remarks>
 /// <code>
@@ -90,9 +91,15 @@ internal static class ComprehensionWorkerFrame
     /// <summary>The most bytes any valid frame for <paramref name="maxOutputCharacters"/> can occupy: three bytes per UTF-16 unit plus the two lines.</summary>
     internal static long MaximumFrameBytes(int maxOutputCharacters) => 3L * maxOutputCharacters + FrameSlackBytes;
 
-    /// <summary>Writes the frame for an outcome, refusing an outcome no frame could carry.</summary>
-    /// <exception cref="ArgumentException">The outcome has a page the body cannot hold or text its kind cannot carry.</exception>
-    internal static byte[] Encode(PdfExtractionOutcome outcome)
+    /// <summary>
+    /// Writes the frame for an outcome, refusing an outcome no frame within <paramref name="maxOutputCharacters"/> could
+    /// carry, so the worker never writes a frame its host's <see cref="Decode"/> refuses for its length.
+    /// </summary>
+    /// <param name="maxOutputCharacters">The output ceiling the body may not exceed: the worker kind's, as for decoding.</param>
+    /// <exception cref="ArgumentException">
+    /// The outcome has a page the body cannot hold, text its kind cannot carry, or a body longer than the ceiling.
+    /// </exception>
+    internal static byte[] Encode(DocumentExtractionOutcome outcome, int maxOutputCharacters)
     {
         ArgumentNullException.ThrowIfNull(outcome);
 
@@ -100,7 +107,12 @@ internal static class ComprehensionWorkerFrame
 
         string body = string.Join(PageSeparator, outcome.Pages);
 
-        if (outcome.Kind == PdfExtractionKind.Extracted)
+        if (body.Length > maxOutputCharacters)
+        {
+            throw new ArgumentException("The outcome's text is longer than the output ceiling.", nameof(outcome));
+        }
+
+        if (outcome.Kind == DocumentExtractionKind.Extracted)
         {
             if (outcome.Pages.Any(page => page.Contains('\0') || page.Contains(PageSeparator)) || !HasVisibleCharacter(body))
             {
@@ -142,7 +154,7 @@ internal static class ComprehensionWorkerFrame
 
         int headerEnd = text.IndexOf('\n');
 
-        if (headerEnd < 0 || !TryReadStatus(text.AsSpan(0, headerEnd), out PdfExtractionKind kind, out bool truncated))
+        if (headerEnd < 0 || !TryReadStatus(text.AsSpan(0, headerEnd), out DocumentExtractionKind kind, out bool truncated))
         {
             return Refused(ComprehensionWorkerFrameDefect.Header);
         }
@@ -172,7 +184,7 @@ internal static class ComprehensionWorkerFrame
             return Refused(ComprehensionWorkerFrameDefect.BodyCeiling);
         }
 
-        if (kind != PdfExtractionKind.Extracted)
+        if (kind != DocumentExtractionKind.Extracted)
         {
             if (declaredPages != 0)
             {
@@ -180,7 +192,7 @@ internal static class ComprehensionWorkerFrame
             }
 
             return body.Length == 0
-                ? new ComprehensionWorkerFrameResult(PdfExtractionOutcome.Without(kind), ComprehensionWorkerFrameDefect.None)
+                ? new ComprehensionWorkerFrameResult(DocumentExtractionOutcome.Without(kind), ComprehensionWorkerFrameDefect.None)
                 : Refused(ComprehensionWorkerFrameDefect.Payload);
         }
 
@@ -197,23 +209,23 @@ internal static class ComprehensionWorkerFrame
         }
 
         return new ComprehensionWorkerFrameResult(
-            new PdfExtractionOutcome(PdfExtractionKind.Extracted, pages, truncated),
+            new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, pages, truncated),
             ComprehensionWorkerFrameDefect.None);
     }
 
     private static ComprehensionWorkerFrameResult Refused(ComprehensionWorkerFrameDefect defect) => new(null, defect);
 
-    private static string StatusOf(PdfExtractionOutcome outcome) => outcome.Kind switch
+    private static string StatusOf(DocumentExtractionOutcome outcome) => outcome.Kind switch
     {
-        PdfExtractionKind.Extracted => outcome.Truncated ? ExtractedTruncated : Extracted,
-        PdfExtractionKind.NoText => NoText,
-        PdfExtractionKind.PasswordRequired => PasswordRequired,
-        PdfExtractionKind.Malformed => Malformed,
-        PdfExtractionKind.Bounds => Bounds,
+        DocumentExtractionKind.Extracted => outcome.Truncated ? ExtractedTruncated : Extracted,
+        DocumentExtractionKind.NoText => NoText,
+        DocumentExtractionKind.PasswordRequired => PasswordRequired,
+        DocumentExtractionKind.Malformed => Malformed,
+        DocumentExtractionKind.Bounds => Bounds,
         _ => throw new ArgumentException("Unknown extraction kind.", nameof(outcome)),
     };
 
-    private static bool TryReadStatus(ReadOnlySpan<char> line, out PdfExtractionKind kind, out bool truncated)
+    private static bool TryReadStatus(ReadOnlySpan<char> line, out DocumentExtractionKind kind, out bool truncated)
     {
         kind = default;
 
@@ -228,29 +240,29 @@ internal static class ComprehensionWorkerFrame
 
         if (status.SequenceEqual(Extracted))
         {
-            kind = PdfExtractionKind.Extracted;
+            kind = DocumentExtractionKind.Extracted;
         }
         else if (status.SequenceEqual(ExtractedTruncated))
         {
-            kind = PdfExtractionKind.Extracted;
+            kind = DocumentExtractionKind.Extracted;
 
             truncated = true;
         }
         else if (status.SequenceEqual(NoText))
         {
-            kind = PdfExtractionKind.NoText;
+            kind = DocumentExtractionKind.NoText;
         }
         else if (status.SequenceEqual(PasswordRequired))
         {
-            kind = PdfExtractionKind.PasswordRequired;
+            kind = DocumentExtractionKind.PasswordRequired;
         }
         else if (status.SequenceEqual(Malformed))
         {
-            kind = PdfExtractionKind.Malformed;
+            kind = DocumentExtractionKind.Malformed;
         }
         else if (status.SequenceEqual(Bounds))
         {
-            kind = PdfExtractionKind.Bounds;
+            kind = DocumentExtractionKind.Bounds;
         }
         else
         {

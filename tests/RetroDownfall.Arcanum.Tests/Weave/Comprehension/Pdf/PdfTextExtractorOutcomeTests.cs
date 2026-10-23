@@ -1,5 +1,7 @@
 using System.Text;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -8,10 +10,10 @@ public sealed class PdfTextExtractorOutcomeTests
 {
     private const string EncryptedCodeword = "ENCRYPTED-CODEWORD-PAPAYA-4410";
 
-    private static PdfExtractionOutcome Extract(string fileName) =>
+    private static DocumentExtractionOutcome Extract(string fileName) =>
         new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), PdfExtractionLimits.Default, CancellationToken.None);
 
-    private static void AssertCarriesNoText(PdfExtractionKind kind, PdfExtractionOutcome outcome)
+    private static void AssertCarriesNoText(DocumentExtractionKind kind, DocumentExtractionOutcome outcome)
     {
         Assert.Equal(kind, outcome.Kind);
 
@@ -31,7 +33,7 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         // Sensitivity: the "any non-whitespace" test. Two pages of an image, a run of spaces, and a page tree with no
         // reachable page all produce no entry, so the later OCR stage gets the definition of "nothing to read".
-        AssertCarriesNoText(PdfExtractionKind.NoText, Extract(fileName));
+        AssertCarriesNoText(DocumentExtractionKind.NoText, Extract(fileName));
     }
 
     // ---------------------------------------------------------------- encryption
@@ -42,9 +44,9 @@ public sealed class PdfTextExtractorOutcomeTests
     public void Extract_EncryptedWithTheEmptyUserPassword_IsExtracted(string fileName)
     {
         // Permission-only restrictions: the user password is empty, so any reader opens the file without asking.
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([EncryptedCodeword], outcome.Pages);
     }
@@ -54,7 +56,7 @@ public sealed class PdfTextExtractorOutcomeTests
     [InlineData("encrypted-aes-password.pdf")]
     public void Extract_EncryptedWithARealPassword_IsPasswordRequired(string fileName)
     {
-        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, Extract(fileName));
+        AssertCarriesNoText(DocumentExtractionKind.PasswordRequired, Extract(fileName));
     }
 
     [Theory]
@@ -65,9 +67,9 @@ public sealed class PdfTextExtractorOutcomeTests
         // KNOWN LIMITATION, pinned so a change is noticed: no password is ever supplied, but PdfPig tries the empty
         // string as the owner password too, and an owner session decrypts the whole file. A file whose owner password is
         // the empty string therefore opens although its user password is real. See README.md.
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([EncryptedCodeword], outcome.Pages);
     }
@@ -78,21 +80,21 @@ public sealed class PdfTextExtractorOutcomeTests
         // Public-key security has no password to ask for, and PdfPig has no handler for it: it reads the dictionary as a
         // Standard one and fails with an unrelated exception. The file is well formed and protected, so calling it damaged
         // names the wrong condition.
-        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, Extract("encrypted-pubsec.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.PasswordRequired, Extract("encrypted-pubsec.pdf"));
     }
 
     [Fact]
     public void Extract_CertificateEncryptedDocumentWithACrossReferenceStream_IsPasswordRequired()
     {
         // A PDF 1.5 file keeps its trailer entries in the cross-reference stream's dictionary, so that is where /Encrypt is.
-        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, Extract("encrypted-pubsec-xref-stream.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.PasswordRequired, Extract("encrypted-pubsec-xref-stream.pdf"));
     }
 
     [Fact]
     public void Extract_FileThatOpensButWhosePageIsRefused_IsMalformedEvenWhenItsTextMentionsEncrypt()
     {
         // Sensitivity: the check runs only when opening fails. This file opens, so a name in its text proves nothing.
-        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("page-failure-mentions-encrypt.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, Extract("page-failure-mentions-encrypt.pdf"));
     }
 
     [Fact]
@@ -100,7 +102,7 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         // Sensitivity: only a trailer declares encryption. The file has no trailer and cannot be opened, and the name is in
         // its page text, so it is damaged, not protected.
-        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("truncated-mentions-encrypt.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, Extract("truncated-mentions-encrypt.pdf"));
     }
 
     [Theory]
@@ -120,9 +122,9 @@ public sealed class PdfTextExtractorOutcomeTests
         // cross-reference stream's dictionary, and a dictionary where /XRef is not the /Type are not the trailer.
         byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n" + body);
 
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
 
-        AssertCarriesNoText(PdfExtractionKind.Malformed, outcome);
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, outcome);
     }
 
     [Theory]
@@ -134,9 +136,9 @@ public sealed class PdfTextExtractorOutcomeTests
         // The controls for the tests above: a trailer, written loosely or not, and a cross-reference stream's dictionary.
         byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n" + body);
 
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
 
-        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, outcome);
+        AssertCarriesNoText(DocumentExtractionKind.PasswordRequired, outcome);
     }
 
     // ---------------------------------------------------------------- bytes that are not a readable PDF
@@ -151,7 +153,7 @@ public sealed class PdfTextExtractorOutcomeTests
     [InlineData("xref-stream-garbled.pdf")]
     public void Extract_BytesThatAreNotAReadablePdf_AreMalformedWithoutPages(string fileName)
     {
-        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, Extract(fileName));
     }
 
     [Fact]
@@ -172,13 +174,13 @@ public sealed class PdfTextExtractorOutcomeTests
 
         Assert.Equal(31, differing[^1] - differing[0]);
 
-        PdfExtractionOutcome control = Extract("xref-stream.pdf");
+        DocumentExtractionOutcome control = Extract("xref-stream.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, control.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, control.Kind);
 
         Assert.Equal(["XREF-STREAM-TEXT"], control.Pages);
 
-        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("xref-stream-garbled.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, Extract("xref-stream-garbled.pdf"));
     }
 
     [Theory]
@@ -188,9 +190,9 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         // PdfPig scans for objects whenever the xref is unusable, even with lenient parsing off. The repaired text is
         // the text the file shows, so there is no reason to refuse it.
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["BROKEN-XREF-TEXT"], outcome.Pages);
     }
@@ -202,9 +204,9 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         // ISO 32000-1 7.3.10: a reference to an undefined object is the null object, so the page is blank. Refusing the
         // document would lose page 1, which is good, on every path that reads it.
-        PdfExtractionOutcome outcome = Extract("contents-undefined-page-two.pdf");
+        DocumentExtractionOutcome outcome = Extract("contents-undefined-page-two.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["GOOD-PAGE-ONE", string.Empty], outcome.Pages);
     }
@@ -212,9 +214,9 @@ public sealed class PdfTextExtractorOutcomeTests
     [Fact]
     public void Extract_ContentsArrayWithOneUndefinedElement_ExtractsTheOtherElements()
     {
-        PdfExtractionOutcome outcome = Extract("contents-undefined-element.pdf");
+        DocumentExtractionOutcome outcome = Extract("contents-undefined-element.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["ARRAY-ELEMENT-TEXT"], outcome.Pages);
     }
@@ -222,14 +224,14 @@ public sealed class PdfTextExtractorOutcomeTests
     [Fact]
     public void Extract_OnlyPageHasAnUndefinedContents_ShowsNoText()
     {
-        AssertCarriesNoText(PdfExtractionKind.NoText, Extract("contents-undefined-only-page.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.NoText, Extract("contents-undefined-only-page.pdf"));
     }
 
     [Fact]
     public void Extract_UndefinedContentsInAPageTreeThatListsItself_TerminatesAndShowsNoText()
     {
         // Sensitivity: the visited set of the repair's walk of the page tree. Without it this file never returns.
-        AssertCarriesNoText(PdfExtractionKind.NoText, Extract("contents-undefined-in-cyclic-page-tree.pdf"));
+        AssertCarriesNoText(DocumentExtractionKind.NoText, Extract("contents-undefined-in-cyclic-page-tree.pdf"));
     }
 
     [Theory]
@@ -239,9 +241,9 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         // The controls for the damaged-object tests below: an object the cross-reference table lists as free is not defined,
         // and an object written as `null` is the null object itself.
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["GOOD-PAGE-ONE", string.Empty], outcome.Pages);
     }
@@ -257,7 +259,7 @@ public sealed class PdfTextExtractorOutcomeTests
         // that exists but is not a stream (the wrong type, not null), and a /Contents object the cross-reference table lists
         // as in use but whose bytes are overwritten or whose "obj" keyword is garbled (damaged, not undefined) still make the
         // document malformed: a damaged page must not read as a blank one.
-        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, Extract(fileName));
     }
 
     // ---------------------------------------------------------------- hostile structure
@@ -271,7 +273,7 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         // The first two end in PdfPig's nesting-depth exception instead of a stack overflow (the reason the nightly is
         // pinned). The two form cycles are refused only with lenient parsing off: lenient parsing extracts them.
-        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
+        AssertCarriesNoText(DocumentExtractionKind.Malformed, Extract(fileName));
     }
 
     [Theory]
@@ -279,9 +281,9 @@ public sealed class PdfTextExtractorOutcomeTests
     [InlineData("cyclic-pages-with-page.pdf", "PAGE-BESIDE-CYCLE")]
     public void Extract_CycleThatDoesNotStopTheRealContent_IsExtracted(string fileName, string expected)
     {
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([expected], outcome.Pages);
     }
@@ -290,9 +292,9 @@ public sealed class PdfTextExtractorOutcomeTests
     public void Extract_RunThatNamesAnUndefinedFont_IsSkippedAndTheRestIsExtracted()
     {
         // Sensitivity: SkipMissingFonts. Without it PdfPig throws for the whole document.
-        PdfExtractionOutcome outcome = Extract("missing-font.pdf");
+        DocumentExtractionOutcome outcome = Extract("missing-font.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["GOOD-FONT-RUN"], outcome.Pages);
     }
@@ -302,6 +304,6 @@ public sealed class PdfTextExtractorOutcomeTests
     {
         Assert.Equal(
             ["Extracted", "NoText", "PasswordRequired", "Malformed", "Bounds"],
-            Enum.GetNames<PdfExtractionKind>());
+            Enum.GetNames<DocumentExtractionKind>());
     }
 }

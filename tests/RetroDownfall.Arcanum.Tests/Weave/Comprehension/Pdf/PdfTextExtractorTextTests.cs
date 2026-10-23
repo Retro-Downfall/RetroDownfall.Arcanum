@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -33,7 +35,7 @@ public sealed class PdfTextExtractorTextTests
         "\u05DE\u05D7\u05D9\u05E8 $25 \u05D4\u05D9\u05D5\u05DD", // Hebrew: price $25 today
         "\u05EA\u05D0\u05E8\u05D9\u05DA 2026-10-01 \u05D4\u05D9\u05D5\u05DD"); // Hebrew: date 2026-10-01 today
 
-    private static PdfExtractionOutcome Extract(string fileName, PdfExtractionLimits? limits = null) =>
+    private static DocumentExtractionOutcome Extract(string fileName, PdfExtractionLimits? limits = null) =>
         new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), limits ?? PdfExtractionLimits.Default, CancellationToken.None);
 
     [Fact]
@@ -41,9 +43,9 @@ public sealed class PdfTextExtractorTextTests
     {
         // cupsfilter pads its lines and hard-wraps them inside words, so layout differs and whitespace cannot be compared;
         // the characters and their order must not. Word boundaries are pinned by the same-line tests below.
-        PdfExtractionOutcome outcome = Extract("cups-text.pdf");
+        DocumentExtractionOutcome outcome = Extract("cups-text.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.False(outcome.Truncated);
 
@@ -55,9 +57,9 @@ public sealed class PdfTextExtractorTextTests
     [Fact]
     public void Extract_RealProducerDocumentOfTenPages_KeepsPagesApartAndInOrder()
     {
-        PdfExtractionOutcome outcome = Extract("cups-multi.pdf");
+        DocumentExtractionOutcome outcome = Extract("cups-multi.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(10, outcome.Pages.Count);
 
@@ -76,9 +78,9 @@ public sealed class PdfTextExtractorTextTests
     public void Extract_MultiPageDocument_KeepsOneEntryPerPageIncludingEmptyOnes()
     {
         // Page 2 has no content at all. Its empty entry is what keeps "page 3" true for the marker after it.
-        PdfExtractionOutcome outcome = Extract("multi-page.pdf");
+        DocumentExtractionOutcome outcome = Extract("multi-page.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.False(outcome.Truncated);
 
@@ -89,9 +91,9 @@ public sealed class PdfTextExtractorTextTests
     public void Extract_TextShownOutOfVisualOrder_IsReturnedInContentStreamOrder()
     {
         // Sensitivity: ContentOrderTextExtractor. A position-sorted or neighbour-grouped extractor would put the top run first.
-        PdfExtractionOutcome outcome = Extract("content-order.pdf");
+        DocumentExtractionOutcome outcome = Extract("content-order.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["FIRST-IN-STREAM-BOTTOM\nSECOND-IN-STREAM-TOP\nTHIRD-IN-STREAM-MIDDLE"], outcome.Pages);
     }
@@ -104,9 +106,9 @@ public sealed class PdfTextExtractorTextTests
         // left of the previous one; gluing them makes one token of two words. The kerned pair and the accent drawn over the
         // letter that follows it (the way TeX writes an umlaut) are the controls that keep a small backward step inside a
         // word: they step back past the previous glyph's end, but not past its start.
-        PdfExtractionOutcome outcome = Extract("same-line-order.pdf");
+        DocumentExtractionOutcome outcome = Extract("same-line-order.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["RIGHTWORD LEFTWORD\n17 Annual Report\nWAVE\nFIRSTRUN SECONDRUN\nM^uller"], outcome.Pages);
     }
@@ -117,9 +119,9 @@ public sealed class PdfTextExtractorTextTests
         // WebKit paints a float before the inline text it sits beside, a right-to-left table row from the right cell to the
         // left one and a row-reverse flex row from its last item to its first. Glued, the price and the quantity after it
         // read as one number.
-        PdfExtractionOutcome outcome = Extract("webkit-float.pdf");
+        DocumentExtractionOutcome outcome = Extract("webkit-float.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["$1,250.00 2 hours consulting\nRIGHTCELL LEFTCELL\nFLEXFIRST FLEXSECOND"], outcome.Pages);
     }
@@ -132,9 +134,9 @@ public sealed class PdfTextExtractorTextTests
         // and every letter comes out spaced. The kerned upside-down line has no space glyphs, so its words are apart only
         // along their own direction. The last two lines are the controls for a change of direction: an upside-down run with
         // an upright one to its left, and a run that starts off the baseline of the one before, are still two words.
-        PdfExtractionOutcome outcome = Extract("rotated-text.pdf");
+        DocumentExtractionOutcome outcome = Extract("rotated-text.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(
             ["Ordinary line of text\nInvoice total due\nMirrored words here\nRotated one fifty\nSpaced by kerning\nFlipped Upright\nUp the side Turned"],
@@ -147,9 +149,9 @@ public sealed class PdfTextExtractorTextTests
         // Sensitivity: only a visible letter has a baseline the next letter can start off. Some producers draw a
         // paragraph's line feed as a glyph (macOS license documents do, at the top of a page); the line below it starts no
         // new word.
-        PdfExtractionOutcome outcome = Extract("line-feed-glyph.pdf");
+        DocumentExtractionOutcome outcome = Extract("line-feed-glyph.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["\nAB"], outcome.Pages);
     }
@@ -158,9 +160,9 @@ public sealed class PdfTextExtractorTextTests
     public void Extract_RealProducerRotatedAndMirroredText_StaysWords()
     {
         // WebKit draws CSS rotate(180deg), rotate(150deg) and scaleX(-1) text with a turned text matrix.
-        PdfExtractionOutcome outcome = Extract("webkit-rotated.pdf");
+        DocumentExtractionOutcome outcome = Extract("webkit-rotated.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["Normal line here\nUpside down label text\nRotated one fifty\nMirrored words here"], outcome.Pages);
     }
@@ -170,9 +172,9 @@ public sealed class PdfTextExtractorTextTests
     {
         // Sensitivity: the ligature expansion. U+FB05 becomes "st", which is what NFKC gives: its compatibility decomposition
         // is a long s and a t, and the long s decomposes again to s. Nothing else is folded: the plain line is the control.
-        PdfExtractionOutcome outcome = Extract("latin-ligatures.pdf");
+        DocumentExtractionOutcome outcome = Extract("latin-ligatures.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["effect final flow\noffice baffle\nst st\nplain office"], outcome.Pages);
     }
@@ -182,9 +184,9 @@ public sealed class PdfTextExtractorTextTests
     {
         // WebKit writes Helvetica's fi, fl and ffi as ligature glyphs, which PdfPig maps to U+FB01, U+FB02 and U+FB03. The
         // text must be what pdftotext gives and what a person would search for.
-        PdfExtractionOutcome outcome = Extract("webkit-ligatures.pdf");
+        DocumentExtractionOutcome outcome = Extract("webkit-ligatures.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["Helvetica: office, figures, affidavit, flow, fluffy waffles."], outcome.Pages);
     }
@@ -195,9 +197,9 @@ public sealed class PdfTextExtractorTextTests
         // Sensitivity: the reversal of a right-to-left run whose glyphs advance left to right. The sentence keeps its full stop
         // at the end, the English sentence keeps its Hebrew word whole and in place, the number keeps its digit order, the
         // Latin run keeps its letters, and a line with no right-to-left text is untouched.
-        PdfExtractionOutcome outcome = Extract("rtl-visual-order.pdf");
+        DocumentExtractionOutcome outcome = Extract("rtl-visual-order.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(
             [
@@ -211,9 +213,9 @@ public sealed class PdfTextExtractorTextTests
     {
         // Sensitivity: the direction test. Glyphs placed to the left of the one before are already in logical order: they
         // must not be reversed, and the leftward step from one glyph to the next must not read as a gap between words.
-        PdfExtractionOutcome outcome = Extract("rtl-logical-order.pdf");
+        DocumentExtractionOutcome outcome = Extract("rtl-logical-order.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([$"{Shalom} {Olam}\n{Marhaba} {Bilalam}"], outcome.Pages);
     }
@@ -227,9 +229,9 @@ public sealed class PdfTextExtractorTextTests
         // the first to be a new line, and steps back to the left. Turning each of those lines round as a whole would reverse
         // its cells or lines. The last line is the control: drawn left to right as two runs with a gap ahead, it is one
         // visual run and is still turned round as a whole.
-        PdfExtractionOutcome outcome = Extract("rtl-runs.pdf");
+        DocumentExtractionOutcome outcome = Extract("rtl-runs.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(
             [
@@ -249,9 +251,9 @@ public sealed class PdfTextExtractorTextTests
         // one first, and a heading whose line height is under 0.9 em wraps to lines too close to split. The bold word inside
         // a paragraph is the control: WebKit draws a paragraph's inline runs left to right, so the paragraph is one visual
         // run.
-        PdfExtractionOutcome outcome = Extract("webkit-rtl-runs.pdf");
+        DocumentExtractionOutcome outcome = Extract("webkit-rtl-runs.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(
             [
@@ -276,9 +278,9 @@ public sealed class PdfTextExtractorTextTests
         // at the start of the line, a sign next to European digits is drawn inside the number too; after an Arabic letter
         // the digits are Arabic numbers, so a percent or dollar sign is drawn outside them and must come back where it was
         // typed. The first file is hand-written in that visual order, the second is WebKit's.
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([RightToLeftNumbers], outcome.Pages);
     }
@@ -289,9 +291,9 @@ public sealed class PdfTextExtractorTextTests
         // Sensitivity: the direction test and the facing-edge gap measured along the glyphs' own direction. The first line is
         // in visual order (each glyph a glyph's width further along its leftward direction), the second in logical order
         // (each glyph behind the one before); both read the same, and neither is letter-spaced.
-        PdfExtractionOutcome outcome = Extract("rtl-upside-down.pdf");
+        DocumentExtractionOutcome outcome = Extract("rtl-upside-down.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([$"{Shalom} {Olam}\n{Shalom} {Olam}"], outcome.Pages);
     }
@@ -301,9 +303,9 @@ public sealed class PdfTextExtractorTextTests
     {
         // Quartz writes the right-to-left paragraph in visual order, as every macOS producer does. The first line starts
         // with a space the producer draws for the paragraph break.
-        PdfExtractionOutcome outcome = Extract("quartz-hebrew.pdf");
+        DocumentExtractionOutcome outcome = Extract("quartz-hebrew.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         string page = Assert.Single(outcome.Pages);
 
@@ -316,9 +318,9 @@ public sealed class PdfTextExtractorTextTests
     [InlineData("cjk-predefined-cmap.pdf", "あいう")]
     public void Extract_NonAsciiText_IsExact(string fileName, string expected)
     {
-        PdfExtractionOutcome outcome = Extract(fileName);
+        DocumentExtractionOutcome outcome = Extract(fileName);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([expected], outcome.Pages);
     }
@@ -328,9 +330,9 @@ public sealed class PdfTextExtractorTextTests
     {
         // The text comes from the file, not from a font found on the host, so the result cannot depend on which fonts
         // the worker's sandbox can read.
-        PdfExtractionOutcome outcome = Extract("non-embedded-font.pdf");
+        DocumentExtractionOutcome outcome = Extract("non-embedded-font.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["NON-EMBEDDED-FONT-TEXT"], outcome.Pages);
     }
@@ -338,9 +340,9 @@ public sealed class PdfTextExtractorTextTests
     [Fact]
     public void Extract_PageTreeThatClaimsTwoBillionPages_ReadsOnlyThePagesThatExist()
     {
-        PdfExtractionOutcome outcome = Extract("huge-count.pdf");
+        DocumentExtractionOutcome outcome = Extract("huge-count.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["REAL-PAGE-ONE"], outcome.Pages);
     }
@@ -348,9 +350,9 @@ public sealed class PdfTextExtractorTextTests
     [Fact]
     public void Extract_PageBuriedInAThousandLevelPageTree_IsFound()
     {
-        PdfExtractionOutcome outcome = Extract("deep-pages-1k.pdf");
+        DocumentExtractionOutcome outcome = Extract("deep-pages-1k.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["DEEP-PAGE-LEAF"], outcome.Pages);
     }

@@ -215,13 +215,13 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
     public static TheoryData<string, string> UnreadablePdfs() => new()
     {
-        { "encrypted-rc4-password.pdf", SessionAttachmentIsolatedDocumentHost.PasswordRequiredReason },
-        { "encrypted-aes-password.pdf", SessionAttachmentIsolatedDocumentHost.PasswordRequiredReason },
-        { "truncated.pdf", SessionAttachmentIsolatedDocumentHost.MalformedReason },
-        { "xref-stream-garbled.pdf", SessionAttachmentIsolatedDocumentHost.MalformedReason },
-        { "bad-trailer.pdf", SessionAttachmentIsolatedDocumentHost.MalformedReason },
-        { "missing-root.pdf", SessionAttachmentIsolatedDocumentHost.MalformedReason },
-        { "garbage.pdf", SessionAttachmentIsolatedDocumentHost.MalformedReason },
+        { "encrypted-rc4-password.pdf", DocumentWorkerProfile.Pdf.PasswordRequiredReason },
+        { "encrypted-aes-password.pdf", DocumentWorkerProfile.Pdf.PasswordRequiredReason },
+        { "truncated.pdf", DocumentWorkerProfile.Pdf.MalformedReason },
+        { "xref-stream-garbled.pdf", DocumentWorkerProfile.Pdf.MalformedReason },
+        { "bad-trailer.pdf", DocumentWorkerProfile.Pdf.MalformedReason },
+        { "missing-root.pdf", DocumentWorkerProfile.Pdf.MalformedReason },
+        { "garbage.pdf", DocumentWorkerProfile.Pdf.MalformedReason },
     };
 
     [SkippableTheory]

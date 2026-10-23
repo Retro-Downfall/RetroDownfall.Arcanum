@@ -33,11 +33,11 @@ internal sealed class InProcessPdfWorker : IDocumentExtractionWorker
 
         Interlocked.Increment(ref _runs);
 
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, cancellationToken);
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, cancellationToken);
 
         ComprehensionWorkerFrameResult frame = ComprehensionWorkerFrame.Decode(
-            ComprehensionWorkerFrame.Encode(outcome),
-            PdfExtractionLimits.Default.MaxOutputCharacters);
+            ComprehensionWorkerFrame.Encode(outcome, DocumentWorkerProfile.Pdf.MaxOutputCharacters),
+            DocumentWorkerProfile.Pdf.MaxOutputCharacters);
 
         Assert.True(frame.IsValid, $"The extractor's verdict did not survive the frame: {frame.Defect}");
 

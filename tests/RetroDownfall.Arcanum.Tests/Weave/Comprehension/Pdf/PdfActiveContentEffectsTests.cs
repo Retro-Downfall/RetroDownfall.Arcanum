@@ -77,9 +77,9 @@ public sealed class PdfActiveContentEffectsTests : IDisposable
         byte[] document = BuildDocument();
 
         // No jail, no limits: an action the extractor followed would really happen in this process.
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([VisibleText], outcome.Pages);
 
@@ -102,7 +102,7 @@ public sealed class PdfActiveContentEffectsTests : IDisposable
 
         Assert.True(result.FailureReason is null, result.FailureReason);
 
-        Assert.Equal(PdfExtractionKind.Extracted, result.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, result.Outcome!.Kind);
 
         Assert.Equal([VisibleText], result.Outcome.Pages);
 

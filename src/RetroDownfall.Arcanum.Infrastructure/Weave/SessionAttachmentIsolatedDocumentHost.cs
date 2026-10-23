@@ -2,8 +2,6 @@ using System.Globalization;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
-
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
@@ -19,13 +17,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// effect group a worker needs is begun only once the snapshot is in hand.
 /// </summary>
 /// <remarks>
-/// Each page with text is projected as <c>[PDF page n]</c> on a line of its own, then its text, then a line break, with the
-/// page mark set where its heading starts. The bracketed form is not how a document prints its own folios, so a footer such
-/// as <c>Page 1</c> drawn first on PDF page 3 reads as page text under the <c>[PDF page 3]</c> heading, never as the page's
-/// provenance. Nor can a page draw the heading itself: the heading is in-band, so every occurrence of its opening
-/// (<see cref="HeadingOpening"/>) inside page text is written with a backslash before the bracket
-/// (<see cref="EscapedHeadingOpening"/>) and only the host's own headings read <c>[PDF page n]</c>. A page without text emits
-/// nothing and its number is never reused, so the numbers that remain are the document's own. Cancelling <c>revocation</c>
+/// The format's <see cref="DocumentWorkerProfile"/> words everything format-specific in the projection: the heading and the
+/// reasons a verdict without text ends with. Each page with text is projected as the profile's heading (for a PDF,
+/// <c>[PDF page n]</c>) on a line of its own, then its text, then a line break, with the page mark set where its heading
+/// starts. The bracketed form is not how a document prints its own folios, so a footer such as <c>Page 1</c> drawn first on
+/// PDF page 3 reads as page text under the <c>[PDF page 3]</c> heading, never as the page's provenance. Nor can a page draw
+/// the heading itself: the heading is in-band, so every occurrence of its opening
+/// (<see cref="DocumentWorkerProfile.HeadingOpening"/>) inside page text is written with a backslash before the bracket
+/// (<see cref="DocumentWorkerProfile.EscapedHeadingOpening"/>) and only the host's own headings read as headings. A page
+/// without text emits nothing and its number is never reused, so the numbers that remain are the document's own. Cancelling <c>revocation</c>
 /// (maintenance taking the Grimoire back from the indexer) kills the worker and defers the document, which nothing treats
 /// as terminal; a revocation already signalled when the worker would start defers it without starting anything; cancelling
 /// the caller's token kills it and propagates.
@@ -37,25 +37,7 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
     TimeSpan? readTimeout = null,
     TimeSpan? slotWait = null) : SessionAttachmentDocumentHost(readTimeout ?? DefaultReadTimeout, parseSpendsReadBudget: false, slotWait)
 {
-    /// <summary>The opening of the heading the host writes before each page's text: <c>[PDF page n]</c>.</summary>
-    internal const string HeadingOpening = "[PDF page";
-
-    /// <summary>
-    /// What an occurrence of <see cref="HeadingOpening"/> in a page's own text is written as, so the document cannot print a
-    /// line that reads as a heading of the host's.
-    /// </summary>
-    internal const string EscapedHeadingOpening = "\\" + HeadingOpening;
-
-    /// <summary>The document needs a password other than the empty one, which is never guessed, stripped or asked for.</summary>
-    internal const string PasswordRequiredReason = "Password-protected PDFs are not supported.";
-
-    /// <summary>The bytes are not a PDF the strict parser can read.</summary>
-    internal const string MalformedReason = "The PDF document is malformed.";
-
-    /// <summary>The document declares or shows more pages, objects or glyphs than the extractor's bounds allow.</summary>
-    internal const string BoundsReason = "The PDF document exceeds its extraction bounds.";
-
-    /// <summary>The worker call or its verdict failed in a way no other reason describes.</summary>
+    /// <summary>The worker call or its verdict failed in a way no other reason describes, whatever the format.</summary>
     internal const string WorkerFaultReason = "Document extraction failed.";
 
     /// <summary>The longest the snapshot read may take once the slot is held; the worker has its own wall clock.</summary>
@@ -64,6 +46,9 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
     private readonly IDocumentExtractionWorker _worker = worker;
 
     private readonly DocumentWorkerFormat _format = format;
+
+    /// <summary>The format's profile, whose heading and verdict reasons every projection uses; a format without one is refused here.</summary>
+    private readonly DocumentWorkerProfile _profile = DocumentWorkerProfile.For(format);
 
     private readonly int _maximumCharacters = maximumCharacters;
 
@@ -152,26 +137,26 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
 
         switch (outcome.Kind)
         {
-            case PdfExtractionKind.Extracted:
+            case DocumentExtractionKind.Extracted:
 
                 break;
 
-            case PdfExtractionKind.NoText:
+            case DocumentExtractionKind.NoText:
 
                 // Nothing to read is not a failure: an image-only document is the defined input for recognition later.
                 return new SessionAttachmentExtractionResult(SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
 
-            case PdfExtractionKind.PasswordRequired:
+            case DocumentExtractionKind.PasswordRequired:
 
-                return Failed(PasswordRequiredReason);
+                return Failed(_profile.PasswordRequiredReason);
 
-            case PdfExtractionKind.Malformed:
+            case DocumentExtractionKind.Malformed:
 
-                return Failed(MalformedReason);
+                return Failed(_profile.MalformedReason);
 
-            case PdfExtractionKind.Bounds:
+            case DocumentExtractionKind.Bounds:
 
-                return Failed(BoundsReason);
+                return Failed(_profile.BoundsReason);
 
             default:
 
@@ -195,8 +180,8 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
 
                 sink.BeginPage(pageNumber);
 
-                if (!sink.TryAppend(string.Create(CultureInfo.InvariantCulture, $"{HeadingOpening} {pageNumber}]\n"))
-                    || !sink.TryAppend(text.Replace(HeadingOpening, EscapedHeadingOpening, StringComparison.Ordinal))
+                if (!sink.TryAppend(string.Create(CultureInfo.InvariantCulture, $"{_profile.HeadingOpening} {pageNumber}]\n"))
+                    || !sink.TryAppend(text.Replace(_profile.HeadingOpening, _profile.EscapedHeadingOpening, StringComparison.Ordinal))
                     || !sink.TryAppend("\n"))
                 {
                     break;

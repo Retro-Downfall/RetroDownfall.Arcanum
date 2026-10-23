@@ -1,8 +1,9 @@
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
-
 namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
-/// <summary>The document formats an isolated worker reads.</summary>
+/// <summary>
+/// The document formats an isolated worker reads. Each value needs its <see cref="DocumentWorkerProfile"/> and its extractor in
+/// <see cref="ComprehensionWorkerEntry.ExtractorFor"/>; a value without either never runs.
+/// </summary>
 internal enum DocumentWorkerFormat
 {
     Pdf,
@@ -14,7 +15,7 @@ internal enum DocumentWorkerFormat
 /// </summary>
 internal sealed class DocumentWorkerResult
 {
-    private DocumentWorkerResult(PdfExtractionOutcome? outcome, string? failureReason)
+    private DocumentWorkerResult(DocumentExtractionOutcome? outcome, string? failureReason)
     {
         Outcome = outcome;
 
@@ -22,12 +23,12 @@ internal sealed class DocumentWorkerResult
     }
 
     /// <summary>The worker's verdict, or <see langword="null"/> when it gave none.</summary>
-    internal PdfExtractionOutcome? Outcome { get; }
+    internal DocumentExtractionOutcome? Outcome { get; }
 
     /// <summary>The code-owned reason no verdict was given, or <see langword="null"/> when one was.</summary>
     internal string? FailureReason { get; }
 
-    internal static DocumentWorkerResult Completed(PdfExtractionOutcome outcome)
+    internal static DocumentWorkerResult Completed(DocumentExtractionOutcome outcome)
     {
         ArgumentNullException.ThrowIfNull(outcome);
 

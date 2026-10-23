@@ -26,8 +26,6 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
-
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 using RetroDownfall.Arcanum.Tests.Support;
@@ -342,7 +340,7 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
         {
             runs++;
 
-            return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+            return Task.FromResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
         });
 
         SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease, attempt: 3, store: store.Proxy);
@@ -595,7 +593,7 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
         }
         finally
         {
-            release.SetResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+            release.SetResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
 
             await elsewhere.WaitAsync(TimeSpan.FromSeconds(10));
         }
@@ -604,8 +602,8 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
     public static TheoryData<string, string> TerminalWorkerResults() => new()
     {
         { "failed", DocumentWorkerProfile.Pdf.UnavailableReason },
-        { "password", SessionAttachmentIsolatedDocumentHost.PasswordRequiredReason },
-        { "malformed", SessionAttachmentIsolatedDocumentHost.MalformedReason },
+        { "password", DocumentWorkerProfile.Pdf.PasswordRequiredReason },
+        { "malformed", DocumentWorkerProfile.Pdf.MalformedReason },
     };
 
     [SkippableTheory]
@@ -619,8 +617,8 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
         DocumentWorkerResult result = verdict switch
         {
             "failed" => DocumentWorkerResult.Failed(DocumentWorkerProfile.Pdf.UnavailableReason),
-            "password" => DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.PasswordRequired)),
-            _ => DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.Malformed)),
+            "password" => DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.PasswordRequired)),
+            _ => DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.Malformed)),
         };
 
         SessionAttachmentIndexOutcome outcome = await ProcessAsync(

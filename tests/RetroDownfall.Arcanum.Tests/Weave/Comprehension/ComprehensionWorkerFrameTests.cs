@@ -1,15 +1,19 @@
 using System.Text;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
-namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
+using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
+
+namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension;
 
 public sealed class ComprehensionWorkerFrameTests
 {
     private const int Ceiling = 262_144;
 
-    private static PdfExtractionOutcome Extracted(bool truncated, params string[] pages) =>
-        new(PdfExtractionKind.Extracted, pages, truncated);
+    private static DocumentExtractionOutcome Extracted(bool truncated, params string[] pages) =>
+        new(DocumentExtractionKind.Extracted, pages, truncated);
 
     private static byte[] Utf8(string text) => new UTF8Encoding(false).GetBytes(text);
 
@@ -28,15 +32,15 @@ public sealed class ComprehensionWorkerFrameTests
         Assert.Null(result.Outcome);
     }
 
-    private static void AssertRoundTrips(PdfExtractionOutcome outcome, int ceiling = Ceiling)
+    private static void AssertRoundTrips(DocumentExtractionOutcome outcome, int ceiling = Ceiling)
     {
-        ComprehensionWorkerFrameResult result = ComprehensionWorkerFrame.Decode(ComprehensionWorkerFrame.Encode(outcome), ceiling);
+        ComprehensionWorkerFrameResult result = ComprehensionWorkerFrame.Decode(ComprehensionWorkerFrame.Encode(outcome, ceiling), ceiling);
 
         Assert.Equal(ComprehensionWorkerFrameDefect.None, result.Defect);
 
         Assert.True(result.IsValid);
 
-        PdfExtractionOutcome decoded = Assert.IsType<PdfExtractionOutcome>(result.Outcome);
+        DocumentExtractionOutcome decoded = Assert.IsType<DocumentExtractionOutcome>(result.Outcome);
 
         Assert.Equal(outcome.Kind, decoded.Kind);
 
@@ -50,7 +54,7 @@ public sealed class ComprehensionWorkerFrameTests
     [Fact]
     public void Encode_ExtractedPages_WritesHeaderBodyAndTrailer()
     {
-        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, "ab", string.Empty, "c"));
+        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, "ab", string.Empty, "c"), Ceiling);
 
         Assert.Equal("ARCANUM-COMPREHENSION/1 extracted\nab\f\fc\nEND 5 3\n", Encoding.UTF8.GetString(frame));
     }
@@ -58,7 +62,7 @@ public sealed class ComprehensionWorkerFrameTests
     [Fact]
     public void Encode_TruncatedOutcome_UsesTheTruncatedStatus()
     {
-        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(true, "ab"));
+        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(true, "ab"), Ceiling);
 
         Assert.Equal("ARCANUM-COMPREHENSION/1 extracted-truncated\nab\nEND 2 1\n", Encoding.UTF8.GetString(frame));
     }
@@ -70,7 +74,7 @@ public sealed class ComprehensionWorkerFrameTests
     [InlineData("Bounds", "bounds")]
     public void Encode_OutcomeWithoutText_WritesAnEmptyBodyAndNoPages(string kind, string status)
     {
-        byte[] frame = ComprehensionWorkerFrame.Encode(PdfExtractionOutcome.Without(Enum.Parse<PdfExtractionKind>(kind)));
+        byte[] frame = ComprehensionWorkerFrame.Encode(DocumentExtractionOutcome.Without(Enum.Parse<DocumentExtractionKind>(kind)), Ceiling);
 
         Assert.Equal($"ARCANUM-COMPREHENSION/1 {status}\n\nEND 0 0\n", Encoding.UTF8.GetString(frame));
     }
@@ -78,14 +82,14 @@ public sealed class ComprehensionWorkerFrameTests
     [Fact]
     public void Encode_WritesUtf8WithoutAByteOrderMark()
     {
-        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, "\U0001F600日"));
+        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, "\U0001F600日"), Ceiling);
 
         byte[] expected = [.. Utf8("ARCANUM-COMPREHENSION/1 extracted\n"), 0xF0, 0x9F, 0x98, 0x80, 0xE6, 0x97, 0xA5, .. Utf8("\nEND 3 1\n")];
 
         Assert.Equal(expected, frame);
     }
 
-    private static PdfExtractionOutcome Unframeable(int index) => index switch
+    private static DocumentExtractionOutcome Unframeable(int index) => index switch
     {
         0 => Extracted(false, "a\fb"),
         1 => Extracted(false, "a\0b"),
@@ -93,8 +97,8 @@ public sealed class ComprehensionWorkerFrameTests
         3 => Extracted(false),
         4 => Extracted(false, string.Empty),
         5 => Extracted(false, "  ", "\n"),
-        6 => new PdfExtractionOutcome(PdfExtractionKind.NoText, ["text"], false),
-        7 => new PdfExtractionOutcome(PdfExtractionKind.Malformed, [], true),
+        6 => new DocumentExtractionOutcome(DocumentExtractionKind.NoText, ["text"], false),
+        7 => new DocumentExtractionOutcome(DocumentExtractionKind.Malformed, [], true),
         _ => throw new ArgumentOutOfRangeException(nameof(index)),
     };
 
@@ -112,9 +116,19 @@ public sealed class ComprehensionWorkerFrameTests
         // 0 a form feed in a page, 1 NUL, 2 a lone surrogate, 3 no pages, 4 an empty page only, 5 whitespace only,
         // 6 pages on a textless kind, 7 a truncated flag on a textless kind. Each would decode as a protocol failure,
         // so the writer refuses them instead of emitting a frame the host rejects.
-        PdfExtractionOutcome outcome = Unframeable(index);
+        DocumentExtractionOutcome outcome = Unframeable(index);
 
-        Assert.ThrowsAny<ArgumentException>(() => ComprehensionWorkerFrame.Encode(outcome));
+        Assert.ThrowsAny<ArgumentException>(() => ComprehensionWorkerFrame.Encode(outcome, Ceiling));
+    }
+
+    [Fact]
+    public void Encode_BodyOverTheCeiling_IsRefusedBeforeItIsWrittenAndOneAtItIsWritten()
+    {
+        // The worker holds its frame to the same ceiling the host decodes against, page separators counted, so it never
+        // writes a frame the host would refuse for its length.
+        Assert.ThrowsAny<ArgumentException>(() => ComprehensionWorkerFrame.Encode(Extracted(false, "abc", "de"), 5));
+
+        Assert.Equal("ARCANUM-COMPREHENSION/1 extracted\nab\fde\nEND 5 2\n", Encoding.UTF8.GetString(ComprehensionWorkerFrame.Encode(Extracted(false, "ab", "de"), 5)));
     }
 
     // ---------------------------------------------------------------- round trips
@@ -142,13 +156,13 @@ public sealed class ComprehensionWorkerFrameTests
     {
         AssertRoundTrips(Extracted(true, "cut"));
 
-        AssertRoundTrips(PdfExtractionOutcome.Without(PdfExtractionKind.NoText));
+        AssertRoundTrips(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText));
 
-        AssertRoundTrips(PdfExtractionOutcome.Without(PdfExtractionKind.PasswordRequired));
+        AssertRoundTrips(DocumentExtractionOutcome.Without(DocumentExtractionKind.PasswordRequired));
 
-        AssertRoundTrips(PdfExtractionOutcome.Without(PdfExtractionKind.Malformed));
+        AssertRoundTrips(DocumentExtractionOutcome.Without(DocumentExtractionKind.Malformed));
 
-        AssertRoundTrips(PdfExtractionOutcome.Without(PdfExtractionKind.Bounds));
+        AssertRoundTrips(DocumentExtractionOutcome.Without(DocumentExtractionKind.Bounds));
     }
 
     [Fact]
@@ -170,7 +184,7 @@ public sealed class ComprehensionWorkerFrameTests
         // The worst case for the byte bound: 262,144 characters of three UTF-8 bytes each.
         string page = new('日', Ceiling);
 
-        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, page));
+        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, page), Ceiling);
 
         Assert.True(frame.Length <= ComprehensionWorkerFrame.MaximumFrameBytes(Ceiling));
 
@@ -211,7 +225,7 @@ public sealed class ComprehensionWorkerFrameTests
     [InlineData("truncated.pdf")]
     public void RoundTrip_WhatTheExtractorProduces(string fileName)
     {
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), PdfExtractionLimits.Default, CancellationToken.None);
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), PdfExtractionLimits.Default, CancellationToken.None);
 
         AssertRoundTrips(outcome);
     }
@@ -221,7 +235,7 @@ public sealed class ComprehensionWorkerFrameTests
     [InlineData(5)]
     public void RoundTrip_WhatTheExtractorProducesWhenItsCeilingCutsASurrogatePair(int ceiling)
     {
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(
             PdfFixtures.Read("astral-plane.pdf"),
             new PdfExtractionLimits(2000, 100_000, 250_000, 2_000_000, ceiling),
             CancellationToken.None);
@@ -270,7 +284,7 @@ public sealed class ComprehensionWorkerFrameTests
 
         Assert.True(result.IsValid);
 
-        Assert.Equal(PdfExtractionKind.Extracted, result.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, result.Outcome!.Kind);
 
         Assert.Equal(truncated, result.Outcome.Truncated);
     }
@@ -488,12 +502,12 @@ public sealed class ComprehensionWorkerFrameTests
     {
         // The decoder reads bytes a possibly confused child wrote. Whatever it is given it must answer, and the only frames
         // it may accept are exactly those the encoder writes, so no second spelling of a frame can slip through.
-        PdfExtractionOutcome[] outcomes =
+        DocumentExtractionOutcome[] outcomes =
         [
             Extracted(false, "ab", string.Empty, "c\nd"),
             Extracted(true, "日本語\U0001F600", "END 1 1"),
-            PdfExtractionOutcome.Without(PdfExtractionKind.NoText),
-            PdfExtractionOutcome.Without(PdfExtractionKind.Bounds),
+            DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText),
+            DocumentExtractionOutcome.Without(DocumentExtractionKind.Bounds),
         ];
 
         Random random = new(163);
@@ -502,7 +516,7 @@ public sealed class ComprehensionWorkerFrameTests
 
         for (int iteration = 0; iteration < 6000; iteration++)
         {
-            List<byte> frame = [.. ComprehensionWorkerFrame.Encode(outcomes[random.Next(outcomes.Length)])];
+            List<byte> frame = [.. ComprehensionWorkerFrame.Encode(outcomes[random.Next(outcomes.Length)], Ceiling)];
 
             for (int edit = random.Next(1, 4); edit > 0 && frame.Count > 0; edit--)
             {
@@ -537,7 +551,7 @@ public sealed class ComprehensionWorkerFrameTests
             {
                 accepted++;
 
-                Assert.Equal(damaged, ComprehensionWorkerFrame.Encode(result.Outcome!));
+                Assert.Equal(damaged, ComprehensionWorkerFrame.Encode(result.Outcome!, Ceiling));
             }
             else
             {
@@ -554,7 +568,7 @@ public sealed class ComprehensionWorkerFrameTests
     [Fact]
     public void Decode_EveryPrefixOfAValidFrame_IsRefused()
     {
-        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, "ab", string.Empty, "日\U0001F600"));
+        byte[] frame = ComprehensionWorkerFrame.Encode(Extracted(false, "ab", string.Empty, "日\U0001F600"), Ceiling);
 
         Assert.True(ComprehensionWorkerFrame.Decode(frame, Ceiling).IsValid);
 
