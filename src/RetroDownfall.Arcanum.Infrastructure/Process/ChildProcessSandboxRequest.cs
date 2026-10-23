@@ -73,6 +73,17 @@ internal sealed class ChildProcessSandboxRequest
     /// </summary>
     internal bool DenyFileWrites { get; init; }
 
+    /// <summary>
+    /// When true, the child can read no other process's arguments, environment or path and cannot list the processes: the
+    /// macOS profile reads only the sysctls the worker's runtime needs and writes none, and refuses every <c>process-info*</c>
+    /// operation on a process other than the child itself, so another process's argument vector and environment
+    /// (<c>KERN_PROCARGS2</c>), executable path (<c>proc_pidpath</c>) and entry, and the process list (<c>KERN_PROC_ALL</c>,
+    /// <c>proc_listpids</c>) are all refused. The flag changes nothing on
+    /// Windows. Off by default and in every model-directed tool builder, whose children read sysctls freely and inspect the
+    /// processes they start.
+    /// </summary>
+    internal bool ConfineProcessInformation { get; init; }
+
     /// <summary>Tool name for escape-hatch / denial diagnostics (no secrets).</summary>
     internal string? ToolName { get; init; }
 

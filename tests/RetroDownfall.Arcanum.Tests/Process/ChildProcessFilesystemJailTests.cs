@@ -386,6 +386,98 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_that_confines_process_information_reads_only_the_measured_sysctls_and_asks_about_no_other_process()
+    {
+        // A document worker's output reaches model context, and the user's other processes carry secrets in their argument
+        // vectors and environments (an API key on a command line, in a shell's or the host's environment). The confined
+        // profile reads no sysctl but the names the worker's runtime and its launch chain were measured to read, writes none,
+        // and asks about no process but itself; the two denials are stated last, so no allow form can give either back.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            denyProcessFork: true,
+            confineMetadataToRoots: true,
+            denyFileWrites: true,
+            confineProcessInformation: true).ReplaceLineEndings("\n");
+
+        string[] lines = profile.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.DoesNotContain("(allow sysctl*)", lines);
+
+        Assert.Contains(
+            "(allow sysctl-read\n"
+            + "  (sysctl-name \"hw.memsize\")\n"
+            + "  (sysctl-name \"hw.ncpu\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_AES\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_DotProd\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_LRCPC\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_LRCPC2\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_RDM\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_SHA1\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_SHA256\")\n"
+            + "  (sysctl-name \"hw.optional.armv8_1_atomics\")\n"
+            + "  (sysctl-name \"hw.optional.armv8_crc32\")\n"
+            + "  (sysctl-name \"hw.pagesize\")\n"
+            + "  (sysctl-name \"hw.pagesize_compat\")\n"
+            + "  (sysctl-name \"hw.perflevel0.l2cachesize\")\n"
+            + "  (sysctl-name \"hw.perflevel0.l3cachesize\")\n"
+            + "  (sysctl-name \"kern.bootargs\")\n"
+            + "  (sysctl-name \"kern.iossupportversion\")\n"
+            + "  (sysctl-name \"kern.memorystatus_level\")\n"
+            + "  (sysctl-name \"kern.osproductversion\")\n"
+            + "  (sysctl-name \"kern.osvariant_status\")\n"
+            + "  (sysctl-name \"security.mac.lockdown_mode_state\")\n"
+            + "  (sysctl-name \"vm.swapusage\"))\n",
+            profile,
+            StringComparison.Ordinal);
+
+        Assert.Single(lines, static line => line.StartsWith("(allow sysctl", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(lines, static line => line.Contains("sysctl-name-prefix", StringComparison.Ordinal));
+
+        // The shell that runs the limit prelude reads the host name, and runs without it: the machine's name stays out.
+        Assert.DoesNotContain("kern.hostname", profile, StringComparison.Ordinal);
+
+        Assert.Equal(
+            [
+                MacOsSandboxExecProfileBuilder.ObjectIdPathDenialRule,
+                "(deny sysctl-write)",
+                "(deny process-info* (require-not (target self)))",
+            ],
+            lines[^3..]);
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile), profile);
+    }
+
+    [Fact]
+    public void Profile_not_confining_process_information_keeps_its_sysctl_grant_and_never_names_process_information()
+    {
+        // Every other profile keeps today's bytes: a build, a test runner or a model-directed command reads sysctls freely
+        // and inspects the processes it starts.
+        foreach ((bool denyNetwork, bool worker) in new[] { (false, false), (true, false), (true, true) })
+        {
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                worker ? [] : ["/Users/arcanum-test/workspace"],
+                ["/usr", "/bin", "/System"],
+                "/private/tmp/arcanum-sb-test-invocation",
+                denyNetwork: denyNetwork,
+                denyProcessFork: denyNetwork,
+                confineMetadataToRoots: worker,
+                denyFileWrites: worker);
+
+            Assert.Contains("(allow sysctl*)", profile.ReplaceLineEndings("\n").Split('\n'));
+
+            Assert.DoesNotContain("sysctl-read", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("sysctl-write", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("process-info", profile, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void A_request_that_denies_file_writes_but_names_a_writable_root_is_refused_without_an_escape()
     {
         // The two contradict each other. The jail refuses before touching the start, and the operator escape, which would

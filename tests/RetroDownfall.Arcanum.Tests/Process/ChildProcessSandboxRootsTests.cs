@@ -142,4 +142,30 @@ public sealed class ChildProcessSandboxRootsTests : IDisposable
             _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
         }
     }
+
+    [Fact]
+    public void Model_directed_tool_requests_keep_their_process_information()
+    {
+        // Process-information confinement is opt-in for the document worker. A model-directed tool's children read sysctls
+        // freely and inspect the processes they start (a build tool waiting on its workers), so each builder leaves it off.
+        string package = Directory.CreateDirectory(Path.Combine(_workspace, "packages")).FullName;
+
+        string writable = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "arcanum-roots-rw-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        try
+        {
+            Assert.False(ChildProcessSandboxRoots.ForExecuteCommand(_workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).ConfineProcessInformation);
+
+            Assert.False(ChildProcessSandboxRoots.ForSpellScript([_workspace], _workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).ConfineProcessInformation);
+
+            Assert.False(ChildProcessSandboxRoots.ForWorkspaceCheck(_workspace, [package], [writable]).ConfineProcessInformation);
+
+            Assert.False(new ChildProcessSandboxRequest { ReadWriteRoots = [], ReadExecuteRoots = [] }.ConfineProcessInformation);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
+        }
+    }
 }

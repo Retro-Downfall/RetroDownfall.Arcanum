@@ -408,6 +408,32 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Under_the_host_launch_the_child_cannot_read_another_process_or_list_the_processes()
+    {
+        // The user's other processes carry secrets in their argument vectors and environments: an API key on a command line,
+        // or in the environment of a shell or of this host. The kernel hands both to any process of the same user through
+        // KERN_PROCARGS2 (the environment too, unless the target is a platform binary), names each process's executable
+        // through proc_pidpath, and lists every process through KERN_PROC_ALL and listpids. The stand-in asks each of them
+        // about this test process, a .NET host that is not a platform binary, and reads its own arguments as a control inside
+        // the jail; outside the jail the same program is told everything, so each refusal below is the jail's.
+        Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
+
+        string program = ProcessInformationProbeProgram(System.Environment.ProcessId);
+
+        string control = (await RunUnjailedAsync("/usr/bin/perl", ["-e", program])).Split('\n')[1];
+
+        Assert.Equal("ARGV=SEEN ENV=SEEN OLDARGS=SEEN PATH=SEEN PID=SEEN ALL=SEEN LISTPIDS=SEEN SELF=SEEN", control);
+
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync($"exec /usr/bin/perl -e '{program}'\n");
+
+        Assert.Null(result.FailureReason);
+
+        Assert.Equal(
+            "ARGV=REFUSED ENV=REFUSED OLDARGS=REFUSED PATH=REFUSED PID=REFUSED ALL=REFUSED LISTPIDS=REFUSED SELF=SEEN",
+            Assert.Single(result.Outcome!.Pages));
+    }
+
+    [SkippableFact]
     public async Task A_replaced_executable_is_refused_before_it_starts()
     {
         Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
@@ -488,6 +514,45 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
         }
         print "ARCANUM-COMPREHENSION/1 extracted\n$r\nEND ", length($r), " 1\n";
         """.Replace("<ID>", objectId.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
+
+    /// <summary>
+    /// A perl program, free of single quotes so a shell can carry it, that asks the kernel about the process whose id it is
+    /// given, through raw sysctl (202) and proc_info (336) calls since perl binds neither, and answers as the frame of one page:
+    /// its arguments and environment (KERN_PROCARGS2, 49), its arguments the older way (KERN_PROCARGS, 38), its executable
+    /// path (proc_pidpath: PROC_INFO_CALL_PIDINFO, PROC_PIDPATHINFO), its process entry (KERN_PROC_PID), every process's
+    /// entry (KERN_PROC_ALL), every process id (proc_listallpids: PROC_INFO_CALL_LISTPIDS, PROC_ALL_PIDS), and, as a control,
+    /// its own arguments.
+    /// </summary>
+    private static string ProcessInformationProbeProgram(int processId) =>
+        """
+        my $pid = <PID>;
+        sub sysctl { my ($size, @mib) = @_; my $buf = "\0" x $size; my $len = pack("Q", $size); return syscall(202, pack("i*", @mib), scalar(@mib), $buf, $len, 0, 0) == 0 ? substr($buf, 0, unpack("Q", $len)) : undef; }
+        my @r;
+        my $args = sysctl(1048576, 1, 49, $pid);
+        if (defined $args) {
+          my $argc = unpack("i", $args);
+          my @strings = grep { length } split(/\0+/, substr($args, 4));
+          push @r, "ARGV=" . ($argc >= 1 && @strings > $argc ? "SEEN" : "EMPTY");
+          push @r, "ENV=" . ((grep { /=/ } @strings[($argc + 1) .. $#strings]) ? "SEEN" : "EMPTY");
+        } else {
+          push @r, "ARGV=REFUSED", "ENV=REFUSED";
+        }
+        my $old = sysctl(1048576, 1, 38, $pid);
+        push @r, "OLDARGS=" . (defined $old ? (length($old) > 0 ? "SEEN" : "EMPTY") : "REFUSED");
+        my $path = "\0" x 4096;
+        my $n = syscall(336, 2, $pid, 11, 0, $path, 4096);
+        $path =~ s/\0.*//s;
+        push @r, "PATH=" . ($n >= 0 && length($path) > 0 ? "SEEN" : "REFUSED");
+        my $entry = sysctl(648, 1, 14, 1, $pid);
+        push @r, "PID=" . (defined $entry && length($entry) == 648 ? "SEEN" : "REFUSED");
+        my $all = sysctl(8388608, 1, 14, 0);
+        push @r, "ALL=" . (defined $all && length($all) > 648 ? "SEEN" : "REFUSED");
+        push @r, "LISTPIDS=" . (syscall(336, 1, 1, 0, 0, 0, 0) > 0 ? "SEEN" : "REFUSED");
+        my $self = sysctl(1048576, 1, 49, $$);
+        push @r, "SELF=" . (defined $self && unpack("i", $self) >= 1 ? "SEEN" : "REFUSED");
+        my $r = join(" ", @r);
+        print "ARCANUM-COMPREHENSION/1 extracted\n$r\nEND ", length($r), " 1\n";
+        """.Replace("<PID>", processId.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
 
     private static async Task<long> ObjectIdOfAsync(string path) =>
         long.Parse(

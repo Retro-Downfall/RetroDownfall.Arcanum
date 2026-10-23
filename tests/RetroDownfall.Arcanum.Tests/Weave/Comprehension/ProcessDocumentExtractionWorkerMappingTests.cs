@@ -298,6 +298,20 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     }
 
     [Fact]
+    public void CreateSandbox_ConfinesProcessInformationForEveryLaunch()
+    {
+        // A worker's frame reaches model context, so no launch may read another process's arguments, environment or path,
+        // or list the processes running.
+        using TemporaryExecutable executable = new();
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!).ConfineProcessInformation);
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path)).ConfineProcessInformation);
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path, allowProcessFork: true)).ConfineProcessInformation);
+    }
+
+    [Fact]
     public void CreateSandbox_DeniesFileWritesForEveryLaunch()
     {
         // The worker writes no file, and its file-size ceiling does not bound how many it could create, so no launch gets

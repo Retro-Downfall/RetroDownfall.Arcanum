@@ -47,11 +47,69 @@ internal static class MacOsSandboxExecProfileBuilder
     /// list or stat. Only the <c>syscall-unix</c> operation governs them, and a rule naming the two calls leaves every other
     /// system call as it was (<c>(deny default)</c> does not reach <c>syscall-unix</c> until a rule names it). Denying one of the
     /// two is not enough, because the other returns the same path. The rule closes object-id path recovery and nothing else: the
-    /// root directory's listing, the ancestors' metadata, the mount-point names <c>getfsstat</c> lists (dyld's own profile allows
-    /// that call) and, since <c>process*</c> and <c>sysctl*</c> stay allowed, other processes' paths, argument vectors and
-    /// environments remain readable to a confined child, which the design reference records as its residual.
+    /// root directory's listing, the ancestors' metadata and the mount-point names <c>getfsstat</c> lists (dyld's own profile
+    /// allows that call) remain readable to a confined child, which the design reference records as its residual. What other
+    /// processes reveal is closed separately, by <see cref="OtherProcessInformationDenialRule"/> and <see cref="RuntimeSysctlNames"/>.
     /// </summary>
     internal const string ObjectIdPathDenialRule = "(deny syscall-unix (syscall-number SYS_fsgetpath SYS_fsgetpath_ext))";
+
+    /// <summary>
+    /// A profile that confines process information ends with this denial, after <see cref="SysctlWriteDenialRule"/>: no
+    /// <c>process-info*</c> operation on any process but the child itself. It refuses <c>proc_pidpath</c>,
+    /// <c>proc_pidinfo</c>, <c>proc_name</c> and the rest of <c>proc_info</c> on another process, and <c>proc_listpids</c>,
+    /// which names no target, outright. The child's operations on itself (the runtime reads its own process information and
+    /// sets its own process control) stay allowed. <c>(target others)</c> parses but, measured on macOS 27, refuses nothing,
+    /// so the rule names what it keeps.
+    /// </summary>
+    internal const string OtherProcessInformationDenialRule = "(deny process-info* (require-not (target self)))";
+
+    /// <summary>
+    /// A profile that confines process information grants <c>sysctl-read</c> for <see cref="RuntimeSysctlNames"/> only and no
+    /// <c>sysctl-write</c>, and states the write denial last so no allow form can give it back. The denial cannot simply follow
+    /// <c>(allow sysctl*)</c>: measured on macOS 27, that pair refuses every read as well.
+    /// </summary>
+    internal const string SysctlWriteDenialRule = "(deny sysctl-write)";
+
+    /// <summary>
+    /// The only sysctls a profile that confines process information may read, found by running the PDF worker (the Native AOT
+    /// binary and a managed apphost), its limit prelude's <c>/bin/sh</c> and the system utilities the stand-ins run with every
+    /// read reported, then removing names one at a time. They are libSystem's start-up reads in every process
+    /// (<c>kern.osproductversion</c>, <c>kern.iossupportversion</c>, <c>kern.osvariant_status</c>, <c>kern.bootargs</c>,
+    /// <c>security.mac.lockdown_mode_state</c>), and the runtime's page size, processor count, memory size, cache sizes,
+    /// memory load and swap use (its garbage collector's budget) and the CPU features its code paths are chosen by. Without
+    /// the page size, the processor count, the memory size, or one of the CPU features the Native AOT binary is compiled to
+    /// require, it aborts at start (perl, which the stand-ins run, aborts without <c>hw.pagesize_compat</c> too); the other
+    /// names are kept so the runtime behaves as it does outside the jail. The shell's read of <c>kern.hostname</c> is refused:
+    /// it runs without it. None names a process: <c>kern.procargs2</c>, <c>kern.procargs</c> and <c>kern.proc.*</c> (another process's arguments
+    /// and environment, its entry, and the process table) are refused with every other name. A process's query about itself
+    /// (<c>kern.proc.pid</c> and <c>kern.procargs2</c> with its own id) is answered without a sandbox check, so the runtime
+    /// still reads its own entry.
+    /// </summary>
+    internal static IReadOnlyList<string> RuntimeSysctlNames { get; } =
+    [
+        "hw.memsize",
+        "hw.ncpu",
+        "hw.optional.arm.FEAT_AES",
+        "hw.optional.arm.FEAT_DotProd",
+        "hw.optional.arm.FEAT_LRCPC",
+        "hw.optional.arm.FEAT_LRCPC2",
+        "hw.optional.arm.FEAT_RDM",
+        "hw.optional.arm.FEAT_SHA1",
+        "hw.optional.arm.FEAT_SHA256",
+        "hw.optional.armv8_1_atomics",
+        "hw.optional.armv8_crc32",
+        "hw.pagesize",
+        "hw.pagesize_compat",
+        "hw.perflevel0.l2cachesize",
+        "hw.perflevel0.l3cachesize",
+        "kern.bootargs",
+        "kern.iossupportversion",
+        "kern.memorystatus_level",
+        "kern.osproductversion",
+        "kern.osvariant_status",
+        "security.mac.lockdown_mode_state",
+        "vm.swapusage",
+    ];
 
     /// <summary>
     /// Links outside every root that a confined profile's launch chain resolves: <c>/bin/sh</c>, which runs the limit
@@ -90,6 +148,13 @@ internal static class MacOsSandboxExecProfileBuilder
     /// directory stays readable, and the one write left is <see cref="DevNullWriteRule"/>. Off for every model-directed
     /// tool, whose children write their workspace and temp directory.
     /// </param>
+    /// <param name="confineProcessInformation">
+    /// When true, the profile grants <c>sysctl-read</c> for <see cref="RuntimeSysctlNames"/> only, in place of
+    /// <c>(allow sysctl*)</c>, and ends with <see cref="SysctlWriteDenialRule"/> and
+    /// <see cref="OtherProcessInformationDenialRule"/>, so the child can read no other process's argument vector, environment,
+    /// executable path or entry, and cannot list the processes running. Off for every model-directed tool, whose children read
+    /// sysctls freely and inspect the processes they start.
+    /// </param>
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
@@ -98,7 +163,8 @@ internal static class MacOsSandboxExecProfileBuilder
         bool denyNetwork = false,
         bool denyProcessFork = false,
         bool confineMetadataToRoots = false,
-        bool denyFileWrites = false)
+        bool denyFileWrites = false,
+        bool confineProcessInformation = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
@@ -125,7 +191,15 @@ internal static class MacOsSandboxExecProfileBuilder
         // The runner terminates the tree from outside the sandbox, which no sandbox rule governs.
         sb.AppendLine("(allow signal (target self))");
         sb.AppendLine("(allow signal (target same-sandbox))");
-        sb.AppendLine("(allow sysctl*)");
+
+        if (confineProcessInformation)
+        {
+            AppendSysctlReadAllow(sb, RuntimeSysctlNames);
+        }
+        else
+        {
+            sb.AppendLine("(allow sysctl*)");
+        }
 
         if (!denyNetwork)
         {
@@ -254,6 +328,15 @@ internal static class MacOsSandboxExecProfileBuilder
             // Stated last, so no allow form can give the call back. The confinement is meant to keep every name outside the
             // roots from the child, and these two calls would hand them over by object id.
             sb.AppendLine(ObjectIdPathDenialRule);
+        }
+
+        if (confineProcessInformation)
+        {
+            // Stated last, after the broad (allow process*): no allow form can give back a sysctl write or another
+            // process's information.
+            sb.AppendLine(SysctlWriteDenialRule);
+
+            sb.AppendLine(OtherProcessInformationDenialRule);
         }
 
         string profile = sb.ToString();
@@ -409,6 +492,29 @@ internal static class MacOsSandboxExecProfileBuilder
             sb.AppendLine();
 
             sb.Append("  (literal \"").Append(EscapeSeatbeltString(path)).Append("\")");
+        }
+
+        sb.AppendLine(")");
+    }
+
+    /// <summary>
+    /// Grants the read of exactly <paramref name="names"/>, each as one sysctl name, never a prefix. An empty list is refused,
+    /// since <c>(allow sysctl-read)</c> with no filter would grant every name.
+    /// </summary>
+    private static void AppendSysctlReadAllow(StringBuilder sb, IReadOnlyList<string> names)
+    {
+        if (names.Count == 0)
+        {
+            throw new InvalidOperationException("A sysctl read grant must name the sysctls it grants.");
+        }
+
+        sb.Append("(allow sysctl-read");
+
+        foreach (string name in names)
+        {
+            sb.AppendLine();
+
+            sb.Append("  (sysctl-name \"").Append(EscapeSeatbeltString(name)).Append("\")");
         }
 
         sb.AppendLine(")");
