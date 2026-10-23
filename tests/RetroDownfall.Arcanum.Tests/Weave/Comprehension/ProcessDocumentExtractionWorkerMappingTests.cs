@@ -288,6 +288,16 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     }
 
     [Fact]
+    public void CreateSandbox_ConfinesMetadataToTheRootsForEveryLaunch()
+    {
+        using TemporaryExecutable executable = new();
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!).ConfineMetadataToRoots);
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path, allowProcessFork: true)).ConfineMetadataToRoots);
+    }
+
+    [Fact]
     public void CreateSandbox_ForATestLaunch_AddsOnlyItsOwnRoots()
     {
         using TemporaryExecutable executable = new();

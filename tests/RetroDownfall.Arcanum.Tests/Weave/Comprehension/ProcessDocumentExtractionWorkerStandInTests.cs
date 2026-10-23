@@ -284,6 +284,33 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Under_the_host_launch_the_child_can_neither_list_nor_stat_outside_its_roots()
+    {
+        // Its stdout becomes model context, so a listing would carry the operator's file names, sizes and owners out.
+        string outside = Directory.CreateTempSubdirectory("arcanum-worker-outside-").FullName;
+
+        try
+        {
+            string canary = Path.Combine(outside, "id_ed25519-canary");
+
+            File.WriteAllText(canary, "not for the worker");
+
+            DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
+                "exec /usr/bin/perl -e 'my $l = opendir(my $d, \"/Users\") ? \"LISTED\" : \"REFUSED\"; "
+                + $"my $o = opendir(my $e, \"{outside}\") ? \"LISTED\" : \"REFUSED\"; my $s = (stat \"{canary}\") ? \"STATED\" : \"REFUSED\"; "
+                + "my $r = \"$l $o $s\"; print \"ARCANUM-COMPREHENSION/1 extracted\\n$r\\nEND \", length($r), \" 1\\n\"'\n");
+
+            Assert.Null(result.FailureReason);
+
+            Assert.Equal("REFUSED REFUSED REFUSED", Assert.Single(result.Outcome!.Pages));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [SkippableFact]
     public async Task A_replaced_executable_is_refused_before_it_starts()
     {
         Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");

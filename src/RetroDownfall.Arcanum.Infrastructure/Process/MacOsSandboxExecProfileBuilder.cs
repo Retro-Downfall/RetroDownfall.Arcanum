@@ -8,7 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// <remarks>
 /// <para>
 /// Critical invariant: no profile rule may grant whole-volume file-content read
-/// (no <c>(subpath "/")</c>, no <c>(literal "/")</c> for file-read*).
+/// (no <c>(subpath "/")</c>, no <c>(literal "/")</c> for file-read*). The one rule that names the root is
+/// <see cref="RootDirectoryEntryRule"/>, emitted only for a profile confined to its roots: the root directory's own
+/// listing and metadata, nothing beneath it, which the guard admits by its exact text.
 /// </para>
 /// <para>
 /// Access classes:
@@ -25,6 +27,22 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 internal static class MacOsSandboxExecProfileBuilder
 {
     /// <summary>
+    /// A confined profile's grant on the root directory itself: its listing (the standard top-level names every Mac has)
+    /// and its metadata, nothing beneath it. Every process start reads it, and dyld aborts the process without it; the
+    /// unconfined profile grants it through its read of every directory.
+    /// </summary>
+    internal const string RootDirectoryEntryRule = "(allow file-read-data file-read-metadata (literal \"/\"))";
+
+    /// <summary>
+    /// Links outside every root that a confined profile's launch chain resolves: <c>/bin/sh</c>, which runs the limit
+    /// prelude, reads the link naming the shell it starts.
+    /// </summary>
+    private static readonly string[] ConfinedLaunchChainLinks =
+    [
+        "/private/var/select/sh",
+    ];
+
+    /// <summary>
     /// Builds a deny-default Seatbelt profile. Throws if any root is unsafe (control chars, whole-volume).
     /// </summary>
     /// <param name="denyNetwork">
@@ -37,13 +55,21 @@ internal static class MacOsSandboxExecProfileBuilder
     /// process by fork, vfork or posix_spawn. Exec stays allowed: the launch chain inside the jail (sandbox-exec, the
     /// limit prelude, the target) only ever execs. Off for every model-directed tool, whose children fork their own tools.
     /// </param>
+    /// <param name="confineMetadataToRoots">
+    /// When true, the profile leaves out the grants that list every directory and read every file's metadata, so nothing
+    /// outside the roots can be listed or stat'ed. What it adds back is only what path resolution and process start need:
+    /// the metadata of each root's ancestors (each exact directory, never what is beneath it), the root directory's own
+    /// entry (<see cref="RootDirectoryEntryRule"/>) and the <c>/bin/sh</c> selector link. Off for every model-directed
+    /// tool, whose children list and stat the workspace's surroundings as any build does.
+    /// </param>
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
         string invocationTempDir,
         IReadOnlyList<string>? readOnlyRoots = null,
         bool denyNetwork = false,
-        bool denyProcessFork = false)
+        bool denyProcessFork = false,
+        bool confineMetadataToRoots = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
@@ -87,9 +113,19 @@ internal static class MacOsSandboxExecProfileBuilder
         sb.AppendLine("(allow iokit*)");
         sb.AppendLine("(allow user-preference*)");
         sb.AppendLine("(allow file-map-executable)");
-        sb.AppendLine("(allow file-read-metadata)");
+
+        if (!confineMetadataToRoots)
+        {
+            sb.AppendLine("(allow file-read-metadata)");
+        }
+
         sb.AppendLine("(allow file-ioctl)");
-        sb.AppendLine("(allow file-read* (vnode-type DIRECTORY))");
+
+        if (!confineMetadataToRoots)
+        {
+            sb.AppendLine("(allow file-read* (vnode-type DIRECTORY))");
+        }
+
         // The .NET host requires only identity lookup and the Darwin notification center. Keep
         // every other Mach service and generic IPC operation deny-by-default; Roslyn build hosts
         // use Unix-domain sockets rooted beneath the invocation TMPDIR, granted explicitly below.
@@ -117,6 +153,22 @@ internal static class MacOsSandboxExecProfileBuilder
                 readOnlyRoots,
                 readWriteRoots,
                 [invocationTempDir]));
+
+        if (confineMetadataToRoots)
+        {
+            sb.AppendLine(RootDirectoryEntryRule);
+
+            AppendMetadataAllow(
+                sb,
+                MergeUnique(
+                    AncestorsOf(MergeUnique(
+                        SystemReadExecuteRoots,
+                        readExecuteRoots,
+                        readOnlyRoots,
+                        readWriteRoots,
+                        [invocationTempDir])),
+                    ConfinedLaunchChainLinks));
+        }
 
         AppendFileAllow(
             sb,
@@ -175,8 +227,7 @@ internal static class MacOsSandboxExecProfileBuilder
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        if (profile.Contains("(subpath \"/\")", StringComparison.Ordinal)
-            || profile.Contains("(literal \"/\")", StringComparison.Ordinal))
+        if (NamesTheWholeVolume(profile))
         {
             throw new InvalidOperationException(
                 "macOS Seatbelt profile must not grant whole-volume file access via (subpath \"/\") or (literal \"/\").");
@@ -267,13 +318,56 @@ internal static class MacOsSandboxExecProfileBuilder
             return true;
         }
 
-        if (profile.Contains("(subpath \"/\")", StringComparison.Ordinal)
-            || profile.Contains("(literal \"/\")", StringComparison.Ordinal))
+        if (NamesTheWholeVolume(profile))
         {
             return true;
         }
 
         return ContainsBroadTempWriteGrant(profile);
+    }
+
+    /// <summary>
+    /// Whether any rule names the root as a subpath, or as a literal outside the exact <see cref="RootDirectoryEntryRule"/>.
+    /// </summary>
+    private static bool NamesTheWholeVolume(string profile)
+    {
+        string beyondTheRootEntry = profile.Replace(RootDirectoryEntryRule, string.Empty, StringComparison.Ordinal);
+
+        return beyondTheRootEntry.Contains("(subpath \"/\")", StringComparison.Ordinal)
+            || beyondTheRootEntry.Contains("(literal \"/\")", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Every proper ancestor of each root and of its <c>/private</c> twin, the root directory excluded: the directories path
+    /// resolution stats on its way to a root.
+    /// </summary>
+    private static IEnumerable<string> AncestorsOf(IEnumerable<string> roots)
+    {
+        foreach (string root in roots)
+        {
+            foreach (string variant in MacOsPathVariants(root.Trim()))
+            {
+                for (int slash = variant.LastIndexOf('/'); slash > 0; slash = variant.LastIndexOf('/', slash - 1))
+                {
+                    yield return variant[..slash];
+                }
+            }
+        }
+    }
+
+    /// <summary>Grants the metadata of exactly <paramref name="paths"/>, each as a literal, never what is beneath it.</summary>
+    private static void AppendMetadataAllow(StringBuilder sb, IEnumerable<string> paths)
+    {
+        sb.Append("(allow file-read-metadata");
+
+        foreach (string path in paths)
+        {
+            sb.AppendLine();
+
+            sb.Append("  (literal \"").Append(EscapeSeatbeltString(path)).Append("\")");
+        }
+
+        sb.AppendLine(")");
     }
 
     private static bool ContainsBroadTempWriteGrant(string profile)

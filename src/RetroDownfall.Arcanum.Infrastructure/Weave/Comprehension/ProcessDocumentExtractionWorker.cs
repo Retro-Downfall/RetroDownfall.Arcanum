@@ -210,8 +210,9 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
 
     /// <summary>
     /// The jail: it must be applied (no operator escape, as for <c>workspace_check</c>), with no network, no second
-    /// process, nothing writable but the run's private temp directory, and nothing readable beyond the system runtime
-    /// roots but the executable's own directory.
+    /// process, nothing writable but the run's private temp directory, nothing readable beyond the system runtime roots
+    /// but the executable's own directory, and nothing listed or stat'ed outside those roots but their ancestors, since
+    /// whatever the worker prints reaches model context.
     /// </summary>
     internal static ChildProcessSandboxRequest CreateSandbox(DocumentWorkerLaunch launch)
     {
@@ -225,6 +226,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
             RequireAppliedFilesystemJail = true,
             DenyNetwork = true,
             DenyProcessFork = launch.DenyProcessFork,
+            ConfineMetadataToRoots = true,
             ToolName = "comprehension-worker",
         };
     }

@@ -53,6 +53,15 @@ internal sealed class ChildProcessSandboxRequest
     /// </summary>
     internal bool DenyProcessFork { get; init; }
 
+    /// <summary>
+    /// When true, the child lists directories and reads file metadata only within its roots: the macOS profile leaves out
+    /// its global directory-listing and metadata grants and adds back only each root's ancestors (metadata, for path
+    /// resolution), the root directory's own entry and the <c>/bin/sh</c> selector link. The Windows AppContainer already
+    /// reaches nothing it was not granted, so the flag changes nothing there. Off by default and in every model-directed
+    /// tool builder.
+    /// </summary>
+    internal bool ConfineMetadataToRoots { get; init; }
+
     /// <summary>Tool name for escape-hatch / denial diagnostics (no secrets).</summary>
     internal string? ToolName { get; init; }
 

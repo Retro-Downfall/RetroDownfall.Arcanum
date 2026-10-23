@@ -213,6 +213,78 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_confined_to_its_roots_lists_and_stats_nothing_beyond_them_and_their_ancestors()
+    {
+        // A document worker's output reaches model context, so a listing it makes must not be able to carry the names,
+        // sizes and owners of the operator's files out. The confined profile drops the grants that read every directory
+        // and every file's metadata, and adds back only what path resolution and process start need.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            confineMetadataToRoots: true);
+
+        string[] lines = profile.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.DoesNotContain("(allow file-read-metadata)", lines);
+
+        Assert.DoesNotContain("(allow file-read* (vnode-type DIRECTORY))", lines);
+
+        Assert.Contains(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule, lines);
+
+        // The ancestors of a root, for path resolution: metadata of the exact directory, never what is beneath it.
+        foreach (string ancestor in new[] { "/Applications", "/Applications/Arcanum", "/private/tmp", "/private", "/private/var", "/var", "/System/Volumes" })
+        {
+            Assert.Contains($"  (literal \"{ancestor}\")", lines);
+        }
+
+        Assert.DoesNotContain(lines, static line => line.Contains("\"/Users", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("(subpath \"/Applications\")", profile, StringComparison.Ordinal);
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile), profile);
+    }
+
+    [Fact]
+    public void Profile_not_confined_keeps_its_global_metadata_and_directory_grants()
+    {
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            ["/Users/arcanum-test/workspace"],
+            ["/usr", "/bin", "/System"],
+            "/private/tmp/arcanum-sb-test-invocation");
+
+        string[] lines = profile.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Contains("(allow file-read-metadata)", lines);
+
+        Assert.Contains("(allow file-read* (vnode-type DIRECTORY))", lines);
+
+        Assert.DoesNotContain(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule, profile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Whole_volume_guard_admits_the_root_directory_entry_rule_and_no_other_literal_root()
+    {
+        MacOsSandboxExecProfileBuilder.AssertNoWholeVolumeFootguns(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule + "\n");
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule + "\n"));
+
+        foreach (string footgun in new[]
+        {
+            "(allow file-read* (literal \"/\"))",
+            "(allow file-read-data (literal \"/\"))",
+            "(allow file-write* (literal \"/\"))",
+            MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule + "\n(allow file-read* (literal \"/\"))",
+        })
+        {
+            Assert.Throws<InvalidOperationException>(() => MacOsSandboxExecProfileBuilder.AssertNoWholeVolumeFootguns(footgun));
+
+            Assert.True(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(footgun), footgun);
+        }
+    }
+
+    [Fact]
     public async Task Network_denial_refuses_a_run_whose_jail_was_not_applied()
     {
         // Only an applied jail can take the network away (Seatbelt on macOS, a capability-free AppContainer
