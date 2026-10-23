@@ -61,11 +61,19 @@ internal static class ComprehensionWorkerEntry
 
     private static Assembly? _declaredHost;
 
+    private static DocumentWorkerLaunch? _hostLaunch;
+
     /// <summary>
     /// Whether this process is a host whose re-execution with the worker arguments reaches <see cref="TryHandle"/>: the
     /// same rule as <see cref="SandboxExecHelper.IsBrokerCapableHost"/>, re-decided on every read.
     /// </summary>
     internal static bool IsWorkerCapableHost => SandboxExecHelper.DeclarationBindsToThisProcess(_declaredHost);
+
+    /// <summary>
+    /// This host's own binary as captured when the host started, or <see langword="null"/> when this process cannot
+    /// re-launch itself as the worker.
+    /// </summary>
+    internal static DocumentWorkerLaunch? HostLaunch => IsWorkerCapableHost ? _hostLaunch : null;
 
     /// <summary>
     /// Runs the worker when <paramref name="args"/> select it and the calling host is this process's own entry point,
@@ -89,6 +97,9 @@ internal static class ComprehensionWorkerEntry
 
         if (args.Length == 0 || !string.Equals(args[0], ModeArgument, StringComparison.Ordinal))
         {
+            // The binary is captured now, at host start, so a binary replaced later is told apart from it.
+            _hostLaunch = DocumentWorkerLaunch.ForHostExecutable(Environment.ProcessPath);
+
             _declaredHost = hostEntryPoint.Assembly;
 
             return false;
