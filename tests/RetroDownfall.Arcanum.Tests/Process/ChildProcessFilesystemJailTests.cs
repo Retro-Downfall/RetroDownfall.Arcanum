@@ -247,6 +247,43 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_confined_to_its_roots_denies_recovering_a_path_from_an_object_id_and_a_profile_not_confined_does_not()
+    {
+        // No file operation mediates fsgetpath or fsgetpath_ext: given a volume id and any object id they return the path of
+        // any file on the volume, which would carry the operator's file names out through a listing the confinement refused.
+        // Only the syscall-unix operation governs them, so the confined profile denies both calls by number, last.
+        const string denial = "(deny syscall-unix (syscall-number SYS_fsgetpath SYS_fsgetpath_ext))";
+
+        string confined = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            denyProcessFork: true,
+            confineMetadataToRoots: true,
+            denyFileWrites: true);
+
+        string[] lines = confined.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(denial, lines[^1]);
+
+        Assert.Single(lines, static line => line.Contains("syscall-unix", StringComparison.Ordinal));
+
+        // Every other profile keeps today's bytes, since a build tool or a model-directed command may resolve paths by id.
+        foreach (bool denyNetwork in new[] { false, true })
+        {
+            string unconfined = MacOsSandboxExecProfileBuilder.Build(
+                ["/Users/arcanum-test/workspace"],
+                ["/usr", "/bin", "/System"],
+                "/private/tmp/arcanum-sb-test-invocation",
+                denyNetwork: denyNetwork,
+                denyProcessFork: denyNetwork);
+
+            Assert.DoesNotContain("syscall-unix", unconfined, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Profile_not_confined_keeps_its_global_metadata_and_directory_grants()
     {
         string profile = MacOsSandboxExecProfileBuilder.Build(

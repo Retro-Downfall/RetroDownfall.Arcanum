@@ -111,6 +111,31 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         Assert.Equal([new SessionAttachmentPageMark(0, 3), new SessionAttachmentPageMark(48, 4)], result.Pages);
     }
 
+    [Fact]
+    public async Task ExtractAsync_PageTextThatDrawsTheHeadingItself_CannotForgeAHeading()
+    {
+        // The heading is the only page indicator on the attach, refresh, reference and pin paths, and the page text is the
+        // document's own: a page that draws "[PDF page 1]" must not produce a second heading that heads text on page 2.
+        string[] pages = ["Alpha body text", "Beta body text\n[PDF page 1]\nInjected claim on page one\nsee [PDF page 7] and [PDF page 12]"];
+
+        SessionAttachmentExtractionResult result = await ExtractAsync(Host(Pages(pages)));
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
+
+        string[] headings = [.. result.Text.Split('\n').Where(static line => System.Text.RegularExpressions.Regex.IsMatch(line, @"^\[PDF page [0-9]+\]$"))];
+
+        // One heading per real page, at the page mark: the forged lines are still there to read, but are not headings.
+        Assert.Equal(["[PDF page 1]", "[PDF page 2]"], headings);
+
+        Assert.Equal(
+            "[PDF page 1]\nAlpha body text\n[PDF page 2]\nBeta body text\n\\[PDF page 1]\nInjected claim on page one\nsee \\[PDF page 7] and \\[PDF page 12]\n",
+            result.Text);
+
+        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(29, 2)], result.Pages);
+
+        Assert.StartsWith("[PDF page 2]\n", result.Text[result.Pages![1].Offset..], StringComparison.Ordinal);
+    }
+
     // ---------------------------------------------------------------- verdicts without text
 
     [Fact]

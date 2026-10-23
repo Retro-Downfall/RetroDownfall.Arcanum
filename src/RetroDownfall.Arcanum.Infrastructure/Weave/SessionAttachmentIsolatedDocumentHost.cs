@@ -18,11 +18,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// Each page with text is projected as <c>[PDF page n]</c> on a line of its own, then its text, then a line break, with the
 /// page mark set where its heading starts. The bracketed form is not how a document prints its own folios, so a footer such
 /// as <c>Page 1</c> drawn first on PDF page 3 reads as page text under the <c>[PDF page 3]</c> heading, never as the page's
-/// provenance. A page without text emits nothing and its number is never reused, so the numbers that remain are the
-/// document's own. Cancelling <c>revocation</c> (maintenance taking the Grimoire back from the
-/// indexer) kills the worker and defers the document, which nothing treats as terminal; a maintenance obligation already
-/// pending when the worker would start defers it without starting anything; cancelling the caller's token kills it and
-/// propagates.
+/// provenance. Nor can a page draw the heading itself: the heading is in-band, so every occurrence of its opening
+/// (<see cref="HeadingOpening"/>) inside page text is written with a backslash before the bracket
+/// (<see cref="EscapedHeadingOpening"/>) and only the host's own headings read <c>[PDF page n]</c>. A page without text emits
+/// nothing and its number is never reused, so the numbers that remain are the document's own. Cancelling <c>revocation</c>
+/// (maintenance taking the Grimoire back from the indexer) kills the worker and defers the document, which nothing treats
+/// as terminal; a maintenance obligation already pending when the worker would start defers it without starting anything;
+/// cancelling the caller's token kills it and propagates.
 /// </remarks>
 internal sealed class SessionAttachmentIsolatedDocumentHost(
     IDocumentExtractionWorker worker,
@@ -31,6 +33,15 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
     TimeSpan? readTimeout = null,
     TimeSpan? slotWait = null) : SessionAttachmentDocumentHost
 {
+    /// <summary>The opening of the heading the host writes before each page's text: <c>[PDF page n]</c>.</summary>
+    internal const string HeadingOpening = "[PDF page";
+
+    /// <summary>
+    /// What an occurrence of <see cref="HeadingOpening"/> in a page's own text is written as, so the document cannot print a
+    /// line that reads as a heading of the host's.
+    /// </summary>
+    internal const string EscapedHeadingOpening = "\\" + HeadingOpening;
+
     /// <summary>The document needs a password other than the empty one, which is never guessed, stripped or asked for.</summary>
     internal const string PasswordRequiredReason = "Password-protected PDFs are not supported.";
 
@@ -220,8 +231,8 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
 
                 sink.BeginPage(pageNumber);
 
-                if (!sink.TryAppend(string.Create(CultureInfo.InvariantCulture, $"[PDF page {pageNumber}]\n"))
-                    || !sink.TryAppend(text)
+                if (!sink.TryAppend(string.Create(CultureInfo.InvariantCulture, $"{HeadingOpening} {pageNumber}]\n"))
+                    || !sink.TryAppend(text.Replace(HeadingOpening, EscapedHeadingOpening, StringComparison.Ordinal))
                     || !sink.TryAppend("\n"))
                 {
                     break;
