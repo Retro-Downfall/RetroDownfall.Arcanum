@@ -67,8 +67,8 @@ internal sealed class BoundedXmlReader : IDisposable
         }
         catch (XmlException)
         {
-            stream.Dispose();
-
+            // The stream is a read-only view of bytes already in memory and holds nothing to release, so a reader that
+            // fails to open leaves it to the collector.
             throw new DocumentPackageRejectedException(DocumentPackageRejection.MalformedXml);
         }
     }

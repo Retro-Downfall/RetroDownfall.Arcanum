@@ -47,13 +47,9 @@ public static class SessionAttachmentComprehensionPolicy
 
     public const string VisioMacroEnabledDrawingMimeType = "application/vnd.ms-visio.drawing.macroenabled.12";
 
-    /// <summary>
-    /// The closed registry, container first. MIME constants are lowercase and free of quotes and
-    /// parameters, so SQL can compare them against <c>lower(trim(...))</c> of a stored MIME and
-    /// inline them as literals. A macro-enabled variant is accepted as text only.
-    /// </summary>
-    public static IReadOnlyList<SessionAttachmentComprehensionFormat> Formats { get; } =
-        new ReadOnlyCollection<SessionAttachmentComprehensionFormat>(
+    // The registry's entries. TryGetFormat walks this array rather than Formats: an array's enumeration is
+    // closed, while a read-only collection's enumerator runs whatever list it wraps.
+    private static readonly SessionAttachmentComprehensionFormat[] FormatTable =
         [
             new(MimeType, FormatName),
             new(WordDocumentMimeType, "Word document"),
@@ -67,7 +63,15 @@ public static class SessionAttachmentComprehensionPolicy
             new(OpenDocumentPresentationMimeType, "OpenDocument presentation"),
             new(VisioDrawingMimeType, "Visio drawing"),
             new(VisioMacroEnabledDrawingMimeType, "Visio macro-enabled drawing (macros not read)"),
-        ]);
+        ];
+
+    /// <summary>
+    /// The closed registry, container first. MIME constants are lowercase and free of quotes and
+    /// parameters, so SQL can compare them against <c>lower(trim(...))</c> of a stored MIME and
+    /// inline them as literals. A macro-enabled variant is accepted as text only.
+    /// </summary>
+    public static IReadOnlyList<SessionAttachmentComprehensionFormat> Formats { get; } =
+        new ReadOnlyCollection<SessionAttachmentComprehensionFormat>(FormatTable);
 
     public static IReadOnlyList<string> SupportedMimeTypes { get; } =
         new ReadOnlyCollection<string>([.. Formats.Select(static format => format.MimeType)]);
@@ -83,7 +87,7 @@ public static class SessionAttachmentComprehensionPolicy
     {
         string normalized = NormalizeMimeType(mimeType);
 
-        foreach (SessionAttachmentComprehensionFormat candidate in Formats)
+        foreach (SessionAttachmentComprehensionFormat candidate in FormatTable)
         {
             if (string.Equals(candidate.MimeType, normalized, StringComparison.Ordinal))
             {
