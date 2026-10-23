@@ -3,7 +3,8 @@
 Inputs for the PDF text extractor and the worker frame (`Weave/Comprehension/Pdf`). Two kinds:
 
 - **Real producer**: `cups-text.pdf` and `cups-multi.pdf` were written by macOS Quartz through `cupsfilter`, and
-  `webkit-float.pdf`, `webkit-ligatures.pdf` and `webkit-rotated.pdf` by WebKit (the engine behind Safari's Export as PDF), and
+  `webkit-float.pdf`, `webkit-ligatures.pdf`, `webkit-rotated.pdf` and `webkit-rtl-numbers.pdf` by WebKit (the engine behind
+  Safari's Export as PDF), and
   `quartz-hebrew.pdf` by CoreText into a Quartz PDF context (what macOS Save as PDF uses), so the extractor is proven on
   bytes this repository did not build.
 - **Hand-written**: everything else comes from `generate-handwritten.py`. Each file isolates one rule, so a failing test
@@ -29,6 +30,7 @@ swiftc -O -o "$TMPDIR/macos-fixtures" generate-macos.swift
 "$TMPDIR/macos-fixtures" webkit webkit-float.html webkit-float.pdf
 "$TMPDIR/macos-fixtures" webkit webkit-ligatures.html webkit-ligatures.pdf
 "$TMPDIR/macos-fixtures" webkit webkit-rotated.html webkit-rotated.pdf
+"$TMPDIR/macos-fixtures" webkit webkit-rtl-numbers.html webkit-rtl-numbers.pdf
 "$TMPDIR/macos-fixtures" hebrew quartz-hebrew.pdf
 
 # Hand-written. Run after the lines above: truncated.pdf is the first half of cups-text.pdf.
@@ -62,6 +64,8 @@ Expected outcomes are for the production extractor with its default limits unles
 | `webkit-ligatures.pdf` | (real producer, WebKit) Helvetica text; WebKit writes its fi, fl and ffi as ligature glyphs | `Extracted` as `Helvetica: office, figures, affidavit, flow, fluffy waffles.` |
 | `rtl-visual-order.pdf` | Hebrew and Arabic the way most producers write them, in visual order (each right-to-left run's glyphs advance left to right across the page), on six lines: a Hebrew sentence with its full stop, an English sentence with one Hebrew word, Hebrew around the number `25.5`, a Latin run `abc` between two Hebrew words, Arabic, and a plain ASCII line | `Extracted`; every right-to-left run is returned in logical order, numbers and Latin runs keep their own order, and the ASCII line is untouched |
 | `rtl-logical-order.pdf` | a Hebrew line and an Arabic line written in logical order (each glyph placed to the left of the one before it) | `Extracted` exactly as written: nothing is reversed and no space appears inside a word |
+| `rtl-numbers.pdf` | twelve right-to-left lines with a number, drawn in the visual order the Unicode bidirectional algorithm gives (UAX #9 W2, W4, W5): Arabic-Indic `١٢٫٥` and Persian `۱۲٫۵` (decimal separator U+066B), `١٬٢٥٠` (thousands separator U+066C); after an Arabic letter, `50%`, `٥٠%`, `٥٠٪` and `$25`, whose sign is drawn outside the number; an Arabic line that starts with `50%`; in Hebrew, `25°`, `50%`, `$25` and `2026-10-01`, whose sign or hyphen is drawn inside it | `Extracted`; every number with its digits, separators and signs in logical order, as typed |
+| `webkit-rtl-numbers.pdf` | (real producer, WebKit) the same twelve lines from `webkit-rtl-numbers.html` | `Extracted`, the same text as `rtl-numbers.pdf` |
 | `rtl-upside-down.pdf` | a Hebrew line drawn upside down in visual order (each glyph a glyph's width further along its own, leftward, direction), and one drawn upside down in logical order (each glyph behind the one before) | `Extracted`; both lines read the same in logical order, without spaces inside the words |
 | `quartz-hebrew.pdf` | (real producer, Quartz and CoreText) a Hebrew paragraph with a Latin marker, and an English sentence with one Hebrew word | `Extracted`; the Hebrew words read in logical order |
 | `astral-plane.pdf` | `AB`, U+1F600, `CD` through a ToUnicode CMap | `Extracted`, the pair intact; used for surrogate-safe cuts |
@@ -92,7 +96,12 @@ Expected outcomes are for the production extractor with its default limits unles
   logical order and is left alone. A line with no
   left-to-right letters is one run. In a line that has both, each right-to-left run is reversed where it stands and the runs
   keep their order, so a right-to-left sentence that holds a Latin word reads `Latin right-to-left-words`. Numbers and Latin
-  runs keep their own order. A file carries no paragraph direction, and bracket glyphs it draws mirrored may come out as
+  runs keep their own order. What a producer draws as one number follows the bidirectional algorithm: a separator between
+  digits (the Arabic U+066B and U+066C included) is inside it; a sign next to it (currency, `%`, `°`, `#`, `±`) is inside
+  only after a Hebrew letter or at the start of the line, because after an Arabic letter the digits are Arabic numbers and
+  the sign is drawn outside them. A hyphen between digits is always kept inside, although the algorithm leaves it outside
+  an Arabic number, because producers differ there (WebKit follows the algorithm; the macOS Arabic license document keeps
+  `227.7202-1` whole). A file carries no paragraph direction, and bracket glyphs it draws mirrored may come out as
   the other bracket.
 
 ### Text a reader does not see (all extracted: #163 decides every text-showing run is)

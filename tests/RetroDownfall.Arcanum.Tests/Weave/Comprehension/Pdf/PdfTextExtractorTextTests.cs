@@ -17,6 +17,22 @@ public sealed class PdfTextExtractorTextTests
 
     private const string Bilalam = "\u0628\u0627\u0644\u0639\u0627\u0644\u0645";
 
+    // Numbers inside right-to-left lines, each line in logical order, as a person types it.
+    private static readonly string RightToLeftNumbers = string.Join(
+        '\n',
+        "\u0627\u0644\u0633\u0639\u0631 \u0661\u0662\u066B\u0665 \u062F\u064A\u0646\u0627\u0631", // Arabic: price 12.5 (Arabic-Indic, U+066B) dinar
+        "\u0642\u06CC\u0645\u062A \u06F1\u06F2\u066B\u06F5 \u062A\u0648\u0645\u0627\u0646", // Persian: price 12.5 (Extended Arabic-Indic) toman
+        "\u0627\u0644\u0639\u062F\u062F \u0661\u066C\u0662\u0665\u0660 \u0643\u062A\u0627\u0628", // Arabic: count 1,250 (U+066C) books
+        "\u0646\u0633\u0628\u0629 50% \u0641\u0642\u0637", // Arabic: rate 50% only
+        "\u0646\u0633\u0628\u0629 \u0665\u0660% \u0641\u0642\u0637", // Arabic: rate 50% (Arabic-Indic) only
+        "\u0646\u0633\u0628\u0629 \u0665\u0660\u066A \u0641\u0642\u0637", // Arabic: rate 50 and the Arabic percent sign only
+        "\u0627\u0644\u0633\u0639\u0631 $25 \u0641\u0642\u0637", // Arabic: price $25 only
+        "50% \u0641\u0642\u0637", // Arabic, the number first: 50% only
+        "\u05D4\u05D8\u05DE\u05E4\u05E8\u05D8\u05D5\u05E8\u05D4 25\u00B0 \u05D4\u05D9\u05D5\u05DD", // Hebrew: temperature 25 degrees today
+        "\u05D4\u05E0\u05D7\u05D4 50% \u05D4\u05D9\u05D5\u05DD", // Hebrew: discount 50% today
+        "\u05DE\u05D7\u05D9\u05E8 $25 \u05D4\u05D9\u05D5\u05DD", // Hebrew: price $25 today
+        "\u05EA\u05D0\u05E8\u05D9\u05DA 2026-10-01 \u05D4\u05D9\u05D5\u05DD"); // Hebrew: date 2026-10-01 today
+
     private static PdfExtractionOutcome Extract(string fileName, PdfExtractionLimits? limits = null) =>
         new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), limits ?? PdfExtractionLimits.Default, CancellationToken.None);
 
@@ -200,6 +216,23 @@ public sealed class PdfTextExtractorTextTests
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([$"{Shalom} {Olam}\n{Marhaba} {Bilalam}"], outcome.Pages);
+    }
+
+    [Theory]
+    [InlineData("rtl-numbers.pdf")]
+    [InlineData("webkit-rtl-numbers.pdf")]
+    public void Extract_NumbersInRightToLeftLines_KeepTheirDigitsSeparatorsAndSignsInLogicalOrder(string fileName)
+    {
+        // Sensitivity: what a reversed run keeps together as one number, which the Unicode bidirectional algorithm decides
+        // (UAX #9 W2, W4, W5). The Arabic decimal and thousands separators sit inside the number; after a Hebrew letter, or
+        // at the start of the line, a sign next to European digits is drawn inside the number too; after an Arabic letter
+        // the digits are Arabic numbers, so a percent or dollar sign is drawn outside them and must come back where it was
+        // typed. The first file is hand-written in that visual order, the second is WebKit's.
+        PdfExtractionOutcome outcome = Extract(fileName);
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal([RightToLeftNumbers], outcome.Pages);
     }
 
     [Fact]

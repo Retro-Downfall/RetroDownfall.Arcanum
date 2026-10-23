@@ -273,8 +273,6 @@ internal static class PdfPageText
             return;
         }
 
-        JoinNumbers(line);
-
         if (!hasLeftToRight)
         {
             int start = 0;
@@ -328,33 +326,68 @@ internal static class PdfPageText
     }
 
     /// <summary>
-    /// A separator between two digits (1,250.00, 10:30, 2026-10-01) and a currency or percent sign next to a digit belong to
-    /// the number, so a number is one unit when a run is turned round.
+    /// Marks the separators and signs a producer draws inside a number, in a run already put in logical order, so each number
+    /// is one unit when its digits are turned back. The Unicode bidirectional algorithm decides what that is (UAX #9 W2, W4,
+    /// W5), and it depends on the letter before the number: a separator between two digits (1,250.00, 10:30, 2026-10-01),
+    /// the Arabic decimal and thousands separators U+066B and U+066C included, is always inside. After a Hebrew letter, or with
+    /// no letter before, the digits are European numbers, and a sign next to them (a currency sign, %, °, #, ±) is inside
+    /// too. After an Arabic letter the digits are Arabic numbers, which take no sign, so the sign stays a neutral and the
+    /// run's reversal puts it back where it was typed. (The algorithm does not keep a hyphen inside an Arabic number either,
+    /// but producers differ there, so a hyphen between digits always joins them.)
     /// </summary>
-    private static void JoinNumbers(Span<Cell> line)
+    private static void JoinNumbers(Span<Cell> run)
     {
-        for (int index = 0; index < line.Length; index++)
+        bool afterArabic = false;
+
+        for (int index = 0; index < run.Length; index++)
         {
-            if (line[index].Class != CellClass.Neutral || line[index].Text.Length != 1)
+            if (run[index].Class == CellClass.Rtl)
+            {
+                afterArabic = IsArabicLetter(run[index].Text);
+
+                continue;
+            }
+
+            if (run[index].Class != CellClass.Neutral || run[index].Text.Length != 1)
             {
                 continue;
             }
 
-            char character = line[index].Text[0];
+            char character = run[index].Text[0];
 
-            bool afterDigit = index > 0 && line[index - 1].Class == CellClass.Number;
+            bool afterDigit = index > 0 && run[index - 1].Class == CellClass.Number;
 
-            bool beforeDigit = index + 1 < line.Length && line[index + 1].Class == CellClass.Number;
+            bool beforeDigit = index + 1 < run.Length && run[index + 1].Class == CellClass.Number;
 
-            bool separator = character is '.' or ',' or ':' or '/' or '-';
+            bool separator = character is '.' or ',' or ':' or '/' or '-' or '\u066B' or '\u066C';
 
-            bool sign = char.GetUnicodeCategory(character) == UnicodeCategory.CurrencySymbol || character is '%' or '‰';
+            bool sign = !afterArabic && IsEuropeanNumberSign(character);
 
             if ((separator && afterDigit && beforeDigit) || (sign && (afterDigit || beforeDigit)))
             {
-                line[index].Class = CellClass.Number;
+                run[index].Class = CellClass.Number;
             }
         }
+    }
+
+    /// <summary>A sign a European number takes as its own (bidirectional class ET): a currency sign, %, per mille and per ten thousand (Latin and Arabic), °, #, ± and the primes.</summary>
+    private static bool IsEuropeanNumberSign(char character) =>
+        char.GetUnicodeCategory(character) == UnicodeCategory.CurrencySymbol
+            || character is '%' or '\u2030' or '\u2031' or '\u066A' or '\u0609' or '\u060A' or '\u00B0' or '#' or '\u00B1' or '\u2032' or '\u2033' or '\u2034';
+
+    /// <summary>Whether a right-to-left letter is of a script the bidirectional algorithm calls Arabic (class AL): Arabic, Syriac and Thaana and their presentation forms.</summary>
+    private static bool IsArabicLetter(string text)
+    {
+        foreach (Rune rune in text.EnumerateRunes())
+        {
+            if (rune.Value is >= 0x0600 and <= 0x07BF or >= 0x0860 and <= 0x08FF or >= 0xFB50 and <= 0xFDFF or >= 0xFE70 and <= 0xFEFE
+                or >= 0x10D00 and <= 0x10D3F or >= 0x10EC0 and <= 0x10EFF or >= 0x10F30 and <= 0x10F6F or >= 0x1EC70 and <= 0x1EEFF)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void RestoreLogicalOrderOfRun(Span<Cell> run)
@@ -397,6 +430,8 @@ internal static class PdfPageText
         }
 
         run.Reverse();
+
+        JoinNumbers(run);
 
         int position = 0;
 

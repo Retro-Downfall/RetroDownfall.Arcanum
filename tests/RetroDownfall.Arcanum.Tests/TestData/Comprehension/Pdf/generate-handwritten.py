@@ -591,6 +591,46 @@ write(
     ]),
 )
 
+def visual(*parts):
+    """The characters of a right-to-left line in the order a producer that follows the Unicode bidirectional algorithm draws
+    them, left to right. parts are (text, drawn_left_to_right) in logical order: the order of the parts is reversed, and so
+    is the text of each right-to-left part. The parts are where the algorithm's number rules (UAX #9 W2, W4, W5) are applied:
+    the separators between digits, the Arabic ones (U+066B, U+066C) included, are drawn inside the number; after a Hebrew
+    letter, or with no letter before, a sign next to European digits is drawn inside the number too; after an Arabic letter
+    the digits are Arabic numbers, and a sign is drawn outside them."""
+    return "".join(text if left_to_right_part else text[::-1] for text, left_to_right_part in reversed(parts))
+
+
+ARABIC_PRICE = "\u0627\u0644\u0633\u0639\u0631"
+ARABIC_DINAR = "\u062f\u064a\u0646\u0627\u0631"
+PERSIAN_PRICE = "\u0642\u06cc\u0645\u062a"
+PERSIAN_TOMAN = "\u062a\u0648\u0645\u0627\u0646"
+ARABIC_COUNT = "\u0627\u0644\u0639\u062f\u062f"
+ARABIC_BOOK = "\u0643\u062a\u0627\u0628"
+ARABIC_RATE = "\u0646\u0633\u0628\u0629"
+ARABIC_ONLY = "\u0641\u0642\u0637"
+HEBREW_TEMPERATURE = "\u05d4\u05d8\u05de\u05e4\u05e8\u05d8\u05d5\u05e8\u05d4"
+HEBREW_TODAY = "\u05d4\u05d9\u05d5\u05dd"
+HEBREW_DISCOUNT = "\u05d4\u05e0\u05d7\u05d4"
+HEBREW_DATE = "\u05ea\u05d0\u05e8\u05d9\u05da"
+write(
+    "rtl-numbers.pdf",
+    placed_doc([
+        left_to_right(760, visual((ARABIC_PRICE + " ", False), ("\u0661\u0662\u066b\u0665", True), (" " + ARABIC_DINAR, False))),
+        left_to_right(720, visual((PERSIAN_PRICE + " ", False), ("\u06f1\u06f2\u066b\u06f5", True), (" " + PERSIAN_TOMAN, False))),
+        left_to_right(680, visual((ARABIC_COUNT + " ", False), ("\u0661\u066c\u0662\u0665\u0660", True), (" " + ARABIC_BOOK, False))),
+        left_to_right(640, visual((ARABIC_RATE + " ", False), ("50", True), ("% " + ARABIC_ONLY, False))),
+        left_to_right(600, visual((ARABIC_RATE + " ", False), ("\u0665\u0660", True), ("% " + ARABIC_ONLY, False))),
+        left_to_right(560, visual((ARABIC_RATE + " ", False), ("\u0665\u0660", True), ("\u066a " + ARABIC_ONLY, False))),
+        left_to_right(520, visual((ARABIC_PRICE + " $", False), ("25", True), (" " + ARABIC_ONLY, False))),
+        left_to_right(480, visual(("50%", True), (" " + ARABIC_ONLY, False))),
+        left_to_right(440, visual((HEBREW_TEMPERATURE + " ", False), ("25\u00b0", True), (" " + HEBREW_TODAY, False))),
+        left_to_right(400, visual((HEBREW_DISCOUNT + " ", False), ("50%", True), (" " + HEBREW_TODAY, False))),
+        left_to_right(360, visual((HEBREW_MECHIR + " ", False), ("$25", True), (" " + HEBREW_TODAY, False))),
+        left_to_right(320, visual((HEBREW_DATE + " ", False), ("2026-10-01", True), (" " + HEBREW_TODAY, False))),
+    ]),
+)
+
 # Hebrew drawn upside down. In visual order each glyph is drawn a glyph's width further along its own (leftward) direction;
 # in logical order each is drawn behind the one before. Measured in page x instead of along the glyphs' direction, the first
 # line would be letter-spaced and left reversed, and the second reversed.
