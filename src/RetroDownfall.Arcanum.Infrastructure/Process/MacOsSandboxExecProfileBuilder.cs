@@ -18,7 +18,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// <item>Workspace / Sanctum AllowedPaths — read + write</item>
 /// <item>Spell script roots — read + execute (no write unless also a RW root)</item>
 /// <item>System runtime — read + execute, no write</item>
-/// <item>Per-invocation owner-only TMPDIR — read + write (no broad /tmp)</item>
+/// <item>Per-invocation owner-only TMPDIR — read + write (no broad /tmp); read-only when writes are denied</item>
 /// </list>
 /// Network is explicitly allowed — filesystem-only MVP; not network isolation — unless the request asks
 /// for <see cref="ChildProcessSandboxRequest.DenyNetwork"/>, which removes network and socket access.
@@ -32,6 +32,13 @@ internal static class MacOsSandboxExecProfileBuilder
     /// unconfined profile grants it through its read of every directory.
     /// </summary>
     internal const string RootDirectoryEntryRule = "(allow file-read-data file-read-metadata (literal \"/\"))";
+
+    /// <summary>
+    /// A profile that denies file writes grants this one write and no other: data written to <c>/dev/null</c>, which keeps
+    /// none of it. The document worker does not need it (both the Native AOT binary and a managed apphost extract with no
+    /// device write at all), but a discard sink holds nothing and spares a library that opens it an error path.
+    /// </summary>
+    internal const string DevNullWriteRule = "(allow file-write-data (literal \"/dev/null\"))";
 
     /// <summary>
     /// Links outside every root that a confined profile's launch chain resolves: <c>/bin/sh</c>, which runs the limit
@@ -62,6 +69,12 @@ internal static class MacOsSandboxExecProfileBuilder
     /// entry (<see cref="RootDirectoryEntryRule"/>) and the <c>/bin/sh</c> selector link. Off for every model-directed
     /// tool, whose children list and stat the workspace's surroundings as any build does.
     /// </param>
+    /// <param name="denyFileWrites">
+    /// When true, the profile grants no write of any kind to any root, <paramref name="readWriteRoots"/> and
+    /// <paramref name="invocationTempDir"/> included: no file write, no socket creation, no clone and no link. The temp
+    /// directory stays readable, and the one write left is <see cref="DevNullWriteRule"/>. Off for every model-directed
+    /// tool, whose children write their workspace and temp directory.
+    /// </param>
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
@@ -69,7 +82,8 @@ internal static class MacOsSandboxExecProfileBuilder
         IReadOnlyList<string>? readOnlyRoots = null,
         bool denyNetwork = false,
         bool denyProcessFork = false,
-        bool confineMetadataToRoots = false)
+        bool confineMetadataToRoots = false,
+        bool denyFileWrites = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
@@ -170,33 +184,41 @@ internal static class MacOsSandboxExecProfileBuilder
                     ConfinedLaunchChainLinks));
         }
 
-        AppendFileAllow(
-            sb,
-            "file-write*",
-            MergeUnique(
-                readWriteRoots,
-                [invocationTempDir],
-                DevWriteRoots));
+        if (denyFileWrites)
+        {
+            // No root, not even the temp directory, is writable: only the device that keeps nothing.
+            sb.AppendLine(DevNullWriteRule);
+        }
+        else
+        {
+            AppendFileAllow(
+                sb,
+                "file-write*",
+                MergeUnique(
+                    readWriteRoots,
+                    [invocationTempDir],
+                    DevWriteRoots));
 
-        // Roslyn's dotnet-format BuildHost creates a Unix-domain socket beneath TMPDIR. Socket
-        // vnode creation remains confined to that canonical per-invocation IPC root.
-        sb.Append("(allow file-write-create (vnode-type SOCKET) (subpath \"")
-            .Append(EscapeSeatbeltString(invocationTempDir))
-            .AppendLine("\"))");
+            // Roslyn's dotnet-format BuildHost creates a Unix-domain socket beneath TMPDIR. Socket
+            // vnode creation remains confined to that canonical per-invocation IPC root.
+            sb.Append("(allow file-write-create (vnode-type SOCKET) (subpath \"")
+                .Append(EscapeSeatbeltString(invocationTempDir))
+                .AppendLine("\"))");
 
-        AppendFileAllow(
-            sb,
-            "file-clone",
-            MergeUnique(
-                readWriteRoots,
-                [invocationTempDir]));
+            AppendFileAllow(
+                sb,
+                "file-clone",
+                MergeUnique(
+                    readWriteRoots,
+                    [invocationTempDir]));
 
-        AppendFileAllow(
-            sb,
-            "file-link",
-            MergeUnique(
-                readWriteRoots,
-                [invocationTempDir]));
+            AppendFileAllow(
+                sb,
+                "file-link",
+                MergeUnique(
+                    readWriteRoots,
+                    [invocationTempDir]));
+        }
 
         if (denyNetwork)
         {

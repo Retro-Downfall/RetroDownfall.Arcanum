@@ -285,6 +285,127 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_that_denies_file_writes_lets_the_child_open_only_dev_null_for_writing()
+    {
+        // A document worker writes no file, and a per-file size cap does not bound how many it could create, so its
+        // profile grants no write at all: not its private temp directory (still readable, and created and removed by the
+        // host), not a socket in it, no clone or link, and of the devices only /dev/null.
+        const string temp = "/private/tmp/arcanum-sb-test-invocation";
+
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            temp,
+            denyNetwork: true,
+            denyProcessFork: true,
+            confineMetadataToRoots: true,
+            denyFileWrites: true);
+
+        string[] lines = profile.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Contains("(allow file-write-data (literal \"/dev/null\"))", lines);
+
+        Assert.Single(lines, static line => line.Contains("file-write", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("(allow file-clone", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(allow file-link", profile, StringComparison.Ordinal);
+
+        // The temp directory stays readable: the file-read* form, the only one that names it, still does.
+        Assert.Contains($"  (subpath \"{temp}\"))", lines);
+
+        Assert.Single(lines, line => line.Contains(temp + "\"", StringComparison.Ordinal));
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile), profile);
+    }
+
+    [Fact]
+    public void Profile_without_write_denial_keeps_its_temp_device_socket_clone_and_link_grants()
+    {
+        // Every other jailed child (execute_command, run_spell_script, workspace_check) writes its workspace, its temp
+        // directory and its devices exactly as before.
+        const string workspace = "/Users/arcanum-test/workspace";
+
+        const string temp = "/private/tmp/arcanum-sb-test-invocation";
+
+        foreach (bool denyNetwork in new[] { false, true })
+        {
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                [workspace],
+                ["/usr", "/bin", "/System"],
+                temp,
+                denyNetwork: denyNetwork).ReplaceLineEndings("\n");
+
+            Assert.Contains($"(allow file-write*\n  (subpath \"{workspace}\")\n  (subpath \"{temp}\")\n  (subpath \"/dev\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.Contains($"(allow file-write-create (vnode-type SOCKET) (subpath \"{temp}\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.Contains($"(allow file-clone\n  (subpath \"{workspace}\")\n  (subpath \"{temp}\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.Contains($"(allow file-link\n  (subpath \"{workspace}\")\n  (subpath \"{temp}\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("(literal \"/dev/null\")", profile, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void A_request_that_denies_file_writes_but_names_a_writable_root_is_refused_without_an_escape()
+    {
+        // The two contradict each other. The jail refuses before touching the start, and the operator escape, which would
+        // run the child with no jail and so with every write, does not apply.
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+            WorkingDirectory = _workspace,
+            UseShellExecute = false,
+        };
+
+        startInfo.Environment["TMPDIR"] = "/operator/original-tmpdir";
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            new ChildProcessSandboxRequest
+            {
+                ReadWriteRoots = [_workspace],
+                ReadExecuteRoots = [],
+                AllowUnsandboxed = true,
+                DenyFileWrites = true,
+                ToolName = "comprehension-worker",
+            },
+            NullLogger.Instance);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
+
+        Assert.Empty(apply.OwnedArtifactsToCleanup);
+
+        Assert.Equal("/bin/echo", startInfo.FileName);
+
+        Assert.Empty(startInfo.ArgumentList);
+
+        Assert.Equal("/operator/original-tmpdir", startInfo.Environment["TMPDIR"]);
+    }
+
+    [SkippableFact]
+    public void Windows_jail_that_denies_file_writes_grants_its_temp_directory_read_only()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows broker prepare path only runs on Windows.");
+
+        // The AppContainer reaches only what it is granted. Without write denial the run's temp directory is a read-write
+        // root, as before; with it, the same directory is granted read-only and nothing is granted write.
+        SandboxExecHelperPayload writable = PrepareWindowsBrokerPayload(denyFileWrites: false, out string writableTemp);
+
+        Assert.Contains(writableTemp, writable.ReadWriteRoots);
+
+        Assert.DoesNotContain(writableTemp, writable.ReadOnlyRoots);
+
+        SandboxExecHelperPayload denied = PrepareWindowsBrokerPayload(denyFileWrites: true, out string deniedTemp);
+
+        Assert.Empty(denied.ReadWriteRoots);
+
+        Assert.Contains(deniedTemp, denied.ReadOnlyRoots);
+    }
+
+    [Fact]
     public async Task Network_denial_refuses_a_run_whose_jail_was_not_applied()
     {
         // Only an applied jail can take the network away (Seatbelt on macOS, a capability-free AppContainer
@@ -1512,6 +1633,48 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Prepares a Windows broker run with no writable root and returns the payload it would hand the broker, with the
+    /// run's temp directory (the broker's working directory). Every artifact the prepare created is removed again.
+    /// </summary>
+    private SandboxExecHelperPayload PrepareWindowsBrokerPayload(bool denyFileWrites, out string temp)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = Path.Combine(System.Environment.SystemDirectory, "cmd.exe"),
+            UseShellExecute = false,
+        };
+
+        using IDisposable brokerOverride = ChildProcessFilesystemJail.UseWindowsBrokerExecutableForTests(System.Environment.ProcessPath!);
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            new ChildProcessSandboxRequest
+            {
+                ReadWriteRoots = [],
+                ReadExecuteRoots = [_workspace],
+                RequireAppliedFilesystemJail = true,
+                DenyFileWrites = denyFileWrites,
+                ToolName = "comprehension-worker",
+            },
+            NullLogger.Instance);
+
+        try
+        {
+            Assert.Equal(ChildProcessSandboxApplyStatus.Applied, apply.Status);
+
+            temp = startInfo.WorkingDirectory;
+
+            return System.Text.Json.JsonSerializer.Deserialize(
+                File.ReadAllText(startInfo.ArgumentList[2]),
+                SandboxExecJsonContext.Default.SandboxExecHelperPayload)!;
+        }
+        finally
+        {
+            Assert.True(ChildProcessFilesystemJail.CleanupTempPaths(apply.OwnedArtifactsToCleanup));
+        }
     }
 
     /// <summary>

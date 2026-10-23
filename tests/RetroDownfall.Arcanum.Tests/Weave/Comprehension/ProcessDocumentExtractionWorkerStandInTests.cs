@@ -259,26 +259,87 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task Under_the_host_launch_a_file_cannot_grow_past_the_worker_ceiling()
+    public async Task Under_the_host_launch_the_child_can_write_nowhere_but_dev_null()
     {
-        // Perl ignores SIGXFSZ so the refused write comes back as an error instead of ending it, then reports how much of
-        // the 8 MiB it tried to write reached the file in its private temp directory.
-        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
-            "exec /usr/bin/perl -e '$SIG{XFSZ} = \"IGNORE\"; open(my $f, \">\", \"$ENV{TMPDIR}/fill\") or die; my $chunk = \"\\0\" x 65536; "
-            + "my $w = 0; for (1 .. 128) { my $n = syswrite($f, $chunk); last unless defined $n && $n > 0; $w += $n } close $f; "
-            + "my $r = \"WROTE=$w\"; print \"ARCANUM-COMPREHENSION/1 extracted\\n$r\\nEND \", length($r), \" 1\\n\"'\n");
+        // The stand-in tries one byte at each place a worker could leave a file: its private temp directory, the shared
+        // temp directory, the operator's home, its own executable's directory and a writable device. Only /dev/null, which
+        // keeps nothing, takes it.
+        string name = "arcanum-worker-write-probe-" + Guid.NewGuid().ToString("N");
 
-        Assert.Null(result.FailureReason);
+        string sharedTemp = Path.Combine("/private/tmp", name);
 
-        long written = long.Parse(Assert.Single(result.Outcome!.Pages)["WROTE=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+        string home = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), "." + name);
 
-        Assert.InRange(written, 0, ProcessDocumentExtractionWorker.MaxFileSizeBytes);
+        string beside = Path.Combine(_directory, name);
+
+        try
+        {
+            DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
+                "exec /usr/bin/perl -e 'my @r; "
+                + $"for my $p ([\"temp\", \"$ENV{{TMPDIR}}/probe\"], [\"tmp\", \"{sharedTemp}\"], [\"home\", \"{home}\"], [\"exe\", \"{beside}\"], "
+                + "[\"zero\", \"/dev/zero\"], [\"null\", \"/dev/null\"]) { my ($k, $f) = @$p; my $w = 0; "
+                + "if (open(my $h, \">\", $f)) { $w = syswrite($h, \"x\") // 0; close $h } push @r, \"$k=\" . ($w ? \"WROTE\" : \"REFUSED\") } "
+                + "push @r, \"tempdir=\" . (mkdir(\"$ENV{TMPDIR}/dir\") ? \"MADE\" : \"REFUSED\"); "
+                + "my $r = join(\" \", @r); print \"ARCANUM-COMPREHENSION/1 extracted\\n$r\\nEND \", length($r), \" 1\\n\"'\n");
+
+            Assert.Null(result.FailureReason);
+
+            Assert.Equal(
+                "temp=REFUSED tmp=REFUSED home=REFUSED exe=REFUSED zero=REFUSED null=WROTE tempdir=REFUSED",
+                Assert.Single(result.Outcome!.Pages));
+
+            Assert.False(File.Exists(sharedTemp));
+
+            Assert.False(File.Exists(home));
+
+            Assert.False(File.Exists(beside));
+        }
+        finally
+        {
+            File.Delete(sharedTemp);
+
+            File.Delete(home);
+
+            File.Delete(beside);
+        }
     }
 
     [SkippableFact]
-    public async Task Under_the_host_launch_a_child_killed_for_writing_past_the_ceiling_exceeded_its_resource_limits()
+    public async Task Under_the_host_launch_a_child_writing_many_files_writes_none()
     {
-        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync("exec /bin/dd if=/dev/zero of=\"$TMPDIR/fill\" bs=1048576 count=8\n");
+        // The per-file size ceiling does not bound how many files a worker creates. The stand-in ignores SIGXFSZ and tries
+        // sixteen files of 1 MiB, the most the ceiling lets each one hold, in its private temp directory.
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
+            "exec /usr/bin/perl -e '$SIG{XFSZ} = \"IGNORE\"; my ($n, $b) = (0, 0); my $chunk = \"\\0\" x 65536; "
+            + "for my $i (1 .. 16) { open(my $f, \">\", \"$ENV{TMPDIR}/fill-$i\") or next; $n++; "
+            + "for (1 .. 16) { my $w = syswrite($f, $chunk); last unless defined $w && $w > 0; $b += $w } close $f } "
+            + "my $r = \"FILES=$n BYTES=$b\"; print \"ARCANUM-COMPREHENSION/1 extracted\\n$r\\nEND \", length($r), \" 1\\n\"'\n");
+
+        Assert.Null(result.FailureReason);
+
+        Assert.Equal("FILES=0 BYTES=0", Assert.Single(result.Outcome!.Pages));
+    }
+
+    [SkippableFact]
+    public async Task Under_the_host_launch_the_file_size_ceiling_still_applies()
+    {
+        // Nothing is writable, and the kernel's per-file ceiling stays as defence in depth. The stand-in's shell reports
+        // the ceiling it runs under with builtins alone, since it may not fork.
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
+            "printf 'ARCANUM-COMPREHENSION/1 extracted\\n'\nulimit -f\nprintf 'END 4 1\\n'\n");
+
+        Assert.Null(result.FailureReason);
+
+        Assert.Equal(
+            (ProcessDocumentExtractionWorker.MaxFileSizeBytes / 1024).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Assert.Single(result.Outcome!.Pages));
+    }
+
+    [SkippableFact]
+    public async Task Under_the_host_launch_a_child_ended_by_the_file_size_signal_exceeded_its_resource_limits()
+    {
+        // A write past the ceiling ends the worker by SIGXFSZ. With nowhere to write, the stand-in raises it itself.
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync("exec /usr/bin/perl -e 'kill \"XFSZ\", $$; sleep 5'\n");
 
         Assert.Equal(ProcessDocumentExtractionWorker.ResourceLimitsReason, result.FailureReason);
     }

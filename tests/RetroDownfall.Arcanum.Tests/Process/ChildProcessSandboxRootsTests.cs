@@ -116,4 +116,30 @@ public sealed class ChildProcessSandboxRootsTests : IDisposable
             _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
         }
     }
+
+    [Fact]
+    public void Model_directed_tool_requests_keep_their_file_writes()
+    {
+        // Write denial is opt-in for the document worker. A model-directed tool writes its workspace and its temp
+        // directory, so each existing builder must leave it off.
+        string package = Directory.CreateDirectory(Path.Combine(_workspace, "packages")).FullName;
+
+        string writable = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "arcanum-roots-rw-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        try
+        {
+            Assert.False(ChildProcessSandboxRoots.ForExecuteCommand(_workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).DenyFileWrites);
+
+            Assert.False(ChildProcessSandboxRoots.ForSpellScript([_workspace], _workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).DenyFileWrites);
+
+            Assert.False(ChildProcessSandboxRoots.ForWorkspaceCheck(_workspace, [package], [writable]).DenyFileWrites);
+
+            Assert.False(new ChildProcessSandboxRequest { ReadWriteRoots = [], ReadExecuteRoots = [] }.DenyFileWrites);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
+        }
+    }
 }

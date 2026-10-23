@@ -44,9 +44,9 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
     internal const long TotalOutputCapBytes = 2L * 1024 * 1024;
 
     /// <summary>
-    /// The kernel ceiling on any one file the worker writes. It writes none, but its private temp directory is writable,
-    /// so without this a compromised worker could fill the disk within its wall clock. Not enforced on Windows, which has
-    /// no per-process file-size limit.
+    /// The kernel ceiling on any one file the worker writes. It writes none and its jail grants it nowhere to write (see
+    /// <see cref="CreateSandbox"/>); the ceiling stays as defence in depth should a write ever be granted, though it bounds
+    /// each file and not how many. Not enforced on Windows, which has no per-process file-size limit.
     /// </summary>
     internal const long MaxFileSizeBytes = 1024 * 1024;
 
@@ -210,9 +210,10 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
 
     /// <summary>
     /// The jail: it must be applied (no operator escape, as for <c>workspace_check</c>), with no network, no second
-    /// process, nothing writable but the run's private temp directory, nothing readable beyond the system runtime roots
-    /// but the executable's own directory, and nothing listed or stat'ed outside those roots but their ancestors, since
-    /// whatever the worker prints reaches model context.
+    /// process, nothing writable at all (the run's private temp directory is only readable, and of the devices only
+    /// <c>/dev/null</c> takes a write, so neither a large file nor many small ones can fill the disk), nothing readable
+    /// beyond the system runtime roots but the executable's own directory, and nothing listed or stat'ed outside those
+    /// roots but their ancestors, since whatever the worker prints reaches model context.
     /// </summary>
     internal static ChildProcessSandboxRequest CreateSandbox(DocumentWorkerLaunch launch)
     {
@@ -227,6 +228,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
             DenyNetwork = true,
             DenyProcessFork = launch.DenyProcessFork,
             ConfineMetadataToRoots = true,
+            DenyFileWrites = true,
             ToolName = "comprehension-worker",
         };
     }

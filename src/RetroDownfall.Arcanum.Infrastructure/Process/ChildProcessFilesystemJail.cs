@@ -75,6 +75,21 @@ internal static class ChildProcessFilesystemJail
 
         ArgumentNullException.ThrowIfNull(request);
 
+        // A child that may write nothing cannot also be handed a root to write. The contradiction is refused before the
+        // start is touched, and never escaped: the operator escape would run the child with no jail and so with every write.
+        if (request.DenyFileWrites && request.ReadWriteRoots.Any(static root => !string.IsNullOrWhiteSpace(root)))
+        {
+            logger?.LogWarning(
+                "A child that may write no file was given a read-write root; refusing it. Tool={ToolName}.",
+                string.IsNullOrWhiteSpace(request.ToolName) ? "(unknown)" : request.ToolName);
+
+            return new ChildProcessSandboxApplyResult
+            {
+                Status = ChildProcessSandboxApplyStatus.Unavailable,
+                Detail = "A child that may write no file cannot be given a read-write root.",
+            };
+        }
+
         if (OperatingSystem.IsWindows())
         {
             return ApplyWindows(startInfo, request, logger);
@@ -327,7 +342,10 @@ internal static class ChildProcessFilesystemJail
             }
 
             temp = CreateOwnerOnlyTempDirectory("arcanum-win-child-");
-            readWrite.Add(temp.Value.Path);
+
+            // A child that may write nothing still starts in its temp directory, but the AppContainer may only read it.
+            (request.DenyFileWrites ? readOnly : readWrite).Add(temp.Value.Path);
+
             startInfo.Environment["TMP"] = temp.Value.Path;
             startInfo.Environment["TEMP"] = temp.Value.Path;
 
@@ -495,7 +513,8 @@ internal static class ChildProcessFilesystemJail
                 readOnlyRoots,
                 request.DenyNetwork,
                 request.DenyProcessFork,
-                request.ConfineMetadataToRoots);
+                request.ConfineMetadataToRoots,
+                request.DenyFileWrites);
 
             profileArtifact = WriteOwnerOnlyTempFile(
                 "arcanum-sb-",

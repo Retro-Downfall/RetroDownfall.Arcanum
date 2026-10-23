@@ -62,6 +62,17 @@ internal sealed class ChildProcessSandboxRequest
     /// </summary>
     internal bool ConfineMetadataToRoots { get; init; }
 
+    /// <summary>
+    /// When true, the child writes no file anywhere. It may name no <see cref="ReadWriteRoots"/>: the jail refuses that
+    /// contradiction outright, with no operator escape. The run's private temp directory is still created, named by the
+    /// temp variables and removed by the host, but the child may only read it; on macOS the profile grants no write, no
+    /// socket, clone or link anywhere, and of the devices only <c>/dev/null</c> for writing; on Windows the temp directory
+    /// is granted to the AppContainer read-only. Only an applied jail delivers it, so a caller pairs it with
+    /// <see cref="RequireAppliedFilesystemJail"/>, as the document worker does. Off by default and in every model-directed
+    /// tool builder, whose children write their workspace and temp directory.
+    /// </summary>
+    internal bool DenyFileWrites { get; init; }
+
     /// <summary>Tool name for escape-hatch / denial diagnostics (no secrets).</summary>
     internal string? ToolName { get; init; }
 

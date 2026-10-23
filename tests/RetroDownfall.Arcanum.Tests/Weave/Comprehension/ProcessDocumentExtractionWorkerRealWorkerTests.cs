@@ -131,6 +131,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
     private const string NativeAotWorkerVariable = "ARCANUM_PUBLISHED_EXECUTABLE";
 
     [SkippableTheory]
+    [InlineData("cups-text.pdf")]
     [InlineData("multi-page.pdf")]
     [InlineData("cups-multi.pdf")]
     [InlineData("encrypted-aes-empty.pdf")]

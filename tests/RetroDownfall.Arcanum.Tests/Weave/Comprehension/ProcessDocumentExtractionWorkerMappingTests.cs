@@ -298,6 +298,20 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     }
 
     [Fact]
+    public void CreateSandbox_DeniesFileWritesForEveryLaunch()
+    {
+        // The worker writes no file, and its file-size ceiling does not bound how many it could create, so no launch gets
+        // anywhere to write, not even its private temp directory.
+        using TemporaryExecutable executable = new();
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!).DenyFileWrites);
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path)).DenyFileWrites);
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path, allowProcessFork: true)).DenyFileWrites);
+    }
+
+    [Fact]
     public void CreateSandbox_ForATestLaunch_AddsOnlyItsOwnRoots()
     {
         using TemporaryExecutable executable = new();
