@@ -78,7 +78,7 @@ public static class SessionAttachmentToolInjection
         ArcanumSettings settings,
         string? requestModel,
         CancellationToken cancellationToken = default) =>
-        (await MaterializeAttachAsync(store, sessionId, logicalName, version, settings, requestModel, cancellationToken)
+        (await MaterializeAttachAsync(store, sessionId, logicalName, version, settings, requestModel, SessionAttachmentDocumentExtractors.For, cancellationToken)
             .ConfigureAwait(false)).Contents;
 
     /// <summary>
@@ -96,6 +96,8 @@ public static class SessionAttachmentToolInjection
     /// <summary>
     /// <see cref="TryBuildContentsAsync"/>, also saying why nothing was materialized. The tool accepts an
     /// attachment before anything reads it, so only this decides whether its content reaches the model.
+    /// A registry document is extracted by the host <paramref name="documentHostFor"/> names for its MIME
+    /// type, which in production is always <see cref="SessionAttachmentDocumentExtractors.For"/>.
     /// </summary>
     internal static async Task<AttachMaterialization> MaterializeAttachAsync(
         ISessionAttachmentStore store,
@@ -104,11 +106,12 @@ public static class SessionAttachmentToolInjection
         int? version,
         ArcanumSettings settings,
         string? requestModel,
-        CancellationToken cancellationToken = default,
-        SessionAttachmentDocumentExtractionHost? documentHost = null)
+        Func<string, SessionAttachmentDocumentExtractionHost?> documentHostFor,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(documentHostFor);
 
         if (string.IsNullOrWhiteSpace(logicalName))
         {
@@ -179,7 +182,7 @@ public static class SessionAttachmentToolInjection
                 ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
 
             SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor
-                .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken, documentHost)
+                .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken, documentHostFor(record.MimeType))
                 .ConfigureAwait(false);
 
             if (extraction.Status != SessionAttachmentExtractionStatus.Extracted

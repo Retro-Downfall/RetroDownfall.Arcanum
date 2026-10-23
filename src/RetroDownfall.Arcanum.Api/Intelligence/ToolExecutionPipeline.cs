@@ -52,6 +52,8 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
@@ -547,6 +549,7 @@ public sealed class ToolExecutionPipeline(
                         version,
                         settings.Value,
                         request.Model,
+                        SessionAttachmentDocumentExtractors.For,
                         cancellationToken)
                     .ConfigureAwait(false);
 

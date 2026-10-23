@@ -727,7 +727,7 @@ public sealed class SessionAttachmentToolInjectionTests
             await readEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             SessionAttachmentToolInjection.AttachMaterialization busy = await SessionAttachmentToolInjection.MaterializeAttachAsync(
-                store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null, CancellationToken.None, host);
+                store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null, _ => host, CancellationToken.None);
 
             Assert.Null(busy.Contents);
 
@@ -744,7 +744,7 @@ public sealed class SessionAttachmentToolInjectionTests
 
         // The deferral consumed nothing: the same version attaches once the family is free.
         SessionAttachmentToolInjection.AttachMaterialization retried = await SessionAttachmentToolInjection.MaterializeAttachAsync(
-            store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null, CancellationToken.None, host);
+            store, sessionId, record.LogicalKey, null, ComprehensionSettings(), null, _ => host, CancellationToken.None);
 
         Assert.Null(retried.NotAttachedMessage);
 
