@@ -465,6 +465,7 @@ same_line = (
     b"BT /F1 10 Tf 1 0 0 1 520 650 Tm (17) Tj 1 0 0 1 72 650 Tm (Annual Report) Tj ET\n"  # page number first, then the title
     b"BT /F1 12 Tf 1 0 0 1 72 600 Tm [(WA) 150 (VE)] TJ ET\n"  # a kerned pair is one word: the control
     b"BT /F1 12 Tf 1 0 0 1 72 550 Tm (FIRSTRUN) Tj 1 0 0 1 72 550 Tm (SECONDRUN) Tj ET\n"  # the second run starts on the first
+    b"BT /F1 12 Tf 1 0 0 1 72 500 Tm (M) Tj 1 0 0 1 82.55 503 Tm (^) Tj 1 0 0 1 82 500 Tm (uller) Tj ET\n"  # an accent drawn over the letter after it
 )
 write("same-line-order.pdf", simple_doc(same_line))
 
@@ -509,6 +510,35 @@ write(
         left_to_right(650, "o\uFB03ce ba\uFB04e"),
         left_to_right(600, "\uFB05 \uFB06"),
         left_to_right(550, "plain office"),
+    ]),
+)
+
+# Hebrew and Arabic written the way most producers write them: in visual order, so each right-to-left run's glyphs advance
+# left to right across the page (the characters below are the logical text reversed, run by run, as drawn)
+HEBREW_SHALOM = "\u05e9\u05dc\u05d5\u05dd"
+HEBREW_OLAM = "\u05e2\u05d5\u05dc\u05dd"
+HEBREW_MECHIR = "\u05de\u05d7\u05d9\u05e8"
+HEBREW_SHEKEL = "\u05e9\u05e7\u05dc"
+ARABIC_MARHABA = "\u0645\u0631\u062d\u0628\u0627"
+ARABIC_BILALAM = "\u0628\u0627\u0644\u0639\u0627\u0644\u0645"
+write(
+    "rtl-visual-order.pdf",
+    placed_doc([
+        left_to_right(700, "." + HEBREW_OLAM[::-1] + " " + HEBREW_SHALOM[::-1]),  # a Hebrew sentence with its full stop
+        left_to_right(650, "The word " + HEBREW_SHALOM[::-1] + " means peace."),  # a left-to-right sentence with one Hebrew word
+        left_to_right(600, HEBREW_SHEKEL[::-1] + " 25.5 " + HEBREW_MECHIR[::-1]),  # a number inside Hebrew keeps its digit order
+        left_to_right(550, HEBREW_OLAM[::-1] + " abc " + HEBREW_SHALOM[::-1]),  # a Latin run between two Hebrew words
+        left_to_right(500, ARABIC_BILALAM[::-1] + " " + ARABIC_MARHABA[::-1]),
+        left_to_right(450, "Plain ASCII line 123"),
+    ]),
+)
+
+# The same kind of text written in logical order: each glyph is placed to the left of the one before it
+write(
+    "rtl-logical-order.pdf",
+    placed_doc([
+        right_to_left(700, HEBREW_SHALOM + " " + HEBREW_OLAM),
+        right_to_left(650, ARABIC_MARHABA + " " + ARABIC_BILALAM),
     ]),
 )
 

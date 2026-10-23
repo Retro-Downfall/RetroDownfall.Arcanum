@@ -3,8 +3,9 @@
 Inputs for the PDF text extractor and the worker frame (`Weave/Comprehension/Pdf`). Two kinds:
 
 - **Real producer**: `cups-text.pdf` and `cups-multi.pdf` were written by macOS Quartz through `cupsfilter`, and
-  `webkit-float.pdf` and `webkit-ligatures.pdf` by WebKit (the engine behind Safari's Export as PDF), so the extractor is
-  proven on bytes this repository did not build.
+  `webkit-float.pdf` and `webkit-ligatures.pdf` by WebKit (the engine behind Safari's Export as PDF), and
+  `quartz-hebrew.pdf` by CoreText into a Quartz PDF context (what macOS Save as PDF uses), so the extractor is proven on
+  bytes this repository did not build.
 - **Hand-written**: everything else comes from `generate-handwritten.py`. Each file isolates one rule, so a failing test
   names the rule. The output is deterministic (no timestamps, fixed document ids and IVs, a seeded random source).
 
@@ -23,10 +24,11 @@ cd tests/RetroDownfall.Arcanum.Tests/TestData/Comprehension/Pdf
 cupsfilter -m application/pdf cups-text.txt  > cups-text.pdf
 cupsfilter -m application/pdf cups-multi.txt > cups-multi.pdf
 
-# Real producer, WebKit. generate-macos.swift needs macOS (Xcode command line tools). The file is not deterministic.
+# Real producers, WebKit and Quartz. generate-macos.swift needs macOS (Xcode command line tools). The files are not deterministic.
 swiftc -O -o "$TMPDIR/macos-fixtures" generate-macos.swift
 "$TMPDIR/macos-fixtures" webkit webkit-float.html webkit-float.pdf
 "$TMPDIR/macos-fixtures" webkit webkit-ligatures.html webkit-ligatures.pdf
+"$TMPDIR/macos-fixtures" hebrew quartz-hebrew.pdf
 
 # Hand-written. Run after the lines above: truncated.pdf is the first half of cups-text.pdf.
 python3 -I generate-handwritten.py .
@@ -50,10 +52,13 @@ Expected outcomes are for the production extractor with its default limits unles
 | `cups-multi.pdf` | ten pages (real producer) | `Extracted`, ten pages; the codeword only on page 10 |
 | `multi-page.pdf` | page 1 `PAGE-ONE-ALPHA`, page 2 **no content**, page 3 `PAGE-THREE-MARKER-GAMMA`, page 4 `PAGE-FOUR-DELTA` | `Extracted`, four entries, the second empty, so ordinals stay true. 14, 0, 23 and 15 glyphs. |
 | `content-order.pdf` | three runs shown bottom, top, middle | `Extracted`, in content-stream order |
-| `same-line-order.pdf` | pairs of runs on one baseline: `RIGHTWORD` drawn before the `LEFTWORD` to its left; the page number `17` drawn before the title `Annual Report`; a kerned `WA`, `VE` pair; `FIRSTRUN` and `SECONDRUN` drawn at the same place | `Extracted`; the runs stay separate words (`RIGHTWORD LEFTWORD`, `17 Annual Report`, `FIRSTRUN SECONDRUN`) and the kerned pair stays one word (`WAVE`) |
+| `same-line-order.pdf` | pairs of runs on one baseline: `RIGHTWORD` drawn before the `LEFTWORD` to its left; the page number `17` drawn before the title `Annual Report`; a kerned `WA`, `VE` pair; `FIRSTRUN` and `SECONDRUN` drawn at the same place; an accent `^` drawn over the `u` that follows it in `Muller` | `Extracted`; the runs stay separate words (`RIGHTWORD LEFTWORD`, `17 Annual Report`, `FIRSTRUN SECONDRUN`) and the kerned pair and the accented word stay one word (`WAVE`, `M^uller`) |
 | `webkit-float.pdf` | (real producer, WebKit) a `float:right` price drawn before the text it sits beside, a right-to-left table row and a `row-reverse` flex row | `Extracted`; `$1,250.00 2 hours consulting`, `RIGHTCELL LEFTCELL`, `FLEXFIRST FLEXSECOND`: the price does not fuse with the `2` that follows it |
 | `latin-ligatures.pdf` | single glyphs that a ToUnicode CMap maps to U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st) inside words, then a plain line | `Extracted` as `effect final flow`, `office baffle`, `ſt st` and `plain office`: each ligature code point becomes its letters (U+FB05 becomes a long s and a t, as NFKC does) |
 | `webkit-ligatures.pdf` | (real producer, WebKit) Helvetica text; WebKit writes its fi, fl and ffi as ligature glyphs | `Extracted` as `Helvetica: office, figures, affidavit, flow, fluffy waffles.` |
+| `rtl-visual-order.pdf` | Hebrew and Arabic the way most producers write them, in visual order (each right-to-left run's glyphs advance left to right across the page), on six lines: a Hebrew sentence with its full stop, an English sentence with one Hebrew word, Hebrew around the number `25.5`, a Latin run `abc` between two Hebrew words, Arabic, and a plain ASCII line | `Extracted`; every right-to-left run is returned in logical order, numbers and Latin runs keep their own order, and the ASCII line is untouched |
+| `rtl-logical-order.pdf` | a Hebrew line and an Arabic line written in logical order (each glyph placed to the left of the one before it) | `Extracted` exactly as written: nothing is reversed and no space appears inside a word |
+| `quartz-hebrew.pdf` | (real producer, Quartz and CoreText) a Hebrew paragraph with a Latin marker, and an English sentence with one Hebrew word | `Extracted`; the Hebrew words read in logical order |
 | `astral-plane.pdf` | `AB`, U+1F600, `CD` through a ToUnicode CMap | `Extracted`, the pair intact; used for surrogate-safe cuts |
 | `astral-multi-page.pdf` | page 1 `AB`, U+1F600, `CD`; page 2 `EFGHIJKL`; page 3 no content | `Extracted`, three entries; a cut inside page 1's pair must stop without reading page 2 |
 | `cjk-tounicode.pdf` | CJK on two lines and U+20BB7 on a third | `Extracted` |
