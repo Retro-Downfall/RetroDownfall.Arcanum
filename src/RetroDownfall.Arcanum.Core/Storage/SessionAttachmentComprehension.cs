@@ -18,12 +18,29 @@ public enum SessionAttachmentRangeUnit
 
 /// <summary>
 /// One reviewed Comprehension source format: its lowercase MIME type, the human-readable label
-/// every model-facing framing shows for it, and the unit its chunk ranges are stated in.
+/// every model-facing framing shows for it, the unit its chunk ranges are stated in, and whether
+/// its extracted text may include text a reader of the document would not see.
 /// </summary>
+/// <param name="MayIncludeUnseenText">
+/// The format's text is extracted from every run that shows text, with no rendered-visibility
+/// projection (PDF, per #163), so it may include white-on-white, invisible, tiny or off-page text.
+/// </param>
 public sealed record SessionAttachmentComprehensionFormat(
     string MimeType,
     string FormatName,
-    SessionAttachmentRangeUnit RangeUnit = SessionAttachmentRangeUnit.Lines);
+    SessionAttachmentRangeUnit RangeUnit = SessionAttachmentRangeUnit.Lines,
+    bool MayIncludeUnseenText = false)
+{
+    /// <summary>The clause that tells a reader text from this format may include text the document does not show.</summary>
+    public const string UnseenTextClause = "may include text a reader would not see";
+
+    /// <summary>
+    /// What every model-facing framing of this format's extracted text says after the untrusted-data warning: the label,
+    /// that the layout is not preserved, and, for a format whose text may include text a reader would not see, that too.
+    /// </summary>
+    public string ExtractedTextDescription =>
+        FormatName + "; layout not preserved" + (MayIncludeUnseenText ? "; " + UnseenTextClause : string.Empty);
+}
 
 /// <summary>Closed document eligibility for Comprehension; durable attachment kinds remain unchanged.</summary>
 public static class SessionAttachmentComprehensionPolicy
@@ -78,7 +95,7 @@ public static class SessionAttachmentComprehensionPolicy
             new(OpenDocumentPresentationMimeType, "OpenDocument presentation"),
             new(VisioDrawingMimeType, "Visio drawing"),
             new(VisioMacroEnabledDrawingMimeType, "Visio macro-enabled drawing (macros not read)"),
-            new(PdfMimeType, "PDF document", SessionAttachmentRangeUnit.Pages),
+            new(PdfMimeType, "PDF document", SessionAttachmentRangeUnit.Pages, MayIncludeUnseenText: true),
         ];
 
     /// <summary>

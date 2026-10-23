@@ -24,8 +24,9 @@ public static class SessionAttachmentToolInjection
 
     /// <summary>
     /// The untrusted-data notice for a Comprehension document, naming the source format of the record
-    /// so a reader can tell what was extracted. A record outside the registry is never framed as a document.
-    /// A partial extraction says so, so the text is never read as the whole document.
+    /// so a reader can tell what was extracted, and, for a format whose text may include text a reader would
+    /// not see, saying so. A record outside the registry is never framed as a document. A partial extraction
+    /// says so, so the text is never read as the whole document.
     /// </summary>
     internal static string ComprehensionDataNotice(SessionAttachmentRecord record, bool truncated = false)
     {
@@ -36,7 +37,7 @@ public static class SessionAttachmentToolInjection
             throw new InvalidOperationException("Only a registered Comprehension document can be framed as document data.");
         }
 
-        return "UNTRUSTED DATA; " + format.FormatName + "; layout not preserved"
+        return "UNTRUSTED DATA; " + format.ExtractedTextDescription
             + (truncated ? TruncatedNoticeSuffix : string.Empty);
     }
 

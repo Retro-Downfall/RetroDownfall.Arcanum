@@ -1198,8 +1198,7 @@ public static class SystemPromptBuilder
 
             if (sourceFormat is not null)
             {
-                sb.Append("source-format: ").Append(sourceFormat.FormatName)
-                    .Append("; layout not preserved").Append('\n');
+                sb.Append("source-format: ").Append(sourceFormat.ExtractedTextDescription).Append('\n');
             }
 
             AppendDataFence(sb, chunk.Content);

@@ -73,7 +73,7 @@ public sealed class SessionAttachmentFormatLabelTests
         string prompt = BuildPrompt(SessionAttachmentComprehensionPolicy.PdfMimeType, 3, 3);
 
         Assert.Equal(
-            "source-format: PDF document; layout not preserved",
+            "source-format: PDF document; layout not preserved; may include text a reader would not see",
             Assert.Single(SourceFormatLines(prompt)));
 
         int pagesIndex = prompt.IndexOf("; pages 3-3", StringComparison.Ordinal);
@@ -158,6 +158,46 @@ public sealed class SessionAttachmentFormatLabelTests
         Assert.Contains($"UNTRUSTED DATA; {label}; layout not preserved", framed, StringComparison.Ordinal);
 
         Assert.Contains("extracted body", framed, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Comprehension_notice_for_a_pdf_says_it_may_include_text_a_reader_would_not_see()
+    {
+        // #163 extracts every text-showing run, visible or not, so the frame has to say so in these exact words.
+        Assert.Equal(
+            "UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see",
+            SessionAttachmentToolInjection.ComprehensionDataNotice(Record(SessionAttachmentComprehensionPolicy.PdfMimeType)));
+
+        Assert.Equal(
+            "UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see; truncated at the extraction limit",
+            SessionAttachmentToolInjection.ComprehensionDataNotice(Record(" Application/PDF "), truncated: true));
+    }
+
+    [Fact]
+    public void Comprehension_data_frame_for_a_pdf_carries_the_unseen_text_clause()
+    {
+        string framed = SessionAttachmentToolInjection.FormatComprehensionData(
+            Record(SessionAttachmentComprehensionPolicy.PdfMimeType), "report.pdf", "extracted body");
+
+        Assert.Equal(
+            SystemPromptBuilder.FormatUntrusted(
+                "report.pdf | UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see",
+                "extracted body"),
+            framed);
+    }
+
+    [Theory]
+    [MemberData(nameof(FormatLabels))]
+    public void Only_a_pdf_frame_says_it_may_include_text_a_reader_would_not_see(string mimeType, string label)
+    {
+        _ = label;
+
+        Assert.DoesNotContain(
+            "may include text a reader would not see",
+            SessionAttachmentToolInjection.ComprehensionDataNotice(Record(mimeType)),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("may include text a reader would not see", BuildPrompt(mimeType), StringComparison.Ordinal);
     }
 
     [Fact]

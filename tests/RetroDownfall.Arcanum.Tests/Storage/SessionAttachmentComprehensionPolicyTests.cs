@@ -54,7 +54,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
                 new SessionAttachmentComprehensionFormat(
                     "application/vnd.ms-visio.drawing.macroenabled.12", "Visio macro-enabled drawing (macros not read)"),
                 new SessionAttachmentComprehensionFormat(
-                    "application/pdf", "PDF document", SessionAttachmentRangeUnit.Pages),
+                    "application/pdf", "PDF document", SessionAttachmentRangeUnit.Pages, MayIncludeUnseenText: true),
             ],
             SessionAttachmentComprehensionPolicy.Formats);
     }
@@ -72,6 +72,30 @@ public sealed class SessionAttachmentComprehensionPolicyTests
             SessionAttachmentComprehensionPolicy.Formats.Where(
                 static format => format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType),
             static format => Assert.Equal(SessionAttachmentRangeUnit.Lines, format.RangeUnit));
+    }
+
+    [Fact]
+    public void Only_pdf_text_may_include_text_a_reader_would_not_see()
+    {
+        Assert.Equal(
+            [SessionAttachmentComprehensionPolicy.PdfMimeType],
+            SessionAttachmentComprehensionPolicy.Formats
+                .Where(static format => format.MayIncludeUnseenText)
+                .Select(static format => format.MimeType));
+
+        Assert.False(new SessionAttachmentComprehensionFormat("a/b", "label").MayIncludeUnseenText);
+    }
+
+    [Fact]
+    public void Extracted_text_description_names_the_format_the_lost_layout_and_for_pdf_the_unseen_text()
+    {
+        Assert.True(SessionAttachmentComprehensionPolicy.TryGetFormat(SessionAttachmentComprehensionPolicy.PdfMimeType, out SessionAttachmentComprehensionFormat? pdf));
+
+        Assert.Equal("PDF document; layout not preserved; may include text a reader would not see", pdf.ExtractedTextDescription);
+
+        Assert.True(SessionAttachmentComprehensionPolicy.TryGetFormat(SessionAttachmentComprehensionPolicy.WordDocumentMimeType, out SessionAttachmentComprehensionFormat? word));
+
+        Assert.Equal("Word document; layout not preserved", word.ExtractedTextDescription);
     }
 
     [Fact]
