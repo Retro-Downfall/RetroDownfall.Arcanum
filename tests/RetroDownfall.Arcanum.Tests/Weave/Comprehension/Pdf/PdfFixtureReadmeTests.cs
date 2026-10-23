@@ -48,8 +48,12 @@ public sealed partial class PdfFixtureReadmeTests
         Assert.Empty(oversize);
     }
 
+    /// <summary>The fixtures only the worker's process limits can survive: the Flate bombs and the form fan-out.</summary>
+    private static bool IsWorkerOnly(string name) =>
+        name.StartsWith("flate-", StringComparison.Ordinal) || string.Equals(name, "xobject-fan-out.pdf", StringComparison.Ordinal);
+
     [Fact]
-    public void TheWorkerOnlyFixtures_AreExactlyTheFlateOnes()
+    public void TheWorkerOnlyFixtures_AreExactlyTheFlateOnesAndTheFormFanOut()
     {
         string readme = Readme();
 
@@ -57,8 +61,8 @@ public sealed partial class PdfFixtureReadmeTests
 
         string[] listed = [.. PdfName().Matches(section).Select(match => match.Groups[1].Value).Order(StringComparer.Ordinal)];
 
-        Assert.Equal(CommittedPdfs().Where(name => name.StartsWith("flate-", StringComparison.Ordinal)), listed);
+        Assert.Equal(CommittedPdfs().Where(IsWorkerOnly), listed);
 
-        Assert.Equal(4, listed.Length);
+        Assert.Equal(5, listed.Length);
     }
 }

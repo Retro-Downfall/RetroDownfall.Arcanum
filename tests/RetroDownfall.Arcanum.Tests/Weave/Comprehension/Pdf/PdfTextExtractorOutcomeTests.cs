@@ -79,9 +79,37 @@ public sealed class PdfTextExtractorOutcomeTests
     [InlineData("truncated.pdf")]
     [InlineData("bad-trailer.pdf")]
     [InlineData("missing-root.pdf")]
+    [InlineData("xref-stream-garbled.pdf")]
     public void Extract_BytesThatAreNotAReadablePdf_AreMalformedWithoutPages(string fileName)
     {
         AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
+    }
+
+    [Fact]
+    public void Extract_CrossReferenceStreamWhoseEntriesAreGarbled_IsMalformedWhileTheIntactFileIsExtracted()
+    {
+        // The malformed-cross-reference case a repair scan cannot rescue: every object lives inside an object stream and
+        // is reachable only through the cross-reference stream. The control is the same file; only the stream's 32 bytes
+        // of entries differ, so the entries are the whole reason the garbled file is refused.
+        byte[] intact = PdfFixtures.Read("xref-stream.pdf");
+
+        byte[] garbled = PdfFixtures.Read("xref-stream-garbled.pdf");
+
+        Assert.Equal(intact.Length, garbled.Length);
+
+        int[] differing = [.. Enumerable.Range(0, intact.Length).Where(index => intact[index] != garbled[index])];
+
+        Assert.Equal(32, differing.Length);
+
+        Assert.Equal(31, differing[^1] - differing[0]);
+
+        PdfExtractionOutcome control = Extract("xref-stream.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, control.Kind);
+
+        Assert.Equal(["XREF-STREAM-TEXT"], control.Pages);
+
+        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("xref-stream-garbled.pdf"));
     }
 
     [Theory]

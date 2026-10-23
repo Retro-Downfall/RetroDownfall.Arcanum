@@ -507,6 +507,53 @@ write("bad-xref-offsets.pdf", build({
     5: FONT,
 }, xref_shift=7))
 
+# ---- a PDF 1.5 file whose catalog, page tree, page and font live in a compressed object stream, found only through the
+# cross-reference STREAM. With an intact stream it extracts; with the stream's entries garbled there is nothing for a
+# repair scan to find (the objects are not written as "n 0 obj" at top level), so no reader can open it.
+def xref_stream_doc(garble):
+    font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    members = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"),
+        (5, font),
+    ]
+    index = b""
+    body = b""
+    for number, data in members:
+        index += b"%d %d " % (number, len(body))
+        body += data + b"\n"
+    objstm = index + body
+    out = bytearray(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    offsets = {}
+    content = show(b"XREF-STREAM-TEXT")
+    offsets[4] = len(out)
+    out += b"4 0 obj\n" + stream(b"", content) + b"\nendobj\n"
+    offsets[6] = len(out)
+    out += b"6 0 obj\n<< /Type /ObjStm /N 4 /First %d /Length %d >>\nstream\n" % (len(index), len(objstm)) + objstm + b"\nendstream\nendobj\n"
+    offsets[7] = len(out)
+    # (type, field 2, field 3): type 2 is "compressed in object stream 6, at index field 3"
+    entries = {
+        0: (0, 0, 255),
+        1: (2, 6, 0),
+        2: (2, 6, 1),
+        3: (2, 6, 2),
+        4: (1, offsets[4], 0),
+        5: (2, 6, 3),
+        6: (1, offsets[6], 0),
+        7: (1, offsets[7], 0),
+    }
+    data = b"".join(struct.pack(">BHB", *entries[number]) for number in range(8))
+    if garble:
+        data = bytes(byte ^ 0x5A for byte in data)
+    out += b"7 0 obj\n<< /Type /XRef /Size 8 /W [1 2 1] /Root 1 0 R /Length %d >>\nstream\n" % len(data) + data + b"\nendstream\nendobj\n"
+    out += b"startxref\n%d\n%%%%EOF\n" % offsets[7]
+    return bytes(out)
+
+
+write("xref-stream.pdf", xref_stream_doc(garble=False))
+write("xref-stream-garbled.pdf", xref_stream_doc(garble=True))
+
 # PdfPig repairs both of the files above by scanning for objects even with lenient parsing off, so they
 # still extract. These two it cannot repair: a trailer it cannot read, and a trailer with no catalog.
 multi = build(multi_objs)
@@ -531,6 +578,28 @@ for label, n in [("1m", 1_000_000), ("5m", 5_000_000), ("20m", 20_000_000)]:
     data, zlen = flate_doc(content)
     write(f"flate-letters-{label}.pdf", data)
     print(f"  flate-letters-{label}: {n} glyphs from {zlen} compressed bytes")
+
+# A form XObject chain 30 deep in which every form invokes the next TWICE (2^29 invocations of the last, which draws
+# nothing). It is nested well inside the parser's 50-level limit, has no cycle, shows one line of visible text, and costs
+# about 40 minutes of CPU and little memory in an unlimited parser, so only a wall clock or CPU limit ends it.
+def fan_out_doc(depth, fan):
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"4 0 R", resources_extra=b"/XObject << /Fa 6 0 R >>"),
+        4: stream(b"", show(b"FAN-OUT-VISIBLE-TEXT") + b"/Fa Do\n"),
+        5: FONT,
+    }
+    for index in range(depth):
+        number = 6 + index
+        last = index == depth - 1
+        resources = b"/Resources << >>" if last else b"/Resources << /XObject << /Fa %d 0 R >> >>" % (number + 1)
+        body = b"\n" if last else b"/Fa Do\n" * fan
+        objs[number] = stream(b"/Type /XObject /Subtype /Form /BBox [0 0 612 792] " + resources, body)
+    return build(objs)
+
+
+write("xobject-fan-out.pdf", fan_out_doc(30, 2))
 
 # ---- not committed: larger than the 1 MiB attachment intake ceiling, so the worker would refuse them at stdin
 if LARGE:

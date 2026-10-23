@@ -53,6 +53,7 @@ Expected outcomes are for the production extractor with its default limits unles
 | `missing-font.pdf` | a run whose font the page does not define, then a good run | `Extracted` with the good run only |
 | `huge-count.pdf` | a page tree whose `/Count` claims 2,000,000,000 pages; one is real | `Extracted`, one page |
 | `deep-pages-1k.pdf` | the page is 1,000 levels down the page tree | `Extracted` |
+| `xref-stream.pdf` | PDF 1.5: the catalog, page tree, page and font sit in a compressed object stream, found only through an intact cross-reference stream | `Extracted` (`XREF-STREAM-TEXT`); the control for `xref-stream-garbled.pdf` |
 
 ### Text a reader does not see (all extracted: #163 decides every text-showing run is)
 
@@ -93,9 +94,13 @@ a PdfPig change or reading the encryption dictionary ourselves.
 | `truncated.pdf` | the first half of `cups-text.pdf` (no trailer) |
 | `bad-trailer.pdf` | the trailer's `/Size` and `/Root` are not numbers or references |
 | `missing-root.pdf` | the trailer has no `/Root` |
+| `xref-stream-garbled.pdf` | `xref-stream.pdf` with the entries of its cross-reference stream garbled: the objects it indexes are inside an object stream, so there is nothing for a repair scan to find |
 
 `bad-startxref.pdf` and `bad-xref-offsets.pdf` have a wrong `startxref` and cross-reference offsets. PdfPig rebuilds the
-table by scanning even with lenient parsing off, so they are `Extracted` (`BROKEN-XREF-TEXT`), not `Malformed`.
+table by scanning even with lenient parsing off, so they are `Extracted` (`BROKEN-XREF-TEXT`), not `Malformed`. A damaged
+cross-reference table is therefore `Failed` only when the parser cannot rebuild it: a table whose objects are written at
+top level is repaired by scanning, while `xref-stream-garbled.pdf` (objects inside an object stream), an unreadable trailer
+and a missing `/Root` are not.
 
 ### Hostile structure that PdfPig 0.1.17-alpha-202610200037 turns into exceptions
 
@@ -112,7 +117,7 @@ cheap and safe in-process on the pinned version.
 
 ## Worker-only: never load these in an in-process test
 
-They cost seconds and gigabytes in the parser. They exist to prove the worker's memory, CPU and wall-clock limits kill
+They cost seconds to minutes and up to gigabytes in the parser. They exist to prove the worker's memory, CPU and wall-clock limits kill
 the process, and they are small on disk because they are compressed.
 
 | File | Size | What happens in an unlimited process |
@@ -121,6 +126,7 @@ the process, and they are small on disk because they are compressed.
 | `flate-letters-1m.pdf` | 1.6 KB | one page of 1,000,000 glyphs; about 530 MB, 3 s. Over the 250,000-glyph page bound. |
 | `flate-letters-5m.pdf` | 5.5 KB | 5,000,000 glyphs; over 2 GB, still running after 20 s |
 | `flate-letters-20m.pdf` | 20 KB | 20,000,000 glyphs; over 6.5 GB, still running after 20 s |
+| `xobject-fan-out.pdf` | 5.9 KB | a chain of 30 form XObjects, each invoking the next twice: 2^29 invocations of the last, which draws nothing. No cycle, nested well inside the parser's 50-level limit, one line of visible text. About 40 minutes of CPU and under 60 MB, so only a clock ends it; the worker's own 8 s deadline does |
 
 The `--large` generator output (`deep-dict-info.pdf`, `deep-dict-resources.pdf`, `deep-pages-100k.pdf`,
 `deep-xobject-chain-5k.pdf`, `deep-xobject-chain-50k.pdf`, `q-nesting-1m.pdf`) is larger than the intake ceiling, so the
