@@ -1008,6 +1008,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             && site.Member == "ReadBytesAsync"
             && site.Callee == "System.IO.Stream.ReadAsync");
 
+        // The isolated PDF host reaches its worker process only through the reviewed seam, as a provider call; the runner
+        // behind it is not traversed.
+        Assert.Contains(scoped.Items, static site =>
+            site.SourcePath.EndsWith("/Weave/SessionAttachmentIsolatedDocumentHost.cs", StringComparison.Ordinal)
+            && site.Callee == "RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.IDocumentExtractionWorker.RunAsync"
+            && site.Kind == HostedProducerSiteKind.ProviderCall);
+
+        Assert.DoesNotContain(scoped.Items, static site =>
+            site.SourcePath.Contains("/Process/CappedChildProcessRunner.cs", StringComparison.Ordinal));
+
         Assert.True(
             scoped.Diagnostics.Count == 0,
             string.Join(

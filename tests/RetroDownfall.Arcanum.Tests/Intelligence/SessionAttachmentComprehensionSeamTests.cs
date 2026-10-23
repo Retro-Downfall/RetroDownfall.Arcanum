@@ -63,12 +63,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
         foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
         {
-            // PDF is registered but parsed only out of process, and no real PDF producer file is bundled here yet:
-            // it joins this seam when its isolated host and its producer document exist.
-            if (format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType)
-            {
-                data.Add(format.MimeType);
-            }
+            data.Add(format.MimeType);
         }
 
         return data;
@@ -93,6 +88,9 @@ public sealed class SessionAttachmentComprehensionSeamTests
     [MemberData(nameof(RegistryMimeTypes))]
     public async Task AttachSessionFile_ThroughTheRealToolAndPipeline_InjectsTheFramedDocument(string mimeType)
     {
+        // PDF is parsed by the registry's isolated worker, run here in this process (the process boundary has its own tests).
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
         SessionAttachmentTurnBudget.BeginTurn();
 
         Guid sessionId = Guid.NewGuid();
@@ -293,6 +291,9 @@ public sealed class SessionAttachmentComprehensionSeamTests
     [MemberData(nameof(RegistryMimeTypes))]
     public async Task PerTurnReference_ThroughPrepareThenMaterialize_InjectsTheFramedDocument(string mimeType)
     {
+        // PDF is parsed by the registry's isolated worker, run here in this process (the process boundary has its own tests).
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
         Guid sessionId = Guid.NewGuid();
 
         byte[] bytes = ComprehensionSeamDocuments.Bytes(mimeType);
@@ -409,6 +410,9 @@ public sealed class SessionAttachmentComprehensionSeamTests
     [MemberData(nameof(RegistryMimeTypes))]
     public async Task Refresh_MaterializesEveryRegistryDocumentFramedAsUntrustedData(string mimeType)
     {
+        // PDF is parsed by the registry's isolated worker, run here in this process (the process boundary has its own tests).
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
         SessionAttachmentTurnBudget.BeginTurn();
 
         Guid sessionId = Guid.NewGuid();
@@ -442,6 +446,9 @@ public sealed class SessionAttachmentComprehensionSeamTests
     [MemberData(nameof(RegistryMimeTypes))]
     public async Task Pin_MaterializesEveryRegistryDocumentFramedAsUntrustedData(string mimeType)
     {
+        // PDF is parsed by the registry's isolated worker, run here in this process (the process boundary has its own tests).
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
         Guid sessionId = Guid.NewGuid();
 
         byte[] bytes = ComprehensionSeamDocuments.Bytes(mimeType);
@@ -474,6 +481,182 @@ public sealed class SessionAttachmentComprehensionSeamTests
         Assert.Contains("UNTRUSTED DATA; " + format!.FormatName + "; layout not preserved", text, StringComparison.Ordinal);
 
         Assert.Contains(expected.TrimEnd('\n'), text, StringComparison.Ordinal);
+    }
+
+    private const string PdfFrame =
+        "UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see";
+
+    /// <summary>The pages of <c>multi-page.pdf</c> as every path shows them: page 2 is empty, so page 3 is still page 3.</summary>
+    private const string MultiPageText =
+        "Page 1\nPAGE-ONE-ALPHA\nPage 3\nPAGE-THREE-MARKER-GAMMA\nPage 4\nPAGE-FOUR-DELTA\n";
+
+    [Fact]
+    public async Task AttachSessionFile_Pdf_ThroughTheRealToolAndPipeline_InjectsItsPagesUnderTheUnseenTextFrame()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        using IDisposable pdfWorker = InProcessPdfWorker.Use(out InProcessPdfWorker worker);
+
+        (SessionAttachmentRecord record, byte[] bytes) = Pdf("multi-page.pdf");
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, BothGates());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(record.SessionId!.Value, record.LogicalKey);
+
+        Assert.False(processed.Failed, processed.ResultText);
+
+        string injected = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(processed.AdditionalContextContents))).Text;
+
+        Assert.Contains(PdfFrame, injected, StringComparison.Ordinal);
+
+        Assert.Contains(MultiPageText.TrimEnd('\n'), injected, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Page 2", injected, StringComparison.Ordinal);
+
+        Assert.Equal(1, worker.Runs);
+    }
+
+    [Fact]
+    public async Task AttachSessionFile_PdfWithTextAReaderWouldNotSee_InjectsTheWhiteAndOffPageRunsUnderThatFrame()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
+        (SessionAttachmentRecord record, byte[] bytes) = Pdf("hidden.pdf");
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, BothGates());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(record.SessionId!.Value, record.LogicalKey);
+
+        string injected = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(processed.AdditionalContextContents))).Text;
+
+        Assert.Contains(PdfFrame, injected, StringComparison.Ordinal);
+
+        Assert.Contains("WHITE-ON-WHITE-CHARLIE", injected, StringComparison.Ordinal);
+
+        Assert.Contains("OFFPAGE-ECHO", injected, StringComparison.Ordinal);
+
+        Assert.Contains("INVISIBLE-LINE-BRAVO", injected, StringComparison.Ordinal);
+    }
+
+    public static TheoryData<string, string> UnreadablePdfs() => new()
+    {
+        { "encrypted-aes-password.pdf", "Password-protected PDFs are not supported." },
+        { "truncated.pdf", "The PDF document is malformed." },
+    };
+
+    [Theory]
+    [MemberData(nameof(UnreadablePdfs))]
+    public async Task AttachSessionFile_PdfTheWorkerCannotRead_TellsTheModelItWasNotAttachedAndWhy(string fixture, string reason)
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
+        (SessionAttachmentRecord record, byte[] bytes) = Pdf(fixture);
+
+        await using AttachToolHarness harness = await AttachToolHarness.CreateAsync(record, bytes, BothGates());
+
+        ToolExecutionPipeline.ProcessedToolCall processed = await harness.AttachAsync(record.SessionId!.Value, record.LogicalKey);
+
+        Assert.Null(processed.AdditionalContextContents);
+
+        Assert.Equal("Not attached: 'document.bin' v1. " + reason, processed.ResultText);
+    }
+
+    [Fact]
+    public async Task Refresh_Pdf_MaterializesItsPagesUnderTheUnseenTextFrame()
+    {
+        SessionAttachmentTurnBudget.BeginTurn();
+
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
+        (SessionAttachmentRecord record, byte[] bytes) = Pdf("multi-page.pdf");
+
+        IReadOnlyList<AIContent>? contents = await SessionAttachmentToolInjection.TryBuildRefreshedContentsAsync(
+            new NoOpSessionAttachmentStore(readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes)),
+            record,
+            BothGates(),
+            null);
+
+        string injected = Assert.IsType<TextContent>(Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<AIContent>>(contents))).Text;
+
+        Assert.Contains(PdfFrame, injected, StringComparison.Ordinal);
+
+        Assert.Contains(MultiPageText.TrimEnd('\n'), injected, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PerTurnReference_Pdf_ThroughPrepareThenMaterialize_InjectsItsPagesUnderTheUnseenTextFrame()
+    {
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
+        (SessionAttachmentRecord record, byte[] bytes) = Pdf("multi-page.pdf");
+
+        NoOpSessionAttachmentStore store = new(
+            records: new Dictionary<Guid, SessionAttachmentRecord> { [record.Id] = record },
+            readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes));
+
+        SessionAttachmentTurnPreparation preparation = await SessionAttachmentTurnService.PrepareAsync(
+            new PingRequest("summarize the document", SessionId: record.SessionId, AttachmentReferences: [record.Id]),
+            store,
+            BothGates(),
+            turnSessionId: record.SessionId,
+            turnEntryId: null,
+            pendingTurnId: null);
+
+        SessionAttachmentExplicitMaterialization deferred = Assert.Single(preparation.ExplicitMaterializations!);
+
+        SessionAttachmentReferenceMaterialization materialized = await SessionAttachmentTurnService.MaterializeReferenceAsync(
+            deferred.Record,
+            store,
+            BothGates(),
+            "model",
+            CancellationToken.None);
+
+        Assert.Null(materialized.ErrorMessage);
+
+        string injected = Assert.IsType<TextContent>(Assert.Single(materialized.Contents)).Text;
+
+        Assert.Contains(PdfFrame, injected, StringComparison.Ordinal);
+
+        Assert.Contains(MultiPageText.TrimEnd('\n'), injected, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Pin_Pdf_MaterializesItsPagesUnderTheUnseenTextFrame()
+    {
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
+        (SessionAttachmentRecord record, byte[] bytes) = Pdf("multi-page.pdf");
+
+        SessionContextPinRecord pin = new(
+            Guid.NewGuid(), record.SessionId!.Value, SessionContextPinKind.Attachment,
+            record.Id.ToString("D"), "document", record.ContentSha256, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        SessionContextPinMaterializer materializer = new(
+            new StaticPinStore(pin),
+            new NoOpSessionAttachmentStore(record, readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes)),
+            null!,
+            new TestOptionsSnapshot<ArcanumSettings>(BothGates()));
+
+        SessionContextPinMaterialization result = await materializer.MaterializeAsync(record.SessionId!.Value, Path.GetTempPath(), CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Current", text, StringComparison.Ordinal);
+
+        Assert.Contains(PdfFrame, text, StringComparison.Ordinal);
+
+        Assert.Contains(MultiPageText.TrimEnd('\n'), text, StringComparison.Ordinal);
+    }
+
+    private static (SessionAttachmentRecord Record, byte[] Bytes) Pdf(string fixture)
+    {
+        byte[] bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "TestData", "Comprehension", "Pdf", fixture));
+
+        return (ComprehensionSeamDocuments.Record(Guid.NewGuid(), SessionAttachmentComprehensionPolicy.PdfMimeType, bytes.Length), bytes);
     }
 
     private static Task<SessionAttachmentTurnPreparation> PrepareReferenceAsync(

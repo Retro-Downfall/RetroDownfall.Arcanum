@@ -438,6 +438,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         int reads = 0;
 
+        // At once: a caller that must not wait never queues for the slot.
         SessionAttachmentExtractionResult deferred = await host.ExtractAsync(
             _ =>
             {
@@ -448,7 +449,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
             Snapshot.Length,
             1024,
             CancellationToken.None,
-            waitForSlot: false);
+            waitForSlot: false).WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(SessionAttachmentExtractionStatus.Deferred, deferred.Status);
 

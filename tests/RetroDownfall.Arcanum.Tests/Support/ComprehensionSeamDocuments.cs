@@ -24,6 +24,7 @@ internal static class ComprehensionSeamDocuments
         [SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType] = "OpenDocument/handmade-libreoffice-style.odp",
         [SessionAttachmentComprehensionPolicy.VisioDrawingMimeType] = "Visio/hand-built-stencil.vsdx",
         [SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType] = "Visio/hand-built-stencil.vsdm",
+        [SessionAttachmentComprehensionPolicy.PdfMimeType] = "Pdf/cups-text.pdf",
     };
 
     /// <summary>The bytes of a document of the registry type <paramref name="mimeType"/>.</summary>

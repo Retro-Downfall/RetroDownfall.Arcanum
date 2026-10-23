@@ -314,7 +314,9 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         try
         {
-            SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, new FakeWorkLease(), attempt: 5);
+            // At once: the indexer never queues for the slot, so it cannot hold its lease behind another document.
+            SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, new FakeWorkLease(), attempt: 5)
+                .WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.Same(SessionAttachmentIndexOutcome.DeferredForBusyFamily, outcome);
 
@@ -393,6 +395,37 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
         Assert.Equal(SessionAttachmentIndexStatus.NotEligible, (await _index!.GetStateAsync(attachment.Id, CancellationToken.None)).Status);
     }
 
+    [SkippableFact]
+    public async Task ProcessAsync_HostilePdfStoppedByTheWorkersLimits_IsFailedAndAHealthyPdfBehindItIsIndexed()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // The registry's own PDF host and process worker, re-launched as the Cli apphost: no host is injected.
+        using IDisposable worker = ManagedApphostDocumentWorker.Use();
+
+        SessionAttachmentRecord hostile = await PersistPdfAsync("flate-letters-20m.pdf");
+
+        SessionAttachmentRecord healthy = await PersistPdfAsync("multi-page.pdf");
+
+        SessionAttachmentIndexOutcome stopped = await ProcessAsync(hostile, host: null, new FakeWorkLease());
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, stopped.Status);
+
+        Assert.False(stopped.ShouldRetry);
+
+        Assert.Contains(
+            (await _index!.GetStateAsync(hostile.Id, CancellationToken.None)).FailureReason,
+            new[] { ProcessDocumentExtractionWorker.ResourceLimitsReason, ProcessDocumentExtractionWorker.DeadlineReason });
+
+        SessionAttachmentIndexOutcome indexed = await ProcessAsync(healthy, host: null, new FakeWorkLease());
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, indexed.Status);
+
+        SessionAttachmentIndexedChunk chunk = Assert.Single(await _index.GetChunksForAttachmentAsync(healthy.Id, CancellationToken.None));
+
+        Assert.Equal((1, 4), (chunk.StartLine, chunk.EndLine));
+    }
+
     private async Task AssertDurablyPendingAsync(SessionAttachmentRecord attachment, int attempt)
     {
         SessionAttachmentIndexState state = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
@@ -415,7 +448,7 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
     private Task<SessionAttachmentIndexOutcome> ProcessAsync(
         SessionAttachmentRecord attachment,
-        SessionAttachmentDocumentHost host,
+        SessionAttachmentDocumentHost? host,
         IGrimoireWorkLease lease,
         int attempt = 0) =>
         new SessionAttachmentIndexProcessor(

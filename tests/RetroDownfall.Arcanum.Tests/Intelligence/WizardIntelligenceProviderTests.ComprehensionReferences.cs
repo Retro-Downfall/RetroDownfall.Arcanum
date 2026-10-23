@@ -28,12 +28,7 @@ public sealed partial class WizardIntelligenceProviderTests
 
         foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
         {
-            // PDF is registered but parsed only out of process, and no real PDF producer file is bundled here yet:
-            // it joins this provider path when its isolated host and its producer document exist.
-            if (format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType)
-            {
-                data.Add(format.MimeType);
-            }
+            data.Add(format.MimeType);
         }
 
         return data;
@@ -47,6 +42,9 @@ public sealed partial class WizardIntelligenceProviderTests
     [MemberData(nameof(ComprehensionRegistryMimeTypes))]
     public async Task ExplicitAttachmentReference_ToAComprehensionDocument_ReachesTheModelFramedAsUntrustedData(string mimeType)
     {
+        // PDF is parsed by the registry's isolated worker, run here in this process (the process boundary has its own tests).
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
         Guid sessionId = Guid.NewGuid();
 
         byte[] bytes = ComprehensionSeamDocuments.Bytes(mimeType);

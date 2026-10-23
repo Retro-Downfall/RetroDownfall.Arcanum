@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-
 using Xunit.Abstractions;
 
 using RetroDownfall.Arcanum.Infrastructure.Platform;
@@ -8,27 +6,20 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
-using RetroDownfall.Arcanum.Tests.Process;
+using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension;
 
 /// <summary>
-/// The real worker, re-launched as the managed Cli apphost in this test output through the production launch: the hidden
-/// mode in the Cli's <c>Main</c>, the applied jail with no network, the cleared environment and the code-owned limits.
-/// The test host cannot re-launch itself, so the launch is pointed at the apphost and given what a managed apphost needs
-/// beyond the Native AOT binary: its runtime's location, read access to that runtime, and more file descriptors.
-/// Everything else is the production path. The worker's verdict must equal what the
-/// extractor says in this process for the same bytes.
+/// The real worker, re-launched out of process as the managed Cli apphost through the production launch
+/// (<see cref="ManagedApphostDocumentWorker"/>). The worker's verdict must equal what the extractor says in this process
+/// for the same bytes, and a hostile document must end in its own process without affecting the next one.
 /// </summary>
 [Collection("ChildProcess")]
 public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHelper output)
 {
-    private const string HomebrewPrefix = "/opt/homebrew/";
-
-    private const int ManagedApphostFileDescriptors = 256;
-
     [SkippableTheory]
     [InlineData("cups-text.pdf")]
     [InlineData("multi-page.pdf")]
@@ -136,30 +127,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
 
     private static async Task<DocumentWorkerResult> RunAsync(byte[] document)
     {
-        Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
-
-        string apphost = Path.Combine(AppContext.BaseDirectory, "RetroDownfall.Arcanum.Cli");
-
-        Skip.IfNot(File.Exists(apphost), "The Cli apphost is not in the test output.");
-
-        // The apphost finds the shared runtime through DOTNET_ROOT, which the jailed child must also be allowed to read
-        // and map, together with the libraries that runtime links against (a Homebrew runtime's compression library
-        // links Homebrew's brotli; without it every Flate stream decodes to nothing). It also keeps far more files open
-        // than the Native AOT binary the descriptor limit is sized for. A Native AOT binary needs none of this.
-        string dotnetRoot = Path.GetFullPath(Path.Combine(RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", ".."));
-
-        List<string> runtimeRoots = [dotnetRoot];
-
-        if (dotnetRoot.StartsWith(HomebrewPrefix, StringComparison.Ordinal))
-        {
-            runtimeRoots.Add(HomebrewPrefix);
-        }
-
-        using IDisposable launch = ProcessDocumentExtractionWorker.UseExecutableForTests(
-            apphost,
-            new Dictionary<string, string> { ["DOTNET_ROOT"] = dotnetRoot },
-            runtimeRoots,
-            ManagedApphostFileDescriptors);
+        using IDisposable launch = ManagedApphostDocumentWorker.Use();
 
         return await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
             .RunAsync(DocumentWorkerFormat.Pdf, document, CancellationToken.None);
