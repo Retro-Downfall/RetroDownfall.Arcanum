@@ -127,8 +127,8 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
         Assert.Equal(PdfExtractionKind.Extracted, healthy.Outcome!.Kind);
     }
 
-    /// <summary>Names a published Native AOT Cli binary for the tests that run the shipping worker itself.</summary>
-    private const string NativeAotWorkerVariable = "ARCANUM_TEST_NATIVE_AOT_WORKER";
+    /// <summary>Names a published Native AOT Cli binary, as for every test that runs the shipping binary itself.</summary>
+    private const string NativeAotWorkerVariable = "ARCANUM_PUBLISHED_EXECUTABLE";
 
     [SkippableTheory]
     [InlineData("multi-page.pdf")]
