@@ -64,7 +64,7 @@ public sealed class SessionAttachmentComprehensionTests
     }
 
     [Theory]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("image/png")]
     public async Task ExtractDocument_UnsupportedMime_DoesNotReadBytes(string mimeType)
@@ -75,6 +75,27 @@ public sealed class SessionAttachmentComprehensionTests
             store, CreateRecord(9) with { MimeType = mimeType }, Settings(), 1024, CancellationToken.None);
 
         Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_PdfWithNoHostYet_IsNotEligibleWithoutReadingBytes()
+    {
+        // PDF is a registry format that only an isolated worker can parse. Until the isolated host is registered,
+        // the in-process table holds none for it, so an eligible PDF record resolves to no extraction at all.
+        NoOpSessionAttachmentStore store = new(readBytes: (_, _) => throw new InvalidOperationException("Hostless document read."));
+
+        SessionAttachmentExtractionResult result = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
+            store,
+            CreateRecord(9) with { MimeType = SessionAttachmentComprehensionPolicy.PdfMimeType },
+            Settings(),
+            1024,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
+
+        Assert.Empty(result.Text);
+
+        Assert.Null(result.Pages);
     }
 
     [Fact]

@@ -100,8 +100,10 @@ public sealed class ComprehensionFormatFixturesTests
     [Fact]
     public void Fixtures_CoverEveryRegistryFormatButTheClosedContainer()
     {
+        // PDF is registered but parsed only out of process, so these in-process package fixtures do not cover it.
         string[] expected = [.. SessionAttachmentComprehensionPolicy.SupportedMimeTypes
-            .Where(mimeType => mimeType != SessionAttachmentComprehensionPolicy.MimeType)
+            .Where(mimeType => mimeType != SessionAttachmentComprehensionPolicy.MimeType
+                && mimeType != SessionAttachmentComprehensionPolicy.PdfMimeType)
             .Order(StringComparer.Ordinal)];
 
         string[] actual = [.. ComprehensionFormatFixtures.All.Select(fixture => fixture.MimeType).Order(StringComparer.Ordinal)];

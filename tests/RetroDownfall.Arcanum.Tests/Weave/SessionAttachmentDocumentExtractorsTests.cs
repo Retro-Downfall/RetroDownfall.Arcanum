@@ -14,13 +14,21 @@ public sealed class SessionAttachmentDocumentExtractorsTests
     {
         TheoryData<string> data = [];
 
-        foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
+        foreach (SessionAttachmentComprehensionFormat format in InProcessFormats())
         {
             data.Add(format.MimeType);
         }
 
         return data;
     }
+
+    /// <summary>
+    /// The registry's formats that run in the process. PDF is registered but is parsed only out of process, so the
+    /// static in-process table holds no host for it; its isolated host arrives with the document worker.
+    /// </summary>
+    private static IEnumerable<SessionAttachmentComprehensionFormat> InProcessFormats() =>
+        SessionAttachmentComprehensionPolicy.Formats.Where(
+            static format => format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType);
 
     [Theory]
     [MemberData(nameof(RegistryMimeTypes))]
@@ -46,7 +54,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("text/plain")]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     [InlineData("application/vnd.oasis.opendocument.text-template")]
@@ -111,7 +119,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
 
         Assert.Equal(
             8,
-            SessionAttachmentComprehensionPolicy.Formats
+            InProcessFormats()
                 .Select(static format => SessionAttachmentDocumentExtractors.For(format.MimeType))
                 .Distinct(ReferenceEqualityComparer.Instance)
                 .Count());

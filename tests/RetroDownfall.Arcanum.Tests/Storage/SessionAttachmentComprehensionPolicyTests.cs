@@ -20,10 +20,11 @@ public sealed class SessionAttachmentComprehensionPolicyTests
         { "application/vnd.oasis.opendocument.presentation", "OpenDocument presentation" },
         { "application/vnd.ms-visio.drawing", "Visio drawing" },
         { "application/vnd.ms-visio.drawing.macroenabled.12", "Visio macro-enabled drawing (macros not read)" },
+        { "application/pdf", "PDF document" },
     };
 
     [Fact]
-    public void Formats_list_the_container_first_then_each_office_format_in_the_reviewed_order()
+    public void Formats_list_the_container_first_then_each_office_format_then_pdf_in_the_reviewed_order()
     {
         Assert.Equal(
             [
@@ -52,8 +53,45 @@ public sealed class SessionAttachmentComprehensionPolicyTests
                     "application/vnd.ms-visio.drawing", "Visio drawing"),
                 new SessionAttachmentComprehensionFormat(
                     "application/vnd.ms-visio.drawing.macroenabled.12", "Visio macro-enabled drawing (macros not read)"),
+                new SessionAttachmentComprehensionFormat(
+                    "application/pdf", "PDF document", SessionAttachmentRangeUnit.Pages),
             ],
             SessionAttachmentComprehensionPolicy.Formats);
+    }
+
+    [Fact]
+    public void Range_unit_is_pages_for_pdf_and_lines_for_every_other_format()
+    {
+        Assert.Equal(
+            [SessionAttachmentComprehensionPolicy.PdfMimeType],
+            SessionAttachmentComprehensionPolicy.Formats
+                .Where(static format => format.RangeUnit == SessionAttachmentRangeUnit.Pages)
+                .Select(static format => format.MimeType));
+
+        Assert.All(
+            SessionAttachmentComprehensionPolicy.Formats.Where(
+                static format => format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType),
+            static format => Assert.Equal(SessionAttachmentRangeUnit.Lines, format.RangeUnit));
+    }
+
+    [Fact]
+    public void Range_unit_defaults_to_lines()
+    {
+        Assert.Equal(SessionAttachmentRangeUnit.Lines, new SessionAttachmentComprehensionFormat("a/b", "label").RangeUnit);
+
+        Assert.Equal(SessionAttachmentRangeUnit.Lines, default(SessionAttachmentRangeUnit));
+    }
+
+    [Theory]
+    [InlineData("application/pdf")]
+    [InlineData(" Application/PDF ; charset=utf-8")]
+    public void TryGetFormat_resolves_pdf_to_the_pages_unit(string mimeType)
+    {
+        Assert.True(SessionAttachmentComprehensionPolicy.TryGetFormat(mimeType, out SessionAttachmentComprehensionFormat? format));
+
+        Assert.Equal("PDF document", format.FormatName);
+
+        Assert.Equal(SessionAttachmentRangeUnit.Pages, format.RangeUnit);
     }
 
     [Fact]
@@ -87,6 +125,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
                 SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType,
                 SessionAttachmentComprehensionPolicy.VisioDrawingMimeType,
                 SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType,
+                SessionAttachmentComprehensionPolicy.PdfMimeType,
             ],
             SessionAttachmentComprehensionPolicy.Formats.Select(static format => format.MimeType));
     }
@@ -145,7 +184,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("application/msword")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
@@ -192,7 +231,7 @@ public sealed class SessionAttachmentComprehensionPolicyTests
     }
 
     [Theory]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     public void IsEligibleDocument_refuses_a_mime_outside_the_registry(string mimeType)

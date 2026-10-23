@@ -63,7 +63,12 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
         foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
         {
-            data.Add(format.MimeType);
+            // PDF is registered but parsed only out of process, and no real PDF producer file is bundled here yet:
+            // it joins this seam when its isolated host and its producer document exist.
+            if (format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType)
+            {
+                data.Add(format.MimeType);
+            }
         }
 
         return data;
@@ -78,7 +83,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
     public static TheoryData<string> IneligibleBinaryMimeTypes() =>
     [
-        "application/pdf",
+        "application/rtf",
         "application/octet-stream",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
         "application/msword",

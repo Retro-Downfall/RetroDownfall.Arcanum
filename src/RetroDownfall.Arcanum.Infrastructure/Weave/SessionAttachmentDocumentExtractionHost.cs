@@ -340,7 +340,15 @@ internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDo
 
 internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSink
 {
+    /// <summary>
+    /// The most page marks one document retains. A page that would need a mark beyond it is not retained and the
+    /// result is truncated, so no retained character is ever attributed to a page that is not its own.
+    /// </summary>
+    internal const int MaximumPageMarks = 2_000;
+
     private readonly object _gate = new();
+
+    private readonly List<SessionAttachmentPageMark> _pages = [];
 
     private readonly StringBuilder _text;
 
@@ -353,6 +361,13 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
     private bool _closed;
 
     private bool _truncated;
+
+    // The page the next retained character starts, or zero when none has begun since the last mark. A mark is
+    // taken when that character is retained, so a page with no retained text leaves none.
+    private int _pendingPage;
+
+    // Whether the last character taken was a carriage return the transformer still holds back.
+    private bool _carriageReturnHeld;
 
     public BoundedDocumentTextSink(int maximumCharacters, CancellationToken cancellationToken)
     {
@@ -387,6 +402,8 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
 
                 _transformer.Append(current);
 
+                _carriageReturnHeld = current == '\r';
+
                 if (_truncated)
                 {
                     return false;
@@ -406,12 +423,37 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
                 return;
             }
 
-            _truncated = true;
+            Truncate();
+        }
+    }
 
-            if (_text.Length > 0 && char.IsHighSurrogate(_text[^1]))
+    public void BeginPage(int pageNumber)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageNumber);
+
+        lock (_gate)
+        {
+            if (_closed || _truncated)
             {
-                _text.Length--;
+                return;
             }
+
+            // The transformer holds a trailing carriage return back until it sees the next character, and would then
+            // emit its line break as the first character of this page. Releasing it now keeps that line break on the
+            // page that ended with it.
+            if (_carriageReturnHeld)
+            {
+                _carriageReturnHeld = false;
+
+                _transformer.Append('\n');
+
+                if (_truncated)
+                {
+                    return;
+                }
+            }
+
+            _pendingPage = pageNumber;
         }
     }
 
@@ -433,7 +475,8 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
                     ? SessionAttachmentExtractionStatus.NotEligible
                     : SessionAttachmentExtractionStatus.Extracted,
                 _text.ToString(),
-                _truncated);
+                _truncated,
+                Pages: _pages.Count == 0 ? null : _pages.ToArray());
         }
     }
 
@@ -452,18 +495,36 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
             return;
         }
 
-        if (_text.Length < _maximumCharacters)
+        if (_text.Length >= _maximumCharacters || (_pendingPage != 0 && _pages.Count == MaximumPageMarks))
         {
-            _text.Append(current);
+            Truncate();
 
             return;
         }
 
+        if (_pendingPage != 0)
+        {
+            _pages.Add(new SessionAttachmentPageMark(_text.Length, _pendingPage));
+
+            _pendingPage = 0;
+        }
+
+        _text.Append(current);
+    }
+
+    private void Truncate()
+    {
         _truncated = true;
 
         if (_text.Length > 0 && char.IsHighSurrogate(_text[^1]))
         {
             _text.Length--;
+
+            // A page whose only retained character was that surrogate has no text left to mark.
+            if (_pages.Count > 0 && _pages[^1].Offset == _text.Length)
+            {
+                _pages.RemoveAt(_pages.Count - 1);
+            }
         }
     }
 }

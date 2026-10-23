@@ -33,7 +33,10 @@ internal sealed record SessionAttachmentExtractionResult(
     SessionAttachmentExtractionStatus Status,
     string Text,
     bool WasTruncated,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    IReadOnlyList<SessionAttachmentPageMark>? Pages = null);
+
+internal readonly record struct SessionAttachmentPageMark(int Offset, int Page);
 
 internal sealed record SessionAttachmentTextChunk(
     int ChunkIndex,

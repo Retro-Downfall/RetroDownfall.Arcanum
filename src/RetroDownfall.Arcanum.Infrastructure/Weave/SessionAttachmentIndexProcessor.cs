@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+
 using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.Logging;
@@ -68,6 +70,17 @@ internal sealed class SessionAttachmentIndexProcessor(
     private const int AutomaticEmbeddingBatchSize = 64;
 
     private const string IndexPipelineVersion = "v1";
+
+    private const string DocumentPipelineVersion = "comprehension-v1";
+
+    /// <summary>
+    /// The pipeline of a document whose chunk ranges are pages. It differs from <see cref="DocumentPipelineVersion"/> so an
+    /// in-flight replacement begun before pages were recorded is never resumed into one that records them.
+    /// </summary>
+    private const string PagedDocumentPipelineVersion = "comprehension-v2";
+
+    /// <summary>The one code-owned reason a pages-unit document without usable page marks carries.</summary>
+    internal const string PageProvenanceUnavailableReason = "Document page provenance is unavailable.";
 
     /// <summary>Indexes one dequeued request under the work lease its caller already holds.</summary>
     /// <remarks>
@@ -144,6 +157,13 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         Stream stream;
 
+        // A document of a pages-unit format states its chunk ranges as pages, which the extraction's page marks give.
+        bool pagedDocument = isDocument
+            && SessionAttachmentComprehensionPolicy.TryGetFormat(attachment.MimeType, out SessionAttachmentComprehensionFormat? documentFormat)
+            && documentFormat.RangeUnit == SessionAttachmentRangeUnit.Pages;
+
+        SessionAttachmentPageMap? pageMap = null;
+
         try
         {
             if (isDocument)
@@ -181,6 +201,16 @@ internal sealed class SessionAttachmentIndexProcessor(
                         extractedAt, cancellationToken).ConfigureAwait(false);
 
                     return Concluded(status, shouldRetry: false);
+                }
+
+                // A pages-unit chunk cannot be told from a line-numbered one once stored, so text that no page claims is a
+                // defective extraction, not a document to index under a page label it cannot honour.
+                if (pagedDocument && !SessionAttachmentPageMap.TryCreate(extraction.Pages, out pageMap))
+                {
+                    await MarkWithoutIndexAsync(attachment, SessionAttachmentIndexStatus.Failed, request.Attempt,
+                        PageProvenanceUnavailableReason, extractedAt, cancellationToken).ConfigureAwait(false);
+
+                    return Concluded(SessionAttachmentIndexStatus.Failed, shouldRetry: false);
                 }
 
                 // Deterministic document failures are terminal even while the provider is down.
@@ -235,7 +265,7 @@ internal sealed class SessionAttachmentIndexProcessor(
 
         string pipelineFingerprint = string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"{(isDocument ? "comprehension-v1" : IndexPipelineVersion)}:{chunkSize}:{overlap}");
+            $"{(pagedDocument ? PagedDocumentPipelineVersion : isDocument ? DocumentPipelineVersion : IndexPipelineVersion)}:{chunkSize}:{overlap}");
 
         SessionAttachmentIndexCheckpoint checkpoint = await index.BeginReplaceAsync(
             attachment,
@@ -472,7 +502,7 @@ internal sealed class SessionAttachmentIndexProcessor(
                     continue;
                 }
 
-                chunkBatch.Add(chunks.Current);
+                chunkBatch.Add(pageMap is null ? chunks.Current : pageMap.WithPages(chunks.Current));
 
                 if (chunkBatch.Count == AutomaticEmbeddingBatchSize
                     && await FlushBatchAsync(workLease).ConfigureAwait(false) is { } batchFailure)
@@ -565,4 +595,68 @@ internal sealed class SessionAttachmentIndexProcessor(
             failureReason,
             extractedAt,
             cancellationToken);
+}
+
+/// <summary>
+/// Maps a character offset of an extracted document's text to the page that holds it. Page marks come from the
+/// bounded sink in increasing offset order, so the page of an offset is that of the last mark at or before it.
+/// </summary>
+internal sealed class SessionAttachmentPageMap
+{
+    private readonly IReadOnlyList<SessionAttachmentPageMark> _marks;
+
+    private SessionAttachmentPageMap(IReadOnlyList<SessionAttachmentPageMark> marks)
+    {
+        _marks = marks;
+    }
+
+    /// <summary>
+    /// Builds the map when the first mark opens the text. Without marks, or with text ahead of the first one, some
+    /// character would belong to no page, so there is no map.
+    /// </summary>
+    public static bool TryCreate(
+        IReadOnlyList<SessionAttachmentPageMark>? marks,
+        [NotNullWhen(true)] out SessionAttachmentPageMap? map)
+    {
+        if (marks is { Count: > 0 } && marks[0].Offset == 0)
+        {
+            map = new SessionAttachmentPageMap(marks);
+
+            return true;
+        }
+
+        map = null;
+
+        return false;
+    }
+
+    /// <summary>The chunk with its start and end lines replaced by the pages of its first and last character.</summary>
+    public SessionAttachmentTextChunk WithPages(SessionAttachmentTextChunk chunk) => chunk with
+    {
+        StartLine = PageAt(chunk.CharacterStart),
+        EndLine = PageAt(chunk.CharacterEnd - 1),
+    };
+
+    private int PageAt(int offset)
+    {
+        int low = 0;
+
+        int high = _marks.Count - 1;
+
+        while (low < high)
+        {
+            int middle = low + ((high - low + 1) / 2);
+
+            if (_marks[middle].Offset <= offset)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        return _marks[low].Page;
+    }
 }
