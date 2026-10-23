@@ -110,6 +110,12 @@ Expected outcomes are for the production extractor with its default limits unles
 | `encrypted-rc4-password.pdf`, `encrypted-aes-password.pdf` | `secret` | `owner` | `PasswordRequired` |
 | `encrypted-rc4-owner-empty.pdf`, `encrypted-aes-owner-empty.pdf` | `secret` | empty | `Extracted` (known limitation, below) |
 | `encrypted-pubsec.pdf` | none: public-key (certificate) security, `/Filter /Adobe.PubSec`, which PdfPig has no handler for | none | `PasswordRequired`, not `Malformed`: the file is well formed and protected |
+| `encrypted-pubsec-xref-stream.pdf` | none: the same certificate security in a PDF 1.5 file, declared by the cross-reference stream's dictionary | none | `PasswordRequired` |
+
+A file PdfPig cannot open is `PasswordRequired` only when a trailer declares encryption: an `/Encrypt` key directly in a
+`trailer` dictionary or in a cross-reference stream's dictionary. The name anywhere else (page text, a string, a comment, a
+stream, another dictionary) does not count, so a damaged file that mentions it stays `Malformed`
+(`truncated-mentions-encrypt.pdf`).
 
 **Known limitation.** The extractor never supplies a password, but PdfPig tries the empty string as the *owner* password
 as well as the user password, and an owner session decrypts the whole file. A file that needs a real user password but
@@ -124,6 +130,7 @@ a PdfPig change or reading the encryption dictionary ourselves.
 | `garbage.pdf` | 4,096 seeded random bytes |
 | `header-only.pdf` | `%PDF-1.4` and nothing else |
 | `truncated.pdf` | the first half of `cups-text.pdf` (no trailer) |
+| `truncated-mentions-encrypt.pdf` | an unencrypted one-page file whose page text names the `/Encrypt` key, cut before its cross-reference table (no trailer): damaged, not protected, so not `PasswordRequired` |
 | `bad-trailer.pdf` | the trailer's `/Size` and `/Root` are not numbers or references |
 | `missing-root.pdf` | the trailer has no `/Root` |
 | `xref-stream-garbled.pdf` | `xref-stream.pdf` with the entries of its cross-reference stream garbled: the objects it indexes are inside an object stream, so there is nothing for a repair scan to find |

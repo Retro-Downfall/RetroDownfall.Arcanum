@@ -281,6 +281,11 @@ pubsec_dict = (
 )
 write("encrypted-pubsec.pdf", simple_doc(enc_content, extra_objs={6: pubsec_dict}, trailer_extra=trailer_id + b" /Encrypt 6 0 R"))
 
+# The control for a protected-file test that is too wide: an unencrypted file whose page text names the /Encrypt key, cut just
+# before its cross-reference table, so it has no trailer and cannot be opened. It is damaged, not protected.
+mentions_encrypt = simple_doc(b"BT /F1 12 Tf 72 700 Td (The trailer's /Encrypt entry names the security handler.) Tj ET\n")
+write("truncated-mentions-encrypt.pdf", mentions_encrypt[: mentions_encrypt.index(b"\nxref\n") + 1])
+
 # ---- cyclic structures
 # Pages tree whose Kids contains its own parent (2 -> 3 -> 2).
 objs = {
@@ -684,7 +689,8 @@ write("bad-xref-offsets.pdf", build({
 # ---- a PDF 1.5 file whose catalog, page tree, page and font live in a compressed object stream, found only through the
 # cross-reference STREAM. With an intact stream it extracts; with the stream's entries garbled there is nothing for a
 # repair scan to find (the objects are not written as "n 0 obj" at top level), so no reader can open it.
-def xref_stream_doc(garble):
+def xref_stream_doc(garble, encrypt=None):
+    """encrypt: an /Encrypt dictionary the cross-reference stream's dictionary names (object 8), or None."""
     font = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
     members = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
@@ -705,6 +711,9 @@ def xref_stream_doc(garble):
     out += b"4 0 obj\n" + stream(b"", content) + b"\nendobj\n"
     offsets[6] = len(out)
     out += b"6 0 obj\n<< /Type /ObjStm /N 4 /First %d /Length %d >>\nstream\n" % (len(index), len(objstm)) + objstm + b"\nendstream\nendobj\n"
+    if encrypt is not None:
+        offsets[8] = len(out)
+        out += b"8 0 obj\n" + encrypt + b"\nendobj\n"
     offsets[7] = len(out)
     # (type, field 2, field 3): type 2 is "compressed in object stream 6, at index field 3"
     entries = {
@@ -717,16 +726,24 @@ def xref_stream_doc(garble):
         6: (1, offsets[6], 0),
         7: (1, offsets[7], 0),
     }
-    data = b"".join(struct.pack(">BHB", *entries[number]) for number in range(8))
+    size = 8
+    trailer_entries = b""
+    if encrypt is not None:
+        entries[8] = (1, offsets[8], 0)
+        size = 9
+        trailer_entries = b" " + trailer_id + b" /Encrypt 8 0 R"
+    data = b"".join(struct.pack(">BHB", *entries[number]) for number in range(size))
     if garble:
         data = bytes(byte ^ 0x5A for byte in data)
-    out += b"7 0 obj\n<< /Type /XRef /Size 8 /W [1 2 1] /Root 1 0 R /Length %d >>\nstream\n" % len(data) + data + b"\nendstream\nendobj\n"
+    out += b"7 0 obj\n<< /Type /XRef /Size %d /W [1 2 1] /Root 1 0 R%s /Length %d >>\nstream\n" % (size, trailer_entries, len(data)) + data + b"\nendstream\nendobj\n"
     out += b"startxref\n%d\n%%%%EOF\n" % offsets[7]
     return bytes(out)
 
 
 write("xref-stream.pdf", xref_stream_doc(garble=False))
 write("xref-stream-garbled.pdf", xref_stream_doc(garble=True))
+# Certificate security again, declared where a PDF 1.5 file keeps its trailer entries: the cross-reference stream's dictionary.
+write("encrypted-pubsec-xref-stream.pdf", xref_stream_doc(garble=False, encrypt=pubsec_dict))
 
 # PdfPig repairs both of the files above by scanning for objects even with lenient parsing off, so they
 # still extract. These two it cannot repair: a trailer it cannot read, and a trailer with no catalog.

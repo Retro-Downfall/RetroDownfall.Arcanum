@@ -82,6 +82,13 @@ public sealed class PdfTextExtractorOutcomeTests
     }
 
     [Fact]
+    public void Extract_CertificateEncryptedDocumentWithACrossReferenceStream_IsPasswordRequired()
+    {
+        // A PDF 1.5 file keeps its trailer entries in the cross-reference stream's dictionary, so that is where /Encrypt is.
+        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, Extract("encrypted-pubsec-xref-stream.pdf"));
+    }
+
+    [Fact]
     public void Extract_FileThatOpensButWhosePageIsRefused_IsMalformedEvenWhenItsTextMentionsEncrypt()
     {
         // Sensitivity: the check runs only when opening fails. This file opens, so a name in its text proves nothing.
@@ -89,14 +96,47 @@ public sealed class PdfTextExtractorOutcomeTests
     }
 
     [Fact]
-    public void Extract_UnreadableBytesThatNameEncryptMetadataOnly_AreMalformed()
+    public void Extract_DamagedFileWhosePageTextMentionsEncrypt_IsMalformed()
     {
-        // Sensitivity: the end of the name. /EncryptMetadata is another key, not the trailer's /Encrypt.
-        byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n1 0 obj\n<< /EncryptMetadata false >>\nendobj\n");
+        // Sensitivity: only a trailer declares encryption. The file has no trailer and cannot be opened, and the name is in
+        // its page text, so it is damaged, not protected.
+        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("truncated-mentions-encrypt.pdf"));
+    }
+
+    [Theory]
+    [InlineData("1 0 obj\n<< /EncryptMetadata false >>\nendobj\n")]
+    [InlineData("1 0 obj\n(a (b) \\) trailer << /Encrypt 2 0 R >>)\nendobj\n")]
+    [InlineData("% trailer << /Encrypt 2 0 R >>\n")]
+    [InlineData("1 0 obj\n<< /Length 30 >>\nstream\ntrailer << /Encrypt 2 0 R >>\nendstream\nendobj\n")]
+    [InlineData("1 0 obj\n<< /Type /Annot /Encrypt 2 0 R >>\nendobj\n")]
+    [InlineData("1 0 obj\n<< /Type /Annot /Kids [ /Encrypt ] >>\nendobj\n")]
+    [InlineData("trailer\n<< /Info << /Encrypt 2 0 R >> >>\n")]
+    [InlineData("1 0 obj\n<< /Type /XRef /Info << /Encrypt 2 0 R >> >>\nendobj\n")]
+    [InlineData("1 0 obj\n<< /Kind /XRef /Encrypt 2 0 R >>\nendobj\n")]
+    public void Extract_UnreadableBytesThatNameEncryptOutsideATrailer_AreMalformed(string body)
+    {
+        // Sensitivity: each part of the trailer test. /EncryptMetadata is another key; a string, a comment and a stream's data
+        // are not dictionaries; an ordinary object's dictionary, an array inside it, a dictionary nested in a trailer or in a
+        // cross-reference stream's dictionary, and a dictionary where /XRef is not the /Type are not the trailer.
+        byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n" + body);
 
         PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
 
         AssertCarriesNoText(PdfExtractionKind.Malformed, outcome);
+    }
+
+    [Theory]
+    [InlineData("trailer\n<< /Size 3 /Root 1 0 R /Encrypt 2 0 R >>\n")]
+    [InlineData("trailer % the trailer follows\n<</Encrypt<</Filter/Adobe.PubSec>>>>\n")]
+    [InlineData("1 0 obj\n<< /Type/XRef /Size 3 /Encrypt 2 0 R >>\nstream\n\nendstream\nendobj\n")]
+    public void Extract_UnreadableBytesWhoseTrailerDeclaresEncryption_ArePasswordRequired(string body)
+    {
+        // The controls for the tests above: a trailer, written loosely or not, and a cross-reference stream's dictionary.
+        byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n" + body);
+
+        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
+
+        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, outcome);
     }
 
     // ---------------------------------------------------------------- bytes that are not a readable PDF

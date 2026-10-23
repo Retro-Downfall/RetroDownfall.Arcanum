@@ -27,8 +27,8 @@ internal sealed class PdfTextExtractor
         {
             // Opening reads the trailer and its encryption dictionary. PdfPig reads every /Encrypt dictionary as a Standard
             // handler, so a public-key (certificate) one fails here with an unrelated exception: a well formed, protected
-            // file that is not damaged.
-            bool protectedFile = exception is PdfDocumentEncryptedException || DeclaresEncryption(bytes.Span);
+            // file that is not damaged. A file whose trailer declares no encryption failed for another reason.
+            bool protectedFile = exception is PdfDocumentEncryptedException || PdfTrailerEncryption.IsDeclared(bytes.Span);
 
             return PdfExtractionOutcome.Without(protectedFile ? PdfExtractionKind.PasswordRequired : PdfExtractionKind.Malformed);
         }
@@ -53,42 +53,6 @@ internal sealed class PdfTextExtractor
             }
         }
     }
-
-    /// <summary>
-    /// Whether the bytes carry an <c>/Encrypt</c> key: the name, followed by whitespace, a delimiter or the end of the file, so
-    /// <c>/EncryptMetadata</c> does not count. It is asked only after a failed open, where it separates a protected file
-    /// from a damaged one.
-    /// </summary>
-    internal static bool DeclaresEncryption(ReadOnlySpan<byte> bytes)
-    {
-        ReadOnlySpan<byte> key = "/Encrypt"u8;
-
-        int from = 0;
-
-        while (from < bytes.Length)
-        {
-            int found = bytes[from..].IndexOf(key);
-
-            if (found < 0)
-            {
-                return false;
-            }
-
-            int end = from + found + key.Length;
-
-            if (end == bytes.Length || EndsAName(bytes[end]))
-            {
-                return true;
-            }
-
-            from = end;
-        }
-
-        return false;
-    }
-
-    private static bool EndsAName(byte value) =>
-        value is 0 or 9 or 10 or 12 or 13 or 32 or (byte)'(' or (byte)')' or (byte)'<' or (byte)'>' or (byte)'[' or (byte)']' or (byte)'{' or (byte)'}' or (byte)'/' or (byte)'%';
 
     /// <summary>
     /// Options for one open. A fresh instance each time: the parser is handed it, so it is never shared between extractions.
