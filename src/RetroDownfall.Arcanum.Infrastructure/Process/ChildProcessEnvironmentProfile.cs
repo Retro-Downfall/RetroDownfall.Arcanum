@@ -41,9 +41,11 @@ public enum ChildProcessEnvironmentProfile
 
     /// <summary>
     /// An Arcanum-authored document worker (the PDF text extractor): the child environment is cleared
-    /// entirely, with no allowlist and nothing inherited, because the worker parses untrusted bytes and
-    /// needs no host variable to do it. The filesystem jail, applied after this profile, still points
-    /// <c>TMPDIR</c>, <c>TMP</c> and <c>TEMP</c> at the run's private temp directory.
+    /// entirely, with nothing on the start inherited, because the worker parses untrusted bytes and needs
+    /// no host variable to do it. On Windows alone, <c>SystemRoot</c> and <c>windir</c> are read back from
+    /// the host, because Windows cannot start the process without its system directory. The filesystem
+    /// jail, applied after this profile, still points <c>TMPDIR</c>, <c>TMP</c> and <c>TEMP</c> at the
+    /// run's private temp directory.
     /// </summary>
     DocumentWorker,
 }

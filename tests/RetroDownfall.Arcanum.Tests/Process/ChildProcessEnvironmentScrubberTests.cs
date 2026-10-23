@@ -117,8 +117,74 @@ public sealed class ChildProcessEnvironmentScrubberTests
             startInfo,
             ChildProcessEnvironmentProfile.DocumentWorker);
 
-        Assert.Empty(startInfo.Environment);
+        // Windows cannot start a process without its system directory, so there the profile reads those two back from
+        // the host; nothing that was on the start survives on either OS.
+        Assert.Subset(
+            OperatingSystem.IsWindows() ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "SystemRoot", "windir" } : [],
+            startInfo.Environment.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase));
     }
+
+    /// <summary>A host environment holding everything a document worker must not see, and what Windows needs.</summary>
+    private static readonly Dictionary<string, string> HostEnvironment = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["SystemRoot"] = @"C:\Windows",
+        ["windir"] = @"C:\Windows",
+        ["PATH"] = @"C:\Windows\system32;C:\Tools",
+        ["USERPROFILE"] = @"C:\Users\operator",
+        ["TEMP"] = @"C:\Users\operator\AppData\Local\Temp",
+        ["TMP"] = @"C:\Users\operator\AppData\Local\Temp",
+        ["ARCANUM_PROVIDER_KEY"] = "arcanum-secret",
+        ["MY_OPENAI_KEY"] = "operator-named-secret",
+        ["COMSPEC"] = @"C:\Windows\system32\cmd.exe",
+    };
+
+    [Fact]
+    public void DocumentWorker_environment_on_Windows_is_only_the_system_directory_the_process_start_needs()
+    {
+        // Windows process start needs SystemRoot (workspace_check keeps it for the same reason), and windir names the
+        // same directory. TMP and TEMP are not taken from the host: the jail applied after this points them at the run's
+        // private directory. Nothing already on the start survives.
+        Dictionary<string, string?> environment = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ARCANUM_PROVIDER_KEY"] = "arcanum-secret",
+            ["PATH"] = "/usr/bin",
+        };
+
+        ChildProcessEnvironmentScrubber.ApplyDocumentWorkerEnvironment(environment, windows: true, ReadHost);
+
+        Assert.Equal(
+            new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["SystemRoot"] = @"C:\Windows", ["windir"] = @"C:\Windows" },
+            environment);
+    }
+
+    [Fact]
+    public void DocumentWorker_environment_on_Windows_leaves_out_a_system_directory_the_host_does_not_have()
+    {
+        Dictionary<string, string?> environment = new(StringComparer.OrdinalIgnoreCase);
+
+        ChildProcessEnvironmentScrubber.ApplyDocumentWorkerEnvironment(
+            environment,
+            windows: true,
+            name => name.Equals("SystemRoot", StringComparison.OrdinalIgnoreCase) ? @"C:\Windows" : null);
+
+        Assert.Equal(["SystemRoot"], environment.Keys);
+    }
+
+    [Fact]
+    public void DocumentWorker_environment_off_Windows_is_empty()
+    {
+        // macOS needs nothing from the host; the jail adds TMPDIR, TMP and TEMP afterwards.
+        Dictionary<string, string?> environment = new(StringComparer.Ordinal)
+        {
+            ["HOME"] = "/Users/operator",
+        };
+
+        ChildProcessEnvironmentScrubber.ApplyDocumentWorkerEnvironment(environment, windows: false, ReadHost);
+
+        Assert.Empty(environment);
+    }
+
+    private static string? ReadHost(string name) => HostEnvironment.TryGetValue(name, out string? value) ? value : null;
 
     [Fact]
     public void Every_profile_is_handled_explicitly()

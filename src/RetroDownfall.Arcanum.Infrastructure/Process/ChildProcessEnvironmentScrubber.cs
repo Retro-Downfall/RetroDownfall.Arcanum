@@ -72,10 +72,11 @@ internal static class ChildProcessEnvironmentScrubber
 
             case ChildProcessEnvironmentProfile.DocumentWorker:
 
-                // A document worker parses untrusted bytes and needs no host variable at all. Nothing is
-                // kept, so no secret can survive under a name nobody listed. The filesystem jail applied
-                // after this sets the run's private TMPDIR/TMP/TEMP.
-                startInfo.Environment.Clear();
+                // A document worker parses untrusted bytes and needs no host variable to do it. Nothing on
+                // the start is kept, so no secret can survive under a name nobody listed; only Windows reads
+                // back the system directory its process start needs. The filesystem jail applied after this
+                // sets the run's private TMPDIR/TMP/TEMP.
+                ApplyDocumentWorkerEnvironment(startInfo.Environment, OperatingSystem.IsWindows(), Environment.GetEnvironmentVariable);
 
                 break;
 
@@ -87,6 +88,45 @@ internal static class ChildProcessEnvironmentScrubber
                     nameof(profile),
                     profile,
                     "The child-process environment profile has no defined policy.");
+        }
+    }
+
+    /// <summary>
+    /// The host variables a document worker gets back, on Windows only: the system directory, without which Windows
+    /// cannot start the process or load its system libraries (<c>workspace_check</c> keeps it for the same reason).
+    /// </summary>
+    private static readonly string[] DocumentWorkerWindowsVariables = ["SystemRoot", "windir"];
+
+    /// <summary>
+    /// The document worker's environment, built from nothing: everything on the start is removed, and on
+    /// <paramref name="windows"/> the system directory is read back from the host through
+    /// <paramref name="readHostVariable"/>. Off Windows it stays empty. TMP and TEMP are never read from the host:
+    /// the jail applied afterwards points them at the run's private directory on both systems.
+    /// </summary>
+    internal static void ApplyDocumentWorkerEnvironment(
+        IDictionary<string, string?> environment,
+        bool windows,
+        Func<string, string?> readHostVariable)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+
+        ArgumentNullException.ThrowIfNull(readHostVariable);
+
+        environment.Clear();
+
+        if (!windows)
+        {
+            return;
+        }
+
+        foreach (string name in DocumentWorkerWindowsVariables)
+        {
+            string? value = readHostVariable(name);
+
+            if (!string.IsNullOrEmpty(value) && !value.Any(char.IsControl))
+            {
+                environment[name] = value;
+            }
         }
     }
 
