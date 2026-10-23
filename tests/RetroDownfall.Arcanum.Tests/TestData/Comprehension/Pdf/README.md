@@ -3,8 +3,8 @@
 Inputs for the PDF text extractor and the worker frame (`Weave/Comprehension/Pdf`). Two kinds:
 
 - **Real producer**: `cups-text.pdf` and `cups-multi.pdf` were written by macOS Quartz through `cupsfilter`, and
-  `webkit-float.pdf` by WebKit (the engine behind Safari's Export as PDF), so the extractor is proven on bytes this
-  repository did not build.
+  `webkit-float.pdf` and `webkit-ligatures.pdf` by WebKit (the engine behind Safari's Export as PDF), so the extractor is
+  proven on bytes this repository did not build.
 - **Hand-written**: everything else comes from `generate-handwritten.py`. Each file isolates one rule, so a failing test
   names the rule. The output is deterministic (no timestamps, fixed document ids and IVs, a seeded random source).
 
@@ -26,6 +26,7 @@ cupsfilter -m application/pdf cups-multi.txt > cups-multi.pdf
 # Real producer, WebKit. generate-macos.swift needs macOS (Xcode command line tools). The file is not deterministic.
 swiftc -O -o "$TMPDIR/macos-fixtures" generate-macos.swift
 "$TMPDIR/macos-fixtures" webkit webkit-float.html webkit-float.pdf
+"$TMPDIR/macos-fixtures" webkit webkit-ligatures.html webkit-ligatures.pdf
 
 # Hand-written. Run after the lines above: truncated.pdf is the first half of cups-text.pdf.
 python3 -I generate-handwritten.py .
@@ -51,6 +52,8 @@ Expected outcomes are for the production extractor with its default limits unles
 | `content-order.pdf` | three runs shown bottom, top, middle | `Extracted`, in content-stream order |
 | `same-line-order.pdf` | pairs of runs on one baseline: `RIGHTWORD` drawn before the `LEFTWORD` to its left; the page number `17` drawn before the title `Annual Report`; a kerned `WA`, `VE` pair; `FIRSTRUN` and `SECONDRUN` drawn at the same place | `Extracted`; the runs stay separate words (`RIGHTWORD LEFTWORD`, `17 Annual Report`, `FIRSTRUN SECONDRUN`) and the kerned pair stays one word (`WAVE`) |
 | `webkit-float.pdf` | (real producer, WebKit) a `float:right` price drawn before the text it sits beside, a right-to-left table row and a `row-reverse` flex row | `Extracted`; `$1,250.00 2 hours consulting`, `RIGHTCELL LEFTCELL`, `FLEXFIRST FLEXSECOND`: the price does not fuse with the `2` that follows it |
+| `latin-ligatures.pdf` | single glyphs that a ToUnicode CMap maps to U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st) inside words, then a plain line | `Extracted` as `effect final flow`, `office baffle`, `ſt st` and `plain office`: each ligature code point becomes its letters (U+FB05 becomes a long s and a t, as NFKC does) |
+| `webkit-ligatures.pdf` | (real producer, WebKit) Helvetica text; WebKit writes its fi, fl and ffi as ligature glyphs | `Extracted` as `Helvetica: office, figures, affidavit, flow, fluffy waffles.` |
 | `astral-plane.pdf` | `AB`, U+1F600, `CD` through a ToUnicode CMap | `Extracted`, the pair intact; used for surrogate-safe cuts |
 | `astral-multi-page.pdf` | page 1 `AB`, U+1F600, `CD`; page 2 `EFGHIJKL`; page 3 no content | `Extracted`, three entries; a cut inside page 1's pair must stop without reading page 2 |
 | `cjk-tounicode.pdf` | CJK on two lines and U+20BB7 on a third | `Extracted` |

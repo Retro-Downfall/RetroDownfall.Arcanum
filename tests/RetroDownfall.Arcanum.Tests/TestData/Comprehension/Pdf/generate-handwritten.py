@@ -469,6 +469,49 @@ same_line = (
 write("same-line-order.pdf", simple_doc(same_line))
 
 
+# ---- glyphs placed one by one on an Identity-H font whose every glyph is 1 em (18 pt) wide and maps to its character
+# through a ToUnicode CMap, so a line's geometry is exact: glyphs placed 18 pt apart touch.
+def placed_doc(lines):
+    """lines: [(y, [(x, character)])] in the order the content stream draws them."""
+    characters = sorted({character for _, glyphs in lines for _, character in glyphs})
+    codes = {character: index + 1 for index, character in enumerate(characters)}
+    content = b"BT /F1 18 Tf\n" + b"".join(
+        b"1 0 0 1 %d %d Tm <%04X> Tj\n" % (x, y, codes[character]) for y, glyphs in lines for x, character in glyphs
+    ) + b"ET\n"
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"4 0 R"),
+        4: stream(b"", content),
+        5: b"<< /Type /Font /Subtype /Type0 /BaseFont /FixtureSans /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 8 0 R >>",
+        6: b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /FixtureSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 1000 /CIDToGIDMap /Identity /FontDescriptor 7 0 R >>",
+        7: b"<< /Type /FontDescriptor /FontName /FixtureSans /Flags 4 /FontBBox [0 -200 1000 800] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>",
+        8: stream(b"", to_unicode_cmap([(code, character) for character, code in codes.items()])),
+    }
+    return build(objs)
+
+
+def left_to_right(y, text, x=72):
+    """The characters in the order given, each 18 pt right of the one before (how a producer writes visual order)."""
+    return (y, [(x + 18 * index, character) for index, character in enumerate(text)])
+
+
+def right_to_left(y, text, x=540):
+    """The characters in the order given, each 18 pt left of the one before (how a producer writes logical order)."""
+    return (y, [(x - 18 * (index + 1), character) for index, character in enumerate(text)])
+
+
+# Latin presentation-form ligatures as one glyph each: ff, fi, fl, ffi, ffl, long s t, st
+write(
+    "latin-ligatures.pdf",
+    placed_doc([
+        left_to_right(700, "e\uFB00ect \uFB01nal \uFB02ow"),
+        left_to_right(650, "o\uFB03ce ba\uFB04e"),
+        left_to_right(600, "\uFB05 \uFB06"),
+        left_to_right(550, "plain office"),
+    ]),
+)
+
 # ---- active content that must never run, be followed, or be emitted
 js_action = b"<< /S /JavaScript /JS (app.alert\\('JS-ACTION-SENTINEL'\\);) >>"
 objs = {

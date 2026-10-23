@@ -34,6 +34,8 @@ internal static class PdfPageText
                 continue;
             }
 
+            string spelled = ExpandLigatures(value);
+
             if (value == " " && !lastWasWhitespace)
             {
                 if (previous is not null && IsNewline(previous, letter))
@@ -73,7 +75,7 @@ internal static class PdfPageText
                 }
             }
 
-            text.Append(value);
+            text.Append(spelled);
 
             previous = letter;
 
@@ -84,6 +86,48 @@ internal static class PdfPageText
         }
 
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Spells out the Latin ligature code points U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st). macOS producers write
+    /// Helvetica's fi and fl as ligature glyphs, which would reach the model and the index as "of\uFB01ce". This is the
+    /// compatibility decomposition of those seven code points and nothing wider: the worker runs with invariant globalization,
+    /// where general normalization is not available.
+    /// </summary>
+    private static string ExpandLigatures(string value)
+    {
+        if (value.AsSpan().IndexOfAnyInRange('\uFB00', '\uFB06') < 0)
+        {
+            return value;
+        }
+
+        StringBuilder spelled = new(value.Length + 3);
+
+        foreach (char character in value)
+        {
+            string? letters = character switch
+            {
+                '\uFB00' => "ff",
+                '\uFB01' => "fi",
+                '\uFB02' => "fl",
+                '\uFB03' => "ffi",
+                '\uFB04' => "ffl",
+                '\uFB05' => "\u017Ft",
+                '\uFB06' => "st",
+                _ => null,
+            };
+
+            if (letters is null)
+            {
+                spelled.Append(character);
+            }
+            else
+            {
+                spelled.Append(letters);
+            }
+        }
+
+        return spelled.ToString();
     }
 
     /// <summary>The baselines of two letters differ by more than 0.9 of the smaller whole-number point size.</summary>

@@ -94,6 +94,30 @@ public sealed class PdfTextExtractorTextTests
         Assert.Equal(["$1,250.00 2 hours consulting\nRIGHTCELL LEFTCELL\nFLEXFIRST FLEXSECOND"], outcome.Pages);
     }
 
+    [Fact]
+    public void Extract_LatinLigatureCodePoints_BecomeTheirLetters()
+    {
+        // Sensitivity: the ligature expansion. U+FB05 is a long s and a t, as NFKC decomposes it. Nothing else is folded:
+        // the plain line is the control.
+        PdfExtractionOutcome outcome = Extract("latin-ligatures.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["effect final flow\noffice baffle\n\u017Ft st\nplain office"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_RealProducerLigatureGlyphs_ReadAsPlainWords()
+    {
+        // WebKit writes Helvetica's fi, fl and ffi as ligature glyphs, which PdfPig maps to U+FB01, U+FB02 and U+FB03. The
+        // text must be what pdftotext gives and what a person would search for.
+        PdfExtractionOutcome outcome = Extract("webkit-ligatures.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["Helvetica: office, figures, affidavit, flow, fluffy waffles."], outcome.Pages);
+    }
+
     [Theory]
     [InlineData("astral-plane.pdf", "AB\U0001F600CD")]
     [InlineData("cjk-tounicode.pdf", "日本語\n漢字\n\U00020BB7野家")]
