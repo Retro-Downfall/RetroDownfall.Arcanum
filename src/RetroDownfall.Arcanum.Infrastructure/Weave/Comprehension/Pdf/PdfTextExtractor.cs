@@ -11,7 +11,7 @@ internal sealed class PdfTextExtractor
     /// <summary>The deepest object nesting PdfPig may follow: the value the pinned nightly ships with and was measured at.</summary>
     private const int MaxNestingDepth = 256;
 
-    public PdfExtractionOutcome Extract(ReadOnlyMemory<byte> bytes, PdfExtractionLimits limits, CancellationToken cancellationToken)
+    public DocumentExtractionOutcome Extract(ReadOnlyMemory<byte> bytes, PdfExtractionLimits limits, CancellationToken cancellationToken)
     {
         PdfDocument document;
 
@@ -30,7 +30,7 @@ internal sealed class PdfTextExtractor
             // file that is not damaged. A file whose trailer declares no encryption failed for another reason.
             bool protectedFile = exception is PdfDocumentEncryptedException || PdfTrailerEncryption.IsDeclared(bytes.Span);
 
-            return PdfExtractionOutcome.Without(protectedFile ? PdfExtractionKind.PasswordRequired : PdfExtractionKind.Malformed);
+            return DocumentExtractionOutcome.Without(protectedFile ? DocumentExtractionKind.PasswordRequired : DocumentExtractionKind.Malformed);
         }
 
         using (document)
@@ -45,11 +45,11 @@ internal sealed class PdfTextExtractor
             }
             catch (PdfDocumentEncryptedException)
             {
-                return PdfExtractionOutcome.Without(PdfExtractionKind.PasswordRequired);
+                return DocumentExtractionOutcome.Without(DocumentExtractionKind.PasswordRequired);
             }
             catch (Exception)
             {
-                return PdfExtractionOutcome.Without(PdfExtractionKind.Malformed);
+                return DocumentExtractionOutcome.Without(DocumentExtractionKind.Malformed);
             }
         }
     }
@@ -71,18 +71,18 @@ internal sealed class PdfTextExtractor
         MaxStackDepth = MaxNestingDepth,
     };
 
-    private static PdfExtractionOutcome ExtractPages(PdfDocument document, PdfExtractionLimits limits, CancellationToken cancellationToken)
+    private static DocumentExtractionOutcome ExtractPages(PdfDocument document, PdfExtractionLimits limits, CancellationToken cancellationToken)
     {
         if (document.Structure.CrossReferenceTable.ObjectOffsets.Count > limits.MaxObjects)
         {
-            return PdfExtractionOutcome.Without(PdfExtractionKind.Bounds);
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.Bounds);
         }
 
         int pageCount = document.NumberOfPages;
 
         if (pageCount > limits.MaxPages)
         {
-            return PdfExtractionOutcome.Without(PdfExtractionKind.Bounds);
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.Bounds);
         }
 
         List<string> pages = [];
@@ -118,7 +118,7 @@ internal sealed class PdfTextExtractor
 
             if (pageLetters > limits.MaxLettersPerPage || letters > limits.MaxLettersPerDocument)
             {
-                return PdfExtractionOutcome.Without(PdfExtractionKind.Bounds);
+                return DocumentExtractionOutcome.Without(DocumentExtractionKind.Bounds);
             }
 
             string text = RemoveUnsafeCharacters(PdfPageText.Build(page.Letters));
@@ -151,10 +151,10 @@ internal sealed class PdfTextExtractor
 
         if (!hasText)
         {
-            return PdfExtractionOutcome.Without(truncated ? PdfExtractionKind.Bounds : PdfExtractionKind.NoText);
+            return DocumentExtractionOutcome.Without(truncated ? DocumentExtractionKind.Bounds : DocumentExtractionKind.NoText);
         }
 
-        return new PdfExtractionOutcome(PdfExtractionKind.Extracted, pages, truncated);
+        return new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, pages, truncated);
     }
 
     /// <summary>

@@ -45,7 +45,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
     {
         byte[] document = PdfFixtures.Read(fileName);
 
-        PdfExtractionOutcome expected = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
+        DocumentExtractionOutcome expected = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
 
         DocumentWorkerResult result = await RunAsync(document);
 
@@ -63,7 +63,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
     {
         DocumentWorkerResult result = await RunAsync(PdfFixtures.Read("multi-page.pdf"));
 
-        Assert.Equal(PdfExtractionKind.Extracted, result.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, result.Outcome!.Kind);
 
         Assert.Equal(["PAGE-ONE-ALPHA", string.Empty, "PAGE-THREE-MARKER-GAMMA", "PAGE-FOUR-DELTA"], result.Outcome.Pages);
     }
@@ -73,11 +73,11 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
     {
         DocumentWorkerResult open = await RunAsync(PdfFixtures.Read("encrypted-aes-empty.pdf"));
 
-        Assert.Equal(PdfExtractionKind.Extracted, open.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, open.Outcome!.Kind);
 
         DocumentWorkerResult locked = await RunAsync(PdfFixtures.Read("encrypted-aes-password.pdf"));
 
-        Assert.Equal(PdfExtractionKind.PasswordRequired, locked.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.PasswordRequired, locked.Outcome!.Kind);
 
         Assert.Empty(locked.Outcome.Pages);
     }
@@ -101,7 +101,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
 
         DocumentWorkerResult healthy = await RunAsync(PdfFixtures.Read("multi-page.pdf"));
 
-        Assert.Equal(PdfExtractionKind.Extracted, healthy.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, healthy.Outcome!.Kind);
 
         Assert.Contains("PAGE-THREE-MARKER-GAMMA", healthy.Outcome.Pages);
     }
@@ -125,7 +125,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
 
         DocumentWorkerResult healthy = await RunAsync(PdfFixtures.Read("cups-text.pdf"));
 
-        Assert.Equal(PdfExtractionKind.Extracted, healthy.Outcome!.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, healthy.Outcome!.Kind);
     }
 
     /// <summary>Names a published Native AOT Cli binary, as for every test that runs the shipping binary itself.</summary>
@@ -149,7 +149,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
 
         byte[] document = PdfFixtures.Read(fileName);
 
-        PdfExtractionOutcome expected = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
+        DocumentExtractionOutcome expected = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
 
         DocumentWorkerResult result;
 

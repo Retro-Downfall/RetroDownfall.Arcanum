@@ -1,6 +1,6 @@
 using RetroDownfall.Arcanum.Cli.Infrastructure.Surface;
 
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 using RetroDownfall.Arcanum.Tests.Support;
 
@@ -59,7 +59,7 @@ public sealed class ComprehensionWorkerModeWiringTests
         // instead of the host reporting up front that PDF extraction is unavailable.
         string source = File.ReadAllText(Path.Combine(
             TestRepositoryPaths.RepositoryRoot(),
-            "src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/ComprehensionWorkerEntry.cs"));
+            "src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/ComprehensionWorkerEntry.cs"));
 
         Assert.Contains("DocumentWorkerLaunch.ForHostExecutable(Environment.ProcessPath)", source, StringComparison.Ordinal);
 

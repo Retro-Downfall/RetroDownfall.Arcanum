@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -25,7 +27,7 @@ public sealed class PdfTextExtractorCancellationTests
     {
         using CancellationTokenSource cancellation = new();
 
-        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(
+        DocumentExtractionOutcome outcome = new PdfTextExtractor().Extract(
             PdfFixtures.Read("multi-page.pdf"),
             PdfExtractionLimits.Default,
             cancellation.Token);

@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -8,15 +10,15 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
 /// </summary>
 public sealed class PdfTextExtractorBoundsTests
 {
-    private static PdfExtractionOutcome Extract(string fileName, PdfExtractionLimits limits) =>
+    private static DocumentExtractionOutcome Extract(string fileName, PdfExtractionLimits limits) =>
         new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), limits, CancellationToken.None);
 
     private static PdfExtractionLimits Limits(int pages = 2000, int objects = 100_000, int perPage = 250_000, int perDocument = 2_000_000, int output = 262_144) =>
         new(pages, objects, perPage, perDocument, output);
 
-    private static void AssertBounds(PdfExtractionOutcome outcome)
+    private static void AssertBounds(DocumentExtractionOutcome outcome)
     {
-        Assert.Equal(PdfExtractionKind.Bounds, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Bounds, outcome.Kind);
 
         Assert.Empty(outcome.Pages);
 
@@ -34,9 +36,9 @@ public sealed class PdfTextExtractorBoundsTests
     [Fact]
     public void Extract_ExactlyTheBoundedNumberOfPages_IsExtracted()
     {
-        PdfExtractionOutcome outcome = Extract("multi-page.pdf", Limits(pages: 4));
+        DocumentExtractionOutcome outcome = Extract("multi-page.pdf", Limits(pages: 4));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(4, outcome.Pages.Count);
     }
@@ -53,9 +55,9 @@ public sealed class PdfTextExtractorBoundsTests
     [Fact]
     public void Extract_ExactlyTheBoundedNumberOfDeclaredObjects_IsExtracted()
     {
-        PdfExtractionOutcome outcome = Extract("multi-page.pdf", Limits(objects: 10));
+        DocumentExtractionOutcome outcome = Extract("multi-page.pdf", Limits(objects: 10));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(4, outcome.Pages.Count);
     }
@@ -71,7 +73,7 @@ public sealed class PdfTextExtractorBoundsTests
     [Fact]
     public void Extract_TheSameDocumentAtTheObjectBound_ReadsItsPageAndFindsItMalformed()
     {
-        Assert.Equal(PdfExtractionKind.Malformed, Extract("cyclic-ref-chain.pdf", Limits(objects: 6)).Kind);
+        Assert.Equal(DocumentExtractionKind.Malformed, Extract("cyclic-ref-chain.pdf", Limits(objects: 6)).Kind);
     }
 
     [Theory]
@@ -89,9 +91,9 @@ public sealed class PdfTextExtractorBoundsTests
     public void Extract_ObjectStreamDocumentAtTheObjectBound_IsExtracted()
     {
         // The trailer says /Size 8 (entry 0 is free). Sensitivity: the count is the entries in use, not /Size.
-        PdfExtractionOutcome outcome = Extract("xref-stream.pdf", Limits(objects: 7));
+        DocumentExtractionOutcome outcome = Extract("xref-stream.pdf", Limits(objects: 7));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["XREF-STREAM-TEXT"], outcome.Pages);
     }
@@ -107,9 +109,9 @@ public sealed class PdfTextExtractorBoundsTests
     [Fact]
     public void Extract_FileThatDeclaresExactlyTheProductionBound_IsExtracted()
     {
-        PdfExtractionOutcome outcome = Extract("xref-stream-at-object-bound.pdf", PdfExtractionLimits.Default);
+        DocumentExtractionOutcome outcome = Extract("xref-stream-at-object-bound.pdf", PdfExtractionLimits.Default);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["XREF-STREAM-TEXT"], outcome.Pages);
     }
@@ -120,9 +122,9 @@ public sealed class PdfTextExtractorBoundsTests
         // KNOWN LIMITATION, pinned so a change is noticed: xref-short-table.pdf writes five objects and its table lists two.
         // PdfPig finds the other three by scanning when it looks for them, and the bound does not count them: what a scan can
         // find is limited by the input ceiling (README.md). The trailer says /Size 6, which is not the count either.
-        PdfExtractionOutcome outcome = Extract("xref-short-table.pdf", Limits(objects: 2));
+        DocumentExtractionOutcome outcome = Extract("xref-short-table.pdf", Limits(objects: 2));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["SHORT-TABLE-TEXT"], outcome.Pages);
     }
@@ -132,9 +134,9 @@ public sealed class PdfTextExtractorBoundsTests
     {
         // KNOWN LIMITATION, pinned so a change is noticed: PdfPig builds no table from a scan, it holds an empty one and finds
         // all five objects of xref-no-table.pdf by scanning. Objects inside an object stream cannot be found that way.
-        PdfExtractionOutcome outcome = Extract("xref-no-table.pdf", Limits(objects: 1));
+        DocumentExtractionOutcome outcome = Extract("xref-no-table.pdf", Limits(objects: 1));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["SHORT-TABLE-TEXT"], outcome.Pages);
     }
@@ -151,9 +153,9 @@ public sealed class PdfTextExtractorBoundsTests
     [Fact]
     public void Extract_PageThatShowsExactlyTheBoundedGlyphs_IsExtracted()
     {
-        PdfExtractionOutcome outcome = Extract("multi-page.pdf", Limits(perPage: 23));
+        DocumentExtractionOutcome outcome = Extract("multi-page.pdf", Limits(perPage: 23));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
     }
 
     [Fact]
@@ -166,9 +168,9 @@ public sealed class PdfTextExtractorBoundsTests
     [Fact]
     public void Extract_PagesThatTogetherShowExactlyTheBoundedGlyphs_IsExtracted()
     {
-        PdfExtractionOutcome outcome = Extract("multi-page.pdf", Limits(perDocument: 52));
+        DocumentExtractionOutcome outcome = Extract("multi-page.pdf", Limits(perDocument: 52));
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(4, outcome.Pages.Count);
     }

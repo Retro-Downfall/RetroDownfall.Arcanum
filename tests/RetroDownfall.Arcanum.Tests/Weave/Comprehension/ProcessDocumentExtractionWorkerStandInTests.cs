@@ -68,7 +68,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
         // The stand-in would answer with a good frame, so a Failed result here can only be the refusal.
         DocumentWorkerResult result = await RunAsync(
             $"/bin/cat > /dev/null\nprintf '{ExtractedFrame}'\n",
-            new byte[ComprehensionWorkerEntry.InputCeilingBytes + 1]);
+            new byte[DocumentWorkerProfile.Pdf.InputCeilingBytes + 1]);
 
         Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }

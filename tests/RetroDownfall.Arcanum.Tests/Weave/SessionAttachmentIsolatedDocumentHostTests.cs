@@ -2,8 +2,6 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
-
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
@@ -144,7 +142,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
     [Fact]
     public async Task ExtractAsync_NoText_IsNotEligibleWithNothingElse()
     {
-        SessionAttachmentExtractionResult result = await ExtractAsync(Host(Verdict(PdfExtractionKind.NoText)));
+        SessionAttachmentExtractionResult result = await ExtractAsync(Host(Verdict(DocumentExtractionKind.NoText)));
 
         Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
 
@@ -159,16 +157,16 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
     public static TheoryData<string, string> TerminalVerdicts() => new()
     {
-        { nameof(PdfExtractionKind.PasswordRequired), "Password-protected PDFs are not supported." },
-        { nameof(PdfExtractionKind.Malformed), "The PDF document is malformed." },
-        { nameof(PdfExtractionKind.Bounds), "The PDF document exceeds its extraction bounds." },
+        { nameof(DocumentExtractionKind.PasswordRequired), "Password-protected PDFs are not supported." },
+        { nameof(DocumentExtractionKind.Malformed), "The PDF document is malformed." },
+        { nameof(DocumentExtractionKind.Bounds), "The PDF document exceeds its extraction bounds." },
     };
 
     [Theory]
     [MemberData(nameof(TerminalVerdicts))]
     public async Task ExtractAsync_TerminalVerdict_FailsWithItsCodeOwnedReason(string kindName, string reason)
     {
-        SessionAttachmentExtractionResult result = await ExtractAsync(Host(Verdict(Enum.Parse<PdfExtractionKind>(kindName))));
+        SessionAttachmentExtractionResult result = await ExtractAsync(Host(Verdict(Enum.Parse<DocumentExtractionKind>(kindName))));
 
         AssertFailed(reason, result);
     }
@@ -223,7 +221,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
             seen = bytes.ToArray();
 
-            return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+            return Task.FromResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
         });
 
         await ExtractAsync(host);
@@ -246,7 +244,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.False(extraction.IsCompleted, "The host returned while its worker was still running.");
 
-        worker.SetResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["LATE"], false)));
+        worker.SetResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["LATE"], false)));
 
         Assert.Equal("[PDF page 1]\nLATE\n", (await extraction.WaitAsync(TimeSpan.FromSeconds(5))).Text);
     }
@@ -344,7 +342,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         {
             runs++;
 
-            return Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["UNUSED"], false)));
+            return Task.FromResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["UNUSED"], false)));
         });
 
         SessionAttachmentExtractionResult result;
@@ -391,7 +389,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         {
             runs++;
 
-            return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+            return Task.FromResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
         });
 
         SessionAttachmentExtractionResult result = await host.ExtractAsync(ReadSnapshot, Snapshot.Length + difference, 1024, CancellationToken.None);
@@ -410,7 +408,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         {
             runs++;
 
-            return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+            return Task.FromResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
         });
 
         SessionAttachmentExtractionResult result = await host.ExtractAsync(ReadSnapshot, Snapshot.Length, Snapshot.Length - 1, CancellationToken.None);
@@ -430,7 +428,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
             {
                 runs++;
 
-                return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+                return Task.FromResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
             }),
             DocumentWorkerFormat.Pdf,
             readTimeout: TimeSpan.FromMilliseconds(100));
@@ -490,7 +488,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
                 return holder.Task;
             }
 
-            return Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["SECOND"], false)));
+            return Task.FromResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["SECOND"], false)));
         });
 
         Task<SessionAttachmentExtractionResult> first = ExtractAsync(host);
@@ -520,7 +518,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.Equal(1, runs);
 
-        holder.SetResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["FIRST"], false)));
+        holder.SetResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["FIRST"], false)));
 
         Assert.Equal("[PDF page 1]\nFIRST\n", (await first.WaitAsync(TimeSpan.FromSeconds(5))).Text);
 
@@ -546,7 +544,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
                 return holder.Task;
             }
 
-            return Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["SECOND"], false)));
+            return Task.FromResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["SECOND"], false)));
         });
 
         Task<SessionAttachmentExtractionResult> first = ExtractAsync(host);
@@ -559,7 +557,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.False(second.IsCompleted, "An interactive caller did not wait for the busy family.");
 
-        holder.SetResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+        holder.SetResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
 
         await first.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -604,7 +602,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.Equal(0, reads);
 
-        holder.SetResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
+        holder.SetResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText)));
 
         await first.WaitAsync(TimeSpan.FromSeconds(5));
     }
@@ -618,7 +616,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         {
             1 => throw new InvalidOperationException("fault"),
             2 => throw new OperationCanceledException(),
-            _ => Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["AFTER"], false))),
+            _ => Task.FromResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["AFTER"], false))),
         });
 
         Assert.Equal(SessionAttachmentExtractionStatus.Failed, (await ExtractAsync(host, waitForSlot: false)).Status);
@@ -670,10 +668,10 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         Pages(false, pages);
 
     private static Func<DocumentWorkerFormat, ReadOnlyMemory<byte>, CancellationToken, Task<DocumentWorkerResult>> Pages(bool truncated, params string[] pages) =>
-        (_, _, _) => Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, pages, truncated)));
+        (_, _, _) => Task.FromResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, pages, truncated)));
 
-    private static Func<DocumentWorkerFormat, ReadOnlyMemory<byte>, CancellationToken, Task<DocumentWorkerResult>> Verdict(PdfExtractionKind kind) =>
-        (_, _, _) => Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(kind)));
+    private static Func<DocumentWorkerFormat, ReadOnlyMemory<byte>, CancellationToken, Task<DocumentWorkerResult>> Verdict(DocumentExtractionKind kind) =>
+        (_, _, _) => Task.FromResult(DocumentWorkerResult.Completed(DocumentExtractionOutcome.Without(kind)));
 
     private sealed class DelegateWorker(
         Func<DocumentWorkerFormat, ReadOnlyMemory<byte>, CancellationToken, Task<DocumentWorkerResult>> run) : IDocumentExtractionWorker

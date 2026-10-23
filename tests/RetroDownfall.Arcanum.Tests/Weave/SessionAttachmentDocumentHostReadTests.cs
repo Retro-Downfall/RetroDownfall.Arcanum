@@ -4,8 +4,6 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
-
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
@@ -610,7 +608,7 @@ public sealed class SessionAttachmentDocumentHostReadTests
         {
             onRun?.Invoke();
 
-            return Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["DOCUMENT"], false)));
+            return Task.FromResult(DocumentWorkerResult.Completed(new DocumentExtractionOutcome(DocumentExtractionKind.Extracted, ["DOCUMENT"], false)));
         }
     }
 }

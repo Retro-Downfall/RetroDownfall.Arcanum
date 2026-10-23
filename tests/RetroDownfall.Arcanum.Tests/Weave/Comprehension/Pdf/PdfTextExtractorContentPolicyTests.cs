@@ -1,10 +1,12 @@
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
 
 public sealed class PdfTextExtractorContentPolicyTests
 {
-    private static PdfExtractionOutcome Extract(string fileName) =>
+    private static DocumentExtractionOutcome Extract(string fileName) =>
         new PdfTextExtractor().Extract(PdfFixtures.Read(fileName), PdfExtractionLimits.Default, CancellationToken.None);
 
     // ---------------------------------------------------------------- what is extracted
@@ -14,9 +16,9 @@ public sealed class PdfTextExtractorContentPolicyTests
     {
         // #163 decides that every text-showing run is extracted, so a reader who cannot see a run still finds it in the
         // data and the label says so. Sensitivity: any filter on render mode, fill colour, point size or page bounds.
-        PdfExtractionOutcome outcome = Extract("hidden.pdf");
+        DocumentExtractionOutcome outcome = Extract("hidden.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(
             [
@@ -35,9 +37,9 @@ public sealed class PdfTextExtractorContentPolicyTests
     public void Extract_MarkedContentActualText_NeverReplacesTheGlyphsThatAreShown()
     {
         // /ActualText is replacement text no reader sees and the file's author controls. Sensitivity: ParsingOptions.UseActualText.
-        PdfExtractionOutcome outcome = Extract("actual-text.pdf");
+        DocumentExtractionOutcome outcome = Extract("actual-text.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["SHOWN-GLYPHS-ARE-EXTRACTED"], outcome.Pages);
     }
@@ -47,9 +49,9 @@ public sealed class PdfTextExtractorContentPolicyTests
     {
         // The file carries a JavaScript open action, a launch action, a URI action, an embedded file, a name-tree script
         // and a form field with an appearance stream. Only the page's own text may come out.
-        PdfExtractionOutcome outcome = Extract("active-content.pdf");
+        DocumentExtractionOutcome outcome = Extract("active-content.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["ACTIVE-CONTENT-VISIBLE-TEXT"], outcome.Pages);
     }
@@ -60,9 +62,9 @@ public sealed class PdfTextExtractorContentPolicyTests
     public void Extract_NulAndFormFeedMappedFromGlyphs_AreRemoved()
     {
         // Sensitivity: RemoveUnsafeCharacters. U+000C is the page separator on the worker wire and NUL makes the sink throw.
-        PdfExtractionOutcome outcome = Extract("control-characters.pdf");
+        DocumentExtractionOutcome outcome = Extract("control-characters.pdf");
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["ABC"], outcome.Pages);
     }

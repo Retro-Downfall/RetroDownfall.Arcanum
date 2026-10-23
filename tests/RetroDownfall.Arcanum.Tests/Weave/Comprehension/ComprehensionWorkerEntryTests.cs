@@ -1,32 +1,40 @@
 using System.Diagnostics;
 
-using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
-using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
+using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
 
-namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
+namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension;
 
 /// <summary>
-/// The worker side of <c>arcanum __comprehension-worker pdf</c>, run in this process against streams: what it reads from
-/// stdin, the frame it writes to stdout, and the exit code it ends with. The real re-launch is covered by the process
-/// worker tests.
+/// The worker side of <c>arcanum __comprehension-worker &lt;kind&gt;</c>, run in this process against streams for the PDF
+/// kind: what it reads from stdin, the frame it writes to stdout, and the exit code it ends with. That every kind runs by
+/// its own profile is pinned for each kind in <see cref="ProcessDocumentExtractionWorkerMappingTests"/>; the real re-launch
+/// is covered by the process worker tests.
 /// </summary>
 public sealed class ComprehensionWorkerEntryTests
 {
-    private static readonly string[] PdfArguments = [ComprehensionWorkerEntry.ModeArgument, ComprehensionWorkerEntry.PdfFormatArgument];
+    private static readonly string[] PdfArguments = [ComprehensionWorkerEntry.ModeArgument, DocumentWorkerProfile.Pdf.FormatArgument];
 
     private static readonly TimeSpan Generous = TimeSpan.FromSeconds(30);
 
     [Fact]
     public void Run_TextPdfOnStdin_WritesTheFrameOfItsPagesAndExitsZero()
     {
-        (ComprehensionWorkerExitCode code, byte[] written) = Run(PdfFixtures.Read("multi-page.pdf"));
+        // Through the arguments, as the host's binary runs it: "pdf" runs the PDF extractor under the PDF profile.
+        using MemoryStream input = new(PdfFixtures.Read("multi-page.pdf"), writable: false);
+
+        using MemoryStream output = new();
+
+        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(PdfArguments, input, output);
+
+        byte[] written = output.ToArray();
 
         Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
 
-        PdfExtractionOutcome outcome = Decode(written);
+        DocumentExtractionOutcome outcome = Decode(written);
 
-        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
         Assert.False(outcome.Truncated);
 
@@ -34,20 +42,20 @@ public sealed class ComprehensionWorkerEntryTests
     }
 
     [Theory]
-    [InlineData("encrypted-aes-password.pdf", nameof(PdfExtractionKind.PasswordRequired))]
-    [InlineData("garbage.pdf", nameof(PdfExtractionKind.Malformed))]
-    [InlineData("truncated.pdf", nameof(PdfExtractionKind.Malformed))]
-    [InlineData("image-only.pdf", nameof(PdfExtractionKind.NoText))]
+    [InlineData("encrypted-aes-password.pdf", nameof(DocumentExtractionKind.PasswordRequired))]
+    [InlineData("garbage.pdf", nameof(DocumentExtractionKind.Malformed))]
+    [InlineData("truncated.pdf", nameof(DocumentExtractionKind.Malformed))]
+    [InlineData("image-only.pdf", nameof(DocumentExtractionKind.NoText))]
     public void Run_DocumentWithoutText_WritesTheFrameOfItsVerdictAndExitsZero(string fileName, string kindName)
     {
-        PdfExtractionKind kind = Enum.Parse<PdfExtractionKind>(kindName);
+        DocumentExtractionKind kind = Enum.Parse<DocumentExtractionKind>(kindName);
 
         // A verdict about the document is not a worker failure: it travels in the frame, and the exit code stays zero.
         (ComprehensionWorkerExitCode code, byte[] written) = Run(PdfFixtures.Read(fileName));
 
         Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
 
-        Assert.Equal(PdfExtractionOutcome.Without(kind), Decode(written), OutcomeComparer.Instance);
+        Assert.Equal(DocumentExtractionOutcome.Without(kind), Decode(written), OutcomeComparer.Instance);
     }
 
     [Fact]
@@ -57,7 +65,7 @@ public sealed class ComprehensionWorkerEntryTests
 
         Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
 
-        Assert.Equal(PdfExtractionKind.Malformed, Decode(written).Kind);
+        Assert.Equal(DocumentExtractionKind.Malformed, Decode(written).Kind);
     }
 
     [Fact]
@@ -71,7 +79,7 @@ public sealed class ComprehensionWorkerEntryTests
         {
             seen = bytes.ToArray();
 
-            return PdfExtractionOutcome.Without(PdfExtractionKind.NoText);
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText);
         });
 
         Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
@@ -84,7 +92,7 @@ public sealed class ComprehensionWorkerEntryTests
     {
         int extractions = 0;
 
-        byte[] input = new byte[checked((int)ComprehensionWorkerEntry.InputCeilingBytes)];
+        byte[] input = new byte[checked((int)DocumentWorkerProfile.Pdf.InputCeilingBytes)];
 
         (ComprehensionWorkerExitCode code, byte[] written) = Run(input, extract: (bytes, _) =>
         {
@@ -92,14 +100,14 @@ public sealed class ComprehensionWorkerEntryTests
 
             Assert.Equal(input.Length, bytes.Length);
 
-            return PdfExtractionOutcome.Without(PdfExtractionKind.Malformed);
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.Malformed);
         });
 
         Assert.Equal(ComprehensionWorkerExitCode.FrameWritten, code);
 
         Assert.Equal(1, extractions);
 
-        Assert.Equal(PdfExtractionKind.Malformed, Decode(written).Kind);
+        Assert.Equal(DocumentExtractionKind.Malformed, Decode(written).Kind);
     }
 
     [Fact]
@@ -107,13 +115,13 @@ public sealed class ComprehensionWorkerEntryTests
     {
         int extractions = 0;
 
-        byte[] input = new byte[checked((int)ComprehensionWorkerEntry.InputCeilingBytes + 1)];
+        byte[] input = new byte[checked((int)DocumentWorkerProfile.Pdf.InputCeilingBytes + 1)];
 
         (ComprehensionWorkerExitCode code, byte[] written) = Run(input, extract: (_, _) =>
         {
             extractions++;
 
-            return PdfExtractionOutcome.Without(PdfExtractionKind.Malformed);
+            return DocumentExtractionOutcome.Without(DocumentExtractionKind.Malformed);
         });
 
         Assert.Equal(ComprehensionWorkerExitCode.InputTooLarge, code);
@@ -135,7 +143,7 @@ public sealed class ComprehensionWorkerEntryTests
 
         Assert.Empty(written);
 
-        Assert.Equal(ComprehensionWorkerEntry.InputCeilingBytes + 1, input.BytesRead);
+        Assert.Equal(DocumentWorkerProfile.Pdf.InputCeilingBytes + 1, input.BytesRead);
     }
 
     [Fact]
@@ -155,8 +163,8 @@ public sealed class ComprehensionWorkerEntryTests
         [ComprehensionWorkerEntry.ModeArgument, "docx"],
         [ComprehensionWorkerEntry.ModeArgument, "PDF"],
         [ComprehensionWorkerEntry.ModeArgument, " pdf"],
-        [ComprehensionWorkerEntry.ModeArgument, ComprehensionWorkerEntry.PdfFormatArgument, "extra"],
-        ["__sandbox-exec", ComprehensionWorkerEntry.PdfFormatArgument],
+        [ComprehensionWorkerEntry.ModeArgument, "pdf", "extra"],
+        ["__sandbox-exec", "pdf"],
     ];
 
     [Theory]
@@ -165,7 +173,7 @@ public sealed class ComprehensionWorkerEntryTests
     {
         using MemoryStream output = new();
 
-        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(arguments, new FailingStream(), output, Generous);
+        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(arguments, new FailingStream(), output);
 
         Assert.Equal(ComprehensionWorkerExitCode.Usage, code);
 
@@ -193,7 +201,7 @@ public sealed class ComprehensionWorkerEntryTests
                     // A parser that never looks at its token, as PdfPig does inside one page.
                     release.Wait(TimeSpan.FromSeconds(30));
 
-                    return PdfExtractionOutcome.Without(PdfExtractionKind.NoText);
+                    return DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText);
                 });
 
             elapsed.Stop();
@@ -238,7 +246,7 @@ public sealed class ComprehensionWorkerEntryTests
 
                 token.ThrowIfCancellationRequested();
 
-                return PdfExtractionOutcome.Without(PdfExtractionKind.NoText);
+                return DocumentExtractionOutcome.Without(DocumentExtractionKind.NoText);
             });
 
         Assert.Equal(ComprehensionWorkerExitCode.Deadline, code);
@@ -263,7 +271,7 @@ public sealed class ComprehensionWorkerEntryTests
     {
         (ComprehensionWorkerExitCode code, byte[] written) = Run(
             PdfFixtures.Read("cups-text.pdf"),
-            extract: (_, _) => new PdfExtractionOutcome(PdfExtractionKind.NoText, ["text a no-text frame cannot carry"], false));
+            extract: (_, _) => new DocumentExtractionOutcome(DocumentExtractionKind.NoText, ["text a no-text frame cannot carry"], false));
 
         Assert.Equal(ComprehensionWorkerExitCode.Fault, code);
 
@@ -275,7 +283,11 @@ public sealed class ComprehensionWorkerEntryTests
     {
         using MemoryStream input = new(PdfFixtures.Read("multi-page.pdf"), writable: false);
 
-        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(PdfArguments, input, new FailingStream(), Generous);
+        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(
+            DocumentWorkerProfile.Pdf with { SelfDeadline = Generous },
+            input,
+            new FailingStream(),
+            ComprehensionWorkerEntry.ExtractorFor(DocumentWorkerFormat.Pdf)!);
 
         Assert.Equal(ComprehensionWorkerExitCode.Fault, code);
     }
@@ -300,21 +312,16 @@ public sealed class ComprehensionWorkerEntryTests
     }
 
     [Fact]
-    public void Constants_AreTheHiddenModeTheIntakeCeilingAndASelfDeadlineUnderTheHostClock()
+    public void ModeArgument_IsTheHiddenMode()
     {
+        // A kind's argument, input ceiling and self-deadline are its profile's, pinned with the profile.
         Assert.Equal("__comprehension-worker", ComprehensionWorkerEntry.ModeArgument);
-
-        Assert.Equal("pdf", ComprehensionWorkerEntry.PdfFormatArgument);
-
-        Assert.Equal(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes, ComprehensionWorkerEntry.InputCeilingBytes);
-
-        Assert.Equal(TimeSpan.FromSeconds(8), ComprehensionWorkerEntry.SelfDeadline);
     }
 
     private static (ComprehensionWorkerExitCode Code, byte[] Written) Run(
         byte[] input,
         TimeSpan? deadline = null,
-        Func<ReadOnlyMemory<byte>, CancellationToken, PdfExtractionOutcome>? extract = null)
+        Func<ReadOnlyMemory<byte>, CancellationToken, DocumentExtractionOutcome>? extract = null)
     {
         using MemoryStream stream = new(input, writable: false);
 
@@ -324,32 +331,37 @@ public sealed class ComprehensionWorkerEntryTests
     private static (ComprehensionWorkerExitCode Code, byte[] Written) Run(
         Stream input,
         TimeSpan? deadline = null,
-        Func<ReadOnlyMemory<byte>, CancellationToken, PdfExtractionOutcome>? extract = null)
+        Func<ReadOnlyMemory<byte>, CancellationToken, DocumentExtractionOutcome>? extract = null)
     {
         using MemoryStream output = new();
 
-        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(PdfArguments, input, output, deadline ?? Generous, extract);
+        // The PDF profile with its self-deadline replaced, so a test can end it sooner or give a slow host time.
+        ComprehensionWorkerExitCode code = ComprehensionWorkerEntry.Run(
+            DocumentWorkerProfile.Pdf with { SelfDeadline = deadline ?? Generous },
+            input,
+            output,
+            extract ?? ComprehensionWorkerEntry.ExtractorFor(DocumentWorkerFormat.Pdf)!);
 
         return (code, output.ToArray());
     }
 
-    private static PdfExtractionOutcome Decode(byte[] frame)
+    private static DocumentExtractionOutcome Decode(byte[] frame)
     {
-        ComprehensionWorkerFrameResult decoded = ComprehensionWorkerFrame.Decode(frame, PdfExtractionLimits.Default.MaxOutputCharacters);
+        ComprehensionWorkerFrameResult decoded = ComprehensionWorkerFrame.Decode(frame, DocumentWorkerProfile.Pdf.MaxOutputCharacters);
 
         Assert.True(decoded.IsValid, $"The worker wrote a frame the host refuses: {decoded.Defect}");
 
         return decoded.Outcome!;
     }
 
-    private sealed class OutcomeComparer : IEqualityComparer<PdfExtractionOutcome>
+    private sealed class OutcomeComparer : IEqualityComparer<DocumentExtractionOutcome>
     {
         public static OutcomeComparer Instance { get; } = new();
 
-        public bool Equals(PdfExtractionOutcome? x, PdfExtractionOutcome? y) =>
+        public bool Equals(DocumentExtractionOutcome? x, DocumentExtractionOutcome? y) =>
             x is not null && y is not null && x.Kind == y.Kind && x.Truncated == y.Truncated && x.Pages.SequenceEqual(y.Pages);
 
-        public int GetHashCode(PdfExtractionOutcome obj) => obj.Kind.GetHashCode();
+        public int GetHashCode(DocumentExtractionOutcome obj) => obj.Kind.GetHashCode();
     }
 
     /// <summary>A stream that serves zero bytes up to a length and counts what it served.</summary>
