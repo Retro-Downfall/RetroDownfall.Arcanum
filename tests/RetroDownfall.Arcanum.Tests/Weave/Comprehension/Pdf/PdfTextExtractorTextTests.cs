@@ -10,7 +10,8 @@ public sealed class PdfTextExtractorTextTests
     [Fact]
     public void Extract_RealProducerDocument_KeepsEveryCharacterInOrder()
     {
-        // cupsfilter pads and wraps its lines, so layout differs; the characters and their order must not.
+        // cupsfilter pads its lines and hard-wraps them inside words, so layout differs and whitespace cannot be compared;
+        // the characters and their order must not. Word boundaries are pinned by the same-line tests below.
         PdfExtractionOutcome outcome = Extract("cups-text.pdf");
 
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
@@ -64,6 +65,33 @@ public sealed class PdfTextExtractorTextTests
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["FIRST-IN-STREAM-BOTTOM\nSECOND-IN-STREAM-TOP\nTHIRD-IN-STREAM-MIDDLE"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_RunsOnOneLineDrawnRightToLeftOrOnTopOfEachOther_StayApartAsWords()
+    {
+        // Sensitivity: the separator rule for a backward jump. A right run drawn before the left run it sits beside, a page
+        // number drawn before its title and a run drawn on top of another are all on one baseline with the next run starting
+        // left of the previous one's end; gluing them makes one token of two words. The kerned pair is the control that
+        // keeps a small backward step inside a word.
+        PdfExtractionOutcome outcome = Extract("same-line-order.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["RIGHTWORD LEFTWORD\n17 Annual Report\nWAVE\nFIRSTRUN SECONDRUN"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_RealProducerFloatAndRightToLeftRows_KeepTheirRunsApart()
+    {
+        // WebKit paints a float before the inline text it sits beside, a right-to-left table row from the right cell to the
+        // left one and a row-reverse flex row from its last item to its first. Glued, the price and the quantity after it
+        // read as one number.
+        PdfExtractionOutcome outcome = Extract("webkit-float.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["$1,250.00 2 hours consulting\nRIGHTCELL LEFTCELL\nFLEXFIRST FLEXSECOND"], outcome.Pages);
     }
 
     [Theory]

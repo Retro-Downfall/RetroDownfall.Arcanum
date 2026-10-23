@@ -2,7 +2,6 @@ using System.Text;
 
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
-using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 using UglyToad.PdfPig.Exceptions;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
@@ -94,7 +93,7 @@ internal sealed class PdfTextExtractor
                 return PdfExtractionOutcome.Without(PdfExtractionKind.Bounds);
             }
 
-            string text = RemoveUnsafeCharacters(ContentOrderTextExtractor.GetText(page));
+            string text = RemoveUnsafeCharacters(PdfPageText.Build(page.Letters));
 
             int available = limits.MaxOutputCharacters - used - separator;
 

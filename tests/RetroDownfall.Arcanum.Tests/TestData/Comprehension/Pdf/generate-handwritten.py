@@ -457,6 +457,18 @@ write(
     ),
 )
 
+# ---- text laid out by hand: Helvetica runs placed with Tm, so the order the content stream draws them in is chosen
+# Each pair of runs is on one baseline. A text extractor that only looks at the gap to the right glues runs that are drawn
+# right to left, or on top of each other, into one word.
+same_line = (
+    b"BT /F1 12 Tf 1 0 0 1 400 700 Tm (RIGHTWORD) Tj 1 0 0 1 72 700 Tm (LEFTWORD) Tj ET\n"  # right run first, far apart
+    b"BT /F1 10 Tf 1 0 0 1 520 650 Tm (17) Tj 1 0 0 1 72 650 Tm (Annual Report) Tj ET\n"  # page number first, then the title
+    b"BT /F1 12 Tf 1 0 0 1 72 600 Tm [(WA) 150 (VE)] TJ ET\n"  # a kerned pair is one word: the control
+    b"BT /F1 12 Tf 1 0 0 1 72 550 Tm (FIRSTRUN) Tj 1 0 0 1 72 550 Tm (SECONDRUN) Tj ET\n"  # the second run starts on the first
+)
+write("same-line-order.pdf", simple_doc(same_line))
+
+
 # ---- active content that must never run, be followed, or be emitted
 js_action = b"<< /S /JavaScript /JS (app.alert\\('JS-ACTION-SENTINEL'\\);) >>"
 objs = {
