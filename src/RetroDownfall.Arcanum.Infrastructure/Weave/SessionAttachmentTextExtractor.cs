@@ -64,7 +64,7 @@ internal static class SessionAttachmentTextExtractor
         ArcanumSettings settings,
         long maxBytes,
         CancellationToken cancellationToken,
-        SessionAttachmentDocumentExtractionHost? host = null,
+        SessionAttachmentDocumentHost? host = null,
         bool waitForSlot = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -75,7 +75,7 @@ internal static class SessionAttachmentTextExtractor
                 SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
         }
 
-        SessionAttachmentDocumentExtractionHost? selected = host
+        SessionAttachmentDocumentHost? selected = host
             ?? SessionAttachmentDocumentExtractors.For(record.MimeType);
 
         if (selected is null)
@@ -87,7 +87,7 @@ internal static class SessionAttachmentTextExtractor
 
         if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
         {
-            return SessionAttachmentDocumentExtractionHost.Failed("Document input exceeds its byte ceiling.");
+            return SessionAttachmentDocumentHost.Failed("Document input exceeds its byte ceiling.");
         }
 
         return await selected

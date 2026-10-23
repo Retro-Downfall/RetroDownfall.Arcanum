@@ -1,14 +1,17 @@
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Platform;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// The closed set of extraction hosts, one per parser family. Each host binds a concrete extractor
-/// method group at construction, so quarantine is per family and the set of extractors that can run
-/// is visible to review and to the hosted-producer analysis. A macro-enabled variant shares the host of
-/// its base format, since both are read by the same parser and macros are never opened.
+/// The closed set of extraction hosts, one per parser family. Each in-process host binds a concrete
+/// extractor method group at construction, so quarantine is per family and the set of extractors that can
+/// run is visible to review and to the hosted-producer analysis. A macro-enabled variant shares the host of
+/// its base format, since both are read by the same parser and macros are never opened. PDF is parsed only
+/// out of process, by the jailed worker its isolated host awaits.
 /// </summary>
 internal static class SessionAttachmentDocumentExtractors
 {
@@ -44,6 +47,10 @@ internal static class SessionAttachmentDocumentExtractors
         new VisioDrawingExtractor().ExtractAsync,
         TimeSpan.FromSeconds(5));
 
+    private static readonly SessionAttachmentIsolatedDocumentHost Pdf = new(
+        new ProcessDocumentExtractionWorker(new ProcessResourceLimiter()),
+        DocumentWorkerFormat.Pdf);
+
     /// <summary>The host of the Comprehension text container, which is also the default host.</summary>
     internal static SessionAttachmentDocumentExtractionHost TextContainerHost => TextContainer;
 
@@ -51,7 +58,7 @@ internal static class SessionAttachmentDocumentExtractors
     /// Resolves the host for a registry MIME type, ignoring parameters, whitespace and case. A MIME
     /// outside the registry has no host.
     /// </summary>
-    internal static SessionAttachmentDocumentExtractionHost? For(string mimeType)
+    internal static SessionAttachmentDocumentHost? For(string mimeType)
     {
         if (!SessionAttachmentComprehensionPolicy.TryGetFormat(mimeType, out SessionAttachmentComprehensionFormat? format))
         {
@@ -72,6 +79,7 @@ internal static class SessionAttachmentDocumentExtractors
             SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType => OpenDocumentPresentation,
             SessionAttachmentComprehensionPolicy.VisioDrawingMimeType
                 or SessionAttachmentComprehensionPolicy.VisioMacroEnabledDrawingMimeType => Visio,
+            SessionAttachmentComprehensionPolicy.PdfMimeType => Pdf,
             _ => null,
         };
     }

@@ -65,7 +65,7 @@ internal sealed class SessionAttachmentIndexProcessor(
     ISessionAttachmentStore attachments,
     ISessionAttachmentIndexWriter index,
     ILogger<SessionAttachmentIndexProcessor> logger,
-    SessionAttachmentDocumentExtractionHost? comprehension = null)
+    SessionAttachmentDocumentHost? comprehension = null)
 {
     private const int AutomaticEmbeddingBatchSize = 64;
 

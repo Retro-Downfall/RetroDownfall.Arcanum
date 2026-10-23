@@ -9,6 +9,42 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
+/// The one abstraction a caller reaches a registry format's extraction through, whichever way the format is parsed: in
+/// this process by a pure extractor (<see cref="SessionAttachmentDocumentExtractionHost"/>) or in a jailed worker process
+/// (<see cref="SessionAttachmentIsolatedDocumentHost"/>). Both bound waiting for their family's slot the same way, read
+/// the caller's authenticated snapshot under the caller's admission, and report through the same result.
+/// </summary>
+internal abstract class SessionAttachmentDocumentHost
+{
+    /// <summary>The one code-owned reason a deferred attempt carries, whichever contention caused it.</summary>
+    internal const string BusyReason = "Document extraction is temporarily busy.";
+
+    /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
+    internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
+
+    private protected SessionAttachmentDocumentHost()
+    {
+    }
+
+    /// <summary>
+    /// Extracts the document whose bytes <paramref name="readBytes"/> reads. A caller that must not queue passes
+    /// <paramref name="waitForSlot"/> <see langword="false"/> and is deferred when the family is busy.
+    /// </summary>
+    internal abstract Task<SessionAttachmentExtractionResult> ExtractAsync(
+        Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
+        long expectedByteLength,
+        long maximumBytes,
+        CancellationToken cancellationToken,
+        bool waitForSlot = true);
+
+    internal static SessionAttachmentExtractionResult Failed(string reason) => new(
+        SessionAttachmentExtractionStatus.Failed, string.Empty, WasTruncated: false, reason);
+
+    internal static SessionAttachmentExtractionResult Deferred() => new(
+        SessionAttachmentExtractionStatus.Deferred, string.Empty, WasTruncated: false, BusyReason);
+}
+
+/// <summary>
 /// Bounds parser waiting and retained text for a closed, reviewed in-process format. One slot per
 /// parser family serializes its invocations. Waiting for that slot is bounded separately and is never
 /// charged to the waiting document: a slot not acquired in time, a slot not free for a caller that
@@ -25,14 +61,8 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
     TimeSpan timeout,
     int maximumCharacters = 262_144,
-    TimeSpan? slotWait = null)
+    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost
 {
-    /// <summary>The one code-owned reason a deferred attempt carries, whichever contention caused it.</summary>
-    internal const string BusyReason = "Document extraction is temporarily busy.";
-
-    /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
-    internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
-
     internal static SessionAttachmentDocumentExtractionHost Default => SessionAttachmentDocumentExtractors.TextContainerHost;
 
     private readonly TimeSpan _slotWait = slotWait ?? DefaultSlotWait;
@@ -49,7 +79,19 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
     /// </summary>
     private CancellationTokenSource _quarantineSignal = new();
 
-    internal async Task<SessionAttachmentExtractionResult> ExtractAsync(
+    internal override Task<SessionAttachmentExtractionResult> ExtractAsync(
+        Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
+        long expectedByteLength,
+        long maximumBytes,
+        CancellationToken cancellationToken,
+        bool waitForSlot = true) =>
+        ExtractInProcessAsync(readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot);
+
+    /// <summary>
+    /// <see cref="ExtractAsync"/> as a member of this class alone, so a caller that holds this host by its own type reaches
+    /// the in-process parse and nothing else.
+    /// </summary>
+    internal async Task<SessionAttachmentExtractionResult> ExtractInProcessAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
@@ -270,11 +312,6 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
         }
     }
 
-    internal static SessionAttachmentExtractionResult Failed(string reason) => new(
-        SessionAttachmentExtractionStatus.Failed, string.Empty, WasTruncated: false, reason);
-
-    internal static SessionAttachmentExtractionResult Deferred() => new(
-        SessionAttachmentExtractionStatus.Deferred, string.Empty, WasTruncated: false, BusyReason);
 }
 
 internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDocumentExtractor

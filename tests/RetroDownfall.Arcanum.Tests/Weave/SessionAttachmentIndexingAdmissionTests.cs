@@ -1834,7 +1834,7 @@ public sealed class SessionAttachmentIndexingAdmissionTests : IAsyncLifetime
 
         if (comprehension is not null)
         {
-            services.AddSingleton(comprehension);
+            services.AddSingleton<SessionAttachmentDocumentHost>(comprehension);
         }
 
         services.AddSingleton<SessionAttachmentIndexProcessor>();

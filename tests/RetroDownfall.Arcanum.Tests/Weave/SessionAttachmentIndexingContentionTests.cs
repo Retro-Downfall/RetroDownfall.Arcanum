@@ -580,7 +580,7 @@ public sealed class SessionAttachmentIndexingContentionTests(GrimoireFixture fix
 
         services.AddSingleton<ILogger<SessionAttachmentIndexProcessor>>(NullLogger<SessionAttachmentIndexProcessor>.Instance);
 
-        services.AddSingleton(comprehension);
+        services.AddSingleton<SessionAttachmentDocumentHost>(comprehension);
 
         services.AddSingleton<SessionAttachmentIndexProcessor>();
 

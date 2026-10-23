@@ -106,7 +106,7 @@ public static class SessionAttachmentToolInjection
         int? version,
         ArcanumSettings settings,
         string? requestModel,
-        Func<string, SessionAttachmentDocumentExtractionHost?> documentHostFor,
+        Func<string, SessionAttachmentDocumentHost?> documentHostFor,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -247,7 +247,7 @@ public static class SessionAttachmentToolInjection
         extraction.Status switch
         {
             SessionAttachmentExtractionStatus.Deferred =>
-                (extraction.FailureReason ?? SessionAttachmentDocumentExtractionHost.BusyReason) + RetryLaterHint,
+                (extraction.FailureReason ?? SessionAttachmentDocumentHost.BusyReason) + RetryLaterHint,
             SessionAttachmentExtractionStatus.Failed => extraction.FailureReason ?? "Document extraction failed.",
             _ => extraction.FailureReason ?? "The document has no extractable text.",
         };
