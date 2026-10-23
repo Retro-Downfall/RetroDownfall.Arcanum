@@ -35,8 +35,10 @@ internal sealed class PdfTextExtractor
     /// <summary>
     /// Options for one open. A fresh instance each time: the parser is handed it, so it is never shared between extractions.
     /// Parsing is strict. Missing fonts are skipped rather than failing the document. No password is supplied. /ActualText
-    /// replacement is off, because it is text no reader sees that the file's author controls. The nesting depth is pinned
-    /// here so a library default that grows cannot bring back the stack overflow the pinned nightly turned into an exception.
+    /// replacement is off, because it is text no reader sees that the file's author controls. Path clipping is off, because
+    /// with it on PdfPig drops text that lies outside the page, and #163 decides every text-showing run is extracted. The
+    /// nesting depth is pinned here so a library default that grows cannot bring back the stack overflow the pinned nightly
+    /// turned into an exception.
     /// </summary>
     private static ParsingOptions CreateOptions() => new()
     {

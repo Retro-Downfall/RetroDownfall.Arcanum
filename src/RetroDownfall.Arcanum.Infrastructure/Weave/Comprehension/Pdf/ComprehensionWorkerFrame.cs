@@ -102,7 +102,7 @@ internal static class ComprehensionWorkerFrame
 
         if (outcome.Kind == PdfExtractionKind.Extracted)
         {
-            if (outcome.Pages.Count == 0 || outcome.Pages.Any(page => page.Contains('\0') || page.Contains(PageSeparator)) || !HasVisibleCharacter(body))
+            if (outcome.Pages.Any(page => page.Contains('\0') || page.Contains(PageSeparator)) || !HasVisibleCharacter(body))
             {
                 throw new ArgumentException("An extracted outcome needs pages without NUL or form feed and with a visible character.", nameof(outcome));
             }
