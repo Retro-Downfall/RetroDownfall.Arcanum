@@ -928,7 +928,6 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Convert.TryToBase64Chars",
         "System.DateTimeOffset.TryParseExact",
         "System.Decimal.TryParse",
-        "System.Double.TryParse",
         "System.Enum.TryParse",
         "System.Guid.TryParse",
         "System.Guid.TryParseExact",
@@ -19884,9 +19883,14 @@ internal static partial class HostedGrimoireProducerInventory
 
         private int detachedRecursionSubstitutions;
 
+        // Set only for the one Traverse a call names exactly on the caller's own instance or statically (a target the invocation
+        // itself resolves, not a dispatch over implementations or overrides, and not a call on another object); the state traversal
+        // reads and clears it on entry.
+        private bool exactCallEdge;
+
         // A callback the caller does not own runs under no admission of the caller's, so it has to reach no producer site. Its body is
-        // traversed as any other, except that a re-entry of a state of its own traversal adds no evidence (see the re-entry in
-        // Traverse). When the callback reaches evidence after all, every state whose evidence left a re-entry out is recorded as
+        // traversed as any other, except that a re-entry of a state of its own traversal by a call that names exactly that member
+        // on the same instance adds no evidence (see the re-entry in TraverseState). When the callback reaches evidence after all, every state whose evidence left a re-entry out is recorded as
         // inconclusive, which is what a re-entry makes it everywhere else, so no later traversal reads the evidence it left out.
         private TraversalEvidence TraverseDetachedCallback(AuthoredMember body, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle)
         {
@@ -19980,6 +19984,10 @@ internal static partial class HostedGrimoireProducerInventory
 
         private TraversalEvidence TraverseState(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork, string? inheritedEffect, SyntaxNode? selection, IReadOnlySet<int>? fieldPublications, bool completionOwned, string? recoveryEffect, PlannedRoot? plannedRoot)
         {
+            bool enteredByExactCall = exactCallEdge;
+
+            exactCallEdge = false;
+
             // A member that reads a lease out of a holder object takes no Work from its caller, before any child getter or call can
             // inherit it. Nothing lifts this refusal and no member is exempt from it, a recovery handler included; generic WorkAt keeps
             // its existing contract for every other member.
@@ -20144,11 +20152,12 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 RefuseTraversalCompletion();
 
-                // Inside a detached callback, a state the callback's own traversal is already in is re-entered with nothing that
-                // state's traversal does not report itself, so the re-entry adds no evidence: the callback's evidence is then the
-                // least fixpoint over the states it reaches. A state that was in progress before the callback began is outside it,
-                // and its re-entry stays inconclusive.
-                if (detachedCallbackOuterStates is { } outer && !outer.Contains(state))
+                // Inside a detached callback, a state the callback's own traversal is already in, re-entered by a call that names
+                // exactly that member on the same instance (or a static one), is re-entered with nothing that state's traversal does
+                // not report itself, so the re-entry adds no evidence: the callback's evidence is then the least fixpoint over the
+                // states it reaches. A re-entry through a dispatch or on another instance (a decorator whose inner store the model
+                // cannot tell from itself) and a re-entry of a state that was in progress before the callback began stay inconclusive.
+                if (enteredByExactCall && detachedCallbackOuterStates is { } outer && !outer.Contains(state))
                 {
                     detachedRecursionSubstitutions++;
 
@@ -21583,6 +21592,13 @@ internal static partial class HostedGrimoireProducerInventory
 
                                     foreach (AuthoredMember receiverTarget in receiverTargets)
                                     {
+                                        exactCallEdge = target is not null
+                                            && strategyTargets.Length == 0
+                                            && classDispatch is null
+                                            && receiverTargets.Length == 1
+                                            && node is InvocationExpressionSyntax sameInstanceCall
+                                            && member.Model.GetOperation(sameInstanceCall) is IInvocationOperation { Instance: null or IInstanceReferenceOperation };
+
                                         TraversalEvidence exactEvidence = Traverse(receiverTarget, rootType, operationId + "/call@" + Location(node), active, lifecycle, detached || hostedTaskTransfer ? null : workAdmitted, detached || hostedTaskTransfer ? null : effectGroup, fieldPublications: carrier, completionOwned: joined || lazyOwned, recoveryEffect: detached || hostedTaskTransfer ? null : nextRecoveryEffect);
 
                                         targetEvidence = MergeEvidence(targetEvidence, exactEvidence);

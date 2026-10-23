@@ -550,6 +550,30 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         Assert.Equal(customProvider, HasCampaignEncodingDiagnostic(Discover(source), "System.Double.TryParse"));
     }
 
+    // The character-span overload asks its provider for the same number format, so it is held to the same exact invariant provider.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CampaignEncoding_double_span_parse_requires_exact_invariant_provider(bool customProvider)
+    {
+        string provider = customProvider ? "new CustomProvider()" : "System.Globalization.CultureInfo.InvariantCulture";
+        string source = FixtureSource($$"""
+            System.ReadOnlySpan<char> text = "1.25";
+            _ = double.TryParse(text, System.Globalization.NumberStyles.Float, {{provider}}, out _);
+            """, """
+            sealed class CustomProvider : System.IFormatProvider
+            {
+                public object? GetFormat(System.Type? type)
+                {
+                    System.IO.File.WriteAllText("proof.txt", "effect");
+                    return System.Globalization.NumberFormatInfo.InvariantInfo;
+                }
+            }
+            """);
+
+        Assert.Equal(customProvider, HasCampaignEncodingDiagnostic(Discover(source), "System.Double.TryParse"));
+    }
+
     [Fact]
     public void CampaignEncoding_double_parse_rejects_authored_conversion_from_invariant_culture()
     {

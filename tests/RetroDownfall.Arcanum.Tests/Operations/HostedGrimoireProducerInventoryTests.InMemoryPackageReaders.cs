@@ -172,8 +172,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     }
 
     // A detached callback must own the admission it runs under only when it can reach a producer site. A recursive-descent parser
-    // re-enters a member it is already in with the very same traversal state; that re-entry adds nothing the state's own traversal
-    // does not report, so a detached parser that reaches no site needs no ownership. A site anywhere in the recursion still does.
+    // re-enters a member it is already in, by a call that names that member on the same instance or statically, with the very same
+    // traversal state; that re-entry adds nothing the state's own traversal does not report, so a detached parser that reaches no
+    // site needs no ownership. A site anywhere in the recursion still does, and so does a re-entry on another instance, such as the
+    // OS credential store decorating itself (ABoundedOsCredentialReadMayOutliveOnlyItsReviewedOwner).
     [Theory]
     [InlineData("", true)]
     [InlineData("System.IO.File.Delete(\"path\"); ", false)]

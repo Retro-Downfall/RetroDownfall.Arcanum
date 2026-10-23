@@ -97,8 +97,11 @@ internal static partial class HostedGrimoireProducerInventory
             if (method.IsStatic
                 && method.Name == "TryParse"
                 && IsExactFrameworkType(method.ContainingType, "System.Double", typeof(double).Assembly.GetName())
-                && HasCampaignEncodingParameterTypes(method, "System.String", "System.Globalization.NumberStyles",
-                    "System.IFormatProvider", "System.Double")
+                && (HasCampaignEncodingParameterTypes(method, "System.String", "System.Globalization.NumberStyles",
+                        "System.IFormatProvider", "System.Double")
+                    || HasCampaignEncodingParameterTypes(method, "System.ReadOnlySpan`1", "System.Globalization.NumberStyles",
+                            "System.IFormatProvider", "System.Double")
+                        && method.Parameters[0].Type is INamedTypeSymbol { TypeArguments: [{ SpecialType: SpecialType.System_Char }] })
                 && method.Parameters.Take(3).All(static parameter => parameter.RefKind == RefKind.None)
                 && method.Parameters[3].RefKind == RefKind.Out
                 && invocation.Arguments.SingleOrDefault(static argument => argument.Parameter?.Ordinal == 2) is { } providerArgument
