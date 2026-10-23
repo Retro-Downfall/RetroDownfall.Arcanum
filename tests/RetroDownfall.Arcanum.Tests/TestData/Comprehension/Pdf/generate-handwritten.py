@@ -565,6 +565,72 @@ write(
     ]),
 )
 
+# ---- a page whose /Contents refers to an object the file does not define. ISO 32000-1 7.3.10 reads that as the null object,
+# so the page is blank (or the array element contributes nothing), and the rest of the file is still good
+undefined_contents_objs = {
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+    3: page_obj(b"4 0 R"),
+    4: stream(b"", show(b"GOOD-PAGE-ONE")),
+    5: FONT,
+    6: page_obj(b"20 0 R"),
+}
+write("contents-undefined-page-two.pdf", build(undefined_contents_objs))
+write(
+    "contents-undefined-element.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"[4 0 R 35 0 R]"),
+        4: stream(b"", show(b"ARRAY-ELEMENT-TEXT")),
+        5: FONT,
+    }),
+)
+write(
+    "contents-undefined-only-page.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"9 0 R"),
+        5: FONT,
+    }),
+)
+# The page tree lists itself as a kid beside the page, whose /Contents is undefined: the repair walks the tree and must not loop.
+write(
+    "contents-undefined-in-cyclic-page-tree.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Parent 2 0 R /Kids [2 0 R 3 0 R] /Count 2 >>",
+        3: page_obj(b"9 0 R"),
+        5: FONT,
+    }),
+)
+# The control for a repair that is too wide: page 1 has an undefined /Contents, page 2 has arrays nested past the parser's depth
+# limit. Page 1 is read as blank, and page 2 must still be refused.
+write(
+    "contents-undefined-beside-refused-page.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+        3: page_obj(b"20 0 R"),
+        5: FONT,
+        6: page_obj(b"7 0 R"),
+        7: stream(b"", show(b"BEFORE-DEEP-ARRAY") + b"[" * 300 + b"]" * 300 + b"\n"),
+    }),
+)
+# The control: the object exists but is not a stream. That is a wrong type, not an undefined reference, and stays refused.
+write(
+    "contents-not-a-stream.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"[4 0 R 6 0 R]"),
+        4: stream(b"", show(b"STREAM-BESIDE-A-STRING")),
+        5: FONT,
+        6: b"(this object is a string, not a stream)",
+    }),
+)
+
 # ---- active content that must never run, be followed, or be emitted
 js_action = b"<< /S /JavaScript /JS (app.alert\\('JS-ACTION-SENTINEL'\\);) >>"
 objs = {

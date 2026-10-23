@@ -118,6 +118,21 @@ cross-reference table is therefore `Failed` only when the parser cannot rebuild 
 top level is repaired by scanning, while `xref-stream-garbled.pdf` (objects inside an object stream), an unreadable trailer
 and a missing `/Root` are not.
 
+### Page content that refers to an undefined object
+
+ISO 32000-1 7.3.10 says a reference to an object the file does not define is the null object, not an error. The extractor
+reads an undefined `/Contents` (or one undefined element of a `/Contents` array) as empty content, and nothing else: PdfPig
+refuses such a page even with lenient parsing, and the repair covers only a reference that resolves to nothing.
+
+| File | Shows | Outcome |
+| --- | --- | --- |
+| `contents-undefined-page-two.pdf` | page 1 `GOOD-PAGE-ONE`; page 2 has `/Contents 20 0 R`, an object the file does not define | `Extracted`, two entries; the second is empty |
+| `contents-undefined-element.pdf` | `/Contents [4 0 R 35 0 R]`: a stream `ARRAY-ELEMENT-TEXT` and an undefined object | `Extracted` as `ARRAY-ELEMENT-TEXT` |
+| `contents-undefined-only-page.pdf` | the only page has an undefined `/Contents` | `NoText` |
+| `contents-undefined-in-cyclic-page-tree.pdf` | a page tree that lists itself as a kid, beside a page whose `/Contents` is undefined | `NoText`: the repair walks the tree and terminates |
+| `contents-undefined-beside-refused-page.pdf` | page 1 as in `contents-undefined-page-two.pdf`; page 2 has arrays nested 300 deep | `Malformed` (nesting depth on page 2): the repair does not forgive a second failure |
+| `contents-not-a-stream.pdf` | `/Contents [4 0 R 6 0 R]` where object 6 exists and is a string | `Malformed`: an object that exists but is not a stream is the wrong type, not null |
+
 ### Hostile structure that PdfPig 0.1.17-alpha-202610200037 turns into exceptions
 
 Stable 0.1.16 dies with an uncatchable stack overflow on several of these, which is why the nightly is pinned. They are

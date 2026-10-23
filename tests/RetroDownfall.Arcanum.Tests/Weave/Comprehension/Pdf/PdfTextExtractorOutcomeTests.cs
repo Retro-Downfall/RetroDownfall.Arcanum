@@ -155,6 +155,53 @@ public sealed class PdfTextExtractorOutcomeTests
         Assert.Equal(["BROKEN-XREF-TEXT"], outcome.Pages);
     }
 
+    // ---------------------------------------------------------------- references to objects the file does not define
+
+    [Fact]
+    public void Extract_PageWhoseContentsIsAnUndefinedObject_IsBlankAndTheOtherPagesAreExtracted()
+    {
+        // ISO 32000-1 7.3.10: a reference to an undefined object is the null object, so the page is blank. Refusing the
+        // document would lose page 1, which is good, on every path that reads it.
+        PdfExtractionOutcome outcome = Extract("contents-undefined-page-two.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["GOOD-PAGE-ONE", string.Empty], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_ContentsArrayWithOneUndefinedElement_ExtractsTheOtherElements()
+    {
+        PdfExtractionOutcome outcome = Extract("contents-undefined-element.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["ARRAY-ELEMENT-TEXT"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_OnlyPageHasAnUndefinedContents_ShowsNoText()
+    {
+        AssertCarriesNoText(PdfExtractionKind.NoText, Extract("contents-undefined-only-page.pdf"));
+    }
+
+    [Fact]
+    public void Extract_UndefinedContentsInAPageTreeThatListsItself_TerminatesAndShowsNoText()
+    {
+        // Sensitivity: the visited set of the repair's walk of the page tree. Without it this file never returns.
+        AssertCarriesNoText(PdfExtractionKind.NoText, Extract("contents-undefined-in-cyclic-page-tree.pdf"));
+    }
+
+    [Theory]
+    [InlineData("contents-undefined-beside-refused-page.pdf")]
+    [InlineData("contents-not-a-stream.pdf")]
+    public void Extract_ReferenceTheRepairMustNotForgive_IsStillMalformed(string fileName)
+    {
+        // Sensitivity: how narrow the repair is. A second page the parser refuses for its structure, and a /Contents
+        // element that exists but is not a stream (the wrong type, not null), still make the document malformed.
+        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
+    }
+
     // ---------------------------------------------------------------- hostile structure
 
     [Theory]

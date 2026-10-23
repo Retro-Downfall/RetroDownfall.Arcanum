@@ -118,6 +118,8 @@ internal sealed class PdfTextExtractor
 
         List<string> pages = [];
 
+        bool undefinedContentsRead = false;
+
         long letters = 0;
 
         int used = 0;
@@ -139,7 +141,7 @@ internal sealed class PdfTextExtractor
                 break;
             }
 
-            Page page = document.GetPage(number);
+            Page page = GetPage(document, number, ref undefinedContentsRead, cancellationToken);
 
             int pageLetters = page.Letters.Count;
 
@@ -184,6 +186,30 @@ internal sealed class PdfTextExtractor
         }
 
         return new PdfExtractionOutcome(PdfExtractionKind.Extracted, pages, truncated);
+    }
+
+    /// <summary>
+    /// PdfPig refuses a page whose <c>/Contents</c> refers to an object the file does not define, which the specification
+    /// reads as the null object (a blank page). The first such refusal repairs every page of the document once
+    /// (<see cref="PdfUndefinedContents"/>) and reads the page again; any other refusal, and a second one, stands.
+    /// </summary>
+    private static Page GetPage(PdfDocument document, int number, ref bool undefinedContentsRead, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return document.GetPage(number);
+        }
+        catch (InvalidOperationException)
+        {
+            if (undefinedContentsRead || !PdfUndefinedContents.TryReadAsNull(document, cancellationToken))
+            {
+                throw;
+            }
+
+            undefinedContentsRead = true;
+
+            return document.GetPage(number);
+        }
     }
 
     private static bool HasVisibleCharacter(string text)
