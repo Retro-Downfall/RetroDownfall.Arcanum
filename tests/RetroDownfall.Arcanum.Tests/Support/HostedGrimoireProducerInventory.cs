@@ -928,6 +928,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Convert.TryToBase64Chars",
         "System.DateTimeOffset.TryParseExact",
         "System.Decimal.TryParse",
+        "System.Double.TryParse",
         "System.Enum.TryParse",
         "System.Guid.TryParse",
         "System.Guid.TryParseExact",
@@ -935,6 +936,8 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Int32.TryParse",
         "System.Int64.TryParse",
         "System.Net.IPAddress.TryParse",
+        "System.ReadOnlySpan`1..ctor",
+        "System.Runtime.InteropServices.MemoryMarshal.TryGetArray",
         "System.Text.Encoding.TryGetBytes",
         "System.Text.Rune.DecodeFromUtf16",
         "System.Text.Rune.TryCreate",
@@ -986,6 +989,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.ArgumentNullException",
         "System.ArgumentOutOfRangeException",
         "System.Array",
+        "System.ArraySegment`1",
         "System.BitConverter",
         "System.Boolean",
         "System.Buffers.Binary.BinaryPrimitives",
@@ -1073,6 +1077,7 @@ internal static partial class HostedGrimoireProducerInventory
         "System.Text.RegularExpressions.Regex",
         "System.Text.Rune",
         "System.Text.StringBuilder",
+        "System.Text.StringBuilder.ChunkEnumerator",
         "System.Text.UTF8Encoding",
         "System.Threading.Interlocked",
         "System.Threading.SemaphoreSlim",
@@ -1536,6 +1541,39 @@ internal static partial class HostedGrimoireProducerInventory
         "System.TimeProvider.System",
         "System.Type.Assembly",
         "System.Type.FullName",
+
+        // XmlReaderSettings is a bag of options: constructing it and reading or setting one reads, writes and resolves nothing. What the
+        // options mean for a reader is judged where the reader is created (IsReviewedInMemoryXmlReaderMember).
+        "System.Xml.XmlReaderSettings..ctor",
+        "System.Xml.XmlReaderSettings.CloseInput",
+        "System.Xml.XmlReaderSettings.CloseInput setter",
+        "System.Xml.XmlReaderSettings.DtdProcessing",
+        "System.Xml.XmlReaderSettings.DtdProcessing setter",
+        "System.Xml.XmlReaderSettings.IgnoreComments",
+        "System.Xml.XmlReaderSettings.IgnoreComments setter",
+        "System.Xml.XmlReaderSettings.IgnoreProcessingInstructions",
+        "System.Xml.XmlReaderSettings.IgnoreProcessingInstructions setter",
+        "System.Xml.XmlReaderSettings.IgnoreWhitespace",
+        "System.Xml.XmlReaderSettings.IgnoreWhitespace setter",
+        "System.Xml.XmlReaderSettings.MaxCharactersFromEntities",
+        "System.Xml.XmlReaderSettings.MaxCharactersFromEntities setter",
+        "System.Xml.XmlReaderSettings.MaxCharactersInDocument",
+        "System.Xml.XmlReaderSettings.MaxCharactersInDocument setter",
+        "System.Xml.XmlReaderSettings.XmlResolver",
+        "System.Xml.XmlReaderSettings.XmlResolver setter",
+
+        // These XmlReader members report the node the reader is on (its kind, names, depth, attributes, in-scope namespaces) from
+        // what the last read already parsed; none of them advances the reader or reads its input. The members that do (Create,
+        // Read, Value, Dispose) are judged by the provenance of the input (IsReviewedInMemoryXmlReaderMember).
+        "System.Xml.XmlReader.Depth",
+        "System.Xml.XmlReader.EOF",
+        "System.Xml.XmlReader.GetAttribute",
+        "System.Xml.XmlReader.HasValue",
+        "System.Xml.XmlReader.IsEmptyElement",
+        "System.Xml.XmlReader.LocalName",
+        "System.Xml.XmlReader.LookupNamespace",
+        "System.Xml.XmlReader.NamespaceURI",
+        "System.Xml.XmlReader.NodeType",
     };
 
     private static readonly IReadOnlySet<string> CompletionOwnedExternalAwaitables = new HashSet<string>(StringComparer.Ordinal)
@@ -1641,6 +1679,17 @@ internal static partial class HostedGrimoireProducerInventory
             ["RetroDownfall.Arcanum.Core.Storage.ISessionTurnBeginStore.CreateBoundSessionAsync"] = new HashSet<string>(StringComparer.Ordinal)
             {
                 "RetroDownfall.Arcanum.Infrastructure.Repositories.GrimoireRepository",
+            },
+
+            // The Comprehension extractors write to the one sink the extraction host builds for each invocation: it appends to a
+            // bounded in-memory buffer under its own lock.
+            ["RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentDocumentTextSink.TryAppend"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Weave.BoundedDocumentTextSink",
+            },
+            ["RetroDownfall.Arcanum.Core.Storage.ISessionAttachmentDocumentTextSink.MarkTruncated"] = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "RetroDownfall.Arcanum.Infrastructure.Weave.BoundedDocumentTextSink",
             },
             ["RetroDownfall.Arcanum.Core.Covenant.ICovenantExclusivePostDispositionFinalizer.FinalizeAfterSuccessfulDispositionAsync"] = new HashSet<string>(StringComparer.Ordinal)
             {
@@ -3279,6 +3328,10 @@ internal static partial class HostedGrimoireProducerInventory
 
         private readonly HashSet<(GraphMemberIdentity Member, int DeclarationStart)>
             activeRecoveryLocals = [];
+
+        // The members whose returns RecoveryValue is reading. The path a value query carries is not enough on its own, because
+        // whether a return is reachable is decided by evaluating its guarding conditions, and that evaluation starts a fresh path.
+        private readonly HashSet<GraphMemberIdentity> activeRecoveryInvocations = [];
 
         private readonly Dictionary<ISymbol, List<string>> boundedLazyDataEvidence = new(SymbolEqualityComparer.Default);
 
@@ -18918,6 +18971,15 @@ internal static partial class HostedGrimoireProducerInventory
                         return default;
                     }
 
+                    // A member whose guarding condition calls back into a member whose returns are already being read (two
+                    // mutually recursive readers) re-enters it through that fresh path; the re-entry is cut, so its value is unknown.
+                    if (!activeRecoveryInvocations.Add(identity))
+                    {
+                        path.Remove(identity);
+
+                        return default;
+                    }
+
                     try
                     {
                         ExpressionSyntax[] returns = bound.Syntax switch
@@ -18958,6 +19020,8 @@ internal static partial class HostedGrimoireProducerInventory
                     finally
                     {
                         path.Remove(identity);
+
+                        activeRecoveryInvocations.Remove(identity);
                     }
                 }
             }
@@ -19812,6 +19876,56 @@ internal static partial class HostedGrimoireProducerInventory
             if (traversalCompletion is { } frame) frame.Complete = false;
         }
 
+        // The states in progress when the innermost detached callback's traversal began, the states whose evidence a re-entry inside
+        // it left out, and how many re-entries it has left out.
+        private HashSet<TraversalStateIdentity>? detachedCallbackOuterStates;
+
+        private List<TraversalStateIdentity>? detachedSubstitutedStates;
+
+        private int detachedRecursionSubstitutions;
+
+        // A callback the caller does not own runs under no admission of the caller's, so it has to reach no producer site. Its body is
+        // traversed as any other, except that a re-entry of a state of its own traversal adds no evidence (see the re-entry in
+        // Traverse). When the callback reaches evidence after all, every state whose evidence left a re-entry out is recorded as
+        // inconclusive, which is what a re-entry makes it everywhere else, so no later traversal reads the evidence it left out.
+        private TraversalEvidence TraverseDetachedCallback(AuthoredMember body, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle)
+        {
+            HashSet<TraversalStateIdentity>? previousOuter = detachedCallbackOuterStates;
+
+            List<TraversalStateIdentity>? previousSubstituted = detachedSubstitutedStates;
+
+            detachedCallbackOuterStates = [.. active];
+
+            List<TraversalStateIdentity> substituted = [];
+
+            detachedSubstitutedStates = substituted;
+
+            TraversalEvidence evidence;
+
+            try
+            {
+                evidence = Traverse(body, rootType, operationId, active, lifecycle, null, null, completionOwned: false, recoveryEffect: null);
+            }
+            finally
+            {
+                detachedCallbackOuterStates = previousOuter;
+
+                detachedSubstitutedStates = previousSubstituted;
+            }
+
+            if (evidence != TraversalEvidence.NoEvidence)
+            {
+                foreach (TraversalStateIdentity state in substituted)
+                {
+                    analyzedStates[state] = TraversalEvidence.Inconclusive;
+                }
+            }
+
+            previousSubstituted?.AddRange(substituted);
+
+            return evidence;
+        }
+
         private TraversalEvidence Traverse(AuthoredMember member, string rootType, string operationId, HashSet<TraversalStateIdentity> active, bool lifecycle, string? inheritedWork = null, string? inheritedEffect = null, SyntaxNode? selection = null, IReadOnlySet<int>? fieldPublications = null, bool completionOwned = false, string? recoveryEffect = null, PlannedRoot? plannedRoot = null)
         {
             TraversalCompletionFrame? parent = traversalCompletion;
@@ -20030,10 +20144,23 @@ internal static partial class HostedGrimoireProducerInventory
             {
                 RefuseTraversalCompletion();
 
+                // Inside a detached callback, a state the callback's own traversal is already in is re-entered with nothing that
+                // state's traversal does not report itself, so the re-entry adds no evidence: the callback's evidence is then the
+                // least fixpoint over the states it reaches. A state that was in progress before the callback began is outside it,
+                // and its re-entry stays inconclusive.
+                if (detachedCallbackOuterStates is { } outer && !outer.Contains(state))
+                {
+                    detachedRecursionSubstitutions++;
+
+                    return TraversalEvidence.NoEvidence;
+                }
+
                 return TraversalEvidence.Inconclusive;
             }
 
             analyzedStateCounts[root] = stateCount + 1;
+
+            int detachedSubstitutionsBefore = detachedRecursionSubstitutions;
 
             if (admittedStateObserver is not null)
             {
@@ -21050,7 +21177,9 @@ internal static partial class HostedGrimoireProducerInventory
                                         }
                                         : capturedBody;
 
-                                    TraversalEvidence bodyEvidence = Traverse(callbackBody, rootType, operationId + "/callback@" + Location(callbackCall) + "/body@" + Location(callback), active, lifecycle, callbackOwned ? workAdmitted : null, callbackOwned ? effectGroup : null, completionOwned: callbackOwned, recoveryEffect: callbackOwned ? recoveryEffect : null);
+                                    TraversalEvidence bodyEvidence = callbackOwned
+                                        ? Traverse(callbackBody, rootType, operationId + "/callback@" + Location(callbackCall) + "/body@" + Location(callback), active, lifecycle, workAdmitted, effectGroup, completionOwned: true, recoveryEffect: recoveryEffect)
+                                        : TraverseDetachedCallback(callbackBody, rootType, operationId + "/callback@" + Location(callbackCall) + "/body@" + Location(callback), active, lifecycle);
 
                                     callbackEvidence = MergeEvidence(
                                         callbackEvidence,
@@ -22215,6 +22344,11 @@ internal static partial class HostedGrimoireProducerInventory
             }
 
             analyzedStates[state] = emittedEvidence;
+
+            if (detachedSubstitutedStates is { } substituted && detachedRecursionSubstitutions != detachedSubstitutionsBefore)
+            {
+                substituted.Add(state);
+            }
 
             bool complete = traversalCompletion!.Complete;
 
@@ -25437,6 +25571,8 @@ internal static partial class HostedGrimoireProducerInventory
                     node,
                     model,
                     context)
+                || IsReviewedInMemoryInflaterMember(method, node, model, context)
+                || IsReviewedInMemoryXmlReaderMember(method, node, model, context)
                 || IsReviewedLongRestHistogramObservation(method, node, model, context)
                 || IsReviewedArcanumTokenHistogramObservation(method, node, model, context)
                 || IsReviewedCodeOwnedSdkConstruction(method, node, model, context)
@@ -26246,6 +26382,7 @@ internal static partial class HostedGrimoireProducerInventory
                 || IsReviewedPrimitiveQueueProperty(property, mutation, node, context)
                 || IsReviewedExactMeAiDimensionsProperty(property, mutation)
                 || IsReviewedNonProducerExternalMember(property, mutation)
+                || !mutation && IsReviewedInMemoryXmlReaderMember(property, node, model, context)
                 || !mutation && IsReviewedFrameworkEventDataRead(property)
                 || IsReviewedDatabaseSupportMember(property, mutation)
                     && !(mutation && TrackingBlockedByIdentityResolution(property))
@@ -30203,7 +30340,103 @@ internal static partial class HostedGrimoireProducerInventory
             return reaches;
         }
 
+        // One transitive scan, from the member or members it starts at with a fresh path: the members it has finished without finding
+        // a site, the bindings each member on the path was met with, and whether the scan has ended a path at a member that the path
+        // holds with other bindings.
+        private sealed class ProducerSiteScanQuery
+        {
+            internal HashSet<ProducerSiteScanKey> Settled { get; } = new(ProducerSiteScanKeyComparer.Instance);
+
+            internal Dictionary<GraphMemberIdentity, ProducerSiteScanKey> OnPath { get; } = [];
+
+            internal bool VariantCut { get; set; }
+
+            internal bool PathByPath { get; set; }
+        }
+
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<HashSet<GraphMemberIdentity>, ProducerSiteScanQuery> producerSiteScanQueries = new();
+
+        // A scan asks whether a member it can reach along a path that repeats no member has a site; it ends a path where the path
+        // meets a member already on it. While every such end meets the member with the bindings the path holds it with, the question
+        // is plain reachability over members and their bindings: a member the scan has finished without a site is not scanned again
+        // from another path, since everything it reaches has been scanned, and the answer at the start is the one the path-by-path
+        // scan gives. A recursive group of members would otherwise be scanned once for each path through it. An end at a member the
+        // path holds with other bindings may have cut what those bindings would have reached, so a start that found nothing after one
+        // is scanned again path by path, as every scan was before. A site found either way is a site the path-by-path scan finds.
         private bool ContainsPotentialProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path)
+        {
+            ProducerSiteScanQuery query = producerSiteScanQueries.GetValue(path, static _ => new ProducerSiteScanQuery());
+
+            bool start = path.Count == 0;
+
+            bool reaches = ScanOnceForProducerSite(member, path, query);
+
+            if (start && !reaches && query.VariantCut && !query.PathByPath)
+            {
+                query.PathByPath = true;
+
+                try
+                {
+                    reaches = ScanForProducerSite(member, path);
+                }
+                finally
+                {
+                    query.PathByPath = false;
+                }
+            }
+
+            return reaches;
+        }
+
+        private bool ScanOnceForProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path, ProducerSiteScanQuery query)
+        {
+            if (query.PathByPath)
+            {
+                return ScanForProducerSite(member, path);
+            }
+
+            GraphMemberIdentity identity = MemberIdentity(member);
+
+            ProducerSiteScanKey key = ScanKey(identity, member);
+
+            if (path.Contains(identity))
+            {
+                if (!query.OnPath.TryGetValue(identity, out ProducerSiteScanKey held)
+                    || !ProducerSiteScanKeyComparer.Instance.Equals(held, key))
+                {
+                    query.VariantCut = true;
+                }
+
+                return false;
+            }
+
+            if (query.Settled.Contains(key))
+            {
+                return false;
+            }
+
+            query.OnPath[identity] = key;
+
+            bool reaches;
+
+            try
+            {
+                reaches = ScanForProducerSite(member, path);
+            }
+            finally
+            {
+                query.OnPath.Remove(identity);
+            }
+
+            if (!reaches)
+            {
+                query.Settled.Add(key);
+            }
+
+            return reaches;
+        }
+
+        private bool ScanForProducerSite(AuthoredMember member, HashSet<GraphMemberIdentity> path)
         {
             if (!path.Add(MemberIdentity(member)))
             {
@@ -41965,6 +42198,21 @@ internal static partial class HostedGrimoireProducerInventory
                             ? HostedProducerSiteKind.FileSystemRead
                             : HostedProducerSiteKind.FileSystemEffect);
 
+                return true;
+            }
+
+            // A DeflateStream built over an in-memory stream releases its inflater and that stream: no file.
+            if (TypeKey(exactType) == "System.IO.Compression.DeflateStream"
+                && cleanup.Name == "Dispose"
+                && cleanup.Parameters.Length == 0
+                && resource is not null
+                && HasInMemoryInflaterProvenance(
+                    resource,
+                    member.Model,
+                    new HashSet<ISymbol>(
+                        SymbolEqualityComparer.Default),
+                    member))
+            {
                 return true;
             }
 
