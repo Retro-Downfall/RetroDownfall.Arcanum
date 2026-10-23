@@ -631,6 +631,41 @@ write(
     ]),
 )
 
+def runs_right_to_left(y, runs, right=500, gap=36):
+    """A right-to-left line drawn as separate runs the way WebKit draws a right-to-left table row or flex row: the right run
+    first, then each run to the left of the one before. runs are each run's glyphs already in visual order (a Hebrew run's
+    text reversed, a number as written); within a run the glyphs advance rightwards."""
+    glyphs = []
+    for run in runs:
+        start = right - 18 * len(run)
+        glyphs += [(start + 18 * index, character) for index, character in enumerate(run)]
+        right = start - gap
+    return (y, glyphs)
+
+
+HEBREW_FIRST = "\u05e8\u05d0\u05e9\u05d5\u05df"
+HEBREW_SECOND = "\u05e9\u05e0\u05d9"
+HEBREW_THIRD = "\u05e9\u05dc\u05d9\u05e9\u05d9"
+HEBREW_APPLE = "\u05ea\u05e4\u05d5\u05d7"
+HEBREW_ONE = "\u05d0\u05d7\u05d3"
+HEBREW_TWO = "\u05e9\u05ea\u05d9\u05d9\u05dd"
+# Right-to-left lines drawn as several runs. A table row of three cells; a row of a name and a price; a row of two Hebrew cells
+# and an English one; a heading whose second line is drawn 10 pt below the first, too close to count as a new line, so it joins the first
+# as one line that steps back to the left; and the control, one line drawn left to right in visual order as two runs with a
+# gap between them and no space glyph, which is one run and must still be reversed as a whole.
+write(
+    "rtl-runs.pdf",
+    placed_doc([
+        runs_right_to_left(700, [HEBREW_FIRST[::-1], HEBREW_SECOND[::-1], HEBREW_THIRD[::-1]]),
+        runs_right_to_left(650, [HEBREW_APPLE[::-1], "12.50"]),
+        runs_right_to_left(625, [HEBREW_APPLE[::-1], HEBREW_MECHIR[::-1], "Apple"]),
+        left_to_right(600, (HEBREW_SHALOM + " " + HEBREW_OLAM)[::-1], x=300),
+        (590, [(372 + 18 * index, character) for index, character in enumerate((HEBREW_FIRST + " " + HEBREW_SECOND)[::-1])]),
+        (550, [(100 + 18 * index, character) for index, character in enumerate(HEBREW_TWO[::-1])]
+            + [(100 + 18 * len(HEBREW_TWO) + 9 + 18 * index, character) for index, character in enumerate(HEBREW_ONE[::-1])]),
+    ]),
+)
+
 # Hebrew drawn upside down. In visual order each glyph is drawn a glyph's width further along its own (leftward) direction;
 # in logical order each is drawn behind the one before. Measured in page x instead of along the glyphs' direction, the first
 # line would be letter-spaced and left reversed, and the second reversed.

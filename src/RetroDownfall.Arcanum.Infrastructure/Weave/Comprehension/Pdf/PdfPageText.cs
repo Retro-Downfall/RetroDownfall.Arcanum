@@ -26,7 +26,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 /// <item>
 /// Right-to-left text that the producer wrote in visual order (every glyph further along its own direction than the one
 /// before it, which for upright text is further right, and is how macOS and most other producers write Hebrew and Arabic)
-/// is put back in logical order, run by run.
+/// is put back in logical order, one drawn run at a time, the runs keeping their order.
 /// </item>
 /// </list>
 /// The join is one pass over the letters followed by one pass over each line.
@@ -101,7 +101,9 @@ internal static class PdfPageText
                 }
                 else if (previous.Value != " " && IsWordGap(previous, previousClass, letter, letterClass, direction))
                 {
-                    cells.Add(new Cell(" ", CellClass.Space, position));
+                    bool stepsBack = direction.Along(previous.StartBaseLine, letter.StartBaseLine) < 0;
+
+                    cells.Add(new Cell(" ", stepsBack ? CellClass.RunBreak : CellClass.Space, position));
 
                     lastWasWhitespace = true;
                 }
@@ -236,9 +238,12 @@ internal static class PdfPageText
     /// page, so the text that comes out of the content stream is each run backwards. This puts the characters of those runs
     /// back in logical order. A run whose glyphs already step back against their own direction (leftwards, for upright
     /// text) was written in logical order and is left alone.
-    /// A line of right-to-left text only is one run, so its punctuation and the order of its words come back too; in a line
-    /// that also has left-to-right letters each right-to-left run is reversed where it stands and the order of the runs is
-    /// kept. Numbers and left-to-right runs inside a run keep their own order.
+    /// A drawn run of right-to-left text only is one run, so its punctuation and the order of its words come back too; in a
+    /// line that also has left-to-right letters each right-to-left run is reversed where it stands and the order of the runs
+    /// is kept. A letter that starts behind the one before it, with a gap, begins a new drawn run (the next cell of a
+    /// right-to-left table row, a flex item, the next line of a heading too tightly set to split), so a line is turned round
+    /// one drawn run at a time and the runs keep their order. Numbers and left-to-right runs inside a run keep their own
+    /// order.
     /// </summary>
     private static void RestoreLogicalOrder(Span<Cell> cells)
     {
@@ -275,21 +280,17 @@ internal static class PdfPageText
 
         if (!hasLeftToRight)
         {
-            int start = 0;
+            int runStart = 0;
 
-            while (start < line.Length && line[start].Class == CellClass.Space)
+            for (int index = 0; index <= line.Length; index++)
             {
-                start++;
+                if (index == line.Length || line[index].Class == CellClass.RunBreak)
+                {
+                    RestoreLogicalOrderOfRun(WithoutEdgeSpaces(line[runStart..index]));
+
+                    runStart = index + 1;
+                }
             }
-
-            int end = line.Length;
-
-            while (end > start && line[end - 1].Class == CellClass.Space)
-            {
-                end--;
-            }
-
-            RestoreLogicalOrderOfRun(line[start..end]);
 
             return;
         }
@@ -309,7 +310,7 @@ internal static class PdfPageText
 
             int next = position + 1;
 
-            while (next < line.Length && line[next].Class != CellClass.Ltr)
+            while (next < line.Length && line[next].Class is not (CellClass.Ltr or CellClass.RunBreak))
             {
                 if (line[next].Class == CellClass.Rtl)
                 {
@@ -323,6 +324,25 @@ internal static class PdfPageText
 
             position = next;
         }
+    }
+
+    private static Span<Cell> WithoutEdgeSpaces(Span<Cell> run)
+    {
+        int start = 0;
+
+        while (start < run.Length && run[start].Class == CellClass.Space)
+        {
+            start++;
+        }
+
+        int end = run.Length;
+
+        while (end > start && run[end - 1].Class == CellClass.Space)
+        {
+            end--;
+        }
+
+        return run[start..end];
     }
 
     /// <summary>
@@ -527,6 +547,9 @@ internal static class PdfPageText
 
         /// <summary>A space the producer drew or a gap the join found.</summary>
         Space,
+
+        /// <summary>A gap the join found where the next letter starts behind the previous one: a new drawn run begins.</summary>
+        RunBreak,
 
         /// <summary>A line break.</summary>
         Newline,

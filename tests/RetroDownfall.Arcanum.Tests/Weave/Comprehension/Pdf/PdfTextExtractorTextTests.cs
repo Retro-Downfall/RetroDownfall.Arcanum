@@ -218,6 +218,54 @@ public sealed class PdfTextExtractorTextTests
         Assert.Equal([$"{Shalom} {Olam}\n{Marhaba} {Bilalam}"], outcome.Pages);
     }
 
+    [Fact]
+    public void Extract_RightToLeftLineDrawnAsSeveralRuns_KeepsTheRunsInContentOrder()
+    {
+        // Sensitivity: a run that starts behind the one before is a new drawn run, and each run is turned round where it
+        // stands. The table row is drawn right cell first; so are the name and price row and the row of two Hebrew cells and
+        // an English one, whose Hebrew cells must not turn round together; the heading's second line is drawn too close below
+        // the first to be a new line, and steps back to the left. Turning each of those lines round as a whole would reverse
+        // its cells or lines. The last line is the control: drawn left to right as two runs with a gap ahead, it is one
+        // visual run and is still turned round as a whole.
+        PdfExtractionOutcome outcome = Extract("rtl-runs.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(
+            [
+                "\u05E8\u05D0\u05E9\u05D5\u05DF \u05E9\u05E0\u05D9 \u05E9\u05DC\u05D9\u05E9\u05D9\n" // first second third
+                + "\u05EA\u05E4\u05D5\u05D7 12.50\n" // apple 12.50
+                + $"\u05EA\u05E4\u05D5\u05D7 {Mechir} Apple\n" // apple price Apple
+                + $"{Shalom} {Olam} \u05E8\u05D0\u05E9\u05D5\u05DF \u05E9\u05E0\u05D9\n" // the heading's two lines
+                + "\u05D0\u05D7\u05D3 \u05E9\u05EA\u05D9\u05D9\u05DD", // one two
+            ],
+            outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_RealProducerRightToLeftTableFlexRowAndTightHeading_KeepTheirRunsInContentOrder()
+    {
+        // WebKit paints right-to-left table cells (an English one among them) and flex items in document order, the right
+        // one first, and a heading whose line height is under 0.9 em wraps to lines too close to split. The bold word inside
+        // a paragraph is the control: WebKit draws a paragraph's inline runs left to right, so the paragraph is one visual
+        // run.
+        PdfExtractionOutcome outcome = Extract("webkit-rtl-runs.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(
+            [
+                "\u05E8\u05D0\u05E9\u05D5\u05DF \u05E9\u05E0\u05D9 \u05E9\u05DC\u05D9\u05E9\u05D9\n" // first second third
+                + "\u05DE\u05D5\u05E6\u05E8 \u05DE\u05D7\u05D9\u05E8\n" // product price
+                + "\u05EA\u05E4\u05D5\u05D7 12.50\n" // apple 12.50
+                + "\u05EA\u05E4\u05D5\u05D7 \u05DE\u05D7\u05D9\u05E8 Apple\n" // apple price Apple
+                + "\u05D9\u05DE\u05D9\u05DF \u05E9\u05DE\u05D0\u05DC\n" // right left
+                + "\u05D0\u05D7\u05D3 \u05E9\u05EA\u05D9\u05D9\u05DD \u05E9\u05DC\u05D5\u05E9\n" // one two three
+                + "\u05E9\u05D5\u05E8\u05D4 \u05E8\u05D0\u05E9\u05D5\u05E0\u05D4 \u05E9\u05DC \u05DB\u05D5\u05EA\u05E8\u05EA \u05D0\u05E8\u05D5\u05DB\u05D4 \u05DE\u05D0\u05D5\u05D3", // first line of a very long heading
+            ],
+            outcome.Pages);
+    }
+
     [Theory]
     [InlineData("rtl-numbers.pdf")]
     [InlineData("webkit-rtl-numbers.pdf")]
