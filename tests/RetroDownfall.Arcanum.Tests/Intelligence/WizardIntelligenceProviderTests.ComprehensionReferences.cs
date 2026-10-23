@@ -28,7 +28,12 @@ public sealed partial class WizardIntelligenceProviderTests
 
         foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
         {
-            data.Add(format.MimeType);
+            // PDF is registered but parsed only out of process, and no real PDF producer file is bundled here yet:
+            // it joins this provider path when its isolated host and its producer document exist.
+            if (format.MimeType != SessionAttachmentComprehensionPolicy.PdfMimeType)
+            {
+                data.Add(format.MimeType);
+            }
         }
 
         return data;

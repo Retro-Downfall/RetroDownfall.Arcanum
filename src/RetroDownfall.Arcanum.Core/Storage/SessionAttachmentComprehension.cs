@@ -6,11 +6,24 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
 
+/// <summary>The unit a stored chunk's start and end range counts in, for the format it was extracted from.</summary>
+public enum SessionAttachmentRangeUnit
+{
+    /// <summary>Lines of the extracted text.</summary>
+    Lines,
+
+    /// <summary>Pages of the source document.</summary>
+    Pages,
+}
+
 /// <summary>
-/// One reviewed Comprehension source format: its lowercase MIME type and the human-readable label
-/// every model-facing framing shows for it.
+/// One reviewed Comprehension source format: its lowercase MIME type, the human-readable label
+/// every model-facing framing shows for it, and the unit its chunk ranges are stated in.
 /// </summary>
-public sealed record SessionAttachmentComprehensionFormat(string MimeType, string FormatName);
+public sealed record SessionAttachmentComprehensionFormat(
+    string MimeType,
+    string FormatName,
+    SessionAttachmentRangeUnit RangeUnit = SessionAttachmentRangeUnit.Lines);
 
 /// <summary>Closed document eligibility for Comprehension; durable attachment kinds remain unchanged.</summary>
 public static class SessionAttachmentComprehensionPolicy
@@ -47,6 +60,8 @@ public static class SessionAttachmentComprehensionPolicy
 
     public const string VisioMacroEnabledDrawingMimeType = "application/vnd.ms-visio.drawing.macroenabled.12";
 
+    public const string PdfMimeType = "application/pdf";
+
     // The registry's entries. TryGetFormat walks this array rather than Formats: an array's enumeration is
     // closed, while a read-only collection's enumerator runs whatever list it wraps.
     private static readonly SessionAttachmentComprehensionFormat[] FormatTable =
@@ -63,6 +78,7 @@ public static class SessionAttachmentComprehensionPolicy
             new(OpenDocumentPresentationMimeType, "OpenDocument presentation"),
             new(VisioDrawingMimeType, "Visio drawing"),
             new(VisioMacroEnabledDrawingMimeType, "Visio macro-enabled drawing (macros not read)"),
+            new(PdfMimeType, "PDF document", SessionAttachmentRangeUnit.Pages),
         ];
 
     /// <summary>
@@ -166,4 +182,13 @@ public interface ISessionAttachmentDocumentTextSink
     /// result reports truncation, so a retention overflow is never presented as a complete document.
     /// </summary>
     void MarkTruncated();
+
+    /// <summary>
+    /// Marks that the text appended from now on starts the 1-based page <paramref name="pageNumber"/> of the
+    /// source document, so a retained character can be traced back to its page. A sink that keeps no page
+    /// provenance ignores the call, which is the default.
+    /// </summary>
+    void BeginPage(int pageNumber)
+    {
+    }
 }
