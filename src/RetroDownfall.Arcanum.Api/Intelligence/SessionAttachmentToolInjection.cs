@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Intelligence;
+using RetroDownfall.Arcanum.Infrastructure.Mcp;
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
@@ -18,11 +19,51 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentToolInjection
 {
-    internal const string ComprehensionDataNotice =
-        "UNTRUSTED DATA; " + SessionAttachmentComprehensionPolicy.FormatName + "; layout not preserved";
+    /// <summary>The words that tell a reader the extractor could not retain the whole document.</summary>
+    internal const string TruncatedNoticeSuffix = "; truncated at the extraction limit";
 
-    internal static string FormatComprehensionData(string label, string text) =>
-        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice, text);
+    /// <summary>
+    /// The untrusted-data notice for a Comprehension document, naming the source format of the record
+    /// so a reader can tell what was extracted. A record outside the registry is never framed as a document.
+    /// A partial extraction says so, so the text is never read as the whole document.
+    /// </summary>
+    internal static string ComprehensionDataNotice(SessionAttachmentRecord record, bool truncated = false)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+
+        if (!SessionAttachmentComprehensionPolicy.TryGetFormat(record.MimeType, out SessionAttachmentComprehensionFormat? format))
+        {
+            throw new InvalidOperationException("Only a registered Comprehension document can be framed as document data.");
+        }
+
+        return "UNTRUSTED DATA; " + format.FormatName + "; layout not preserved"
+            + (truncated ? TruncatedNoticeSuffix : string.Empty);
+    }
+
+    internal static string FormatComprehensionData(
+        SessionAttachmentRecord record,
+        string label,
+        string text,
+        bool truncated = false) =>
+        SystemPromptBuilder.FormatUntrusted(label + " | " + ComprehensionDataNotice(record, truncated), text);
+
+    /// <summary>
+    /// The extracted text bounded to the per-item byte ceiling, and whether it is partial: the extractor
+    /// reported a truncation, or the ceiling cut it. Either way the frame has to say so.
+    /// </summary>
+    internal static string BoundExtractedText(
+        SessionAttachmentExtractionResult extraction,
+        long maxTextBytes,
+        out bool truncated)
+    {
+        ArgumentNullException.ThrowIfNull(extraction);
+
+        byte[] encoded = Encoding.UTF8.GetBytes(extraction.Text);
+
+        truncated = extraction.WasTruncated || (maxTextBytes > 0 && encoded.Length > maxTextBytes);
+
+        return DecodeTextWithByteBound(encoded, maxTextBytes);
+    }
 
     /// <summary>
     /// Builds injection contents for a Bound current-session attachment. Enforces combined turn budget,
@@ -36,14 +77,45 @@ public static class SessionAttachmentToolInjection
         int? version,
         ArcanumSettings settings,
         string? requestModel,
+        CancellationToken cancellationToken = default) =>
+        (await MaterializeAttachAsync(store, sessionId, logicalName, version, settings, requestModel, SessionAttachmentDocumentExtractors.For, cancellationToken)
+            .ConfigureAwait(false)).Contents;
+
+    /// <summary>
+    /// What <c>attach_session_file</c> materialized for the next model turn, or, when it materialized
+    /// nothing, the code-owned message the model is shown instead of the tool's acceptance.
+    /// </summary>
+    internal sealed record AttachMaterialization(IReadOnlyList<AIContent>? Contents, string? NotAttachedMessage);
+
+    /// <summary>The words that open every attach outcome that put nothing into the next model turn.</summary>
+    internal const string NotAttachedPrefix = "Not attached: ";
+
+    /// <summary>The hint a busy-family deferral adds: nothing was read, so the same call can succeed later.</summary>
+    internal const string RetryLaterHint = " Try attaching it again shortly.";
+
+    /// <summary>
+    /// <see cref="TryBuildContentsAsync"/>, also saying why nothing was materialized. The tool accepts an
+    /// attachment before anything reads it, so only this decides whether its content reaches the model.
+    /// A registry document is extracted by the host <paramref name="documentHostFor"/> names for its MIME
+    /// type, which in production is always <see cref="SessionAttachmentDocumentExtractors.For"/>.
+    /// </summary>
+    internal static async Task<AttachMaterialization> MaterializeAttachAsync(
+        ISessionAttachmentStore store,
+        Guid sessionId,
+        string logicalName,
+        int? version,
+        ArcanumSettings settings,
+        string? requestModel,
+        Func<string, SessionAttachmentDocumentExtractionHost?> documentHostFor,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(documentHostFor);
 
         if (string.IsNullOrWhiteSpace(logicalName))
         {
-            return null;
+            return new AttachMaterialization(null, null);
         }
 
         SessionAttachmentRecord? record = await store
@@ -52,24 +124,25 @@ public static class SessionAttachmentToolInjection
 
         if (record is null
             || record.State != SessionAttachmentState.Bound
-            || record.SessionId != sessionId)
-        {
-            return null;
-        }
-
-        if (string.IsNullOrWhiteSpace(record.RelativePath)
+            || record.SessionId != sessionId
+            || string.IsNullOrWhiteSpace(record.RelativePath)
             || Path.IsPathRooted(record.RelativePath)
             || HasParentSegment(record.RelativePath))
         {
-            return null;
+            return NotAttached(
+                SystemPromptBuilder.HardenAttachmentIndexName(logicalName.Trim()),
+                version,
+                "The attachment is not available in this session.");
         }
 
+        // The settings are the turn's, so the gates are judged here once, by the snapshot the rest of the
+        // turn uses; the tool server judged a registry document by its format alone.
         bool isDocument = SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings);
 
         if (record.Kind is not SessionAttachmentKind.Text and not SessionAttachmentKind.Image
             && !isDocument)
         {
-            return null;
+            return NotAttached(record, ArcanumInternalToolServer.AttachmentNotInjectableMessage);
         }
 
         ReadOnlyMemory<byte> bytes = isDocument
@@ -84,7 +157,7 @@ public static class SessionAttachmentToolInjection
 
             if (imageError is not null)
             {
-                return null;
+                return NotAttached(record, imageError);
             }
 
             string mime = string.IsNullOrWhiteSpace(record.MimeType) ? "image/*" : record.MimeType;
@@ -109,20 +182,20 @@ public static class SessionAttachmentToolInjection
                 ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes);
 
             SessionAttachmentExtractionResult extraction = await SessionAttachmentTextExtractor
-                .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken)
+                .ExtractDocumentAsync(store, record, settings, maxTextBytes, cancellationToken, documentHostFor(record.MimeType))
                 .ConfigureAwait(false);
 
             if (extraction.Status != SessionAttachmentExtractionStatus.Extracted
                 || string.IsNullOrWhiteSpace(extraction.Text))
             {
-                return null;
+                return NotAttached(record, NotExtractedReason(extraction));
             }
 
-            string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+            string text = BoundExtractedText(extraction, maxTextBytes, out bool truncated);
 
             contents =
             [
-                new TextContent(FormatComprehensionData(FrameLabel(record), text))
+                new TextContent(FormatComprehensionData(record, FrameLabel(record), text, truncated))
                 {
                     AdditionalProperties = ExplicitAttachmentContextProperties(),
                 },
@@ -160,11 +233,34 @@ public static class SessionAttachmentToolInjection
                 record,
                 ContextMaterializationSourceKind.AttachSessionFile))
         {
-            return null;
+            return NotAttached(record, "It is already in this turn's context.");
         }
 
-        return contents;
+        return new AttachMaterialization(contents, null);
     }
+
+    /// <summary>
+    /// The code-owned reason a document put no text into the turn: the extraction's own fixed reason, which
+    /// never echoes an entry name, part name or document text, and for a busy family a hint to try again.
+    /// </summary>
+    private static string NotExtractedReason(SessionAttachmentExtractionResult extraction) =>
+        extraction.Status switch
+        {
+            SessionAttachmentExtractionStatus.Deferred =>
+                (extraction.FailureReason ?? SessionAttachmentDocumentExtractionHost.BusyReason) + RetryLaterHint,
+            SessionAttachmentExtractionStatus.Failed => extraction.FailureReason ?? "Document extraction failed.",
+            _ => extraction.FailureReason ?? "The document has no extractable text.",
+        };
+
+    private static AttachMaterialization NotAttached(SessionAttachmentRecord record, string reason) =>
+        NotAttached(FrameLabel(record), record.Version, reason);
+
+    private static AttachMaterialization NotAttached(string label, int? version, string reason) =>
+        new(
+            null,
+            NotAttachedPrefix + "'" + label + "'"
+            + (version is { } selected ? " v" + selected.ToString(CultureInfo.InvariantCulture) : string.Empty)
+            + ". " + reason);
 
     public static async Task<IReadOnlyList<AIContent>?> TryBuildRefreshedContentsAsync(
         ISessionAttachmentStore store,
@@ -234,11 +330,11 @@ public static class SessionAttachmentToolInjection
                 return null;
             }
 
-            string text = DecodeTextWithByteBound(Encoding.UTF8.GetBytes(extraction.Text), maxTextBytes);
+            string text = BoundExtractedText(extraction, maxTextBytes, out bool truncated);
 
             contents =
             [
-                new TextContent(FormatComprehensionData(label, text))
+                new TextContent(FormatComprehensionData(record, label, text, truncated))
                 {
                     AdditionalProperties = RefreshedContextProperties(),
                 },

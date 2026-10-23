@@ -935,9 +935,11 @@ public sealed class SessionContextPinMaterializer(
 
             materialized = FromText(extraction.Text, byteLimit);
 
+            // A partial extraction is never a current pin: the frame and the status both say it was cut.
             materialized = materialized with
             {
-                Diagnostic = SessionAttachmentToolInjection.ComprehensionDataNotice
+                Status = extraction.WasTruncated ? SessionContextPinStatus.Truncated : materialized.Status,
+                Diagnostic = SessionAttachmentToolInjection.ComprehensionDataNotice(record, extraction.WasTruncated)
                     + (materialized.Diagnostic is null ? "." : ". " + materialized.Diagnostic),
             };
         }

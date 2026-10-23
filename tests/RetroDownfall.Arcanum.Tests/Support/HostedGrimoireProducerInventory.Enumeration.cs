@@ -80,6 +80,11 @@ internal static partial class HostedGrimoireProducerInventory
 
         Collection("System.CharEnumerator", typeof(string), enumerator: false);
 
+        // A segment of an array and its enumerator walk that array; a StringBuilder's chunk enumerator walks its own chunks.
+        Collection("System.ArraySegment`1", typeof(ArraySegment<>));
+
+        Collection("System.Text.StringBuilder.ChunkEnumerator", typeof(System.Text.StringBuilder), enumerator: false);
+
         // The regular-expression engine's match list: a non-virtual GetEnumerator over matches the engine produced.
         Collection("System.Text.RegularExpressions.MatchCollection", typeof(System.Text.RegularExpressions.Regex), enumerator: false);
 

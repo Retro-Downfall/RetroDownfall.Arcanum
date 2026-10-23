@@ -4,6 +4,8 @@ using System.Text;
 
 using Microsoft.Extensions.Options;
 
+using RetroDownfall.Arcanum.Cli.CommandCenter;
+
 using RetroDownfall.Arcanum.Cli.Commands;
 
 using RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
@@ -11,6 +13,8 @@ using RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
+
+using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Cli;
 
@@ -473,6 +477,153 @@ public sealed class RunAttachmentStagerTests : IDisposable
             using FileStream writer = new(fifo, FileMode.Open, FileAccess.Write);
         }
     }
+
+    /// <summary>
+    /// Every extension the Comprehension registry reads, the <c>.arccomp</c> test container included, derived
+    /// from the shared registry so a format added there is covered here without a second list.
+    /// </summary>
+    public static TheoryData<string> ComprehensionExtensions()
+    {
+        TheoryData<string> data = [];
+
+        foreach (string extension in RegistryExtensions())
+        {
+            data.Add(extension);
+        }
+
+        return data;
+    }
+
+    public static TheoryData<string> OrdinaryTextFileNames() =>
+    [
+        "notes.txt",
+        "README.md",
+        "data.xml",
+        "table.csv",
+        "config.json",
+        "notes.docx.txt",
+        "docx",
+    ];
+
+    [Fact]
+
+    public void The_registry_extension_theory_covers_every_known_comprehension_format()
+    {
+        HashSet<string> known =
+        [
+            ".arccomp", ".docx", ".docm", ".xlsx", ".xlsm", ".pptx", ".pptm", ".odt", ".ods", ".odp", ".vsdx", ".vsdm",
+        ];
+
+        HashSet<string> covered = [.. RegistryExtensions()];
+
+        Assert.Superset(known, covered);
+    }
+
+    /// <summary>
+    /// A Comprehension document is a package, not text. Read as UTF-8 it would send the model raw archive bytes,
+    /// and an uncompressed XML part would carry the hidden runs, comments and notes Comprehension withholds. So
+    /// it is refused by its name, before it is read, with the supported route Command Center names.
+    /// </summary>
+    [Theory]
+
+    [MemberData(nameof(ComprehensionExtensions))]
+
+    public async Task StageAsync_refuses_a_comprehension_document_and_names_the_attachment_route(string extension)
+    {
+        string fileName = "report" + extension;
+
+        _ = WriteText(_workspace, fileName, "PK package bytes that decode as text");
+
+        RunAttachmentStageResult result = await CreateStager().StageAsync(
+            ["@" + fileName],
+            _workspace,
+            pipedContent: null,
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Empty(result.AttachedFiles);
+
+        Assert.Empty(result.Metadata);
+
+        Assert.Equal(
+            $"The --with path '{fileName}' cannot be staged because it is a Comprehension document, which is never sent "
+            + "as inline text; store it with \"arcanum attachment add <path>\" and reference it by the attachment's id with "
+            + "\"arcanum run --attachment <id>\" (in Command Center, \"/attachments add <name>\").",
+            result.Error);
+    }
+
+    [Fact]
+
+    public async Task StageAsync_recognizes_a_comprehension_document_whatever_the_case_of_its_extension()
+    {
+        _ = WriteText(_workspace, "REPORT.DOCX", "PK package bytes that decode as text");
+
+        RunAttachmentStageResult result = await CreateStager().StageAsync(
+            ["@REPORT.DOCX"],
+            _workspace,
+            pipedContent: null,
+            CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+
+        Assert.Contains("Comprehension document", result.Error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+
+    public async Task StageAsync_refusal_uses_the_command_center_wording()
+    {
+        _ = WriteText(_workspace, "report.docx", "PK package bytes that decode as text");
+
+        RunAttachmentStageResult result = await CreateStager().StageAsync(
+            ["@report.docx"],
+            _workspace,
+            pipedContent: null,
+            CancellationToken.None);
+
+        Assert.False(CommandCenterTurnAttachmentBuilder.TryStagePathForNextTurn(
+            _workspace,
+            "report.docx",
+            new ArcanumSettings(),
+            out _,
+            out string statusLine));
+
+        const string statusPrefix = "/attach: report.docx is ";
+
+        Assert.StartsWith(statusPrefix, statusLine, StringComparison.Ordinal);
+
+        Assert.Equal(
+            "The --with path 'report.docx' cannot be staged because it is " + statusLine[statusPrefix.Length..],
+            result.Error);
+    }
+
+    [Theory]
+
+    [MemberData(nameof(OrdinaryTextFileNames))]
+
+    public async Task StageAsync_still_stages_an_ordinary_text_file(string fileName)
+    {
+        _ = WriteText(_workspace, fileName, "ordinary text");
+
+        RunAttachmentStageResult result = await CreateStager().StageAsync(
+            ["@" + fileName],
+            _workspace,
+            pipedContent: null,
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error);
+
+        Assert.Equal("ordinary text", Assert.Single(result.AttachedFiles).Content);
+    }
+
+    private static List<string> RegistryExtensions() =>
+    [
+        .. AttachmentMimeDetector.ExtensionMimeTypes
+            .Where(static mapping => SessionAttachmentComprehensionPolicy.TryGetFormat(mapping.Value, out _))
+            .Select(static mapping => mapping.Key)
+            .Order(StringComparer.Ordinal),
+    ];
 
     private static RunAttachmentStager CreateStager() =>
         new(Options.Create(new ArcanumSettings()));

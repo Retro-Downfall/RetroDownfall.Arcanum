@@ -52,6 +52,8 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 using RetroDownfall.Arcanum.Infrastructure.Workspaces.CodingTools;
@@ -539,16 +541,27 @@ public sealed class ToolExecutionPipeline(
         {
             try
             {
-                additionalContext = await SessionAttachmentToolInjection
-                    .TryBuildContentsAsync(
+                SessionAttachmentToolInjection.AttachMaterialization attached = await SessionAttachmentToolInjection
+                    .MaterializeAttachAsync(
                         sessionAttachmentStore,
                         ambientSessionId,
                         logicalName,
                         version,
                         settings.Value,
                         request.Model,
+                        SessionAttachmentDocumentExtractors.For,
                         cancellationToken)
                     .ConfigureAwait(false);
+
+                additionalContext = attached.Contents;
+
+                // The tool accepted the attachment before anything read it. When nothing was materialized,
+                // that acceptance would promise content the next turn never receives, so the model is told
+                // it was not attached and the code-owned reason instead.
+                if (attached.NotAttachedMessage is { } notAttached)
+                {
+                    resultText = notAttached;
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

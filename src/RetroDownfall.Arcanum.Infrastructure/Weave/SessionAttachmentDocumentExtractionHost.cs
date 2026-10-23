@@ -4,22 +4,38 @@ using System.Text;
 
 using RetroDownfall.Arcanum.Core.Storage;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// Bounds parser waiting and retained text for a closed, reviewed in-process format. Snapshot reads
-/// remain awaited inside the caller's admission and receive cancellation from the total deadline.
-/// A parser still running after timeout quarantines its format until it ends. This limits abandoned
-/// pure computation; it does not claim to preempt a parser or police its private allocations.
+/// Bounds parser waiting and retained text for a closed, reviewed in-process format. One slot per
+/// parser family serializes its invocations. Waiting for that slot is bounded separately and is never
+/// charged to the waiting document: a slot not acquired in time, a slot not free for a caller that
+/// asked not to wait, or a family quarantined by an outstanding parser, is
+/// <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller treats as terminal. A
+/// quarantine refuses later callers at once and releases the callers already queued for the slot.
+/// Once the slot is held, the document's own budget covers its snapshot read and its parse, and expiry
+/// of that budget is a terminal failure. Snapshot reads remain awaited inside the caller's admission and
+/// receive cancellation from that budget. A parser still running after its budget quarantines its
+/// family until it ends. This limits abandoned pure computation; it does not claim to preempt a parser
+/// or police its private allocations.
 /// </summary>
 internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
     TimeSpan timeout,
-    int maximumCharacters = 262_144)
+    int maximumCharacters = 262_144,
+    TimeSpan? slotWait = null)
 {
-    internal static SessionAttachmentDocumentExtractionHost Default { get; } = new(
-        new ComprehensionTextContainerExtractor().ExtractAsync,
-        TimeSpan.FromSeconds(5));
+    /// <summary>The one code-owned reason a deferred attempt carries, whichever contention caused it.</summary>
+    internal const string BusyReason = "Document extraction is temporarily busy.";
+
+    /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
+    internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
+
+    internal static SessionAttachmentDocumentExtractionHost Default => SessionAttachmentDocumentExtractors.TextContainerHost;
+
+    private readonly TimeSpan _slotWait = slotWait ?? DefaultSlotWait;
 
     private readonly object _gate = new();
 
@@ -27,37 +43,58 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
 
     private bool _quarantined;
 
+    /// <summary>
+    /// Cancelled when the family is quarantined, releasing every caller queued for the slot before it.
+    /// Each quarantine replaces it, so a caller that queues after the family recovers waits on a fresh one.
+    /// </summary>
+    private CancellationTokenSource _quarantineSignal = new();
+
     internal async Task<SessionAttachmentExtractionResult> ExtractAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool waitForSlot = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        long started = Stopwatch.GetTimestamp();
+        // Contention belongs to other documents. A quarantined family refuses at once rather than
+        // queueing behind a parser that may never end, and its quarantine releases a caller already
+        // queued. Otherwise the slot wait is bounded on its own clock, and a caller that must not wait
+        // takes the slot only when it is free. No refusal has read or parsed this document, so none is
+        // its outcome.
+        CancellationToken quarantine;
 
         lock (_gate)
         {
             if (_quarantined)
             {
-                return Failed("Document extraction is quarantined while a prior invocation is outstanding.");
+                return Deferred();
+            }
+
+            quarantine = _quarantineSignal.Token;
+        }
+
+        using (CancellationTokenSource slotWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, quarantine))
+        {
+            try
+            {
+                if (!await _serial.WaitAsync(waitForSlot ? _slotWait : TimeSpan.Zero, slotWait.Token).ConfigureAwait(false))
+                {
+                    return Deferred();
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return Deferred();
             }
         }
 
-        if (!await _serial.WaitAsync(timeout, cancellationToken).ConfigureAwait(false))
-        {
-            return Failed("Document extraction exceeded its deadline while awaiting the format.");
-        }
+        // The document's own budget starts only now that it holds the slot. The snapshot read and the
+        // parse share it, and its expiry is charged to this document alone.
+        long started = Stopwatch.GetTimestamp();
 
-        TimeSpan remaining = timeout - Stopwatch.GetElapsedTime(started);
-
-        if (remaining <= TimeSpan.Zero)
-        {
-            _serial.Release();
-
-            return Failed("Document extraction exceeded its deadline.");
-        }
+        TimeSpan remaining = timeout;
 
         bool parserOwnsSlot = false;
 
@@ -120,6 +157,12 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
 
                     return sink.Complete();
                 }
+                catch (DocumentPackageRejectedException rejected)
+                {
+                    // A closed, code-owned rejection: fixed status and reason, no entry or part names.
+                    // It is an ordinary outcome, so the format is not quarantined by it.
+                    return rejected.ToResult();
+                }
                 catch (Exception)
                 {
                     return Failed("Document extraction failed.");
@@ -161,10 +204,7 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             {
                 sink.Close();
 
-                lock (_gate)
-                {
-                    _quarantined = !invocation.IsCompleted;
-                }
+                QuarantineWhileRunning(invocation);
 
                 RequestCancellation(cancellation);
 
@@ -174,10 +214,7 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             {
                 sink.Close();
 
-                lock (_gate)
-                {
-                    _quarantined = !invocation.IsCompleted;
-                }
+                QuarantineWhileRunning(invocation);
 
                 RequestCancellation(cancellation);
 
@@ -190,6 +227,34 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
             {
                 _serial.Release();
             }
+        }
+    }
+
+    /// <summary>
+    /// Quarantines the family while the abandoned invocation still runs, and releases the callers queued for
+    /// its slot: they would otherwise wait out the whole slot wait behind a parser that may never end. The
+    /// release runs their continuations on the thread pool, not on this caller's thread. The released source
+    /// owns no timer and is not disposed, since a caller may still be linking to its token.
+    /// </summary>
+    private void QuarantineWhileRunning(Task invocation)
+    {
+        CancellationTokenSource? queued = null;
+
+        lock (_gate)
+        {
+            _quarantined = !invocation.IsCompleted;
+
+            if (_quarantined)
+            {
+                queued = _quarantineSignal;
+
+                _quarantineSignal = new CancellationTokenSource();
+            }
+        }
+
+        if (queued is not null)
+        {
+            _ = queued.CancelAsync();
         }
     }
 
@@ -207,6 +272,9 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
 
     internal static SessionAttachmentExtractionResult Failed(string reason) => new(
         SessionAttachmentExtractionStatus.Failed, string.Empty, WasTruncated: false, reason);
+
+    internal static SessionAttachmentExtractionResult Deferred() => new(
+        SessionAttachmentExtractionStatus.Deferred, string.Empty, WasTruncated: false, BusyReason);
 }
 
 internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDocumentExtractor
@@ -326,6 +394,24 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
             }
 
             return true;
+        }
+    }
+
+    public void MarkTruncated()
+    {
+        lock (_gate)
+        {
+            if (_truncated)
+            {
+                return;
+            }
+
+            _truncated = true;
+
+            if (_text.Length > 0 && char.IsHighSurrogate(_text[^1]))
+            {
+                _text.Length--;
+            }
         }
     }
 

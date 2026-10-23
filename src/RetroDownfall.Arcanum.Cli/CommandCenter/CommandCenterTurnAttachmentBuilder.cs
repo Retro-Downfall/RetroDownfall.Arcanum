@@ -10,7 +10,9 @@ namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
 /// UI-agnostic turn attachment builder: inline <c>@path</c> tokens + pre-staged <c>/attach</c> paths.
-/// Text files → <see cref="AttachedFileDto"/>; images → <see cref="ScryingFocusDto"/> (ephemeral).
+/// Text files → <see cref="AttachedFileDto"/>; images → <see cref="ScryingFocusDto"/> (ephemeral). A
+/// Comprehension document is never staged here: it goes through <c>arcanum attachment add</c> and is
+/// referenced by id, so the server's Comprehension rules decide what the model reads.
 /// </summary>
 internal static partial class CommandCenterTurnAttachmentBuilder
 {
@@ -25,6 +27,12 @@ internal static partial class CommandCenterTurnAttachmentBuilder
     private static partial Regex AtTokenRegex();
 
     private const int FileReadBufferBytes = 81920;
+
+    /// <summary>Why a Comprehension document is never staged, worded once for every CLI path that refuses one.</summary>
+    private const string ComprehensionReason = ComprehensionDocumentPaths.Reason;
+
+    /// <summary>The supported route for a Comprehension document, worded once for every CLI path.</summary>
+    private const string ComprehensionGuidance = ComprehensionDocumentPaths.Guidance;
 
     /// <summary>
     /// Resolves <c>@path</c> tokens and pre-staged <c>/attach</c> paths into the turn's attachments. Only
@@ -95,6 +103,16 @@ internal static partial class CommandCenterTurnAttachmentBuilder
                 continue;
             }
 
+            if (IsComprehensionDocument(fullPath))
+            {
+                // Read as UTF-8 text, the package's raw bytes (and any uncompressed XML part, with the
+                // hidden runs, comments and notes Comprehension withholds) would reach the model. The
+                // token stays so the operator's message is unchanged.
+                status.Add(
+                    $"Cannot stage {Path.GetFileName(fullPath)}: it is {ComprehensionReason}; {ComprehensionGuidance}; literal token kept in the prompt.");
+                continue;
+            }
+
             if (ScryingFocusStager.IsImagePath(fullPath))
             {
                 ScryingFocusStager.StagingResult sizeCheck = ScryingFocusStager.CheckSize(fullPath, maxImage);
@@ -160,6 +178,12 @@ internal static partial class CommandCenterTurnAttachmentBuilder
             if (!AttachableFile.TryConfirmRegularFile(full, out string? preNotRegularReason))
             {
                 status.Add($"/attach: {Path.GetFileName(full)} is {preNotRegularReason}; skipped.");
+                continue;
+            }
+
+            if (IsComprehensionDocument(full))
+            {
+                status.Add($"/attach: {Path.GetFileName(full)} is {ComprehensionReason}; {ComprehensionGuidance}; skipped.");
                 continue;
             }
 
@@ -255,6 +279,10 @@ internal static partial class CommandCenterTurnAttachmentBuilder
             clearPre);
     }
 
+    /// <summary>Whether the file is a Comprehension document, decided by its name alone (<see cref="ComprehensionDocumentPaths"/>).</summary>
+    private static bool IsComprehensionDocument(string fullPath) =>
+        ComprehensionDocumentPaths.IsComprehensionDocument(fullPath);
+
     private static void AddInlineToken(Dictionary<string, List<Match>> inlineTokens, string fullPath, Match match)
     {
         if (!inlineTokens.TryGetValue(fullPath, out List<Match>? matches))
@@ -323,6 +351,12 @@ internal static partial class CommandCenterTurnAttachmentBuilder
         if (!AttachableFile.TryConfirmRegularFile(fullPath, out string? notRegularReason))
         {
             statusLine = $"/attach: {Path.GetFileName(fullPath)} is {notRegularReason}.";
+            return false;
+        }
+
+        if (IsComprehensionDocument(fullPath))
+        {
+            statusLine = $"/attach: {Path.GetFileName(fullPath)} is {ComprehensionReason}; {ComprehensionGuidance}.";
             return false;
         }
 

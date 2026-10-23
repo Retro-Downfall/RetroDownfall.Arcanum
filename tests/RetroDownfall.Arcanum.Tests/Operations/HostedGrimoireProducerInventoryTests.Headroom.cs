@@ -114,6 +114,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // sixty-six primary rows retain their prescribed ceilings. Two of those also grow by two states, as noted beside
     // their unchanged rows. The additional partition has 1,544 sites,
     // zero diagnostics and unchanged ceilings for all thirty roots under each arrangement.
+    // Remeasured on 2026-10-22 for the Comprehension format extractors (#177) under one, two and three root workers: every
+    // discovery reported the committed 6,863 primary sites and zero diagnostics. SessionAttachmentIndexingService.ExecuteAsync
+    // grows from 1,226 to 3,066 states in every arrangement, so its row is 3,066 plus the margin; the other sixty-eight primary
+    // rows and the thirty additional rows are each their unchanged maximum plus the margin.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -178,7 +182,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync", 1448), // measured 1375, 1375 and 1375 under one, two and three workers; stopped-host erasure recovery reaches the capsule maintenance drain
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.EnqueueExtraction", 32), // measured 21
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync", 1408), // measured 1338, 1338 and 1338 under one, two and three workers; Saga store mutations now own the capsule mutation barrier and its drain
-        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 1288), // measured 1226
+        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3224), // measured 3066, 3066 and 3066 under one, two and three workers; the detached parser callback now reaches the seven Comprehension format extractors (#177), whose package, XML and walker members are analysed in it
         new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.TryEnqueue", 16), // measured 4
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StartAsync", 80), // measured 65
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StopAsync", 16), // measured 1

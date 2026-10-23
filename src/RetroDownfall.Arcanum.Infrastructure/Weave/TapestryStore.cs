@@ -189,12 +189,13 @@ internal sealed class TapestryStore(
     internal const int LeafPageSize = 512;
 
     // Comprehension contributes to flat attachment retrieval only. Its output must never enter a
-    // summary corpus, where a feature toggle could no longer distinguish it from ordinary text.
-    private const string DocumentMimePredicate =
-        "lower(trim(substr(s.\"MimeType\", 1, instr(s.\"MimeType\" || ';', ';') - 1))) = '"
-        + SessionAttachmentComprehensionPolicy.MimeType + "'";
+    // summary corpus, where a feature toggle could no longer distinguish it from ordinary text. The set
+    // is the code-owned registry, spelled once as quoted literals (a view or index definition cannot
+    // take parameters), so a MIME containing a quote is refused when the type is first used.
+    private static readonly string DocumentMimePredicate = BuildDocumentMimePredicate(
+        [.. SessionAttachmentComprehensionPolicy.Formats.Select(static format => format.MimeType)]);
 
-    private const string DocumentGenerationLeaves =
+    private static readonly string DocumentGenerationLeaves =
         """
         SELECT 1
         FROM "tapestry_nodes" documentNode
@@ -203,8 +204,28 @@ internal sealed class TapestryStore(
           AND documentNode."NodeKind" = 'Leaf'
         """ + " AND " + DocumentMimePredicate;
 
-    private const string DocumentFreeGenerationPredicate =
+    private static readonly string DocumentFreeGenerationPredicate =
         "(g.\"ScopeKind\" <> 'SessionAttachment' OR NOT EXISTS (" + DocumentGenerationLeaves + "))";
+
+    internal static string BuildDocumentMimePredicate(IReadOnlyList<string> mimeTypes)
+    {
+        List<string> literals = new(mimeTypes.Count);
+
+        foreach (string mimeType in mimeTypes)
+        {
+            if (mimeType.Contains('\'', StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("A Comprehension MIME type cannot contain a quote.");
+            }
+
+            literals.Add("'" + mimeType + "'");
+        }
+
+        return SessionAttachmentDocumentMimeSql.NormalizedExpression("s.\"MimeType\"")
+            + " IN ("
+            + string.Join(", ", literals)
+            + ")";
+    }
 
     /// <summary>
     /// Where each scope kind's leaves live: the corpus table, its id and label columns, the predicate that

@@ -128,6 +128,71 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Equal(1, reads);
     }
 
+    public static TheoryData<string> ComprehensionFormats => ComprehensionFormatFixtures.MimeTypes;
+
+    [Theory]
+    [MemberData(nameof(ComprehensionFormats))]
+    public async Task Comprehension_format_pin_materializes_only_the_visible_text_with_source_provenance(string mimeType)
+    {
+        // Sensitivity: the registry. A format missing from SessionAttachmentComprehensionPolicy.Formats is
+        // Unsupported before reading, so exactly that format's row fails here.
+        ComprehensionFormatFixture fixture = ComprehensionFormatFixtures.For(mimeType);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord record = new(
+            Guid.NewGuid(), sessionId, null, null, SessionAttachmentState.Bound,
+            "document", fixture.FileName, 3, "missing/" + fixture.FileName, "document-hash",
+            fixture.MimeType, fixture.Package.Length, SessionAttachmentKind.Binary, DateTimeOffset.UtcNow);
+
+        SessionContextPinRecord pin = new(
+            Guid.NewGuid(), sessionId, SessionContextPinKind.Attachment,
+            record.Id.ToString("D"), "document", record.ContentSha256, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        int reads = 0;
+
+        NoOpSessionAttachmentStore store = new(
+            record,
+            readBytes: (_, _) =>
+            {
+                reads++;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(fixture.Package);
+            },
+            openRead: (_, _) => throw new InvalidOperationException("Documents must use stored bytes."));
+
+        ArcanumSettings settings = new()
+        {
+            Features = new FeatureSettings { AttachmentRetrieval = true, Comprehension = true },
+        };
+
+        SessionContextPinMaterializer materializer = new(
+            new StaticPinStore(pin), store, CreateSessions(), new TestOptionsSnapshot<ArcanumSettings>(settings));
+
+        SessionContextPinMaterialization result = await materializer.MaterializeAsync(
+            sessionId, _workspace, CancellationToken.None);
+
+        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+
+        Assert.Contains("status: Current", text, StringComparison.Ordinal);
+
+        fixture.AssertSurfaces(text);
+
+        Assert.Contains("UNTRUSTED SESSION CONTEXT DATA", text, StringComparison.Ordinal);
+
+        Assert.Contains(fixture.DataFraming, text, StringComparison.Ordinal);
+
+        ContextPinMaterializedItem item = Assert.Single(result.Items!);
+
+        Assert.Equal(record.Id.ToString("N"), item.SourceId);
+
+        Assert.Equal(3, item.VersionOrdinal);
+
+        Assert.Equal("document-hash", item.ContentHash);
+
+        Assert.Equal(1, reads);
+    }
+
     private string _dbPath = string.Empty;
 
     private string _workspace = string.Empty;

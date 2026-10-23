@@ -211,8 +211,9 @@ internal sealed class SessionAttachmentIndexRepository(
         {
             pending.Transaction = transaction;
 
+            // The parameter names are generated from the code-owned registry; MIME values are bound.
             pending.CommandText =
-                """
+                $"""
                 SELECT a.Id, a.SessionId, COALESCE(s.AttemptCount, 0)
                 FROM SessionAttachments a
                 LEFT JOIN session_attachment_index_state s ON s.AttachmentId = a.Id
@@ -220,7 +221,7 @@ internal sealed class SessionAttachmentIndexRepository(
                   AND a.SessionId IS NOT NULL
                   AND (s.AttachmentId IS NULL OR s.Status IN ('Pending', 'Stale')
                        OR (@comprehensionEnabled = 1 AND a.Kind = 'Binary'
-                           AND lower(trim(substr(a.MimeType, 1, instr(a.MimeType || ';', ';') - 1))) = @documentMime
+                           AND {SessionAttachmentDocumentMimeSql.NormalizedExpression("a.MimeType")} IN ({SessionAttachmentDocumentMimeSql.ParameterList})
                            AND s.Status = 'NotEligible' AND s.ExtractedAt IS NULL))
                 ORDER BY a.CreatedAt, a.Id
                 LIMIT @limit
@@ -230,7 +231,10 @@ internal sealed class SessionAttachmentIndexRepository(
 
             AddParameter(pending, "@comprehensionEnabled", comprehensionEnabled ? 1 : 0);
 
-            AddParameter(pending, "@documentMime", SessionAttachmentComprehensionPolicy.MimeType);
+            foreach (KeyValuePair<string, string> documentMime in SessionAttachmentDocumentMimeSql.Parameters)
+            {
+                AddParameter(pending, documentMime.Key, documentMime.Value);
+            }
 
             await using DbDataReader reader = await pending.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 

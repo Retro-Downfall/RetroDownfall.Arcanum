@@ -4,6 +4,7 @@ using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Core.Weave.Tapestry;
@@ -711,9 +712,47 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Empty(hydrated);
     }
 
+    public static TheoryData<string> DocumentMimeTypes()
+    {
+        TheoryData<string> data = [];
+
+        foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
+        {
+            data.Add(format.MimeType);
+        }
+
+        data.Add(" Application/Vnd.Arcanum.Comprehension-Text ; charset=utf-8");
+
+        data.Add(" Application/Vnd.OpenXMLFormats-OfficeDocument.WordprocessingML.Document ; charset=utf-8");
+
+        data.Add("APPLICATION/VND.OASIS.OPENDOCUMENT.TEXT");
+
+        return data;
+    }
+
+    [Fact]
+    public void Document_predicate_spells_the_registry_as_one_quoted_literal_list()
+    {
+        string predicate = TapestryStore.BuildDocumentMimePredicate(
+            [.. SessionAttachmentComprehensionPolicy.Formats.Select(static format => format.MimeType)]);
+
+        string literals = string.Join(
+            ", ", SessionAttachmentComprehensionPolicy.Formats.Select(static format => "'" + format.MimeType + "'"));
+
+        Assert.EndsWith(" IN (" + literals + ")", predicate, StringComparison.Ordinal);
+
+        Assert.StartsWith("lower(trim(substr(s.\"MimeType\"", predicate, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Document_predicate_refuses_a_mime_that_would_break_out_of_its_literal()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            TapestryStore.BuildDocumentMimePredicate(["application/x-ok", "application/x-bad' OR '1'='1"]));
+    }
+
     [SkippableTheory]
-    [InlineData("application/vnd.arcanum.comprehension-text")]
-    [InlineData(" Application/Vnd.Arcanum.Comprehension-Text ; charset=utf-8")]
+    [MemberData(nameof(DocumentMimeTypes))]
     public async Task Corpus_excludes_Comprehension_document_chunks(string mimeType)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -737,8 +776,9 @@ public sealed class TapestryStoreTests : IAsyncLifetime
         Assert.Equal("ordinary text", leaf.Content);
     }
 
-    [SkippableFact]
-    public async Task Comprehension_document_generation_is_refused_by_current_lookup()
+    [SkippableTheory]
+    [MemberData(nameof(DocumentMimeTypes))]
+    public async Task Comprehension_document_generation_is_refused_by_current_lookup(string mimeType)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -746,16 +786,16 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         TapestryScope scope = new(TapestryScopeKind.SessionAttachment, sessionId);
 
-        await SeedAttachmentChunkAsync(
-            sessionId, "document-chunk", "document secret", "application/vnd.arcanum.comprehension-text");
+        await SeedAttachmentChunkAsync(sessionId, "document-chunk", "document secret", mimeType);
 
         _ = await PublishAttachmentTreeAsync(scope, ("document-chunk", "document secret"));
 
         Assert.Null(await _store!.GetCurrentGenerationAsync(scope, CancellationToken.None));
     }
 
-    [SkippableFact]
-    public async Task Comprehension_mixed_summary_generation_is_refused_even_for_text_hits()
+    [SkippableTheory]
+    [MemberData(nameof(DocumentMimeTypes))]
+    public async Task Comprehension_mixed_summary_generation_is_refused_even_for_text_hits(string mimeType)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -765,8 +805,7 @@ public sealed class TapestryStoreTests : IAsyncLifetime
 
         await SeedAttachmentChunkAsync(sessionId, "text-chunk", "ordinary text");
 
-        await SeedAttachmentChunkAsync(
-            sessionId, "document-chunk", "document secret", "application/vnd.arcanum.comprehension-text");
+        await SeedAttachmentChunkAsync(sessionId, "document-chunk", "document secret", mimeType);
 
         // Represents an already-published generation or one captured before the source feature was
         // disabled. Hydration must independently refuse it, including hits on its ordinary text.

@@ -19455,6 +19455,73 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         Assert.InRange(metric.RecoveryValueQueries, 1, levels * 32);
     }
 
+    // The value of a call is the value its reachable returns agree on, and whether a return is reachable is decided by
+    // evaluating the conditions that guard it, which starts a fresh path. Two members that each return from under a call
+    // to the other (a recursive-descent reader's Shapes and Shape) would re-enter each other through those conditions
+    // without end; the re-entry is cut, so the call's value is unknown and both arms of the caller stay reachable.
+    [Fact]
+    public void RecoveryValueCutsMutualRecursionThroughGuardingConditions()
+    {
+        const string helper = """
+            internal static class MutualRecoveryTarget
+            {
+                internal static void Run(bool flag)
+                {
+                    if (Shapes(flag, 0))
+                    {
+                        System.IO.File.Exists("mutual-true");
+                    }
+                    else
+                    {
+                        System.IO.File.Delete("mutual-false");
+                    }
+                }
+
+                private static bool Shapes(bool flag, int depth)
+                {
+                    if (!Shape(flag, depth))
+                    {
+                        return false;
+                    }
+
+                    return true;
+                }
+
+                private static bool Shape(bool flag, int depth)
+                {
+                    if (!Shapes(flag, depth + 1))
+                    {
+                        return false;
+                    }
+
+                    return true;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result =
+            DiscoverWithRoots(
+                R2Source("MutualRecoveryTarget.Run(true);", helper),
+                OrdinaryRoot() with
+                {
+                    Authority = HostedProducerAuthorityKind.PreReadinessStartup,
+                    WorkKind = null,
+                    Proof = "Worker.StartAsync: mutual recursion through guarding conditions",
+                });
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "MutualRecoveryTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Exists");
+
+        Assert.Contains(result.Items, static site =>
+            site.EnclosingType == "MutualRecoveryTarget"
+            && site.Member == "Run"
+            && site.Callee == "System.IO.File.Delete");
+    }
+
     [Fact]
     public void RecoveryFeasibilityKeepsUserDefinedConversionBranchesReachable()
     {

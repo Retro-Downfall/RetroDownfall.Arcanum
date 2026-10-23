@@ -162,6 +162,92 @@ public sealed class AttachmentMimeDetectorTests
         Assert.Equal(SessionAttachmentKind.Binary, SessionAttachmentContentPolicy.Classify(mimeType));
     }
 
+    public static TheoryData<string, string> ComprehensionDocumentExtensionMappings => new()
+    {
+        { ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+        { ".docm", "application/vnd.ms-word.document.macroenabled.12" },
+        { ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+        { ".xlsm", "application/vnd.ms-excel.sheet.macroenabled.12" },
+        { ".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation" },
+        { ".pptm", "application/vnd.ms-powerpoint.presentation.macroenabled.12" },
+        { ".odt", "application/vnd.oasis.opendocument.text" },
+        { ".ods", "application/vnd.oasis.opendocument.spreadsheet" },
+        { ".odp", "application/vnd.oasis.opendocument.presentation" },
+        { ".vsdx", "application/vnd.ms-visio.drawing" },
+        { ".vsdm", "application/vnd.ms-visio.drawing.macroenabled.12" },
+    };
+
+    [Theory]
+    [MemberData(nameof(ComprehensionDocumentExtensionMappings))]
+    public void Detect_maps_each_comprehension_document_extension_to_its_registry_mime(
+        string extension,
+        string expectedMimeType)
+    {
+        Assert.Equal(expectedMimeType, AttachmentMimeDetector.Detect("PK\u0003\u0004package"u8, "report" + extension));
+
+        Assert.Equal(
+            expectedMimeType,
+            AttachmentMimeDetector.Detect("PK\u0003\u0004package"u8, "REPORT" + extension.ToUpperInvariant()));
+
+        Assert.True(SessionAttachmentComprehensionPolicy.TryGetFormat(expectedMimeType, out _));
+    }
+
+    [Fact]
+    public void Detect_maps_every_registry_mime_from_exactly_one_extension()
+    {
+        string[] mapped = [.. AttachmentMimeDetector.ExtensionMimeTypes.Values
+            .Where(static mimeType => SessionAttachmentComprehensionPolicy.SupportedMimeTypes.Contains(mimeType))
+            .Order(StringComparer.Ordinal)];
+
+        Assert.Equal(
+            [.. SessionAttachmentComprehensionPolicy.SupportedMimeTypes.Order(StringComparer.Ordinal)],
+            mapped);
+    }
+
+    [Fact]
+    public void Detect_classifies_every_registry_mime_as_binary_so_kind_never_becomes_text()
+    {
+        Assert.All(
+            SessionAttachmentComprehensionPolicy.Formats,
+            static format => Assert.Equal(
+                SessionAttachmentKind.Binary,
+                SessionAttachmentContentPolicy.Classify(format.MimeType)));
+    }
+
+    [Theory]
+    [InlineData(".dotx")]
+    [InlineData(".dotm")]
+    [InlineData(".xltx")]
+    [InlineData(".xltm")]
+    [InlineData(".potx")]
+    [InlineData(".potm")]
+    [InlineData(".vstx")]
+    [InlineData(".vstm")]
+    [InlineData(".ott")]
+    [InlineData(".ots")]
+    [InlineData(".otp")]
+    [InlineData(".fodt")]
+    [InlineData(".rtf")]
+    [InlineData(".epub")]
+    public void Detect_leaves_templates_and_unsupported_package_formats_unrecognized(string extension)
+    {
+        Assert.Equal(
+            "application/octet-stream",
+            AttachmentMimeDetector.Detect("PK\u0003\u0004package"u8, "document" + extension));
+    }
+
+    [Theory]
+    [InlineData("renamed.bin")]
+    [InlineData("renamed")]
+    public void Detect_does_not_sniff_zip_content_so_a_renamed_package_stays_ineligible(string fileName)
+    {
+        string mimeType = AttachmentMimeDetector.Detect("PK\u0003\u0004[Content_Types].xml"u8, fileName);
+
+        Assert.Equal("application/octet-stream", mimeType);
+
+        Assert.False(SessionAttachmentComprehensionPolicy.TryGetFormat(mimeType, out _));
+    }
+
     [Fact]
     public void Detect_arccomp_extension_preserves_document_identity_for_malformed_input()
     {

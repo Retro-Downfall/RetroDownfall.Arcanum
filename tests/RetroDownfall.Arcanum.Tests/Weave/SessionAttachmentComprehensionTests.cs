@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
+
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Weave;
@@ -386,7 +388,8 @@ public sealed class SessionAttachmentComprehensionTests
 
             SessionAttachmentExtractionResult quarantined = await ExtractAsync("ARCCOMP1\nhello", host: host);
 
-            Assert.Equal(SessionAttachmentExtractionStatus.Failed, quarantined.Status);
+            // Quarantine defers other documents (never fails them) and still admits no second parser.
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, quarantined.Status);
 
             Assert.Equal(1, invocations);
 
@@ -433,12 +436,201 @@ public sealed class SessionAttachmentComprehensionTests
 
             SessionAttachmentExtractionResult quarantined = await ExtractAsync("ARCCOMP1\nhello", host: host);
 
-            Assert.Equal(SessionAttachmentExtractionStatus.Failed, quarantined.Status);
+            // Quarantine defers other documents (never fails them) and still admits no second parser.
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, quarantined.Status);
         }
         finally
         {
             release.TrySetResult();
         }
+    }
+
+    public static TheoryData<string> PackageRejections()
+    {
+        TheoryData<string> data = [];
+
+        foreach (DocumentPackageRejection rejection in Enum.GetValues<DocumentPackageRejection>())
+        {
+            data.Add(rejection.ToString());
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(PackageRejections))]
+    public async Task ExtractDocument_PackageRejection_MapsToItsCodeOwnedStatusAndReason(string rejectionName)
+    {
+        DocumentPackageRejection rejection = Enum.Parse<DocumentPackageRejection>(rejectionName);
+
+        DelegateExtractor extractor = new((_, _, _) => throw new DocumentPackageRejectedException(rejection));
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromSeconds(5));
+
+        SessionAttachmentExtractionResult result = await ExtractAsync("ARCCOMP1\nhello", host: host);
+
+        Assert.Equal(DocumentPackageRejections.Status(rejection), result.Status);
+
+        Assert.Equal(DocumentPackageRejections.Reason(rejection), result.FailureReason);
+
+        Assert.Empty(result.Text);
+
+        Assert.False(result.WasTruncated);
+    }
+
+    [Theory]
+    [InlineData("Encrypted", "NotEligible", "Encrypted document packages are not supported.")]
+    [InlineData("UnsupportedContainer", "NotEligible", "Document package uses an unsupported ZIP feature.")]
+    [InlineData("NotZip", "Failed", "Document package is not a valid ZIP container.")]
+    [InlineData("EntryBounds", "Failed", "Document package exceeds its entry bounds.")]
+    [InlineData("ExpansionBounds", "Failed", "Document package exceeds its expansion bounds.")]
+    [InlineData("UnsafeEntryName", "Failed", "Document package contains an unsafe or duplicate entry name.")]
+    [InlineData("MissingPart", "Failed", "Document package is missing a required part.")]
+    [InlineData("FormatMismatch", "Failed", "Document package does not match its declared format.")]
+    [InlineData("MalformedXml", "Failed", "Document part is not well-formed XML or declares a DTD.")]
+    [InlineData("StructureBounds", "Failed", "Document structure exceeds its bounds.")]
+    public async Task ExtractDocument_PackageRejection_PinsTheReviewedStatusTable(
+        string rejectionName,
+        string statusName,
+        string reason)
+    {
+        DocumentPackageRejection rejection = Enum.Parse<DocumentPackageRejection>(rejectionName);
+
+        SessionAttachmentExtractionStatus status = Enum.Parse<SessionAttachmentExtractionStatus>(statusName);
+
+        DelegateExtractor extractor = new((_, _, _) => throw new DocumentPackageRejectedException(rejection));
+
+        SessionAttachmentExtractionResult result = await ExtractAsync(
+            "ARCCOMP1\nhello", host: new(extractor.ExtractAsync, TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(status, result.Status);
+
+        Assert.Equal(reason, result.FailureReason);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_PackageRejectionAfterAnAwait_IsMappedTheSameWay()
+    {
+        DelegateExtractor extractor = new(async (_, _, _) =>
+        {
+            await Task.Yield();
+
+            throw new DocumentPackageRejectedException(DocumentPackageRejection.Encrypted);
+        });
+
+        SessionAttachmentExtractionResult result = await ExtractAsync(
+            "ARCCOMP1\nhello", host: new(extractor.ExtractAsync, TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
+
+        Assert.Equal(DocumentPackageRejections.Reason(DocumentPackageRejection.Encrypted), result.FailureReason);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_PackageRejection_DoesNotQuarantineTheHost()
+    {
+        int calls = 0;
+
+        DelegateExtractor extractor = new((_, output, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                throw new DocumentPackageRejectedException(DocumentPackageRejection.ExpansionBounds);
+            }
+
+            output.TryAppend("healthy");
+
+            return ValueTask.CompletedTask;
+        });
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromSeconds(5));
+
+        SessionAttachmentExtractionResult rejected = await ExtractAsync("ARCCOMP1\nhello", host: host);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, rejected.Status);
+
+        SessionAttachmentExtractionResult healthy = await ExtractAsync("ARCCOMP1\nhello", host: host);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, healthy.Status);
+
+        Assert.Equal("healthy", healthy.Text);
+
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_AnyOtherException_KeepsTheGenericReasonWithoutEchoingItsMessage()
+    {
+        DelegateExtractor extractor = new((_, _, _) =>
+            throw new InvalidDataException("secret/entry-name.xml is malformed"));
+
+        SessionAttachmentExtractionResult result = await ExtractAsync(
+            "ARCCOMP1\nhello", host: new(extractor.ExtractAsync, TimeSpan.FromSeconds(5)));
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+        Assert.Equal("Document extraction failed.", result.FailureReason);
+
+        Assert.Empty(result.Text);
+    }
+
+    [Fact]
+    public void BoundedSink_MarkTruncated_StopsLaterAppendsAndReportsTruncation()
+    {
+        BoundedDocumentTextSink sink = new(1024, CancellationToken.None);
+
+        Assert.True(sink.TryAppend("kept"));
+
+        sink.MarkTruncated();
+
+        Assert.False(sink.TryAppend("dropped"));
+
+        SessionAttachmentExtractionResult result = sink.Complete();
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
+
+        Assert.Equal("kept", result.Text);
+
+        Assert.True(result.WasTruncated);
+    }
+
+    [Fact]
+    public void BoundedSink_MarkTruncated_DropsADanglingHighSurrogate()
+    {
+        BoundedDocumentTextSink sink = new(1024, CancellationToken.None);
+
+        Assert.True(sink.TryAppend("a\uD83D"));
+
+        sink.MarkTruncated();
+
+        SessionAttachmentExtractionResult result = sink.Complete();
+
+        Assert.Equal("a", result.Text);
+
+        Assert.True(result.WasTruncated);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_ExtractorThatMarksTruncation_ReportsTheRetainedTextAsTruncated()
+    {
+        DelegateExtractor extractor = new((_, output, _) =>
+        {
+            output.TryAppend("partial");
+
+            output.MarkTruncated();
+
+            return ValueTask.CompletedTask;
+        });
+
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromSeconds(5));
+
+        SessionAttachmentExtractionResult result = await ExtractAsync("ARCCOMP1\nhello", host: host);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
+
+        Assert.Equal("partial", result.Text);
+
+        Assert.True(result.WasTruncated);
     }
 
     private static Task<SessionAttachmentExtractionResult> ExtractAsync(
