@@ -41,6 +41,19 @@ internal static class MacOsSandboxExecProfileBuilder
     internal const string DevNullWriteRule = "(allow file-write-data (literal \"/dev/null\"))";
 
     /// <summary>
+    /// A confined profile ends with this denial. No file operation mediates <c>fsgetpath</c> and <c>fsgetpath_ext</c>:
+    /// given a volume id (a <c>statfs</c> of the child's own temp directory supplies it) and any object id they return the
+    /// absolute path of any file on the volume, so a sweep of ids would recover every file name the confinement refuses to
+    /// list or stat. Only the <c>syscall-unix</c> operation governs them, and a rule naming the two calls leaves every other
+    /// system call as it was (<c>(deny default)</c> does not reach <c>syscall-unix</c> until a rule names it). Denying one of the
+    /// two is not enough, because the other returns the same path. The rule closes object-id path recovery and nothing else: the
+    /// root directory's listing, the ancestors' metadata, the mount-point names <c>getfsstat</c> lists (dyld's own profile allows
+    /// that call) and, since <c>process*</c> and <c>sysctl*</c> stay allowed, other processes' paths, argument vectors and
+    /// environments remain readable to a confined child, which the design reference records as its residual.
+    /// </summary>
+    internal const string ObjectIdPathDenialRule = "(deny syscall-unix (syscall-number SYS_fsgetpath SYS_fsgetpath_ext))";
+
+    /// <summary>
     /// Links outside every root that a confined profile's launch chain resolves: <c>/bin/sh</c>, which runs the limit
     /// prelude, reads the link naming the shell it starts.
     /// </summary>
@@ -66,8 +79,10 @@ internal static class MacOsSandboxExecProfileBuilder
     /// When true, the profile leaves out the grants that list every directory and read every file's metadata, so nothing
     /// outside the roots can be listed or stat'ed. What it adds back is only what path resolution and process start need:
     /// the metadata of each root's ancestors (each exact directory, never what is beneath it), the root directory's own
-    /// entry (<see cref="RootDirectoryEntryRule"/>) and the <c>/bin/sh</c> selector link. Off for every model-directed
-    /// tool, whose children list and stat the workspace's surroundings as any build does.
+    /// entry (<see cref="RootDirectoryEntryRule"/>) and the <c>/bin/sh</c> selector link. The profile also ends with
+    /// <see cref="ObjectIdPathDenialRule"/>, since the two calls that turn an object id back into a path would otherwise
+    /// name every file on the volume. Off for every model-directed tool, whose children list and stat the workspace's
+    /// surroundings as any build does.
     /// </param>
     /// <param name="denyFileWrites">
     /// When true, the profile grants no write of any kind to any root, <paramref name="readWriteRoots"/> and
@@ -232,6 +247,13 @@ internal static class MacOsSandboxExecProfileBuilder
         {
             // Stated last, after the broad (allow process*), so no earlier or later allow form can give fork back.
             sb.AppendLine("(deny process-fork)");
+        }
+
+        if (confineMetadataToRoots)
+        {
+            // Stated last, so no allow form can give the call back. The confinement is meant to keep every name outside the
+            // roots from the child, and these two calls would hand them over by object id.
+            sb.AppendLine(ObjectIdPathDenialRule);
         }
 
         string profile = sb.ToString();

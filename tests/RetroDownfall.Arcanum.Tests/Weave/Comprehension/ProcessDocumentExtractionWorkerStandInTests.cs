@@ -372,6 +372,42 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Under_the_host_launch_the_child_cannot_recover_a_path_from_an_object_id()
+    {
+        // The jail refuses a stat, a listing and an open outside its roots, but no file operation mediates fsgetpath and
+        // fsgetpath_ext: with the volume's id (its own temp directory's statfs supplies it) and an object id they name any
+        // file on the volume, and a sweep of ids would carry every file name out in its frame. The stand-in asks for the
+        // path of a canary outside every root by both calls; outside the jail the same program is told it, so the refusal
+        // below is the jail's and not a mistake in the program.
+        Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
+
+        string outside = Directory.CreateTempSubdirectory("arcanum-worker-outside-").FullName;
+
+        try
+        {
+            string canary = Path.Combine(outside, "id_ed25519-canary");
+
+            File.WriteAllText(canary, "not for the worker");
+
+            string program = ObjectIdProbeProgram(await ObjectIdOfAsync(canary));
+
+            string control = (await RunUnjailedAsync("/usr/bin/perl", ["-e", program])).Split('\n')[1];
+
+            Assert.Matches(@"^FSGETPATH=\S+/id_ed25519-canary FSGETPATH_EXT=\S+/id_ed25519-canary$", control);
+
+            DocumentWorkerResult result = await RunUnderTheHostLaunchAsync($"exec /usr/bin/perl -e '{program}'\n");
+
+            Assert.Null(result.FailureReason);
+
+            Assert.Equal("FSGETPATH=REFUSED FSGETPATH_EXT=REFUSED", Assert.Single(result.Outcome!.Pages));
+        }
+        finally
+        {
+            Directory.Delete(outside, recursive: true);
+        }
+    }
+
+    [SkippableFact]
     public async Task A_replaced_executable_is_refused_before_it_starts()
     {
         Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
@@ -423,6 +459,62 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
 
         return await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
             .RunAsync(DocumentWorkerFormat.Pdf, document ?? "%PDF-1.7 stand-in"u8.ToArray(), CancellationToken.None);
+    }
+
+    /// <summary>
+    /// A perl program, free of single quotes so a shell can carry it, that asks fsgetpath and fsgetpath_ext (by number, since
+    /// perl has no binding for them) for the path of the object whose id it is given, on the volume of its own temp directory,
+    /// and answers as the frame of one page. A volume id it cannot get is reported as such, so a refusal never hides a program
+    /// that never reached the call.
+    /// </summary>
+    private static string ObjectIdProbeProgram(long objectId) =>
+        """
+        my $id = <ID> + 0;
+        my $sfs = "\0" x 2168;
+        my $r;
+        if (syscall(345, $ENV{TMPDIR}, $sfs) != 0) {
+          $r = "STATFS-FAILED";
+        } else {
+          my $fsid = substr($sfs, 48, 8);
+          my @r;
+          for my $call ("FSGETPATH", "FSGETPATH_EXT") {
+            my $buf = "\0" x 1024;
+            my $n = $call eq "FSGETPATH" ? syscall(427, $buf, 1024, $fsid, $id) : syscall(217, $buf, 1024, $fsid, $id, 0);
+            my $path = $buf;
+            $path =~ s/\0.*//s;
+            push @r, "$call=" . ($n > 0 ? $path : "REFUSED");
+          }
+          $r = join(" ", @r);
+        }
+        print "ARCANUM-COMPREHENSION/1 extracted\n$r\nEND ", length($r), " 1\n";
+        """.Replace("<ID>", objectId.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
+
+    private static async Task<long> ObjectIdOfAsync(string path) =>
+        long.Parse(
+            (await RunUnjailedAsync("/usr/bin/stat", ["-f", "%i", path])).Trim(),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Runs a program as the test process itself, outside every jail: the control a refusal under the jail is read against.</summary>
+    private static async Task<string> RunUnjailedAsync(string executable, string[] arguments)
+    {
+        ProcessStartInfo start = new(executable) { RedirectStandardOutput = true, UseShellExecute = false };
+
+        foreach (string argument in arguments)
+        {
+            start.ArgumentList.Add(argument);
+        }
+
+        start.Environment["TMPDIR"] = Path.GetTempPath();
+
+        using System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!;
+
+        string output = await process.StandardOutput.ReadToEndAsync();
+
+        await process.WaitForExitAsync();
+
+        Assert.Equal(0, process.ExitCode);
+
+        return output;
     }
 
     private string WriteStandIn(string fileName, string script)
