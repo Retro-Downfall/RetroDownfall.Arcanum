@@ -265,6 +265,19 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     }
 
     [Fact]
+    public void CreateSandbox_DeniesForkingForTheHostBinaryAndForATestLaunchUnlessItAllowsIt()
+    {
+        using TemporaryExecutable executable = new();
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!).DenyProcessFork);
+
+        Assert.True(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path)).DenyProcessFork);
+
+        // Only a shell stand-in, which runs its utilities as children, opts out; the fork denial has its own tests.
+        Assert.False(ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForTests(executable.Path, allowProcessFork: true)).DenyProcessFork);
+    }
+
+    [Fact]
     public void CreateSandbox_ForATestLaunch_AddsOnlyItsOwnRoots()
     {
         using TemporaryExecutable executable = new();

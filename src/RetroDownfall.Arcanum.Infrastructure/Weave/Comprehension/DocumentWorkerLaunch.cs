@@ -24,9 +24,12 @@ internal sealed class DocumentWorkerLaunch
         ChildProcessEnvironmentProfile environmentProfile,
         IReadOnlyDictionary<string, string> environment,
         IReadOnlyList<string> additionalReadExecuteRoots,
-        int? maxFileDescriptors)
+        int? maxFileDescriptors,
+        bool denyProcessFork)
     {
         Executable = snapshot.Path;
+
+        DenyProcessFork = denyProcessFork;
 
         AdditionalReadExecuteRoots = additionalReadExecuteRoots;
 
@@ -62,6 +65,12 @@ internal sealed class DocumentWorkerLaunch
     internal int? MaxFileDescriptors { get; }
 
     /// <summary>
+    /// Whether the jail refuses every fork, so the worker stays one process: always for the host's binary, and for a test
+    /// launch unless it is a shell stand-in that runs its utilities as children.
+    /// </summary>
+    internal bool DenyProcessFork { get; }
+
+    /// <summary>
     /// The launch of the host's own binary, with an environment cleared entirely, when this host is a Native AOT binary
     /// (the runtime reports no dynamic code). There is none for any managed host, a dev host or a non-AOT publish: its
     /// runtime lives outside the binary, which a cleared environment and a jail cannot reach, so a worker started from it
@@ -83,7 +92,7 @@ internal sealed class DocumentWorkerLaunch
         }
 
         return TrySnapshot(processPath) is { } snapshot && !IsDotNetMuxer(snapshot.Path)
-            ? new DocumentWorkerLaunch(snapshot, ChildProcessEnvironmentProfile.DocumentWorker, new Dictionary<string, string>(), [], null)
+            ? new DocumentWorkerLaunch(snapshot, ChildProcessEnvironmentProfile.DocumentWorker, new Dictionary<string, string>(), [], null, denyProcessFork: true)
             : null;
     }
 
@@ -92,13 +101,15 @@ internal sealed class DocumentWorkerLaunch
     /// <paramref name="environment"/>, with <paramref name="additionalReadExecuteRoots"/> readable as well and, when
     /// given, <paramref name="maxFileDescriptors"/> as its descriptor ceiling (a managed apphost needs its shared runtime
     /// and more descriptors than the Native AOT binary). The runner's document-worker profile would clear those variables
-    /// too, so this launch uses the profile whose caller has already rebuilt the whole environment.
+    /// too, so this launch uses the profile whose caller has already rebuilt the whole environment. Forking is denied as
+    /// for the host's binary unless <paramref name="allowProcessFork"/> is set, for a shell stand-in.
     /// </summary>
     internal static DocumentWorkerLaunch ForTests(
         string executable,
         IReadOnlyDictionary<string, string>? environment = null,
         IReadOnlyList<string>? additionalReadExecuteRoots = null,
-        int? maxFileDescriptors = null)
+        int? maxFileDescriptors = null,
+        bool allowProcessFork = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
 
@@ -110,7 +121,8 @@ internal sealed class DocumentWorkerLaunch
             ChildProcessEnvironmentProfile.WorkspaceCheck,
             new Dictionary<string, string>(environment ?? new Dictionary<string, string>(), StringComparer.Ordinal),
             [.. additionalReadExecuteRoots ?? []],
-            maxFileDescriptors);
+            maxFileDescriptors,
+            denyProcessFork: !allowProcessFork);
     }
 
     /// <summary>Whether the file at <see cref="Executable"/> is still the one captured: the same file, size and write time.</summary>

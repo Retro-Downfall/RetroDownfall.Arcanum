@@ -45,6 +45,14 @@ internal sealed class ChildProcessSandboxRequest
     /// </summary>
     internal bool DenyNetwork { get; init; }
 
+    /// <summary>
+    /// When true, the child is one process: the macOS profile refuses <c>process-fork</c> (fork, vfork and posix_spawn)
+    /// while still letting the launch chain exec the target. Windows already bounds the tree by the Job Object's
+    /// active-process limit, so the flag changes nothing there. Off by default and in every model-directed tool builder,
+    /// whose children fork their own tools.
+    /// </summary>
+    internal bool DenyProcessFork { get; init; }
+
     /// <summary>Tool name for escape-hatch / denial diagnostics (no secrets).</summary>
     internal string? ToolName { get; init; }
 

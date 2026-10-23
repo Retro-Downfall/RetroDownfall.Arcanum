@@ -177,6 +177,42 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_with_fork_denial_denies_process_fork_last_and_still_lets_the_launch_exec()
+    {
+        // A document worker is one process: it never forks, so its profile refuses fork, vfork and posix_spawn. The
+        // launch chain inside the jail only execs (sandbox-exec, the limit prelude, the target), so process* stays.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            denyProcessFork: true);
+
+        Assert.Contains("(allow process*)", profile, StringComparison.Ordinal);
+
+        Assert.EndsWith(
+            "(deny network*)\n(deny system-socket)\n(deny process-fork)\n",
+            profile.ReplaceLineEndings("\n"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Profile_without_fork_denial_never_mentions_process_fork()
+    {
+        // Every other jailed child (execute_command, run_spell_script, workspace_check) forks its own tools.
+        foreach (bool denyNetwork in new[] { false, true })
+        {
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                ["/Users/arcanum-test/workspace"],
+                ["/usr", "/bin", "/System"],
+                "/private/tmp/arcanum-sb-test-invocation",
+                denyNetwork: denyNetwork);
+
+            Assert.DoesNotContain("process-fork", profile, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task Network_denial_refuses_a_run_whose_jail_was_not_applied()
     {
         // Only an applied jail can take the network away (Seatbelt on macOS, a capability-free AppContainer

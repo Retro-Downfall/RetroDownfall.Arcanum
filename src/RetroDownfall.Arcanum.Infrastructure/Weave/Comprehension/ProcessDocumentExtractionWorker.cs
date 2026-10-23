@@ -197,9 +197,9 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
     }
 
     /// <summary>
-    /// The jail: it must be applied (no operator escape, as for <c>workspace_check</c>), with no network, nothing
-    /// writable but the run's private temp directory, and nothing readable beyond the system runtime roots but the
-    /// executable's own directory.
+    /// The jail: it must be applied (no operator escape, as for <c>workspace_check</c>), with no network, no second
+    /// process, nothing writable but the run's private temp directory, and nothing readable beyond the system runtime
+    /// roots but the executable's own directory.
     /// </summary>
     internal static ChildProcessSandboxRequest CreateSandbox(DocumentWorkerLaunch launch)
     {
@@ -212,6 +212,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
             AllowUnsandboxed = false,
             RequireAppliedFilesystemJail = true,
             DenyNetwork = true,
+            DenyProcessFork = launch.DenyProcessFork,
             ToolName = "comprehension-worker",
         };
     }
@@ -225,10 +226,21 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         string executable,
         IReadOnlyDictionary<string, string>? environment = null,
         IReadOnlyList<string>? additionalReadExecuteRoots = null,
-        int? maxFileDescriptors = null)
-    {
-        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForTests(executable, environment, additionalReadExecuteRoots, maxFileDescriptors);
+        int? maxFileDescriptors = null,
+        bool allowProcessFork = false) =>
+        UseLaunch(DocumentWorkerLaunch.ForTests(executable, environment, additionalReadExecuteRoots, maxFileDescriptors, allowProcessFork));
 
+    /// <summary>
+    /// Points the worker at another executable through exactly the launch the host's own binary gets, environment profile,
+    /// limits and jail included, for the calling async flow: a stand-in then meets the production boundary itself. Never
+    /// set in production.
+    /// </summary>
+    internal static IDisposable UseHostLaunchForTests(string executable) =>
+        UseLaunch(DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true)
+            ?? throw new InvalidOperationException("The test executable has no host launch."));
+
+    private static IDisposable UseLaunch(DocumentWorkerLaunch launch)
+    {
         DocumentWorkerLaunch? previous = LaunchForTests.Value;
 
         LaunchForTests.Value = launch;

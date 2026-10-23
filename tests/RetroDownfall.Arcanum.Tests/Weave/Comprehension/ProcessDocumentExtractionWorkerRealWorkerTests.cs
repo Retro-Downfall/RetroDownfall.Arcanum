@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
+using RetroDownfall.Arcanum.Tests.Process;
+
 using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -123,6 +125,43 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
         DocumentWorkerResult healthy = await RunAsync(PdfFixtures.Read("cups-text.pdf"));
 
         Assert.Equal(PdfExtractionKind.Extracted, healthy.Outcome!.Kind);
+    }
+
+    /// <summary>Names a published Native AOT Cli binary for the tests that run the shipping worker itself.</summary>
+    private const string NativeAotWorkerVariable = "ARCANUM_TEST_NATIVE_AOT_WORKER";
+
+    [SkippableTheory]
+    [InlineData("multi-page.pdf")]
+    [InlineData("cups-multi.pdf")]
+    [InlineData("encrypted-aes-empty.pdf")]
+    [InlineData("astral-plane.pdf")]
+    public async Task The_native_aot_worker_reaches_the_same_verdict_under_the_host_launch(string fileName)
+    {
+        // The shipping binary through exactly the launch the host gives it: the cleared environment, the code-owned limits
+        // with no test relaxation, and the worker's jail. A managed apphost cannot prove the Native AOT binary starts there.
+        string? binary = System.Environment.GetEnvironmentVariable(NativeAotWorkerVariable);
+
+        Skip.If(string.IsNullOrWhiteSpace(binary) || !File.Exists(binary), $"Set {NativeAotWorkerVariable} to a published Native AOT Cli binary.");
+
+        Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
+
+        byte[] document = PdfFixtures.Read(fileName);
+
+        PdfExtractionOutcome expected = new PdfTextExtractor().Extract(document, PdfExtractionLimits.Default, CancellationToken.None);
+
+        DocumentWorkerResult result;
+
+        using (ProcessDocumentExtractionWorker.UseHostLaunchForTests(binary!))
+        {
+            result = await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
+                .RunAsync(DocumentWorkerFormat.Pdf, document, CancellationToken.None);
+        }
+
+        Assert.True(result.FailureReason is null, result.FailureReason);
+
+        Assert.Equal(expected.Kind, result.Outcome!.Kind);
+
+        Assert.Equal(expected.Pages, result.Outcome.Pages);
     }
 
     private static async Task<DocumentWorkerResult> RunAsync(byte[] document)

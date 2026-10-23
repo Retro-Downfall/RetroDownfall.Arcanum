@@ -244,6 +244,21 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Under_the_host_launch_the_child_cannot_start_a_second_process()
+    {
+        // The production launch of the host binary, with this stand-in in its place: the worker is one process. The
+        // stand-in execs perl, which tries one fork and reports what happened in the frame; the launch chain itself only
+        // execs, so the stand-in starts at all.
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
+            "exec /usr/bin/perl -e 'my $r; my $pid = fork(); if (!defined $pid) { $r = \"REFUSED\" } elsif ($pid == 0) { exit 0 } "
+            + "else { waitpid($pid, 0); $r = \"FORKED\" } print \"ARCANUM-COMPREHENSION/1 extracted\\n$r\\nEND \", length($r), \" 1\\n\"'\n");
+
+        Assert.Null(result.FailureReason);
+
+        Assert.Equal("REFUSED", Assert.Single(result.Outcome!.Pages));
+    }
+
+    [SkippableFact]
     public async Task A_replaced_executable_is_refused_before_it_starts()
     {
         Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
@@ -252,7 +267,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
 
         ProcessDocumentExtractionWorker worker = new(new ProcessResourceLimiter());
 
-        using (ProcessDocumentExtractionWorker.UseExecutableForTests(executable))
+        using (ProcessDocumentExtractionWorker.UseExecutableForTests(executable, allowProcessFork: true))
         {
             Assert.Null((await worker.RunAsync(DocumentWorkerFormat.Pdf, "%PDF"u8.ToArray(), CancellationToken.None)).FailureReason);
 
@@ -273,10 +288,28 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
 
         string executable = WriteStandIn("worker-" + Guid.NewGuid().ToString("N"), script);
 
-        using IDisposable scope = ProcessDocumentExtractionWorker.UseExecutableForTests(executable);
+        // These stand-ins are shell scripts that run their utilities as children, so they may fork; the fork denial the
+        // worker's own launch carries is proved under the host launch below.
+        using IDisposable scope = ProcessDocumentExtractionWorker.UseExecutableForTests(executable, allowProcessFork: true);
 
         return await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
             .RunAsync(DocumentWorkerFormat.Pdf, document ?? "%PDF-1.7 stand-in"u8.ToArray(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Runs a stand-in through exactly the launch the host binary gets: the document-worker environment profile, the
+    /// code-owned limits with no test relaxation, and the worker's jail. The stand-in must not fork.
+    /// </summary>
+    private async Task<DocumentWorkerResult> RunUnderTheHostLaunchAsync(string script, byte[]? document = null)
+    {
+        Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");
+
+        string executable = WriteStandIn("worker-" + Guid.NewGuid().ToString("N"), script);
+
+        using IDisposable scope = ProcessDocumentExtractionWorker.UseHostLaunchForTests(executable);
+
+        return await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
+            .RunAsync(DocumentWorkerFormat.Pdf, document ?? "%PDF-1.7 stand-in"u8.ToArray(), CancellationToken.None);
     }
 
     private string WriteStandIn(string fileName, string script)

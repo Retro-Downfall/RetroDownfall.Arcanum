@@ -32,12 +32,18 @@ internal static class MacOsSandboxExecProfileBuilder
     /// domain can be created) and ends with explicit denials of both. Off for every model-directed tool,
     /// whose jail stays filesystem-only.
     /// </param>
+    /// <param name="denyProcessFork">
+    /// When true, the profile ends with an explicit denial of <c>process-fork</c>, so the child can create no other
+    /// process by fork, vfork or posix_spawn. Exec stays allowed: the launch chain inside the jail (sandbox-exec, the
+    /// limit prelude, the target) only ever execs. Off for every model-directed tool, whose children fork their own tools.
+    /// </param>
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
         string invocationTempDir,
         IReadOnlyList<string>? readOnlyRoots = null,
-        bool denyNetwork = false)
+        bool denyNetwork = false,
+        bool denyProcessFork = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
@@ -146,6 +152,12 @@ internal static class MacOsSandboxExecProfileBuilder
             sb.AppendLine("(deny network*)");
 
             sb.AppendLine("(deny system-socket)");
+        }
+
+        if (denyProcessFork)
+        {
+            // Stated last, after the broad (allow process*), so no earlier or later allow form can give fork back.
+            sb.AppendLine("(deny process-fork)");
         }
 
         string profile = sb.ToString();
