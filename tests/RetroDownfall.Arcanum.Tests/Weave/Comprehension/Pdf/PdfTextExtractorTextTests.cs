@@ -80,6 +80,18 @@ public sealed class PdfTextExtractorTextTests
     }
 
     [Fact]
+    public void Extract_FontThatIsNotEmbeddedAndInstalledNowhere_IsStillExtracted()
+    {
+        // The text comes from the file, not from a font found on the host, so the result cannot depend on which fonts
+        // the worker's sandbox can read.
+        PdfExtractionOutcome outcome = Extract("non-embedded-font.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["NON-EMBEDDED-FONT-TEXT"], outcome.Pages);
+    }
+
+    [Fact]
     public void Extract_PageTreeThatClaimsTwoBillionPages_ReadsOnlyThePagesThatExist()
     {
         PdfExtractionOutcome outcome = Extract("huge-count.pdf");

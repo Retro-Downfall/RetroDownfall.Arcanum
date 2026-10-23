@@ -481,6 +481,74 @@ public sealed class ComprehensionWorkerFrameTests
         AssertRefused(ComprehensionWorkerFrameDefect.Payload, Decode(Frame("extracted", body, body.Length, pages)));
     }
 
+    // ---------------------------------------------------------------- damage anywhere
+
+    [Fact]
+    public void Decode_DamagedFrames_NeverThrowAndAreAcceptedOnlyInTheirOneCanonicalForm()
+    {
+        // The decoder reads bytes a possibly confused child wrote. Whatever it is given it must answer, and the only frames
+        // it may accept are exactly those the encoder writes, so no second spelling of a frame can slip through.
+        PdfExtractionOutcome[] outcomes =
+        [
+            Extracted(false, "ab", string.Empty, "c\nd"),
+            Extracted(true, "日本語\U0001F600", "END 1 1"),
+            PdfExtractionOutcome.Without(PdfExtractionKind.NoText),
+            PdfExtractionOutcome.Without(PdfExtractionKind.Bounds),
+        ];
+
+        Random random = new(163);
+
+        int accepted = 0;
+
+        for (int iteration = 0; iteration < 6000; iteration++)
+        {
+            List<byte> frame = [.. ComprehensionWorkerFrame.Encode(outcomes[random.Next(outcomes.Length)])];
+
+            for (int edit = random.Next(1, 4); edit > 0 && frame.Count > 0; edit--)
+            {
+                int at = random.Next(frame.Count);
+
+                switch (random.Next(4))
+                {
+                    case 0:
+                        frame[at] = (byte)random.Next(256);
+
+                        break;
+                    case 1:
+                        frame.RemoveAt(at);
+
+                        break;
+                    case 2:
+                        frame.Insert(at, (byte)random.Next(256));
+
+                        break;
+                    default:
+                        frame[at] = (byte)"0123456789 \n\fEND"[random.Next(16)];
+
+                        break;
+                }
+            }
+
+            byte[] damaged = [.. frame];
+
+            ComprehensionWorkerFrameResult result = ComprehensionWorkerFrame.Decode(damaged, Ceiling);
+
+            if (result.IsValid)
+            {
+                accepted++;
+
+                Assert.Equal(damaged, ComprehensionWorkerFrame.Encode(result.Outcome!));
+            }
+            else
+            {
+                Assert.Null(result.Outcome);
+            }
+        }
+
+        // Most edits land in text that stays well-formed, so a fair number of frames are still accepted, and the property above held for each.
+        Assert.InRange(accepted, 1, 5999);
+    }
+
     // ---------------------------------------------------------------- truncation anywhere
 
     [Fact]

@@ -121,6 +121,22 @@ missing_font = (
 )
 write("missing-font.pdf", simple_doc(missing_font))
 
+# ---- a TrueType font that is not embedded and that no machine has installed. The text comes from the file, never
+# from a font found on the host, so the result cannot depend on which fonts the worker's sandbox can read.
+non_embedded = b"FixtureUnknownFont-Regular"
+write(
+    "non-embedded-font.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"4 0 R"),
+        4: stream(b"", show(b"NON-EMBEDDED-FONT-TEXT")),
+        5: b"<< /Type /Font /Subtype /TrueType /BaseFont /%s /FirstChar 32 /LastChar 126 /Widths [%s] /Encoding /WinAnsiEncoding /FontDescriptor 6 0 R >>"
+        % (non_embedded, b" ".join([b"556"] * 95)),
+        6: b"<< /Type /FontDescriptor /FontName /%s /Flags 32 /FontBBox [-200 -200 1200 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>" % non_embedded,
+    }),
+)
+
 # ---- a text layer made only of spaces
 write("whitespace-only.pdf", simple_doc(b"BT /F1 18 Tf 72 700 Td (     ) Tj ET\n"))
 
@@ -405,17 +421,17 @@ write(
     ),
 )
 
-# Page 1 is "AB" + U+1F600 + "CD", page 2 has no content, page 3 is "EF": a ceiling that cuts page 1 inside the pair must
-# stop there instead of going on to the empty page
+# Page 1 is "AB" + U+1F600 + "CD" (five glyphs), page 2 is "EFGHIJKL" (eight glyphs), page 3 has no content. A ceiling that
+# cuts page 1 inside the pair must stop there: page 2 is never read, which a per-page glyph bound of 7 would notice.
 astral_multi_objs = {
     1: b"<< /Type /Catalog /Pages 2 0 R >>",
-    2: b"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+    2: b"<< /Type /Pages /Kids [3 0 R 5 0 R 4 0 R] /Count 3 >>",
     3: page_obj(b"6 0 R"),
     4: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>",
     5: page_obj(b"7 0 R"),
     6: stream(b"", b"BT /F1 18 Tf 72 700 Td <00010002000300040005> Tj ET\n"),
-    7: stream(b"", b"BT /F1 18 Tf 72 700 Td <00060007> Tj ET\n"),
-    8: stream(b"", to_unicode_cmap([(1, "A"), (2, "B"), (3, "\U0001F600"), (4, "C"), (5, "D"), (6, "E"), (7, "F")])),
+    7: stream(b"", b"BT /F1 18 Tf 72 700 Td <0006000700080009000A000B000C000D> Tj ET\n"),
+    8: stream(b"", to_unicode_cmap([(1, "A"), (2, "B"), (3, "\U0001F600"), (4, "C"), (5, "D"), (6, "E"), (7, "F"), (8, "G"), (9, "H"), (10, "I"), (11, "J"), (12, "K"), (13, "L")])),
     9: b"<< /Type /Font /Subtype /Type0 /BaseFont /FixtureSans /Encoding /Identity-H /DescendantFonts [10 0 R] /ToUnicode 8 0 R >>",
     10: b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /FixtureSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 1000 /CIDToGIDMap /Identity /FontDescriptor 11 0 R >>",
     11: b"<< /Type /FontDescriptor /FontName /FixtureSans /Flags 4 /FontBBox [0 -200 1000 800] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>",

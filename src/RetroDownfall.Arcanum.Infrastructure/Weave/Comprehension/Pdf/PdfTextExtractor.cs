@@ -9,6 +9,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 internal sealed class PdfTextExtractor
 {
+    /// <summary>The deepest object nesting PdfPig may follow: the value the pinned nightly ships with and was measured at.</summary>
+    private const int MaxNestingDepth = 256;
+
     public PdfExtractionOutcome Extract(ReadOnlyMemory<byte> bytes, PdfExtractionLimits limits, CancellationToken cancellationToken)
     {
         try
@@ -29,11 +32,19 @@ internal sealed class PdfTextExtractor
         }
     }
 
-    /// <summary>Options for one open. A fresh instance each time: the parser is handed it, so it is never shared between extractions.</summary>
+    /// <summary>
+    /// Options for one open. A fresh instance each time: the parser is handed it, so it is never shared between extractions.
+    /// Parsing is strict. Missing fonts are skipped rather than failing the document. No password is supplied. /ActualText
+    /// replacement is off, because it is text no reader sees that the file's author controls. The nesting depth is pinned
+    /// here so a library default that grows cannot bring back the stack overflow the pinned nightly turned into an exception.
+    /// </summary>
     private static ParsingOptions CreateOptions() => new()
     {
         UseLenientParsing = false,
         SkipMissingFonts = true,
+        UseActualText = false,
+        ClipPaths = false,
+        MaxStackDepth = MaxNestingDepth,
     };
 
     private static PdfExtractionOutcome ExtractPages(ReadOnlyMemory<byte> bytes, PdfExtractionLimits limits, CancellationToken cancellationToken)

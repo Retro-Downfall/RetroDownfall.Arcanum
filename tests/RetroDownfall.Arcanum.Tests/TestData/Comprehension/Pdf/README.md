@@ -25,7 +25,7 @@ cupsfilter -m application/pdf cups-multi.txt > cups-multi.pdf
 # Hand-written. Run after the two lines above: truncated.pdf is the first half of cups-text.pdf.
 python3 -I generate-handwritten.py .
 
-# Optional, never committed: the hostile files that are larger than the intake ceiling (about 40 MB in all).
+# Optional, never committed: the hostile files that are larger than the intake ceiling (about 30 MB in all).
 python3 -I generate-handwritten.py /some/scratch/dir --large
 ```
 
@@ -45,10 +45,11 @@ Expected outcomes are for the production extractor with its default limits unles
 | `multi-page.pdf` | page 1 `PAGE-ONE-ALPHA`, page 2 **no content**, page 3 `PAGE-THREE-MARKER-GAMMA`, page 4 `PAGE-FOUR-DELTA` | `Extracted`, four entries, the second empty, so ordinals stay true. 14, 0, 23 and 15 glyphs. |
 | `content-order.pdf` | three runs shown bottom, top, middle | `Extracted`, in content-stream order |
 | `astral-plane.pdf` | `AB`, U+1F600, `CD` through a ToUnicode CMap | `Extracted`, the pair intact; used for surrogate-safe cuts |
-| `astral-multi-page.pdf` | page 1 `AB`, U+1F600, `CD`; page 2 no content; page 3 `EF` | `Extracted`, three entries; a cut inside page 1's pair must stop before page 2 |
+| `astral-multi-page.pdf` | page 1 `AB`, U+1F600, `CD`; page 2 `EFGHIJKL`; page 3 no content | `Extracted`, three entries; a cut inside page 1's pair must stop without reading page 2 |
 | `cjk-tounicode.pdf` | CJK on two lines and U+20BB7 on a third | `Extracted` |
 | `cjk-predefined-cmap.pdf` | Japanese through the predefined `90ms-RKSJ-H` CMap | `Extracted` (PdfPig's embedded CMap resources) |
 | `control-characters.pdf` | glyphs mapped to `A`, NUL, U+000C, `B`, `C` | `Extracted` as `ABC` |
+| `non-embedded-font.pdf` | a TrueType font with a descriptor, not embedded, installed on no machine | `Extracted`; the text never depends on a host font |
 | `missing-font.pdf` | a run whose font the page does not define, then a good run | `Extracted` with the good run only |
 | `huge-count.pdf` | a page tree whose `/Count` claims 2,000,000,000 pages; one is real | `Extracted`, one page |
 | `deep-pages-1k.pdf` | the page is 1,000 levels down the page tree | `Extracted` |

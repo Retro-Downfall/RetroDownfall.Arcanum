@@ -101,11 +101,17 @@ public sealed class PdfTextExtractorOutputCeilingTests
     }
 
     [Fact]
-    public void Extract_CeilingThatCutsAPairOnTheFirstPage_StopsThereInsteadOfGoingOnToTheEmptyPageAfterIt()
+    public void Extract_CeilingThatCutsAPairOnTheFirstPage_StopsThereAndNeverReadsTheNextPage()
     {
-        // "AB" + U+1F600 + "CD", an empty page, "EF". A cut at 3 leaves "AB" (2 characters), so room remains for the
-        // empty page's separator; the extractor must still stop at the cut.
-        PdfExtractionOutcome outcome = Extract("astral-multi-page.pdf", 3);
+        // "AB" + U+1F600 + "CD" (5 glyphs), "EFGHIJKL" (8 glyphs), an empty page. A cut at 3 leaves "AB", so room remains for
+        // the next separator; the extractor must still stop at the cut. A bound of 7 glyphs per page would refuse page 2
+        // if it were read, so reading it shows up as Bounds.
+        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(
+            PdfFixtures.Read("astral-multi-page.pdf"),
+            new PdfExtractionLimits(2000, 7, 2_000_000, 3),
+            CancellationToken.None);
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
         Assert.True(outcome.Truncated);
 
@@ -115,12 +121,12 @@ public sealed class PdfTextExtractorOutputCeilingTests
     [Fact]
     public void Extract_CeilingThatFitsAllThreePagesOfTheAstralDocument_IsNotTruncated()
     {
-        // 6 + 1 + 0 + 1 + 2 = 10.
-        PdfExtractionOutcome outcome = Extract("astral-multi-page.pdf", 10);
+        // 6 + 1 + 8 + 1 + 0 = 16.
+        PdfExtractionOutcome outcome = Extract("astral-multi-page.pdf", 16);
 
         Assert.False(outcome.Truncated);
 
-        Assert.Equal(["AB\U0001F600CD", string.Empty, "EF"], outcome.Pages);
+        Assert.Equal(["AB\U0001F600CD", "EFGHIJKL", string.Empty], outcome.Pages);
     }
 
     [Fact]
