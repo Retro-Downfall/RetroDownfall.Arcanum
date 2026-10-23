@@ -113,7 +113,8 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
                 preStartValidation: () => launch.IsUnchanged()
                     ? new CappedChildProcessPreStartValidationResult(true, null)
                     : new CappedChildProcessPreStartValidationResult(false, UnavailableReason, ReplacedExecutableCode),
-                standardInput: bytes).ConfigureAwait(false);
+                standardInput: bytes,
+                rawStandardOutput: true).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -257,13 +258,16 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
             return DocumentWorkerResult.Failed(DeadlineReason);
         }
 
-        if (run.ExitCode != (int)ComprehensionWorkerExitCode.FrameWritten || run.Stdout.Truncated)
+        // The frame is judged on the bytes the worker wrote, never on a decoding of them: a text reader would detect a
+        // byte-order mark and switch encoding, strip a UTF-8 one, or replace an invalid byte, and the grammar's own
+        // UTF-8 and header rules would then pass a frame they refuse.
+        if (run.ExitCode != (int)ComprehensionWorkerExitCode.FrameWritten || run.Stdout.Truncated || run.Stdout.Bytes is not { } written)
         {
             return DocumentWorkerResult.Failed(FailedReason);
         }
 
         ComprehensionWorkerFrameResult frame = ComprehensionWorkerFrame.Decode(
-            Encoding.UTF8.GetBytes(run.Stdout.Text),
+            written,
             PdfExtractionLimits.Default.MaxOutputCharacters);
 
         return frame.IsValid

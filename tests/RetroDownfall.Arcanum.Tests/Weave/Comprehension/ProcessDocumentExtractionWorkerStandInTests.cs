@@ -6,6 +6,8 @@ using System.Net.Sockets;
 
 using System.Security.Cryptography;
 
+using System.Text;
+
 using RetroDownfall.Arcanum.Infrastructure.Platform;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
@@ -91,6 +93,36 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     public async Task A_child_that_writes_garbage_failed()
     {
         DocumentWorkerResult result = await RunAsync("/bin/cat > /dev/null\nprintf 'Unhandled exception at /Users/someone/secret.pdf'\n");
+
+        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+    }
+
+    public static TheoryData<string, byte[]> FramesThatAreNotStrictUtf8() => new()
+    {
+        // The frame in UTF-16LE behind its byte-order mark: a text reader would detect the mark and decode it as UTF-16.
+        { "utf-16le-with-bom", [0xFF, 0xFE, .. Encoding.Unicode.GetBytes("ARCANUM-COMPREHENSION/1 extracted\nHELLO\nEND 5 1\n")] },
+
+        // One byte that is not UTF-8 inside a page: a replacing decoder would turn it into U+FFFD and accept the frame.
+        { "invalid-utf-8", [.. "ARCANUM-COMPREHENSION/1 extracted\nA"u8, 0xFF, .. "B\nEND 3 1\n"u8] },
+
+        // A UTF-8 byte-order mark before the header: a text reader would strip it and accept the frame.
+        { "utf-8-bom", [0xEF, 0xBB, 0xBF, .. "ARCANUM-COMPREHENSION/1 extracted\nHELLO\nEND 5 1\n"u8] },
+    };
+
+    [SkippableTheory]
+    [MemberData(nameof(FramesThatAreNotStrictUtf8))]
+    public async Task A_frame_that_is_not_strict_utf8_without_a_preamble_failed(string name, byte[] frame)
+    {
+        // The frame grammar is checked against the bytes the child wrote, never against a text decoding of them.
+        Assert.False(ComprehensionWorkerFrame.Decode(frame, PdfExtractionLimits.Default.MaxOutputCharacters).IsValid, name);
+
+        string written = Path.Combine(_directory, name + ".frame");
+
+        File.WriteAllBytes(written, frame);
+
+        DocumentWorkerResult result = await RunAsync($"exec /bin/cat '{written}'\n");
+
+        Assert.Null(result.Outcome);
 
         Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
     }

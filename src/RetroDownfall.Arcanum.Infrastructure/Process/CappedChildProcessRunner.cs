@@ -75,12 +75,17 @@ internal enum CappedChildProcessOutcome
 /// the post-exit drain gave up on it: <see cref="Text"/> is empty, nothing was preserved, and the stream
 /// is reported as truncated without a <see cref="CompleteOutputPath"/>.
 /// </param>
+/// <param name="Bytes">
+/// Exactly the bytes the child wrote, up to the stream's cap, when the caller asked for raw standard output;
+/// <see cref="Text"/> is then empty. <see langword="null"/> for a stream read as text.
+/// </param>
 internal readonly record struct CappedStreamOutput(
     string Text,
     bool Truncated,
     string? CompleteOutputPath = null,
     long TotalBytes = 0L,
-    bool ReadAbandoned = false);
+    bool ReadAbandoned = false,
+    byte[]? Bytes = null);
 
 internal sealed class ChildProcessOutputPreservationException(
     Exception innerException) : IOException(
@@ -199,6 +204,12 @@ internal static class CappedChildProcessRunner
     /// containment and holds fd 0 unread can still be inside one chunk after that. A child that exits,
     /// closes fd 0 or is killed before taking them all is not a fault: its exit status is the run's result.
     /// </param>
+    /// <param name="rawStandardOutput">
+    /// When set (an Arcanum-authored worker whose stdout is a byte protocol), stdout is read from the raw pipe into
+    /// <see cref="CappedStreamOutput.Bytes"/>, up to the same per-stream cap, with nothing decoded: no byte-order mark is
+    /// detected or stripped and no invalid byte is replaced, so the caller validates exactly what the child wrote. Raw
+    /// stdout is never spilled to a file. Off for every model-directed tool, whose stdout stays text.
+    /// </param>
     internal static async Task<CappedChildProcessRunResult> RunAsync(
         ProcessStartInfo startInfo,
         ChildProcessEnvironmentProfile environmentProfile,
@@ -214,7 +225,8 @@ internal static class CappedChildProcessRunner
         string? outputSpillDirectory = null,
         IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null,
         Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null,
-        ReadOnlyMemory<byte>? standardInput = null)
+        ReadOnlyMemory<byte>? standardInput = null,
+        bool rawStandardOutput = false)
     {
         ChildProcessEnvironmentScrubber.ApplyProfile(
             startInfo,
@@ -635,20 +647,27 @@ internal static class CappedChildProcessRunner
 
             try
             {
-                string? stdoutSpillPath = BuildOutputSpillPath(
-                    outputSpillDirectory,
-                    "stdout");
+                string? stdoutSpillPath = rawStandardOutput
+                    ? null
+                    : BuildOutputSpillPath(
+                        outputSpillDirectory,
+                        "stdout");
 
                 string? stderrSpillPath = BuildOutputSpillPath(
                     outputSpillDirectory,
                     "stderr");
 
-                Task<CappedStreamOutput> stdoutTask = ReadStreamCappedAsync(
-                    process.StandardOutput,
-                    perStreamCapBytes,
-                    cancellationToken,
-                    stdoutSpillPath,
-                    outputSpillBudget);
+                Task<CappedStreamOutput> stdoutTask = rawStandardOutput
+                    ? ReadStreamBytesCappedAsync(
+                        process.StandardOutput.BaseStream,
+                        perStreamCapBytes,
+                        cancellationToken)
+                    : ReadStreamCappedAsync(
+                        process.StandardOutput,
+                        perStreamCapBytes,
+                        cancellationToken,
+                        stdoutSpillPath,
+                        outputSpillBudget);
 
                 Task<CappedStreamOutput> stderrTask = ReadStreamCappedAsync(
                     process.StandardError,
@@ -1884,6 +1903,58 @@ internal static class CappedChildProcessRunner
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Reads <paramref name="stream"/> to its end as raw bytes, keeping the first <paramref name="maxBytes"/> and draining
+    /// the rest so the child is never held behind a full pipe. Nothing is decoded, so a byte-order mark or a byte that is
+    /// not valid UTF-8 stays exactly as the child wrote it.
+    /// </summary>
+    private static async Task<CappedStreamOutput> ReadStreamBytesCappedAsync(
+        Stream stream,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        byte[] buffer = new byte[16 * 1024];
+
+        using MemoryStream kept = new();
+
+        long totalBytes = 0L;
+
+        bool truncated = false;
+
+        while (true)
+        {
+            int read = await stream.ReadAsync(
+                    buffer.AsMemory(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read <= 0)
+            {
+                break;
+            }
+
+            totalBytes += read;
+
+            long room = maxBytes - kept.Length;
+
+            if (room > 0)
+            {
+                kept.Write(buffer, 0, (int)Math.Min(room, read));
+            }
+
+            if (read > room)
+            {
+                truncated = true;
+            }
+        }
+
+        return new CappedStreamOutput(
+            string.Empty,
+            truncated,
+            TotalBytes: totalBytes,
+            Bytes: kept.ToArray());
     }
 
     private static StreamWriter CreateCompleteOutputWriter(string path)

@@ -118,6 +118,37 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
         AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, stdout));
     }
 
+    public static TheoryData<string, byte[]> BytesThatAreNotStrictUtf8() => new()
+    {
+        { "utf-16le-with-bom", [0xFF, 0xFE, .. Encoding.Unicode.GetBytes("ARCANUM-COMPREHENSION/1 extracted\nHELLO\nEND 5 1\n")] },
+        { "invalid-utf-8", [.. "ARCANUM-COMPREHENSION/1 extracted\nA"u8, 0xFF, .. "B\nEND 3 1\n"u8] },
+        { "utf-8-bom", [0xEF, 0xBB, 0xBF, .. "ARCANUM-COMPREHENSION/1 extracted\nHELLO\nEND 5 1\n"u8] },
+    };
+
+    [Theory]
+    [MemberData(nameof(BytesThatAreNotStrictUtf8))]
+    public void Map_CompletedWithAFrameThatIsNotStrictUtf8WithoutAPreamble_Failed(string name, byte[] stdout)
+    {
+        _ = name;
+
+        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, stdout));
+    }
+
+    [Fact]
+    public void Map_CompletedWithAValidFrameAsTextButNoRawBytes_Failed()
+    {
+        // Only the bytes the worker wrote are judged; a text decoding of them, however valid, is not a frame.
+        CappedChildProcessRunResult run = new()
+        {
+            Outcome = CappedChildProcessOutcome.Completed,
+            ExitCode = 0,
+            Stdout = new CappedStreamOutput(ValidFrame(), false),
+            Stderr = new CappedStreamOutput(string.Empty, false),
+        };
+
+        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, run);
+    }
+
     [Fact]
     public void Map_CompletedWithAValidFrameButTruncatedOutput_Failed()
     {
@@ -361,15 +392,22 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
         Encoding.UTF8.GetString(ComprehensionWorkerFrame.Encode(
             new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["PAGE ONE", string.Empty, "PAGE THREE é\U0001F600"], Truncated: true)));
 
+    /// <summary>A run whose stdout is the raw bytes the worker wrote, as the runner hands them back for this caller.</summary>
     private static CappedChildProcessRunResult Run(
         CappedChildProcessOutcome outcome,
         int exitCode,
         string stdout,
+        bool truncated = false) => Run(outcome, exitCode, Encoding.UTF8.GetBytes(stdout), truncated);
+
+    private static CappedChildProcessRunResult Run(
+        CappedChildProcessOutcome outcome,
+        int exitCode,
+        byte[] stdout,
         bool truncated = false) => new()
         {
             Outcome = outcome,
             ExitCode = exitCode,
-            Stdout = new CappedStreamOutput(stdout, truncated),
+            Stdout = new CappedStreamOutput(string.Empty, truncated, Bytes: stdout),
             Stderr = new CappedStreamOutput(HostileStderr, false),
         };
 
