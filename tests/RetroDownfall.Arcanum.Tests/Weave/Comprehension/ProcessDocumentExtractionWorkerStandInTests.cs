@@ -259,6 +259,31 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Under_the_host_launch_a_file_cannot_grow_past_the_worker_ceiling()
+    {
+        // Perl ignores SIGXFSZ so the refused write comes back as an error instead of ending it, then reports how much of
+        // the 8 MiB it tried to write reached the file in its private temp directory.
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync(
+            "exec /usr/bin/perl -e '$SIG{XFSZ} = \"IGNORE\"; open(my $f, \">\", \"$ENV{TMPDIR}/fill\") or die; my $chunk = \"\\0\" x 65536; "
+            + "my $w = 0; for (1 .. 128) { my $n = syswrite($f, $chunk); last unless defined $n && $n > 0; $w += $n } close $f; "
+            + "my $r = \"WROTE=$w\"; print \"ARCANUM-COMPREHENSION/1 extracted\\n$r\\nEND \", length($r), \" 1\\n\"'\n");
+
+        Assert.Null(result.FailureReason);
+
+        long written = long.Parse(Assert.Single(result.Outcome!.Pages)["WROTE=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.InRange(written, 0, ProcessDocumentExtractionWorker.MaxFileSizeBytes);
+    }
+
+    [SkippableFact]
+    public async Task Under_the_host_launch_a_child_killed_for_writing_past_the_ceiling_exceeded_its_resource_limits()
+    {
+        DocumentWorkerResult result = await RunUnderTheHostLaunchAsync("exec /bin/dd if=/dev/zero of=\"$TMPDIR/fill\" bs=1048576 count=8\n");
+
+        Assert.Equal(ProcessDocumentExtractionWorker.ResourceLimitsReason, result.FailureReason);
+    }
+
+    [SkippableFact]
     public async Task A_replaced_executable_is_refused_before_it_starts()
     {
         Skip.IfNot(MacOsSandboxProbe.IsSandboxExecRunnable(), "Needs a macOS host where sandbox-exec can apply a profile.");

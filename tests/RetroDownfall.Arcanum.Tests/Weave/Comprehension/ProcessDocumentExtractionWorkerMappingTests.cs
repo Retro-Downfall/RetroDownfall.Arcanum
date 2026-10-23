@@ -172,6 +172,16 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
         AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, exitCode, ValidFrame()));
     }
 
+    [Theory]
+    [InlineData(128 + 25)]
+    [InlineData(-25)]
+    public void Map_CompletedByTheFileSizeSignal_ExceededItsResourceLimits(int exitCode)
+    {
+        // SIGXFSZ: the worker wrote a file past its size ceiling and the kernel ended it, reported through the launch
+        // chain's shell (128 + 25) or directly (-25). Whatever it printed first is not a verdict.
+        AssertFailed(ProcessDocumentExtractionWorker.ResourceLimitsReason, Run(CappedChildProcessOutcome.Completed, exitCode, ValidFrame()));
+    }
+
     [Fact]
     public void Map_CompletedWithTheWorkersDeadlineExit_ExceededItsDeadline()
     {
@@ -303,6 +313,9 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
             ProcessDocumentExtractionWorker.Limits);
 
         Assert.Equal(TimeSpan.FromSeconds(10), ProcessDocumentExtractionWorker.WallClock);
+
+        // The worker writes no file, so the one it could write is small: a compromised worker cannot fill the disk.
+        Assert.Equal(1024L * 1024, ProcessDocumentExtractionWorker.MaxFileSizeBytes);
 
         Assert.Equal(2L * 1024 * 1024, ProcessDocumentExtractionWorker.TotalOutputCapBytes);
 

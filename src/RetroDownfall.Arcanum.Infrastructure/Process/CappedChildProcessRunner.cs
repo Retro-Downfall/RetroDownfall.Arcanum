@@ -210,6 +210,12 @@ internal static class CappedChildProcessRunner
     /// detected or stripped and no invalid byte is replaced, so the caller validates exactly what the child wrote. Raw
     /// stdout is never spilled to a file. Off for every model-directed tool, whose stdout stays text.
     /// </param>
+    /// <param name="maxFileSizeBytes">
+    /// A kernel ceiling on the size of any one file the child writes, for an Arcanum-authored worker that writes none
+    /// (see <see cref="ProcessResourceLimiter.Apply(ProcessStartInfo, ResourceLimits, long?)"/>). Only the platform
+    /// limiter can apply it: a run that asks for it with any other limiter, or with no limits, is refused before start
+    /// rather than started without it. <see langword="null"/> for every model-directed tool.
+    /// </param>
     internal static async Task<CappedChildProcessRunResult> RunAsync(
         ProcessStartInfo startInfo,
         ChildProcessEnvironmentProfile environmentProfile,
@@ -226,7 +232,8 @@ internal static class CappedChildProcessRunner
         IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null,
         Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null,
         ReadOnlyMemory<byte>? standardInput = null,
-        bool rawStandardOutput = false)
+        bool rawStandardOutput = false,
+        long? maxFileSizeBytes = null)
     {
         ChildProcessEnvironmentScrubber.ApplyProfile(
             startInfo,
@@ -265,15 +272,13 @@ internal static class CappedChildProcessRunner
                     resourceLimits.MaxFileWriteMb * 1024L * 1024L)
                 : null;
 
-        // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
-        // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
-        // resource-limit enforcement is simply skipped for that invocation rather than applying an
-        // unconfigured default.
         // Applied before Process.Start() so the rewritten StartInfo (potentially a ulimit shell
         // prelude — see ProcessResourceLimiter) is what actually gets launched.
-        ProcessResourceLimiterResult limiterResult = resourceLimits is not null && resourceLimiter is not null
-            ? resourceLimiter.Apply(startInfo, resourceLimits)
-            : new ProcessResourceLimiterResult(null, null);
+        ProcessResourceLimiterResult limiterResult = ApplyResourceLimits(
+            startInfo,
+            resourceLimits,
+            resourceLimiter,
+            maxFileSizeBytes);
 
         if (limiterResult.Error is not null)
         {
@@ -1126,6 +1131,32 @@ internal static class CappedChildProcessRunner
                 logger?.LogWarning(ex, "Cleaning the child-process resource limiter scope failed.");
             }
         }
+    }
+
+    private static ProcessResourceLimiterResult ApplyResourceLimits(
+        ProcessStartInfo startInfo,
+        ResourceLimits? resourceLimits,
+        IProcessResourceLimiter? resourceLimiter,
+        long? maxFileSizeBytes)
+    {
+        if (maxFileSizeBytes is null)
+        {
+            // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
+            // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
+            // resource-limit enforcement is simply skipped for that invocation rather than applying an
+            // unconfigured default.
+            return resourceLimits is not null && resourceLimiter is not null
+                ? resourceLimiter.Apply(startInfo, resourceLimits)
+                : new ProcessResourceLimiterResult(null, null);
+        }
+
+        // A requested file-size ceiling is a promise to the caller: a run that cannot have it is refused, never
+        // started without it.
+        return resourceLimits is not null && resourceLimiter is ProcessResourceLimiter platform
+            ? platform.Apply(startInfo, resourceLimits, maxFileSizeBytes)
+            : new ProcessResourceLimiterResult(
+                new ResourceLimitError("A child-process file-size ceiling was requested from a limiter that cannot apply it; the child was not started."),
+                null);
     }
 
     private static MacOsDescendantSupervisor? DefaultDescendantSupervisorFactory(

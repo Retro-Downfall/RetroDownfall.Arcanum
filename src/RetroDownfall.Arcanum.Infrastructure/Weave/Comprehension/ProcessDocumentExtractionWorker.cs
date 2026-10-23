@@ -43,12 +43,20 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
     /// </summary>
     internal const long TotalOutputCapBytes = 2L * 1024 * 1024;
 
+    /// <summary>
+    /// The kernel ceiling on any one file the worker writes. It writes none, but its private temp directory is writable,
+    /// so without this a compromised worker could fill the disk within its wall clock. Not enforced on Windows, which has
+    /// no per-process file-size limit.
+    /// </summary>
+    internal const long MaxFileSizeBytes = 1024 * 1024;
+
     /// <summary>The wall clock from before the child starts until it is gone, cold start included.</summary>
     internal static readonly TimeSpan WallClock = TimeSpan.FromSeconds(10);
 
     /// <summary>
     /// The code-owned process limits, never configuration: a 768 MB memory ceiling (the macOS footprint monitor, a
-    /// Windows job object), 15 s of CPU, one process and 64 file descriptors. No output file is written, so no write budget.
+    /// Windows job object), 15 s of CPU, one process and 64 file descriptors. <c>MaxFileWriteMb</c> is Sanctum's write-tool
+    /// budget and stays 0; the kernel's ceiling on a file the worker writes is <see cref="MaxFileSizeBytes"/>.
     /// </summary>
     internal static ResourceLimits Limits { get; } = new(
         MaxProcessMemoryMb: 768,
@@ -60,6 +68,9 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         MaxFileDescriptors: 64);
 
     private const string ReplacedExecutableCode = "comprehension-worker-executable-changed";
+
+    /// <summary>SIGXFSZ, the same number on macOS and Linux: a write past <see cref="MaxFileSizeBytes"/>.</summary>
+    private const int FileSizeSignal = 25;
 
     private static readonly UTF8Encoding Utf8WithoutPreamble = new(encoderShouldEmitUTF8Identifier: false);
 
@@ -114,7 +125,8 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
                     ? new CappedChildProcessPreStartValidationResult(true, null)
                     : new CappedChildProcessPreStartValidationResult(false, UnavailableReason, ReplacedExecutableCode),
                 standardInput: bytes,
-                rawStandardOutput: true).ConfigureAwait(false);
+                rawStandardOutput: true,
+                maxFileSizeBytes: MaxFileSizeBytes).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -265,6 +277,13 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
 
     private static DocumentWorkerResult MapCompleted(CappedChildProcessRunResult run)
     {
+        // The kernel ended the worker for a write past its file-size ceiling, reported through the launch chain's
+        // supervising shell (128 + the signal) or directly (the negated signal).
+        if (run.ExitCode is 128 + FileSizeSignal or -FileSizeSignal)
+        {
+            return DocumentWorkerResult.Failed(ResourceLimitsReason);
+        }
+
         if (run.ExitCode == (int)ComprehensionWorkerExitCode.Deadline)
         {
             return DocumentWorkerResult.Failed(DeadlineReason);

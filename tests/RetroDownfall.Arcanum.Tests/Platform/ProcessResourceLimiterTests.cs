@@ -421,6 +421,107 @@ public sealed class ProcessResourceLimiterTests
     }
 
     [SkippableFact]
+    public void Apply_without_a_file_size_ceiling_emits_no_file_size_limit()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix-only behavior (the ulimit shell prelude).");
+
+        // Every existing caller: Sanctum's MaxFileWriteMb is a write-tool policy, never a kernel limit on a child.
+        ProcessStartInfo psi = new() { FileName = "/bin/echo" };
+
+        ProcessResourceLimiterResult result = _limiter.Apply(psi, new ResourceLimits { MaxCpuSeconds = 30, MaxFileWriteMb = 100 });
+
+        Assert.Null(result.Error);
+
+        Assert.DoesNotContain("ulimit -f", psi.ArgumentList[1], StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Apply_with_a_file_size_ceiling_emits_it_in_kibibytes_and_fails_closed()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix-only behavior (the ulimit shell prelude).");
+
+        ProcessStartInfo psi = new() { FileName = "/bin/echo" };
+
+        ProcessResourceLimiterResult result = _limiter.Apply(psi, new ResourceLimits { MaxCpuSeconds = 30 }, maxFileSizeBytes: 1024 * 1024);
+
+        Assert.Null(result.Error);
+
+        Assert.NotNull(result.PreExecFailureMarker);
+
+        Assert.Contains("ulimit -f 1024 || exit 126; ", psi.ArgumentList[1], StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Apply_with_only_a_file_size_ceiling_still_writes_the_prelude()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix-only behavior (the ulimit shell prelude).");
+
+        ProcessStartInfo psi = new() { FileName = "/bin/echo" };
+
+        ResourceLimits none = new() { MaxProcessMemoryMb = 0, MaxProcessCount = 0, MaxCpuSeconds = 0, MaxMemoryMb = 0, MaxFileDescriptors = 0 };
+
+        ProcessResourceLimiterResult result = _limiter.Apply(psi, none, maxFileSizeBytes: 4096);
+
+        Assert.Null(result.Error);
+
+        Assert.Equal("/bin/sh", psi.FileName);
+
+        Assert.Contains("ulimit -f 4 || exit 126; ", psi.ArgumentList[1], StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(-1024L)]
+    [InlineData(1000L)]
+    public void Apply_refuses_a_file_size_ceiling_that_is_not_whole_kibibytes(long maxFileSizeBytes)
+    {
+        ProcessStartInfo psi = new() { FileName = "/bin/echo" };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => _limiter.Apply(psi, new ResourceLimits(), maxFileSizeBytes));
+    }
+
+    [SkippableFact]
+    public async Task Prelude_file_size_ceiling_stops_a_write_past_it()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix-only behavior (setrlimit via the ulimit shell prelude).");
+
+        string target = Path.Combine(Path.GetTempPath(), "arcanum-fsize-" + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            ProcessStartInfo psi = new()
+            {
+                FileName = "/bin/dd",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList = { "if=/dev/zero", "of=" + target, "bs=1024", "count=64" },
+            };
+
+            Assert.Null(_limiter.Apply(psi, new ResourceLimits { MaxCpuSeconds = 30 }, maxFileSizeBytes: 16 * 1024).Error);
+
+            using System.Diagnostics.Process process = new() { StartInfo = psi };
+
+            Assert.True(process.Start());
+
+            _ = await process.StandardOutput.ReadToEndAsync();
+
+            _ = await process.StandardError.ReadToEndAsync();
+
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+            // The kernel stops the write at the ceiling and sends SIGXFSZ, whose default action ends the process.
+            Assert.NotEqual(0, process.ExitCode);
+
+            Assert.True(new FileInfo(target).Length <= 16 * 1024, $"{new FileInfo(target).Length} bytes were written.");
+        }
+        finally
+        {
+            File.Delete(target);
+        }
+    }
+
+    [SkippableFact]
     public async Task Apply_writes_cgroup_files_on_linux()
     {
         Skip.If(
