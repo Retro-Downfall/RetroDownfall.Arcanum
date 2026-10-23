@@ -109,6 +109,47 @@ public sealed class PdfTextExtractorTextTests
     }
 
     [Fact]
+    public void Extract_TextWhoseGlyphsDoNotAdvanceRightwards_StaysWords()
+    {
+        // Sensitivity: word breaks measured along each glyph's own advance direction. Upside-down, mirrored and 150-degree
+        // text starts each glyph a glyph's width left of the one before; measured in page x, that step reads as a word break
+        // and every letter comes out spaced. The kerned upside-down line has no space glyphs, so its words are apart only
+        // along their own direction. The last two lines are the controls for a change of direction: an upside-down run with
+        // an upright one to its left, and a run that starts off the baseline of the one before, are still two words.
+        PdfExtractionOutcome outcome = Extract("rotated-text.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(
+            ["Ordinary line of text\nInvoice total due\nMirrored words here\nRotated one fifty\nSpaced by kerning\nFlipped Upright\nUp the side Turned"],
+            outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_LineFeedGlyphAboveALineOfLetters_DoesNotStartTheLineWithASpace()
+    {
+        // Sensitivity: only a visible letter has a baseline the next letter can start off. Some producers draw a
+        // paragraph's line feed as a glyph (macOS license documents do, at the top of a page); the line below it starts no
+        // new word.
+        PdfExtractionOutcome outcome = Extract("line-feed-glyph.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["\nAB"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_RealProducerRotatedAndMirroredText_StaysWords()
+    {
+        // WebKit draws CSS rotate(180deg), rotate(150deg) and scaleX(-1) text with a turned text matrix.
+        PdfExtractionOutcome outcome = Extract("webkit-rotated.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["Normal line here\nUpside down label text\nRotated one fifty\nMirrored words here"], outcome.Pages);
+    }
+
+    [Fact]
     public void Extract_LatinLigatureCodePoints_BecomeTheirLetters()
     {
         // Sensitivity: the ligature expansion. U+FB05 becomes "st", which is what NFKC gives: its compatibility decomposition
@@ -159,6 +200,19 @@ public sealed class PdfTextExtractorTextTests
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([$"{Shalom} {Olam}\n{Marhaba} {Bilalam}"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_RightToLeftTextDrawnUpsideDown_IsJudgedAlongItsOwnDirection()
+    {
+        // Sensitivity: the direction test and the facing-edge gap measured along the glyphs' own direction. The first line is
+        // in visual order (each glyph a glyph's width further along its leftward direction), the second in logical order
+        // (each glyph behind the one before); both read the same, and neither is letter-spaced.
+        PdfExtractionOutcome outcome = Extract("rtl-upside-down.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal([$"{Shalom} {Olam}\n{Shalom} {Olam}"], outcome.Pages);
     }
 
     [Fact]

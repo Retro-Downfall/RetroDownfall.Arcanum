@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 
 using UglyToad.PdfPig.Content;
+using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Util;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
@@ -13,17 +14,19 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 /// shows correctly:
 /// <list type="bullet">
 /// <item>
-/// A letter that starts well left of where the previous one started is a new word. PdfPig only looks at gaps to the right,
-/// so a float drawn before the text beside it, a right-to-left table row, a page number drawn before its title and a run
-/// drawn over another were glued into one token. A small step back (kerning, an accent drawn over the letter that follows
-/// it) stays inside the word.
+/// A letter that starts well behind where the previous one started is a new word. PdfPig only looks at gaps ahead, so a
+/// float drawn before the text beside it, a right-to-left table row, a page number drawn before its title and a run drawn
+/// over another were glued into one token. A small step back (kerning, an accent drawn over the letter that follows it)
+/// stays inside the word. Ahead and behind are measured along the direction each glyph advances in, so upside-down,
+/// mirrored and otherwise turned text is judged as it reads.
 /// </item>
 /// <item>
 /// The Latin ligature code points U+FB00 to U+FB06 are spelled out as letters.
 /// </item>
 /// <item>
-/// Right-to-left text that the producer wrote in visual order (every glyph further right than the one before it, which is
-/// how macOS and most other producers write Hebrew and Arabic) is put back in logical order, run by run.
+/// Right-to-left text that the producer wrote in visual order (every glyph further along its own direction than the one
+/// before it, which for upright text is further right, and is how macOS and most other producers write Hebrew and Arabic)
+/// is put back in logical order, run by run.
 /// </item>
 /// </list>
 /// The join is one pass over the letters followed by one pass over each line.
@@ -40,6 +43,8 @@ internal static class PdfPageText
 
         Letter? previousNonWhitespace = null;
 
+        Direction direction = Direction.Rightward;
+
         bool lastWasWhitespace = false;
 
         foreach (Letter letter in letters)
@@ -55,6 +60,10 @@ internal static class PdfPageText
 
             CellClass letterClass = Classify(spelled);
 
+            Direction own = Direction.Of(letter, direction);
+
+            double position = own.Position(letter.StartBaseLine);
+
             if (value == " " && !lastWasWhitespace)
             {
                 if (previous is not null && IsNewline(previous, letter))
@@ -62,9 +71,11 @@ internal static class PdfPageText
                     continue;
                 }
 
-                cells.Add(new Cell(" ", CellClass.Space, letter.StartBaseLine.X));
+                cells.Add(new Cell(" ", CellClass.Space, position));
 
                 previous = letter;
+
+                direction = own;
 
                 previousClass = CellClass.Space;
 
@@ -88,17 +99,19 @@ internal static class PdfPageText
 
                     lastWasWhitespace = true;
                 }
-                else if (previous.Value != " " && IsWordGap(previous, previousClass, letter, letterClass))
+                else if (previous.Value != " " && IsWordGap(previous, previousClass, letter, letterClass, direction))
                 {
-                    cells.Add(new Cell(" ", CellClass.Space, letter.StartBaseLine.X));
+                    cells.Add(new Cell(" ", CellClass.Space, position));
 
                     lastWasWhitespace = true;
                 }
             }
 
-            cells.Add(new Cell(spelled, letterClass, letter.StartBaseLine.X));
+            cells.Add(new Cell(spelled, letterClass, position));
 
             previous = letter;
+
+            direction = own;
 
             previousClass = letterClass;
 
@@ -130,31 +143,49 @@ internal static class PdfPageText
             return false;
         }
 
+        return Math.Abs(previous.StartBaseLine.Y - letter.StartBaseLine.Y) > LineTolerance(previous, letter);
+    }
+
+    /// <summary>0.9 of the smaller whole-number point size of two letters: how far apart two baselines may be on one line.</summary>
+    private static double LineTolerance(Letter previous, Letter letter)
+    {
         int previousSize = (int)Math.Round(previous.PointSize);
 
         int letterSize = (int)Math.Round(letter.PointSize);
 
         int smaller = letterSize < previousSize ? letterSize : previousSize;
 
-        return Math.Abs(previous.StartBaseLine.Y - letter.StartBaseLine.Y) > smaller * 0.9;
+        return smaller * 0.9;
     }
 
     /// <summary>
-    /// Whether a space belongs between two consecutive letters of a line. The gap to the right is PdfPig's word-space test.
-    /// The step back is measured from where the previous letter started, not from where it ended: kerning and an accent
-    /// drawn over the letter after it move the next letter back by less than the previous glyph's own width, while a run
-    /// drawn to the left of the one before starts further back than any glyph is wide. Two right-to-left letters written
-    /// one to the left of the other are in logical order, and the gap between them is measured between their facing edges.
+    /// Whether a space belongs between two consecutive letters of a line. Every distance is measured along the direction the
+    /// previous glyph advances in (rightwards for ordinary text; leftwards for upside-down or mirrored text), so turned text
+    /// is judged as it reads. The gap ahead is PdfPig's word-space test. The step back is measured from where the previous
+    /// letter started, not from where it ended: kerning and an accent drawn over the letter after it move the next letter
+    /// back by less than the previous glyph's own width, while a run drawn behind the one before starts further back than
+    /// any glyph is wide. Two right-to-left letters written one behind the other are in logical order, and the gap between
+    /// them is measured between their facing edges. A letter that starts off a visible previous letter's baseline by more
+    /// than a line allows (which page height alone does not show for turned text) starts a new word; for upright text that
+    /// is the line test, already passed.
     /// </summary>
-    private static bool IsWordGap(Letter previous, CellClass previousClass, Letter letter, CellClass letterClass)
+    private static bool IsWordGap(Letter previous, CellClass previousClass, Letter letter, CellClass letterClass, Direction direction)
     {
-        if (previousClass == CellClass.Rtl && letterClass == CellClass.Rtl && letter.StartBaseLine.X < previous.StartBaseLine.X)
+        if (!string.IsNullOrWhiteSpace(previous.Value)
+            && direction.Across(previous.StartBaseLine, letter.StartBaseLine) > LineTolerance(previous, letter))
         {
-            return WhitespaceSizeStatistics.IsProbablyWhitespace(previous.StartBaseLine.X - letter.EndBaseLine.X, previous);
+            return true;
         }
 
-        return WhitespaceSizeStatistics.IsProbablyWhitespace(letter.StartBaseLine.X - previous.EndBaseLine.X, previous)
-            || WhitespaceSizeStatistics.IsProbablyWhitespace(previous.StartBaseLine.X - letter.StartBaseLine.X, previous);
+        double step = direction.Along(previous.StartBaseLine, letter.StartBaseLine);
+
+        if (previousClass == CellClass.Rtl && letterClass == CellClass.Rtl && step < 0)
+        {
+            return WhitespaceSizeStatistics.IsProbablyWhitespace(direction.Along(letter.EndBaseLine, previous.StartBaseLine), previous);
+        }
+
+        return WhitespaceSizeStatistics.IsProbablyWhitespace(direction.Along(previous.EndBaseLine, letter.StartBaseLine), previous)
+            || WhitespaceSizeStatistics.IsProbablyWhitespace(-step, previous);
     }
 
     /// <summary>
@@ -203,7 +234,8 @@ internal static class PdfPageText
     /// <summary>
     /// PDF is a visual format: most producers write a right-to-left run with its glyphs advancing left to right across the
     /// page, so the text that comes out of the content stream is each run backwards. This puts the characters of those runs
-    /// back in logical order. A run whose glyphs already step leftwards was written in logical order and is left alone.
+    /// back in logical order. A run whose glyphs already step back against their own direction (leftwards, for upright
+    /// text) was written in logical order and is left alone.
     /// A line of right-to-left text only is one run, so its punctuation and the order of its words come back too; in a line
     /// that also has left-to-right letters each right-to-left run is reversed where it stands and the order of the runs is
     /// kept. Numbers and left-to-right runs inside a run keep their own order.
@@ -331,7 +363,7 @@ internal static class PdfPageText
 
         int falling = 0;
 
-        double previousX = 0;
+        double previousPosition = 0;
 
         bool hasPrevious = false;
 
@@ -344,17 +376,17 @@ internal static class PdfPageText
 
             if (hasPrevious)
             {
-                if (cell.X > previousX)
+                if (cell.Position > previousPosition)
                 {
                     rising++;
                 }
-                else if (cell.X < previousX)
+                else if (cell.Position < previousPosition)
                 {
                     falling++;
                 }
             }
 
-            previousX = cell.X;
+            previousPosition = cell.Position;
 
             hasPrevious = true;
         }
@@ -474,13 +506,45 @@ internal static class PdfPageText
         Rtl,
     }
 
-    /// <summary>The text one letter (or one gap) contributes, with the position it was drawn at.</summary>
-    private struct Cell(string text, CellClass kind, double x)
+    /// <summary>
+    /// The unit vector a glyph advances along: from where it starts on its baseline to where it ends, which is the direction
+    /// of its text rendering matrix. A glyph too narrow to show a direction keeps the one before it.
+    /// </summary>
+    private readonly record struct Direction(double X, double Y)
+    {
+        /// <summary>A thousandth of a point: an advance shorter than this shows no direction.</summary>
+        private const double ShortestAdvance = 0.001;
+
+        public static Direction Rightward { get; } = new(1, 0);
+
+        public static Direction Of(Letter letter, Direction fallback)
+        {
+            double x = letter.EndBaseLine.X - letter.StartBaseLine.X;
+
+            double y = letter.EndBaseLine.Y - letter.StartBaseLine.Y;
+
+            double length = Math.Sqrt((x * x) + (y * y));
+
+            return length < ShortestAdvance ? fallback : new Direction(x / length, y / length);
+        }
+
+        /// <summary>Where a point lies along this direction, so that positions further ahead are larger.</summary>
+        public double Position(PdfPoint point) => (point.X * X) + (point.Y * Y);
+
+        /// <summary>How far <paramref name="to"/> lies ahead of <paramref name="from"/> in this direction (negative when behind).</summary>
+        public double Along(PdfPoint from, PdfPoint to) => ((to.X - from.X) * X) + ((to.Y - from.Y) * Y);
+
+        /// <summary>How far <paramref name="to"/> lies from the line through <paramref name="from"/> in this direction.</summary>
+        public double Across(PdfPoint from, PdfPoint to) => Math.Abs(((to.X - from.X) * Y) - ((to.Y - from.Y) * X));
+    }
+
+    /// <summary>The text one letter (or one gap) contributes, with where it was drawn along its glyph's direction.</summary>
+    private struct Cell(string text, CellClass kind, double position)
     {
         public string Text { get; } = text;
 
         public CellClass Class { get; set; } = kind;
 
-        public double X { get; } = x;
+        public double Position { get; } = position;
     }
 }

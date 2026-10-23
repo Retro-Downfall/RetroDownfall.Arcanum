@@ -497,15 +497,35 @@ same_line = (
 )
 write("same-line-order.pdf", simple_doc(same_line))
 
+# Text whose glyphs do not advance rightwards: each glyph starts a glyph's width left of (or above) the one before, so a word
+# break measured in page x instead of along the glyph's own direction would put a space between every letter.
+rotated = (
+    b"BT /F1 12 Tf 1 0 0 1 72 700 Tm (Ordinary line of text) Tj ET\n"
+    b"BT /F1 12 Tf -1 0 0 -1 400 650 Tm (Invoice total due) Tj ET\n"  # upside down (180 degrees)
+    b"BT /F1 12 Tf -1 0 0 1 400 600 Tm (Mirrored words here) Tj ET\n"  # mirrored
+    b"BT /F1 12 Tf -0.866025 0.5 -0.5 -0.866025 400 550 Tm (Rotated one fifty) Tj ET\n"  # 150 degrees
+    b"BT /F1 12 Tf -1 0 0 -1 400 500 Tm [(Spaced) -400 (by) -400 (kerning)] TJ ET\n"  # upside down, words apart with no space glyph
+    b"BT /F1 12 Tf -1 0 0 -1 300 450 Tm (Flipped) Tj 1 0 0 1 72 450 Tm (Upright) Tj ET\n"  # upside down, then upright to its left
+    b"BT /F1 12 Tf 0 1 -1 0 113 300 Tm (Up the side) Tj -0.866025 0.5 -0.5 -0.866025 192 356 Tm (Turned) Tj ET\n"  # off the first run's baseline
+)
+write("rotated-text.pdf", simple_doc(rotated))
+
 
 # ---- glyphs placed one by one on an Identity-H font whose every glyph is 1 em (18 pt) wide and maps to its character
 # through a ToUnicode CMap, so a line's geometry is exact: glyphs placed 18 pt apart touch.
+UPRIGHT = (1, 0, 0, 1)
+UPSIDE_DOWN = (-1, 0, 0, -1)
+
+
 def placed_doc(lines):
-    """lines: [(y, [(x, character)])] in the order the content stream draws them."""
-    characters = sorted({character for _, glyphs in lines for _, character in glyphs})
+    """lines: [(y, [(x, character)]) or (y, [(x, character)], (a, b, c, d))] in the order the content stream draws them; the
+    optional (a, b, c, d) is the text matrix that turns each glyph of the line (upright when it is left out)."""
+    characters = sorted({character for line in lines for _, character in line[1]})
     codes = {character: index + 1 for index, character in enumerate(characters)}
     content = b"BT /F1 18 Tf\n" + b"".join(
-        b"1 0 0 1 %d %d Tm <%04X> Tj\n" % (x, y, codes[character]) for y, glyphs in lines for x, character in glyphs
+        b"%d %d %d %d %d %d Tm <%04X> Tj\n" % (*(line[2] if len(line) > 2 else UPRIGHT), x, line[0], codes[character])
+        for line in lines
+        for x, character in line[1]
     ) + b"ET\n"
     objs = {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -529,6 +549,16 @@ def right_to_left(y, text, x=540):
     """The characters in the order given, each 18 pt left of the one before (how a producer writes logical order)."""
     return (y, [(x - 18 * (index + 1), character) for index, character in enumerate(text)])
 
+
+# A glyph whose text is a line feed, alone on the first line, the way some producers end a paragraph, then a line of letters
+# below it. The line feed is not a letter, so the letters below it do not start off its baseline as a new word.
+write(
+    "line-feed-glyph.pdf",
+    placed_doc([
+        (700, [(72, "\n")]),
+        left_to_right(680, "AB"),
+    ]),
+)
 
 # Latin presentation-form ligatures as one glyph each: ff, fi, fl, ffi, ffl, long s t, st
 write(
@@ -558,6 +588,17 @@ write(
         left_to_right(550, HEBREW_OLAM[::-1] + " abc " + HEBREW_SHALOM[::-1]),  # a Latin run between two Hebrew words
         left_to_right(500, ARABIC_BILALAM[::-1] + " " + ARABIC_MARHABA[::-1]),
         left_to_right(450, "Plain ASCII line 123"),
+    ]),
+)
+
+# Hebrew drawn upside down. In visual order each glyph is drawn a glyph's width further along its own (leftward) direction;
+# in logical order each is drawn behind the one before. Measured in page x instead of along the glyphs' direction, the first
+# line would be letter-spaced and left reversed, and the second reversed.
+write(
+    "rtl-upside-down.pdf",
+    placed_doc([
+        (500, [(400 - 18 * index, character) for index, character in enumerate(HEBREW_OLAM[::-1] + " " + HEBREW_SHALOM[::-1])], UPSIDE_DOWN),
+        (450, [(200 + 18 * index, character) for index, character in enumerate(HEBREW_SHALOM + " " + HEBREW_OLAM)], UPSIDE_DOWN),
     ]),
 )
 

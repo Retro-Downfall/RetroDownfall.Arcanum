@@ -3,7 +3,7 @@
 Inputs for the PDF text extractor and the worker frame (`Weave/Comprehension/Pdf`). Two kinds:
 
 - **Real producer**: `cups-text.pdf` and `cups-multi.pdf` were written by macOS Quartz through `cupsfilter`, and
-  `webkit-float.pdf` and `webkit-ligatures.pdf` by WebKit (the engine behind Safari's Export as PDF), and
+  `webkit-float.pdf`, `webkit-ligatures.pdf` and `webkit-rotated.pdf` by WebKit (the engine behind Safari's Export as PDF), and
   `quartz-hebrew.pdf` by CoreText into a Quartz PDF context (what macOS Save as PDF uses), so the extractor is proven on
   bytes this repository did not build.
 - **Hand-written**: everything else comes from `generate-handwritten.py`. Each file isolates one rule, so a failing test
@@ -28,6 +28,7 @@ cupsfilter -m application/pdf cups-multi.txt > cups-multi.pdf
 swiftc -O -o "$TMPDIR/macos-fixtures" generate-macos.swift
 "$TMPDIR/macos-fixtures" webkit webkit-float.html webkit-float.pdf
 "$TMPDIR/macos-fixtures" webkit webkit-ligatures.html webkit-ligatures.pdf
+"$TMPDIR/macos-fixtures" webkit webkit-rotated.html webkit-rotated.pdf
 "$TMPDIR/macos-fixtures" hebrew quartz-hebrew.pdf
 
 # Hand-written. Run after the lines above: truncated.pdf is the first half of cups-text.pdf.
@@ -53,11 +54,15 @@ Expected outcomes are for the production extractor with its default limits unles
 | `multi-page.pdf` | page 1 `PAGE-ONE-ALPHA`, page 2 **no content**, page 3 `PAGE-THREE-MARKER-GAMMA`, page 4 `PAGE-FOUR-DELTA` | `Extracted`, four entries, the second empty, so ordinals stay true. 14, 0, 23 and 15 glyphs. |
 | `content-order.pdf` | three runs shown bottom, top, middle | `Extracted`, in content-stream order |
 | `same-line-order.pdf` | pairs of runs on one baseline: `RIGHTWORD` drawn before the `LEFTWORD` to its left; the page number `17` drawn before the title `Annual Report`; a kerned `WA`, `VE` pair; `FIRSTRUN` and `SECONDRUN` drawn at the same place; an accent `^` drawn over the `u` that follows it in `Muller` | `Extracted`; the runs stay separate words (`RIGHTWORD LEFTWORD`, `17 Annual Report`, `FIRSTRUN SECONDRUN`) and the kerned pair and the accented word stay one word (`WAVE`, `M^uller`) |
+| `rotated-text.pdf` | Helvetica runs whose glyphs do not advance rightwards: upside down, mirrored, turned 150 degrees, and upside down with its words apart only by `TJ` kerning (no space glyph); then an upside-down run with an upright one to its left, and a run turned 90 degrees followed by one that starts off its baseline | `Extracted` as `Ordinary line of text`, `Invoice total due`, `Mirrored words here`, `Rotated one fifty`, `Spaced by kerning`, `Flipped Upright`, `Up the side Turned`: no letter-spacing, and a change of direction still separates words |
+| `webkit-rotated.pdf` | (real producer, WebKit) CSS `rotate(180deg)`, `rotate(150deg)` and `scaleX(-1)` text beside an ordinary line | `Extracted` as `Normal line here`, `Upside down label text`, `Rotated one fifty`, `Mirrored words here` |
+| `line-feed-glyph.pdf` | a glyph mapped to a line feed alone on the first line (some producers draw a paragraph's line feed), then `AB` on the line below | `Extracted` as `\nAB`: the line below a glyph that is not a letter does not start with a space |
 | `webkit-float.pdf` | (real producer, WebKit) a `float:right` price drawn before the text it sits beside, a right-to-left table row and a `row-reverse` flex row | `Extracted`; `$1,250.00 2 hours consulting`, `RIGHTCELL LEFTCELL`, `FLEXFIRST FLEXSECOND`: the price does not fuse with the `2` that follows it |
 | `latin-ligatures.pdf` | single glyphs that a ToUnicode CMap maps to U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st) inside words, then a plain line | `Extracted` as `effect final flow`, `office baffle`, `st st` and `plain office`: each ligature code point becomes what NFKC gives (U+FB05 becomes `st`: its decomposition is a long s and a t, and the long s decomposes again to `s`) |
 | `webkit-ligatures.pdf` | (real producer, WebKit) Helvetica text; WebKit writes its fi, fl and ffi as ligature glyphs | `Extracted` as `Helvetica: office, figures, affidavit, flow, fluffy waffles.` |
 | `rtl-visual-order.pdf` | Hebrew and Arabic the way most producers write them, in visual order (each right-to-left run's glyphs advance left to right across the page), on six lines: a Hebrew sentence with its full stop, an English sentence with one Hebrew word, Hebrew around the number `25.5`, a Latin run `abc` between two Hebrew words, Arabic, and a plain ASCII line | `Extracted`; every right-to-left run is returned in logical order, numbers and Latin runs keep their own order, and the ASCII line is untouched |
 | `rtl-logical-order.pdf` | a Hebrew line and an Arabic line written in logical order (each glyph placed to the left of the one before it) | `Extracted` exactly as written: nothing is reversed and no space appears inside a word |
+| `rtl-upside-down.pdf` | a Hebrew line drawn upside down in visual order (each glyph a glyph's width further along its own, leftward, direction), and one drawn upside down in logical order (each glyph behind the one before) | `Extracted`; both lines read the same in logical order, without spaces inside the words |
 | `quartz-hebrew.pdf` | (real producer, Quartz and CoreText) a Hebrew paragraph with a Latin marker, and an English sentence with one Hebrew word | `Extracted`; the Hebrew words read in logical order |
 | `astral-plane.pdf` | `AB`, U+1F600, `CD` through a ToUnicode CMap | `Extracted`, the pair intact; used for surrogate-safe cuts |
 | `astral-multi-page.pdf` | page 1 `AB`, U+1F600, `CD`; page 2 `EFGHIJKL`; page 3 no content | `Extracted`, three entries; a cut inside page 1's pair must stop without reading page 2 |
@@ -72,15 +77,19 @@ Expected outcomes are for the production extractor with its default limits unles
 
 **What the page join does to the text** (`PdfPageText`; the rows above pin each rule).
 
-- *Word breaks.* Letters are joined in content-stream order. A space goes between two letters when the next starts a word
-  space or more to the right of the previous one's end (PdfPig's rule), or starts a word space or more to the left of the
-  previous one's *start*: a float, a right-to-left table row or a page number drawn before its title steps back past a whole
-  glyph, while kerning and an accent drawn over the letter after it step back by less than the previous glyph is wide.
+- *Word breaks.* Letters are joined in content-stream order. Distances are measured along the direction the previous glyph
+  advances in (rightwards for upright text, leftwards for upside-down or mirrored text), so turned text is not letter-spaced.
+  A space goes between two letters when the next starts a word space or more ahead of the previous one's end (PdfPig's
+  rule), or a word space or more behind the previous one's *start*: a float, a right-to-left table row or a page number
+  drawn before its title steps back past a whole glyph, while kerning and an accent drawn over the letter after it step back
+  by less than the previous glyph is wide. A letter that starts off a visible previous letter's baseline by more than a line
+  allows is a new word too, which for turned text page height alone does not show.
 - *Ligatures.* Only U+FB00 to U+FB06 are spelled out (ff, fi, fl, ffi, ffl, long s t, st). Nothing else is normalized, because
   the worker runs with invariant globalization: Arabic presentation forms (U+FB50 to U+FDFF, U+FE70 to U+FEFF) come out as the
   producer's code points, not folded to the base letters.
-- *Right-to-left text.* Most producers write Hebrew and Arabic in visual order. A run whose glyphs step rightwards is reversed
-  to logical order; one whose glyphs step leftwards was written in logical order and is left alone. A line with no
+- *Right-to-left text.* Most producers write Hebrew and Arabic in visual order. A run whose glyphs step ahead along their
+  own direction (rightwards, for upright text) is reversed to logical order; one whose glyphs step back was written in
+  logical order and is left alone. A line with no
   left-to-right letters is one run. In a line that has both, each right-to-left run is reversed where it stands and the runs
   keep their order, so a right-to-left sentence that holds a Latin word reads `Latin right-to-left-words`. Numbers and Latin
   runs keep their own order. A file carries no paragraph direction, and bracket glyphs it draws mirrored may come out as
