@@ -159,16 +159,21 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
         }
     }
 
-    private static void RequestCancellation(CancellationTokenSource cancellation)
+    /// <summary>
+    /// Asks the parser to stop. The parse that ends disposes its own source, which can precede this request when completion
+    /// raced the caller's timeout or cancellation, and cancelling a disposed source does not throw: it returns a faulted
+    /// task. The fault is observed here, since a task nobody observes surfaces much later as an unobserved task exception.
+    /// </summary>
+    internal static void RequestCancellation(CancellationTokenSource cancellation)
     {
-        try
-        {
-            _ = cancellation.CancelAsync();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Completion raced the timeout; the invocation has already ended.
-        }
+        _ = cancellation.CancelAsync().ContinueWith(
+            static cancelled =>
+            {
+                _ = cancelled.Exception;
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 }
 
