@@ -1285,6 +1285,43 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.NegativeNonDatabaseProof, "CliCommandTree.BuildConfig(1)", 0)),
 
+        // BoundedZipPackage.Open reads the central directory of a ZIP package already held in memory as the snapshot's bytes;
+        // it opens no connection and no file, and no database type is in reach of these extractors.
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpenDocumentPackageContent.cs", "OpenDocumentPackageContent", "Load(4)", AcquisitionConstructKind.ProviderOpen, "BoundedZipPackage.Open", 2, "BoundedZipPackage.Open(bytes,cancellationToken)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "OpenDocumentPackageContent.Load(4)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/PresentationDocumentExtractor.cs", "PresentationDocumentExtractor", "ExtractAsync(3)", AcquisitionConstructKind.ProviderOpen, "BoundedZipPackage.Open", 2, "BoundedZipPackage.Open(bytes,cancellationToken)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "PresentationDocumentExtractor.ExtractAsync(3)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/SpreadsheetDocumentExtractor.cs", "SpreadsheetDocumentExtractor", "ExtractAsync(3)", AcquisitionConstructKind.ProviderOpen, "BoundedZipPackage.Open", 2, "BoundedZipPackage.Open(bytes,cancellationToken)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpreadsheetDocumentExtractor.ExtractAsync(3)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/VisioDrawingExtraction.cs", "VisioDrawingExtraction", "Run(1)", AcquisitionConstructKind.ProviderOpen, "BoundedZipPackage.Open", 2, "BoundedZipPackage.Open(bytes,cancellationToken)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "VisioDrawingExtraction.Run(1)", 0)),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/WordprocessingDocumentExtractor.cs", "WordprocessingDocumentExtractor", "ExtractAsync(3)", AcquisitionConstructKind.ProviderOpen, "BoundedZipPackage.Open", 2, "BoundedZipPackage.Open(bytes,cancellationToken)"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "WordprocessingDocumentExtractor.ExtractAsync(3)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "HandleSearchAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,context.RequestAborted)"),
             GrimoirePathAuthority.LiveGrimoire,
