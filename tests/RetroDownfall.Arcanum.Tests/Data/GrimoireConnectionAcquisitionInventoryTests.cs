@@ -12,7 +12,7 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed class GrimoireConnectionAcquisitionInventoryTests
 {
-    private const int ExpectedProductionAcquisitionCount = 527;
+    private const int ExpectedProductionAcquisitionCount = 532;
 
     private static readonly HashSet<(string RelativePath, string EnclosingMember)> ScopedMigrationMembers =
     [
