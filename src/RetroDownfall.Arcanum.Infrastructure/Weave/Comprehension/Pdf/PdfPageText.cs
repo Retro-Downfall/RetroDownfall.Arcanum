@@ -159,9 +159,10 @@ internal static class PdfPageText
 
     /// <summary>
     /// Spells out the Latin ligature code points U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st). macOS producers write
-    /// Helvetica's fi and fl as ligature glyphs, which would reach the model and the index as "ofﬁce". This is the
-    /// compatibility decomposition of those seven code points and nothing wider: the worker runs with invariant globalization,
-    /// where general normalization is not available.
+    /// Helvetica's fi and fl as ligature glyphs, which would reach the model and the index as "ofﬁce". Each becomes what NFKC
+    /// gives for it (the long s t becomes "st": its decomposition is a long s and a t, and the long s decomposes again to s),
+    /// and nothing wider is normalized: the worker runs with invariant globalization, where general normalization is not
+    /// available.
     /// </summary>
     private static string ExpandLigatures(string value)
     {
@@ -181,7 +182,7 @@ internal static class PdfPageText
                 'ﬂ' => "fl",
                 'ﬃ' => "ffi",
                 'ﬄ' => "ffl",
-                'ﬅ' => "ſt",
+                'ﬅ' => "st",
                 'ﬆ' => "st",
                 _ => null,
             };

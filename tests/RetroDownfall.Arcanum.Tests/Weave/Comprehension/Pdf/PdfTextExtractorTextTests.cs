@@ -111,13 +111,13 @@ public sealed class PdfTextExtractorTextTests
     [Fact]
     public void Extract_LatinLigatureCodePoints_BecomeTheirLetters()
     {
-        // Sensitivity: the ligature expansion. U+FB05 is a long s and a t, as NFKC decomposes it. Nothing else is folded:
-        // the plain line is the control.
+        // Sensitivity: the ligature expansion. U+FB05 becomes "st", which is what NFKC gives: its compatibility decomposition
+        // is a long s and a t, and the long s decomposes again to s. Nothing else is folded: the plain line is the control.
         PdfExtractionOutcome outcome = Extract("latin-ligatures.pdf");
 
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
-        Assert.Equal(["effect final flow\noffice baffle\n\u017Ft st\nplain office"], outcome.Pages);
+        Assert.Equal(["effect final flow\noffice baffle\nst st\nplain office"], outcome.Pages);
     }
 
     [Fact]
