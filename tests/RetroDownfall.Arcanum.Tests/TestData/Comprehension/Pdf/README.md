@@ -70,6 +70,22 @@ Expected outcomes are for the production extractor with its default limits unles
 | `deep-pages-1k.pdf` | the page is 1,000 levels down the page tree | `Extracted` |
 | `xref-stream.pdf` | PDF 1.5: the catalog, page tree, page and font sit in a compressed object stream, found only through an intact cross-reference stream | `Extracted` (`XREF-STREAM-TEXT`); the control for `xref-stream-garbled.pdf` |
 
+**What the page join does to the text** (`PdfPageText`; the rows above pin each rule).
+
+- *Word breaks.* Letters are joined in content-stream order. A space goes between two letters when the next starts a word
+  space or more to the right of the previous one's end (PdfPig's rule), or starts a word space or more to the left of the
+  previous one's *start*: a float, a right-to-left table row or a page number drawn before its title steps back past a whole
+  glyph, while kerning and an accent drawn over the letter after it step back by less than the previous glyph is wide.
+- *Ligatures.* Only U+FB00 to U+FB06 are spelled out (ff, fi, fl, ffi, ffl, long s t, st). Nothing else is normalized, because
+  the worker runs with invariant globalization: Arabic presentation forms (U+FB50 to U+FDFF, U+FE70 to U+FEFF) come out as the
+  producer's code points, not folded to the base letters.
+- *Right-to-left text.* Most producers write Hebrew and Arabic in visual order. A run whose glyphs step rightwards is reversed
+  to logical order; one whose glyphs step leftwards was written in logical order and is left alone. A line with no
+  left-to-right letters is one run. In a line that has both, each right-to-left run is reversed where it stands and the runs
+  keep their order, so a right-to-left sentence that holds a Latin word reads `Latin right-to-left-words`. Numbers and Latin
+  runs keep their own order. A file carries no paragraph direction, and bracket glyphs it draws mirrored may come out as
+  the other bracket.
+
 ### Text a reader does not see (all extracted: #163 decides every text-showing run is)
 
 | File | Shows | Outcome |

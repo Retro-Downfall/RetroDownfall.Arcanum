@@ -12,7 +12,7 @@ internal enum PdfExtractionKind
     /// <summary>The document is well formed but shows no text on any page (image-only, blank, or only spaces).</summary>
     NoText,
 
-    /// <summary>The document needs a password other than the empty one.</summary>
+    /// <summary>The document needs a password other than the empty one, or is protected by a security handler that has no password to give (public-key, certificate encryption).</summary>
     PasswordRequired,
 
     /// <summary>The bytes are not a PDF the parser can read (truncated, damaged, garbage, empty).</summary>
