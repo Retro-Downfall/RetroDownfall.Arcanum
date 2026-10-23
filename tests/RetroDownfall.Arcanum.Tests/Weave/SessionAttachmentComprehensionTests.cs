@@ -100,9 +100,9 @@ public sealed class SessionAttachmentComprehensionTests
 
         Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
 
-        Assert.Equal("Page 1\nPAGE-ONE-ALPHA\nPage 3\nPAGE-THREE-MARKER-GAMMA\nPage 4\nPAGE-FOUR-DELTA\n", result.Text);
+        Assert.Equal("[PDF page 1]\nPAGE-ONE-ALPHA\n[PDF page 3]\nPAGE-THREE-MARKER-GAMMA\n[PDF page 4]\nPAGE-FOUR-DELTA\n", result.Text);
 
-        Assert.Equal([3], result.Pages!.Where(static mark => mark.Offset == 22).Select(static mark => mark.Page));
+        Assert.Equal([3], result.Pages!.Where(static mark => mark.Offset == 28).Select(static mark => mark.Page));
 
         Assert.Equal(1, pdf.Runs);
     }

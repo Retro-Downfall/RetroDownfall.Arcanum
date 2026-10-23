@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 /// <summary>
 /// The host of a format parsed only out of process, against a fake worker: the same family-slot semantics as the in-process
 /// host, the snapshot read and its checks, the worker awaited inline, every verdict mapped to its code-owned result, and the
-/// verdict's pages projected through the bounded sink with a "Page n" heading and a page mark for each page with text.
+/// verdict's pages projected through the bounded sink with a "[PDF page n]" heading and a page mark for each page with text.
 /// </summary>
 public sealed class SessionAttachmentIsolatedDocumentHostTests
 {
@@ -26,13 +26,13 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
 
-        Assert.Equal("Page 1\nPAGE-ONE-ALPHA\nPage 2\nPAGE-TWO-BETA\nsecond line\n", result.Text);
+        Assert.Equal("[PDF page 1]\nPAGE-ONE-ALPHA\n[PDF page 2]\nPAGE-TWO-BETA\nsecond line\n", result.Text);
 
         Assert.False(result.WasTruncated);
 
         Assert.Null(result.FailureReason);
 
-        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(22, 2)], result.Pages);
+        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(28, 2)], result.Pages);
     }
 
     [Fact]
@@ -43,15 +43,15 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         SessionAttachmentExtractionResult result = await ExtractAsync(host);
 
-        Assert.Equal("Page 1\nPAGE-ONE-ALPHA\nPage 3\nPAGE-THREE-MARKER-GAMMA\nPage 5\nFIVE\n", result.Text);
+        Assert.Equal("[PDF page 1]\nPAGE-ONE-ALPHA\n[PDF page 3]\nPAGE-THREE-MARKER-GAMMA\n[PDF page 5]\nFIVE\n", result.Text);
 
         Assert.Equal(
-            [new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(22, 3), new SessionAttachmentPageMark(53, 5)],
+            [new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(28, 3), new SessionAttachmentPageMark(65, 5)],
             result.Pages);
 
         Assert.Equal(3, result.Pages![1].Page);
 
-        Assert.StartsWith("Page 3\nPAGE-THREE-MARKER-GAMMA", result.Text[result.Pages[1].Offset..], StringComparison.Ordinal);
+        Assert.StartsWith("[PDF page 3]\nPAGE-THREE-MARKER-GAMMA", result.Text[result.Pages[1].Offset..], StringComparison.Ordinal);
     }
 
     [Fact]
@@ -65,13 +65,13 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.True(result.WasTruncated);
 
-        Assert.Equal("Page 1\nPAGE-ONE-ALPHA\n", result.Text);
+        Assert.Equal("[PDF page 1]\nPAGE-ONE-ALPHA\n", result.Text);
     }
 
     [Fact]
     public async Task ExtractAsync_ProjectionOverTheCeiling_IsCutByTheSinkLikeAnyOtherFormat()
     {
-        // 30 characters fit the whole of page 1 (22) and the start of page 2's heading; page 3 never starts.
+        // 30 characters fit the whole of page 1 (28) and the start of page 2's heading; page 3 never starts.
         SessionAttachmentIsolatedDocumentHost host = Host(Pages("PAGE-ONE-ALPHA", "PAGE-TWO-BETA", "PAGE-THREE-GAMMA"), maximumCharacters: 30);
 
         SessionAttachmentExtractionResult result = await ExtractAsync(host);
@@ -80,9 +80,9 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.True(result.WasTruncated);
 
-        Assert.Equal("Page 1\nPAGE-ONE-ALPHA\nPage 2\nP", result.Text);
+        Assert.Equal("[PDF page 1]\nPAGE-ONE-ALPHA\n[P", result.Text);
 
-        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(22, 2)], result.Pages);
+        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(28, 2)], result.Pages);
     }
 
     [Fact]
@@ -92,7 +92,23 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         SessionAttachmentExtractionResult result = await ExtractAsync(Host(Pages(pages)));
 
-        Assert.Equal("Page 1234\nLAST\n", result.Text);
+        Assert.Equal("[PDF page 1234]\nLAST\n", result.Text);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_PageTextThatReadsLikeAPageNumber_CannotBeMistakenForTheHeading()
+    {
+        // A report whose printed numbering starts on PDF page 3 draws its footer "Page 1" first. The heading the host
+        // inserts is a bracketed form page text does not use, so the line nearest the body is never the provenance.
+        string[] pages = [string.Empty, string.Empty, "Page 1\nRevenue grew by 14 percent.", "Page 2\nCosts fell by 6 percent."];
+
+        SessionAttachmentExtractionResult result = await ExtractAsync(Host(Pages(pages)));
+
+        Assert.Equal(
+            "[PDF page 3]\nPage 1\nRevenue grew by 14 percent.\n[PDF page 4]\nPage 2\nCosts fell by 6 percent.\n",
+            result.Text);
+
+        Assert.Equal([new SessionAttachmentPageMark(0, 3), new SessionAttachmentPageMark(48, 4)], result.Pages);
     }
 
     // ---------------------------------------------------------------- verdicts without text
@@ -199,7 +215,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         worker.SetResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["LATE"], false)));
 
-        Assert.Equal("Page 1\nLATE\n", (await extraction.WaitAsync(TimeSpan.FromSeconds(5))).Text);
+        Assert.Equal("[PDF page 1]\nLATE\n", (await extraction.WaitAsync(TimeSpan.FromSeconds(5))).Text);
     }
 
     [Fact]
@@ -461,10 +477,10 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         holder.SetResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["FIRST"], false)));
 
-        Assert.Equal("Page 1\nFIRST\n", (await first.WaitAsync(TimeSpan.FromSeconds(5))).Text);
+        Assert.Equal("[PDF page 1]\nFIRST\n", (await first.WaitAsync(TimeSpan.FromSeconds(5))).Text);
 
         // The slot came back with the first document, so the same caller now runs.
-        Assert.Equal("Page 1\nSECOND\n", (await ExtractAsync(host, waitForSlot: false)).Text);
+        Assert.Equal("[PDF page 1]\nSECOND\n", (await ExtractAsync(host, waitForSlot: false)).Text);
     }
 
     [Fact]
@@ -502,7 +518,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         await first.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.Equal("Page 1\nSECOND\n", (await second.WaitAsync(TimeSpan.FromSeconds(5))).Text);
+        Assert.Equal("[PDF page 1]\nSECOND\n", (await second.WaitAsync(TimeSpan.FromSeconds(5))).Text);
     }
 
     [Fact]
@@ -572,7 +588,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ExtractAsync(host, cancellationToken: cancelled.Token));
 
-        Assert.Equal("Page 1\nAFTER\n", (await ExtractAsync(host, waitForSlot: false)).Text);
+        Assert.Equal("[PDF page 1]\nAFTER\n", (await ExtractAsync(host, waitForSlot: false)).Text);
     }
 
     private static Task<ReadOnlyMemory<byte>> ReadSnapshot(CancellationToken cancellationToken) =>

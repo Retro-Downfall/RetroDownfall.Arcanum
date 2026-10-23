@@ -488,7 +488,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
     /// <summary>The pages of <c>multi-page.pdf</c> as every path shows them: page 2 is empty, so page 3 is still page 3.</summary>
     private const string MultiPageText =
-        "Page 1\nPAGE-ONE-ALPHA\nPage 3\nPAGE-THREE-MARKER-GAMMA\nPage 4\nPAGE-FOUR-DELTA\n";
+        "[PDF page 1]\nPAGE-ONE-ALPHA\n[PDF page 3]\nPAGE-THREE-MARKER-GAMMA\n[PDF page 4]\nPAGE-FOUR-DELTA\n";
 
     [Fact]
     public async Task AttachSessionFile_Pdf_ThroughTheRealToolAndPipeline_InjectsItsPagesUnderTheUnseenTextFrame()
@@ -511,7 +511,7 @@ public sealed class SessionAttachmentComprehensionSeamTests
 
         Assert.Contains(MultiPageText.TrimEnd('\n'), injected, StringComparison.Ordinal);
 
-        Assert.DoesNotContain("Page 2", injected, StringComparison.Ordinal);
+        Assert.DoesNotContain("[PDF page 2]", injected, StringComparison.Ordinal);
 
         Assert.Equal(1, worker.Runs);
     }

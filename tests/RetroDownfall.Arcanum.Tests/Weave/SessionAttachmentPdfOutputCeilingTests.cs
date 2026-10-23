@@ -27,8 +27,11 @@ public sealed class SessionAttachmentPdfOutputCeilingTests
 
     private const int FirstPageGlyphs = 120_000;
 
-    /// <summary>The projection is <c>Page 1\n</c>, page one's text, <c>\n</c>, then <c>Page 2\n</c>.</summary>
-    private const int SecondPageStart = 7 + FirstPageGlyphs + 1 + 7;
+    /// <summary>The projection is <c>[PDF page 1]\n</c>, page one's text, <c>\n</c>, then <c>[PDF page 2]\n</c>.</summary>
+    private const int SecondPageStart = HeadingLength + FirstPageGlyphs + 1 + HeadingLength;
+
+    /// <summary>The length of <c>[PDF page n]\n</c> for a one-digit page number.</summary>
+    private const int HeadingLength = 13;
 
     private const string Emoji = "\U0001F600";
 
@@ -52,7 +55,7 @@ public sealed class SessionAttachmentPdfOutputCeilingTests
 
         Assert.DoesNotContain('�', first.Text);
 
-        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(7 + FirstPageGlyphs + 1, 2)], first.Pages);
+        Assert.Equal([new SessionAttachmentPageMark(0, 1), new SessionAttachmentPageMark(HeadingLength + FirstPageGlyphs + 1, 2)], first.Pages);
 
         // Strict UTF-8 refuses a lone surrogate: the text can be written and stored as it is.
         _ = new UTF8Encoding(false, true).GetBytes(first.Text);

@@ -15,9 +15,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// through the same bounded sink as every other format, so truncation and page marks behave alike.
 /// </summary>
 /// <remarks>
-/// Each page with text is projected as <c>Page n</c> on a line of its own, then its text, then a line break, with the page
-/// mark set where its heading starts. A page without text emits nothing and its number is never reused, so the numbers
-/// that remain are the document's own. Cancelling <c>revocation</c> (maintenance taking the Grimoire back from the
+/// Each page with text is projected as <c>[PDF page n]</c> on a line of its own, then its text, then a line break, with the
+/// page mark set where its heading starts. The bracketed form is not how a document prints its own folios, so a footer such
+/// as <c>Page 1</c> drawn first on PDF page 3 reads as page text under the <c>[PDF page 3]</c> heading, never as the page's
+/// provenance. A page without text emits nothing and its number is never reused, so the numbers that remain are the
+/// document's own. Cancelling <c>revocation</c> (maintenance taking the Grimoire back from the
 /// indexer) kills the worker and defers the document, which nothing treats as terminal; cancelling the caller's token
 /// kills it and propagates.
 /// </remarks>
@@ -207,7 +209,7 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
 
                 sink.BeginPage(pageNumber);
 
-                if (!sink.TryAppend(string.Create(CultureInfo.InvariantCulture, $"Page {pageNumber}\n"))
+                if (!sink.TryAppend(string.Create(CultureInfo.InvariantCulture, $"[PDF page {pageNumber}]\n"))
                     || !sink.TryAppend(text)
                     || !sink.TryAppend("\n"))
                 {

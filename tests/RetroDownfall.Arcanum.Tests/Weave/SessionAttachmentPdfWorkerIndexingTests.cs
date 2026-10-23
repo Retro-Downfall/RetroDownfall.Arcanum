@@ -331,7 +331,7 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
         // The exact source string, in the text the model would be given, with its page.
         Assert.Contains(marker, hit.Content, StringComparison.Ordinal);
 
-        Assert.StartsWith("Page 1\n", hit.Content, StringComparison.Ordinal);
+        Assert.StartsWith("[PDF page 1]\n", hit.Content, StringComparison.Ordinal);
 
         Assert.Equal((1, 1), (hit.StartLine, hit.EndLine));
     }
@@ -355,7 +355,7 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         SessionAttachmentIndexedChunk chunk = Assert.Single(await _index!.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
 
-        Assert.Equal("Page 1\nACTIVE-CONTENT-VISIBLE-TEXT", chunk.Content.TrimEnd('\n'));
+        Assert.Equal("[PDF page 1]\nACTIVE-CONTENT-VISIBLE-TEXT", chunk.Content.TrimEnd('\n'));
 
         foreach (string payload in new[]
         {
