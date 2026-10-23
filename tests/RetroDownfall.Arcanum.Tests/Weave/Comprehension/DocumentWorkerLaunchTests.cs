@@ -49,6 +49,30 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
         Assert.Null(DocumentWorkerLaunch.ForHostExecutable(CreateExecutable(fileName)));
     }
 
+    [SkippableFact]
+    public void ForHostExecutable_ALinkNamedDotnet_IsNoLaunch()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not grant.");
+
+        string link = Path.Combine(_directory, "dotnet");
+
+        File.CreateSymbolicLink(link, CreateExecutable("host-real"));
+
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(link));
+    }
+
+    [SkippableFact]
+    public void ForHostExecutable_ALinkToTheDotnetMuxer_IsNoLaunch()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege the Windows lane does not grant.");
+
+        string link = Path.Combine(_directory, "host");
+
+        File.CreateSymbolicLink(link, CreateExecutable("dotnet"));
+
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(link));
+    }
+
     [Fact]
     public void ForHostExecutable_TheHostBinary_IsAClearedDocumentWorkerLaunchOfItsFullPath()
     {
