@@ -69,6 +69,24 @@ internal static class ChildProcessEnvironmentScrubber
                 // WorkspaceCheckEnvironmentBuilder already cleared and reconstructed the entire
                 // environment. Do not reintroduce or copy anything from the host here.
                 break;
+
+            case ChildProcessEnvironmentProfile.DocumentWorker:
+
+                // A document worker parses untrusted bytes and needs no host variable at all. Nothing is
+                // kept, so no secret can survive under a name nobody listed. The filesystem jail applied
+                // after this sets the run's private TMPDIR/TMP/TEMP.
+                startInfo.Environment.Clear();
+
+                break;
+
+            default:
+
+                // A profile without its own case would otherwise apply no policy and hand the child every
+                // host variable. Refuse it before anything is started.
+                throw new ArgumentOutOfRangeException(
+                    nameof(profile),
+                    profile,
+                    "The child-process environment profile has no defined policy.");
         }
     }
 

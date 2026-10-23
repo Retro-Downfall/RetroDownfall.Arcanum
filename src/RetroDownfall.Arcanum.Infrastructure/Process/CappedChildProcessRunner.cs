@@ -169,6 +169,36 @@ internal static class CappedChildProcessRunner
     /// </summary>
     private const int PreExecLimitFailureExitCode = 126;
 
+    /// <summary>
+    /// The most the stdin writer hands the pipe in one write, so a stopped run ends the input at the next
+    /// chunk instead of after the whole payload.
+    /// </summary>
+    private const int StandardInputChunkBytes = 64 * 1024;
+
+    /// <summary>
+    /// How long teardown waits for the stdin writer to finish once the child is gone. A pipe whose readers
+    /// all exited fails a pending write at once, so this only runs out when a process outside the run holds
+    /// fd 0 open without reading.
+    /// </summary>
+    private static readonly TimeSpan StandardInputWriterStopGrace =
+        TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The encoding the runner gives the stdin text writer when the caller supplies raw input bytes: the
+    /// writer never carries those bytes, and only a preamble-free encoding guarantees it writes nothing of
+    /// its own ahead of them.
+    /// </summary>
+    private static readonly Encoding StandardInputWithoutPreamble =
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    /// <param name="standardInput">
+    /// Bytes for the child's stdin, or <see langword="null"/> (every model-directed tool) for a pipe closed
+    /// at start, so a reading child sees end of input at once. When set, the bytes are written exactly —
+    /// raw, after start, concurrently with the output readers — and the pipe is then closed. The caller
+    /// must not change the memory until the run returns; only a writer abandoned to a process that escaped
+    /// containment and holds fd 0 unread can still be inside one chunk after that. A child that exits,
+    /// closes fd 0 or is killed before taking them all is not a fault: its exit status is the run's result.
+    /// </param>
     internal static async Task<CappedChildProcessRunResult> RunAsync(
         ProcessStartInfo startInfo,
         ChildProcessEnvironmentProfile environmentProfile,
@@ -183,21 +213,31 @@ internal static class CappedChildProcessRunner
         Func<TimeSpan>? getCleanupTimeRemaining = null,
         string? outputSpillDirectory = null,
         IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null,
-        Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null)
+        Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null,
+        ReadOnlyMemory<byte>? standardInput = null)
     {
         ChildProcessEnvironmentScrubber.ApplyProfile(
             startInfo,
             environmentProfile,
             operatorDeclaredSecretEnvironmentVariables);
 
-        // No caller can feed a tool child input — RunAsync has no parameter for it — so fd 0 is
-        // redirected unconditionally rather than left inherited. An unredirected child receives the
-        // host's own stdin handle, and the `arcanum serve` daemon is started attached to the
+        // fd 0 is redirected unconditionally rather than left inherited. An unredirected child receives
+        // the host's own stdin handle, and the `arcanum serve` daemon is started attached to the
         // operator's terminal (ServeProcessLauncher), so a child that reads stdin (`cat`, `git
-        // commit`, `ssh`) would block on that terminal while every production caller passes
-        // Timeout.InfiniteTimeSpan — a wedge with no deadline to break it. The write end is closed
-        // immediately after start (CloseChildStandardInput), turning that hang into an instant EOF.
+        // commit`, `ssh`) would block on that terminal while every model-directed caller passes
+        // Timeout.InfiniteTimeSpan — a wedge with no deadline to break it. Without standardInput (every
+        // model-directed tool) the write end is closed immediately after start
+        // (CloseChildStandardInput), turning that hang into an instant EOF. With it (an Arcanum-authored
+        // worker), exactly those bytes are written and the pipe is then closed (WriteChildStandardInputAsync).
         startInfo.RedirectStandardInput = true;
+
+        if (standardInput is not null)
+        {
+            // Process.Start flushes the stdin writer as it creates it, so an encoding with a preamble
+            // would put its byte-order mark ahead of the caller's bytes. The bytes are written to the
+            // raw pipe and never pass through that writer, so a preamble-free encoding changes nothing else.
+            startInfo.StandardInputEncoding = StandardInputWithoutPreamble;
+        }
 
         long perStreamCapBytes = totalOutputCapBytes / 2L;
 
@@ -245,6 +285,10 @@ internal static class CappedChildProcessRunner
 
         MacOsDescendantSupervisor? descendantSupervisor = null;
 
+        Task? standardInputWriter = null;
+
+        CancellationTokenSource? standardInputStop = null;
+
         try
         {
             // FS jail wraps the post-rlimit StartInfo (macOS sandbox-exec around the ulimit prelude when
@@ -291,6 +335,22 @@ internal static class CappedChildProcessRunner
                         FilesystemSandboxDenialMessage =
                             "workspace_check requires an active filesystem jail; the process was not started. "
                             + ChildProcessSandboxMessages.NotNetworkIsolationNote,
+                    };
+                }
+
+                // Only an applied jail takes the network away. The operator escape runs the child with no
+                // jail, so a child that must have no network is refused instead of started with it.
+                if (filesystemSandbox.DenyNetwork
+                    && sandboxResult.Status != ChildProcessSandboxApplyStatus.Applied)
+                {
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        FilesystemSandboxDenialMessage =
+                            ChildProcessSandboxMessages.NetworkDenialRequiresAppliedSandbox,
                     };
                 }
 
@@ -443,7 +503,20 @@ internal static class CappedChildProcessRunner
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
 
-            CloseChildStandardInput(process, logger);
+            if (standardInput is { } input)
+            {
+                standardInputStop = new CancellationTokenSource();
+
+                standardInputWriter = WriteChildStandardInputAsync(
+                    process,
+                    input,
+                    standardInputStop.Token,
+                    logger);
+            }
+            else
+            {
+                CloseChildStandardInput(process, logger);
+            }
 
             // Only a launcher that put the child in its own group (Linux setsid) leaves the runner a group
             // to kill. setpgid on an already-started child is refused once it has exec'd, which it always
@@ -925,7 +998,9 @@ internal static class CappedChildProcessRunner
                     limiterResult,
                     startedPid,
                     getCleanupTimeRemaining,
-                    logger)
+                    logger,
+                    standardInputWriter,
+                    standardInputStop)
                 .ConfigureAwait(false);
         }
     }
@@ -942,8 +1017,27 @@ internal static class CappedChildProcessRunner
         ProcessResourceLimiterResult limiterResult,
         int startedPid,
         Func<TimeSpan>? getCleanupTimeRemaining,
-        ILogger? logger)
+        ILogger? logger,
+        Task? standardInputWriter,
+        CancellationTokenSource? standardInputStop)
     {
+        if (standardInputWriter is not null
+            && standardInputStop is not null)
+        {
+            try
+            {
+                await StopChildStandardInputWriterAsync(
+                        standardInputWriter,
+                        standardInputStop,
+                        logger)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Stopping the child stdin writer failed; the remaining teardown continues.");
+            }
+        }
+
         if (descendantSupervisor is not null)
         {
             try
@@ -1159,6 +1253,99 @@ internal static class CappedChildProcessRunner
                 ex,
                 "Closing the child process stdin pipe raced the child's exit.");
         }
+    }
+
+    /// <summary>
+    /// Writes <paramref name="input"/> to the child's stdin pipe and then closes it, off the calling thread
+    /// so the run's output readers and deadline are never held behind a full pipe. It writes the raw pipe
+    /// stream, never the text writer around it, and in bounded chunks so a stopped run ends the write at
+    /// the next chunk. A child that exits, closes fd 0 or is killed before taking everything breaks the
+    /// pipe; that is the child's own outcome, reported by its exit status, so the failure is swallowed and
+    /// the task always completes successfully.
+    /// </summary>
+    private static Task WriteChildStandardInputAsync(
+        Process process,
+        ReadOnlyMemory<byte> input,
+        CancellationToken stop,
+        ILogger? logger)
+    {
+        Stream pipe;
+
+        try
+        {
+            pipe = process.StandardInput.BaseStream;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogDebug(ex, "The child process stdin pipe was unavailable after start.");
+
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(
+            async () =>
+            {
+                try
+                {
+                    for (int offset = 0;
+                         offset < input.Length && !stop.IsCancellationRequested;
+                         offset += StandardInputChunkBytes)
+                    {
+                        int count = Math.Min(StandardInputChunkBytes, input.Length - offset);
+
+                        await pipe.WriteAsync(input.Slice(offset, count), CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+
+                    await pipe.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogDebug(ex, "The child stopped taking its stdin before the input was complete.");
+                }
+                finally
+                {
+                    try
+                    {
+                        await pipe.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogDebug(ex, "Closing the child process stdin pipe raced the child's exit.");
+                    }
+                }
+            },
+            CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Ends the stdin writer at teardown. By then the child and its process group are gone, so a write
+    /// still pending fails at once on the broken pipe. Only a descendant that escaped every containment
+    /// sweep and keeps fd 0 open without reading can hold it, and the run's result must never wait on
+    /// that: the writer is given <see cref="StandardInputWriterStopGrace"/> and then abandoned, still
+    /// blocked in the one write the escaped reader holds, until that reader goes away.
+    /// </summary>
+    private static async Task StopChildStandardInputWriterAsync(
+        Task writer,
+        CancellationTokenSource stop,
+        ILogger? logger)
+    {
+        stop.Cancel();
+
+        try
+        {
+            await writer.WaitAsync(StandardInputWriterStopGrace).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            logger?.LogWarning(
+                "The child's stdin was still held open, unread, by a process outside the run after it ended; the input writer was abandoned.");
+
+            // The abandoned writer still reads its stop token, so the source stays undisposed.
+            return;
+        }
+
+        stop.Dispose();
     }
 
     private static async Task CleanupSandboxTempPathsAsync(

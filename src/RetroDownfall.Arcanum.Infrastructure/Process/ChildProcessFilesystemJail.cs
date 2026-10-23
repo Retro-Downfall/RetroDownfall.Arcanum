@@ -492,7 +492,8 @@ internal static class ChildProcessFilesystemJail
                 readWriteRoots,
                 readExecuteRoots,
                 invocationTempDir,
-                readOnlyRoots);
+                readOnlyRoots,
+                request.DenyNetwork);
 
             profileArtifact = WriteOwnerOnlyTempFile(
                 "arcanum-sb-",

@@ -18,7 +18,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// <item>System runtime — read + execute, no write</item>
 /// <item>Per-invocation owner-only TMPDIR — read + write (no broad /tmp)</item>
 /// </list>
-/// Network is explicitly allowed — filesystem-only MVP; not network isolation.
+/// Network is explicitly allowed — filesystem-only MVP; not network isolation — unless the request asks
+/// for <see cref="ChildProcessSandboxRequest.DenyNetwork"/>, which removes network and socket access.
 /// </para>
 /// </remarks>
 internal static class MacOsSandboxExecProfileBuilder
@@ -26,11 +27,17 @@ internal static class MacOsSandboxExecProfileBuilder
     /// <summary>
     /// Builds a deny-default Seatbelt profile. Throws if any root is unsafe (control chars, whole-volume).
     /// </summary>
+    /// <param name="denyNetwork">
+    /// When true, the profile grants neither <c>network*</c> nor <c>system-socket</c> (no socket of any
+    /// domain can be created) and ends with explicit denials of both. Off for every model-directed tool,
+    /// whose jail stays filesystem-only.
+    /// </param>
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
         string invocationTempDir,
-        IReadOnlyList<string>? readOnlyRoots = null)
+        IReadOnlyList<string>? readOnlyRoots = null,
+        bool denyNetwork = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
@@ -58,9 +65,19 @@ internal static class MacOsSandboxExecProfileBuilder
         sb.AppendLine("(allow signal (target self))");
         sb.AppendLine("(allow signal (target same-sandbox))");
         sb.AppendLine("(allow sysctl*)");
-        sb.AppendLine("(allow system-socket)");
+
+        if (!denyNetwork)
+        {
+            sb.AppendLine("(allow system-socket)");
+        }
+
         sb.AppendLine("(allow system-fsctl)");
-        sb.AppendLine("(allow network*)");
+
+        if (!denyNetwork)
+        {
+            sb.AppendLine("(allow network*)");
+        }
+
         sb.AppendLine("(allow iokit*)");
         sb.AppendLine("(allow user-preference*)");
         sb.AppendLine("(allow file-map-executable)");
@@ -122,6 +139,14 @@ internal static class MacOsSandboxExecProfileBuilder
             MergeUnique(
                 readWriteRoots,
                 [invocationTempDir]));
+
+        if (denyNetwork)
+        {
+            // Deny-by-default already refuses both; stating them last means no allow form can follow.
+            sb.AppendLine("(deny network*)");
+
+            sb.AppendLine("(deny system-socket)");
+        }
 
         string profile = sb.ToString();
 

@@ -133,6 +133,124 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_keeps_network_and_sockets_unless_denial_is_requested()
+    {
+        // Every model-directed tool child keeps today's posture: the jail is filesystem-only.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            ["/Users/arcanum-test/workspace"],
+            ["/usr", "/bin", "/System"],
+            "/private/tmp/arcanum-sb-test-invocation");
+
+        Assert.Contains("(allow network*)", profile, StringComparison.Ordinal);
+
+        Assert.Contains("(allow system-socket)", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(deny network*)", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(deny system-socket)", profile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Profile_with_network_denial_grants_no_network_or_socket_and_denies_both_last()
+    {
+        // A document worker parses hostile bytes and must have no way to reach anything: no network
+        // operation and no socket of any domain. Deny-by-default already refuses both; the explicit
+        // denials close the profile so no allow form can follow them.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true);
+
+        Assert.DoesNotContain("(allow network", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(allow system-socket", profile, StringComparison.Ordinal);
+
+        Assert.EndsWith(
+            "(deny network*)\n(deny system-socket)\n",
+            profile.ReplaceLineEndings("\n"),
+            StringComparison.Ordinal);
+
+        Assert.False(
+            MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile),
+            profile);
+    }
+
+    [Fact]
+    public async Task Network_denial_refuses_a_run_whose_jail_was_not_applied()
+    {
+        // Only an applied jail can take the network away (Seatbelt on macOS, a capability-free AppContainer
+        // on Windows). The operator escape hatch runs the child with no jail at all, so a request that needs
+        // the network gone must refuse it rather than start a child that still has it.
+        string missing = Path.Combine(_workspace, "missing-" + Guid.NewGuid().ToString("N"));
+
+        string ranMarker = Path.Combine(_outsideDir, "ran.txt");
+
+        CappedChildProcessRunResult denied = await RunWithEscapedJailAsync(ranMarker, missing, denyNetwork: true);
+
+        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, denied.Outcome);
+
+        Assert.Equal(
+            ChildProcessSandboxMessages.NetworkDenialRequiresAppliedSandbox,
+            denied.FilesystemSandboxDenialMessage);
+
+        Assert.False(File.Exists(ranMarker), "The child ran although its network could not be denied.");
+
+        CappedChildProcessRunResult escaped = await RunWithEscapedJailAsync(ranMarker, missing, denyNetwork: false);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, escaped.Outcome);
+
+        Assert.True(File.Exists(ranMarker), "The escaped control run did not start its child.");
+    }
+
+    private static async Task<CappedChildProcessRunResult> RunWithEscapedJailAsync(
+        string ranMarker,
+        string missingRoot,
+        bool denyNetwork)
+    {
+        ProcessStartInfo psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                ArgumentList = { "/c", "type nul > " + ranMarker },
+            }
+            : new ProcessStartInfo
+            {
+                FileName = "/bin/sh",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList = { "-c", ": > \"$1\"", "sh", ranMarker },
+            };
+
+        // Roots that do not exist leave the jail nothing to grant, so it is never applied and the escape
+        // hatch takes over on every platform.
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = [missingRoot],
+            ReadExecuteRoots = [missingRoot],
+            AllowUnsandboxed = true,
+            DenyNetwork = denyNetwork,
+            ToolName = "network-denial-probe",
+        };
+
+        return await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            64 * 1024,
+            TimeSpan.FromSeconds(60),
+            resourceLimits: null,
+            resourceLimiter: null,
+            CancellationToken.None,
+            request,
+            NullLogger.Instance);
+    }
+
+    [Fact]
     public void Root_normalization_drops_every_root_that_is_neither_a_directory_nor_a_file()
     {
         // Every jail — the Seatbelt profile and the Windows broker payload — is built from this list.

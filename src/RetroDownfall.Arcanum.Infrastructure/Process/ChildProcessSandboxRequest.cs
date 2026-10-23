@@ -4,7 +4,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// Roots and policy for the MVP OS filesystem jail applied to tool children.
 /// </summary>
 /// <remarks>
-/// This jail is filesystem-only. It does not prevent network use by network-capable binaries.
+/// This jail is filesystem-only unless <see cref="DenyNetwork"/> is set; without it, it does not prevent
+/// network use by network-capable binaries.
 /// On Windows without Sanctum path-boundary, status is <c>NoFilesystemJail</c> (Job Objects only).
 /// </remarks>
 internal sealed class ChildProcessSandboxRequest
@@ -35,6 +36,14 @@ internal sealed class ChildProcessSandboxRequest
     /// Windows no-jail posture, or other non-applied status satisfies this requirement.
     /// </summary>
     internal bool RequireAppliedFilesystemJail { get; init; }
+
+    /// <summary>
+    /// When true, the child runs with no network: the macOS profile grants no network operation and no
+    /// socket, and the Windows AppContainer grants no capability (as it never does). Only an applied jail
+    /// can deliver that, so the runner refuses the child whenever the jail is not applied, whatever
+    /// <see cref="AllowUnsandboxed"/> says. Off by default and in every model-directed tool builder.
+    /// </summary>
+    internal bool DenyNetwork { get; init; }
 
     /// <summary>Tool name for escape-hatch / denial diagnostics (no secrets).</summary>
     internal string? ToolName { get; init; }

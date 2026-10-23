@@ -71,4 +71,49 @@ public sealed class ChildProcessSandboxRootsTests : IDisposable
                 Path.GetFileName(_workspace),
                 StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Model_directed_tool_requests_keep_the_network()
+    {
+        // Network denial is opt-in for Arcanum-authored workers. Turning it on for a model-directed tool
+        // would break every command that legitimately fetches (git, package restore), so each existing
+        // builder must leave it off.
+        string package = Directory.CreateDirectory(Path.Combine(_workspace, "packages")).FullName;
+
+        string writable = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "arcanum-roots-rw-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        try
+        {
+            ChildProcessSandboxRequest command = ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: true);
+
+            ChildProcessSandboxRequest spell = ChildProcessSandboxRoots.ForSpellScript(
+                [_workspace],
+                _workspace,
+                null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: true);
+
+            ChildProcessSandboxRequest check = ChildProcessSandboxRoots.ForWorkspaceCheck(
+                _workspace,
+                [package],
+                [writable]);
+
+            Assert.False(command.DenyNetwork);
+
+            Assert.False(spell.DenyNetwork);
+
+            Assert.False(check.DenyNetwork);
+
+            Assert.False(new ChildProcessSandboxRequest { ReadWriteRoots = [], ReadExecuteRoots = [] }.DenyNetwork);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
+        }
+    }
 }
