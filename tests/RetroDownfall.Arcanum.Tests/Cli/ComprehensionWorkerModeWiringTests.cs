@@ -52,6 +52,21 @@ public sealed class ComprehensionWorkerModeWiringTests
     }
 
     [Fact]
+    public void The_host_captures_its_launch_by_asking_the_runtime_whether_it_is_native_aot()
+    {
+        // The capture at host start must go through the form that reads the runtime's own answer. Telling it the host is
+        // Native AOT would let a managed apphost start a worker that cannot find its runtime and fails without a word,
+        // instead of the host reporting up front that PDF extraction is unavailable.
+        string source = File.ReadAllText(Path.Combine(
+            TestRepositoryPaths.RepositoryRoot(),
+            "src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/ComprehensionWorkerEntry.cs"));
+
+        Assert.Contains("DocumentWorkerLaunch.ForHostExecutable(Environment.ProcessPath)", source, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("nativeAot", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void This_test_host_is_not_a_worker_capable_host()
     {
         // Re-executing the test platform with the worker arguments would start the test platform, so nothing here may

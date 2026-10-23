@@ -23,19 +23,42 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     [InlineData("   ")]
     public void ForHostExecutable_WithoutAProcessPath_IsNoLaunch(string? processPath)
     {
-        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(processPath));
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(processPath, nativeAot: true));
+    }
+
+    [Fact]
+    public void ForHostExecutable_AManagedHost_IsNoLaunchEvenForARealExecutable()
+    {
+        // Only the Native AOT binary is the shipping worker. A managed apphost (a dev host, a non-AOT publish) re-launched
+        // with a cleared environment cannot find its runtime and would fail generically, so it is refused up front and the
+        // host reports that PDF extraction is unavailable instead of starting a worker that cannot work.
+        string executable = CreateExecutable("arcanum");
+
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: false));
+
+        Assert.NotNull(DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true));
+    }
+
+    [Fact]
+    public void ForHostExecutable_WithoutSayingWhetherTheHostIsNativeAot_AsksTheRuntime()
+    {
+        // This test host runs managed code with dynamic code generation, so by the runtime's own answer it is not a
+        // Native AOT binary: the one-argument form the host start uses must refuse it.
+        Assert.True(System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported);
+
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(CreateExecutable("arcanum")));
     }
 
     [Fact]
     public void ForHostExecutable_MissingExecutable_IsNoLaunch()
     {
-        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(Path.Combine(_directory, "arcanum")));
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(Path.Combine(_directory, "arcanum"), nativeAot: true));
     }
 
     [Fact]
     public void ForHostExecutable_ADirectory_IsNoLaunch()
     {
-        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(_directory));
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(_directory, nativeAot: true));
     }
 
     [Theory]
@@ -46,7 +69,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     {
         // A host started as `dotnet host.dll` reports the muxer as its process path, and the muxer would read the worker
         // arguments as an SDK command. It is not this host's executable, so it is never launched as its worker.
-        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(CreateExecutable(fileName)));
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(CreateExecutable(fileName), nativeAot: true));
     }
 
     [SkippableFact]
@@ -58,7 +81,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
 
         File.CreateSymbolicLink(link, CreateExecutable("host-real"));
 
-        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(link));
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(link, nativeAot: true));
     }
 
     [SkippableFact]
@@ -70,7 +93,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
 
         File.CreateSymbolicLink(link, CreateExecutable("dotnet"));
 
-        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(link));
+        Assert.Null(DocumentWorkerLaunch.ForHostExecutable(link, nativeAot: true));
     }
 
     [Fact]
@@ -78,7 +101,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     {
         string executable = CreateExecutable("arcanum");
 
-        DocumentWorkerLaunch launch = Assert.IsType<DocumentWorkerLaunch>(DocumentWorkerLaunch.ForHostExecutable(executable));
+        DocumentWorkerLaunch launch = Assert.IsType<DocumentWorkerLaunch>(DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true));
 
         Assert.Equal(Path.GetFullPath(executable), launch.Executable);
 
@@ -104,7 +127,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
 
         File.CreateSymbolicLink(link, target);
 
-        DocumentWorkerLaunch launch = Assert.IsType<DocumentWorkerLaunch>(DocumentWorkerLaunch.ForHostExecutable(link));
+        DocumentWorkerLaunch launch = Assert.IsType<DocumentWorkerLaunch>(DocumentWorkerLaunch.ForHostExecutable(link, nativeAot: true));
 
         // The identity that is checked is the identity of the file that is started.
         Assert.Equal(Path.GetFullPath(target), launch.Executable);
@@ -144,7 +167,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     {
         string executable = CreateExecutable("arcanum");
 
-        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable)!;
+        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true)!;
 
         // An update writes the new binary beside the old one and renames it over: the same path, a different file. The
         // replacement here even has the same size and time, so only the file identity tells them apart.
@@ -162,7 +185,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     {
         string executable = CreateExecutable("arcanum");
 
-        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable)!;
+        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true)!;
 
         DateTime written = File.GetLastWriteTimeUtc(executable);
 
@@ -178,7 +201,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     {
         string executable = CreateExecutable("arcanum");
 
-        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable)!;
+        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true)!;
 
         DateTime written = File.GetLastWriteTimeUtc(executable);
 
@@ -194,7 +217,7 @@ public sealed class DocumentWorkerLaunchTests : IDisposable
     {
         string executable = CreateExecutable("arcanum");
 
-        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable)!;
+        DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForHostExecutable(executable, nativeAot: true)!;
 
         File.Delete(executable);
 

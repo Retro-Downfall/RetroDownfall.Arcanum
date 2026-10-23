@@ -13,12 +13,13 @@ namespace RetroDownfall.Arcanum.Infrastructure.Familiars;
 /// <remarks>
 /// Deliberately not <c>CappedChildProcessRunner</c>. That runner exists for code the <em>model</em>
 /// chose to run, so it wraps every spawn in a filesystem jail, OS resource limits, and a
-/// process-group supervisor that rewrites the process image — and it has no stdin and no
-/// incremental output. A Familiar is the opposite case: an operator-configured binary running an
-/// Arcanum-authored argument list, which needs to reach the network and read its own auth store to
-/// work at all, and which streams NDJSON that must be projected as it arrives. What the two share
-/// is the security discipline, and that is reused directly: the same environment scrubber and the
-/// same kill-tree teardown.
+/// process-group supervisor that rewrites the process image — and its stdin is only a fixed byte
+/// payload a caller hands it up front (the isolated document worker's input), written once and then
+/// closed, with no interactive input, and it has no incremental output. A Familiar is the opposite
+/// case: an operator-configured binary running an Arcanum-authored argument list, which needs to
+/// reach the network and read its own auth store to work at all, and which streams NDJSON that must
+/// be projected as it arrives. What the two share is the security discipline, and that is reused
+/// directly: the same environment scrubber and the same kill-tree teardown.
 /// </remarks>
 public sealed class FamiliarProcessRunner(ILogger<FamiliarProcessRunner>? logger = null) : IFamiliarProcessRunner
 {

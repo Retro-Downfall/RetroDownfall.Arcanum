@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 
 using RetroDownfall.Arcanum.Infrastructure.Security;
@@ -60,13 +62,22 @@ internal sealed class DocumentWorkerLaunch
     internal int? MaxFileDescriptors { get; }
 
     /// <summary>
-    /// The launch of the host's own binary, with an environment cleared entirely. There is none without a process path,
-    /// for a file that cannot be identified, or for the <c>dotnet</c> muxer of a host started as <c>dotnet host.dll</c>,
-    /// which would read the worker arguments as an SDK command.
+    /// The launch of the host's own binary, with an environment cleared entirely, when this host is a Native AOT binary
+    /// (the runtime reports no dynamic code). There is none for any managed host, a dev host or a non-AOT publish: its
+    /// runtime lives outside the binary, which a cleared environment and a jail cannot reach, so a worker started from it
+    /// would fail without a word and the host says up front that PDF extraction is unavailable. There is also none
+    /// without a process path, for a file that cannot be identified, or for the <c>dotnet</c> muxer of a host started as
+    /// <c>dotnet host.dll</c>, which would read the worker arguments as an SDK command.
     /// </summary>
-    internal static DocumentWorkerLaunch? ForHostExecutable(string? processPath)
+    internal static DocumentWorkerLaunch? ForHostExecutable(string? processPath) =>
+        ForHostExecutable(processPath, nativeAot: !RuntimeFeature.IsDynamicCodeSupported);
+
+    /// <inheritdoc cref="ForHostExecutable(string?)"/>
+    /// <param name="processPath">The host's process path.</param>
+    /// <param name="nativeAot">Whether the host is a Native AOT binary; a managed host has no launch.</param>
+    internal static DocumentWorkerLaunch? ForHostExecutable(string? processPath, bool nativeAot)
     {
-        if (string.IsNullOrWhiteSpace(processPath) || IsDotNetMuxer(processPath))
+        if (!nativeAot || string.IsNullOrWhiteSpace(processPath) || IsDotNetMuxer(processPath))
         {
             return null;
         }

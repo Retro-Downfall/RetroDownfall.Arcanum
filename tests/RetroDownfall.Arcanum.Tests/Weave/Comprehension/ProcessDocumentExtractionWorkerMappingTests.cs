@@ -208,7 +208,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         using TemporaryExecutable executable = new();
 
-        ProcessStartInfo startInfo = ProcessDocumentExtractionWorker.CreateStartInfo(DocumentWorkerLaunch.ForHostExecutable(executable.Path)!);
+        ProcessStartInfo startInfo = ProcessDocumentExtractionWorker.CreateStartInfo(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!);
 
         Assert.Empty(startInfo.Environment);
     }
@@ -218,7 +218,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         using TemporaryExecutable executable = new();
 
-        ChildProcessSandboxRequest sandbox = ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForHostExecutable(executable.Path)!);
+        ChildProcessSandboxRequest sandbox = ProcessDocumentExtractionWorker.CreateSandbox(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!);
 
         Assert.True(sandbox.RequireAppliedFilesystemJail);
 
@@ -276,7 +276,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         using TemporaryExecutable executable = new();
 
-        Assert.Same(ProcessDocumentExtractionWorker.Limits, ProcessDocumentExtractionWorker.LimitsFor(DocumentWorkerLaunch.ForHostExecutable(executable.Path)!));
+        Assert.Same(ProcessDocumentExtractionWorker.Limits, ProcessDocumentExtractionWorker.LimitsFor(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!));
 
         Assert.Equal(
             ProcessDocumentExtractionWorker.Limits with { MaxFileDescriptors = 256 },

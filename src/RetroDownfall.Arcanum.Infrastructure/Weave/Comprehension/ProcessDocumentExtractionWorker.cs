@@ -34,7 +34,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
     /// <summary>The worker crossed its memory or CPU ceiling, or the memory monitor that enforces it stopped.</summary>
     internal const string ResourceLimitsReason = "PDF extraction exceeded its resource limits.";
 
-    /// <summary>This host cannot run the worker: no re-launchable binary, no applied jail, no limits, or a replaced binary.</summary>
+    /// <summary>This host cannot run the worker: not a Native AOT binary (a dev host or a managed publish), no re-launchable binary, no applied jail, no limits, or a replaced binary.</summary>
     internal const string UnavailableReason = "PDF extraction is unavailable on this host.";
 
     /// <summary>
