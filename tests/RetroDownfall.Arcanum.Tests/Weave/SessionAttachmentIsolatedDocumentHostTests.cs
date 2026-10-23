@@ -270,7 +270,7 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         });
 
         Task<SessionAttachmentExtractionResult> extraction = host.ExtractIsolatedAsync(
-            ReadSnapshot, Snapshot.Length, 1024, CancellationToken.None, waitForSlot: false, revocation.Token);
+            ReadSnapshot, Snapshot.Length, 1024, CancellationToken.None, waitForSlot: false, revocation.Token, static () => false);
 
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -316,13 +316,58 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
             1024,
             CancellationToken.None,
             waitForSlot: false,
-            revocation.Token);
+            revocation.Token,
+            static () => false);
 
         Assert.Equal(SessionAttachmentExtractionStatus.Deferred, result.Status);
 
         Assert.Equal(0, reads);
 
         Assert.Equal(0, runs);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_MaintenancePendingByTheEndOfTheRead_IsDeferredWithoutRunning()
+    {
+        // Maintenance that arrives while an effect group is open leaves the revocation token uncancelled until the group
+        // closes, so the host asks the caller's pending obligation as well, immediately before it would start the worker.
+        bool pending = false;
+
+        int runs = 0;
+
+        SessionAttachmentIsolatedDocumentHost host = Host((_, _, _) =>
+        {
+            runs++;
+
+            return Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["UNUSED"], false)));
+        });
+
+        SessionAttachmentExtractionResult result = await host.ExtractIsolatedAsync(
+            _ =>
+            {
+                pending = true;
+
+                return Task.FromResult<ReadOnlyMemory<byte>>(Snapshot);
+            },
+            Snapshot.Length,
+            1024,
+            CancellationToken.None,
+            waitForSlot: false,
+            CancellationToken.None,
+            () => pending);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Deferred, result.Status);
+
+        Assert.Equal(SessionAttachmentDocumentHost.BusyReason, result.FailureReason);
+
+        Assert.Empty(result.Text);
+
+        Assert.Equal(0, runs);
+
+        // The slot came back: the same host runs the next document once nothing is pending.
+        pending = false;
+
+        Assert.Equal("[PDF page 1]\nUNUSED\n", (await ExtractAsync(host, waitForSlot: false)).Text);
     }
 
     [Fact]

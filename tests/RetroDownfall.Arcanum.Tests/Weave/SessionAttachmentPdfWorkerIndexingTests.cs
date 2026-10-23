@@ -521,6 +521,67 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
         Assert.Null(state.ExtractedAt);
     }
 
+    [SkippableFact]
+    public async Task ProcessAsync_MaintenanceBegunDuringTheSnapshotRead_StartsNoWorkerAndTheDrainSucceeds()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        // The effect group is already open when maintenance arrives, so the gate does not refuse it and does not cancel
+        // the lease's revocation either: it only marks the lease pending and cancels when the group closes. Maintenance
+        // begun inside the snapshot read is therefore invisible to the revocation token, and only the host's check of the
+        // pending obligation just before the launch keeps a worker whose result would be thrown away from starting.
+        SessionAttachmentRecord attachment = await PersistAsync(Guid.NewGuid(), "multi-page.pdf");
+
+        using IDisposable worker = InProcessPdfWorker.Use(out InProcessPdfWorker spawned);
+
+        GrimoireConnectionAdmissionGate gate = new(TimeProvider.System);
+
+        Assert.True(gate.TryAcquireWorkLease(GrimoireWorkKind.SessionAttachmentIndexing, out IGrimoireWorkLease? lease));
+
+        Result<IGrimoireClosingOwner>? closing = null;
+
+        Task<Result>? drain = null;
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+        store.BeforeRead = () =>
+        {
+            closing = gate.BeginOrResumeExclusive(Owner());
+
+            Assert.True(closing.IsSuccess);
+
+            drain = gate.DrainRequestAndWorkAsync(closing.Value, CancellationToken.None).AsTask();
+        };
+
+        SessionAttachmentIndexOutcome outcome = await new SessionAttachmentIndexProcessor(
+                new TestOptionsMonitor<ArcanumSettings>(_settings),
+                new MarkerWeaveService("unused"),
+                store.Proxy,
+                _index!,
+                NullLogger<SessionAttachmentIndexProcessor>.Instance)
+            .ProcessAsync(new SessionAttachmentIndexRequest(attachment.Id, attachment.SessionId!.Value, Attempt: 3), lease!, CancellationToken.None);
+
+        Assert.Same(SessionAttachmentIndexOutcome.DeferredForMaintenance, outcome);
+
+        Assert.Equal(0, spawned.Runs);
+
+        Assert.Contains(nameof(ISessionAttachmentStore.ReadBytesAsync), store.Calls);
+
+        await lease!.DisposeAsync();
+
+        Assert.True((await drain!.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
+
+        SessionAttachmentIndexState state = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Pending, state.Status);
+
+        Assert.Equal(3, state.AttemptCount);
+
+        Assert.Null(state.ExtractedAt);
+
+        Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private Task<SessionAttachmentRecord> PersistAsync(Guid sessionId, string fixture) =>
@@ -623,6 +684,9 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         public IReadOnlyCollection<string> Calls => _calls;
 
+        /// <summary>Runs inside the store's snapshot read, before the real read starts.</summary>
+        public Action? BeforeRead { get; set; }
+
         public static RecordingStore Wrap(ISessionAttachmentStore target)
         {
             ISessionAttachmentStore proxy = Create<ISessionAttachmentStore, RecordingStore>();
@@ -639,6 +703,11 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
             ArgumentNullException.ThrowIfNull(targetMethod);
 
             _calls.Enqueue(targetMethod.Name);
+
+            if (targetMethod.Name == nameof(ISessionAttachmentStore.ReadBytesAsync))
+            {
+                BeforeRead?.Invoke();
+            }
 
             try
             {

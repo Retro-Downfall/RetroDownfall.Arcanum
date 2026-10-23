@@ -185,8 +185,10 @@ internal sealed class SessionAttachmentIndexProcessor(
                     // that already owns admission refuses it before anything is read, and nothing is spent. The worker is
                     // linked to the lease's revocation, so a lease that revokes an open group kills it and the document is
                     // deferred. The gate itself waits through an open group and signals revocation only once it closes,
-                    // so maintenance that arrived while the worker ran is seen here, and the document stands down unspent
-                    // instead of writing an index generation maintenance is waiting to take the Grimoire from.
+                    // so the host also asks the lease's pending obligation just before it would start the worker: once
+                    // maintenance arrived during the snapshot read, no worker starts. Maintenance that arrived while the
+                    // worker ran is seen here, and the document stands down unspent instead of writing an index
+                    // generation maintenance is waiting to take the Grimoire from.
                     if (!workLease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? extractionGroup))
                     {
                         return SessionAttachmentIndexOutcome.DeferredForMaintenance;
@@ -202,7 +204,8 @@ internal sealed class SessionAttachmentIndexProcessor(
                             cancellationToken,
                             isolatedHost,
                             waitForSlot: false,
-                            workLease.MaintenanceRevocation).ConfigureAwait(false);
+                            workLease.MaintenanceRevocation,
+                            () => workLease.MaintenanceRevocationPending).ConfigureAwait(false);
                     }
 
                     if (workLease.MaintenanceRevocation.IsCancellationRequested)

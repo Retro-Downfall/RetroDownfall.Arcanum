@@ -131,7 +131,8 @@ internal static class SessionAttachmentTextExtractor
 
     /// <summary>
     /// <see cref="ExtractDocumentAsync"/> through an isolated host named by its own type, so this call reaches the worker
-    /// alone. The indexer uses it inside an effect group, with the work lease's <paramref name="revocation"/>.
+    /// alone. The indexer uses it inside an effect group, with the work lease's <paramref name="revocation"/> and its
+    /// pending maintenance obligation as <paramref name="maintenancePending"/>.
     /// </summary>
     internal static async Task<SessionAttachmentExtractionResult> ExtractIsolatedDocumentAsync(
         ISessionAttachmentStore store,
@@ -141,7 +142,8 @@ internal static class SessionAttachmentTextExtractor
         CancellationToken cancellationToken,
         SessionAttachmentIsolatedDocumentHost host,
         bool waitForSlot,
-        CancellationToken revocation)
+        CancellationToken revocation,
+        Func<bool> maintenancePending)
     {
         ArgumentNullException.ThrowIfNull(host);
 
@@ -164,7 +166,8 @@ internal static class SessionAttachmentTextExtractor
                 maxBytes,
                 cancellationToken,
                 waitForSlot,
-                revocation).ConfigureAwait(false);
+                revocation,
+                maintenancePending).ConfigureAwait(false);
     }
 
     /// <summary>The refusal of an eligible document before any byte is read, or <see langword="null"/> when it may be read.</summary>

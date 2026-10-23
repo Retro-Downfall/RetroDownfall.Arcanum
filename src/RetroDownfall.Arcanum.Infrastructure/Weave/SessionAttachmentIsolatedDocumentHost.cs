@@ -20,8 +20,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// as <c>Page 1</c> drawn first on PDF page 3 reads as page text under the <c>[PDF page 3]</c> heading, never as the page's
 /// provenance. A page without text emits nothing and its number is never reused, so the numbers that remain are the
 /// document's own. Cancelling <c>revocation</c> (maintenance taking the Grimoire back from the
-/// indexer) kills the worker and defers the document, which nothing treats as terminal; cancelling the caller's token
-/// kills it and propagates.
+/// indexer) kills the worker and defers the document, which nothing treats as terminal; a maintenance obligation already
+/// pending when the worker would start defers it without starting anything; cancelling the caller's token kills it and
+/// propagates.
 /// </remarks>
 internal sealed class SessionAttachmentIsolatedDocumentHost(
     IDocumentExtractionWorker worker,
@@ -67,21 +68,29 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
         long maximumBytes,
         CancellationToken cancellationToken,
         bool waitForSlot = true) =>
-        ExtractIsolatedAsync(readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot, CancellationToken.None);
+        ExtractIsolatedAsync(readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot, CancellationToken.None, static () => false);
 
     /// <summary>
     /// <see cref="ExtractAsync"/> with a <paramref name="revocation"/> that, once cancelled, kills the worker and defers the
     /// document instead of failing it. A member of this class alone, so a caller that holds this host by its own type
     /// reaches the isolated parse and nothing else.
     /// </summary>
+    /// <param name="maintenancePending">
+    /// Whether the caller's admission already owes maintenance, asked immediately before the worker would start. The gate
+    /// cancels <paramref name="revocation"/> only once the caller's effect group closes, so maintenance that arrives during
+    /// the snapshot read is seen here and nowhere else; the document is then deferred and no worker starts.
+    /// </param>
     internal async Task<SessionAttachmentExtractionResult> ExtractIsolatedAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
         CancellationToken cancellationToken,
         bool waitForSlot,
-        CancellationToken revocation)
+        CancellationToken revocation,
+        Func<bool> maintenancePending)
     {
+        ArgumentNullException.ThrowIfNull(maintenancePending);
+
         cancellationToken.ThrowIfCancellationRequested();
 
         // The slot belongs to the document holding it, so a refusal here is contention, never this document's outcome.
@@ -122,7 +131,9 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
                 return Failed(SnapshotMismatchReason);
             }
 
-            if (revocation.IsCancellationRequested)
+            // The last moment before a process exists. A worker started now would run while maintenance waits, only for its
+            // verdict to be discarded when the document stands down.
+            if (revocation.IsCancellationRequested || maintenancePending())
             {
                 return Deferred();
             }
