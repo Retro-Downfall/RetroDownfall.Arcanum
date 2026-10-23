@@ -93,6 +93,7 @@ Expected outcomes are for the production extractor with its default limits unles
 | `encrypted-rc4-empty.pdf`, `encrypted-aes-empty.pdf` | empty | `owner` | `Extracted` (permission-only restrictions) |
 | `encrypted-rc4-password.pdf`, `encrypted-aes-password.pdf` | `secret` | `owner` | `PasswordRequired` |
 | `encrypted-rc4-owner-empty.pdf`, `encrypted-aes-owner-empty.pdf` | `secret` | empty | `Extracted` (known limitation, below) |
+| `encrypted-pubsec.pdf` | none: public-key (certificate) security, `/Filter /Adobe.PubSec`, which PdfPig has no handler for | none | `PasswordRequired`, not `Malformed`: the file is well formed and protected |
 
 **Known limitation.** The extractor never supplies a password, but PdfPig tries the empty string as the *owner* password
 as well as the user password, and an owner session decrypts the whole file. A file that needs a real user password but
@@ -125,6 +126,7 @@ cheap and safe in-process on the pinned version.
 | File | Structure | Outcome |
 | --- | --- | --- |
 | `cyclic-ref-chain.pdf` | `/Contents` is an object that refers to another that refers back | `Malformed` (nesting depth) |
+| `page-failure-mentions-encrypt.pdf` | the `/Contents` chain of `cyclic-ref-chain.pdf`, plus an unreferenced note whose text mentions the `/Encrypt` name | `Malformed` (nesting depth), not `PasswordRequired`: only a failure to open can be an unsupported security handler |
 | `deep-array-content.pdf` | 200,000 nested arrays in the content stream (400 KB) | `Malformed` (nesting depth) |
 | `cyclic-xobject.pdf`, `cyclic-xobject-ab.pdf` | a form that invokes itself, two forms that invoke each other | `Malformed`; lenient parsing would extract them, which is what the strict-parsing test pins |
 | `cyclic-length.pdf` | a stream whose `/Length` is an object that refers to itself | `Extracted` (`LENGTH-CYCLE`) |

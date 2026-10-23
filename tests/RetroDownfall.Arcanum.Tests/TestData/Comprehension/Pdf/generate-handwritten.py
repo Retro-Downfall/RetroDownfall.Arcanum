@@ -258,6 +258,29 @@ for name, maker, upw, opw in [
     _, encrypt, enc_dict = maker(upw, opw)
     write(name, simple_doc(enc_content, enc=encrypt, extra_objs={6: enc_dict}, trailer_extra=trailer_id + b" /Encrypt 6 0 R"))
 
+# A file that is not encrypted, opens, and has a page the parser refuses (the /Contents chain of cyclic-ref-chain.pdf), with an
+# unreferenced note whose text mentions the /Encrypt name. Only a failure to open can be an unsupported security handler.
+write(
+    "page-failure-mentions-encrypt.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"6 0 R"),
+        5: FONT,
+        6: b"7 0 R",
+        7: b"6 0 R",
+        8: b"<< /Note (the /Encrypt dictionary is described here) >>",
+    }),
+)
+
+# Public-key (certificate) security is a handler PdfPig does not implement: the trailer names an /Encrypt dictionary with no
+# /O or /U, which the parser reads as a Standard handler and fails on. The file is well formed, so it must not read as damaged.
+pubsec_dict = (
+    b"<< /Filter /Adobe.PubSec /SubFilter /adbe.pkcs7.s5 /V 4 /R 4 /Length 128 /Recipients [<3082>] "
+    b"/CF << /DefaultCryptFilter << /CFM /AESV2 /Length 16 /Recipients [<3082>] >> >> /StmF /DefaultCryptFilter /StrF /DefaultCryptFilter >>"
+)
+write("encrypted-pubsec.pdf", simple_doc(enc_content, extra_objs={6: pubsec_dict}, trailer_extra=trailer_id + b" /Encrypt 6 0 R"))
+
 # ---- cyclic structures
 # Pages tree whose Kids contains its own parent (2 -> 3 -> 2).
 objs = {

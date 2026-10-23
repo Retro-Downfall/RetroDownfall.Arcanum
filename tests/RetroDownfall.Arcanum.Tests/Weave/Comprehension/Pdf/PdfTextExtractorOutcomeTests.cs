@@ -1,3 +1,5 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -68,6 +70,33 @@ public sealed class PdfTextExtractorOutcomeTests
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal([EncryptedCodeword], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_CertificateEncryptedDocument_IsPasswordRequiredNotMalformed()
+    {
+        // Public-key security has no password to ask for, and PdfPig has no handler for it: it reads the dictionary as a
+        // Standard one and fails with an unrelated exception. The file is well formed and protected, so calling it damaged
+        // names the wrong condition.
+        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, Extract("encrypted-pubsec.pdf"));
+    }
+
+    [Fact]
+    public void Extract_FileThatOpensButWhosePageIsRefused_IsMalformedEvenWhenItsTextMentionsEncrypt()
+    {
+        // Sensitivity: the check runs only when opening fails. This file opens, so a name in its text proves nothing.
+        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("page-failure-mentions-encrypt.pdf"));
+    }
+
+    [Fact]
+    public void Extract_UnreadableBytesThatNameEncryptMetadataOnly_AreMalformed()
+    {
+        // Sensitivity: the end of the name. /EncryptMetadata is another key, not the trailer's /Encrypt.
+        byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n1 0 obj\n<< /EncryptMetadata false >>\nendobj\n");
+
+        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
+
+        AssertCarriesNoText(PdfExtractionKind.Malformed, outcome);
     }
 
     // ---------------------------------------------------------------- bytes that are not a readable PDF
