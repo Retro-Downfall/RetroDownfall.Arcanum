@@ -233,12 +233,30 @@ public sealed class PdfTextExtractorOutcomeTests
     }
 
     [Theory]
+    [InlineData("contents-free-entry.pdf")]
+    [InlineData("contents-null-object.pdf")]
+    public void Extract_PageWhoseContentsIsAFreeEntryOrTheNullObject_IsBlankAndTheOtherPagesAreExtracted(string fileName)
+    {
+        // The controls for the damaged-object tests below: an object the cross-reference table lists as free is not defined,
+        // and an object written as `null` is the null object itself.
+        PdfExtractionOutcome outcome = Extract(fileName);
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["GOOD-PAGE-ONE", string.Empty], outcome.Pages);
+    }
+
+    [Theory]
     [InlineData("contents-undefined-beside-refused-page.pdf")]
     [InlineData("contents-not-a-stream.pdf")]
+    [InlineData("contents-damaged-only-page.pdf")]
+    [InlineData("contents-damaged-page-two.pdf")]
     public void Extract_ReferenceTheRepairMustNotForgive_IsStillMalformed(string fileName)
     {
-        // Sensitivity: how narrow the repair is. A second page the parser refuses for its structure, and a /Contents
-        // element that exists but is not a stream (the wrong type, not null), still make the document malformed.
+        // Sensitivity: how narrow the repair is. A second page the parser refuses for its structure, a /Contents element
+        // that exists but is not a stream (the wrong type, not null), and a /Contents object the cross-reference table lists
+        // as in use but whose bytes are overwritten or whose "obj" keyword is garbled (damaged, not undefined) still make the
+        // document malformed: a damaged page must not read as a blank one.
         AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
     }
 

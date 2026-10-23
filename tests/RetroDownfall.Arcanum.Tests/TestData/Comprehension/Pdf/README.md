@@ -145,7 +145,9 @@ and a missing `/Root` are not.
 
 ISO 32000-1 7.3.10 says a reference to an object the file does not define is the null object, not an error. The extractor
 reads an undefined `/Contents` (or one undefined element of a `/Contents` array) as empty content, and nothing else: PdfPig
-refuses such a page even with lenient parsing, and the repair covers only a reference that resolves to nothing.
+refuses such a page even with lenient parsing, and the repair covers only a reference that the cross-reference data does
+not list as in use (no entry, a free entry, or a number past the table) and the parser cannot find, or an object written as
+`null`. An object the table lists as in use that the parser cannot read is damaged, not undefined, and stays `Malformed`.
 
 | File | Shows | Outcome |
 | --- | --- | --- |
@@ -153,6 +155,10 @@ refuses such a page even with lenient parsing, and the repair covers only a refe
 | `contents-undefined-element.pdf` | `/Contents [4 0 R 35 0 R]`: a stream `ARRAY-ELEMENT-TEXT` and an undefined object | `Extracted` as `ARRAY-ELEMENT-TEXT` |
 | `contents-undefined-only-page.pdf` | the only page has an undefined `/Contents` | `NoText` |
 | `contents-undefined-in-cyclic-page-tree.pdf` | a page tree that lists itself as a kid, beside a page whose `/Contents` is undefined | `NoText`: the repair walks the tree and terminates |
+| `contents-free-entry.pdf` | page 1 `GOOD-PAGE-ONE`; page 2 has `/Contents 6 0 R`, which the cross-reference table lists as free | `Extracted`, two entries; the second is empty |
+| `contents-null-object.pdf` | page 1 `GOOD-PAGE-ONE`; page 2 has `/Contents 7 0 R`, an object written as `null` | `Extracted`, two entries; the second is empty |
+| `contents-damaged-only-page.pdf` | the only page's content stream is overwritten with spaces; the cross-reference table still lists it as in use | `Malformed`: damaged, not undefined, so not a blank page (`NoText`) |
+| `contents-damaged-page-two.pdf` | page 1 `GOOD-PAGE-ONE`; page 2's content stream has its `obj` keyword garbled (`7 0 obX`); the table lists it as in use | `Malformed`: page 2 is not silently blank |
 | `contents-undefined-beside-refused-page.pdf` | page 1 as in `contents-undefined-page-two.pdf`; page 2 has arrays nested 300 deep | `Malformed` (nesting depth on page 2): the repair does not forgive a second failure |
 | `contents-not-a-stream.pdf` | `/Contents [4 0 R 6 0 R]` where object 6 exists and is a string | `Malformed`: an object that exists but is not a stream is the wrong type, not null |
 

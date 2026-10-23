@@ -623,6 +623,59 @@ write(
         7: stream(b"", show(b"BEFORE-DEEP-ARRAY") + b"[" * 300 + b"]" * 300 + b"\n"),
     }),
 )
+# A free cross-reference entry is not a defined object either: page 2's /Contents names object 6, which the table lists as free.
+write(
+    "contents-free-entry.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>",
+        3: page_obj(b"4 0 R"),
+        4: stream(b"", show(b"GOOD-PAGE-ONE")),
+        5: FONT,
+        7: page_obj(b"6 0 R"),
+    }),
+)
+# An object that is defined and is the null object itself: page 2's /Contents names object 7, written as `null`.
+write(
+    "contents-null-object.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+        3: page_obj(b"4 0 R"),
+        4: stream(b"", show(b"GOOD-PAGE-ONE")),
+        5: FONT,
+        6: page_obj(b"7 0 R"),
+        7: b"null",
+    }),
+)
+
+
+def blank_object(data, number):
+    """The file with object `number`'s bytes overwritten by spaces, while its cross-reference entry still says it is in use."""
+    start = data.index(b"\n%d 0 obj\n" % number) + 1
+    end = data.index(b"endobj\n", start) + len(b"endobj\n")
+    return data[:start] + b" " * (end - start) + data[end:]
+
+
+# The controls for a repair that is too wide: the cross-reference table lists the /Contents object as in use, but its bytes
+# are damaged, so it is not the null object. The only page's content stream is overwritten with spaces; page 2's content
+# stream has its "obj" keyword garbled.
+write(
+    "contents-damaged-only-page.pdf",
+    blank_object(simple_doc(show(b"LOST-PAGE-TEXT")), 4),
+)
+damaged_page_two = build({
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+    3: page_obj(b"4 0 R"),
+    4: stream(b"", show(b"GOOD-PAGE-ONE")),
+    5: FONT,
+    6: page_obj(b"7 0 R"),
+    7: stream(b"", show(b"DAMAGED-PAGE-TWO")),
+})
+assert damaged_page_two.count(b"\n7 0 obj\n") == 1
+write("contents-damaged-page-two.pdf", damaged_page_two.replace(b"\n7 0 obj\n", b"\n7 0 obX\n"))
+
 # The control: the object exists but is not a stream. That is a wrong type, not an undefined reference, and stays refused.
 write(
     "contents-not-a-stream.pdf",

@@ -12,15 +12,16 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 /// and the refusal would lose every other page of the document.
 /// <para>
 /// This is the one repair made, and only after PdfPig has refused a page: it walks the page tree once and replaces each
-/// <c>/Contents</c> reference that resolves to nothing (or to the null object) with an empty content stream, which is what
-/// the specification says the reader sees. A reference to an object that exists but is not a stream is the wrong type, not
-/// null, and is left to be refused.
+/// <c>/Contents</c> reference to an object the file does not define (or to the null object) with an empty content stream,
+/// which is what the specification says the reader sees. A reference to an object that exists but is not a stream is the
+/// wrong type, not null, and one the cross-reference data lists as in use but the parser cannot read is damaged, not
+/// undefined; both are left to be refused.
 /// </para>
 /// </summary>
 internal static class PdfUndefinedContents
 {
     /// <summary>
-    /// Replaces every undefined <c>/Contents</c> reference of every page with an empty stream. Returns whether it replaced
+    /// Replaces every undefined or null <c>/Contents</c> reference of every page with an empty stream. Returns whether it replaced
     /// any, which is when reading the refused page again can succeed. Anything the walk itself cannot make sense of means no
     /// repair, so the original refusal stands.
     /// </summary>
@@ -118,11 +119,20 @@ internal static class PdfUndefinedContents
         return replaced;
     }
 
+    /// <summary>
+    /// Replaces the object a reference names when it is the null object: one the cross-reference data does not list as in use
+    /// (no entry, a free entry, or a number past the table) and the parser cannot find, or one written as <c>null</c>. An
+    /// object the table lists as in use that the parser cannot read is damaged, not undefined, and is left to be refused.
+    /// </summary>
     private static bool ReplaceIfUndefined(IndirectReference reference, PdfDocument document, IPdfTokenScanner scanner)
     {
         ObjectToken? target = scanner.Get(reference);
 
-        if (target is not null && target.Data is not NullToken)
+        bool isNull = target is null
+            ? !document.Structure.CrossReferenceTable.ObjectOffsets.ContainsKey(reference)
+            : target.Data is NullToken;
+
+        if (!isNull)
         {
             return false;
         }
