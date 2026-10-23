@@ -16,7 +16,8 @@ namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension;
 
 /// <summary>
 /// How the process worker reads its runner's result, and the code-owned launch it hands the runner: every outcome becomes
-/// either the frame's verdict or one of four fixed reasons, and nothing the child, the runtime or the OS said reaches one.
+/// either the frame's verdict or one of the four fixed reasons of the worker kind's profile, and nothing the child, the
+/// runtime or the OS said reaches one. Every worker kind has a profile and runs only under the jail.
 /// </summary>
 public sealed class ProcessDocumentExtractionWorkerMappingTests
 {
@@ -24,30 +25,30 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
     private static readonly string[] Reasons =
     [
-        ProcessDocumentExtractionWorker.FailedReason,
-        ProcessDocumentExtractionWorker.DeadlineReason,
-        ProcessDocumentExtractionWorker.ResourceLimitsReason,
-        ProcessDocumentExtractionWorker.UnavailableReason,
+        DocumentWorkerProfile.Pdf.FailedReason,
+        DocumentWorkerProfile.Pdf.DeadlineReason,
+        DocumentWorkerProfile.Pdf.ResourceLimitsReason,
+        DocumentWorkerProfile.Pdf.UnavailableReason,
     ];
 
     public static TheoryData<string, string> OutcomeReasons() => new()
     {
-        { nameof(CappedChildProcessOutcome.TimedOut), ProcessDocumentExtractionWorker.DeadlineReason },
-        { nameof(CappedChildProcessOutcome.ResourceLimitExceeded), ProcessDocumentExtractionWorker.ResourceLimitsReason },
-        { nameof(CappedChildProcessOutcome.MemoryMonitorStopped), ProcessDocumentExtractionWorker.ResourceLimitsReason },
-        { nameof(CappedChildProcessOutcome.FilesystemSandboxUnavailable), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.ResourceLimitApplyFailed), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.FailedToStart), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.IoErrorOnStart), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.AccessDeniedOnStart), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.PreStartValidationFailed), ProcessDocumentExtractionWorker.UnavailableReason },
-        { nameof(CappedChildProcessOutcome.IoErrorReadingOutput), ProcessDocumentExtractionWorker.FailedReason },
-        { nameof(CappedChildProcessOutcome.AccessDeniedReadingOutput), ProcessDocumentExtractionWorker.FailedReason },
-        { nameof(CappedChildProcessOutcome.OutputPreservationFailed), ProcessDocumentExtractionWorker.FailedReason },
-        { nameof(CappedChildProcessOutcome.Canceled), ProcessDocumentExtractionWorker.FailedReason },
-        { nameof(CappedChildProcessOutcome.CanceledBeforeStart), ProcessDocumentExtractionWorker.FailedReason },
-        { nameof(CappedChildProcessOutcome.CanceledWhileReadingOutput), ProcessDocumentExtractionWorker.FailedReason },
+        { nameof(CappedChildProcessOutcome.TimedOut), DocumentWorkerProfile.Pdf.DeadlineReason },
+        { nameof(CappedChildProcessOutcome.ResourceLimitExceeded), DocumentWorkerProfile.Pdf.ResourceLimitsReason },
+        { nameof(CappedChildProcessOutcome.MemoryMonitorStopped), DocumentWorkerProfile.Pdf.ResourceLimitsReason },
+        { nameof(CappedChildProcessOutcome.FilesystemSandboxUnavailable), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.ResourceLimitApplyFailed), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.FailedToStart), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.IoErrorOnStart), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.AccessDeniedOnStart), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.PreStartValidationFailed), DocumentWorkerProfile.Pdf.UnavailableReason },
+        { nameof(CappedChildProcessOutcome.IoErrorReadingOutput), DocumentWorkerProfile.Pdf.FailedReason },
+        { nameof(CappedChildProcessOutcome.AccessDeniedReadingOutput), DocumentWorkerProfile.Pdf.FailedReason },
+        { nameof(CappedChildProcessOutcome.OutputPreservationFailed), DocumentWorkerProfile.Pdf.FailedReason },
+        { nameof(CappedChildProcessOutcome.Canceled), DocumentWorkerProfile.Pdf.FailedReason },
+        { nameof(CappedChildProcessOutcome.CanceledBeforeStart), DocumentWorkerProfile.Pdf.FailedReason },
+        { nameof(CappedChildProcessOutcome.CanceledWhileReadingOutput), DocumentWorkerProfile.Pdf.FailedReason },
     };
 
     [Theory]
@@ -55,10 +56,9 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     public void Map_RunThatDidNotComplete_IsItsCodeOwnedReason(string outcomeName, string reason)
     {
         // Even a run that carries a perfectly good frame is not believed unless it completed.
-        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(Run(
-            Enum.Parse<CappedChildProcessOutcome>(outcomeName),
-            exitCode: 0,
-            stdout: ValidFrame()));
+        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(
+            Run(Enum.Parse<CappedChildProcessOutcome>(outcomeName), exitCode: 0, stdout: ValidFrame()),
+            DocumentWorkerProfile.Pdf);
 
         Assert.Null(result.Outcome);
 
@@ -77,7 +77,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     [Fact]
     public void Map_CompletedWithExitZeroAndAValidFrame_IsTheFramesVerdict()
     {
-        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(Run(CappedChildProcessOutcome.Completed, 0, ValidFrame()));
+        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(Run(CappedChildProcessOutcome.Completed, 0, ValidFrame()), DocumentWorkerProfile.Pdf);
 
         Assert.Null(result.FailureReason);
 
@@ -97,10 +97,9 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     [InlineData("no-text")]
     public void Map_CompletedWithAVerdictFrame_IsThatVerdict(string status)
     {
-        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(Run(
-            CappedChildProcessOutcome.Completed,
-            0,
-            $"ARCANUM-COMPREHENSION/1 {status}\n\nEND 0 0\n"));
+        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(
+            Run(CappedChildProcessOutcome.Completed, 0, $"ARCANUM-COMPREHENSION/1 {status}\n\nEND 0 0\n"),
+            DocumentWorkerProfile.Pdf);
 
         Assert.NotNull(result.Outcome);
 
@@ -115,7 +114,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     [InlineData("ARCANUM-COMPREHENSION/2 extracted\nPAGE ONE\nEND 8 1\n")]
     public void Map_CompletedWithExitZeroButNoValidFrame_Failed(string stdout)
     {
-        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, stdout));
+        AssertFailed(DocumentWorkerProfile.Pdf.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, stdout));
     }
 
     public static TheoryData<string, byte[]> BytesThatAreNotStrictUtf8() => new()
@@ -131,7 +130,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         _ = name;
 
-        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, stdout));
+        AssertFailed(DocumentWorkerProfile.Pdf.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, stdout));
     }
 
     [Fact]
@@ -146,14 +145,14 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
             Stderr = new CappedStreamOutput(string.Empty, false),
         };
 
-        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, run);
+        AssertFailed(DocumentWorkerProfile.Pdf.FailedReason, run);
     }
 
     [Fact]
     public void Map_CompletedWithAValidFrameButTruncatedOutput_Failed()
     {
         // The runner cut stdout at its cap; whatever survived is not the whole frame, even if it happens to parse.
-        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, ValidFrame(), truncated: true));
+        AssertFailed(DocumentWorkerProfile.Pdf.FailedReason, Run(CappedChildProcessOutcome.Completed, 0, ValidFrame(), truncated: true));
     }
 
     [Theory]
@@ -169,7 +168,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     [InlineData(-1)]
     public void Map_CompletedWithAnotherExitCode_FailedEvenWithAValidFrame(int exitCode)
     {
-        AssertFailed(ProcessDocumentExtractionWorker.FailedReason, Run(CappedChildProcessOutcome.Completed, exitCode, ValidFrame()));
+        AssertFailed(DocumentWorkerProfile.Pdf.FailedReason, Run(CappedChildProcessOutcome.Completed, exitCode, ValidFrame()));
     }
 
     [Theory]
@@ -179,14 +178,14 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         // SIGXFSZ: the worker wrote a file past its size ceiling and the kernel ended it, reported through the launch
         // chain's shell (128 + 25) or directly (-25). Whatever it printed first is not a verdict.
-        AssertFailed(ProcessDocumentExtractionWorker.ResourceLimitsReason, Run(CappedChildProcessOutcome.Completed, exitCode, ValidFrame()));
+        AssertFailed(DocumentWorkerProfile.Pdf.ResourceLimitsReason, Run(CappedChildProcessOutcome.Completed, exitCode, ValidFrame()));
     }
 
     [Fact]
     public void Map_CompletedWithTheWorkersDeadlineExit_ExceededItsDeadline()
     {
         AssertFailed(
-            ProcessDocumentExtractionWorker.DeadlineReason,
+            DocumentWorkerProfile.Pdf.DeadlineReason,
             Run(CappedChildProcessOutcome.Completed, (int)ComprehensionWorkerExitCode.Deadline, string.Empty));
     }
 
@@ -208,7 +207,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
             PreStartValidationError = HostileStderr,
         };
 
-        Assert.Contains(ProcessDocumentExtractionWorker.Map(run).FailureReason, Reasons);
+        Assert.Contains(ProcessDocumentExtractionWorker.Map(run, DocumentWorkerProfile.Pdf).FailureReason, Reasons);
     }
 
     [Fact]
@@ -218,7 +217,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
         DocumentWorkerLaunch launch = DocumentWorkerLaunch.ForTests(executable.Path, new Dictionary<string, string> { ["DOTNET_ROOT"] = "/runtime" });
 
-        ProcessStartInfo startInfo = ProcessDocumentExtractionWorker.CreateStartInfo(launch);
+        ProcessStartInfo startInfo = ProcessDocumentExtractionWorker.CreateStartInfo(launch, DocumentWorkerProfile.Pdf);
 
         Assert.Equal(launch.Executable, startInfo.FileName);
 
@@ -249,7 +248,9 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     {
         using TemporaryExecutable executable = new();
 
-        ProcessStartInfo startInfo = ProcessDocumentExtractionWorker.CreateStartInfo(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!);
+        ProcessStartInfo startInfo = ProcessDocumentExtractionWorker.CreateStartInfo(
+            DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!,
+            DocumentWorkerProfile.Pdf);
 
         Assert.Empty(startInfo.Environment);
     }
@@ -337,7 +338,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
     }
 
     [Fact]
-    public void Limits_AreTheCodeOwnedProcessBounds()
+    public void PdfProfile_HoldsTheCodeOwnedProcessBounds()
     {
         Assert.Equal(
             new ResourceLimits(
@@ -348,34 +349,116 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
                 MaxCpuSeconds: 15,
                 MaxMemoryMb: 768,
                 MaxFileDescriptors: 64),
-            ProcessDocumentExtractionWorker.Limits);
+            DocumentWorkerProfile.Pdf.Limits);
 
-        Assert.Equal(TimeSpan.FromSeconds(10), ProcessDocumentExtractionWorker.WallClock);
+        Assert.Equal(TimeSpan.FromSeconds(10), DocumentWorkerProfile.Pdf.WallClock);
 
         // The worker writes no file, so the one it could write is small: a compromised worker cannot fill the disk.
-        Assert.Equal(1024L * 1024, ProcessDocumentExtractionWorker.MaxFileSizeBytes);
+        Assert.Equal(1024L * 1024, DocumentWorkerProfile.Pdf.MaxFileSizeBytes);
 
-        Assert.Equal(2L * 1024 * 1024, ProcessDocumentExtractionWorker.TotalOutputCapBytes);
+        Assert.Equal(2L * 1024 * 1024, DocumentWorkerProfile.Pdf.TotalOutputCapBytes);
 
         // The worker gives up on its own before the host has to kill it.
-        Assert.True(ComprehensionWorkerEntry.SelfDeadline < ProcessDocumentExtractionWorker.WallClock);
+        Assert.True(DocumentWorkerProfile.Pdf.SelfDeadline < DocumentWorkerProfile.Pdf.WallClock);
+
+        Assert.Equal(ComprehensionWorkerEntry.SelfDeadline, DocumentWorkerProfile.Pdf.SelfDeadline);
+
+        // The host refuses a document the worker would refuse at stdin, and decodes a frame against the extractor's own ceiling.
+        Assert.Equal(ComprehensionWorkerEntry.InputCeilingBytes, DocumentWorkerProfile.Pdf.InputCeilingBytes);
+
+        Assert.Equal(PdfExtractionLimits.Default.MaxOutputCharacters, DocumentWorkerProfile.Pdf.MaxOutputCharacters);
 
         // Each stream gets half the cap, and stdout must hold the largest frame the output ceiling allows.
         Assert.True(
-            ProcessDocumentExtractionWorker.TotalOutputCapBytes / 2
-            >= ComprehensionWorkerFrame.MaximumFrameBytes(PdfExtractionLimits.Default.MaxOutputCharacters));
+            DocumentWorkerProfile.Pdf.TotalOutputCapBytes / 2
+            >= ComprehensionWorkerFrame.MaximumFrameBytes(DocumentWorkerProfile.Pdf.MaxOutputCharacters));
     }
 
     [Fact]
-    public void LimitsFor_TheHostBinary_IsExactlyTheCodeOwnedLimits()
+    public void LimitsFor_TheHostBinary_IsExactlyItsProfilesLimits()
     {
         using TemporaryExecutable executable = new();
 
-        Assert.Same(ProcessDocumentExtractionWorker.Limits, ProcessDocumentExtractionWorker.LimitsFor(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!));
+        Assert.Same(
+            DocumentWorkerProfile.Pdf.Limits,
+            ProcessDocumentExtractionWorker.LimitsFor(DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!, DocumentWorkerProfile.Pdf));
 
         Assert.Equal(
-            ProcessDocumentExtractionWorker.Limits with { MaxFileDescriptors = 256 },
-            ProcessDocumentExtractionWorker.LimitsFor(DocumentWorkerLaunch.ForTests(executable.Path, maxFileDescriptors: 256)));
+            DocumentWorkerProfile.Pdf.Limits with { MaxFileDescriptors = 256 },
+            ProcessDocumentExtractionWorker.LimitsFor(DocumentWorkerLaunch.ForTests(executable.Path, maxFileDescriptors: 256), DocumentWorkerProfile.Pdf));
+    }
+
+    public static TheoryData<string> WorkerFormats()
+    {
+        TheoryData<string> formats = new();
+
+        foreach (string format in Enum.GetNames<DocumentWorkerFormat>())
+        {
+            formats.Add(format);
+        }
+
+        return formats;
+    }
+
+    [Theory]
+    [MemberData(nameof(WorkerFormats))]
+    public void EveryWorkerFormat_HasAProfileASelfDeadlineUnderItsWallClockAndAJailedLaunch(string formatName)
+    {
+        // A worker kind added later cannot run without a profile, a deadline of its own that ends it before the host's wall
+        // clock has to, and the jail: every confinement the jail can ask for, applied or nothing runs.
+        DocumentWorkerFormat format = Enum.Parse<DocumentWorkerFormat>(formatName);
+
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(format);
+
+        Assert.Equal(format, profile.Format);
+
+        Assert.InRange(profile.SelfDeadline, TimeSpan.FromTicks(1), profile.WallClock - TimeSpan.FromTicks(1));
+
+        using TemporaryExecutable executable = new();
+
+        DocumentWorkerRunRequest request = ProcessDocumentExtractionWorker.CreateRunRequest(
+            DocumentWorkerLaunch.ForHostExecutable(executable.Path, nativeAot: true)!,
+            profile);
+
+        Assert.False(request.Sandbox.AllowUnsandboxed);
+
+        Assert.True(request.Sandbox.RequireAppliedFilesystemJail);
+
+        Assert.True(request.Sandbox.DenyNetwork);
+
+        Assert.True(request.Sandbox.DenyProcessFork);
+
+        Assert.True(request.Sandbox.ConfineMetadataToRoots);
+
+        Assert.True(request.Sandbox.DenyFileWrites);
+
+        Assert.True(request.Sandbox.ConfineProcessInformation);
+
+        Assert.Empty(request.Sandbox.ReadWriteRoots);
+
+        // The run is the profile's: its argument, its clock, its limits and its output bounds.
+        Assert.Equal([ComprehensionWorkerEntry.ModeArgument, profile.FormatArgument], request.StartInfo.ArgumentList);
+
+        Assert.Equal(profile.WallClock, request.WallClock);
+
+        Assert.Same(profile.Limits, request.Limits);
+
+        Assert.Equal(profile.TotalOutputCapBytes, request.TotalOutputCapBytes);
+
+        Assert.Equal(profile.MaxFileSizeBytes, request.MaxFileSizeBytes);
+    }
+
+    [Fact]
+    public void For_AFormatWithoutAProfile_IsRefused()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => DocumentWorkerProfile.For((DocumentWorkerFormat)int.MaxValue));
+    }
+
+    [Fact]
+    public async Task RunAsync_AFormatWithoutAProfile_IsRefusedWithoutStartingAnything()
+    {
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => new ProcessDocumentExtractionWorker(new ProcessResourceLimiter())
+            .RunAsync((DocumentWorkerFormat)int.MaxValue, "%PDF-1.7"u8.ToArray(), CancellationToken.None));
     }
 
     [Fact]
@@ -400,7 +483,7 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
         Assert.Null(result.Outcome);
 
-        Assert.Equal(ProcessDocumentExtractionWorker.UnavailableReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.UnavailableReason, result.FailureReason);
     }
 
     [Fact]
@@ -439,13 +522,13 @@ public sealed class ProcessDocumentExtractionWorkerMappingTests
 
         // The substitute is scoped: once disposed, this host is back to having no worker.
         Assert.Equal(
-            ProcessDocumentExtractionWorker.UnavailableReason,
+            DocumentWorkerProfile.Pdf.UnavailableReason,
             (await new ProcessDocumentExtractionWorker(new ProcessResourceLimiter()).RunAsync(DocumentWorkerFormat.Pdf, bytes, CancellationToken.None)).FailureReason);
     }
 
     private static void AssertFailed(string reason, CappedChildProcessRunResult run)
     {
-        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(run);
+        DocumentWorkerResult result = ProcessDocumentExtractionWorker.Map(run, DocumentWorkerProfile.Pdf);
 
         Assert.Null(result.Outcome);
 

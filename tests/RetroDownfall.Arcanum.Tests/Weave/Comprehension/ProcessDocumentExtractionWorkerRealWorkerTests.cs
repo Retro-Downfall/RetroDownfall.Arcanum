@@ -97,7 +97,7 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
 
         Assert.Contains(
             hostile.FailureReason,
-            new[] { ProcessDocumentExtractionWorker.ResourceLimitsReason, ProcessDocumentExtractionWorker.DeadlineReason });
+            new[] { DocumentWorkerProfile.Pdf.ResourceLimitsReason, DocumentWorkerProfile.Pdf.DeadlineReason });
 
         DocumentWorkerResult healthy = await RunAsync(PdfFixtures.Read("multi-page.pdf"));
 
@@ -119,7 +119,8 @@ public sealed class ProcessDocumentExtractionWorkerRealWorkerTests(ITestOutputHe
 
         Assert.True(
             hostile.Outcome is not null
-            || hostile.FailureReason is ProcessDocumentExtractionWorker.ResourceLimitsReason or ProcessDocumentExtractionWorker.DeadlineReason,
+            || hostile.FailureReason == DocumentWorkerProfile.Pdf.ResourceLimitsReason
+            || hostile.FailureReason == DocumentWorkerProfile.Pdf.DeadlineReason,
             hostile.FailureReason);
 
         DocumentWorkerResult healthy = await RunAsync(PdfFixtures.Read("cups-text.pdf"));

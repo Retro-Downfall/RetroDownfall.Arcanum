@@ -14,62 +14,21 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 /// <summary>
 /// Parses a document in a child process: this host's own binary re-launched in the hidden worker mode, under the capped
-/// runner with code-owned limits, a required filesystem jail, no network and a cleared environment, with the document on
-/// stdin. The runner kills the child's whole tree on its deadline, its limits, or the caller's cancellation, and returns
-/// only after it is gone, so a crash, a hang or a memory blow-up in the parser ends as a bounded result here.
+/// runner with the code-owned limits of the document kind's <see cref="DocumentWorkerProfile"/>, a required filesystem jail
+/// that is the same for every kind, no network and a cleared environment, with the document on stdin. The runner kills the
+/// child's whole tree on its deadline, its limits, or the caller's cancellation, and returns only after it is gone, so a
+/// crash, a hang or a memory blow-up in the parser ends as a bounded result here.
 /// </summary>
 /// <remarks>
-/// Every result is the worker's frame or one of four code-owned reasons. No exception text, path, exit code or stderr
-/// reaches a reason. An environment that cannot run the worker at all is <see cref="UnavailableReason"/>; retrying it
-/// would only start the same refusal again, so the operator re-indexes after fixing the host.
+/// Every result is the worker's frame or one of the profile's four code-owned reasons. No exception text, path, exit code
+/// or stderr reaches a reason. An environment that cannot run the worker at all is the profile's unavailable reason;
+/// retrying it would only start the same refusal again, so the operator re-indexes after fixing the host.
 /// </remarks>
 internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter resourceLimiter) : IDocumentExtractionWorker
 {
-    /// <summary>The worker gave no usable frame: it crashed, exited with a code of its own, or wrote something else.</summary>
-    internal const string FailedReason = "PDF extraction failed.";
-
-    /// <summary>The worker outlived the wall clock, or gave up at its own deadline first.</summary>
-    internal const string DeadlineReason = "PDF extraction exceeded its deadline.";
-
-    /// <summary>The worker crossed its memory or CPU ceiling, or the memory monitor that enforces it stopped.</summary>
-    internal const string ResourceLimitsReason = "PDF extraction exceeded its resource limits.";
-
-    /// <summary>This host cannot run the worker: not a Native AOT binary (a dev host or a managed publish), no re-launchable binary, no applied jail, no limits, or a replaced binary.</summary>
-    internal const string UnavailableReason = "PDF extraction is unavailable on this host.";
-
-    /// <summary>
-    /// The runner's total output cap. Each stream gets half, and stdout must hold the largest frame the output ceiling
-    /// allows: 262,144 UTF-16 characters at three UTF-8 bytes each, plus the header and trailer.
-    /// </summary>
-    internal const long TotalOutputCapBytes = 2L * 1024 * 1024;
-
-    /// <summary>
-    /// The kernel ceiling on any one file the worker writes. It writes none and its jail grants it nowhere to write (see
-    /// <see cref="CreateSandbox"/>); the ceiling stays as defence in depth should a write ever be granted, though it bounds
-    /// each file and not how many. Not enforced on Windows, which has no per-process file-size limit.
-    /// </summary>
-    internal const long MaxFileSizeBytes = 1024 * 1024;
-
-    /// <summary>The wall clock from before the child starts until it is gone, cold start included.</summary>
-    internal static readonly TimeSpan WallClock = TimeSpan.FromSeconds(10);
-
-    /// <summary>
-    /// The code-owned process limits, never configuration: a 768 MB memory ceiling (the macOS footprint monitor, a
-    /// Windows job object), 15 s of CPU, one process and 64 file descriptors. <c>MaxFileWriteMb</c> is Sanctum's write-tool
-    /// budget and stays 0; the kernel's ceiling on a file the worker writes is <see cref="MaxFileSizeBytes"/>.
-    /// </summary>
-    internal static ResourceLimits Limits { get; } = new(
-        MaxProcessMemoryMb: 768,
-        MaxProcessCount: 1,
-        MaxFileWriteMb: 0,
-        ProcessTimeoutSeconds: 10,
-        MaxCpuSeconds: 15,
-        MaxMemoryMb: 768,
-        MaxFileDescriptors: 64);
-
     private const string ReplacedExecutableCode = "comprehension-worker-executable-changed";
 
-    /// <summary>SIGXFSZ, the same number on macOS and Linux: a write past <see cref="MaxFileSizeBytes"/>.</summary>
+    /// <summary>SIGXFSZ, the same number on macOS and Linux: a write past the profile's file-size ceiling.</summary>
     private const int FileSizeSignal = 25;
 
     private static readonly UTF8Encoding Utf8WithoutPreamble = new(encoderShouldEmitUTF8Identifier: false);
@@ -83,10 +42,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         ReadOnlyMemory<byte> bytes,
         CancellationToken cancellationToken)
     {
-        if (format != DocumentWorkerFormat.Pdf)
-        {
-            throw new ArgumentOutOfRangeException(nameof(format), format, "The worker reads only PDF documents.");
-        }
+        DocumentWorkerProfile profile = DocumentWorkerProfile.For(format);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -96,37 +52,39 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         }
 
         // The worker would refuse it at stdin anyway; starting a process to hear that is not worth it.
-        if (bytes.Length > ComprehensionWorkerEntry.InputCeilingBytes)
+        if (bytes.Length > profile.InputCeilingBytes)
         {
-            return DocumentWorkerResult.Failed(FailedReason);
+            return DocumentWorkerResult.Failed(profile.FailedReason);
         }
 
         DocumentWorkerLaunch? launch = LaunchForTests.Value ?? ComprehensionWorkerEntry.HostLaunch;
 
         if (launch is null)
         {
-            return DocumentWorkerResult.Failed(UnavailableReason);
+            return DocumentWorkerResult.Failed(profile.UnavailableReason);
         }
+
+        DocumentWorkerRunRequest request = CreateRunRequest(launch, profile);
 
         CappedChildProcessRunResult run;
 
         try
         {
             run = await CappedChildProcessRunner.RunAsync(
-                CreateStartInfo(launch),
+                request.StartInfo,
                 launch.EnvironmentProfile,
-                TotalOutputCapBytes,
-                WallClock,
-                LimitsFor(launch),
+                request.TotalOutputCapBytes,
+                request.WallClock,
+                request.Limits,
                 resourceLimiter,
                 cancellationToken,
-                CreateSandbox(launch),
+                request.Sandbox,
                 preStartValidation: () => launch.IsUnchanged()
                     ? new CappedChildProcessPreStartValidationResult(true, null)
-                    : new CappedChildProcessPreStartValidationResult(false, UnavailableReason, ReplacedExecutableCode),
+                    : new CappedChildProcessPreStartValidationResult(false, profile.UnavailableReason, ReplacedExecutableCode),
                 standardInput: bytes,
                 rawStandardOutput: true,
-                maxFileSizeBytes: MaxFileSizeBytes).ConfigureAwait(false);
+                maxFileSizeBytes: request.MaxFileSizeBytes).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -134,7 +92,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         }
         catch (Exception)
         {
-            return DocumentWorkerResult.Failed(FailedReason);
+            return DocumentWorkerResult.Failed(profile.FailedReason);
         }
 
         if (run.Outcome is CappedChildProcessOutcome.Canceled
@@ -144,43 +102,71 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
             cancellationToken.ThrowIfCancellationRequested();
         }
 
-        return Map(run);
+        return Map(run, profile);
+    }
+
+    /// <summary>
+    /// The one run the worker hands the runner for <paramref name="launch"/> and <paramref name="profile"/>: the re-launch with
+    /// the profile's argument, the profile's clock, limits and output bounds, and the jail every kind runs under.
+    /// </summary>
+    internal static DocumentWorkerRunRequest CreateRunRequest(DocumentWorkerLaunch launch, DocumentWorkerProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(launch);
+
+        ArgumentNullException.ThrowIfNull(profile);
+
+        return new DocumentWorkerRunRequest(
+            CreateStartInfo(launch, profile),
+            CreateSandbox(launch),
+            LimitsFor(launch, profile),
+            profile.WallClock,
+            profile.TotalOutputCapBytes,
+            profile.MaxFileSizeBytes);
     }
 
     /// <summary>Reads one run: the frame of a worker that completed cleanly, or the code-owned reason it gave none.</summary>
-    internal static DocumentWorkerResult Map(CappedChildProcessRunResult run)
+    internal static DocumentWorkerResult Map(CappedChildProcessRunResult run, DocumentWorkerProfile profile)
     {
         ArgumentNullException.ThrowIfNull(run);
 
+        ArgumentNullException.ThrowIfNull(profile);
+
         return run.Outcome switch
         {
-            CappedChildProcessOutcome.Completed => MapCompleted(run),
-            CappedChildProcessOutcome.TimedOut => DocumentWorkerResult.Failed(DeadlineReason),
+            CappedChildProcessOutcome.Completed => MapCompleted(run, profile),
+            CappedChildProcessOutcome.TimedOut => DocumentWorkerResult.Failed(profile.DeadlineReason),
             CappedChildProcessOutcome.ResourceLimitExceeded
-                or CappedChildProcessOutcome.MemoryMonitorStopped => DocumentWorkerResult.Failed(ResourceLimitsReason),
+                or CappedChildProcessOutcome.MemoryMonitorStopped => DocumentWorkerResult.Failed(profile.ResourceLimitsReason),
             CappedChildProcessOutcome.FilesystemSandboxUnavailable
                 or CappedChildProcessOutcome.FilesystemSandboxDeniedByWindowsSanctum
                 or CappedChildProcessOutcome.ResourceLimitApplyFailed
                 or CappedChildProcessOutcome.FailedToStart
                 or CappedChildProcessOutcome.IoErrorOnStart
                 or CappedChildProcessOutcome.AccessDeniedOnStart
-                or CappedChildProcessOutcome.PreStartValidationFailed => DocumentWorkerResult.Failed(UnavailableReason),
-            _ => DocumentWorkerResult.Failed(FailedReason),
+                or CappedChildProcessOutcome.PreStartValidationFailed => DocumentWorkerResult.Failed(profile.UnavailableReason),
+            _ => DocumentWorkerResult.Failed(profile.FailedReason),
         };
     }
 
-    /// <summary>The code-owned <see cref="Limits"/>, with a test launch's descriptor ceiling when it names one.</summary>
-    internal static ResourceLimits LimitsFor(DocumentWorkerLaunch launch)
+    /// <summary>The profile's code-owned limits, with a test launch's descriptor ceiling when it names one.</summary>
+    internal static ResourceLimits LimitsFor(DocumentWorkerLaunch launch, DocumentWorkerProfile profile)
     {
         ArgumentNullException.ThrowIfNull(launch);
 
-        return launch.MaxFileDescriptors is { } descriptors ? Limits with { MaxFileDescriptors = descriptors } : Limits;
+        ArgumentNullException.ThrowIfNull(profile);
+
+        return launch.MaxFileDescriptors is { } descriptors ? profile.Limits with { MaxFileDescriptors = descriptors } : profile.Limits;
     }
 
-    /// <summary>The re-launch of <paramref name="launch"/> in worker mode, with UTF-8 pipes and exactly its environment.</summary>
-    internal static ProcessStartInfo CreateStartInfo(DocumentWorkerLaunch launch)
+    /// <summary>
+    /// The re-launch of <paramref name="launch"/> in worker mode for the profile's kind, with UTF-8 pipes and exactly the
+    /// launch's environment.
+    /// </summary>
+    internal static ProcessStartInfo CreateStartInfo(DocumentWorkerLaunch launch, DocumentWorkerProfile profile)
     {
         ArgumentNullException.ThrowIfNull(launch);
+
+        ArgumentNullException.ThrowIfNull(profile);
 
         ProcessStartInfo startInfo = new()
         {
@@ -195,7 +181,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
 
         startInfo.ArgumentList.Add(ComprehensionWorkerEntry.ModeArgument);
 
-        startInfo.ArgumentList.Add(ComprehensionWorkerEntry.PdfFormatArgument);
+        startInfo.ArgumentList.Add(profile.FormatArgument);
 
         // Nothing of this host's environment is inherited, whichever profile the runner then applies.
         startInfo.Environment.Clear();
@@ -209,7 +195,7 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
     }
 
     /// <summary>
-    /// The jail: it must be applied (no operator escape, as for <c>workspace_check</c>), with no network, no second
+    /// The jail, the same for every kind of worker: it must be applied (no operator escape, as for <c>workspace_check</c>), with no network, no second
     /// process, nothing writable at all (the run's private temp directory is only readable, and of the devices only
     /// <c>/dev/null</c> takes a write, so neither a large file nor many small ones can fill the disk), nothing readable
     /// beyond the system runtime roots but the executable's own directory, nothing listed or stat'ed outside those roots but
@@ -281,18 +267,18 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         return new Scope(() => SubstituteForTests.Value = previous);
     }
 
-    private static DocumentWorkerResult MapCompleted(CappedChildProcessRunResult run)
+    private static DocumentWorkerResult MapCompleted(CappedChildProcessRunResult run, DocumentWorkerProfile profile)
     {
         // The kernel ended the worker for a write past its file-size ceiling, reported through the launch chain's
         // supervising shell (128 + the signal) or directly (the negated signal).
         if (run.ExitCode is 128 + FileSizeSignal or -FileSizeSignal)
         {
-            return DocumentWorkerResult.Failed(ResourceLimitsReason);
+            return DocumentWorkerResult.Failed(profile.ResourceLimitsReason);
         }
 
         if (run.ExitCode == (int)ComprehensionWorkerExitCode.Deadline)
         {
-            return DocumentWorkerResult.Failed(DeadlineReason);
+            return DocumentWorkerResult.Failed(profile.DeadlineReason);
         }
 
         // The frame is judged on the bytes the worker wrote, never on a decoding of them: a text reader would detect a
@@ -300,16 +286,14 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         // UTF-8 and header rules would then pass a frame they refuse.
         if (run.ExitCode != (int)ComprehensionWorkerExitCode.FrameWritten || run.Stdout.Truncated || run.Stdout.Bytes is not { } written)
         {
-            return DocumentWorkerResult.Failed(FailedReason);
+            return DocumentWorkerResult.Failed(profile.FailedReason);
         }
 
-        ComprehensionWorkerFrameResult frame = ComprehensionWorkerFrame.Decode(
-            written,
-            PdfExtractionLimits.Default.MaxOutputCharacters);
+        ComprehensionWorkerFrameResult frame = ComprehensionWorkerFrame.Decode(written, profile.MaxOutputCharacters);
 
         return frame.IsValid
             ? DocumentWorkerResult.Completed(frame.Outcome!)
-            : DocumentWorkerResult.Failed(FailedReason);
+            : DocumentWorkerResult.Failed(profile.FailedReason);
     }
 
     private sealed class Scope(Action restore) : IDisposable
@@ -317,3 +301,16 @@ internal sealed class ProcessDocumentExtractionWorker(IProcessResourceLimiter re
         public void Dispose() => restore();
     }
 }
+
+/// <summary>
+/// Everything one worker run hands the capped runner, composed from a launch and a kind's profile by
+/// <see cref="ProcessDocumentExtractionWorker.CreateRunRequest"/>, so the jail a run gets is the one a test can read for every
+/// kind.
+/// </summary>
+internal sealed record DocumentWorkerRunRequest(
+    ProcessStartInfo StartInfo,
+    ChildProcessSandboxRequest Sandbox,
+    ResourceLimits Limits,
+    TimeSpan WallClock,
+    long TotalOutputCapBytes,
+    long MaxFileSizeBytes);

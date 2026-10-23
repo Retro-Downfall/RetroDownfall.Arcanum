@@ -7,12 +7,16 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// The host of a format parsed only out of process. It keeps the in-process host's family-slot semantics: one document
-/// of the family at a time, a caller that must not queue (the indexer) deferred at once when the family is busy, and an
-/// interactive caller waiting a bounded time. It reads the caller's authenticated snapshot under the caller's admission
-/// with the same byte checks, then awaits the worker inline: no detached task and no quarantine, because the worker owns
-/// its child process and returns only after the child is gone, whatever ended it. The worker's verdict is projected
+/// The host of a format parsed only out of process. It shares the reserve-and-read step of every host
+/// (<see cref="SessionAttachmentDocumentHost.ReadSnapshotAsync"/>): one document of the family at a time, a caller that
+/// must not queue (the indexer) deferred at once when the family is busy, an interactive caller waiting a bounded time, and
+/// the caller's authenticated snapshot read under the caller's admission within its own budget, with the same byte checks.
+/// Its own step, <see cref="RunWorkerAsync"/>, awaits the worker on that snapshot inline: no detached task and no
+/// quarantine, because the worker owns its child process and returns only after the child is gone, whatever ended it, so
+/// the slot stays with the snapshot and the caller's disposal of it gives the slot back. The worker's verdict is projected
 /// through the same bounded sink as every other format, so truncation and page marks behave alike.
+/// <see cref="ExtractAsync"/> composes the two steps for an interactive caller; the indexer takes them apart so that the
+/// effect group a worker needs is begun only once the snapshot is in hand.
 /// </summary>
 /// <remarks>
 /// Each page with text is projected as <c>[PDF page n]</c> on a line of its own, then its text, then a line break, with the
@@ -23,15 +27,15 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// (<see cref="EscapedHeadingOpening"/>) and only the host's own headings read <c>[PDF page n]</c>. A page without text emits
 /// nothing and its number is never reused, so the numbers that remain are the document's own. Cancelling <c>revocation</c>
 /// (maintenance taking the Grimoire back from the indexer) kills the worker and defers the document, which nothing treats
-/// as terminal; a maintenance obligation already pending when the worker would start defers it without starting anything;
-/// cancelling the caller's token kills it and propagates.
+/// as terminal; a revocation already signalled when the worker would start defers it without starting anything; cancelling
+/// the caller's token kills it and propagates.
 /// </remarks>
 internal sealed class SessionAttachmentIsolatedDocumentHost(
     IDocumentExtractionWorker worker,
     DocumentWorkerFormat format,
     int maximumCharacters = 262_144,
     TimeSpan? readTimeout = null,
-    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost
+    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost(readTimeout ?? DefaultReadTimeout, parseSpendsReadBudget: false, slotWait)
 {
     /// <summary>The opening of the heading the host writes before each page's text: <c>[PDF page n]</c>.</summary>
     internal const string HeadingOpening = "[PDF page";
@@ -54,10 +58,6 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
     /// <summary>The worker call or its verdict failed in a way no other reason describes.</summary>
     internal const string WorkerFaultReason = "Document extraction failed.";
 
-    internal const string ReadDeadlineReason = "Document extraction exceeded its deadline while reading its snapshot.";
-
-    internal const string SnapshotMismatchReason = "Document input does not match its bounded snapshot.";
-
     /// <summary>The longest the snapshot read may take once the slot is held; the worker has its own wall clock.</summary>
     internal static readonly TimeSpan DefaultReadTimeout = TimeSpan.FromSeconds(5);
 
@@ -67,116 +67,80 @@ internal sealed class SessionAttachmentIsolatedDocumentHost(
 
     private readonly int _maximumCharacters = maximumCharacters;
 
-    private readonly TimeSpan _readTimeout = readTimeout ?? DefaultReadTimeout;
-
-    private readonly TimeSpan _slotWait = slotWait ?? DefaultSlotWait;
-
-    private readonly SemaphoreSlim _serial = new(1, 1);
-
-    internal override Task<SessionAttachmentExtractionResult> ExtractAsync(
+    /// <summary>
+    /// <see cref="SessionAttachmentDocumentHost.ReadSnapshotAsync"/> and then <see cref="RunWorkerAsync"/> with no revocation,
+    /// holding the slot from the read through the worker. The interactive paths (attach, refresh, reference, pin) come here,
+    /// under their request's admission.
+    /// </summary>
+    internal override async Task<SessionAttachmentExtractionResult> ExtractAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
         CancellationToken cancellationToken,
-        bool waitForSlot = true) =>
-        ExtractIsolatedAsync(readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot, CancellationToken.None, static () => false);
+        bool waitForSlot = true)
+    {
+        using SessionAttachmentDocumentSnapshot snapshot = await ReadSnapshotAsync(
+            readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot).ConfigureAwait(false);
+
+        return snapshot.Refusal
+            ?? await RunWorkerAsync(snapshot, cancellationToken, CancellationToken.None).ConfigureAwait(false);
+    }
 
     /// <summary>
-    /// <see cref="ExtractAsync"/> with a <paramref name="revocation"/> that, once cancelled, kills the worker and defers the
-    /// document instead of failing it. A member of this class alone, so a caller that holds this host by its own type
-    /// reaches the isolated parse and nothing else.
+    /// This host's own step: runs the worker, once, on a snapshot this host read and still holds, and projects its verdict.
+    /// A member of this class alone, so a caller that holds this host by its own type reaches the worker and nothing else.
+    /// The snapshot keeps the slot; the caller's disposal of it gives the slot back.
     /// </summary>
-    /// <param name="maintenancePending">
-    /// Whether the caller's admission already owes maintenance, asked immediately before the worker would start. The gate
-    /// cancels <paramref name="revocation"/> only once the caller's effect group closes, so maintenance that arrives during
-    /// the snapshot read is seen here and nowhere else; the document is then deferred and no worker starts.
+    /// <param name="revocation">
+    /// Cancelled when the caller's admission is taken back for maintenance. Already cancelled, it defers the document without
+    /// starting anything; cancelled while the worker runs, it kills the worker and defers the document. The indexer passes its
+    /// work lease's revocation and begins the lease's effect group before this step, so maintenance that became pending
+    /// during the snapshot read has already refused that group and this step is never reached.
     /// </param>
-    internal async Task<SessionAttachmentExtractionResult> ExtractIsolatedAsync(
-        Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
-        long expectedByteLength,
-        long maximumBytes,
+    /// <exception cref="InvalidOperationException">
+    /// The snapshot is a refusal, was read by another host, was disposed, or has already been run.
+    /// </exception>
+    internal async Task<SessionAttachmentExtractionResult> RunWorkerAsync(
+        SessionAttachmentDocumentSnapshot snapshot,
         CancellationToken cancellationToken,
-        bool waitForSlot,
-        CancellationToken revocation,
-        Func<bool> maintenancePending)
+        CancellationToken revocation)
     {
-        ArgumentNullException.ThrowIfNull(maintenancePending);
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        ReadOnlyMemory<byte> bytes = snapshot.TakeBytesForParse(this);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        // The slot belongs to the document holding it, so a refusal here is contention, never this document's outcome.
-        if (revocation.IsCancellationRequested
-            || !await _serial.WaitAsync(waitForSlot ? _slotWait : TimeSpan.Zero, cancellationToken).ConfigureAwait(false))
+        // The last moment before a process exists. A worker started now would run while maintenance waits, only for its
+        // verdict to be discarded when the document stands down.
+        if (revocation.IsCancellationRequested)
         {
             return Deferred();
         }
 
-        try
+        DocumentWorkerResult result;
+
+        using (CancellationTokenSource workerLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, revocation))
         {
-            ReadOnlyMemory<byte> bytes;
-
-            // Storage borrows the caller's admission and must finish, including stream disposal, before this returns.
-            // The deadline asks it to stop; it is never permission to abandon the read.
-            using (CancellationTokenSource readDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            try
             {
-                readDeadline.CancelAfter(_readTimeout);
-
-                try
-                {
-                    bytes = await readBytes(readDeadline.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (OperationCanceledException) when (readDeadline.IsCancellationRequested)
-                {
-                    return Failed(ReadDeadlineReason);
-                }
+                result = await _worker.RunAsync(_format, bytes, workerLifetime.Token).ConfigureAwait(false);
             }
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (bytes.Length != expectedByteLength || bytes.Length > maximumBytes)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return Failed(SnapshotMismatchReason);
+                throw;
             }
-
-            // The last moment before a process exists. A worker started now would run while maintenance waits, only for its
-            // verdict to be discarded when the document stands down.
-            if (revocation.IsCancellationRequested || maintenancePending())
+            catch (OperationCanceledException) when (revocation.IsCancellationRequested)
             {
                 return Deferred();
             }
-
-            DocumentWorkerResult result;
-
-            using (CancellationTokenSource workerLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, revocation))
+            catch (Exception)
             {
-                try
-                {
-                    result = await _worker.RunAsync(_format, bytes, workerLifetime.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (OperationCanceledException) when (revocation.IsCancellationRequested)
-                {
-                    return Deferred();
-                }
-                catch (Exception)
-                {
-                    return Failed(WorkerFaultReason);
-                }
+                return Failed(WorkerFaultReason);
             }
+        }
 
-            return Project(result, cancellationToken);
-        }
-        finally
-        {
-            _serial.Release();
-        }
+        return Project(result, cancellationToken);
     }
 
     private SessionAttachmentExtractionResult Project(DocumentWorkerResult result, CancellationToken cancellationToken)

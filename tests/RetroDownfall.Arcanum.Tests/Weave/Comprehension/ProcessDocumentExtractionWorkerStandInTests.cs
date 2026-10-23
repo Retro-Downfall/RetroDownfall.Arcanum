@@ -70,7 +70,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
             $"/bin/cat > /dev/null\nprintf '{ExtractedFrame}'\n",
             new byte[ComprehensionWorkerEntry.InputCeilingBytes + 1]);
 
-        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -78,7 +78,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     {
         DocumentWorkerResult result = await RunAsync($"/bin/cat > /dev/null\nprintf '{ExtractedFrame}'\nexit 3\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -86,7 +86,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     {
         DocumentWorkerResult result = await RunAsync("/bin/cat > /dev/null\nexit 5\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.DeadlineReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.DeadlineReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -94,7 +94,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     {
         DocumentWorkerResult result = await RunAsync("/bin/cat > /dev/null\nprintf 'Unhandled exception at /Users/someone/secret.pdf'\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }
 
     public static TheoryData<string, byte[]> FramesThatAreNotStrictUtf8() => new()
@@ -124,7 +124,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
 
         Assert.Null(result.Outcome);
 
-        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -132,7 +132,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
     {
         DocumentWorkerResult result = await RunAsync("/bin/cat > /dev/null\nprintf 'ARCANUM-COMPREHENSION/1 extracted\\nHELLO'\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -141,7 +141,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
         DocumentWorkerResult result = await RunAsync(
             $"/bin/cat > /dev/null\n/usr/bin/perl -e 'print \"x\" x 3000000'\nprintf '{ExtractedFrame}'\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.FailedReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.FailedReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -153,9 +153,9 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
 
         elapsed.Stop();
 
-        Assert.Equal(ProcessDocumentExtractionWorker.DeadlineReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.DeadlineReason, result.FailureReason);
 
-        Assert.InRange(elapsed.Elapsed, ProcessDocumentExtractionWorker.WallClock, ProcessDocumentExtractionWorker.WallClock + TimeSpan.FromSeconds(15));
+        Assert.InRange(elapsed.Elapsed, DocumentWorkerProfile.Pdf.WallClock, DocumentWorkerProfile.Pdf.WallClock + TimeSpan.FromSeconds(15));
     }
 
     [SkippableFact]
@@ -164,7 +164,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
         DocumentWorkerResult result = await RunAsync(
             "/bin/cat > /dev/null\n/usr/bin/perl -e '$x = \"a\" x (1200 * 1024 * 1024); sleep 30'\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.ResourceLimitsReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.ResourceLimitsReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -331,7 +331,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
         Assert.Null(result.FailureReason);
 
         Assert.Equal(
-            (ProcessDocumentExtractionWorker.MaxFileSizeBytes / 1024).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            (DocumentWorkerProfile.Pdf.MaxFileSizeBytes / 1024).ToString(System.Globalization.CultureInfo.InvariantCulture),
             Assert.Single(result.Outcome!.Pages));
     }
 
@@ -341,7 +341,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
         // A write past the ceiling ends the worker by SIGXFSZ. With nowhere to write, the stand-in raises it itself.
         DocumentWorkerResult result = await RunUnderTheHostLaunchAsync("exec /usr/bin/perl -e 'kill \"XFSZ\", $$; sleep 5'\n");
 
-        Assert.Equal(ProcessDocumentExtractionWorker.ResourceLimitsReason, result.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.ResourceLimitsReason, result.FailureReason);
     }
 
     [SkippableFact]
@@ -450,7 +450,7 @@ public sealed class ProcessDocumentExtractionWorkerStandInTests : IDisposable
 
             DocumentWorkerResult replaced = await worker.RunAsync(DocumentWorkerFormat.Pdf, "%PDF"u8.ToArray(), CancellationToken.None);
 
-            Assert.Equal(ProcessDocumentExtractionWorker.UnavailableReason, replaced.FailureReason);
+            Assert.Equal(DocumentWorkerProfile.Pdf.UnavailableReason, replaced.FailureReason);
         }
     }
 

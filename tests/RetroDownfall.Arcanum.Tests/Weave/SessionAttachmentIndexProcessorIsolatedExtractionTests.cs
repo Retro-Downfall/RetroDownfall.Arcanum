@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Extensions.AI;
 
 using Microsoft.Extensions.Logging.Abstractions;
@@ -32,12 +34,18 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
 
+using RecordingStore = RetroDownfall.Arcanum.Tests.Weave.SessionAttachmentPdfWorkerIndexingTests.RecordingStore;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
-/// How the indexer runs a document parsed out of process: inside an effect group of its work lease, refused up front when
-/// maintenance owns admission, linked to the lease's revocation, and stood down without spending an attempt when
-/// maintenance arrives while the worker runs. An in-process document keeps extracting outside any group, as before.
+/// How the indexer extracts a document: every host's snapshot is reserved and read through the one shared step, under the
+/// family slot and outside any effect group, and the indexer alone then owns admission for the parse. A document parsed out
+/// of process is not read at all once the lease is revoked; with the snapshot in hand the indexer begins an effect group of
+/// its work lease and runs the worker inside it, linked to the lease's revocation, and a refused group stands the document
+/// down without spending an attempt, as does maintenance that arrives while the worker runs. A document parsed in process
+/// is parsed with no group. Either way the slot is held from the read through the parse and comes back on every way out,
+/// except that an in-process parse abandoned by its caller keeps it, and its family quarantined, until the parse really ends.
 /// </summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
@@ -110,13 +118,19 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
     }
 
     [SkippableFact]
-    public async Task ProcessAsync_Pdf_RunsItsWorkerInsideAnEffectGroupAndIndexesItsPages()
+    public async Task ProcessAsync_Pdf_ReadsItsSnapshotOutsideAnyEffectGroupRunsItsWorkerInsideOneAndIndexesItsPages()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionAttachmentRecord attachment = await PersistPdfAsync("multi-page.pdf");
 
         FakeWorkLease lease = new();
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+        int? groupsOpenWhileReading = null;
+
+        store.BeforeRead = () => groupsOpenWhileReading = lease.OpenGroups;
 
         bool? groupOpenWhileTheWorkerRan = null;
 
@@ -127,9 +141,13 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
             return new InProcessPdfWorker().RunAsync(DocumentWorkerFormat.Pdf, bytes, cancellationToken);
         });
 
-        SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease);
+        SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease, store: store.Proxy);
 
         Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
+
+        // The snapshot is read as an in-process format reads its own, outside any group; the group is begun only once the
+        // snapshot is in hand, and is open while the worker runs.
+        Assert.Equal(0, groupsOpenWhileReading);
 
         Assert.True(groupOpenWhileTheWorkerRan);
 
@@ -138,15 +156,21 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
     }
 
     [SkippableFact]
-    public async Task ProcessAsync_InProcessDocument_ExtractsOutsideAnyEffectGroup()
+    public async Task ProcessAsync_InProcessDocument_IsReadAndParsedWithNoEffectGroupAndGivesTheSlotBack()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        SessionAttachmentRecord attachment = await _attachments!.PersistNewAsync(
-            Guid.NewGuid(), null, null, "container", "container.arccomp", "ARCCOMP1\nin-process document"u8.ToArray(),
-            SessionAttachmentComprehensionPolicy.MimeType, SessionAttachmentKind.Binary);
+        SessionAttachmentRecord attachment = await PersistContainerAsync("in-process document");
+
+        SessionAttachmentRecord next = await PersistContainerAsync("next in-process document");
 
         FakeWorkLease lease = new();
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+        int? openGroupsWhileReading = null;
+
+        store.BeforeRead = () => openGroupsWhileReading = lease.OpenGroups;
 
         int? openGroupsWhileParsing = null;
 
@@ -159,21 +183,158 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
             },
             TimeSpan.FromSeconds(30));
 
-        SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease);
+        SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease, store: store.Proxy);
 
         Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
 
+        // The shared step read the snapshot outside any group, and the in-process parse needs none either.
+        Assert.Equal(1, Reads(store));
+
+        Assert.Equal(0, openGroupsWhileReading);
+
         Assert.Equal(0, openGroupsWhileParsing);
+
+        // The parse gave the family slot back when it ended, so the next document of the family is not deferred as busy.
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await ProcessAsync(next, host, new FakeWorkLease())).Status);
     }
 
     [SkippableFact]
-    public async Task ProcessAsync_PdfWhoseEffectGroupIsRefused_IsDeferredForMaintenanceWithoutReadingOrRunning()
+    public async Task ProcessAsync_InProcessDocumentWhoseBatchGroupIsRefused_StandsDownWithTheSlotAlreadyBack()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentRecord refused = await PersistContainerAsync("refused in-process document");
+
+        SessionAttachmentRecord next = await PersistContainerAsync("next in-process document");
+
+        SessionAttachmentDocumentExtractionHost host = new(new ComprehensionTextContainerExtractor().ExtractAsync, TimeSpan.FromSeconds(30));
+
+        // The in-process parse takes no group, so the first group asked for is the first embedding batch's, and the gate
+        // refuses it: the document stands down for maintenance.
+        SessionAttachmentIndexOutcome outcome = await ProcessAsync(refused, host, new FakeWorkLease { RefuseGroups = true }, attempt: 2);
+
+        Assert.Same(SessionAttachmentIndexOutcome.DeferredForMaintenance, outcome);
+
+        // The snapshot had already given the family slot back when its parse ended, so the next document is not busy.
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await ProcessAsync(next, host, new FakeWorkLease())).Status);
+    }
+
+    public static TheoryData<string> HostKinds() => new() { "in-process", "isolated" };
+
+    [SkippableTheory]
+    [MemberData(nameof(HostKinds))]
+    public async Task ProcessAsync_DocumentWhoseSnapshotReadThrows_IsFailedForRetryAndGivesTheSlotBack(string kind)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        bool inProcess = kind == "in-process";
+
+        SessionAttachmentRecord failing = inProcess ? await PersistContainerAsync("unreadable document") : await PersistPdfAsync("multi-page.pdf");
+
+        SessionAttachmentRecord next = inProcess ? await PersistContainerAsync("next document") : await PersistPdfAsync("multi-page.pdf");
+
+        SessionAttachmentDocumentHost host = inProcess
+            ? new SessionAttachmentDocumentExtractionHost(new ComprehensionTextContainerExtractor().ExtractAsync, TimeSpan.FromSeconds(30))
+            : IsolatedHost((_, bytes, cancellationToken) => new InProcessPdfWorker().RunAsync(DocumentWorkerFormat.Pdf, bytes, cancellationToken));
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+        store.BeforeRead = static () => throw new IOException("storage failed");
+
+        SessionAttachmentIndexOutcome outcome = await ProcessAsync(failing, host, new FakeWorkLease(), store: store.Proxy);
+
+        Assert.Equal(SessionAttachmentIndexStatus.Failed, outcome.Status);
+
+        Assert.True(outcome.ShouldRetry);
+
+        Assert.Equal("Encrypted attachment bytes are unavailable.", (await _index!.GetStateAsync(failing.Id, CancellationToken.None)).FailureReason);
+
+        // The read failed inside the shared step, which gave the family slot back on its way out.
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await ProcessAsync(next, host, new FakeWorkLease())).Status);
+    }
+
+    [SkippableFact]
+    public async Task ProcessAsync_HostCancellationWhileAnInProcessParseRuns_PropagatesAndTheParseKeepsTheFamilyUntilItEnds()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentRecord cancelled = await PersistContainerAsync("poison");
+
+        SessionAttachmentRecord next = await PersistContainerAsync("healthy document");
+
+        using ManualResetEventSlim release = new(false);
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SessionAttachmentDocumentExtractionHost host = new(
+            (bytes, output, cancellationToken) =>
+            {
+                if (bytes.Span.EndsWith("poison"u8))
+                {
+                    entered.TrySetResult();
+
+                    // An uncooperative parser: it ignores cancellation, so its caller abandons it still running.
+                    release.Wait(TimeSpan.FromSeconds(30));
+
+                    return ValueTask.CompletedTask;
+                }
+
+                return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
+            },
+            TimeSpan.FromSeconds(30));
+
+        using CancellationTokenSource shutdown = new();
+
+        try
+        {
+            Task<SessionAttachmentIndexOutcome> processing = ProcessAsync(cancelled, host, new FakeWorkLease(), cancellationToken: shutdown.Token);
+
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            await shutdown.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing.WaitAsync(TimeSpan.FromSeconds(10)));
+
+            RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+            // The abandoned parse still holds the family's slot, so the next document is deferred as busy and reads nothing.
+            Assert.Same(
+                SessionAttachmentIndexOutcome.DeferredForBusyFamily,
+                await ProcessAsync(next, host, new FakeWorkLease(), store: store.Proxy).WaitAsync(TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(0, Reads(store));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        // Once the parse really ends it gives the slot back, and the family takes the next document again.
+        Stopwatch clock = Stopwatch.StartNew();
+
+        SessionAttachmentIndexOutcome recovered;
+
+        while ((recovered = await ProcessAsync(next, host, new FakeWorkLease())) == SessionAttachmentIndexOutcome.DeferredForBusyFamily
+            && clock.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, recovered.Status);
+    }
+
+    [SkippableFact]
+    public async Task ProcessAsync_PdfWhoseLeaseIsAlreadyRevoked_IsDeferredForMaintenanceWithoutReadingOrRunning()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionAttachmentRecord attachment = await PersistPdfAsync("multi-page.pdf");
 
-        FakeWorkLease lease = new() { RefuseGroups = true };
+        FakeWorkLease lease = new();
+
+        await lease.Revocation.CancelAsync();
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
 
         int runs = 0;
 
@@ -184,13 +345,112 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
             return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
         });
 
-        SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease, attempt: 3);
+        SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, lease, attempt: 3, store: store.Proxy);
 
         Assert.Same(SessionAttachmentIndexOutcome.DeferredForMaintenance, outcome);
+
+        Assert.Equal(0, Reads(store));
 
         Assert.Equal(0, runs);
 
         await AssertDurablyPendingAsync(attachment, attempt: 3);
+    }
+
+    [SkippableFact]
+    public async Task ProcessAsync_PdfWhoseEffectGroupIsRefusedAfterTheRead_IsDeferredForMaintenanceWithoutRunningAndGivesTheSlotBack()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentRecord refused = await PersistPdfAsync("multi-page.pdf");
+
+        SessionAttachmentRecord next = await PersistPdfAsync("multi-page.pdf");
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+        int runs = 0;
+
+        SessionAttachmentIsolatedDocumentHost host = IsolatedHost((_, bytes, cancellationToken) =>
+        {
+            runs++;
+
+            return new InProcessPdfWorker().RunAsync(DocumentWorkerFormat.Pdf, bytes, cancellationToken);
+        });
+
+        // A lease whose revocation is not yet signalled but whose gate refuses a new group: maintenance that became pending
+        // while the snapshot was being read. The refusal stands the document down; no worker starts.
+        SessionAttachmentIndexOutcome outcome = await ProcessAsync(refused, host, new FakeWorkLease { RefuseGroups = true }, attempt: 3, store: store.Proxy);
+
+        Assert.Same(SessionAttachmentIndexOutcome.DeferredForMaintenance, outcome);
+
+        Assert.Equal(1, Reads(store));
+
+        Assert.Equal(0, runs);
+
+        await AssertDurablyPendingAsync(refused, attempt: 3);
+
+        // The family slot the read took came back with the refusal, so the next document runs instead of being deferred as busy.
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await ProcessAsync(next, host, new FakeWorkLease())).Status);
+
+        Assert.Equal(1, runs);
+    }
+
+    [SkippableFact]
+    public async Task ProcessAsync_PdfWhoseEffectGroupThrowsAfterTheRead_GivesTheSlotBack()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentRecord failing = await PersistPdfAsync("multi-page.pdf");
+
+        SessionAttachmentRecord next = await PersistPdfAsync("multi-page.pdf");
+
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
+        SessionAttachmentIsolatedDocumentHost host = IsolatedHost((_, bytes, cancellationToken) =>
+            new InProcessPdfWorker().RunAsync(DocumentWorkerFormat.Pdf, bytes, cancellationToken));
+
+        _ = await ProcessAsync(failing, host, new FakeWorkLease { ThrowOnGroup = true }, store: store.Proxy);
+
+        Assert.Equal(1, Reads(store));
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await ProcessAsync(next, host, new FakeWorkLease())).Status);
+    }
+
+    [SkippableFact]
+    public async Task ProcessAsync_HostCancellationWhileTheWorkerRuns_PropagatesAndGivesTheSlotBack()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentRecord cancelled = await PersistPdfAsync("multi-page.pdf");
+
+        SessionAttachmentRecord next = await PersistPdfAsync("multi-page.pdf");
+
+        using CancellationTokenSource shutdown = new();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        int runs = 0;
+
+        SessionAttachmentIsolatedDocumentHost host = IsolatedHost(async (_, bytes, cancellationToken) =>
+        {
+            if (Interlocked.Increment(ref runs) == 1)
+            {
+                entered.TrySetResult();
+
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            }
+
+            return await new InProcessPdfWorker().RunAsync(DocumentWorkerFormat.Pdf, bytes, cancellationToken);
+        });
+
+        Task<SessionAttachmentIndexOutcome> processing = ProcessAsync(cancelled, host, new FakeWorkLease(), cancellationToken: shutdown.Token);
+
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await shutdown.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => processing.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.Equal(SessionAttachmentIndexStatus.Indexed, (await ProcessAsync(next, host, new FakeWorkLease())).Status);
     }
 
     [SkippableFact]
@@ -312,13 +572,18 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
         try
         {
             // At once: the indexer never queues for the slot, so it cannot hold its lease behind another document.
-            SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, new FakeWorkLease(), attempt: 5)
+            SessionAttachmentIndexOutcome outcome = await ProcessAsync(attachment, host, new FakeWorkLease(), attempt: 5, store: store.Proxy)
                 .WaitAsync(TimeSpan.FromSeconds(10));
 
             Assert.Same(SessionAttachmentIndexOutcome.DeferredForBusyFamily, outcome);
+
+            // The busy family is found before the snapshot read, so nothing was read.
+            Assert.Equal(0, Reads(store));
 
             SessionAttachmentIndexState state = await _index!.GetStateAsync(attachment.Id, CancellationToken.None);
 
@@ -338,7 +603,7 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
     public static TheoryData<string, string> TerminalWorkerResults() => new()
     {
-        { "failed", ProcessDocumentExtractionWorker.UnavailableReason },
+        { "failed", DocumentWorkerProfile.Pdf.UnavailableReason },
         { "password", SessionAttachmentIsolatedDocumentHost.PasswordRequiredReason },
         { "malformed", SessionAttachmentIsolatedDocumentHost.MalformedReason },
     };
@@ -353,7 +618,7 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         DocumentWorkerResult result = verdict switch
         {
-            "failed" => DocumentWorkerResult.Failed(ProcessDocumentExtractionWorker.UnavailableReason),
+            "failed" => DocumentWorkerResult.Failed(DocumentWorkerProfile.Pdf.UnavailableReason),
             "password" => DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.PasswordRequired)),
             _ => DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.Malformed)),
         };
@@ -415,7 +680,7 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         Assert.Contains(
             (await _index!.GetStateAsync(hostile.Id, CancellationToken.None)).FailureReason,
-            new[] { ProcessDocumentExtractionWorker.ResourceLimitsReason, ProcessDocumentExtractionWorker.DeadlineReason });
+            new[] { DocumentWorkerProfile.Pdf.ResourceLimitsReason, DocumentWorkerProfile.Pdf.DeadlineReason });
 
         SessionAttachmentIndexOutcome indexed = await ProcessAsync(healthy, host: null, new FakeWorkLease());
 
@@ -441,6 +706,11 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
         Assert.Null(state.PublishedGenerationId);
     }
 
+    private Task<SessionAttachmentRecord> PersistContainerAsync(string text) =>
+        _attachments!.PersistNewAsync(
+            Guid.NewGuid(), null, null, "container", "container.arccomp", System.Text.Encoding.UTF8.GetBytes("ARCCOMP1\n" + text),
+            SessionAttachmentComprehensionPolicy.MimeType, SessionAttachmentKind.Binary);
+
     private Task<SessionAttachmentRecord> PersistPdfAsync(string fixture) =>
         _attachments!.PersistNewAsync(
             Guid.NewGuid(), null, null, "report", "report.pdf", PdfFixtures.Read(fixture),
@@ -450,15 +720,20 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
         SessionAttachmentRecord attachment,
         SessionAttachmentDocumentHost? host,
         IGrimoireWorkLease lease,
-        int attempt = 0) =>
+        int attempt = 0,
+        ISessionAttachmentStore? store = null,
+        CancellationToken cancellationToken = default) =>
         new SessionAttachmentIndexProcessor(
                 new TestOptionsMonitor<ArcanumSettings>(_settings),
                 new UnitWeaveService(),
-                _attachments!,
+                store ?? _attachments!,
                 _index!,
                 NullLogger<SessionAttachmentIndexProcessor>.Instance,
                 host)
-            .ProcessAsync(new SessionAttachmentIndexRequest(attachment.Id, attachment.SessionId!.Value, attempt), lease, CancellationToken.None);
+            .ProcessAsync(new SessionAttachmentIndexRequest(attachment.Id, attachment.SessionId!.Value, attempt), lease, cancellationToken);
+
+    private static int Reads(RecordingStore store) =>
+        store.Calls.Count(static call => call == nameof(ISessionAttachmentStore.ReadBytesAsync));
 
     private static SessionAttachmentIsolatedDocumentHost IsolatedHost(
         Func<DocumentWorkerFormat, ReadOnlyMemory<byte>, CancellationToken, Task<DocumentWorkerResult>> run) =>
@@ -483,6 +758,8 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         public bool RefuseGroups { get; init; }
 
+        public bool ThrowOnGroup { get; init; }
+
         public int OpenGroups => Volatile.Read(ref _openGroups);
 
         public GrimoireWorkKind Kind => GrimoireWorkKind.SessionAttachmentIndexing;
@@ -495,6 +772,11 @@ public sealed class SessionAttachmentIndexProcessorIsolatedExtractionTests : IAs
 
         public bool TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? effectGroup)
         {
+            if (ThrowOnGroup)
+            {
+                throw new InvalidOperationException("The gate failed.");
+            }
+
             if (RefuseGroups || Revocation.IsCancellationRequested)
             {
                 effectGroup = null;

@@ -96,78 +96,40 @@ internal static class SessionAttachmentTextExtractor
     }
 
     /// <summary>
-    /// <see cref="ExtractDocumentAsync"/> through an in-process host named by its own type, so this call reaches the
-    /// in-process parse alone. The indexer uses it outside any effect group.
+    /// The first step of <see cref="ExtractDocumentAsync"/> alone, for the caller that runs the parse step itself:
+    /// eligibility, the refusals before reading, then the reserve-and-read step every host shares
+    /// (<see cref="SessionAttachmentDocumentHost.ReadSnapshotAsync"/>). It reaches no parse, whichever host it is given. The
+    /// indexer uses it outside any effect group, holds the returned snapshot (and with it the family slot) in a
+    /// <see langword="using"/>, and then runs the parse step of the host it names by its concrete type.
     /// </summary>
-    internal static async Task<SessionAttachmentExtractionResult> ExtractInProcessDocumentAsync(
+    internal static async Task<SessionAttachmentDocumentSnapshot> ReadDocumentSnapshotAsync(
         ISessionAttachmentStore store,
         SessionAttachmentRecord record,
         ArcanumSettings settings,
         long maxBytes,
         CancellationToken cancellationToken,
-        SessionAttachmentDocumentExtractionHost? host,
+        SessionAttachmentDocumentHost? host,
         bool waitForSlot)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
         {
-            return NotEligibleDocument();
+            return SessionAttachmentDocumentSnapshot.Refused(NotEligibleDocument());
         }
 
         if (RefuseBeforeReading(record, maxBytes, host is not null) is { } refused)
         {
-            return refused;
+            return SessionAttachmentDocumentSnapshot.Refused(refused);
         }
 
         return await host!
-            .ExtractInProcessAsync(
+            .ReadSnapshotAsync(
                 token => store.ReadBytesAsync(record, token),
                 record.ByteLength,
                 maxBytes,
                 cancellationToken,
                 waitForSlot).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// <see cref="ExtractDocumentAsync"/> through an isolated host named by its own type, so this call reaches the worker
-    /// alone. The indexer uses it inside an effect group, with the work lease's <paramref name="revocation"/> and its
-    /// pending maintenance obligation as <paramref name="maintenancePending"/>.
-    /// </summary>
-    internal static async Task<SessionAttachmentExtractionResult> ExtractIsolatedDocumentAsync(
-        ISessionAttachmentStore store,
-        SessionAttachmentRecord record,
-        ArcanumSettings settings,
-        long maxBytes,
-        CancellationToken cancellationToken,
-        SessionAttachmentIsolatedDocumentHost host,
-        bool waitForSlot,
-        CancellationToken revocation,
-        Func<bool> maintenancePending)
-    {
-        ArgumentNullException.ThrowIfNull(host);
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
-        {
-            return NotEligibleDocument();
-        }
-
-        if (RefuseBeforeReading(record, maxBytes, hasHost: true) is { } refused)
-        {
-            return refused;
-        }
-
-        return await host
-            .ExtractIsolatedAsync(
-                token => store.ReadBytesAsync(record, token),
-                record.ByteLength,
-                maxBytes,
-                cancellationToken,
-                waitForSlot,
-                revocation,
-                maintenancePending).ConfigureAwait(false);
     }
 
     /// <summary>The refusal of an eligible document before any byte is read, or <see langword="null"/> when it may be read.</summary>

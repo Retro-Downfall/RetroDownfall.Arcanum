@@ -175,54 +175,70 @@ internal sealed class SessionAttachmentIndexProcessor(
 
                 SessionAttachmentExtractionResult extraction;
 
-                // Either way this runs inside the work lease, so it never queues for its family's slot: a slot held by
-                // other documents' parses would hold maintenance's stage-one drain behind them. A busy family is a
-                // deferral instead, retried after the backoff with the lease given back. The two hosts are reached by
-                // their own types, so the worker process can be reached only from inside an effect group.
-                if (documentHost is SessionAttachmentIsolatedDocumentHost isolatedHost)
+                // A worker process is an external effect, and a lease maintenance has already revoked starts none: a document
+                // parsed out of process is then not even read, and stands down unspent.
+                if (documentHost is SessionAttachmentIsolatedDocumentHost
+                    && workLease.MaintenanceRevocation.IsCancellationRequested)
                 {
-                    // A worker process is an external effect, so it runs inside an effect group of this lease: maintenance
-                    // that already owns admission refuses it before anything is read, and nothing is spent. The worker is
-                    // linked to the lease's revocation, so a lease that revokes an open group kills it and the document is
-                    // deferred. The gate itself waits through an open group and signals revocation only once it closes,
-                    // so the host also asks the lease's pending obligation just before it would start the worker: once
-                    // maintenance arrived during the snapshot read, no worker starts. Maintenance that arrived while the
-                    // worker ran is seen here, and the document stands down unspent instead of writing an index
-                    // generation maintenance is waiting to take the Grimoire from.
-                    if (!workLease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? extractionGroup))
-                    {
-                        return SessionAttachmentIndexOutcome.DeferredForMaintenance;
-                    }
-
-                    await using (IGrimoireExternalEffectGroup extractionEffect = extractionGroup!)
-                    {
-                        extraction = await SessionAttachmentTextExtractor.ExtractIsolatedDocumentAsync(
-                            attachments,
-                            attachment,
-                            runtimeSettings,
-                            maxDocumentBytes,
-                            cancellationToken,
-                            isolatedHost,
-                            waitForSlot: false,
-                            workLease.MaintenanceRevocation,
-                            () => workLease.MaintenanceRevocationPending).ConfigureAwait(false);
-                    }
-
-                    if (workLease.MaintenanceRevocation.IsCancellationRequested)
-                    {
-                        return SessionAttachmentIndexOutcome.DeferredForMaintenance;
-                    }
+                    return SessionAttachmentIndexOutcome.DeferredForMaintenance;
                 }
-                else
+
+                // Every host's snapshot is reserved and read by the one shared step, inside the work lease and outside any
+                // effect group, and never queues for its family's slot: a slot held by other documents' parses would hold
+                // maintenance's stage-one drain behind them. A busy family is a deferral instead, retried after the backoff
+                // with the lease given back. The snapshot holds the slot from the read through the parse and gives it back on
+                // every way out of this block, so a document that stands down never holds the next one up.
+                using (SessionAttachmentDocumentSnapshot snapshot = await SessionAttachmentTextExtractor.ReadDocumentSnapshotAsync(
+                    attachments,
+                    attachment,
+                    runtimeSettings,
+                    maxDocumentBytes,
+                    cancellationToken,
+                    documentHost,
+                    waitForSlot: false).ConfigureAwait(false))
                 {
-                    extraction = await SessionAttachmentTextExtractor.ExtractInProcessDocumentAsync(
-                        attachments,
-                        attachment,
-                        runtimeSettings,
-                        maxDocumentBytes,
-                        cancellationToken,
-                        documentHost as SessionAttachmentDocumentExtractionHost,
-                        waitForSlot: false).ConfigureAwait(false);
+                    if (snapshot.Refusal is { } refusal)
+                    {
+                        extraction = refusal;
+                    }
+                    else if (documentHost is SessionAttachmentIsolatedDocumentHost isolatedHost)
+                    {
+                        // Admission is this method's alone, and each parse step is reached by its host's own type, so the
+                        // worker runs only inside an effect group of this lease, begun only now that the snapshot is in
+                        // hand. Maintenance that arrived during the read found no open group: the gate signalled the lease's
+                        // revocation at once and refuses the group, and the document stands down unspent with no worker
+                        // started. The worker is linked to the lease's revocation, so a lease that revokes an open group
+                        // kills it and the document is deferred. The gate itself waits through an open group and signals
+                        // revocation only once it closes, so maintenance that arrived while the worker ran is seen after the
+                        // group, and the document stands down unspent instead of writing an index generation maintenance is
+                        // waiting to take the Grimoire from.
+                        if (workLease.MaintenanceRevocation.IsCancellationRequested
+                            || !workLease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? extractionGroup))
+                        {
+                            return SessionAttachmentIndexOutcome.DeferredForMaintenance;
+                        }
+
+                        await using (IGrimoireExternalEffectGroup extractionEffect = extractionGroup!)
+                        {
+                            extraction = await isolatedHost.RunWorkerAsync(
+                                snapshot,
+                                cancellationToken,
+                                workLease.MaintenanceRevocation).ConfigureAwait(false);
+                        }
+
+                        if (workLease.MaintenanceRevocation.IsCancellationRequested)
+                        {
+                            return SessionAttachmentIndexOutcome.DeferredForMaintenance;
+                        }
+                    }
+                    else
+                    {
+                        // An in-process parse is pure computation over bytes already read, so it takes no group. It takes the
+                        // slot over from the snapshot, and a parse that outlives this call keeps the slot, and its family
+                        // quarantined, until it really ends.
+                        extraction = await ((SessionAttachmentDocumentExtractionHost)documentHost!)
+                            .ParseInProcessAsync(snapshot, cancellationToken).ConfigureAwait(false);
+                    }
                 }
 
                 if (extraction.Status == SessionAttachmentExtractionStatus.Deferred)

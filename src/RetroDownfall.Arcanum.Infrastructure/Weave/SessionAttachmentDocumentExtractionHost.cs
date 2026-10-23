@@ -9,294 +9,153 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// The one abstraction a caller reaches a registry format's extraction through, whichever way the format is parsed: in
-/// this process by a pure extractor (<see cref="SessionAttachmentDocumentExtractionHost"/>) or in a jailed worker process
-/// (<see cref="SessionAttachmentIsolatedDocumentHost"/>). Both bound waiting for their family's slot the same way, read
-/// the caller's authenticated snapshot under the caller's admission, and report through the same result.
-/// </summary>
-internal abstract class SessionAttachmentDocumentHost
-{
-    /// <summary>The one code-owned reason a deferred attempt carries, whichever contention caused it.</summary>
-    internal const string BusyReason = "Document extraction is temporarily busy.";
-
-    /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
-    internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
-
-    private protected SessionAttachmentDocumentHost()
-    {
-    }
-
-    /// <summary>
-    /// Extracts the document whose bytes <paramref name="readBytes"/> reads. A caller that must not queue passes
-    /// <paramref name="waitForSlot"/> <see langword="false"/> and is deferred when the family is busy.
-    /// </summary>
-    internal abstract Task<SessionAttachmentExtractionResult> ExtractAsync(
-        Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
-        long expectedByteLength,
-        long maximumBytes,
-        CancellationToken cancellationToken,
-        bool waitForSlot = true);
-
-    internal static SessionAttachmentExtractionResult Failed(string reason) => new(
-        SessionAttachmentExtractionStatus.Failed, string.Empty, WasTruncated: false, reason);
-
-    internal static SessionAttachmentExtractionResult Deferred() => new(
-        SessionAttachmentExtractionStatus.Deferred, string.Empty, WasTruncated: false, BusyReason);
-}
-
-/// <summary>
-/// Bounds parser waiting and retained text for a closed, reviewed in-process format. One slot per
-/// parser family serializes its invocations. Waiting for that slot is bounded separately and is never
-/// charged to the waiting document: a slot not acquired in time, a slot not free for a caller that
-/// asked not to wait, or a family quarantined by an outstanding parser, is
-/// <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller treats as terminal. A
-/// quarantine refuses later callers at once and releases the callers already queued for the slot.
-/// Once the slot is held, the document's own budget covers its snapshot read and its parse, and expiry
-/// of that budget is a terminal failure. Snapshot reads remain awaited inside the caller's admission and
-/// receive cancellation from that budget. A parser still running after its budget quarantines its
-/// family until it ends. This limits abandoned pure computation; it does not claim to preempt a parser
-/// or police its private allocations.
+/// Bounds parser waiting and retained text for a closed, reviewed in-process format, over the reserve-and-read step every
+/// host shares (<see cref="SessionAttachmentDocumentHost.ReadSnapshotAsync"/>). One slot per parser family serializes its
+/// invocations. Waiting for that slot is bounded separately and is never charged to the waiting document: a slot not
+/// acquired in time, a slot not free for a caller that asked not to wait, or a family quarantined by an outstanding parser,
+/// is <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller treats as terminal. A quarantine refuses
+/// later callers at once and releases the callers already queued for the slot. Once the slot is held, the document's own
+/// budget covers its snapshot read and its parse, and expiry of that budget is a terminal failure. Snapshot reads remain
+/// awaited inside the caller's admission and receive cancellation from that budget. The parse
+/// (<see cref="ParseInProcessAsync"/>) is the only code of this host's own: it takes the slot over from the snapshot, and a
+/// parser still running after its budget keeps the slot and quarantines its family until it ends. This limits abandoned
+/// pure computation; it does not claim to preempt a parser or police its private allocations.
 /// </summary>
 internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
     TimeSpan timeout,
     int maximumCharacters = 262_144,
-    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost
+    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost(timeout, parseSpendsReadBudget: true, slotWait)
 {
+    /// <summary>The document's parse outlived what its budget had left once its snapshot was read.</summary>
+    internal const string DeadlineReason = "Document extraction exceeded its deadline.";
+
     internal static SessionAttachmentDocumentExtractionHost Default => SessionAttachmentDocumentExtractors.TextContainerHost;
 
-    private readonly TimeSpan _slotWait = slotWait ?? DefaultSlotWait;
+    /// <summary>The document's own budget, which the snapshot read and the parse share; the base holds it for the read.</summary>
+    private readonly TimeSpan _timeout = timeout;
 
-    private readonly object _gate = new();
-
-    private readonly SemaphoreSlim _serial = new(1, 1);
-
-    private bool _quarantined;
-
-    /// <summary>
-    /// Cancelled when the family is quarantined, releasing every caller queued for the slot before it.
-    /// Each quarantine replaces it, so a caller that queues after the family recovers waits on a fresh one.
-    /// </summary>
-    private CancellationTokenSource _quarantineSignal = new();
-
-    internal override Task<SessionAttachmentExtractionResult> ExtractAsync(
-        Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
-        long expectedByteLength,
-        long maximumBytes,
-        CancellationToken cancellationToken,
-        bool waitForSlot = true) =>
-        ExtractInProcessAsync(readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot);
-
-    /// <summary>
-    /// <see cref="ExtractAsync"/> as a member of this class alone, so a caller that holds this host by its own type reaches
-    /// the in-process parse and nothing else.
-    /// </summary>
-    internal async Task<SessionAttachmentExtractionResult> ExtractInProcessAsync(
+    internal override async Task<SessionAttachmentExtractionResult> ExtractAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
         CancellationToken cancellationToken,
         bool waitForSlot = true)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        using SessionAttachmentDocumentSnapshot snapshot = await ReadSnapshotAsync(
+            readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot).ConfigureAwait(false);
 
-        // Contention belongs to other documents. A quarantined family refuses at once rather than
-        // queueing behind a parser that may never end, and its quarantine releases a caller already
-        // queued. Otherwise the slot wait is bounded on its own clock, and a caller that must not wait
-        // takes the slot only when it is free. No refusal has read or parsed this document, so none is
-        // its outcome.
-        CancellationToken quarantine;
-
-        lock (_gate)
-        {
-            if (_quarantined)
-            {
-                return Deferred();
-            }
-
-            quarantine = _quarantineSignal.Token;
-        }
-
-        using (CancellationTokenSource slotWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, quarantine))
-        {
-            try
-            {
-                if (!await _serial.WaitAsync(waitForSlot ? _slotWait : TimeSpan.Zero, slotWait.Token).ConfigureAwait(false))
-                {
-                    return Deferred();
-                }
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                return Deferred();
-            }
-        }
-
-        // The document's own budget starts only now that it holds the slot. The snapshot read and the
-        // parse share it, and its expiry is charged to this document alone.
-        long started = Stopwatch.GetTimestamp();
-
-        TimeSpan remaining = timeout;
-
-        bool parserOwnsSlot = false;
-
-        try
-        {
-            // Storage borrows the caller's admission and must finish (including stream disposal)
-            // before this method returns. A cancellation deadline requests cooperation; it is never
-            // permission to abandon a read that still owns installation resources.
-            using CancellationTokenSource readDeadline = CancellationTokenSource
-                .CreateLinkedTokenSource(cancellationToken);
-
-            readDeadline.CancelAfter(remaining);
-
-            ReadOnlyMemory<byte> bytes;
-
-            try
-            {
-                bytes = await readBytes(readDeadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException) when (readDeadline.IsCancellationRequested)
-            {
-                return Failed("Document extraction exceeded its deadline while reading its snapshot.");
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-
-            remaining = timeout - Stopwatch.GetElapsedTime(started);
-
-            if (readDeadline.IsCancellationRequested || remaining <= TimeSpan.Zero)
-            {
-                return Failed("Document extraction exceeded its deadline while reading its snapshot.");
-            }
-
-            if (bytes.Length != expectedByteLength || bytes.Length > maximumBytes)
-            {
-                return Failed("Document input does not match its bounded snapshot.");
-            }
-
-            CancellationTokenSource cancellation = new();
-
-            BoundedDocumentTextSink sink = new(maximumCharacters, cancellation.Token);
-
-            // The callback is a closed concrete method group in the production registry. The
-            // scheduled closure references only owned bytes, the bounded sink, parser cancellation,
-            // and host mechanics/callback. Neither callback here references the storage delegate or
-            // the read deadline, so neither borrowed value is retained by their shared closure.
-            Task<SessionAttachmentExtractionResult> invocation = Task.Run(async () =>
-            {
-                try
-                {
-                    cancellation.Token.ThrowIfCancellationRequested();
-
-                    await extract(bytes, sink, cancellation.Token).ConfigureAwait(false);
-
-                    cancellation.Token.ThrowIfCancellationRequested();
-
-                    return sink.Complete();
-                }
-                catch (DocumentPackageRejectedException rejected)
-                {
-                    // A closed, code-owned rejection: fixed status and reason, no entry or part names.
-                    // It is an ordinary outcome, so the format is not quarantined by it.
-                    return rejected.ToResult();
-                }
-                catch (Exception)
-                {
-                    return Failed("Document extraction failed.");
-                }
-            }, CancellationToken.None);
-
-            parserOwnsSlot = true;
-
-            _ = invocation.ContinueWith(
-                completed =>
-                {
-                    _ = completed.Exception;
-
-                    lock (_gate)
-                    {
-                        _quarantined = false;
-                    }
-
-                    cancellation.Dispose();
-
-                    _serial.Release();
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-
-            try
-            {
-                SessionAttachmentExtractionResult result = await invocation
-                    .WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                return Stopwatch.GetElapsedTime(started) >= timeout
-                    ? Failed("Document extraction exceeded its deadline.")
-                    : result;
-            }
-            catch (TimeoutException) when (!invocation.IsFaulted)
-            {
-                sink.Close();
-
-                QuarantineWhileRunning(invocation);
-
-                RequestCancellation(cancellation);
-
-                return Failed("Document extraction exceeded its deadline.");
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                sink.Close();
-
-                QuarantineWhileRunning(invocation);
-
-                RequestCancellation(cancellation);
-
-                throw;
-            }
-        }
-        finally
-        {
-            if (!parserOwnsSlot)
-            {
-                _serial.Release();
-            }
-        }
+        return snapshot.Refusal ?? await ParseInProcessAsync(snapshot, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Quarantines the family while the abandoned invocation still runs, and releases the callers queued for
-    /// its slot: they would otherwise wait out the whole slot wait behind a parser that may never end. The
-    /// release runs their continuations on the thread pool, not on this caller's thread. The released source
-    /// owns no timer and is not disposed, since a caller may still be linking to its token.
+    /// This host's own step: parses, once, a snapshot this host read and still holds, within what the read left of the
+    /// document's budget. A member of this class alone, so a caller that holds this host by its own type reaches the
+    /// in-process parse and nothing else. The parse takes the slot over from the snapshot as it starts and gives it back
+    /// when it ends, so a parse that outlives its caller (its budget expired, or the caller was cancelled) keeps the slot,
+    /// and its family quarantined, until it really ends; a step that ends before the parse starts leaves the slot with the
+    /// snapshot, whose disposal gives it back.
     /// </summary>
-    private void QuarantineWhileRunning(Task invocation)
+    /// <exception cref="InvalidOperationException">
+    /// The snapshot is a refusal, was read by another host, was disposed, or has already been parsed.
+    /// </exception>
+    internal async Task<SessionAttachmentExtractionResult> ParseInProcessAsync(
+        SessionAttachmentDocumentSnapshot snapshot,
+        CancellationToken cancellationToken)
     {
-        CancellationTokenSource? queued = null;
+        ArgumentNullException.ThrowIfNull(snapshot);
 
-        lock (_gate)
+        ReadOnlyMemory<byte> bytes = snapshot.TakeBytesForParse(this);
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        long started = snapshot.SlotTakenAt;
+
+        TimeSpan remaining = _timeout - Stopwatch.GetElapsedTime(started);
+
+        if (remaining <= TimeSpan.Zero)
         {
-            _quarantined = !invocation.IsCompleted;
-
-            if (_quarantined)
-            {
-                queued = _quarantineSignal;
-
-                _quarantineSignal = new CancellationTokenSource();
-            }
+            return Failed(DeadlineReason);
         }
 
-        if (queued is not null)
+        CancellationTokenSource cancellation = new();
+
+        BoundedDocumentTextSink sink = new(maximumCharacters, cancellation.Token);
+
+        // The callback is a closed concrete method group in the production registry. The scheduled closure references only
+        // owned bytes, the bounded sink, parser cancellation, and host mechanics/callback. Neither callback here references
+        // the storage delegate or the read deadline, so neither borrowed value is retained by their shared closure.
+        Task<SessionAttachmentExtractionResult> invocation = Task.Run(async () =>
         {
-            _ = queued.CancelAsync();
+            try
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+
+                await extract(bytes, sink, cancellation.Token).ConfigureAwait(false);
+
+                cancellation.Token.ThrowIfCancellationRequested();
+
+                return sink.Complete();
+            }
+            catch (DocumentPackageRejectedException rejected)
+            {
+                // A closed, code-owned rejection: fixed status and reason, no entry or part names.
+                // It is an ordinary outcome, so the format is not quarantined by it.
+                return rejected.ToResult();
+            }
+            catch (Exception)
+            {
+                return Failed("Document extraction failed.");
+            }
+        }, CancellationToken.None);
+
+        // From here the parse owns the slot: its own end gives the slot back, whenever that is. The continuation references
+        // only the parser cancellation and the snapshot whose slot it gives back, never the storage delegate.
+        snapshot.HandSlotToParse();
+
+        _ = invocation.ContinueWith(
+            completed =>
+            {
+                _ = completed.Exception;
+
+                cancellation.Dispose();
+
+                snapshot.ReleaseHandedOverSlot();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
+        try
+        {
+            SessionAttachmentExtractionResult result = await invocation
+                .WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return Stopwatch.GetElapsedTime(started) >= _timeout
+                ? Failed(DeadlineReason)
+                : result;
+        }
+        catch (TimeoutException) when (!invocation.IsFaulted)
+        {
+            sink.Close();
+
+            QuarantineWhileRunning(invocation);
+
+            RequestCancellation(cancellation);
+
+            return Failed(DeadlineReason);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            sink.Close();
+
+            QuarantineWhileRunning(invocation);
+
+            RequestCancellation(cancellation);
+
+            throw;
         }
     }
 

@@ -170,7 +170,7 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         Assert.Equal(SessionAttachmentIndexStatus.Failed, hostileState.Status);
 
-        Assert.Equal(ProcessDocumentExtractionWorker.DeadlineReason, hostileState.FailureReason);
+        Assert.Equal(DocumentWorkerProfile.Pdf.DeadlineReason, hostileState.FailureReason);
 
         Assert.NotNull(hostileState.ExtractedAt);
 
@@ -473,10 +473,11 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // The lease predates the maintenance request, so the processor is already running when maintenance becomes
-        // pending. The real gate then refuses the effect group the worker needs, and no worker starts. Three layers
-        // each stop it on their own (the group refusal, the host's check of the revocation, the worker's check of its
-        // token), so this test with the real gate fails only if all of them are gone; the refusal by itself is pinned
-        // against a lease that revokes nothing in SessionAttachmentIndexProcessorIsolatedExtractionTests.
+        // pending. With no group open the real gate revokes the lease at once and refuses the effect group the worker
+        // needs. Four layers each stop the worker on their own (the processor's check of the revocation before the read,
+        // the group refusal after it, the worker step's check of the revocation, the worker's check of its token), so this
+        // test with the real gate fails only if all of them are gone; the refusal by itself is pinned against a lease that
+        // revokes nothing in SessionAttachmentIndexProcessorIsolatedExtractionTests.
         SessionAttachmentRecord attachment = await PersistAsync(Guid.NewGuid(), "multi-page.pdf");
 
         using IDisposable worker = InProcessPdfWorker.Use(out InProcessPdfWorker spawned);
@@ -496,10 +497,12 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         Assert.Null(refused);
 
+        RecordingStore store = RecordingStore.Wrap(_attachments!);
+
         SessionAttachmentIndexOutcome outcome = await new SessionAttachmentIndexProcessor(
                 new TestOptionsMonitor<ArcanumSettings>(_settings),
                 new MarkerWeaveService("unused"),
-                _attachments!,
+                store.Proxy,
                 _index!,
                 NullLogger<SessionAttachmentIndexProcessor>.Instance)
             .ProcessAsync(new SessionAttachmentIndexRequest(attachment.Id, attachment.SessionId!.Value, Attempt: 3), lease, CancellationToken.None);
@@ -507,6 +510,9 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
         Assert.Same(SessionAttachmentIndexOutcome.DeferredForMaintenance, outcome);
 
         Assert.Equal(0, spawned.Runs);
+
+        // A lease maintenance already revoked reads nothing either.
+        Assert.DoesNotContain(nameof(ISessionAttachmentStore.ReadBytesAsync), store.Calls);
 
         await lease.DisposeAsync();
 
@@ -526,10 +532,9 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
-        // The effect group is already open when maintenance arrives, so the gate does not refuse it and does not cancel
-        // the lease's revocation either: it only marks the lease pending and cancels when the group closes. Maintenance
-        // begun inside the snapshot read is therefore invisible to the revocation token, and only the host's check of the
-        // pending obligation just before the launch keeps a worker whose result would be thrown away from starting.
+        // The snapshot is read before any effect group is begun, so maintenance that arrives during the read finds no
+        // open group: the gate revokes the lease at once and refuses the group the worker would need. The refused group
+        // stands the document down, so no worker starts whose verdict would be thrown away and the drain waits for none.
         SessionAttachmentRecord attachment = await PersistAsync(Guid.NewGuid(), "multi-page.pdf");
 
         using IDisposable worker = InProcessPdfWorker.Use(out InProcessPdfWorker spawned);
@@ -542,6 +547,8 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         Task<Result>? drain = null;
 
+        bool? revokedDuringTheRead = null;
+
         RecordingStore store = RecordingStore.Wrap(_attachments!);
 
         store.BeforeRead = () =>
@@ -549,6 +556,8 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
             closing = gate.BeginOrResumeExclusive(Owner());
 
             Assert.True(closing.IsSuccess);
+
+            revokedDuringTheRead = lease!.MaintenanceRevocation.IsCancellationRequested;
 
             drain = gate.DrainRequestAndWorkAsync(closing.Value, CancellationToken.None).AsTask();
         };
@@ -567,6 +576,9 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
 
         Assert.Contains(nameof(ISessionAttachmentStore.ReadBytesAsync), store.Calls);
 
+        // No group was open while the snapshot was read, so the gate revoked the lease the moment maintenance began.
+        Assert.True(revokedDuringTheRead);
+
         await lease!.DisposeAsync();
 
         Assert.True((await drain!.WaitAsync(TimeSpan.FromSeconds(10))).IsSuccess);
@@ -580,6 +592,27 @@ public sealed class SessionAttachmentPdfWorkerIndexingTests : IAsyncLifetime
         Assert.Null(state.ExtractedAt);
 
         Assert.Empty(await _index.GetChunksForAttachmentAsync(attachment.Id, CancellationToken.None));
+
+        // The snapshot gave the registry's PDF slot back when the refused group stood the document down, so under a lease
+        // of a gate with no maintenance the next PDF is read, run and indexed rather than deferred as busy.
+        SessionAttachmentRecord next = await PersistAsync(Guid.NewGuid(), "multi-page.pdf");
+
+        Assert.True(new GrimoireConnectionAdmissionGate(TimeProvider.System).TryAcquireWorkLease(GrimoireWorkKind.SessionAttachmentIndexing, out IGrimoireWorkLease? nextLease));
+
+        await using (nextLease)
+        {
+            SessionAttachmentIndexOutcome indexed = await new SessionAttachmentIndexProcessor(
+                    new TestOptionsMonitor<ArcanumSettings>(_settings),
+                    new MarkerWeaveService("unused"),
+                    _attachments!,
+                    _index!,
+                    NullLogger<SessionAttachmentIndexProcessor>.Instance)
+                .ProcessAsync(new SessionAttachmentIndexRequest(next.Id, next.SessionId!.Value, Attempt: 0), nextLease!, CancellationToken.None);
+
+            Assert.Equal(SessionAttachmentIndexStatus.Indexed, indexed.Status);
+        }
+
+        Assert.Equal(1, spawned.Runs);
     }
 
     // ---------------------------------------------------------------- helpers

@@ -7,9 +7,12 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
-/// The host of a format parsed only out of process, against a fake worker: the same family-slot semantics as the in-process
-/// host, the snapshot read and its checks, the worker awaited inline, every verdict mapped to its code-owned result, and the
-/// verdict's pages projected through the bounded sink with a "[PDF page n]" heading and a page mark for each page with text.
+/// The host of a format parsed only out of process, against a fake worker: the family slot and the snapshot read it shares
+/// with every host, the worker awaited inline, every verdict mapped to its code-owned result, and the verdict's pages
+/// projected through the bounded sink with a "[PDF page n]" heading and a page mark for each page with text. Its own parse
+/// step, the worker run on a snapshot the shared step read, is pinned on its own: a revoked caller does not start it, and a
+/// revocation while it runs kills it. The shared step itself is pinned for both hosts in
+/// <see cref="SessionAttachmentDocumentHostReadTests"/>.
 /// </summary>
 public sealed class SessionAttachmentIsolatedDocumentHostTests
 {
@@ -170,11 +173,16 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
         AssertFailed(reason, result);
     }
 
+    public static TheoryData<string> WorkerReasons() => new()
+    {
+        DocumentWorkerProfile.Pdf.FailedReason,
+        DocumentWorkerProfile.Pdf.DeadlineReason,
+        DocumentWorkerProfile.Pdf.ResourceLimitsReason,
+        DocumentWorkerProfile.Pdf.UnavailableReason,
+    };
+
     [Theory]
-    [InlineData(ProcessDocumentExtractionWorker.FailedReason)]
-    [InlineData(ProcessDocumentExtractionWorker.DeadlineReason)]
-    [InlineData(ProcessDocumentExtractionWorker.ResourceLimitsReason)]
-    [InlineData(ProcessDocumentExtractionWorker.UnavailableReason)]
+    [MemberData(nameof(WorkerReasons))]
     public async Task ExtractAsync_WorkerWithoutAVerdict_FailsWithTheWorkersReason(string reason)
     {
         SessionAttachmentExtractionResult result = await ExtractAsync(Host((_, _, _) => Task.FromResult(DocumentWorkerResult.Failed(reason))));
@@ -275,7 +283,17 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
     }
 
     [Fact]
-    public async Task ExtractAsync_RevocationDuringTheWorker_CancelsItAndIsDeferred()
+    public async Task ExtractAsync_WorkerCancellationThatIsNeitherTheCallersNorRevocation_IsACodeOwnedFailure()
+    {
+        SessionAttachmentExtractionResult result = await ExtractAsync(Host((_, _, _) => throw new OperationCanceledException("its own")));
+
+        AssertFailed("Document extraction failed.", result);
+    }
+
+    // ---------------------------------------------------------------- the worker step on a snapshot the shared step read
+
+    [Fact]
+    public async Task RunWorkerAsync_RevocationDuringTheWorker_CancelsItAndIsDeferred()
     {
         using CancellationTokenSource revocation = new();
 
@@ -294,8 +312,9 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
             throw new InvalidOperationException("unreachable");
         });
 
-        Task<SessionAttachmentExtractionResult> extraction = host.ExtractIsolatedAsync(
-            ReadSnapshot, Snapshot.Length, 1024, CancellationToken.None, waitForSlot: false, revocation.Token, static () => false);
+        using SessionAttachmentDocumentSnapshot snapshot = await ReadSnapshotAsync(host);
+
+        Task<SessionAttachmentExtractionResult> extraction = host.RunWorkerAsync(snapshot, CancellationToken.None, revocation.Token);
 
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -313,50 +332,11 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
     }
 
     [Fact]
-    public async Task ExtractAsync_AlreadyRevoked_IsDeferredWithoutReadingOrRunning()
+    public async Task RunWorkerAsync_RevokedByTheEndOfTheRead_IsDeferredWithoutRunningAndTheSlotComesBack()
     {
+        // A caller's lease revoked while its snapshot was being read: the worker step asks the revocation before a process
+        // would exist, so no worker starts for a verdict that would be thrown away.
         using CancellationTokenSource revocation = new();
-
-        await revocation.CancelAsync();
-
-        int reads = 0;
-
-        int runs = 0;
-
-        SessionAttachmentIsolatedDocumentHost host = Host((_, _, _) =>
-        {
-            runs++;
-
-            return Task.FromResult(DocumentWorkerResult.Completed(PdfExtractionOutcome.Without(PdfExtractionKind.NoText)));
-        });
-
-        SessionAttachmentExtractionResult result = await host.ExtractIsolatedAsync(
-            _ =>
-            {
-                reads++;
-
-                return Task.FromResult<ReadOnlyMemory<byte>>(Snapshot);
-            },
-            Snapshot.Length,
-            1024,
-            CancellationToken.None,
-            waitForSlot: false,
-            revocation.Token,
-            static () => false);
-
-        Assert.Equal(SessionAttachmentExtractionStatus.Deferred, result.Status);
-
-        Assert.Equal(0, reads);
-
-        Assert.Equal(0, runs);
-    }
-
-    [Fact]
-    public async Task ExtractAsync_MaintenancePendingByTheEndOfTheRead_IsDeferredWithoutRunning()
-    {
-        // Maintenance that arrives while an effect group is open leaves the revocation token uncancelled until the group
-        // closes, so the host asks the caller's pending obligation as well, immediately before it would start the worker.
-        bool pending = false;
 
         int runs = 0;
 
@@ -367,19 +347,24 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
             return Task.FromResult(DocumentWorkerResult.Completed(new PdfExtractionOutcome(PdfExtractionKind.Extracted, ["UNUSED"], false)));
         });
 
-        SessionAttachmentExtractionResult result = await host.ExtractIsolatedAsync(
-            _ =>
-            {
-                pending = true;
+        SessionAttachmentExtractionResult result;
 
-                return Task.FromResult<ReadOnlyMemory<byte>>(Snapshot);
+        using (SessionAttachmentDocumentSnapshot snapshot = await host.ReadSnapshotAsync(
+            async _ =>
+            {
+                await revocation.CancelAsync();
+
+                return Snapshot;
             },
             Snapshot.Length,
             1024,
             CancellationToken.None,
-            waitForSlot: false,
-            CancellationToken.None,
-            () => pending);
+            waitForSlot: false))
+        {
+            Assert.Null(snapshot.Refusal);
+
+            result = await host.RunWorkerAsync(snapshot, CancellationToken.None, revocation.Token);
+        }
 
         Assert.Equal(SessionAttachmentExtractionStatus.Deferred, result.Status);
 
@@ -389,18 +374,8 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
         Assert.Equal(0, runs);
 
-        // The slot came back: the same host runs the next document once nothing is pending.
-        pending = false;
-
+        // The slot came back with the snapshot: the same host runs the next document.
         Assert.Equal("[PDF page 1]\nUNUSED\n", (await ExtractAsync(host, waitForSlot: false)).Text);
-    }
-
-    [Fact]
-    public async Task ExtractAsync_WorkerCancellationThatIsNeitherTheCallersNorRevocation_IsACodeOwnedFailure()
-    {
-        SessionAttachmentExtractionResult result = await ExtractAsync(Host((_, _, _) => throw new OperationCanceledException("its own")));
-
-        AssertFailed("Document extraction failed.", result);
     }
 
     // ---------------------------------------------------------------- snapshot
@@ -663,6 +638,9 @@ public sealed class SessionAttachmentIsolatedDocumentHostTests
 
     private static Task<ReadOnlyMemory<byte>> ReadSnapshot(CancellationToken cancellationToken) =>
         Task.FromResult<ReadOnlyMemory<byte>>(Snapshot);
+
+    private static Task<SessionAttachmentDocumentSnapshot> ReadSnapshotAsync(SessionAttachmentIsolatedDocumentHost host) =>
+        host.ReadSnapshotAsync(ReadSnapshot, Snapshot.Length, 1024, CancellationToken.None, waitForSlot: false);
 
     private static Task<SessionAttachmentExtractionResult> ExtractAsync(
         SessionAttachmentIsolatedDocumentHost host,
