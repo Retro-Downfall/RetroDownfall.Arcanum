@@ -2230,6 +2230,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/BoundedXmlReader.
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/BoundedZipPackage.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentPackageRejection.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentWorkerLaunch.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentWorkerProfile.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/IDocumentExtractionWorker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpcPackageRelationships.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpenDocumentCellValue.cs
@@ -2281,6 +2282,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/LongRestHierarchyBuilder.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SagaCurationService.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentExtractionHost.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentExtractors.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentHost.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentDocumentMimeSql.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexDisposition.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/SessionAttachmentIndexProcessor.cs
