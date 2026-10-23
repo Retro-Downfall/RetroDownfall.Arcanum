@@ -1,3 +1,5 @@
+using System.Text;
+
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
 
 namespace RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
@@ -70,6 +72,33 @@ public sealed class PdfTextExtractorOutcomeTests
         Assert.Equal([EncryptedCodeword], outcome.Pages);
     }
 
+    [Fact]
+    public void Extract_CertificateEncryptedDocument_IsPasswordRequiredNotMalformed()
+    {
+        // Public-key security has no password to ask for, and PdfPig has no handler for it: it reads the dictionary as a
+        // Standard one and fails with an unrelated exception. The file is well formed and protected, so calling it damaged
+        // names the wrong condition.
+        AssertCarriesNoText(PdfExtractionKind.PasswordRequired, Extract("encrypted-pubsec.pdf"));
+    }
+
+    [Fact]
+    public void Extract_FileThatOpensButWhosePageIsRefused_IsMalformedEvenWhenItsTextMentionsEncrypt()
+    {
+        // Sensitivity: the check runs only when opening fails. This file opens, so a name in its text proves nothing.
+        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract("page-failure-mentions-encrypt.pdf"));
+    }
+
+    [Fact]
+    public void Extract_UnreadableBytesThatNameEncryptMetadataOnly_AreMalformed()
+    {
+        // Sensitivity: the end of the name. /EncryptMetadata is another key, not the trailer's /Encrypt.
+        byte[] bytes = Encoding.ASCII.GetBytes("%PDF-1.4\n1 0 obj\n<< /EncryptMetadata false >>\nendobj\n");
+
+        PdfExtractionOutcome outcome = new PdfTextExtractor().Extract(bytes, PdfExtractionLimits.Default, CancellationToken.None);
+
+        AssertCarriesNoText(PdfExtractionKind.Malformed, outcome);
+    }
+
     // ---------------------------------------------------------------- bytes that are not a readable PDF
 
     [Theory]
@@ -124,6 +153,53 @@ public sealed class PdfTextExtractorOutcomeTests
         Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
 
         Assert.Equal(["BROKEN-XREF-TEXT"], outcome.Pages);
+    }
+
+    // ---------------------------------------------------------------- references to objects the file does not define
+
+    [Fact]
+    public void Extract_PageWhoseContentsIsAnUndefinedObject_IsBlankAndTheOtherPagesAreExtracted()
+    {
+        // ISO 32000-1 7.3.10: a reference to an undefined object is the null object, so the page is blank. Refusing the
+        // document would lose page 1, which is good, on every path that reads it.
+        PdfExtractionOutcome outcome = Extract("contents-undefined-page-two.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["GOOD-PAGE-ONE", string.Empty], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_ContentsArrayWithOneUndefinedElement_ExtractsTheOtherElements()
+    {
+        PdfExtractionOutcome outcome = Extract("contents-undefined-element.pdf");
+
+        Assert.Equal(PdfExtractionKind.Extracted, outcome.Kind);
+
+        Assert.Equal(["ARRAY-ELEMENT-TEXT"], outcome.Pages);
+    }
+
+    [Fact]
+    public void Extract_OnlyPageHasAnUndefinedContents_ShowsNoText()
+    {
+        AssertCarriesNoText(PdfExtractionKind.NoText, Extract("contents-undefined-only-page.pdf"));
+    }
+
+    [Fact]
+    public void Extract_UndefinedContentsInAPageTreeThatListsItself_TerminatesAndShowsNoText()
+    {
+        // Sensitivity: the visited set of the repair's walk of the page tree. Without it this file never returns.
+        AssertCarriesNoText(PdfExtractionKind.NoText, Extract("contents-undefined-in-cyclic-page-tree.pdf"));
+    }
+
+    [Theory]
+    [InlineData("contents-undefined-beside-refused-page.pdf")]
+    [InlineData("contents-not-a-stream.pdf")]
+    public void Extract_ReferenceTheRepairMustNotForgive_IsStillMalformed(string fileName)
+    {
+        // Sensitivity: how narrow the repair is. A second page the parser refuses for its structure, and a /Contents
+        // element that exists but is not a stream (the wrong type, not null), still make the document malformed.
+        AssertCarriesNoText(PdfExtractionKind.Malformed, Extract(fileName));
     }
 
     // ---------------------------------------------------------------- hostile structure

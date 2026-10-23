@@ -2,8 +2,10 @@
 
 Inputs for the PDF text extractor and the worker frame (`Weave/Comprehension/Pdf`). Two kinds:
 
-- **Real producer**: `cups-text.pdf` and `cups-multi.pdf` were written by macOS Quartz through `cupsfilter`, so the
-  extractor is proven on bytes this repository did not build.
+- **Real producer**: `cups-text.pdf` and `cups-multi.pdf` were written by macOS Quartz through `cupsfilter`, and
+  `webkit-float.pdf` and `webkit-ligatures.pdf` by WebKit (the engine behind Safari's Export as PDF), and
+  `quartz-hebrew.pdf` by CoreText into a Quartz PDF context (what macOS Save as PDF uses), so the extractor is proven on
+  bytes this repository did not build.
 - **Hand-written**: everything else comes from `generate-handwritten.py`. Each file isolates one rule, so a failing test
   names the rule. The output is deterministic (no timestamps, fixed document ids and IVs, a seeded random source).
 
@@ -22,7 +24,13 @@ cd tests/RetroDownfall.Arcanum.Tests/TestData/Comprehension/Pdf
 cupsfilter -m application/pdf cups-text.txt  > cups-text.pdf
 cupsfilter -m application/pdf cups-multi.txt > cups-multi.pdf
 
-# Hand-written. Run after the two lines above: truncated.pdf is the first half of cups-text.pdf.
+# Real producers, WebKit and Quartz. generate-macos.swift needs macOS (Xcode command line tools). The files are not deterministic.
+swiftc -O -o "$TMPDIR/macos-fixtures" generate-macos.swift
+"$TMPDIR/macos-fixtures" webkit webkit-float.html webkit-float.pdf
+"$TMPDIR/macos-fixtures" webkit webkit-ligatures.html webkit-ligatures.pdf
+"$TMPDIR/macos-fixtures" hebrew quartz-hebrew.pdf
+
+# Hand-written. Run after the lines above: truncated.pdf is the first half of cups-text.pdf.
 python3 -I generate-handwritten.py .
 
 # Optional, never committed: the hostile files that are larger than the intake ceiling (about 30 MB in all).
@@ -44,6 +52,13 @@ Expected outcomes are for the production extractor with its default limits unles
 | `cups-multi.pdf` | ten pages (real producer) | `Extracted`, ten pages; the codeword only on page 10 |
 | `multi-page.pdf` | page 1 `PAGE-ONE-ALPHA`, page 2 **no content**, page 3 `PAGE-THREE-MARKER-GAMMA`, page 4 `PAGE-FOUR-DELTA` | `Extracted`, four entries, the second empty, so ordinals stay true. 14, 0, 23 and 15 glyphs. |
 | `content-order.pdf` | three runs shown bottom, top, middle | `Extracted`, in content-stream order |
+| `same-line-order.pdf` | pairs of runs on one baseline: `RIGHTWORD` drawn before the `LEFTWORD` to its left; the page number `17` drawn before the title `Annual Report`; a kerned `WA`, `VE` pair; `FIRSTRUN` and `SECONDRUN` drawn at the same place; an accent `^` drawn over the `u` that follows it in `Muller` | `Extracted`; the runs stay separate words (`RIGHTWORD LEFTWORD`, `17 Annual Report`, `FIRSTRUN SECONDRUN`) and the kerned pair and the accented word stay one word (`WAVE`, `M^uller`) |
+| `webkit-float.pdf` | (real producer, WebKit) a `float:right` price drawn before the text it sits beside, a right-to-left table row and a `row-reverse` flex row | `Extracted`; `$1,250.00 2 hours consulting`, `RIGHTCELL LEFTCELL`, `FLEXFIRST FLEXSECOND`: the price does not fuse with the `2` that follows it |
+| `latin-ligatures.pdf` | single glyphs that a ToUnicode CMap maps to U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st) inside words, then a plain line | `Extracted` as `effect final flow`, `office baffle`, `ſt st` and `plain office`: each ligature code point becomes its letters (U+FB05 becomes a long s and a t, as NFKC does) |
+| `webkit-ligatures.pdf` | (real producer, WebKit) Helvetica text; WebKit writes its fi, fl and ffi as ligature glyphs | `Extracted` as `Helvetica: office, figures, affidavit, flow, fluffy waffles.` |
+| `rtl-visual-order.pdf` | Hebrew and Arabic the way most producers write them, in visual order (each right-to-left run's glyphs advance left to right across the page), on six lines: a Hebrew sentence with its full stop, an English sentence with one Hebrew word, Hebrew around the number `25.5`, a Latin run `abc` between two Hebrew words, Arabic, and a plain ASCII line | `Extracted`; every right-to-left run is returned in logical order, numbers and Latin runs keep their own order, and the ASCII line is untouched |
+| `rtl-logical-order.pdf` | a Hebrew line and an Arabic line written in logical order (each glyph placed to the left of the one before it) | `Extracted` exactly as written: nothing is reversed and no space appears inside a word |
+| `quartz-hebrew.pdf` | (real producer, Quartz and CoreText) a Hebrew paragraph with a Latin marker, and an English sentence with one Hebrew word | `Extracted`; the Hebrew words read in logical order |
 | `astral-plane.pdf` | `AB`, U+1F600, `CD` through a ToUnicode CMap | `Extracted`, the pair intact; used for surrogate-safe cuts |
 | `astral-multi-page.pdf` | page 1 `AB`, U+1F600, `CD`; page 2 `EFGHIJKL`; page 3 no content | `Extracted`, three entries; a cut inside page 1's pair must stop without reading page 2 |
 | `cjk-tounicode.pdf` | CJK on two lines and U+20BB7 on a third | `Extracted` |
@@ -54,6 +69,22 @@ Expected outcomes are for the production extractor with its default limits unles
 | `huge-count.pdf` | a page tree whose `/Count` claims 2,000,000,000 pages; one is real | `Extracted`, one page |
 | `deep-pages-1k.pdf` | the page is 1,000 levels down the page tree | `Extracted` |
 | `xref-stream.pdf` | PDF 1.5: the catalog, page tree, page and font sit in a compressed object stream, found only through an intact cross-reference stream | `Extracted` (`XREF-STREAM-TEXT`); the control for `xref-stream-garbled.pdf` |
+
+**What the page join does to the text** (`PdfPageText`; the rows above pin each rule).
+
+- *Word breaks.* Letters are joined in content-stream order. A space goes between two letters when the next starts a word
+  space or more to the right of the previous one's end (PdfPig's rule), or starts a word space or more to the left of the
+  previous one's *start*: a float, a right-to-left table row or a page number drawn before its title steps back past a whole
+  glyph, while kerning and an accent drawn over the letter after it step back by less than the previous glyph is wide.
+- *Ligatures.* Only U+FB00 to U+FB06 are spelled out (ff, fi, fl, ffi, ffl, long s t, st). Nothing else is normalized, because
+  the worker runs with invariant globalization: Arabic presentation forms (U+FB50 to U+FDFF, U+FE70 to U+FEFF) come out as the
+  producer's code points, not folded to the base letters.
+- *Right-to-left text.* Most producers write Hebrew and Arabic in visual order. A run whose glyphs step rightwards is reversed
+  to logical order; one whose glyphs step leftwards was written in logical order and is left alone. A line with no
+  left-to-right letters is one run. In a line that has both, each right-to-left run is reversed where it stands and the runs
+  keep their order, so a right-to-left sentence that holds a Latin word reads `Latin right-to-left-words`. Numbers and Latin
+  runs keep their own order. A file carries no paragraph direction, and bracket glyphs it draws mirrored may come out as
+  the other bracket.
 
 ### Text a reader does not see (all extracted: #163 decides every text-showing run is)
 
@@ -78,6 +109,7 @@ Expected outcomes are for the production extractor with its default limits unles
 | `encrypted-rc4-empty.pdf`, `encrypted-aes-empty.pdf` | empty | `owner` | `Extracted` (permission-only restrictions) |
 | `encrypted-rc4-password.pdf`, `encrypted-aes-password.pdf` | `secret` | `owner` | `PasswordRequired` |
 | `encrypted-rc4-owner-empty.pdf`, `encrypted-aes-owner-empty.pdf` | `secret` | empty | `Extracted` (known limitation, below) |
+| `encrypted-pubsec.pdf` | none: public-key (certificate) security, `/Filter /Adobe.PubSec`, which PdfPig has no handler for | none | `PasswordRequired`, not `Malformed`: the file is well formed and protected |
 
 **Known limitation.** The extractor never supplies a password, but PdfPig tries the empty string as the *owner* password
 as well as the user password, and an owner session decrypts the whole file. A file that needs a real user password but
@@ -102,6 +134,21 @@ cross-reference table is therefore `Failed` only when the parser cannot rebuild 
 top level is repaired by scanning, while `xref-stream-garbled.pdf` (objects inside an object stream), an unreadable trailer
 and a missing `/Root` are not.
 
+### Page content that refers to an undefined object
+
+ISO 32000-1 7.3.10 says a reference to an object the file does not define is the null object, not an error. The extractor
+reads an undefined `/Contents` (or one undefined element of a `/Contents` array) as empty content, and nothing else: PdfPig
+refuses such a page even with lenient parsing, and the repair covers only a reference that resolves to nothing.
+
+| File | Shows | Outcome |
+| --- | --- | --- |
+| `contents-undefined-page-two.pdf` | page 1 `GOOD-PAGE-ONE`; page 2 has `/Contents 20 0 R`, an object the file does not define | `Extracted`, two entries; the second is empty |
+| `contents-undefined-element.pdf` | `/Contents [4 0 R 35 0 R]`: a stream `ARRAY-ELEMENT-TEXT` and an undefined object | `Extracted` as `ARRAY-ELEMENT-TEXT` |
+| `contents-undefined-only-page.pdf` | the only page has an undefined `/Contents` | `NoText` |
+| `contents-undefined-in-cyclic-page-tree.pdf` | a page tree that lists itself as a kid, beside a page whose `/Contents` is undefined | `NoText`: the repair walks the tree and terminates |
+| `contents-undefined-beside-refused-page.pdf` | page 1 as in `contents-undefined-page-two.pdf`; page 2 has arrays nested 300 deep | `Malformed` (nesting depth on page 2): the repair does not forgive a second failure |
+| `contents-not-a-stream.pdf` | `/Contents [4 0 R 6 0 R]` where object 6 exists and is a string | `Malformed`: an object that exists but is not a stream is the wrong type, not null |
+
 ### Hostile structure that PdfPig 0.1.17-alpha-202610200037 turns into exceptions
 
 Stable 0.1.16 dies with an uncatchable stack overflow on several of these, which is why the nightly is pinned. They are
@@ -110,6 +157,7 @@ cheap and safe in-process on the pinned version.
 | File | Structure | Outcome |
 | --- | --- | --- |
 | `cyclic-ref-chain.pdf` | `/Contents` is an object that refers to another that refers back | `Malformed` (nesting depth) |
+| `page-failure-mentions-encrypt.pdf` | the `/Contents` chain of `cyclic-ref-chain.pdf`, plus an unreferenced note whose text mentions the `/Encrypt` name | `Malformed` (nesting depth), not `PasswordRequired`: only a failure to open can be an unsupported security handler |
 | `deep-array-content.pdf` | 200,000 nested arrays in the content stream (400 KB) | `Malformed` (nesting depth) |
 | `cyclic-xobject.pdf`, `cyclic-xobject-ab.pdf` | a form that invokes itself, two forms that invoke each other | `Malformed`; lenient parsing would extract them, which is what the strict-parsing test pins |
 | `cyclic-length.pdf` | a stream whose `/Length` is an object that refers to itself | `Extracted` (`LENGTH-CYCLE`) |

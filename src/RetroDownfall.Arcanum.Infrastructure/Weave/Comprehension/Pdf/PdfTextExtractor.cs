@@ -2,7 +2,6 @@ using System.Text;
 
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
-using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 using UglyToad.PdfPig.Exceptions;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.Pdf;
@@ -14,23 +13,82 @@ internal sealed class PdfTextExtractor
 
     public PdfExtractionOutcome Extract(ReadOnlyMemory<byte> bytes, PdfExtractionLimits limits, CancellationToken cancellationToken)
     {
+        PdfDocument document;
+
         try
         {
-            return ExtractPages(bytes, limits, cancellationToken);
+            document = PdfDocument.Open(bytes, CreateOptions());
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (PdfDocumentEncryptedException)
+        catch (Exception exception)
         {
-            return PdfExtractionOutcome.Without(PdfExtractionKind.PasswordRequired);
+            // Opening reads the trailer and its encryption dictionary. PdfPig reads every /Encrypt dictionary as a Standard
+            // handler, so a public-key (certificate) one fails here with an unrelated exception: a well formed, protected
+            // file that is not damaged.
+            bool protectedFile = exception is PdfDocumentEncryptedException || DeclaresEncryption(bytes.Span);
+
+            return PdfExtractionOutcome.Without(protectedFile ? PdfExtractionKind.PasswordRequired : PdfExtractionKind.Malformed);
         }
-        catch (Exception)
+
+        using (document)
         {
-            return PdfExtractionOutcome.Without(PdfExtractionKind.Malformed);
+            try
+            {
+                return ExtractPages(document, limits, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (PdfDocumentEncryptedException)
+            {
+                return PdfExtractionOutcome.Without(PdfExtractionKind.PasswordRequired);
+            }
+            catch (Exception)
+            {
+                return PdfExtractionOutcome.Without(PdfExtractionKind.Malformed);
+            }
         }
     }
+
+    /// <summary>
+    /// Whether the bytes carry an <c>/Encrypt</c> key: the name, followed by whitespace, a delimiter or the end of the file, so
+    /// <c>/EncryptMetadata</c> does not count. It is asked only after a failed open, where it separates a protected file
+    /// from a damaged one.
+    /// </summary>
+    internal static bool DeclaresEncryption(ReadOnlySpan<byte> bytes)
+    {
+        ReadOnlySpan<byte> key = "/Encrypt"u8;
+
+        int from = 0;
+
+        while (from < bytes.Length)
+        {
+            int found = bytes[from..].IndexOf(key);
+
+            if (found < 0)
+            {
+                return false;
+            }
+
+            int end = from + found + key.Length;
+
+            if (end == bytes.Length || EndsAName(bytes[end]))
+            {
+                return true;
+            }
+
+            from = end;
+        }
+
+        return false;
+    }
+
+    private static bool EndsAName(byte value) =>
+        value is 0 or 9 or 10 or 12 or 13 or 32 or (byte)'(' or (byte)')' or (byte)'<' or (byte)'>' or (byte)'[' or (byte)']' or (byte)'{' or (byte)'}' or (byte)'/' or (byte)'%';
 
     /// <summary>
     /// Options for one open. A fresh instance each time: the parser is handed it, so it is never shared between extractions.
@@ -49,10 +107,8 @@ internal sealed class PdfTextExtractor
         MaxStackDepth = MaxNestingDepth,
     };
 
-    private static PdfExtractionOutcome ExtractPages(ReadOnlyMemory<byte> bytes, PdfExtractionLimits limits, CancellationToken cancellationToken)
+    private static PdfExtractionOutcome ExtractPages(PdfDocument document, PdfExtractionLimits limits, CancellationToken cancellationToken)
     {
-        using PdfDocument document = PdfDocument.Open(bytes, CreateOptions());
-
         int pageCount = document.NumberOfPages;
 
         if (pageCount > limits.MaxPages)
@@ -61,6 +117,8 @@ internal sealed class PdfTextExtractor
         }
 
         List<string> pages = [];
+
+        bool undefinedContentsRead = false;
 
         long letters = 0;
 
@@ -83,7 +141,7 @@ internal sealed class PdfTextExtractor
                 break;
             }
 
-            Page page = document.GetPage(number);
+            Page page = GetPage(document, number, ref undefinedContentsRead, cancellationToken);
 
             int pageLetters = page.Letters.Count;
 
@@ -94,7 +152,7 @@ internal sealed class PdfTextExtractor
                 return PdfExtractionOutcome.Without(PdfExtractionKind.Bounds);
             }
 
-            string text = RemoveUnsafeCharacters(ContentOrderTextExtractor.GetText(page));
+            string text = RemoveUnsafeCharacters(PdfPageText.Build(page.Letters));
 
             int available = limits.MaxOutputCharacters - used - separator;
 
@@ -128,6 +186,30 @@ internal sealed class PdfTextExtractor
         }
 
         return new PdfExtractionOutcome(PdfExtractionKind.Extracted, pages, truncated);
+    }
+
+    /// <summary>
+    /// PdfPig refuses a page whose <c>/Contents</c> refers to an object the file does not define, which the specification
+    /// reads as the null object (a blank page). The first such refusal repairs every page of the document once
+    /// (<see cref="PdfUndefinedContents"/>) and reads the page again; any other refusal, and a second one, stands.
+    /// </summary>
+    private static Page GetPage(PdfDocument document, int number, ref bool undefinedContentsRead, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return document.GetPage(number);
+        }
+        catch (InvalidOperationException)
+        {
+            if (undefinedContentsRead || !PdfUndefinedContents.TryReadAsNull(document, cancellationToken))
+            {
+                throw;
+            }
+
+            undefinedContentsRead = true;
+
+            return document.GetPage(number);
+        }
     }
 
     private static bool HasVisibleCharacter(string text)

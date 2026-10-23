@@ -258,6 +258,29 @@ for name, maker, upw, opw in [
     _, encrypt, enc_dict = maker(upw, opw)
     write(name, simple_doc(enc_content, enc=encrypt, extra_objs={6: enc_dict}, trailer_extra=trailer_id + b" /Encrypt 6 0 R"))
 
+# A file that is not encrypted, opens, and has a page the parser refuses (the /Contents chain of cyclic-ref-chain.pdf), with an
+# unreferenced note whose text mentions the /Encrypt name. Only a failure to open can be an unsupported security handler.
+write(
+    "page-failure-mentions-encrypt.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"6 0 R"),
+        5: FONT,
+        6: b"7 0 R",
+        7: b"6 0 R",
+        8: b"<< /Note (the /Encrypt dictionary is described here) >>",
+    }),
+)
+
+# Public-key (certificate) security is a handler PdfPig does not implement: the trailer names an /Encrypt dictionary with no
+# /O or /U, which the parser reads as a Standard handler and fails on. The file is well formed, so it must not read as damaged.
+pubsec_dict = (
+    b"<< /Filter /Adobe.PubSec /SubFilter /adbe.pkcs7.s5 /V 4 /R 4 /Length 128 /Recipients [<3082>] "
+    b"/CF << /DefaultCryptFilter << /CFM /AESV2 /Length 16 /Recipients [<3082>] >> >> /StmF /DefaultCryptFilter /StrF /DefaultCryptFilter >>"
+)
+write("encrypted-pubsec.pdf", simple_doc(enc_content, extra_objs={6: pubsec_dict}, trailer_extra=trailer_id + b" /Encrypt 6 0 R"))
+
 # ---- cyclic structures
 # Pages tree whose Kids contains its own parent (2 -> 3 -> 2).
 objs = {
@@ -455,6 +478,157 @@ write(
         [(700, [1, 2, 3, 4, 5])],
         [(1, "A"), (2, "\u0000"), (3, "\u000c"), (4, "B"), (5, "C")],
     ),
+)
+
+# ---- text laid out by hand: Helvetica runs placed with Tm, so the order the content stream draws them in is chosen
+# Each pair of runs is on one baseline. A text extractor that only looks at the gap to the right glues runs that are drawn
+# right to left, or on top of each other, into one word.
+same_line = (
+    b"BT /F1 12 Tf 1 0 0 1 400 700 Tm (RIGHTWORD) Tj 1 0 0 1 72 700 Tm (LEFTWORD) Tj ET\n"  # right run first, far apart
+    b"BT /F1 10 Tf 1 0 0 1 520 650 Tm (17) Tj 1 0 0 1 72 650 Tm (Annual Report) Tj ET\n"  # page number first, then the title
+    b"BT /F1 12 Tf 1 0 0 1 72 600 Tm [(WA) 150 (VE)] TJ ET\n"  # a kerned pair is one word: the control
+    b"BT /F1 12 Tf 1 0 0 1 72 550 Tm (FIRSTRUN) Tj 1 0 0 1 72 550 Tm (SECONDRUN) Tj ET\n"  # the second run starts on the first
+    b"BT /F1 12 Tf 1 0 0 1 72 500 Tm (M) Tj 1 0 0 1 82.55 503 Tm (^) Tj 1 0 0 1 82 500 Tm (uller) Tj ET\n"  # an accent drawn over the letter after it
+)
+write("same-line-order.pdf", simple_doc(same_line))
+
+
+# ---- glyphs placed one by one on an Identity-H font whose every glyph is 1 em (18 pt) wide and maps to its character
+# through a ToUnicode CMap, so a line's geometry is exact: glyphs placed 18 pt apart touch.
+def placed_doc(lines):
+    """lines: [(y, [(x, character)])] in the order the content stream draws them."""
+    characters = sorted({character for _, glyphs in lines for _, character in glyphs})
+    codes = {character: index + 1 for index, character in enumerate(characters)}
+    content = b"BT /F1 18 Tf\n" + b"".join(
+        b"1 0 0 1 %d %d Tm <%04X> Tj\n" % (x, y, codes[character]) for y, glyphs in lines for x, character in glyphs
+    ) + b"ET\n"
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"4 0 R"),
+        4: stream(b"", content),
+        5: b"<< /Type /Font /Subtype /Type0 /BaseFont /FixtureSans /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 8 0 R >>",
+        6: b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /FixtureSans /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 1000 /CIDToGIDMap /Identity /FontDescriptor 7 0 R >>",
+        7: b"<< /Type /FontDescriptor /FontName /FixtureSans /Flags 4 /FontBBox [0 -200 1000 800] /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 >>",
+        8: stream(b"", to_unicode_cmap([(code, character) for character, code in codes.items()])),
+    }
+    return build(objs)
+
+
+def left_to_right(y, text, x=72):
+    """The characters in the order given, each 18 pt right of the one before (how a producer writes visual order)."""
+    return (y, [(x + 18 * index, character) for index, character in enumerate(text)])
+
+
+def right_to_left(y, text, x=540):
+    """The characters in the order given, each 18 pt left of the one before (how a producer writes logical order)."""
+    return (y, [(x - 18 * (index + 1), character) for index, character in enumerate(text)])
+
+
+# Latin presentation-form ligatures as one glyph each: ff, fi, fl, ffi, ffl, long s t, st
+write(
+    "latin-ligatures.pdf",
+    placed_doc([
+        left_to_right(700, "e\uFB00ect \uFB01nal \uFB02ow"),
+        left_to_right(650, "o\uFB03ce ba\uFB04e"),
+        left_to_right(600, "\uFB05 \uFB06"),
+        left_to_right(550, "plain office"),
+    ]),
+)
+
+# Hebrew and Arabic written the way most producers write them: in visual order, so each right-to-left run's glyphs advance
+# left to right across the page (the characters below are the logical text reversed, run by run, as drawn)
+HEBREW_SHALOM = "\u05e9\u05dc\u05d5\u05dd"
+HEBREW_OLAM = "\u05e2\u05d5\u05dc\u05dd"
+HEBREW_MECHIR = "\u05de\u05d7\u05d9\u05e8"
+HEBREW_SHEKEL = "\u05e9\u05e7\u05dc"
+ARABIC_MARHABA = "\u0645\u0631\u062d\u0628\u0627"
+ARABIC_BILALAM = "\u0628\u0627\u0644\u0639\u0627\u0644\u0645"
+write(
+    "rtl-visual-order.pdf",
+    placed_doc([
+        left_to_right(700, "." + HEBREW_OLAM[::-1] + " " + HEBREW_SHALOM[::-1]),  # a Hebrew sentence with its full stop
+        left_to_right(650, "The word " + HEBREW_SHALOM[::-1] + " means peace."),  # a left-to-right sentence with one Hebrew word
+        left_to_right(600, HEBREW_SHEKEL[::-1] + " 25.5 " + HEBREW_MECHIR[::-1]),  # a number inside Hebrew keeps its digit order
+        left_to_right(550, HEBREW_OLAM[::-1] + " abc " + HEBREW_SHALOM[::-1]),  # a Latin run between two Hebrew words
+        left_to_right(500, ARABIC_BILALAM[::-1] + " " + ARABIC_MARHABA[::-1]),
+        left_to_right(450, "Plain ASCII line 123"),
+    ]),
+)
+
+# The same kind of text written in logical order: each glyph is placed to the left of the one before it
+write(
+    "rtl-logical-order.pdf",
+    placed_doc([
+        right_to_left(700, HEBREW_SHALOM + " " + HEBREW_OLAM),
+        right_to_left(650, ARABIC_MARHABA + " " + ARABIC_BILALAM),
+    ]),
+)
+
+# ---- a page whose /Contents refers to an object the file does not define. ISO 32000-1 7.3.10 reads that as the null object,
+# so the page is blank (or the array element contributes nothing), and the rest of the file is still good
+undefined_contents_objs = {
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+    3: page_obj(b"4 0 R"),
+    4: stream(b"", show(b"GOOD-PAGE-ONE")),
+    5: FONT,
+    6: page_obj(b"20 0 R"),
+}
+write("contents-undefined-page-two.pdf", build(undefined_contents_objs))
+write(
+    "contents-undefined-element.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"[4 0 R 35 0 R]"),
+        4: stream(b"", show(b"ARRAY-ELEMENT-TEXT")),
+        5: FONT,
+    }),
+)
+write(
+    "contents-undefined-only-page.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"9 0 R"),
+        5: FONT,
+    }),
+)
+# The page tree lists itself as a kid beside the page, whose /Contents is undefined: the repair walks the tree and must not loop.
+write(
+    "contents-undefined-in-cyclic-page-tree.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Parent 2 0 R /Kids [2 0 R 3 0 R] /Count 2 >>",
+        3: page_obj(b"9 0 R"),
+        5: FONT,
+    }),
+)
+# The control for a repair that is too wide: page 1 has an undefined /Contents, page 2 has arrays nested past the parser's depth
+# limit. Page 1 is read as blank, and page 2 must still be refused.
+write(
+    "contents-undefined-beside-refused-page.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+        3: page_obj(b"20 0 R"),
+        5: FONT,
+        6: page_obj(b"7 0 R"),
+        7: stream(b"", show(b"BEFORE-DEEP-ARRAY") + b"[" * 300 + b"]" * 300 + b"\n"),
+    }),
+)
+# The control: the object exists but is not a stream. That is a wrong type, not an undefined reference, and stays refused.
+write(
+    "contents-not-a-stream.pdf",
+    build({
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: page_obj(b"[4 0 R 6 0 R]"),
+        4: stream(b"", show(b"STREAM-BESIDE-A-STRING")),
+        5: FONT,
+        6: b"(this object is a string, not a stream)",
+    }),
 )
 
 # ---- active content that must never run, be followed, or be emitted
