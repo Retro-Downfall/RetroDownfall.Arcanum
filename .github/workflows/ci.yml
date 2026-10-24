@@ -441,31 +441,31 @@ jobs:
           fi
 
       - name: Download primary source analysis evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-primary-analysis
           path: .tmp/coverage/analysis-primary
 
       - name: Download additional source analysis evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-additional-analysis
           path: .tmp/coverage/analysis-additional
 
       - name: Download fixture source analysis evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-fixture-analysis
           path: .tmp/coverage/analysis-fixtures
 
       - name: Download fixture build source analysis evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-fixture-build-analysis
           path: .tmp/coverage/analysis-fixtures-build
 
       - name: Download serve host source analysis evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: hosted-producer-serve-host-analysis
           path: .tmp/coverage/analysis-serve-host
