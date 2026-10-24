@@ -148,12 +148,12 @@ public sealed class PdfTextExtractorTextTests
     {
         // Sensitivity: only a visible letter has a baseline the next letter can start off. Some producers draw a
         // paragraph's line feed as a glyph (macOS license documents do, at the top of a page); the line below it starts no
-        // new word.
+        // new word. The line the glyph ends is empty, and an empty line is not returned.
         DocumentExtractionOutcome outcome = Extract("line-feed-glyph.pdf");
 
         Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
 
-        Assert.Equal(["\nAB"], outcome.Pages);
+        Assert.Equal(["AB"], outcome.Pages);
     }
 
     [Fact]

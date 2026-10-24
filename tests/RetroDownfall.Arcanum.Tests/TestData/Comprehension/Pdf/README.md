@@ -20,8 +20,9 @@ Tool versions used: macOS 27.2 (build 26B118), Python 3.14.7, `cryptography` 50.
 ```sh
 cd tests/RetroDownfall.Arcanum.Tests/TestData/Comprehension/Pdf
 
-# Real producer. The .txt files are the committed sources; cupsfilter wraps lines at 80 columns and pads them with spaces,
-# and it stamps a creation date, so a regenerated PDF differs byte for byte. The committed bytes are the reference.
+# Real producer. The .txt files are the committed sources; cupsfilter wraps lines at 80 columns and pads them with space
+# glyphs (it draws one in every cell of its character grid, blank rows included), and it stamps a creation date, so a
+# regenerated PDF differs byte for byte. The committed bytes are the reference.
 cupsfilter -m application/pdf cups-text.txt  > cups-text.pdf
 cupsfilter -m application/pdf cups-multi.txt > cups-multi.pdf
 
@@ -52,14 +53,15 @@ Expected outcomes are for the production extractor with its default limits unles
 
 | File | Shows | Outcome |
 | --- | --- | --- |
-| `cups-text.pdf` | one page of prose (real producer) | `Extracted`, one page; every non-whitespace character of `cups-text.txt` in order |
-| `cups-multi.pdf` | ten pages (real producer) | `Extracted`, ten pages; the codeword only on page 10 |
+| `cups-text.pdf` | one page of prose (real producer); 4,960 glyphs of which 4,582 are space glyphs, the padding of cupsfilter's 80-column grid | `Extracted`, one page; every non-whitespace character of `cups-text.txt` in order; 452 characters, not the 4,803 the join writes: no padding, no run of spaces, no blank line |
+| `cups-multi.pdf` | ten pages (real producer), each line padded to the 80th column | `Extracted`, ten pages; the codeword only on page 10; 26,383 characters, not 48,133 |
 | `multi-page.pdf` | page 1 `PAGE-ONE-ALPHA`, page 2 **no content**, page 3 `PAGE-THREE-MARKER-GAMMA`, page 4 `PAGE-FOUR-DELTA` | `Extracted`, four entries, the second empty, so ordinals stay true. 14, 0, 23 and 15 glyphs. |
+| `blank-page-then-text.pdf` | page 1 five spaces, page 2 `TEXT-AFTER-BLANK-PAGE` | `Extracted`, two entries, the first empty: the spaces are removed, the page keeps its place and its separator. With the output ceiling at 1 the separator uses the only character, so the outcome is `Bounds` |
 | `content-order.pdf` | three runs shown bottom, top, middle | `Extracted`, in content-stream order |
 | `same-line-order.pdf` | pairs of runs on one baseline: `RIGHTWORD` drawn before the `LEFTWORD` to its left; the page number `17` drawn before the title `Annual Report`; a kerned `WA`, `VE` pair; `FIRSTRUN` and `SECONDRUN` drawn at the same place; an accent `^` drawn over the `u` that follows it in `Muller` | `Extracted`; the runs stay separate words (`RIGHTWORD LEFTWORD`, `17 Annual Report`, `FIRSTRUN SECONDRUN`) and the kerned pair and the accented word stay one word (`WAVE`, `M^uller`) |
 | `rotated-text.pdf` | Helvetica runs whose glyphs do not advance rightwards: upside down, mirrored, turned 150 degrees, and upside down with its words apart only by `TJ` kerning (no space glyph); then an upside-down run with an upright one to its left, and a run turned 90 degrees followed by one that starts off its baseline | `Extracted` as `Ordinary line of text`, `Invoice total due`, `Mirrored words here`, `Rotated one fifty`, `Spaced by kerning`, `Flipped Upright`, `Up the side Turned`: no letter-spacing, and a change of direction still separates words |
 | `webkit-rotated.pdf` | (real producer, WebKit) CSS `rotate(180deg)`, `rotate(150deg)` and `scaleX(-1)` text beside an ordinary line | `Extracted` as `Normal line here`, `Upside down label text`, `Rotated one fifty`, `Mirrored words here` |
-| `line-feed-glyph.pdf` | a glyph mapped to a line feed alone on the first line (some producers draw a paragraph's line feed), then `AB` on the line below | `Extracted` as `\nAB`: the line below a glyph that is not a letter does not start with a space |
+| `line-feed-glyph.pdf` | a glyph mapped to a line feed alone on the first line (some producers draw a paragraph's line feed), then `AB` on the line below | `Extracted` as `AB`: the line below a glyph that is not a letter does not start with a space, and the empty line the glyph ends is not returned |
 | `webkit-float.pdf` | (real producer, WebKit) a `float:right` price drawn before the text it sits beside, a right-to-left table row and a `row-reverse` flex row | `Extracted`; `$1,250.00 2 hours consulting`, `RIGHTCELL LEFTCELL`, `FLEXFIRST FLEXSECOND`: the price does not fuse with the `2` that follows it |
 | `latin-ligatures.pdf` | single glyphs that a ToUnicode CMap maps to U+FB00 to U+FB06 (ff, fi, fl, ffi, ffl, long s t, st) inside words, then a plain line | `Extracted` as `effect final flow`, `office baffle`, `st st` and `plain office`: each ligature code point becomes what NFKC gives (U+FB05 becomes `st`: its decomposition is a long s and a t, and the long s decomposes again to `s`) |
 | `webkit-ligatures.pdf` | (real producer, WebKit) Helvetica text; WebKit writes its fi, fl and ffi as ligature glyphs | `Extracted` as `Helvetica: office, figures, affidavit, flow, fluffy waffles.` |
@@ -82,7 +84,7 @@ Expected outcomes are for the production extractor with its default limits unles
 | `deep-pages-1k.pdf` | the page is 1,000 levels down the page tree | `Extracted` |
 | `xref-stream.pdf` | PDF 1.5: the catalog, page tree, page and font sit in a compressed object stream, found only through an intact cross-reference stream | `Extracted` (`XREF-STREAM-TEXT`); the control for `xref-stream-garbled.pdf` |
 
-**What the page join does to the text** (`PdfPageText`; the rows above pin each rule).
+**What the page join does to the text** (`PdfPageText`, then `PdfTextExtractor.NormalizeWhitespace`; the rows above pin each rule).
 
 - *Word breaks.* Letters are joined in content-stream order. Distances are measured along the direction the previous glyph
   advances in (rightwards for upright text, leftwards for upside-down or mirrored text), so turned text is not letter-spaced.
@@ -108,6 +110,16 @@ Expected outcomes are for the production extractor with its default limits unles
   an Arabic number, because producers differ there (WebKit follows the algorithm; the macOS Arabic license document keeps
   `227.7202-1` whole). A file carries no paragraph direction, and bracket glyphs it draws mirrored may come out as
   the other bracket.
+- *Whitespace.* The finished page text is returned without layout, because the label the model reads already says layout is
+  not preserved. Every run of horizontal whitespace (a space, a tab, U+00A0, any other Unicode space separator) becomes one
+  space, each line is trimmed at both ends, a line with nothing left on it is dropped, and a line break stays between the
+  lines that remain (U+000A, whichever mandatory break the producer drew). The visible characters and their order are
+  untouched, so the steps above are unaffected: this runs last, after the unsafe characters are removed, and before the
+  output ceiling is counted, so real text fills the ceiling and not padding. A page of nothing else is the empty string, and a
+  document of such pages is `NoText`. cupsfilter is why: it draws a space glyph in every cell of its character grid (`cups-text.pdf`
+  has 4,582 of them among 4,960 glyphs), and the join keeps consecutive space glyphs, so before this rule the
+  output of that one page was 4,803 characters, 92 percent of them whitespace, with a single run of 3,897 spaces.
+  When a cut by the output ceiling falls after whitespace, the page ends at the last visible character before it.
 
 ### Text a reader does not see (all extracted: #163 decides every text-showing run is)
 
@@ -122,7 +134,7 @@ Expected outcomes are for the production extractor with its default limits unles
 | File | Shows | Outcome |
 | --- | --- | --- |
 | `image-only.pdf` | page 1 draws an image, page 2 is empty | `NoText` |
-| `whitespace-only.pdf` | five spaces | `NoText`; `Bounds` if the output ceiling is under 5 |
+| `whitespace-only.pdf` | five spaces | `NoText`, whatever the output ceiling: the spaces are removed before they are counted |
 | `cyclic-pages.pdf`, `cyclic-pages-self.pdf` | a page tree that only leads back to itself | `NoText` (PdfPig reports zero pages) |
 
 ### Encryption
