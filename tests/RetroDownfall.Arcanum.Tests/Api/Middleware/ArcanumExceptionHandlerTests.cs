@@ -421,7 +421,7 @@ public sealed class ArcanumExceptionHandlerTests
     /// <see cref="InvalidOperationException"/> for a JSON Content-Type whose charset it cannot decode, and
     /// that is the caller's mistake, answered 415.
     /// </summary>
-    [Theory]
+    [SkippableTheory]
     [InlineData("/api/prompts", "windows-1252")]
     [InlineData("/api/prompts", "bogus")]
     [InlineData("/v1/files", "bogus")]
@@ -429,6 +429,8 @@ public sealed class ArcanumExceptionHandlerTests
         string path,
         string charset)
     {
+        SkipWhenTheProcessCanDecode(charset);
+
         RecordingLogger logger = new();
 
         ArcanumExceptionHandler handler = new(logger);
@@ -859,6 +861,27 @@ public sealed class ArcanumExceptionHandlerTests
             .Stream;
 
         return Encoding.UTF8.GetString(body.ToArray());
+    }
+
+    // A charset is unknown only while no encoding provider decodes it, and the provider list is process-wide: PdfPig
+    // registers CodePagesEncodingProvider the first time a PDF test in this process parses a document, after which
+    // windows-1252 decodes and is not an unknown charset here (ApiRequestJsonCharsetTests skips the same way).
+    private static void SkipWhenTheProcessCanDecode(string charset)
+    {
+        bool known;
+
+        try
+        {
+            _ = Encoding.GetEncoding(charset);
+
+            known = true;
+        }
+        catch (ArgumentException)
+        {
+            known = false;
+        }
+
+        Skip.If(known, $"This process registers an encoding provider that decodes '{charset}', so it is not an unknown charset here.");
     }
 
     private sealed class RecordingLogger : ILogger<ArcanumExceptionHandler>

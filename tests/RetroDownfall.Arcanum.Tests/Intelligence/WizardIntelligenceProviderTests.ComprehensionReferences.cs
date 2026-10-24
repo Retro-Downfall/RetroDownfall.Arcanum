@@ -42,6 +42,9 @@ public sealed partial class WizardIntelligenceProviderTests
     [MemberData(nameof(ComprehensionRegistryMimeTypes))]
     public async Task ExplicitAttachmentReference_ToAComprehensionDocument_ReachesTheModelFramedAsUntrustedData(string mimeType)
     {
+        // PDF is parsed by the registry's isolated worker, run here in this process (the process boundary has its own tests).
+        using IDisposable pdfWorker = InProcessPdfWorker.Use();
+
         Guid sessionId = Guid.NewGuid();
 
         byte[] bytes = ComprehensionSeamDocuments.Bytes(mimeType);

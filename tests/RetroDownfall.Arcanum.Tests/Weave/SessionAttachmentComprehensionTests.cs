@@ -10,6 +10,10 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
+using RetroDownfall.Arcanum.Tests.Weave.Comprehension.Pdf;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentComprehensionTests
@@ -64,7 +68,7 @@ public sealed class SessionAttachmentComprehensionTests
     }
 
     [Theory]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("image/png")]
     public async Task ExtractDocument_UnsupportedMime_DoesNotReadBytes(string mimeType)
@@ -75,6 +79,52 @@ public sealed class SessionAttachmentComprehensionTests
             store, CreateRecord(9) with { MimeType = mimeType }, Settings(), 1024, CancellationToken.None);
 
         Assert.Equal(SessionAttachmentExtractionStatus.NotEligible, result.Status);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_Pdf_IsExtractedByTheRegistrysIsolatedWorkerWithPageHeadings()
+    {
+        // PDF is a registry format that only the isolated worker parses; the registry's host projects the worker's pages.
+        byte[] bytes = PdfFixtures.Read("multi-page.pdf");
+
+        NoOpSessionAttachmentStore store = new(readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes));
+
+        using IDisposable worker = InProcessPdfWorker.Use(out InProcessPdfWorker pdf);
+
+        SessionAttachmentExtractionResult result = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
+            store,
+            CreateRecord(bytes.Length) with { MimeType = SessionAttachmentComprehensionPolicy.PdfMimeType },
+            Settings(),
+            1024 * 1024,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Extracted, result.Status);
+
+        Assert.Equal("[PDF page 1]\nPAGE-ONE-ALPHA\n[PDF page 3]\nPAGE-THREE-MARKER-GAMMA\n[PDF page 4]\nPAGE-FOUR-DELTA\n", result.Text);
+
+        Assert.Equal([3], result.Pages!.Where(static mark => mark.Offset == 28).Select(static mark => mark.Page));
+
+        Assert.Equal(1, pdf.Runs);
+    }
+
+    [Fact]
+    public async Task ExtractDocument_PdfInAHostThatCannotRelaunchItself_FailsAsUnavailable()
+    {
+        // The registry's own worker, unsubstituted: this test platform cannot re-launch itself as the worker.
+        byte[] bytes = PdfFixtures.Read("multi-page.pdf");
+
+        SessionAttachmentExtractionResult result = await SessionAttachmentTextExtractor.ExtractDocumentAsync(
+            new NoOpSessionAttachmentStore(readBytes: (_, _) => Task.FromResult<ReadOnlyMemory<byte>>(bytes)),
+            CreateRecord(bytes.Length) with { MimeType = SessionAttachmentComprehensionPolicy.PdfMimeType },
+            Settings(),
+            1024 * 1024,
+            CancellationToken.None);
+
+        Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+        Assert.Equal("PDF extraction is unavailable on this host.", result.FailureReason);
+
+        Assert.Empty(result.Text);
     }
 
     [Fact]

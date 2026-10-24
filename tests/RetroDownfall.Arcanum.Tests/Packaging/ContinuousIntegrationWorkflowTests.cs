@@ -294,6 +294,7 @@ public sealed class ContinuousIntegrationWorkflowTests
             "Process.WindowsAppContainerRootLockBudgetTests",
             "Process.ChildProcessBoundaryBehaviorTests",
             "Process.ChildProcessFilesystemJailTests",
+            "Process.CappedChildProcessRunnerStandardInputTests",
             "Familiars.FamiliarExecutableResolverTests",
             "Intelligence.Spells.SpellDirectoryTests",
             "Repositories.SpellRepositoryTests",

@@ -52,8 +52,8 @@ public sealed class CappedChildProcessRunnerTests : IAsyncLifetime
     [Fact]
     public async Task RunAsync_closes_child_stdin_so_a_reading_child_sees_eof_instead_of_the_host_console()
     {
-        // RunAsync has no way to feed a child input, so every tool child must receive a closed pipe
-        // on fd 0 rather than the host's inherited console. Without the redirect a child that reads
+        // A run given no input bytes (every model-directed tool) must hand its child a closed pipe on
+        // fd 0 rather than the host's inherited console. Without the redirect a child that reads
         // stdin (`cat`, `git commit`, `ssh`, `sudo`) blocks on the operator's terminal, and since
         // execute_command / run_spell_script / workspace_check all pass Timeout.InfiniteTimeSpan
         // there is no deadline that would ever unwedge the tool call.

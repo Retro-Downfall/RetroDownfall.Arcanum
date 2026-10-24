@@ -21,7 +21,7 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
 {
     [Theory]
     [InlineData(false, "application/vnd.arcanum.comprehension-text")]
-    [InlineData(true, "application/pdf")]
+    [InlineData(true, "application/rtf")]
     public async Task Comprehension_ineligible_pin_is_unsupported_without_reading(bool enabled, string mimeType)
     {
         Guid sessionId = Guid.NewGuid();

@@ -35849,6 +35849,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
     [InlineData("RetroDownfall.Arcanum.Core.Resilience.IProviderHealthProbe.ProbeAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Daemons.IDaemonRunner.RunScheduledAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Daemons.IDaemonJob.RunAsync", 3)]
+    [InlineData("RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension.IDocumentExtractionWorker.RunAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Infrastructure.Weave.TapestryWeaver.WeaveAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Mcp.IMcpConnectionManager.StartAsync", 3)]
     [InlineData("RetroDownfall.Arcanum.Core.Mcp.IMcpConnectionManager.StopAllAsync", 3)]

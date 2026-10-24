@@ -10,11 +10,18 @@ using RetroDownfall.Arcanum.Api.Hosting;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 using Serilog;
 
 if (SandboxExecHelper.TryHandle(args, typeof(Program)))
 {
     return 0;
+}
+
+// The hidden document worker runs before the host reads configuration, for the same reason as in the Cli.
+if (ComprehensionWorkerEntry.TryHandle(args, typeof(Program), out int workerExitCode))
+{
+    return workerExitCode;
 }
 
 WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();

@@ -33,7 +33,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
     [MemberData(nameof(RegistryMimeTypes))]
     public void For_ignores_case_whitespace_and_parameters(string mimeType)
     {
-        SessionAttachmentDocumentExtractionHost? expected = SessionAttachmentDocumentExtractors.For(mimeType);
+        SessionAttachmentDocumentHost? expected = SessionAttachmentDocumentExtractors.For(mimeType);
 
         Assert.NotNull(expected);
 
@@ -46,7 +46,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("text/plain")]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     [InlineData("application/vnd.oasis.opendocument.text-template")]
@@ -80,7 +80,7 @@ public sealed class SessionAttachmentDocumentExtractorsTests
         string baseMimeType,
         string macroEnabledMimeType)
     {
-        SessionAttachmentDocumentExtractionHost? host = SessionAttachmentDocumentExtractors.For(baseMimeType);
+        SessionAttachmentDocumentHost? host = SessionAttachmentDocumentExtractors.For(baseMimeType);
 
         Assert.NotNull(host);
 
@@ -100,21 +100,38 @@ public sealed class SessionAttachmentDocumentExtractorsTests
             SessionAttachmentComprehensionPolicy.OpenDocumentSpreadsheetMimeType,
             SessionAttachmentComprehensionPolicy.OpenDocumentPresentationMimeType,
             SessionAttachmentComprehensionPolicy.VisioDrawingMimeType,
+            SessionAttachmentComprehensionPolicy.PdfMimeType,
         ];
 
-        SessionAttachmentDocumentExtractionHost[] hosts =
+        SessionAttachmentDocumentHost[] hosts =
         [
             .. families.Select(static mimeType => SessionAttachmentDocumentExtractors.For(mimeType)!),
         ];
 
-        Assert.Equal(8, hosts.Distinct(ReferenceEqualityComparer.Instance).Count());
+        Assert.Equal(9, hosts.Distinct(ReferenceEqualityComparer.Instance).Count());
 
         Assert.Equal(
-            8,
+            9,
             SessionAttachmentComprehensionPolicy.Formats
                 .Select(static format => SessionAttachmentDocumentExtractors.For(format.MimeType))
                 .Distinct(ReferenceEqualityComparer.Instance)
                 .Count());
+    }
+
+    [Theory]
+    [MemberData(nameof(RegistryMimeTypes))]
+    public void For_parses_pdf_only_out_of_process_and_every_other_format_in_process(string mimeType)
+    {
+        SessionAttachmentDocumentHost? host = SessionAttachmentDocumentExtractors.For(mimeType);
+
+        if (mimeType == SessionAttachmentComprehensionPolicy.PdfMimeType)
+        {
+            Assert.IsType<SessionAttachmentIsolatedDocumentHost>(host);
+        }
+        else
+        {
+            Assert.IsType<SessionAttachmentDocumentExtractionHost>(host);
+        }
     }
 
     [Theory]

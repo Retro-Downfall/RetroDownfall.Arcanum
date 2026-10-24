@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Hosting;
 using RetroDownfall.Arcanum.Infrastructure.InstallationReset;
 using RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
+using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
 namespace RetroDownfall.Arcanum.Cli;
 
@@ -21,6 +22,13 @@ internal static class Program
         if (SandboxExecHelper.TryHandle(args, typeof(Program)))
         {
             return 0;
+        }
+
+        // The hidden document worker reads one document from stdin and writes one frame to stdout. It runs before
+        // configuration, installation probing and System.CommandLine, because its jail grants none of their roots.
+        if (ComprehensionWorkerEntry.TryHandle(args, typeof(Program), out int workerExitCode))
+        {
+            return workerExitCode;
         }
 
         AppContext.SetSwitch("Microsoft.AspNetCore.Mvc.ApiExplorer.IsEnhancedModelMetadataSupported", false);

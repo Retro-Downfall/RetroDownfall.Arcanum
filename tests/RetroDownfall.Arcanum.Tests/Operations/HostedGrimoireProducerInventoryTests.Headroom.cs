@@ -118,6 +118,27 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // discovery reported the committed 6,863 primary sites and zero diagnostics. SessionAttachmentIndexingService.ExecuteAsync
     // grows from 1,226 to 3,066 states in every arrangement, so its row is 3,066 plus the margin; the other sixty-eight primary
     // rows and the thirty additional rows are each their unchanged maximum plus the margin.
+    // Remeasured on 2026-10-23 for PDF text-layer extraction (#163) under one, two and three root workers: every discovery
+    // reported the same 6,870 primary sites and zero diagnostics. SessionAttachmentIndexingService.ExecuteAsync grows from
+    // 3,066 to 3,192 states in every arrangement, so its row is 3,192 plus the margin; the other sixty-eight primary rows
+    // each measured their unchanged maximum.
+    // Remeasured on 2026-10-23 after every document host was given one shared reserve-and-read step, with the parse the only
+    // per-host code and the indexer reading every document before it begins a PDF's effect group, under one, two and three root
+    // workers (the three-worker regeneration reported the regenerated 6,865 primary sites and zero diagnostics):
+    // SessionAttachmentIndexingService.ExecuteAsync falls from 3,192 to 3,188 states in every arrangement, because the snapshot
+    // read is analysed before the extraction's effect group is begun, not inside it, and both hosts now reach the one shared
+    // read; 3,188 plus the margin is still 3,352, so its row is unchanged. The other sixty-eight primary rows each measured
+    // their unchanged maximum.
+    // Remeasured on 2026-10-23 after the isolated worker kinds became format-neutral and the in-process parse observed the
+    // fault of cancelling a source it had already disposed, under one, two and three root workers (the one-worker discovery
+    // matched the committed 6,865-row manifest with zero diagnostics): SessionAttachmentIndexingService.ExecuteAsync grows from
+    // 3,188 to 3,192 states in every arrangement. Two states are the isolated host reading its heading and verdict reasons from
+    // its format's worker profile, and two are the continuation by which the in-process host's cancellation request observes
+    // that fault, which the checker enters as an asynchronous callback (with that request alone restored, the root measured
+    // 3,190). 3,192 plus the margin is still 3,352, so its row is unchanged. The other sixty-eight primary rows each measured
+    // their unchanged maximum under one worker. Under three, the handoff root
+    // LongRunningOperationStartupHostedService.ContinueInBackgroundAsync measured 2,134 states in both three-worker runs, half
+    // the 4,268 of its one-worker entry, which its row already holds.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -182,7 +203,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync", 1448), // measured 1375, 1375 and 1375 under one, two and three workers; stopped-host erasure recovery reaches the capsule maintenance drain
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.EnqueueExtraction", 32), // measured 21
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync", 1408), // measured 1338, 1338 and 1338 under one, two and three workers; Saga store mutations now own the capsule mutation barrier and its drain
-        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3224), // measured 3066, 3066 and 3066 under one, two and three workers; the detached parser callback now reaches the seven Comprehension format extractors (#177), whose package, XML and walker members are analysed in it
+        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3352), // measured 3192, 3192 and 3192 under one, two and three workers; beside the detached parser callback of the seven Comprehension format extractors (#177), the isolated PDF path (#163) adds the external effect group begun after the shared reserve-and-read step and the worker seam's provider call
         new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.TryEnqueue", 16), // measured 4
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StartAsync", 80), // measured 65
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StopAsync", 16), // measured 1

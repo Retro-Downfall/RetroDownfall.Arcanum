@@ -436,6 +436,11 @@
           "Microsoft.Extensions.Logging.Abstractions": "10.0.7"
         }
       },
+      "PdfPig": {
+        "type": "Transitive",
+        "resolved": "0.1.17-alpha-202610200037-ad829",
+        "contentHash": "NQHcO5xyj29nrb/5RCCyiyzviy/iIY/tXJMGXeYAWavC34WYnSbPD7Yy1fF47Pfi1QwaN4YZYhc8/dqgqgwavw=="
+      },
       "Serilog": {
         "type": "Transitive",
         "resolved": "4.3.0",
@@ -572,6 +577,7 @@
           "Microsoft.Extensions.Hosting.Systemd": "[10.0.10, )",
           "Microsoft.Extensions.Hosting.WindowsServices": "[10.0.10, )",
           "ModelContextProtocol.Core": "[1.4.1, )",
+          "PdfPig": "[0.1.17-alpha-202610200037-ad829, )",
           "RetroDownfall.Arcanum.Core": "[0.1.0-beta, )",
           "RetroDownfall.Arcanum.Secrets": "[0.1.0-beta, )",
           "SQLitePCLRaw.provider.e_sqlcipher": "[2.1.11, )",

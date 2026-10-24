@@ -1,0 +1,10 @@
+Arcanum PdfPig probe document
+
+The quick brown fox jumps over the lazy dog. This paragraph exists so the extractor
+has ordinary English prose to read back in reading order.
+
+Accented text: café résumé naïve Zürich Ångström piñata — "smart quotes" and an em dash.
+
+The distinctive codeword is: ZEPHYR-QUINCE-7731. It must survive extraction exactly.
+
+A second paragraph follows. It has a number list: 1, 2, 3, 4, 5 and a URL https://example.com/path?q=1.

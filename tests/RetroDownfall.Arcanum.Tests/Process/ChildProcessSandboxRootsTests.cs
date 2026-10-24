@@ -71,4 +71,101 @@ public sealed class ChildProcessSandboxRootsTests : IDisposable
                 Path.GetFileName(_workspace),
                 StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void Model_directed_tool_requests_keep_the_network()
+    {
+        // Network denial is opt-in for Arcanum-authored workers. Turning it on for a model-directed tool
+        // would break every command that legitimately fetches (git, package restore), so each existing
+        // builder must leave it off.
+        string package = Directory.CreateDirectory(Path.Combine(_workspace, "packages")).FullName;
+
+        string writable = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "arcanum-roots-rw-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        try
+        {
+            ChildProcessSandboxRequest command = ChildProcessSandboxRoots.ForExecuteCommand(
+                _workspace,
+                null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: true);
+
+            ChildProcessSandboxRequest spell = ChildProcessSandboxRoots.ForSpellScript(
+                [_workspace],
+                _workspace,
+                null,
+                allowUnsandboxed: false,
+                windowsPathBoundaryRequired: true);
+
+            ChildProcessSandboxRequest check = ChildProcessSandboxRoots.ForWorkspaceCheck(
+                _workspace,
+                [package],
+                [writable]);
+
+            Assert.False(command.DenyNetwork);
+
+            Assert.False(spell.DenyNetwork);
+
+            Assert.False(check.DenyNetwork);
+
+            Assert.False(new ChildProcessSandboxRequest { ReadWriteRoots = [], ReadExecuteRoots = [] }.DenyNetwork);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
+        }
+    }
+
+    [Fact]
+    public void Model_directed_tool_requests_keep_their_file_writes()
+    {
+        // Write denial is opt-in for the document worker. A model-directed tool writes its workspace and its temp
+        // directory, so each existing builder must leave it off.
+        string package = Directory.CreateDirectory(Path.Combine(_workspace, "packages")).FullName;
+
+        string writable = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "arcanum-roots-rw-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        try
+        {
+            Assert.False(ChildProcessSandboxRoots.ForExecuteCommand(_workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).DenyFileWrites);
+
+            Assert.False(ChildProcessSandboxRoots.ForSpellScript([_workspace], _workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).DenyFileWrites);
+
+            Assert.False(ChildProcessSandboxRoots.ForWorkspaceCheck(_workspace, [package], [writable]).DenyFileWrites);
+
+            Assert.False(new ChildProcessSandboxRequest { ReadWriteRoots = [], ReadExecuteRoots = [] }.DenyFileWrites);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
+        }
+    }
+
+    [Fact]
+    public void Model_directed_tool_requests_keep_their_process_information()
+    {
+        // Process-information confinement is opt-in for the document worker. A model-directed tool's children read sysctls
+        // freely and inspect the processes they start (a build tool waiting on its workers), so each builder leaves it off.
+        string package = Directory.CreateDirectory(Path.Combine(_workspace, "packages")).FullName;
+
+        string writable = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "arcanum-roots-rw-" + Guid.NewGuid().ToString("N"))).FullName;
+
+        try
+        {
+            Assert.False(ChildProcessSandboxRoots.ForExecuteCommand(_workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).ConfineProcessInformation);
+
+            Assert.False(ChildProcessSandboxRoots.ForSpellScript([_workspace], _workspace, null, allowUnsandboxed: false, windowsPathBoundaryRequired: true).ConfineProcessInformation);
+
+            Assert.False(ChildProcessSandboxRoots.ForWorkspaceCheck(_workspace, [package], [writable]).ConfineProcessInformation);
+
+            Assert.False(new ChildProcessSandboxRequest { ReadWriteRoots = [], ReadExecuteRoots = [] }.ConfineProcessInformation);
+        }
+        finally
+        {
+            _ = TestDirectoryCleanup.TryDelete(writable, nameof(ChildProcessSandboxRootsTests));
+        }
+    }
 }

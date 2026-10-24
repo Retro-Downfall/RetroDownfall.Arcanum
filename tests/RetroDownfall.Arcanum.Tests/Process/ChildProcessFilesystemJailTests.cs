@@ -133,6 +133,482 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
     }
 
     [Fact]
+    public void Profile_keeps_network_and_sockets_unless_denial_is_requested()
+    {
+        // Every model-directed tool child keeps today's posture: the jail is filesystem-only.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            ["/Users/arcanum-test/workspace"],
+            ["/usr", "/bin", "/System"],
+            "/private/tmp/arcanum-sb-test-invocation");
+
+        Assert.Contains("(allow network*)", profile, StringComparison.Ordinal);
+
+        Assert.Contains("(allow system-socket)", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(deny network*)", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(deny system-socket)", profile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Profile_with_network_denial_grants_no_network_or_socket_and_denies_both_last()
+    {
+        // A document worker parses hostile bytes and must have no way to reach anything: no network
+        // operation and no socket of any domain. Deny-by-default already refuses both; the explicit
+        // denials close the profile so no allow form can follow them.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true);
+
+        Assert.DoesNotContain("(allow network", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(allow system-socket", profile, StringComparison.Ordinal);
+
+        Assert.EndsWith(
+            "(deny network*)\n(deny system-socket)\n",
+            profile.ReplaceLineEndings("\n"),
+            StringComparison.Ordinal);
+
+        Assert.False(
+            MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile),
+            profile);
+    }
+
+    [Fact]
+    public void Profile_with_fork_denial_denies_process_fork_last_and_still_lets_the_launch_exec()
+    {
+        // A document worker is one process: it never forks, so its profile refuses fork, vfork and posix_spawn. The
+        // launch chain inside the jail only execs (sandbox-exec, the limit prelude, the target), so process* stays.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            denyProcessFork: true);
+
+        Assert.Contains("(allow process*)", profile, StringComparison.Ordinal);
+
+        Assert.EndsWith(
+            "(deny network*)\n(deny system-socket)\n(deny process-fork)\n",
+            profile.ReplaceLineEndings("\n"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Profile_without_fork_denial_never_mentions_process_fork()
+    {
+        // Every other jailed child (execute_command, run_spell_script, workspace_check) forks its own tools.
+        foreach (bool denyNetwork in new[] { false, true })
+        {
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                ["/Users/arcanum-test/workspace"],
+                ["/usr", "/bin", "/System"],
+                "/private/tmp/arcanum-sb-test-invocation",
+                denyNetwork: denyNetwork);
+
+            Assert.DoesNotContain("process-fork", profile, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Profile_confined_to_its_roots_lists_and_stats_nothing_beyond_them_and_their_ancestors()
+    {
+        // A document worker's output reaches model context, so a listing it makes must not be able to carry the names,
+        // sizes and owners of the operator's files out. The confined profile drops the grants that read every directory
+        // and every file's metadata, and adds back only what path resolution and process start need.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            confineMetadataToRoots: true);
+
+        string[] lines = profile.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.DoesNotContain("(allow file-read-metadata)", lines);
+
+        Assert.DoesNotContain("(allow file-read* (vnode-type DIRECTORY))", lines);
+
+        Assert.Contains(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule, lines);
+
+        // The ancestors of a root, for path resolution: metadata of the exact directory, never what is beneath it.
+        foreach (string ancestor in new[] { "/Applications", "/Applications/Arcanum", "/private/tmp", "/private", "/private/var", "/var", "/System/Volumes" })
+        {
+            Assert.Contains($"  (literal \"{ancestor}\")", lines);
+        }
+
+        Assert.DoesNotContain(lines, static line => line.Contains("\"/Users", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("(subpath \"/Applications\")", profile, StringComparison.Ordinal);
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile), profile);
+    }
+
+    [Fact]
+    public void Profile_confined_to_its_roots_denies_recovering_a_path_from_an_object_id_and_a_profile_not_confined_does_not()
+    {
+        // No file operation mediates fsgetpath or fsgetpath_ext: given a volume id and any object id they return the path of
+        // any file on the volume, which would carry the operator's file names out through a listing the confinement refused.
+        // Only the syscall-unix operation governs them, so the confined profile denies both calls by number, last.
+        const string denial = "(deny syscall-unix (syscall-number SYS_fsgetpath SYS_fsgetpath_ext))";
+
+        string confined = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            denyProcessFork: true,
+            confineMetadataToRoots: true,
+            denyFileWrites: true);
+
+        string[] lines = confined.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal(denial, lines[^1]);
+
+        Assert.Single(lines, static line => line.Contains("syscall-unix", StringComparison.Ordinal));
+
+        // Every other profile keeps today's bytes, since a build tool or a model-directed command may resolve paths by id.
+        foreach (bool denyNetwork in new[] { false, true })
+        {
+            string unconfined = MacOsSandboxExecProfileBuilder.Build(
+                ["/Users/arcanum-test/workspace"],
+                ["/usr", "/bin", "/System"],
+                "/private/tmp/arcanum-sb-test-invocation",
+                denyNetwork: denyNetwork,
+                denyProcessFork: denyNetwork);
+
+            Assert.DoesNotContain("syscall-unix", unconfined, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Profile_not_confined_keeps_its_global_metadata_and_directory_grants()
+    {
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            ["/Users/arcanum-test/workspace"],
+            ["/usr", "/bin", "/System"],
+            "/private/tmp/arcanum-sb-test-invocation");
+
+        string[] lines = profile.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Contains("(allow file-read-metadata)", lines);
+
+        Assert.Contains("(allow file-read* (vnode-type DIRECTORY))", lines);
+
+        Assert.DoesNotContain(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule, profile, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Whole_volume_guard_admits_the_root_directory_entry_rule_and_no_other_literal_root()
+    {
+        MacOsSandboxExecProfileBuilder.AssertNoWholeVolumeFootguns(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule + "\n");
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule + "\n"));
+
+        foreach (string footgun in new[]
+        {
+            "(allow file-read* (literal \"/\"))",
+            "(allow file-read-data (literal \"/\"))",
+            "(allow file-write* (literal \"/\"))",
+            MacOsSandboxExecProfileBuilder.RootDirectoryEntryRule + "\n(allow file-read* (literal \"/\"))",
+        })
+        {
+            Assert.Throws<InvalidOperationException>(() => MacOsSandboxExecProfileBuilder.AssertNoWholeVolumeFootguns(footgun));
+
+            Assert.True(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(footgun), footgun);
+        }
+    }
+
+    [Fact]
+    public void Profile_that_denies_file_writes_lets_the_child_open_only_dev_null_for_writing()
+    {
+        // A document worker writes no file, and a per-file size cap does not bound how many it could create, so its
+        // profile grants no write at all: not its private temp directory (still readable, and created and removed by the
+        // host), not a socket in it, no clone or link, and of the devices only /dev/null.
+        const string temp = "/private/tmp/arcanum-sb-test-invocation";
+
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            temp,
+            denyNetwork: true,
+            denyProcessFork: true,
+            confineMetadataToRoots: true,
+            denyFileWrites: true);
+
+        string[] lines = profile.ReplaceLineEndings("\n").Split('\n');
+
+        Assert.Contains("(allow file-write-data (literal \"/dev/null\"))", lines);
+
+        Assert.Single(lines, static line => line.Contains("file-write", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("(allow file-clone", profile, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("(allow file-link", profile, StringComparison.Ordinal);
+
+        // The temp directory stays readable: the file-read* form, the only one that names it, still does.
+        Assert.Contains($"  (subpath \"{temp}\"))", lines);
+
+        Assert.Single(lines, line => line.Contains(temp + "\"", StringComparison.Ordinal));
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile), profile);
+    }
+
+    [Fact]
+    public void Profile_without_write_denial_keeps_its_temp_device_socket_clone_and_link_grants()
+    {
+        // Every other jailed child (execute_command, run_spell_script, workspace_check) writes its workspace, its temp
+        // directory and its devices exactly as before.
+        const string workspace = "/Users/arcanum-test/workspace";
+
+        const string temp = "/private/tmp/arcanum-sb-test-invocation";
+
+        foreach (bool denyNetwork in new[] { false, true })
+        {
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                [workspace],
+                ["/usr", "/bin", "/System"],
+                temp,
+                denyNetwork: denyNetwork).ReplaceLineEndings("\n");
+
+            Assert.Contains($"(allow file-write*\n  (subpath \"{workspace}\")\n  (subpath \"{temp}\")\n  (subpath \"/dev\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.Contains($"(allow file-write-create (vnode-type SOCKET) (subpath \"{temp}\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.Contains($"(allow file-clone\n  (subpath \"{workspace}\")\n  (subpath \"{temp}\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.Contains($"(allow file-link\n  (subpath \"{workspace}\")\n  (subpath \"{temp}\"))\n", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("(literal \"/dev/null\")", profile, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Profile_that_confines_process_information_reads_only_the_measured_sysctls_and_asks_about_no_other_process()
+    {
+        // A document worker's output reaches model context, and the user's other processes carry secrets in their argument
+        // vectors and environments (an API key on a command line, in a shell's or the host's environment). The confined
+        // profile reads no sysctl but the names the worker's runtime and its launch chain were measured to read, writes none,
+        // and asks about no process but itself; the two denials are stated last, so no allow form can give either back.
+        string profile = MacOsSandboxExecProfileBuilder.Build(
+            [],
+            ["/Applications/Arcanum/bin"],
+            "/private/tmp/arcanum-sb-test-invocation",
+            denyNetwork: true,
+            denyProcessFork: true,
+            confineMetadataToRoots: true,
+            denyFileWrites: true,
+            confineProcessInformation: true).ReplaceLineEndings("\n");
+
+        string[] lines = profile.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.DoesNotContain("(allow sysctl*)", lines);
+
+        Assert.Contains(
+            "(allow sysctl-read\n"
+            + "  (sysctl-name \"hw.memsize\")\n"
+            + "  (sysctl-name \"hw.ncpu\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_AES\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_DotProd\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_LRCPC\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_LRCPC2\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_RDM\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_SHA1\")\n"
+            + "  (sysctl-name \"hw.optional.arm.FEAT_SHA256\")\n"
+            + "  (sysctl-name \"hw.optional.armv8_1_atomics\")\n"
+            + "  (sysctl-name \"hw.optional.armv8_crc32\")\n"
+            + "  (sysctl-name \"hw.pagesize\")\n"
+            + "  (sysctl-name \"hw.pagesize_compat\")\n"
+            + "  (sysctl-name \"hw.perflevel0.l2cachesize\")\n"
+            + "  (sysctl-name \"hw.perflevel0.l3cachesize\")\n"
+            + "  (sysctl-name \"kern.bootargs\")\n"
+            + "  (sysctl-name \"kern.iossupportversion\")\n"
+            + "  (sysctl-name \"kern.memorystatus_level\")\n"
+            + "  (sysctl-name \"kern.osproductversion\")\n"
+            + "  (sysctl-name \"kern.osvariant_status\")\n"
+            + "  (sysctl-name \"security.mac.lockdown_mode_state\")\n"
+            + "  (sysctl-name \"vm.swapusage\"))\n",
+            profile,
+            StringComparison.Ordinal);
+
+        Assert.Single(lines, static line => line.StartsWith("(allow sysctl", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(lines, static line => line.Contains("sysctl-name-prefix", StringComparison.Ordinal));
+
+        // The shell that runs the limit prelude reads the host name, and runs without it: the machine's name stays out.
+        Assert.DoesNotContain("kern.hostname", profile, StringComparison.Ordinal);
+
+        Assert.Equal(
+            [
+                MacOsSandboxExecProfileBuilder.ObjectIdPathDenialRule,
+                "(deny sysctl-write)",
+                "(deny process-info* (require-not (target self)))",
+            ],
+            lines[^3..]);
+
+        Assert.False(MacOsSandboxExecProfileBuilder.ContainsWholeVolumeOrBroadTempFootgun(profile), profile);
+    }
+
+    [Fact]
+    public void Profile_not_confining_process_information_keeps_its_sysctl_grant_and_never_names_process_information()
+    {
+        // Every other profile keeps today's bytes: a build, a test runner or a model-directed command reads sysctls freely
+        // and inspects the processes it starts.
+        foreach ((bool denyNetwork, bool worker) in new[] { (false, false), (true, false), (true, true) })
+        {
+            string profile = MacOsSandboxExecProfileBuilder.Build(
+                worker ? [] : ["/Users/arcanum-test/workspace"],
+                ["/usr", "/bin", "/System"],
+                "/private/tmp/arcanum-sb-test-invocation",
+                denyNetwork: denyNetwork,
+                denyProcessFork: denyNetwork,
+                confineMetadataToRoots: worker,
+                denyFileWrites: worker);
+
+            Assert.Contains("(allow sysctl*)", profile.ReplaceLineEndings("\n").Split('\n'));
+
+            Assert.DoesNotContain("sysctl-read", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("sysctl-write", profile, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("process-info", profile, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void A_request_that_denies_file_writes_but_names_a_writable_root_is_refused_without_an_escape()
+    {
+        // The two contradict each other. The jail refuses before touching the start, and the operator escape, which would
+        // run the child with no jail and so with every write, does not apply.
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "/bin/echo",
+            WorkingDirectory = _workspace,
+            UseShellExecute = false,
+        };
+
+        startInfo.Environment["TMPDIR"] = "/operator/original-tmpdir";
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            new ChildProcessSandboxRequest
+            {
+                ReadWriteRoots = [_workspace],
+                ReadExecuteRoots = [],
+                AllowUnsandboxed = true,
+                DenyFileWrites = true,
+                ToolName = "comprehension-worker",
+            },
+            NullLogger.Instance);
+
+        Assert.Equal(ChildProcessSandboxApplyStatus.Unavailable, apply.Status);
+
+        Assert.Empty(apply.OwnedArtifactsToCleanup);
+
+        Assert.Equal("/bin/echo", startInfo.FileName);
+
+        Assert.Empty(startInfo.ArgumentList);
+
+        Assert.Equal("/operator/original-tmpdir", startInfo.Environment["TMPDIR"]);
+    }
+
+    [SkippableFact]
+    public void Windows_jail_that_denies_file_writes_grants_its_temp_directory_read_only()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "The Windows broker prepare path only runs on Windows.");
+
+        // The AppContainer reaches only what it is granted. Without write denial the run's temp directory is a read-write
+        // root, as before; with it, the same directory is granted read-only and nothing is granted write.
+        SandboxExecHelperPayload writable = PrepareWindowsBrokerPayload(denyFileWrites: false, out string writableTemp);
+
+        Assert.Contains(writableTemp, writable.ReadWriteRoots);
+
+        Assert.DoesNotContain(writableTemp, writable.ReadOnlyRoots);
+
+        SandboxExecHelperPayload denied = PrepareWindowsBrokerPayload(denyFileWrites: true, out string deniedTemp);
+
+        Assert.Empty(denied.ReadWriteRoots);
+
+        Assert.Contains(deniedTemp, denied.ReadOnlyRoots);
+    }
+
+    [Fact]
+    public async Task Network_denial_refuses_a_run_whose_jail_was_not_applied()
+    {
+        // Only an applied jail can take the network away (Seatbelt on macOS, a capability-free AppContainer
+        // on Windows). The operator escape hatch runs the child with no jail at all, so a request that needs
+        // the network gone must refuse it rather than start a child that still has it.
+        string missing = Path.Combine(_workspace, "missing-" + Guid.NewGuid().ToString("N"));
+
+        string ranMarker = Path.Combine(_outsideDir, "ran.txt");
+
+        CappedChildProcessRunResult denied = await RunWithEscapedJailAsync(ranMarker, missing, denyNetwork: true);
+
+        Assert.Equal(CappedChildProcessOutcome.FilesystemSandboxUnavailable, denied.Outcome);
+
+        Assert.Equal(
+            ChildProcessSandboxMessages.NetworkDenialRequiresAppliedSandbox,
+            denied.FilesystemSandboxDenialMessage);
+
+        Assert.False(File.Exists(ranMarker), "The child ran although its network could not be denied.");
+
+        CappedChildProcessRunResult escaped = await RunWithEscapedJailAsync(ranMarker, missing, denyNetwork: false);
+
+        Assert.Equal(CappedChildProcessOutcome.Completed, escaped.Outcome);
+
+        Assert.True(File.Exists(ranMarker), "The escaped control run did not start its child.");
+    }
+
+    private static async Task<CappedChildProcessRunResult> RunWithEscapedJailAsync(
+        string ranMarker,
+        string missingRoot,
+        bool denyNetwork)
+    {
+        ProcessStartInfo psi = OperatingSystem.IsWindows()
+            ? new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                ArgumentList = { "/c", "type nul > " + ranMarker },
+            }
+            : new ProcessStartInfo
+            {
+                FileName = "/bin/sh",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                ArgumentList = { "-c", ": > \"$1\"", "sh", ranMarker },
+            };
+
+        // Roots that do not exist leave the jail nothing to grant, so it is never applied and the escape
+        // hatch takes over on every platform.
+        ChildProcessSandboxRequest request = new()
+        {
+            ReadWriteRoots = [missingRoot],
+            ReadExecuteRoots = [missingRoot],
+            AllowUnsandboxed = true,
+            DenyNetwork = denyNetwork,
+            ToolName = "network-denial-probe",
+        };
+
+        return await CappedChildProcessRunner.RunAsync(
+            psi,
+            ChildProcessEnvironmentProfile.ToolExec,
+            64 * 1024,
+            TimeSpan.FromSeconds(60),
+            resourceLimits: null,
+            resourceLimiter: null,
+            CancellationToken.None,
+            request,
+            NullLogger.Instance);
+    }
+
+    [Fact]
     public void Root_normalization_drops_every_root_that_is_neither_a_directory_nor_a_file()
     {
         // Every jail — the Seatbelt profile and the Windows broker payload — is built from this list.
@@ -1286,6 +1762,48 @@ public sealed class ChildProcessFilesystemJailTests : IDisposable
             StringComparison.Ordinal);
 
         Assert.DoesNotContain("Hub.Error", result.FilesystemSandboxDenialMessage ?? "", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Prepares a Windows broker run with no writable root and returns the payload it would hand the broker, with the
+    /// run's temp directory (the broker's working directory). Every artifact the prepare created is removed again.
+    /// </summary>
+    private SandboxExecHelperPayload PrepareWindowsBrokerPayload(bool denyFileWrites, out string temp)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = Path.Combine(System.Environment.SystemDirectory, "cmd.exe"),
+            UseShellExecute = false,
+        };
+
+        using IDisposable brokerOverride = ChildProcessFilesystemJail.UseWindowsBrokerExecutableForTests(System.Environment.ProcessPath!);
+
+        ChildProcessSandboxApplyResult apply = ChildProcessFilesystemJail.Apply(
+            startInfo,
+            new ChildProcessSandboxRequest
+            {
+                ReadWriteRoots = [],
+                ReadExecuteRoots = [_workspace],
+                RequireAppliedFilesystemJail = true,
+                DenyFileWrites = denyFileWrites,
+                ToolName = "comprehension-worker",
+            },
+            NullLogger.Instance);
+
+        try
+        {
+            Assert.Equal(ChildProcessSandboxApplyStatus.Applied, apply.Status);
+
+            temp = startInfo.WorkingDirectory;
+
+            return System.Text.Json.JsonSerializer.Deserialize(
+                File.ReadAllText(startInfo.ArgumentList[2]),
+                SandboxExecJsonContext.Default.SandboxExecHelperPayload)!;
+        }
+        finally
+        {
+            Assert.True(ChildProcessFilesystemJail.CleanupTempPaths(apply.OwnedArtifactsToCleanup));
+        }
     }
 
     /// <summary>

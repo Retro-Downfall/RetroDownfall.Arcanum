@@ -14,4 +14,7 @@ internal static class ChildProcessSandboxMessages
 
     internal const string NotNetworkIsolationNote =
         "Filesystem sandbox only — does not isolate network use by child binaries.";
+
+    internal const string NetworkDenialRequiresAppliedSandbox =
+        "This child must run without network access, which only an applied sandbox provides; the process was not started.";
 }

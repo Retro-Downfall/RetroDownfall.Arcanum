@@ -8,7 +8,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// <remarks>
 /// <para>
 /// Critical invariant: no profile rule may grant whole-volume file-content read
-/// (no <c>(subpath "/")</c>, no <c>(literal "/")</c> for file-read*).
+/// (no <c>(subpath "/")</c>, no <c>(literal "/")</c> for file-read*). The one rule that names the root is
+/// <see cref="RootDirectoryEntryRule"/>, emitted only for a profile confined to its roots: the root directory's own
+/// listing and metadata, nothing beneath it, which the guard admits by its exact text.
 /// </para>
 /// <para>
 /// Access classes:
@@ -16,21 +18,153 @@ namespace RetroDownfall.Arcanum.Infrastructure.ProcessExecution;
 /// <item>Workspace / Sanctum AllowedPaths — read + write</item>
 /// <item>Spell script roots — read + execute (no write unless also a RW root)</item>
 /// <item>System runtime — read + execute, no write</item>
-/// <item>Per-invocation owner-only TMPDIR — read + write (no broad /tmp)</item>
+/// <item>Per-invocation owner-only TMPDIR — read + write (no broad /tmp); read-only when writes are denied</item>
 /// </list>
-/// Network is explicitly allowed — filesystem-only MVP; not network isolation.
+/// Network is explicitly allowed — filesystem-only MVP; not network isolation — unless the request asks
+/// for <see cref="ChildProcessSandboxRequest.DenyNetwork"/>, which removes network and socket access.
 /// </para>
 /// </remarks>
 internal static class MacOsSandboxExecProfileBuilder
 {
     /// <summary>
+    /// A confined profile's grant on the root directory itself: its listing (the standard top-level names every Mac has)
+    /// and its metadata, nothing beneath it. Every process start reads it, and dyld aborts the process without it; the
+    /// unconfined profile grants it through its read of every directory.
+    /// </summary>
+    internal const string RootDirectoryEntryRule = "(allow file-read-data file-read-metadata (literal \"/\"))";
+
+    /// <summary>
+    /// A profile that denies file writes grants this one write and no other: data written to <c>/dev/null</c>, which keeps
+    /// none of it. The document worker does not need it (both the Native AOT binary and a managed apphost extract with no
+    /// device write at all), but a discard sink holds nothing and spares a library that opens it an error path.
+    /// </summary>
+    internal const string DevNullWriteRule = "(allow file-write-data (literal \"/dev/null\"))";
+
+    /// <summary>
+    /// A confined profile ends with this denial. No file operation mediates <c>fsgetpath</c> and <c>fsgetpath_ext</c>:
+    /// given a volume id (a <c>statfs</c> of the child's own temp directory supplies it) and any object id they return the
+    /// absolute path of any file on the volume, so a sweep of ids would recover every file name the confinement refuses to
+    /// list or stat. Only the <c>syscall-unix</c> operation governs them, and a rule naming the two calls leaves every other
+    /// system call as it was (<c>(deny default)</c> does not reach <c>syscall-unix</c> until a rule names it). Denying one of the
+    /// two is not enough, because the other returns the same path. The rule closes object-id path recovery and nothing else: the
+    /// root directory's listing, the ancestors' metadata and the mount-point names <c>getfsstat</c> lists (dyld's own profile
+    /// allows that call) remain readable to a confined child, which the design reference records as its residual. What other
+    /// processes reveal is closed separately, by <see cref="OtherProcessInformationDenialRule"/> and <see cref="RuntimeSysctlNames"/>.
+    /// </summary>
+    internal const string ObjectIdPathDenialRule = "(deny syscall-unix (syscall-number SYS_fsgetpath SYS_fsgetpath_ext))";
+
+    /// <summary>
+    /// A profile that confines process information ends with this denial, after <see cref="SysctlWriteDenialRule"/>: no
+    /// <c>process-info*</c> operation on any process but the child itself. It refuses <c>proc_pidpath</c>,
+    /// <c>proc_pidinfo</c>, <c>proc_name</c> and the rest of <c>proc_info</c> on another process, and <c>proc_listpids</c>,
+    /// which names no target, outright. The child's operations on itself (the runtime reads its own process information and
+    /// sets its own process control) stay allowed. <c>(target others)</c> parses but, measured on macOS 27, refuses nothing,
+    /// so the rule names what it keeps.
+    /// </summary>
+    internal const string OtherProcessInformationDenialRule = "(deny process-info* (require-not (target self)))";
+
+    /// <summary>
+    /// A profile that confines process information grants <c>sysctl-read</c> for <see cref="RuntimeSysctlNames"/> only and no
+    /// <c>sysctl-write</c>, and states the write denial last so no allow form can give it back. The denial cannot simply follow
+    /// <c>(allow sysctl*)</c>: measured on macOS 27, that pair refuses every read as well.
+    /// </summary>
+    internal const string SysctlWriteDenialRule = "(deny sysctl-write)";
+
+    /// <summary>
+    /// The only sysctls a profile that confines process information may read, found by running the PDF worker (the Native AOT
+    /// binary and a managed apphost), its limit prelude's <c>/bin/sh</c> and the system utilities the stand-ins run with every
+    /// read reported, then removing names one at a time. They are libSystem's start-up reads in every process
+    /// (<c>kern.osproductversion</c>, <c>kern.iossupportversion</c>, <c>kern.osvariant_status</c>, <c>kern.bootargs</c>,
+    /// <c>security.mac.lockdown_mode_state</c>), and the runtime's page size, processor count, memory size, cache sizes,
+    /// memory load and swap use (its garbage collector's budget) and the CPU features its code paths are chosen by. Without
+    /// the page size, the processor count, the memory size, or one of the CPU features the Native AOT binary is compiled to
+    /// require, it aborts at start (perl, which the stand-ins run, aborts without <c>hw.pagesize_compat</c> too); the other
+    /// names are kept so the runtime behaves as it does outside the jail. The shell's read of <c>kern.hostname</c> is refused:
+    /// it runs without it. None names a process: <c>kern.procargs2</c>, <c>kern.procargs</c> and <c>kern.proc.*</c> (another process's arguments
+    /// and environment, its entry, and the process table) are refused with every other name. A process's query about itself
+    /// (<c>kern.proc.pid</c> and <c>kern.procargs2</c> with its own id) is answered without a sandbox check, so the runtime
+    /// still reads its own entry.
+    /// </summary>
+    internal static IReadOnlyList<string> RuntimeSysctlNames { get; } =
+    [
+        "hw.memsize",
+        "hw.ncpu",
+        "hw.optional.arm.FEAT_AES",
+        "hw.optional.arm.FEAT_DotProd",
+        "hw.optional.arm.FEAT_LRCPC",
+        "hw.optional.arm.FEAT_LRCPC2",
+        "hw.optional.arm.FEAT_RDM",
+        "hw.optional.arm.FEAT_SHA1",
+        "hw.optional.arm.FEAT_SHA256",
+        "hw.optional.armv8_1_atomics",
+        "hw.optional.armv8_crc32",
+        "hw.pagesize",
+        "hw.pagesize_compat",
+        "hw.perflevel0.l2cachesize",
+        "hw.perflevel0.l3cachesize",
+        "kern.bootargs",
+        "kern.iossupportversion",
+        "kern.memorystatus_level",
+        "kern.osproductversion",
+        "kern.osvariant_status",
+        "security.mac.lockdown_mode_state",
+        "vm.swapusage",
+    ];
+
+    /// <summary>
+    /// Links outside every root that a confined profile's launch chain resolves: <c>/bin/sh</c>, which runs the limit
+    /// prelude, reads the link naming the shell it starts.
+    /// </summary>
+    private static readonly string[] ConfinedLaunchChainLinks =
+    [
+        "/private/var/select/sh",
+    ];
+
+    /// <summary>
     /// Builds a deny-default Seatbelt profile. Throws if any root is unsafe (control chars, whole-volume).
     /// </summary>
+    /// <param name="denyNetwork">
+    /// When true, the profile grants neither <c>network*</c> nor <c>system-socket</c> (no socket of any
+    /// domain can be created) and ends with explicit denials of both. Off for every model-directed tool,
+    /// whose jail stays filesystem-only.
+    /// </param>
+    /// <param name="denyProcessFork">
+    /// When true, the profile ends with an explicit denial of <c>process-fork</c>, so the child can create no other
+    /// process by fork, vfork or posix_spawn. Exec stays allowed: the launch chain inside the jail (sandbox-exec, the
+    /// limit prelude, the target) only ever execs. Off for every model-directed tool, whose children fork their own tools.
+    /// </param>
+    /// <param name="confineMetadataToRoots">
+    /// When true, the profile leaves out the grants that list every directory and read every file's metadata, so nothing
+    /// outside the roots can be listed or stat'ed. What it adds back is only what path resolution and process start need:
+    /// the metadata of each root's ancestors (each exact directory, never what is beneath it), the root directory's own
+    /// entry (<see cref="RootDirectoryEntryRule"/>) and the <c>/bin/sh</c> selector link. The profile also ends with
+    /// <see cref="ObjectIdPathDenialRule"/>, since the two calls that turn an object id back into a path would otherwise
+    /// name every file on the volume. Off for every model-directed tool, whose children list and stat the workspace's
+    /// surroundings as any build does.
+    /// </param>
+    /// <param name="denyFileWrites">
+    /// When true, the profile grants no write of any kind to any root, <paramref name="readWriteRoots"/> and
+    /// <paramref name="invocationTempDir"/> included: no file write, no socket creation, no clone and no link. The temp
+    /// directory stays readable, and the one write left is <see cref="DevNullWriteRule"/>. Off for every model-directed
+    /// tool, whose children write their workspace and temp directory.
+    /// </param>
+    /// <param name="confineProcessInformation">
+    /// When true, the profile grants <c>sysctl-read</c> for <see cref="RuntimeSysctlNames"/> only, in place of
+    /// <c>(allow sysctl*)</c>, and ends with <see cref="SysctlWriteDenialRule"/> and
+    /// <see cref="OtherProcessInformationDenialRule"/>, so the child can read no other process's argument vector, environment,
+    /// executable path or entry, and cannot list the processes running. Off for every model-directed tool, whose children read
+    /// sysctls freely and inspect the processes they start.
+    /// </param>
     internal static string Build(
         IReadOnlyList<string> readWriteRoots,
         IReadOnlyList<string> readExecuteRoots,
         string invocationTempDir,
-        IReadOnlyList<string>? readOnlyRoots = null)
+        IReadOnlyList<string>? readOnlyRoots = null,
+        bool denyNetwork = false,
+        bool denyProcessFork = false,
+        bool confineMetadataToRoots = false,
+        bool denyFileWrites = false,
+        bool confineProcessInformation = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationTempDir);
 
@@ -57,16 +191,44 @@ internal static class MacOsSandboxExecProfileBuilder
         // The runner terminates the tree from outside the sandbox, which no sandbox rule governs.
         sb.AppendLine("(allow signal (target self))");
         sb.AppendLine("(allow signal (target same-sandbox))");
-        sb.AppendLine("(allow sysctl*)");
-        sb.AppendLine("(allow system-socket)");
+
+        if (confineProcessInformation)
+        {
+            AppendSysctlReadAllow(sb, RuntimeSysctlNames);
+        }
+        else
+        {
+            sb.AppendLine("(allow sysctl*)");
+        }
+
+        if (!denyNetwork)
+        {
+            sb.AppendLine("(allow system-socket)");
+        }
+
         sb.AppendLine("(allow system-fsctl)");
-        sb.AppendLine("(allow network*)");
+
+        if (!denyNetwork)
+        {
+            sb.AppendLine("(allow network*)");
+        }
+
         sb.AppendLine("(allow iokit*)");
         sb.AppendLine("(allow user-preference*)");
         sb.AppendLine("(allow file-map-executable)");
-        sb.AppendLine("(allow file-read-metadata)");
+
+        if (!confineMetadataToRoots)
+        {
+            sb.AppendLine("(allow file-read-metadata)");
+        }
+
         sb.AppendLine("(allow file-ioctl)");
-        sb.AppendLine("(allow file-read* (vnode-type DIRECTORY))");
+
+        if (!confineMetadataToRoots)
+        {
+            sb.AppendLine("(allow file-read* (vnode-type DIRECTORY))");
+        }
+
         // The .NET host requires only identity lookup and the Darwin notification center. Keep
         // every other Mach service and generic IPC operation deny-by-default; Roslyn build hosts
         // use Unix-domain sockets rooted beneath the invocation TMPDIR, granted explicitly below.
@@ -95,33 +257,87 @@ internal static class MacOsSandboxExecProfileBuilder
                 readWriteRoots,
                 [invocationTempDir]));
 
-        AppendFileAllow(
-            sb,
-            "file-write*",
-            MergeUnique(
-                readWriteRoots,
-                [invocationTempDir],
-                DevWriteRoots));
+        if (confineMetadataToRoots)
+        {
+            sb.AppendLine(RootDirectoryEntryRule);
 
-        // Roslyn's dotnet-format BuildHost creates a Unix-domain socket beneath TMPDIR. Socket
-        // vnode creation remains confined to that canonical per-invocation IPC root.
-        sb.Append("(allow file-write-create (vnode-type SOCKET) (subpath \"")
-            .Append(EscapeSeatbeltString(invocationTempDir))
-            .AppendLine("\"))");
+            AppendMetadataAllow(
+                sb,
+                MergeUnique(
+                    AncestorsOf(MergeUnique(
+                        SystemReadExecuteRoots,
+                        readExecuteRoots,
+                        readOnlyRoots,
+                        readWriteRoots,
+                        [invocationTempDir])),
+                    ConfinedLaunchChainLinks));
+        }
 
-        AppendFileAllow(
-            sb,
-            "file-clone",
-            MergeUnique(
-                readWriteRoots,
-                [invocationTempDir]));
+        if (denyFileWrites)
+        {
+            // No root, not even the temp directory, is writable: only the device that keeps nothing.
+            sb.AppendLine(DevNullWriteRule);
+        }
+        else
+        {
+            AppendFileAllow(
+                sb,
+                "file-write*",
+                MergeUnique(
+                    readWriteRoots,
+                    [invocationTempDir],
+                    DevWriteRoots));
 
-        AppendFileAllow(
-            sb,
-            "file-link",
-            MergeUnique(
-                readWriteRoots,
-                [invocationTempDir]));
+            // Roslyn's dotnet-format BuildHost creates a Unix-domain socket beneath TMPDIR. Socket
+            // vnode creation remains confined to that canonical per-invocation IPC root.
+            sb.Append("(allow file-write-create (vnode-type SOCKET) (subpath \"")
+                .Append(EscapeSeatbeltString(invocationTempDir))
+                .AppendLine("\"))");
+
+            AppendFileAllow(
+                sb,
+                "file-clone",
+                MergeUnique(
+                    readWriteRoots,
+                    [invocationTempDir]));
+
+            AppendFileAllow(
+                sb,
+                "file-link",
+                MergeUnique(
+                    readWriteRoots,
+                    [invocationTempDir]));
+        }
+
+        if (denyNetwork)
+        {
+            // Deny-by-default already refuses both; stating them last means no allow form can follow.
+            sb.AppendLine("(deny network*)");
+
+            sb.AppendLine("(deny system-socket)");
+        }
+
+        if (denyProcessFork)
+        {
+            // Stated last, after the broad (allow process*), so no earlier or later allow form can give fork back.
+            sb.AppendLine("(deny process-fork)");
+        }
+
+        if (confineMetadataToRoots)
+        {
+            // Stated last, so no allow form can give the call back. The confinement is meant to keep every name outside the
+            // roots from the child, and these two calls would hand them over by object id.
+            sb.AppendLine(ObjectIdPathDenialRule);
+        }
+
+        if (confineProcessInformation)
+        {
+            // Stated last, after the broad (allow process*): no allow form can give back a sysctl write or another
+            // process's information.
+            sb.AppendLine(SysctlWriteDenialRule);
+
+            sb.AppendLine(OtherProcessInformationDenialRule);
+        }
 
         string profile = sb.ToString();
 
@@ -138,8 +354,7 @@ internal static class MacOsSandboxExecProfileBuilder
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        if (profile.Contains("(subpath \"/\")", StringComparison.Ordinal)
-            || profile.Contains("(literal \"/\")", StringComparison.Ordinal))
+        if (NamesTheWholeVolume(profile))
         {
             throw new InvalidOperationException(
                 "macOS Seatbelt profile must not grant whole-volume file access via (subpath \"/\") or (literal \"/\").");
@@ -230,13 +445,79 @@ internal static class MacOsSandboxExecProfileBuilder
             return true;
         }
 
-        if (profile.Contains("(subpath \"/\")", StringComparison.Ordinal)
-            || profile.Contains("(literal \"/\")", StringComparison.Ordinal))
+        if (NamesTheWholeVolume(profile))
         {
             return true;
         }
 
         return ContainsBroadTempWriteGrant(profile);
+    }
+
+    /// <summary>
+    /// Whether any rule names the root as a subpath, or as a literal outside the exact <see cref="RootDirectoryEntryRule"/>.
+    /// </summary>
+    private static bool NamesTheWholeVolume(string profile)
+    {
+        string beyondTheRootEntry = profile.Replace(RootDirectoryEntryRule, string.Empty, StringComparison.Ordinal);
+
+        return beyondTheRootEntry.Contains("(subpath \"/\")", StringComparison.Ordinal)
+            || beyondTheRootEntry.Contains("(literal \"/\")", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Every proper ancestor of each root and of its <c>/private</c> twin, the root directory excluded: the directories path
+    /// resolution stats on its way to a root.
+    /// </summary>
+    private static IEnumerable<string> AncestorsOf(IEnumerable<string> roots)
+    {
+        foreach (string root in roots)
+        {
+            foreach (string variant in MacOsPathVariants(root.Trim()))
+            {
+                for (int slash = variant.LastIndexOf('/'); slash > 0; slash = variant.LastIndexOf('/', slash - 1))
+                {
+                    yield return variant[..slash];
+                }
+            }
+        }
+    }
+
+    /// <summary>Grants the metadata of exactly <paramref name="paths"/>, each as a literal, never what is beneath it.</summary>
+    private static void AppendMetadataAllow(StringBuilder sb, IEnumerable<string> paths)
+    {
+        sb.Append("(allow file-read-metadata");
+
+        foreach (string path in paths)
+        {
+            sb.AppendLine();
+
+            sb.Append("  (literal \"").Append(EscapeSeatbeltString(path)).Append("\")");
+        }
+
+        sb.AppendLine(")");
+    }
+
+    /// <summary>
+    /// Grants the read of exactly <paramref name="names"/>, each as one sysctl name, never a prefix. An empty list is refused,
+    /// since <c>(allow sysctl-read)</c> with no filter would grant every name.
+    /// </summary>
+    private static void AppendSysctlReadAllow(StringBuilder sb, IReadOnlyList<string> names)
+    {
+        if (names.Count == 0)
+        {
+            throw new InvalidOperationException("A sysctl read grant must name the sysctls it grants.");
+        }
+
+        sb.Append("(allow sysctl-read");
+
+        foreach (string name in names)
+        {
+            sb.AppendLine();
+
+            sb.Append("  (sysctl-name \"").Append(EscapeSeatbeltString(name)).Append("\")");
+        }
+
+        sb.AppendLine(")");
     }
 
     private static bool ContainsBroadTempWriteGrant(string profile)

@@ -39,6 +39,80 @@ public sealed class SessionAttachmentFormatLabelTests
         Assert.Equal($"source-format: {label}; layout not preserved", line);
     }
 
+    public static TheoryData<string> LinesFormatMimeTypes()
+    {
+        TheoryData<string> data = [];
+
+        foreach (SessionAttachmentComprehensionFormat format in SessionAttachmentComprehensionPolicy.Formats)
+        {
+            if (format.RangeUnit == SessionAttachmentRangeUnit.Lines)
+            {
+                data.Add(format.MimeType);
+            }
+        }
+
+        return data;
+    }
+
+    [Theory]
+    [InlineData(3, 3, "chunk/range: 5; chars 100-180; pages 3-3")]
+    [InlineData(2, 3, "chunk/range: 5; chars 100-180; pages 2-3")]
+    [InlineData(12, 40, "chunk/range: 5; chars 100-180; pages 12-40")]
+    public void Retrieved_pdf_chunk_states_its_range_as_pages(int startPage, int endPage, string expected)
+    {
+        string prompt = BuildPrompt(SessionAttachmentComprehensionPolicy.PdfMimeType, startPage, endPage);
+
+        Assert.Equal(expected, Assert.Single(RangeLines(prompt)));
+
+        Assert.DoesNotContain("; lines ", prompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Retrieved_pdf_chunk_keeps_its_source_format_line_after_the_pages_range()
+    {
+        string prompt = BuildPrompt(SessionAttachmentComprehensionPolicy.PdfMimeType, 3, 3);
+
+        Assert.Equal(
+            "source-format: PDF document; layout not preserved; may include text a reader would not see",
+            Assert.Single(SourceFormatLines(prompt)));
+
+        int pagesIndex = prompt.IndexOf("; pages 3-3", StringComparison.Ordinal);
+
+        Assert.True(pagesIndex >= 0);
+
+        Assert.True(pagesIndex < prompt.IndexOf("source-format: ", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Retrieved_pdf_chunk_resolves_its_unit_through_the_normalized_mime()
+    {
+        string prompt = BuildPrompt(" Application/PDF ; charset=binary", 4, 6);
+
+        Assert.Equal("chunk/range: 5; chars 100-180; pages 4-6", Assert.Single(RangeLines(prompt)));
+    }
+
+    [Theory]
+    [MemberData(nameof(LinesFormatMimeTypes))]
+    public void Retrieved_chunk_of_a_lines_format_keeps_stating_its_range_as_lines(string mimeType)
+    {
+        string prompt = BuildPrompt(mimeType, 8, 12);
+
+        Assert.Equal("chunk/range: 5; chars 100-180; lines 8-12", Assert.Single(RangeLines(prompt)));
+
+        Assert.DoesNotContain("; pages ", prompt, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("text/plain")]
+    [InlineData("application/rtf")]
+    [InlineData("application/octet-stream")]
+    public void Retrieved_chunk_outside_the_registry_keeps_stating_its_range_as_lines(string mimeType)
+    {
+        Assert.Equal(
+            "chunk/range: 5; chars 100-180; lines 8-12",
+            Assert.Single(RangeLines(BuildPrompt(mimeType, 8, 12))));
+    }
+
     [Fact]
     public void Retrieved_chunk_resolves_its_format_through_the_normalized_mime()
     {
@@ -52,7 +126,7 @@ public sealed class SessionAttachmentFormatLabelTests
 
     [Theory]
     [InlineData("text/plain")]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/octet-stream")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     public void Retrieved_chunk_outside_the_registry_has_no_source_format_line(string mimeType)
@@ -87,6 +161,46 @@ public sealed class SessionAttachmentFormatLabelTests
     }
 
     [Fact]
+    public void Comprehension_notice_for_a_pdf_says_it_may_include_text_a_reader_would_not_see()
+    {
+        // #163 extracts every text-showing run, visible or not, so the frame has to say so in these exact words.
+        Assert.Equal(
+            "UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see",
+            SessionAttachmentToolInjection.ComprehensionDataNotice(Record(SessionAttachmentComprehensionPolicy.PdfMimeType)));
+
+        Assert.Equal(
+            "UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see; truncated at the extraction limit",
+            SessionAttachmentToolInjection.ComprehensionDataNotice(Record(" Application/PDF "), truncated: true));
+    }
+
+    [Fact]
+    public void Comprehension_data_frame_for_a_pdf_carries_the_unseen_text_clause()
+    {
+        string framed = SessionAttachmentToolInjection.FormatComprehensionData(
+            Record(SessionAttachmentComprehensionPolicy.PdfMimeType), "report.pdf", "extracted body");
+
+        Assert.Equal(
+            SystemPromptBuilder.FormatUntrusted(
+                "report.pdf | UNTRUSTED DATA; PDF document; layout not preserved; may include text a reader would not see",
+                "extracted body"),
+            framed);
+    }
+
+    [Theory]
+    [MemberData(nameof(FormatLabels))]
+    public void Only_a_pdf_frame_says_it_may_include_text_a_reader_would_not_see(string mimeType, string label)
+    {
+        _ = label;
+
+        Assert.DoesNotContain(
+            "may include text a reader would not see",
+            SessionAttachmentToolInjection.ComprehensionDataNotice(Record(mimeType)),
+            StringComparison.Ordinal);
+
+        Assert.DoesNotContain("may include text a reader would not see", BuildPrompt(mimeType), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Comprehension_notice_keeps_the_container_text_byte_for_byte()
     {
         Assert.Equal(
@@ -106,7 +220,7 @@ public sealed class SessionAttachmentFormatLabelTests
 
     [Theory]
     [InlineData("text/plain")]
-    [InlineData("application/pdf")]
+    [InlineData("application/rtf")]
     [InlineData("application/vnd.openxmlformats-officedocument.wordprocessingml.template")]
     public void Comprehension_notice_refuses_a_record_outside_the_registry(string mimeType)
     {
@@ -124,6 +238,11 @@ public sealed class SessionAttachmentFormatLabelTests
         .. prompt.Split('\n').Where(static line => line.StartsWith("source-format: ", StringComparison.Ordinal)),
     ];
 
+    private static string[] RangeLines(string prompt) =>
+    [
+        .. prompt.Split('\n').Where(static line => line.StartsWith("chunk/range: ", StringComparison.Ordinal)),
+    ];
+
     private static string BuildPrompt(string mimeType) => SystemPromptBuilder.Build(
         new PingRequest("hello"),
         codexContent: null,
@@ -132,5 +251,15 @@ public sealed class SessionAttachmentFormatLabelTests
             new SessionAttachmentRetrievedChunk(
                 "chunk-1", Guid.NewGuid(), Guid.NewGuid(), "document", 1, "document.bin", mimeType,
                 "abc123", 0, 0, 20, 1, 1, "retrieved document text", 0.9f),
+        ]);
+
+    private static string BuildPrompt(string mimeType, int startLine, int endLine) => SystemPromptBuilder.Build(
+        new PingRequest("hello"),
+        codexContent: null,
+        sessionAttachmentContext:
+        [
+            new SessionAttachmentRetrievedChunk(
+                "chunk-1", Guid.NewGuid(), Guid.NewGuid(), "document", 1, "document.bin", mimeType,
+                "abc123", 4, 100, 180, startLine, endLine, "retrieved document text", 0.9f),
         ]);
 }

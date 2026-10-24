@@ -117,6 +117,12 @@
 
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
 
+    <!-- PDF text extraction. Pinned to the nightly because 0.1.16 dies with an uncatchable stack
+         overflow on tiny cyclic files; the nightly turns them into exceptions. It runs only inside
+         the isolated comprehension worker process, never in the host. Move to the first stable
+         release that carries the cycle fixes when it ships. -->
+    <PackageReference Include="PdfPig" Version="0.1.17-alpha-202610200037-ad829" />
+
   </ItemGroup>
 
 </Project>

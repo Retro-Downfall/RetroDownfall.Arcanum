@@ -33,7 +33,10 @@ internal sealed record SessionAttachmentExtractionResult(
     SessionAttachmentExtractionStatus Status,
     string Text,
     bool WasTruncated,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    IReadOnlyList<SessionAttachmentPageMark>? Pages = null);
+
+internal readonly record struct SessionAttachmentPageMark(int Offset, int Page);
 
 internal sealed record SessionAttachmentTextChunk(
     int ChunkIndex,
@@ -55,39 +58,35 @@ internal sealed class SessionAttachmentExtractionException(
 
 internal static class SessionAttachmentTextExtractor
 {
+    /// <summary>
+    /// Extracts a registry document through <paramref name="host"/>, or the registry's host for its MIME type, whichever way
+    /// that host parses it. The interactive paths (attach, refresh, reference, pin) come here.
+    /// </summary>
     public static async Task<SessionAttachmentExtractionResult> ExtractDocumentAsync(
         ISessionAttachmentStore store,
         SessionAttachmentRecord record,
         ArcanumSettings settings,
         long maxBytes,
         CancellationToken cancellationToken,
-        SessionAttachmentDocumentExtractionHost? host = null,
+        SessionAttachmentDocumentHost? host = null,
         bool waitForSlot = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
         {
-            return new SessionAttachmentExtractionResult(
-                SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
+            return NotEligibleDocument();
         }
 
-        SessionAttachmentDocumentExtractionHost? selected = host
+        SessionAttachmentDocumentHost? selected = host
             ?? SessionAttachmentDocumentExtractors.For(record.MimeType);
 
-        if (selected is null)
+        if (RefuseBeforeReading(record, maxBytes, selected is not null) is { } refused)
         {
-            // An eligible record always has a host: the registry and the host table close over the same MIME types.
-            return new SessionAttachmentExtractionResult(
-                SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
+            return refused;
         }
 
-        if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
-        {
-            return SessionAttachmentDocumentExtractionHost.Failed("Document input exceeds its byte ceiling.");
-        }
-
-        return await selected
+        return await selected!
             .ExtractAsync(
                 token => store.ReadBytesAsync(record, token),
                 record.ByteLength,
@@ -95,6 +94,63 @@ internal static class SessionAttachmentTextExtractor
                 cancellationToken,
                 waitForSlot).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// The first step of <see cref="ExtractDocumentAsync"/> alone, for the caller that runs the parse step itself:
+    /// eligibility, the refusals before reading, then the reserve-and-read step every host shares
+    /// (<see cref="SessionAttachmentDocumentHost.ReadSnapshotAsync"/>). It reaches no parse, whichever host it is given. The
+    /// indexer uses it outside any effect group, holds the returned snapshot (and with it the family slot) in a
+    /// <see langword="using"/>, and then runs the parse step of the host it names by its concrete type.
+    /// </summary>
+    internal static async Task<SessionAttachmentDocumentSnapshot> ReadDocumentSnapshotAsync(
+        ISessionAttachmentStore store,
+        SessionAttachmentRecord record,
+        ArcanumSettings settings,
+        long maxBytes,
+        CancellationToken cancellationToken,
+        SessionAttachmentDocumentHost? host,
+        bool waitForSlot)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!SessionAttachmentComprehensionPolicy.IsEligibleDocument(record, settings))
+        {
+            return SessionAttachmentDocumentSnapshot.Refused(NotEligibleDocument());
+        }
+
+        if (RefuseBeforeReading(record, maxBytes, host is not null) is { } refused)
+        {
+            return SessionAttachmentDocumentSnapshot.Refused(refused);
+        }
+
+        return await host!
+            .ReadSnapshotAsync(
+                token => store.ReadBytesAsync(record, token),
+                record.ByteLength,
+                maxBytes,
+                cancellationToken,
+                waitForSlot).ConfigureAwait(false);
+    }
+
+    /// <summary>The refusal of an eligible document before any byte is read, or <see langword="null"/> when it may be read.</summary>
+    private static SessionAttachmentExtractionResult? RefuseBeforeReading(SessionAttachmentRecord record, long maxBytes, bool hasHost)
+    {
+        if (!hasHost)
+        {
+            // An eligible record always has a host: the registry and the host table close over the same MIME types.
+            return NotEligibleDocument();
+        }
+
+        if (record.ByteLength < 0 || record.ByteLength > maxBytes || record.ByteLength > int.MaxValue)
+        {
+            return SessionAttachmentDocumentHost.Failed("Document input exceeds its byte ceiling.");
+        }
+
+        return null;
+    }
+
+    private static SessionAttachmentExtractionResult NotEligibleDocument() => new(
+        SessionAttachmentExtractionStatus.NotEligible, string.Empty, WasTruncated: false);
 
     private const int StreamingCharacterBufferSize = 4096;
 

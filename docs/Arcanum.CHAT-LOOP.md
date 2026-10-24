@@ -95,7 +95,7 @@ Admission order is explicit-first: current attachment → attachment reference �
 
 Direct reference preparation is metadata-only and has no incidental item-count ceiling. After the provider and canonical model are resolved, the loop opens references sequentially in request order, adds one candidate to the assembled payload, applies normal compression and semantic shedding, and runs the real context gate. Only an admitted candidate is injected; failure stops before later references or provider I/O. Cancellation during a read propagates and leaves subsequent references unopened.
 
-Initial DATA ordering is `Attached Files for this Turn` → `Retrieved Session Attachment Context` → `Session Attachments Index` → workspace semantic context. Every retrieved chunk includes sanitized filename, logical key, version, opaque attachment id, character/line range, hash, an explicit untrusted-DATA warning, and an adaptive fence.
+Initial DATA ordering is `Attached Files for this Turn` → `Retrieved Session Attachment Context` → `Session Attachments Index` → workspace semantic context. Every retrieved chunk includes sanitized filename, logical key, version, opaque attachment id, character range, line range (a page range for a PDF), hash, an explicit untrusted-DATA warning, and an adaptive fence.
 
 ## 4. Attachment memory promotion gate
 

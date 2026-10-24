@@ -75,12 +75,17 @@ internal enum CappedChildProcessOutcome
 /// the post-exit drain gave up on it: <see cref="Text"/> is empty, nothing was preserved, and the stream
 /// is reported as truncated without a <see cref="CompleteOutputPath"/>.
 /// </param>
+/// <param name="Bytes">
+/// Exactly the bytes the child wrote, up to the stream's cap, when the caller asked for raw standard output;
+/// <see cref="Text"/> is then empty. <see langword="null"/> for a stream read as text.
+/// </param>
 internal readonly record struct CappedStreamOutput(
     string Text,
     bool Truncated,
     string? CompleteOutputPath = null,
     long TotalBytes = 0L,
-    bool ReadAbandoned = false);
+    bool ReadAbandoned = false,
+    byte[]? Bytes = null);
 
 internal sealed class ChildProcessOutputPreservationException(
     Exception innerException) : IOException(
@@ -169,6 +174,48 @@ internal static class CappedChildProcessRunner
     /// </summary>
     private const int PreExecLimitFailureExitCode = 126;
 
+    /// <summary>
+    /// The most the stdin writer hands the pipe in one write, so a stopped run ends the input at the next
+    /// chunk instead of after the whole payload.
+    /// </summary>
+    private const int StandardInputChunkBytes = 64 * 1024;
+
+    /// <summary>
+    /// How long teardown waits for the stdin writer to finish once the child is gone. A pipe whose readers
+    /// all exited fails a pending write at once, so this only runs out when a process outside the run holds
+    /// fd 0 open without reading.
+    /// </summary>
+    private static readonly TimeSpan StandardInputWriterStopGrace =
+        TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The encoding the runner gives the stdin text writer when the caller supplies raw input bytes: the
+    /// writer never carries those bytes, and only a preamble-free encoding guarantees it writes nothing of
+    /// its own ahead of them.
+    /// </summary>
+    private static readonly Encoding StandardInputWithoutPreamble =
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    /// <param name="standardInput">
+    /// Bytes for the child's stdin, or <see langword="null"/> (every model-directed tool) for a pipe closed
+    /// at start, so a reading child sees end of input at once. When set, the bytes are written exactly —
+    /// raw, after start, concurrently with the output readers — and the pipe is then closed. The caller
+    /// must not change the memory until the run returns; only a writer abandoned to a process that escaped
+    /// containment and holds fd 0 unread can still be inside one chunk after that. A child that exits,
+    /// closes fd 0 or is killed before taking them all is not a fault: its exit status is the run's result.
+    /// </param>
+    /// <param name="rawStandardOutput">
+    /// When set (an Arcanum-authored worker whose stdout is a byte protocol), stdout is read from the raw pipe into
+    /// <see cref="CappedStreamOutput.Bytes"/>, up to the same per-stream cap, with nothing decoded: no byte-order mark is
+    /// detected or stripped and no invalid byte is replaced, so the caller validates exactly what the child wrote. Raw
+    /// stdout is never spilled to a file. Off for every model-directed tool, whose stdout stays text.
+    /// </param>
+    /// <param name="maxFileSizeBytes">
+    /// A kernel ceiling on the size of any one file the child writes, for an Arcanum-authored worker that writes none
+    /// (see <see cref="ProcessResourceLimiter.Apply(ProcessStartInfo, ResourceLimits, long?)"/>). Only the platform
+    /// limiter can apply it: a run that asks for it with any other limiter, or with no limits, is refused before start
+    /// rather than started without it. <see langword="null"/> for every model-directed tool.
+    /// </param>
     internal static async Task<CappedChildProcessRunResult> RunAsync(
         ProcessStartInfo startInfo,
         ChildProcessEnvironmentProfile environmentProfile,
@@ -183,21 +230,33 @@ internal static class CappedChildProcessRunner
         Func<TimeSpan>? getCleanupTimeRemaining = null,
         string? outputSpillDirectory = null,
         IReadOnlyCollection<string>? operatorDeclaredSecretEnvironmentVariables = null,
-        Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null)
+        Func<int, long?, MacOsDescendantSupervisor?>? descendantSupervisorFactory = null,
+        ReadOnlyMemory<byte>? standardInput = null,
+        bool rawStandardOutput = false,
+        long? maxFileSizeBytes = null)
     {
         ChildProcessEnvironmentScrubber.ApplyProfile(
             startInfo,
             environmentProfile,
             operatorDeclaredSecretEnvironmentVariables);
 
-        // No caller can feed a tool child input — RunAsync has no parameter for it — so fd 0 is
-        // redirected unconditionally rather than left inherited. An unredirected child receives the
-        // host's own stdin handle, and the `arcanum serve` daemon is started attached to the
+        // fd 0 is redirected unconditionally rather than left inherited. An unredirected child receives
+        // the host's own stdin handle, and the `arcanum serve` daemon is started attached to the
         // operator's terminal (ServeProcessLauncher), so a child that reads stdin (`cat`, `git
-        // commit`, `ssh`) would block on that terminal while every production caller passes
-        // Timeout.InfiniteTimeSpan — a wedge with no deadline to break it. The write end is closed
-        // immediately after start (CloseChildStandardInput), turning that hang into an instant EOF.
+        // commit`, `ssh`) would block on that terminal while every model-directed caller passes
+        // Timeout.InfiniteTimeSpan — a wedge with no deadline to break it. Without standardInput (every
+        // model-directed tool) the write end is closed immediately after start
+        // (CloseChildStandardInput), turning that hang into an instant EOF. With it (an Arcanum-authored
+        // worker), exactly those bytes are written and the pipe is then closed (WriteChildStandardInputAsync).
         startInfo.RedirectStandardInput = true;
+
+        if (standardInput is not null)
+        {
+            // Process.Start flushes the stdin writer as it creates it, so an encoding with a preamble
+            // would put its byte-order mark ahead of the caller's bytes. The bytes are written to the
+            // raw pipe and never pass through that writer, so a preamble-free encoding changes nothing else.
+            startInfo.StandardInputEncoding = StandardInputWithoutPreamble;
+        }
 
         long perStreamCapBytes = totalOutputCapBytes / 2L;
 
@@ -213,15 +272,13 @@ internal static class CappedChildProcessRunner
                     resourceLimits.MaxFileWriteMb * 1024L * 1024L)
                 : null;
 
-        // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
-        // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
-        // resource-limit enforcement is simply skipped for that invocation rather than applying an
-        // unconfigured default.
         // Applied before Process.Start() so the rewritten StartInfo (potentially a ulimit shell
         // prelude — see ProcessResourceLimiter) is what actually gets launched.
-        ProcessResourceLimiterResult limiterResult = resourceLimits is not null && resourceLimiter is not null
-            ? resourceLimiter.Apply(startInfo, resourceLimits)
-            : new ProcessResourceLimiterResult(null, null);
+        ProcessResourceLimiterResult limiterResult = ApplyResourceLimits(
+            startInfo,
+            resourceLimits,
+            resourceLimiter,
+            maxFileSizeBytes);
 
         if (limiterResult.Error is not null)
         {
@@ -244,6 +301,10 @@ internal static class CappedChildProcessRunner
         int startedPid = -1;
 
         MacOsDescendantSupervisor? descendantSupervisor = null;
+
+        Task? standardInputWriter = null;
+
+        CancellationTokenSource? standardInputStop = null;
 
         try
         {
@@ -291,6 +352,22 @@ internal static class CappedChildProcessRunner
                         FilesystemSandboxDenialMessage =
                             "workspace_check requires an active filesystem jail; the process was not started. "
                             + ChildProcessSandboxMessages.NotNetworkIsolationNote,
+                    };
+                }
+
+                // Only an applied jail takes the network away. The operator escape runs the child with no
+                // jail, so a child that must have no network is refused instead of started with it.
+                if (filesystemSandbox.DenyNetwork
+                    && sandboxResult.Status != ChildProcessSandboxApplyStatus.Applied)
+                {
+                    return new CappedChildProcessRunResult
+                    {
+                        Outcome = CappedChildProcessOutcome.FilesystemSandboxUnavailable,
+
+                        PerStreamCapBytes = perStreamCapBytes,
+
+                        FilesystemSandboxDenialMessage =
+                            ChildProcessSandboxMessages.NetworkDenialRequiresAppliedSandbox,
                     };
                 }
 
@@ -443,7 +520,20 @@ internal static class CappedChildProcessRunner
             // actually need a live pid to clean up correctly.
             startedPid = process.Id;
 
-            CloseChildStandardInput(process, logger);
+            if (standardInput is { } input)
+            {
+                standardInputStop = new CancellationTokenSource();
+
+                standardInputWriter = WriteChildStandardInputAsync(
+                    process,
+                    input,
+                    standardInputStop.Token,
+                    logger);
+            }
+            else
+            {
+                CloseChildStandardInput(process, logger);
+            }
 
             // Only a launcher that put the child in its own group (Linux setsid) leaves the runner a group
             // to kill. setpgid on an already-started child is refused once it has exec'd, which it always
@@ -562,20 +652,27 @@ internal static class CappedChildProcessRunner
 
             try
             {
-                string? stdoutSpillPath = BuildOutputSpillPath(
-                    outputSpillDirectory,
-                    "stdout");
+                string? stdoutSpillPath = rawStandardOutput
+                    ? null
+                    : BuildOutputSpillPath(
+                        outputSpillDirectory,
+                        "stdout");
 
                 string? stderrSpillPath = BuildOutputSpillPath(
                     outputSpillDirectory,
                     "stderr");
 
-                Task<CappedStreamOutput> stdoutTask = ReadStreamCappedAsync(
-                    process.StandardOutput,
-                    perStreamCapBytes,
-                    cancellationToken,
-                    stdoutSpillPath,
-                    outputSpillBudget);
+                Task<CappedStreamOutput> stdoutTask = rawStandardOutput
+                    ? ReadStreamBytesCappedAsync(
+                        process.StandardOutput.BaseStream,
+                        perStreamCapBytes,
+                        cancellationToken)
+                    : ReadStreamCappedAsync(
+                        process.StandardOutput,
+                        perStreamCapBytes,
+                        cancellationToken,
+                        stdoutSpillPath,
+                        outputSpillBudget);
 
                 Task<CappedStreamOutput> stderrTask = ReadStreamCappedAsync(
                     process.StandardError,
@@ -925,7 +1022,9 @@ internal static class CappedChildProcessRunner
                     limiterResult,
                     startedPid,
                     getCleanupTimeRemaining,
-                    logger)
+                    logger,
+                    standardInputWriter,
+                    standardInputStop)
                 .ConfigureAwait(false);
         }
     }
@@ -942,8 +1041,27 @@ internal static class CappedChildProcessRunner
         ProcessResourceLimiterResult limiterResult,
         int startedPid,
         Func<TimeSpan>? getCleanupTimeRemaining,
-        ILogger? logger)
+        ILogger? logger,
+        Task? standardInputWriter,
+        CancellationTokenSource? standardInputStop)
     {
+        if (standardInputWriter is not null
+            && standardInputStop is not null)
+        {
+            try
+            {
+                await StopChildStandardInputWriterAsync(
+                        standardInputWriter,
+                        standardInputStop,
+                        logger)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Stopping the child stdin writer failed; the remaining teardown continues.");
+            }
+        }
+
         if (descendantSupervisor is not null)
         {
             try
@@ -1013,6 +1131,32 @@ internal static class CappedChildProcessRunner
                 logger?.LogWarning(ex, "Cleaning the child-process resource limiter scope failed.");
             }
         }
+    }
+
+    private static ProcessResourceLimiterResult ApplyResourceLimits(
+        ProcessStartInfo startInfo,
+        ResourceLimits? resourceLimits,
+        IProcessResourceLimiter? resourceLimiter,
+        long? maxFileSizeBytes)
+    {
+        if (maxFileSizeBytes is null)
+        {
+            // Call sites without Sanctum context (e.g. run_spell_script constructed directly in unit
+            // tests, with no campaign/DI backing) legitimately have nothing to resolve limits from;
+            // resource-limit enforcement is simply skipped for that invocation rather than applying an
+            // unconfigured default.
+            return resourceLimits is not null && resourceLimiter is not null
+                ? resourceLimiter.Apply(startInfo, resourceLimits)
+                : new ProcessResourceLimiterResult(null, null);
+        }
+
+        // A requested file-size ceiling is a promise to the caller: a run that cannot have it is refused, never
+        // started without it.
+        return resourceLimits is not null && resourceLimiter is ProcessResourceLimiter platform
+            ? platform.Apply(startInfo, resourceLimits, maxFileSizeBytes)
+            : new ProcessResourceLimiterResult(
+                new ResourceLimitError("A child-process file-size ceiling was requested from a limiter that cannot apply it; the child was not started."),
+                null);
     }
 
     private static MacOsDescendantSupervisor? DefaultDescendantSupervisorFactory(
@@ -1159,6 +1303,99 @@ internal static class CappedChildProcessRunner
                 ex,
                 "Closing the child process stdin pipe raced the child's exit.");
         }
+    }
+
+    /// <summary>
+    /// Writes <paramref name="input"/> to the child's stdin pipe and then closes it, off the calling thread
+    /// so the run's output readers and deadline are never held behind a full pipe. It writes the raw pipe
+    /// stream, never the text writer around it, and in bounded chunks so a stopped run ends the write at
+    /// the next chunk. A child that exits, closes fd 0 or is killed before taking everything breaks the
+    /// pipe; that is the child's own outcome, reported by its exit status, so the failure is swallowed and
+    /// the task always completes successfully.
+    /// </summary>
+    private static Task WriteChildStandardInputAsync(
+        Process process,
+        ReadOnlyMemory<byte> input,
+        CancellationToken stop,
+        ILogger? logger)
+    {
+        Stream pipe;
+
+        try
+        {
+            pipe = process.StandardInput.BaseStream;
+        }
+        catch (Exception ex)
+        {
+            logger?.LogDebug(ex, "The child process stdin pipe was unavailable after start.");
+
+            return Task.CompletedTask;
+        }
+
+        return Task.Run(
+            async () =>
+            {
+                try
+                {
+                    for (int offset = 0;
+                         offset < input.Length && !stop.IsCancellationRequested;
+                         offset += StandardInputChunkBytes)
+                    {
+                        int count = Math.Min(StandardInputChunkBytes, input.Length - offset);
+
+                        await pipe.WriteAsync(input.Slice(offset, count), CancellationToken.None)
+                            .ConfigureAwait(false);
+                    }
+
+                    await pipe.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogDebug(ex, "The child stopped taking its stdin before the input was complete.");
+                }
+                finally
+                {
+                    try
+                    {
+                        await pipe.DisposeAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger?.LogDebug(ex, "Closing the child process stdin pipe raced the child's exit.");
+                    }
+                }
+            },
+            CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Ends the stdin writer at teardown. By then the child and its process group are gone, so a write
+    /// still pending fails at once on the broken pipe. Only a descendant that escaped every containment
+    /// sweep and keeps fd 0 open without reading can hold it, and the run's result must never wait on
+    /// that: the writer is given <see cref="StandardInputWriterStopGrace"/> and then abandoned, still
+    /// blocked in the one write the escaped reader holds, until that reader goes away.
+    /// </summary>
+    private static async Task StopChildStandardInputWriterAsync(
+        Task writer,
+        CancellationTokenSource stop,
+        ILogger? logger)
+    {
+        stop.Cancel();
+
+        try
+        {
+            await writer.WaitAsync(StandardInputWriterStopGrace).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            logger?.LogWarning(
+                "The child's stdin was still held open, unread, by a process outside the run after it ended; the input writer was abandoned.");
+
+            // The abandoned writer still reads its stop token, so the source stays undisposed.
+            return;
+        }
+
+        stop.Dispose();
     }
 
     private static async Task CleanupSandboxTempPathsAsync(
@@ -1697,6 +1934,58 @@ internal static class CappedChildProcessRunner
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Reads <paramref name="stream"/> to its end as raw bytes, keeping the first <paramref name="maxBytes"/> and draining
+    /// the rest so the child is never held behind a full pipe. Nothing is decoded, so a byte-order mark or a byte that is
+    /// not valid UTF-8 stays exactly as the child wrote it.
+    /// </summary>
+    private static async Task<CappedStreamOutput> ReadStreamBytesCappedAsync(
+        Stream stream,
+        long maxBytes,
+        CancellationToken cancellationToken)
+    {
+        byte[] buffer = new byte[16 * 1024];
+
+        using MemoryStream kept = new();
+
+        long totalBytes = 0L;
+
+        bool truncated = false;
+
+        while (true)
+        {
+            int read = await stream.ReadAsync(
+                    buffer.AsMemory(),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            if (read <= 0)
+            {
+                break;
+            }
+
+            totalBytes += read;
+
+            long room = maxBytes - kept.Length;
+
+            if (room > 0)
+            {
+                kept.Write(buffer, 0, (int)Math.Min(room, read));
+            }
+
+            if (read > room)
+            {
+                truncated = true;
+            }
+        }
+
+        return new CappedStreamOutput(
+            string.Empty,
+            truncated,
+            TotalBytes: totalBytes,
+            Bytes: kept.ToArray());
     }
 
     private static StreamWriter CreateCompleteOutputWriter(string path)

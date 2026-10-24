@@ -6,11 +6,41 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Core.Storage;
 
+/// <summary>The unit a stored chunk's start and end range counts in, for the format it was extracted from.</summary>
+public enum SessionAttachmentRangeUnit
+{
+    /// <summary>Lines of the extracted text.</summary>
+    Lines,
+
+    /// <summary>Pages of the source document.</summary>
+    Pages,
+}
+
 /// <summary>
-/// One reviewed Comprehension source format: its lowercase MIME type and the human-readable label
-/// every model-facing framing shows for it.
+/// One reviewed Comprehension source format: its lowercase MIME type, the human-readable label
+/// every model-facing framing shows for it, the unit its chunk ranges are stated in, and whether
+/// its extracted text may include text a reader of the document would not see.
 /// </summary>
-public sealed record SessionAttachmentComprehensionFormat(string MimeType, string FormatName);
+/// <param name="MayIncludeUnseenText">
+/// The format's text is extracted from every run that shows text, with no rendered-visibility
+/// projection (PDF, per #163), so it may include white-on-white, invisible, tiny or off-page text.
+/// </param>
+public sealed record SessionAttachmentComprehensionFormat(
+    string MimeType,
+    string FormatName,
+    SessionAttachmentRangeUnit RangeUnit = SessionAttachmentRangeUnit.Lines,
+    bool MayIncludeUnseenText = false)
+{
+    /// <summary>The clause that tells a reader text from this format may include text the document does not show.</summary>
+    public const string UnseenTextClause = "may include text a reader would not see";
+
+    /// <summary>
+    /// What every model-facing framing of this format's extracted text says after the untrusted-data warning: the label,
+    /// that the layout is not preserved, and, for a format whose text may include text a reader would not see, that too.
+    /// </summary>
+    public string ExtractedTextDescription =>
+        FormatName + "; layout not preserved" + (MayIncludeUnseenText ? "; " + UnseenTextClause : string.Empty);
+}
 
 /// <summary>Closed document eligibility for Comprehension; durable attachment kinds remain unchanged.</summary>
 public static class SessionAttachmentComprehensionPolicy
@@ -47,6 +77,8 @@ public static class SessionAttachmentComprehensionPolicy
 
     public const string VisioMacroEnabledDrawingMimeType = "application/vnd.ms-visio.drawing.macroenabled.12";
 
+    public const string PdfMimeType = "application/pdf";
+
     // The registry's entries. TryGetFormat walks this array rather than Formats: an array's enumeration is
     // closed, while a read-only collection's enumerator runs whatever list it wraps.
     private static readonly SessionAttachmentComprehensionFormat[] FormatTable =
@@ -63,6 +95,7 @@ public static class SessionAttachmentComprehensionPolicy
             new(OpenDocumentPresentationMimeType, "OpenDocument presentation"),
             new(VisioDrawingMimeType, "Visio drawing"),
             new(VisioMacroEnabledDrawingMimeType, "Visio macro-enabled drawing (macros not read)"),
+            new(PdfMimeType, "PDF document", SessionAttachmentRangeUnit.Pages, MayIncludeUnseenText: true),
         ];
 
     /// <summary>
@@ -166,4 +199,13 @@ public interface ISessionAttachmentDocumentTextSink
     /// result reports truncation, so a retention overflow is never presented as a complete document.
     /// </summary>
     void MarkTruncated();
+
+    /// <summary>
+    /// Marks that the text appended from now on starts the 1-based page <paramref name="pageNumber"/> of the
+    /// source document, so a retained character can be traced back to its page. A sink that keeps no page
+    /// provenance ignores the call, which is the default.
+    /// </summary>
+    void BeginPage(int pageNumber)
+    {
+    }
 }

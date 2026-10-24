@@ -1322,6 +1322,15 @@ internal static class GrimoireConnectionAcquisitionScanner
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
             new(ExactNonServingProofKind.NegativeNonDatabaseProof, "WordprocessingDocumentExtractor.ExtractAsync(3)", 0)),
 
+        // PdfDocument.Open parses the PDF bytes the document worker read from its stdin and holds in memory. Only the worker
+        // process reaches it (ComprehensionWorkerEntry); it opens no connection and no file, and no database type is in reach.
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfTextExtractor.cs", "PdfTextExtractor", "Extract(3)", AcquisitionConstructKind.ProviderOpen, "PdfDocument.Open", 2, "PdfDocument.Open(bytes,CreateOptions())"),
+            GrimoirePathAuthority.NotGrimoire,
+            GrimoireAcquisitionKind.NonGrimoireCandidate,
+            GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "PdfTextExtractor.Extract(3)", 0)),
+
         new(
             new("src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs", "MemoryEndpoints", "HandleSearchAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 3, "OpenConnectionAsync(db,connections,context.RequestAborted)"),
             GrimoirePathAuthority.LiveGrimoire,

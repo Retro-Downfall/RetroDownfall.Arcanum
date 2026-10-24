@@ -191,6 +191,64 @@ public sealed class WindowsAppContainerBrokerTests : IDisposable
         Assert.Contains("granted", File.ReadAllText(inside), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The broker hands its own standard handles to the target it creates, so the input bytes the runner
+    /// writes reach the AppContainer target, and output the caller decodes as UTF-8 comes back intact
+    /// across the broker hop. <c>findstr "^"</c> echoes every line byte for byte; every line ends in CRLF
+    /// so it adds nothing.
+    /// </summary>
+    [SkippableFact]
+    [SupportedOSPlatform("windows")]
+    public async Task Broker_forwards_input_bytes_to_the_target_and_returns_its_utf8_output()
+    {
+        string executable = RequirePublishedExecutable();
+
+        string text = string.Concat(Enumerable.Repeat("Grüße — 漢字かな — Ελληνικά — 🙂\r\n", 500));
+
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = "findstr",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            WorkingDirectory = _workspace,
+        };
+
+        startInfo.ArgumentList.Add("^");
+
+        ChildProcessSandboxRequest request = ChildProcessSandboxRoots.ForExecuteCommand(
+            _workspace,
+            null,
+            allowUnsandboxed: false,
+            windowsPathBoundaryRequired: true);
+
+        CappedChildProcessRunResult result;
+
+        using (ChildProcessFilesystemJail.UseWindowsBrokerExecutableForTests(executable))
+        {
+            result = await CappedChildProcessRunner.RunAsync(
+                startInfo,
+                ChildProcessEnvironmentProfile.ToolExec,
+                totalOutputCapBytes: 1024 * 1024,
+                TimeSpan.FromSeconds(60),
+                new ResourceLimits(),
+                new ProcessResourceLimiter(),
+                CancellationToken.None,
+                request,
+                NullLogger.Instance,
+                standardInput: System.Text.Encoding.UTF8.GetBytes(text));
+        }
+
+        string diagnostic = Describe(result);
+
+        Assert.True(result.Outcome == CappedChildProcessOutcome.Completed, diagnostic);
+
+        Assert.True(result.ExitCode == 0, diagnostic);
+
+        Assert.Equal(text, result.Stdout.Text);
+    }
+
     [SkippableFact]
     [SupportedOSPlatform("windows")]
     public void Broker_refusing_an_incomplete_payload_says_why_on_stderr()

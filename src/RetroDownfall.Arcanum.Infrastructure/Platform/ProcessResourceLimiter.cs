@@ -79,18 +79,37 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
         _windowsJobApi = windowsJobApi;
     }
 
-    public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits)
+    public ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits) =>
+        Apply(startInfo, limits, maxFileSizeBytes: null);
+
+    /// <summary>
+    /// <see cref="Apply(ProcessStartInfo, ResourceLimits)"/> with a kernel ceiling on the size of any one file the child
+    /// writes: <c>RLIMIT_FSIZE</c> through the prelude's <c>ulimit -f</c>, which fails closed like every other step. A
+    /// write past it is refused and the writer is sent <c>SIGXFSZ</c>, whose default action ends it. The ceiling bounds
+    /// each file, not how many files are written, and pipes are not files, so the child's output is unaffected. Neither
+    /// a Windows Job Object nor an AppContainer has a per-process file-size limit, so Windows applies no ceiling.
+    /// </summary>
+    /// <param name="maxFileSizeBytes">
+    /// The ceiling in bytes, a positive whole number of KiB, or <see langword="null"/> for none. <c>ulimit -f</c> counts
+    /// 1 KiB blocks in macOS's <c>/bin/sh</c>; a shell that counts POSIX 512-byte blocks halves the ceiling, never raises it.
+    /// </param>
+    internal ProcessResourceLimiterResult Apply(ProcessStartInfo startInfo, ResourceLimits limits, long? maxFileSizeBytes)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
 
         ArgumentNullException.ThrowIfNull(limits);
+
+        if (maxFileSizeBytes is { } fileBytes && (fileBytes <= 0 || fileBytes % 1024 != 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxFileSizeBytes), fileBytes, "A file-size ceiling is a positive whole number of KiB.");
+        }
 
         if (OperatingSystem.IsWindows())
         {
             return ApplyOnWindows(startInfo, limits);
         }
 
-        if (!HasUnixLimit(limits))
+        if (!HasUnixLimit(limits) && maxFileSizeBytes is null)
         {
             return new ProcessResourceLimiterResult(null, null);
         }
@@ -104,12 +123,12 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
 
         if (OperatingSystem.IsLinux())
         {
-            return ApplyOnLinux(startInfo, limits);
+            return ApplyOnLinux(startInfo, limits, maxFileSizeBytes);
         }
 
         if (OperatingSystem.IsMacOS())
         {
-            return ApplyOnMacOs(startInfo, limits);
+            return ApplyOnMacOs(startInfo, limits, maxFileSizeBytes);
         }
 
         // Unsupported/unknown OS: fail open with no enforcement rather than blocking every tool
@@ -192,7 +211,7 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
             ReserveBrokerSlot: session.ReserveBrokerSlot);
     }
 
-    private ProcessResourceLimiterResult ApplyOnMacOs(ProcessStartInfo startInfo, ResourceLimits limits)
+    private ProcessResourceLimiterResult ApplyOnMacOs(ProcessStartInfo startInfo, ResourceLimits limits, long? maxFileSizeBytes)
     {
         if (limits.MaxProcessCount > 0)
         {
@@ -205,7 +224,7 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
         // effective ceiling instead by sampling the started tree's physical footprint.
         string marker = CreatePreExecFailureMarker();
 
-        string? prelude = BuildUlimitPrelude(limits, includeMemory: false, cgroupPath: null, marker);
+        string? prelude = BuildUlimitPrelude(limits, includeMemory: false, cgroupPath: null, marker, maxFileSizeBytes);
 
         if (prelude is not null)
         {
@@ -221,7 +240,7 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
             PreExecFailureMarker: prelude is null ? null : marker);
     }
 
-    private ProcessResourceLimiterResult ApplyOnLinux(ProcessStartInfo startInfo, ResourceLimits limits)
+    private ProcessResourceLimiterResult ApplyOnLinux(ProcessStartInfo startInfo, ResourceLimits limits, long? maxFileSizeBytes)
     {
         string? cgroupPath = TryCreateAndConfigureCgroup(limits);
 
@@ -233,7 +252,7 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
         // 126 like a refused ulimit, never running the target outside the scope.
         string marker = CreatePreExecFailureMarker();
 
-        string? prelude = BuildUlimitPrelude(limits, includeMemory: cgroupPath is null, cgroupPath, marker);
+        string? prelude = BuildUlimitPrelude(limits, includeMemory: cgroupPath is null, cgroupPath, marker, maxFileSizeBytes);
 
         if (prelude is not null)
         {
@@ -422,7 +441,8 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
         ResourceLimits limits,
         bool includeMemory,
         string? cgroupPath,
-        string marker)
+        string marker,
+        long? maxFileSizeBytes = null)
     {
         StringBuilder steps = new();
 
@@ -448,6 +468,11 @@ public sealed class ProcessResourceLimiter : IProcessResourceLimiter
         if (limits.MaxFileDescriptors > 0)
         {
             steps.Append("ulimit -n ").Append(limits.MaxFileDescriptors).Append(" || exit 126; ");
+        }
+
+        if (maxFileSizeBytes is { } fileBytes)
+        {
+            steps.Append("ulimit -f ").Append((fileBytes / 1024).ToString(CultureInfo.InvariantCulture)).Append(" || exit 126; ");
         }
 
         if (steps.Length == 0)

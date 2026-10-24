@@ -9,272 +9,172 @@ using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
-/// Bounds parser waiting and retained text for a closed, reviewed in-process format. One slot per
-/// parser family serializes its invocations. Waiting for that slot is bounded separately and is never
-/// charged to the waiting document: a slot not acquired in time, a slot not free for a caller that
-/// asked not to wait, or a family quarantined by an outstanding parser, is
-/// <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller treats as terminal. A
-/// quarantine refuses later callers at once and releases the callers already queued for the slot.
-/// Once the slot is held, the document's own budget covers its snapshot read and its parse, and expiry
-/// of that budget is a terminal failure. Snapshot reads remain awaited inside the caller's admission and
-/// receive cancellation from that budget. A parser still running after its budget quarantines its
-/// family until it ends. This limits abandoned pure computation; it does not claim to preempt a parser
-/// or police its private allocations.
+/// Bounds parser waiting and retained text for a closed, reviewed in-process format, over the reserve-and-read step every
+/// host shares (<see cref="SessionAttachmentDocumentHost.ReadSnapshotAsync"/>). One slot per parser family serializes its
+/// invocations. Waiting for that slot is bounded separately and is never charged to the waiting document: a slot not
+/// acquired in time, a slot not free for a caller that asked not to wait, or a family quarantined by an outstanding parser,
+/// is <see cref="SessionAttachmentExtractionStatus.Deferred"/>, which no caller treats as terminal. A quarantine refuses
+/// later callers at once and releases the callers already queued for the slot. Once the slot is held, the document's own
+/// budget covers its snapshot read and its parse, and expiry of that budget is a terminal failure. Snapshot reads remain
+/// awaited inside the caller's admission and receive cancellation from that budget. The parse
+/// (<see cref="ParseInProcessAsync"/>) is the only code of this host's own: it takes the slot over from the snapshot, and a
+/// parser still running after its budget keeps the slot and quarantines its family until it ends. This limits abandoned
+/// pure computation; it does not claim to preempt a parser or police its private allocations.
 /// </summary>
 internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
     TimeSpan timeout,
     int maximumCharacters = 262_144,
-    TimeSpan? slotWait = null)
+    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost(timeout, parseSpendsReadBudget: true, slotWait)
 {
-    /// <summary>The one code-owned reason a deferred attempt carries, whichever contention caused it.</summary>
-    internal const string BusyReason = "Document extraction is temporarily busy.";
-
-    /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
-    internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
+    /// <summary>The document's parse outlived what its budget had left once its snapshot was read.</summary>
+    internal const string DeadlineReason = "Document extraction exceeded its deadline.";
 
     internal static SessionAttachmentDocumentExtractionHost Default => SessionAttachmentDocumentExtractors.TextContainerHost;
 
-    private readonly TimeSpan _slotWait = slotWait ?? DefaultSlotWait;
+    /// <summary>The document's own budget, which the snapshot read and the parse share; the base holds it for the read.</summary>
+    private readonly TimeSpan _timeout = timeout;
 
-    private readonly object _gate = new();
-
-    private readonly SemaphoreSlim _serial = new(1, 1);
-
-    private bool _quarantined;
-
-    /// <summary>
-    /// Cancelled when the family is quarantined, releasing every caller queued for the slot before it.
-    /// Each quarantine replaces it, so a caller that queues after the family recovers waits on a fresh one.
-    /// </summary>
-    private CancellationTokenSource _quarantineSignal = new();
-
-    internal async Task<SessionAttachmentExtractionResult> ExtractAsync(
+    internal override async Task<SessionAttachmentExtractionResult> ExtractAsync(
         Func<CancellationToken, Task<ReadOnlyMemory<byte>>> readBytes,
         long expectedByteLength,
         long maximumBytes,
         CancellationToken cancellationToken,
         bool waitForSlot = true)
     {
+        using SessionAttachmentDocumentSnapshot snapshot = await ReadSnapshotAsync(
+            readBytes, expectedByteLength, maximumBytes, cancellationToken, waitForSlot).ConfigureAwait(false);
+
+        return snapshot.Refusal ?? await ParseInProcessAsync(snapshot, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// This host's own step: parses, once, a snapshot this host read and still holds, within what the read left of the
+    /// document's budget. A member of this class alone, so a caller that holds this host by its own type reaches the
+    /// in-process parse and nothing else. The parse takes the slot over from the snapshot as it starts and gives it back
+    /// when it ends, so a parse that outlives its caller (its budget expired, or the caller was cancelled) keeps the slot,
+    /// and its family quarantined, until it really ends; a step that ends before the parse starts leaves the slot with the
+    /// snapshot, whose disposal gives it back.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The snapshot is a refusal, was read by another host, was disposed, or has already been parsed.
+    /// </exception>
+    internal async Task<SessionAttachmentExtractionResult> ParseInProcessAsync(
+        SessionAttachmentDocumentSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        ReadOnlyMemory<byte> bytes = snapshot.TakeBytesForParse(this);
+
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Contention belongs to other documents. A quarantined family refuses at once rather than
-        // queueing behind a parser that may never end, and its quarantine releases a caller already
-        // queued. Otherwise the slot wait is bounded on its own clock, and a caller that must not wait
-        // takes the slot only when it is free. No refusal has read or parsed this document, so none is
-        // its outcome.
-        CancellationToken quarantine;
+        long started = snapshot.SlotTakenAt;
 
-        lock (_gate)
+        TimeSpan remaining = _timeout - Stopwatch.GetElapsedTime(started);
+
+        if (remaining <= TimeSpan.Zero)
         {
-            if (_quarantined)
-            {
-                return Deferred();
-            }
-
-            quarantine = _quarantineSignal.Token;
+            return Failed(DeadlineReason);
         }
 
-        using (CancellationTokenSource slotWait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, quarantine))
+        CancellationTokenSource cancellation = new();
+
+        BoundedDocumentTextSink sink = new(maximumCharacters, cancellation.Token);
+
+        // The callback is a closed concrete method group in the production registry. The scheduled closure references only
+        // owned bytes, the bounded sink, parser cancellation, and host mechanics/callback. Neither callback here references
+        // the storage delegate or the read deadline, so neither borrowed value is retained by their shared closure.
+        Task<SessionAttachmentExtractionResult> invocation = Task.Run(async () =>
         {
             try
             {
-                if (!await _serial.WaitAsync(waitForSlot ? _slotWait : TimeSpan.Zero, slotWait.Token).ConfigureAwait(false))
-                {
-                    return Deferred();
-                }
+                cancellation.Token.ThrowIfCancellationRequested();
+
+                await extract(bytes, sink, cancellation.Token).ConfigureAwait(false);
+
+                cancellation.Token.ThrowIfCancellationRequested();
+
+                return sink.Complete();
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (DocumentPackageRejectedException rejected)
             {
-                return Deferred();
+                // A closed, code-owned rejection: fixed status and reason, no entry or part names.
+                // It is an ordinary outcome, so the format is not quarantined by it.
+                return rejected.ToResult();
             }
-        }
+            catch (Exception)
+            {
+                return Failed("Document extraction failed.");
+            }
+        }, CancellationToken.None);
 
-        // The document's own budget starts only now that it holds the slot. The snapshot read and the
-        // parse share it, and its expiry is charged to this document alone.
-        long started = Stopwatch.GetTimestamp();
+        // From here the parse owns the slot: its own end gives the slot back, whenever that is. The continuation references
+        // only the parser cancellation and the snapshot whose slot it gives back, never the storage delegate.
+        snapshot.HandSlotToParse();
 
-        TimeSpan remaining = timeout;
+        _ = invocation.ContinueWith(
+            completed =>
+            {
+                _ = completed.Exception;
 
-        bool parserOwnsSlot = false;
+                cancellation.Dispose();
+
+                snapshot.ReleaseHandedOverSlot();
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
         try
         {
-            // Storage borrows the caller's admission and must finish (including stream disposal)
-            // before this method returns. A cancellation deadline requests cooperation; it is never
-            // permission to abandon a read that still owns installation resources.
-            using CancellationTokenSource readDeadline = CancellationTokenSource
-                .CreateLinkedTokenSource(cancellationToken);
-
-            readDeadline.CancelAfter(remaining);
-
-            ReadOnlyMemory<byte> bytes;
-
-            try
-            {
-                bytes = await readBytes(readDeadline.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException) when (readDeadline.IsCancellationRequested)
-            {
-                return Failed("Document extraction exceeded its deadline while reading its snapshot.");
-            }
+            SessionAttachmentExtractionResult result = await invocation
+                .WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            remaining = timeout - Stopwatch.GetElapsedTime(started);
-
-            if (readDeadline.IsCancellationRequested || remaining <= TimeSpan.Zero)
-            {
-                return Failed("Document extraction exceeded its deadline while reading its snapshot.");
-            }
-
-            if (bytes.Length != expectedByteLength || bytes.Length > maximumBytes)
-            {
-                return Failed("Document input does not match its bounded snapshot.");
-            }
-
-            CancellationTokenSource cancellation = new();
-
-            BoundedDocumentTextSink sink = new(maximumCharacters, cancellation.Token);
-
-            // The callback is a closed concrete method group in the production registry. The
-            // scheduled closure references only owned bytes, the bounded sink, parser cancellation,
-            // and host mechanics/callback. Neither callback here references the storage delegate or
-            // the read deadline, so neither borrowed value is retained by their shared closure.
-            Task<SessionAttachmentExtractionResult> invocation = Task.Run(async () =>
-            {
-                try
-                {
-                    cancellation.Token.ThrowIfCancellationRequested();
-
-                    await extract(bytes, sink, cancellation.Token).ConfigureAwait(false);
-
-                    cancellation.Token.ThrowIfCancellationRequested();
-
-                    return sink.Complete();
-                }
-                catch (DocumentPackageRejectedException rejected)
-                {
-                    // A closed, code-owned rejection: fixed status and reason, no entry or part names.
-                    // It is an ordinary outcome, so the format is not quarantined by it.
-                    return rejected.ToResult();
-                }
-                catch (Exception)
-                {
-                    return Failed("Document extraction failed.");
-                }
-            }, CancellationToken.None);
-
-            parserOwnsSlot = true;
-
-            _ = invocation.ContinueWith(
-                completed =>
-                {
-                    _ = completed.Exception;
-
-                    lock (_gate)
-                    {
-                        _quarantined = false;
-                    }
-
-                    cancellation.Dispose();
-
-                    _serial.Release();
-                },
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-
-            try
-            {
-                SessionAttachmentExtractionResult result = await invocation
-                    .WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                return Stopwatch.GetElapsedTime(started) >= timeout
-                    ? Failed("Document extraction exceeded its deadline.")
-                    : result;
-            }
-            catch (TimeoutException) when (!invocation.IsFaulted)
-            {
-                sink.Close();
-
-                QuarantineWhileRunning(invocation);
-
-                RequestCancellation(cancellation);
-
-                return Failed("Document extraction exceeded its deadline.");
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                sink.Close();
-
-                QuarantineWhileRunning(invocation);
-
-                RequestCancellation(cancellation);
-
-                throw;
-            }
+            return Stopwatch.GetElapsedTime(started) >= _timeout
+                ? Failed(DeadlineReason)
+                : result;
         }
-        finally
+        catch (TimeoutException) when (!invocation.IsFaulted)
         {
-            if (!parserOwnsSlot)
-            {
-                _serial.Release();
-            }
+            sink.Close();
+
+            QuarantineWhileRunning(invocation);
+
+            RequestCancellation(cancellation);
+
+            return Failed(DeadlineReason);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            sink.Close();
+
+            QuarantineWhileRunning(invocation);
+
+            RequestCancellation(cancellation);
+
+            throw;
         }
     }
 
     /// <summary>
-    /// Quarantines the family while the abandoned invocation still runs, and releases the callers queued for
-    /// its slot: they would otherwise wait out the whole slot wait behind a parser that may never end. The
-    /// release runs their continuations on the thread pool, not on this caller's thread. The released source
-    /// owns no timer and is not disposed, since a caller may still be linking to its token.
+    /// Asks the parser to stop. The parse that ends disposes its own source, which can precede this request when completion
+    /// raced the caller's timeout or cancellation, and cancelling a disposed source does not throw: it returns a faulted
+    /// task. The fault is observed here, since a task nobody observes surfaces much later as an unobserved task exception.
     /// </summary>
-    private void QuarantineWhileRunning(Task invocation)
+    internal static void RequestCancellation(CancellationTokenSource cancellation)
     {
-        CancellationTokenSource? queued = null;
-
-        lock (_gate)
-        {
-            _quarantined = !invocation.IsCompleted;
-
-            if (_quarantined)
+        _ = cancellation.CancelAsync().ContinueWith(
+            static cancelled =>
             {
-                queued = _quarantineSignal;
-
-                _quarantineSignal = new CancellationTokenSource();
-            }
-        }
-
-        if (queued is not null)
-        {
-            _ = queued.CancelAsync();
-        }
+                _ = cancelled.Exception;
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
-
-    private static void RequestCancellation(CancellationTokenSource cancellation)
-    {
-        try
-        {
-            _ = cancellation.CancelAsync();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Completion raced the timeout; the invocation has already ended.
-        }
-    }
-
-    internal static SessionAttachmentExtractionResult Failed(string reason) => new(
-        SessionAttachmentExtractionStatus.Failed, string.Empty, WasTruncated: false, reason);
-
-    internal static SessionAttachmentExtractionResult Deferred() => new(
-        SessionAttachmentExtractionStatus.Deferred, string.Empty, WasTruncated: false, BusyReason);
 }
 
 internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDocumentExtractor
@@ -340,7 +240,15 @@ internal sealed class ComprehensionTextContainerExtractor : ISessionAttachmentDo
 
 internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSink
 {
+    /// <summary>
+    /// The most page marks one document retains. A page that would need a mark beyond it is not retained and the
+    /// result is truncated, so no retained character is ever attributed to a page that is not its own.
+    /// </summary>
+    internal const int MaximumPageMarks = 2_000;
+
     private readonly object _gate = new();
+
+    private readonly List<SessionAttachmentPageMark> _pages = [];
 
     private readonly StringBuilder _text;
 
@@ -353,6 +261,13 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
     private bool _closed;
 
     private bool _truncated;
+
+    // The page the next retained character starts, or zero when none has begun since the last mark. A mark is
+    // taken when that character is retained, so a page with no retained text leaves none.
+    private int _pendingPage;
+
+    // Whether the last character taken was a carriage return the transformer still holds back.
+    private bool _carriageReturnHeld;
 
     public BoundedDocumentTextSink(int maximumCharacters, CancellationToken cancellationToken)
     {
@@ -387,6 +302,8 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
 
                 _transformer.Append(current);
 
+                _carriageReturnHeld = current == '\r';
+
                 if (_truncated)
                 {
                     return false;
@@ -406,12 +323,37 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
                 return;
             }
 
-            _truncated = true;
+            Truncate();
+        }
+    }
 
-            if (_text.Length > 0 && char.IsHighSurrogate(_text[^1]))
+    public void BeginPage(int pageNumber)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(pageNumber);
+
+        lock (_gate)
+        {
+            if (_closed || _truncated)
             {
-                _text.Length--;
+                return;
             }
+
+            // The transformer holds a trailing carriage return back until it sees the next character, and would then
+            // emit its line break as the first character of this page. Releasing it now keeps that line break on the
+            // page that ended with it.
+            if (_carriageReturnHeld)
+            {
+                _carriageReturnHeld = false;
+
+                _transformer.Append('\n');
+
+                if (_truncated)
+                {
+                    return;
+                }
+            }
+
+            _pendingPage = pageNumber;
         }
     }
 
@@ -433,7 +375,8 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
                     ? SessionAttachmentExtractionStatus.NotEligible
                     : SessionAttachmentExtractionStatus.Extracted,
                 _text.ToString(),
-                _truncated);
+                _truncated,
+                Pages: _pages.Count == 0 ? null : _pages.ToArray());
         }
     }
 
@@ -452,18 +395,36 @@ internal sealed class BoundedDocumentTextSink : ISessionAttachmentDocumentTextSi
             return;
         }
 
-        if (_text.Length < _maximumCharacters)
+        if (_text.Length >= _maximumCharacters || (_pendingPage != 0 && _pages.Count == MaximumPageMarks))
         {
-            _text.Append(current);
+            Truncate();
 
             return;
         }
 
+        if (_pendingPage != 0)
+        {
+            _pages.Add(new SessionAttachmentPageMark(_text.Length, _pendingPage));
+
+            _pendingPage = 0;
+        }
+
+        _text.Append(current);
+    }
+
+    private void Truncate()
+    {
         _truncated = true;
 
         if (_text.Length > 0 && char.IsHighSurrogate(_text[^1]))
         {
             _text.Length--;
+
+            // A page whose only retained character was that surrogate has no text left to mark.
+            if (_pages.Count > 0 && _pages[^1].Offset == _text.Length)
+            {
+                _pages.RemoveAt(_pages.Count - 1);
+            }
         }
     }
 }
