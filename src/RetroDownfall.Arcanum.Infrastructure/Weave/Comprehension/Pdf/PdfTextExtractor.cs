@@ -121,13 +121,14 @@ internal sealed class PdfTextExtractor
                 return DocumentExtractionOutcome.Without(DocumentExtractionKind.Bounds);
             }
 
-            string text = RemoveUnsafeCharacters(PdfPageText.Build(page.Letters));
+            string text = NormalizeWhitespace(RemoveUnsafeCharacters(PdfPageText.Build(page.Letters)));
 
             int available = limits.MaxOutputCharacters - used - separator;
 
             if (text.Length > available)
             {
-                text = CutAtSurrogateBoundary(text, available);
+                // The cut can fall after a space or a line break, which would leave the page ending in whitespace.
+                text = CutAtSurrogateBoundary(text, available).TrimEnd();
 
                 truncated = true;
             }
@@ -204,6 +205,69 @@ internal sealed class PdfTextExtractor
 
         return text[..length];
     }
+
+    /// <summary>
+    /// Returns the page text without its layout, which the label the model reads already says is not preserved. Every run of
+    /// horizontal whitespace (a space, a tab, a no-break space, any other Unicode space separator) becomes one space, each
+    /// line is trimmed at both ends, a line with nothing left on it is dropped, and a line break stays between the lines that
+    /// remain (as U+000A, whichever mandatory break the producer drew). The visible characters and their order are untouched:
+    /// this runs on the finished page text, after the right-to-left runs are turned round and the numbers joined, and after
+    /// <see cref="RemoveUnsafeCharacters"/>, whose removal of a NUL or form feed can bring two runs of spaces together.
+    /// A producer that lays its text out on a character grid (macOS cupsfilter draws a space glyph in each of the 80 columns of
+    /// each row) would otherwise fill the output ceiling and the index with padding. Whitespace is <see cref="char.IsWhiteSpace(char)"/>,
+    /// the test that decides whether a page has text at all, so a page of nothing else normalizes to the empty string.
+    /// </summary>
+    internal static string NormalizeWhitespace(string text)
+    {
+        StringBuilder normalized = new(text.Length);
+
+        bool lineHasText = false;
+
+        bool spacePending = false;
+
+        bool lineBreakPending = false;
+
+        foreach (char character in text)
+        {
+            if (IsLineBreak(character))
+            {
+                lineBreakPending |= lineHasText;
+
+                lineHasText = false;
+
+                spacePending = false;
+            }
+            else if (char.IsWhiteSpace(character))
+            {
+                spacePending |= lineHasText;
+            }
+            else
+            {
+                if (lineBreakPending)
+                {
+                    normalized.Append('\n');
+
+                    lineBreakPending = false;
+                }
+                else if (spacePending)
+                {
+                    normalized.Append(' ');
+                }
+
+                spacePending = false;
+
+                lineHasText = true;
+
+                normalized.Append(character);
+            }
+        }
+
+        return normalized.ToString();
+    }
+
+    /// <summary>The mandatory line breaks of UAX #14: line feed, vertical tab, form feed, carriage return, next line, line separator and paragraph separator.</summary>
+    private static bool IsLineBreak(char character) =>
+        character is '\n' or '\v' or '\f' or '\r' or '\u0085' or '\u2028' or '\u2029';
 
     /// <summary>
     /// Removes NUL and form feed, which the worker frame and the sink cannot carry (form feed separates pages), and replaces

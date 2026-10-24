@@ -134,8 +134,10 @@ public sealed class PdfTextExtractorOutputCeilingTests
     [Fact]
     public void Extract_CeilingReachedBeforeAnyTextWasProduced_IsBoundsNotNoText()
     {
-        // Five spaces under a ceiling of three: the document does have more than it may return, but nothing readable.
-        DocumentExtractionOutcome outcome = Extract("whitespace-only.pdf", 3);
+        // The blank first page is an empty entry that costs no characters; the separator before page 2 costs the one
+        // character the ceiling has, so no character of page 2 fits. The document has text it may not return, which is not
+        // "no text".
+        DocumentExtractionOutcome outcome = Extract("blank-page-then-text.pdf", 1);
 
         Assert.Equal(DocumentExtractionKind.Bounds, outcome.Kind);
 
@@ -145,11 +147,31 @@ public sealed class PdfTextExtractorOutputCeilingTests
     }
 
     [Fact]
-    public void Extract_WhitespaceThatFitsTheCeiling_IsNoText()
+    public void Extract_CeilingThatLeavesRoomForPartOfThePageAfterABlankOne_ReturnsThePrefix()
     {
-        DocumentExtractionOutcome outcome = Extract("whitespace-only.pdf", 5);
+        // 0 + 1 separator + 4 characters.
+        DocumentExtractionOutcome outcome = Extract("blank-page-then-text.pdf", 5);
+
+        Assert.Equal(DocumentExtractionKind.Extracted, outcome.Kind);
+
+        Assert.True(outcome.Truncated);
+
+        Assert.Equal([string.Empty, "TEXT"], outcome.Pages);
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(3)]
+    [InlineData(1)]
+    public void Extract_WhitespaceOnlyDocument_IsNoTextWhateverTheCeiling(int ceiling)
+    {
+        // Sensitivity: the order of normalizing and counting. The five spaces are removed before they are counted, so a
+        // ceiling under five no longer reaches them first and turns "no text" into "more than may be returned".
+        DocumentExtractionOutcome outcome = Extract("whitespace-only.pdf", ceiling);
 
         Assert.Equal(DocumentExtractionKind.NoText, outcome.Kind);
+
+        Assert.Empty(outcome.Pages);
 
         Assert.False(outcome.Truncated);
     }

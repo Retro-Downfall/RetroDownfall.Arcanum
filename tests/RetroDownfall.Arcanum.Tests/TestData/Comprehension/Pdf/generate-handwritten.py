@@ -140,6 +140,18 @@ write(
 # ---- a text layer made only of spaces
 write("whitespace-only.pdf", simple_doc(b"BT /F1 18 Tf 72 700 Td (     ) Tj ET\n"))
 
+# ---- a page of only spaces, then a page with text: the blank page still takes its place and its separator
+blank_then_text_objs = {
+    1: b"<< /Type /Catalog /Pages 2 0 R >>",
+    2: b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    3: page_obj(b"5 0 R", fonts=b"/F1 7 0 R"),
+    4: page_obj(b"6 0 R", fonts=b"/F1 7 0 R"),
+    5: stream(b"", show(b"     ")),
+    6: stream(b"", show(b"TEXT-AFTER-BLANK-PAGE")),
+    7: FONT,
+}
+write("blank-page-then-text.pdf", build(blank_then_text_objs))
+
 # ---- hidden.pdf: visible, invisible (Tr 3), white-on-white, tiny, stroke-only, off-page
 hidden_content = (
     b"BT /F1 18 Tf 0 Tr 72 700 Td (VISIBLE-LINE-ALPHA) Tj ET\n"
