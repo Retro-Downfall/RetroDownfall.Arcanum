@@ -129,6 +129,16 @@ public sealed partial class HostedGrimoireProducerInventoryTests
     // read is analysed before the extraction's effect group is begun, not inside it, and both hosts now reach the one shared
     // read; 3,188 plus the margin is still 3,352, so its row is unchanged. The other sixty-eight primary rows each measured
     // their unchanged maximum.
+    // Remeasured on 2026-10-23 after the isolated worker kinds became format-neutral and the in-process parse observed the
+    // fault of cancelling a source it had already disposed, under one, two and three root workers (the one-worker discovery
+    // matched the committed 6,865-row manifest with zero diagnostics): SessionAttachmentIndexingService.ExecuteAsync grows from
+    // 3,188 to 3,192 states in every arrangement. Two states are the isolated host reading its heading and verdict reasons from
+    // its format's worker profile, and two are the continuation by which the in-process host's cancellation request observes
+    // that fault, which the checker enters as an asynchronous callback (with that request alone restored, the root measured
+    // 3,190). 3,192 plus the margin is still 3,352, so its row is unchanged. The other sixty-eight primary rows each measured
+    // their unchanged maximum under one worker. Under three, the handoff root
+    // LongRunningOperationStartupHostedService.ContinueInBackgroundAsync measured 2,134 states in both three-worker runs, half
+    // the 4,268 of its one-worker entry, which its row already holds.
     private static readonly HeadroomCeiling[] ProductionRootCeilings =
     [
         new("A2ASendingLeaseRenewer", "RetroDownfall.Arcanum.Infrastructure.A2A.A2ASendingLeaseRenewer.ExecuteAsync", 200), // measured 186
@@ -193,7 +203,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         new("RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure", "RetroDownfall.Arcanum.Infrastructure.InstallationReset.StoppedHostFactoryErasure.ApplyAsync", 1448), // measured 1375, 1375 and 1375 under one, two and three workers; stopped-host erasure recovery reaches the capsule maintenance drain
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.EnqueueExtraction", 32), // measured 21
         new("SagaExtractionService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SagaExtractionService.ExecuteAsync", 1408), // measured 1338, 1338 and 1338 under one, two and three workers; Saga store mutations now own the capsule mutation barrier and its drain
-        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3352), // measured 3188, 3188 and 3188 under one, two and three workers; beside the detached parser callback of the seven Comprehension format extractors (#177), the isolated PDF path (#163) adds the external effect group begun after the shared reserve-and-read step and the worker seam's provider call
+        new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.ExecuteAsync", 3352), // measured 3192, 3192 and 3192 under one, two and three workers; beside the detached parser callback of the seven Comprehension format extractors (#177), the isolated PDF path (#163) adds the external effect group begun after the shared reserve-and-read step and the worker seam's provider call
         new("SessionAttachmentIndexingService", "RetroDownfall.Arcanum.Infrastructure.Weave.SessionAttachmentIndexingService.TryEnqueue", 16), // measured 4
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StartAsync", 80), // measured 65
         new("SessionAttachmentPendingGcHostedService", "RetroDownfall.Arcanum.Infrastructure.Hosting.SessionAttachmentPendingGcHostedService.StopAsync", 16), // measured 1

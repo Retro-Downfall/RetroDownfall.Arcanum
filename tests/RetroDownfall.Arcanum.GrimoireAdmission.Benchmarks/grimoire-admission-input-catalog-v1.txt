@@ -2228,6 +2228,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Tower/PhysicalCampaignRootOpener.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Tower/PromptRenderer.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/BoundedXmlReader.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/BoundedZipPackage.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/ComprehensionWorkerEntry.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/ComprehensionWorkerFrame.cs
+R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentExtractionOutcome.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentPackageRejection.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentWorkerLaunch.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/DocumentWorkerProfile.cs
@@ -2243,10 +2246,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpenDocumentSprea
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpenDocumentSpreadsheetWalker.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpenDocumentStyleTable.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/OpenDocumentTextExtractor.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/ComprehensionWorkerEntry.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/ComprehensionWorkerFrame.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfExtractionLimits.cs
-R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfExtractionOutcome.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfPageText.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfTextExtractor.cs
 R	src/RetroDownfall.Arcanum.Infrastructure/Weave/Comprehension/Pdf/PdfTrailerEncryption.cs
