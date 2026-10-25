@@ -1,4 +1,6 @@
 using System.Data.Common;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -181,7 +183,8 @@ internal static class CampaignSummaryLifecycle
         DbTransaction? transaction,
         Guid sessionId,
         CancellationToken cancellationToken,
-        bool includeOwnerRows = true)
+        bool includeOwnerRows = true,
+        HashSet<string>? rowKeys = null)
     {
         await using DbCommand installed = connection.CreateCommand();
 
@@ -212,9 +215,7 @@ internal static class CampaignSummaryLifecycle
 
         long rows = 0;
 
-        System.Text.StringBuilder authority = new();
-
-        System.Text.StringBuilder rowKeys = new();
+        using IncrementalHash authority = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         foreach ((string table, string predicate, string identity, string key) in targets)
         {
@@ -237,16 +238,58 @@ internal static class CampaignSummaryLifecycle
             {
                 string value = reader.GetString(0);
 
-                authority.Append(table).Append(':').Append(value.Length).Append(':').Append(value).Append('\n');
+                // Preserve the legacy UTF16 length prefix and UTF8 authority bytes exactly.
+                AppendAuthority(authority, table, cancellationToken);
 
-                rowKeys.Append(table).Append(':').Append(reader.GetString(1)).Append('\n');
+                AppendAuthority(authority, ":", cancellationToken);
+
+                AppendAuthority(authority, value.Length.ToString(System.Globalization.CultureInfo.CurrentCulture), cancellationToken);
+
+                AppendAuthority(authority, ":", cancellationToken);
+
+                AppendAuthority(authority, value, cancellationToken);
+
+                AppendAuthority(authority, "\n", cancellationToken);
+
+                if (rowKeys is not null)
+                {
+                    _ = rowKeys.Add(table + ":" + reader.GetString(1));
+                }
 
                 rows = checked(rows + 1);
             }
         }
 
-        return new CampaignSummaryClosureSnapshot(rows, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(authority.ToString()))), rowKeys.ToString());
+        return new CampaignSummaryClosureSnapshot(rows, Convert.ToHexString(authority.GetHashAndReset()));
+    }
+
+    private static void AppendAuthority(
+        IncrementalHash authority,
+        ReadOnlySpan<char> value,
+        CancellationToken cancellationToken)
+    {
+        Span<byte> buffer = stackalloc byte[1024];
+
+        while (!value.IsEmpty)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            int characters = Math.Min(value.Length, 256);
+
+            // Keep surrogate pairs together while preserving Encoding.UTF8's legacy fallback.
+            if (characters < value.Length
+                && char.IsHighSurrogate(value[characters - 1])
+                && char.IsLowSurrogate(value[characters]))
+            {
+                characters--;
+            }
+
+            int bytes = Encoding.UTF8.GetBytes(value[..characters], buffer);
+
+            authority.AppendData(buffer[..bytes]);
+
+            value = value[characters..];
+        }
     }
 
     internal static async Task<string[]> ReadArtifactClosureRowKeysAsync(
@@ -601,4 +644,4 @@ internal static class CampaignSummaryLifecycle
     private static string Format(Guid value) => value.ToString("D").ToUpperInvariant();
 }
 
-internal sealed record CampaignSummaryClosureSnapshot(long Rows, string Authority, string RowKeys = "");
+internal sealed record CampaignSummaryClosureSnapshot(long Rows, string Authority);

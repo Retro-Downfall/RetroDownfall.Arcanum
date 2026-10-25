@@ -1468,6 +1468,10 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V23/130_CostA
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V23/140_LongRunningOperations_SessionId_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V23/150_CostAdjustments_BillableOperationId_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V23/160_UploadedFiles_Id_index.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V24/001_idx_campaign_rollup_sources_session.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V24/002_idx_campaign_maintenance_checkpoints_session.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V24/003_idx_campaign_maintenance_checkpoints_source_session.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V24/004_idx_campaign_maintenance_checkpoints_output.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/010_annal_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/011_annal_claims_subject_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/012_annal_claims_store_candidate_index.sql

@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 23 and declares twenty-two steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 24 and declares twenty-three steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -141,8 +141,10 @@ internal static class GrimoireSchemaVersionChains
     /// reservations and unresolved paid work without scanning settled history.</para>
     /// <para>Version 23 indexes normalized retention identities and accounting relationships without
     /// rewriting their accepted spellings or changing deletion authority.</para>
+    /// <para>Version 24 indexes Campaign continuity Session and output-artifact dependencies without
+    /// changing source manifests, checkpoints, or their cascade relationships.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 23;
+    internal const int CoreSchemaVersion = 24;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -311,6 +313,10 @@ internal static class GrimoireSchemaVersionChains
             // Captured from the published v22 catalog before indexing retention identity and accounting.
             [(GrimoireSchemaTransactionTier.Core, 23)] =
                 "7777286981B12C5727713341CF25E4112124FD0CBC52B611A648FB31281AEA43",
+
+            // Captured from the published v23 catalog before indexing Campaign continuity closure.
+            [(GrimoireSchemaTransactionTier.Core, 24)] =
+                "2861C4C010C5398840BC2B626ED7FEED910E2882B0ABAD5CBC9DD7F15C669303",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",

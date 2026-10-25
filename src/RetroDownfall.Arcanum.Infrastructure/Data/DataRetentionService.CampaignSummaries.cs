@@ -83,11 +83,9 @@ internal sealed partial class DataRetentionService
 
         foreach (Guid owner in selectedSessions.Concat(selectedEntryOwners).Distinct().Order())
         {
-            CampaignSummaryClosureSnapshot closure = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
-                connection, null, owner, cancellationToken, includeOwnerRows: selectedSessions.Contains(owner))
+            _ = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
+                connection, null, owner, cancellationToken, includeOwnerRows: selectedSessions.Contains(owner), rowKeys: campaignRows)
                 .ConfigureAwait(false);
-
-            campaignRows.UnionWith(closure.RowKeys.Split('\n', StringSplitOptions.RemoveEmptyEntries));
 
             if (!selectedSessions.Contains(owner))
             {

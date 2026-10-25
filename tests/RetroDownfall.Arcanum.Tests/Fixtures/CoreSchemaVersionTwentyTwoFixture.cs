@@ -415,7 +415,7 @@ internal static class CoreSchemaVersionTwentyTwoFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects.Select(item => FrozenTables.TryGetValue(item.Name, out string? sql)
+        .. CoreSchemaVersionTwentyThreeFixture.Objects.Select(item => FrozenTables.TryGetValue(item.Name, out string? sql)
             ? item with { Sql = sql + "\n" }
             : item),
     ];

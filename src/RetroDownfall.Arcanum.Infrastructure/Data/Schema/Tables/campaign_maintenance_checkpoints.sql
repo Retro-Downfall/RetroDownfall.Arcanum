@@ -29,3 +29,6 @@ CREATE TABLE IF NOT EXISTS campaign_maintenance_checkpoints (
             AND OutputRevision IS NULL AND OutputContentDigest IS NULL AND OutputSensitivityDigest IS NULL))
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_maintenance_checkpoints_campaign ON campaign_maintenance_checkpoints(CampaignId);
+CREATE INDEX IF NOT EXISTS idx_campaign_maintenance_checkpoints_session ON campaign_maintenance_checkpoints(SessionId);
+CREATE INDEX IF NOT EXISTS idx_campaign_maintenance_checkpoints_source_session ON campaign_maintenance_checkpoints(SourceSessionId);
+CREATE INDEX IF NOT EXISTS idx_campaign_maintenance_checkpoints_output ON campaign_maintenance_checkpoints(OutputArtifactKindCode, OutputArtifactId);
