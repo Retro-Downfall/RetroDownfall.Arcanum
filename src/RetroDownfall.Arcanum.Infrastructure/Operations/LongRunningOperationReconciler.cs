@@ -601,6 +601,8 @@ public sealed class LongRunningOperationReconciler
             CancellationToken.None).ConfigureAwait(false)
             ?? leased;
 
+        // Other handlers must finish required compensation and retain their completion or repair verdict.
+        // Their cancellation checks stop renewable work; a blanket override here could strand cleanup.
         if (latest.Kind == LongRunningOperationKinds.LongRestSweep && latest.State == LongRunningOperationState.Cancelling)
         {
             result = LongRunningOperationRecoveryResult.Abandoned("long_rest.cancelled");

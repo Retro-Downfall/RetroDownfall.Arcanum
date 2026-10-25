@@ -39,7 +39,8 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
     internal Func<
         LongRunningOperation,
         LongRunningOperationRecoveryFingerprint,
-        LongRunningOperationLeaseResult?>? ClassifiedLeaseOverride { get; set; }
+        LongRunningOperationLeaseResult?>? ClassifiedLeaseOverride
+    { get; set; }
 
     public IReadOnlyCollection<LongRunningOperation> Operations => [.. _operations.Values];
 
@@ -376,7 +377,9 @@ internal sealed class FakeLongRunningOperationStore(TimeProvider timeProvider)
 
         LongRunningOperation leased = current with
         {
-            State = LongRunningOperationState.Running,
+            State = current.State == LongRunningOperationState.Cancelling
+                ? LongRunningOperationState.Cancelling
+                : LongRunningOperationState.Running,
             LeaseOwner = ownerId,
             LeaseExpiresAt = leaseExpiresAt,
             AttemptCount = current.AttemptCount + 1,
