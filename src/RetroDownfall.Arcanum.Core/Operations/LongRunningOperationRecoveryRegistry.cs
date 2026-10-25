@@ -144,7 +144,7 @@ public static class LongRunningOperationRecoveryRegistry
                 LongRunningOperationRecoveryPolicy.RestartIdempotently,
                 Owner: "DataRetentionService",
                 MinCheckpointVersion: 0,
-                MaxCheckpointVersion: 2,
+                MaxCheckpointVersion: 3,
                 LongRunningOperationStartupPriority.Readiness,
                 RecoveryIntent: "Restart idempotently from the durable prune cursor; pruned rows are already gone.",
                 ManualRepairGuidance: "Re-run 'arcanum data prune --apply'; the cursor makes repetition safe."),

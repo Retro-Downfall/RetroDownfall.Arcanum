@@ -34,7 +34,7 @@ internal static class LongRunningOperationRecoveryAdmission
             (LongRunningOperationKinds.BlobEncryptionKeyRotation, 0 or 1) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
             (LongRunningOperationKinds.BackupCreate, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
             (LongRunningOperationKinds.BackupCreate, 2) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
-            (LongRunningOperationKinds.DataRetentionPrune, 0 or 2) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
+            (LongRunningOperationKinds.DataRetentionPrune, 0 or 2 or 3) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
             (LongRunningOperationKinds.DataRetentionMutation, 0) => LongRunningRecoveryAdmissionKind.OrdinaryDbOnly,
             (LongRunningOperationKinds.DataRetentionMutation, 2) => LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect,
             (LongRunningOperationKinds.DataRetentionMutation, 4) => OwnerBoundKind(operation, ownerEvidence),

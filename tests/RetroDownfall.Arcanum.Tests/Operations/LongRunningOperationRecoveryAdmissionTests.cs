@@ -22,6 +22,7 @@ public sealed class LongRunningOperationRecoveryAdmissionTests
         { LongRunningOperationKinds.DataRetentionPrune, 0, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
         { LongRunningOperationKinds.DataRetentionPrune, 1, LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion },
         { LongRunningOperationKinds.DataRetentionPrune, 2, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
+        { LongRunningOperationKinds.DataRetentionPrune, 3, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },
         { LongRunningOperationKinds.DataRetentionMutation, 0, LongRunningRecoveryAdmissionKind.OrdinaryDbOnly },
         { LongRunningOperationKinds.DataRetentionMutation, 1, LongRunningRecoveryAdmissionKind.UnsupportedCheckpointVersion },
         { LongRunningOperationKinds.DataRetentionMutation, 2, LongRunningRecoveryAdmissionKind.OrdinaryExternalEffect },

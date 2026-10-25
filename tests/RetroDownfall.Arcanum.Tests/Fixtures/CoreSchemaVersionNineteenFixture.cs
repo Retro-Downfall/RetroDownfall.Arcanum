@@ -7,7 +7,7 @@ internal static class CoreSchemaVersionNineteenFixture
 {
     internal const string PublishedFingerprint = "5FB2D2B1187D76CE5900B9A984C00312452E6F0BD45EFC2E69D8BDF20EA2B204";
 
-    internal static IReadOnlyList<GrimoireSchemaObject> Objects => [.. GrimoireSchemaCatalog.CoreObjects.Where(item => !item.Name.StartsWith("saga_committed_uses", StringComparison.Ordinal))];
+    internal static IReadOnlyList<GrimoireSchemaObject> Objects => [.. GrimoireSchemaCatalog.CoreObjects.Where(item => !item.Name.StartsWith("saga_committed_uses", StringComparison.Ordinal) && !item.Name.StartsWith("data_retention_prune_snapshots", StringComparison.Ordinal))];
 
     internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);
 
