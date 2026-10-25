@@ -21,23 +21,26 @@ public sealed class OperationCommands(
             return CliFailureExit.ExitCode(result.Error);
         }
 
-        Table table = new();
-        table.AddColumn(themePalette.HeadingTableColumn("ID"));
-        table.AddColumn(themePalette.HeadingTableColumn("Kind"));
-        table.AddColumn(themePalette.HeadingTableColumn("State"));
-        table.AddColumn(themePalette.HeadingTableColumn("Attempts"));
-        table.AddColumn(themePalette.HeadingTableColumn("Summary"));
-        foreach (LongRunningOperationDto operation in result.Value)
+        IReadOnlyList<ListingColumn<LongRunningOperationDto>> columns =
+        [
+            new("ID", static operation => operation.Id.ToString("D"), ListingColumnRole.Fixed),
+            new("Kind", static operation => operation.Kind, ListingColumnRole.Optional, DropOrder: 1),
+            new("State", static operation => operation.State.ToString(), ListingColumnRole.Fixed),
+            new("Attempts", static operation => operation.AttemptCount.ToString(System.Globalization.CultureInfo.InvariantCulture), ListingColumnRole.Fixed, Muted: true),
+            new("Summary", static operation => operation.PublicSummary, ListingColumnRole.Optional, DropOrder: 2),
+        ];
+
+        int width = AnsiConsole.Profile.Width;
+
+        ListingTableResult rendered = ListingTable.Build(themePalette, columns, result.Value, width);
+
+        AnsiConsole.Write(rendered.Table);
+
+        if (ListingTable.HiddenColumnsNotice(rendered, width) is { } hiddenNotice)
         {
-            table.AddRow(
-                themePalette.TextMarkup(Markup.Escape(operation.Id.ToString("D"))),
-                themePalette.TextMarkup(Markup.Escape(operation.Kind)),
-                themePalette.HighlightMarkup(Markup.Escape(operation.State.ToString())),
-                themePalette.MutedMarkup(operation.AttemptCount.ToString(System.Globalization.CultureInfo.InvariantCulture)),
-                themePalette.TextMarkup(Markup.Escape(operation.PublicSummary)));
+            CliErrorOutput.WriteMarkupLine(themePalette.MutedMarkup(Markup.Escape(hiddenNotice)));
         }
 
-        AnsiConsole.Write(table);
         if (result.Value.Length == 0)
         {
             AnsiConsole.MarkupLine(themePalette.MutedMarkup("No durable operations found."));
