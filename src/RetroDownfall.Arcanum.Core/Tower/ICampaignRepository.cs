@@ -58,7 +58,17 @@ public interface ICampaignRepository
 
     Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default);
 
-    Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default);
+    /// <summary>Writes only name, type, description, settings and the supplied UpdatedAt; returns the stored row or a domain failure.</summary>
+    Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default);
+
+    /// <summary>Writes only settings and the supplied UpdatedAt; returns the stored row or a domain failure.</summary>
+    Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default);
+
+    /// <summary>Writes only Sanctum configuration and the supplied UpdatedAt; returns the stored row or a domain failure.</summary>
+    Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default);
+
+    /// <summary>Writes only name and type and the supplied UpdatedAt; returns the stored row or a domain failure.</summary>
+    Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default);
 
     Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
 

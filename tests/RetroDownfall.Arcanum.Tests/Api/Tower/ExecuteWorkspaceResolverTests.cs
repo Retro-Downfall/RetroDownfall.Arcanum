@@ -129,8 +129,17 @@ public sealed class ExecuteWorkspaceResolverTests : IAsyncLifetime
         public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result<Campaign>.Success(campaign));
 
-        public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
@@ -242,8 +251,17 @@ public sealed class CampaignWorkspaceFillTests
         public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result<Campaign>.Success(campaign));
 
-        public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);

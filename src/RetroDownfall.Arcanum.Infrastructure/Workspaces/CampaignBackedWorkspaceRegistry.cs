@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
 public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 {
-
     private readonly IServiceScopeFactory _scopeFactory;
 
     private readonly IGrimoireDbReadiness _dbReadiness;
@@ -53,7 +52,6 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         while (true)
         {
-
             ListPageResult<Campaign> page = await repo
                 .ListAsync(typeFilter: null, limit: pageSize, offset: offset, cancellationToken: ct)
                 .ConfigureAwait(false);
@@ -62,23 +60,18 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
             if (!page.HasMore)
             {
-
                 break;
-
             }
 
             int nextOffset = page.NextOffset ?? checked(offset + page.Items.Length);
 
             if (nextOffset <= offset)
             {
-
                 throw new InvalidOperationException(
                     "Campaign pagination returned a non-advancing continuation offset. Retry the request; if the problem persists, inspect the campaign repository.");
-
             }
 
             offset = nextOffset;
-
         }
 
         WorkspaceInfo[] result = new WorkspaceInfo[campaigns.Count];
@@ -240,9 +233,19 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
 
         existing.UpdatedAt = DateTimeOffset.UtcNow;
 
-        await repo.UpdateAsync(existing, ct).ConfigureAwait(false);
+        Result<Campaign> updated = await repo.UpdateWorkspaceAsync(existing, ct).ConfigureAwait(false);
 
-        return ToWorkspaceInfo(existing);
+        if (updated.IsFailure)
+        {
+            return updated.Error.Code switch
+            {
+                ErrorCodes.Campaign.NotFound => new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found."),
+                ErrorCodes.Campaign.DuplicateName => new Error("Workspace.NameDuplicate", "A workspace with this name is already registered."),
+                _ => updated.Error,
+            };
+        }
+
+        return ToWorkspaceInfo(updated.Value);
     }
 
     public async Task<Result<bool>> UnregisterAsync(string id, CancellationToken ct)
@@ -287,5 +290,4 @@ public sealed class CampaignBackedWorkspaceRegistry : IWorkspaceRegistry
             ErrorCodes.Campaign.PathNotAllowed => new Error(ErrorCodes.Workspace.PathNotAllowed, error.Message),
             _ => error,
         };
-
 }

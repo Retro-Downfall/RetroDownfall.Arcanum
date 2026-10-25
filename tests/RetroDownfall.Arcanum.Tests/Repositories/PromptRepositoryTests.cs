@@ -651,6 +651,42 @@ public sealed class PromptRepositoryTests : IAsyncLifetime
             (await repository.ListAsync(target, cancellationToken: CancellationToken.None)).Items.Select(static p => p.Name));
     }
 
+    [SkippableFact]
+    public async Task UpdateAsync_deleted_after_read_returns_NotFound_and_context_remains_usable()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        PromptRepository seed = new(_db!, NullLogger<PromptRepository>.Instance);
+
+        Prompt original = await seed.AddSucceededAsync(CreatePrompt(null, "deleted", "1", DateTimeOffset.UtcNow), CancellationToken.None);
+
+        await using ArcanumDbContext writerContext = _fixture.CreateContext(_dbPath);
+
+        await using ArcanumDbContext deletingContext = _fixture.CreateContext(_dbPath);
+
+        PromptRepository writer = new(writerContext, NullLogger<PromptRepository>.Instance);
+
+        PromptRepository deleting = new(deletingContext, NullLogger<PromptRepository>.Instance);
+
+        Prompt stale = (await writer.GetByIdAsync(original.Id))!;
+
+        Assert.True(await deleting.DeleteAsync(original.Id));
+
+        stale.Template = "Late update";
+
+        Result<Prompt> result = await writer.UpdateAsync(stale);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Prompt.NotFound, result.Error.Code);
+
+        Assert.Equal(EntityState.Detached, writerContext.Entry(stale).State);
+
+        Assert.True((await writer.AddAsync(CreatePrompt(null, "survivor", "1", DateTimeOffset.UtcNow))).IsSuccess);
+
+        Assert.Null(await writer.GetByIdAsync(original.Id));
+    }
+
     private async Task<Guid> SeedCampaignAsync(string name)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;

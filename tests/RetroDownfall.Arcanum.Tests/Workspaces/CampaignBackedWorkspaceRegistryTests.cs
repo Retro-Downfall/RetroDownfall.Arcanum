@@ -300,10 +300,25 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
                         ErrorCodes.Campaign.MaxReached,
                         "Repository failure selected by code, not legacy exception text.")));
 
-        public Task<Campaign> UpdateAsync(
+        public Task<Result<Campaign>> UpdateHeaderAsync(
             Campaign campaign,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<bool> DeleteAsync(
             Guid id,
@@ -360,10 +375,25 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             return Task.FromResult(Result<Campaign>.Success(campaign));
         }
 
-        public Task<Campaign> UpdateAsync(
+        public Task<Result<Campaign>> UpdateHeaderAsync(
             Campaign campaign,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<bool> DeleteAsync(
             Guid id,
@@ -432,7 +462,22 @@ public sealed class CampaignBackedWorkspaceRegistryTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Campaign> UpdateAsync(
+        public Task<Result<Campaign>> UpdateHeaderAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(
             Campaign campaign,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();

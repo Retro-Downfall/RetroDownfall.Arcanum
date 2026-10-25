@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Models;
+using RetroDownfall.Arcanum.Api.Primitives;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Tower;
@@ -16,7 +17,6 @@ namespace RetroDownfall.Arcanum.Api.Security;
 
 internal static class SanctumEndpoints
 {
-
     public static RouteGroupBuilder MapSanctumEndpoints(this RouteGroupBuilder apiGroup)
     {
         apiGroup.MapGet(
@@ -58,13 +58,11 @@ internal static class SanctumEndpoints
 
                 if (request is null)
                 {
-
                     return Results.BadRequest(
                         ApiResponse<SanctumConfig>.FromResult(
                             Result<SanctumConfig>.Failure(
                                 new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage)),
                             traceId));
-
                 }
 
                 Campaign? campaign = await repo.GetByIdAsync(campaignId, ctx.RequestAborted).ConfigureAwait(false);
@@ -93,7 +91,15 @@ internal static class SanctumEndpoints
 
                 campaign.UpdatedAt = DateTimeOffset.UtcNow;
 
-                await repo.UpdateAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Campaign> updated = await repo.UpdateSanctumAsync(campaign, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (updated.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<SanctumConfig>.FromResult(Result<SanctumConfig>.Failure(updated.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseSanctumConfig,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(updated.Error.Code));
+                }
 
                 return Results.Ok(
                     ApiResponse<SanctumConfig>.FromResult(
@@ -208,5 +214,4 @@ internal static class SanctumEndpoints
 
         return Result<SanctumConfig>.Success(clamped);
     }
-
 }

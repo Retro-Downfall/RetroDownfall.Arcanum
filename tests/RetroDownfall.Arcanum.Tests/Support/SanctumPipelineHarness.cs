@@ -276,7 +276,16 @@ internal sealed class SingleCampaignRepository(Campaign campaign) : ICampaignRep
     public Task<Result<Campaign>> AddAsync(Campaign added, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
 
-    public Task<Campaign> UpdateAsync(Campaign updated, CancellationToken cancellationToken = default) =>
+    public Task<Result<Campaign>> UpdateHeaderAsync(Campaign updated, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public Task<Result<Campaign>> UpdateSettingsAsync(Campaign updated, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public Task<Result<Campaign>> UpdateSanctumAsync(Campaign updated, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign updated, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException();
 
     public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>

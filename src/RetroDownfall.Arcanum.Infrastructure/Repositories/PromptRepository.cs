@@ -184,6 +184,13 @@ public sealed class PromptRepository : IPromptRepository
 
             return Result<Prompt>.Success(prompt);
         }
+        catch (DbUpdateConcurrencyException exception) when (exception.Entries.Count == 1
+            && ReferenceEquals(exception.Entries[0].Entity, prompt))
+        {
+            DetachAll([prompt]);
+
+            return Result<Prompt>.Failure(new Error(ErrorCodes.Prompt.NotFound, "Prompt was not found."));
+        }
         catch (Exception exception)
         {
             if (ClassifyConstraintViolation(exception) is not { } error)
