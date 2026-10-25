@@ -394,7 +394,7 @@ Source-generated parsing (AOT-clean, no reflection). Spectre remains for renderi
 
 Every direct command inherits these recursive root options, accepted before or after the verb:
 
-- `--output-format text|json` selects the output shape, and `--json` is its shorthand. `json` forces one valid JSON document on stdout. Commands with typed structured output write that type through `IConsoleDispatcher.WriteJson` and an explicit source-generated `JsonTypeInfo`; legacy text commands are captured at the process boundary and returned as `CliTextPayload { output, exitCode }`. ANSI is disabled while JSON is active, so terminal control sequences cannot corrupt a pipe such as `arcanum operation list --json | jq`. Combining `--json` with `--output-format text` is a contradiction and exits `2` rather than resolving a precedence.
+- `--output-format text|json` selects the output shape, and `--json` is its shorthand. `json` forces one valid JSON document on stdout. Commands with typed structured output write that type through `IConsoleDispatcher.WriteJson` and an explicit source-generated `JsonTypeInfo`; legacy text commands are captured at the process boundary and returned as `CliTextPayload { output, exitCode }`. ANSI is disabled while JSON is active, so terminal control sequences cannot corrupt a pipe such as `arcanum budget --json | jq`. Combining `--json` with `--output-format text` is a contradiction and exits `2` rather than resolving a precedence.
 - `--plain` disables ANSI color and terminal animation for that invocation. It does not persist or replace `Arcanum:Cli:Theme`. The guarantee holds inside CI environments whose detectors would otherwise force ANSI on (§16.5, "Opting out of ANSI is final").
 - `--yes` is the only global auto-approval signal. `IConfirmationPrompt` returns immediately when it is present; otherwise a redirected-output invocation fails closed with `NonInteractiveConfirmationException` before reading stdin or writing a prompt. Command Center modals and inference `ask_human` are separate interactive protocols.
 - `--no-context` bypasses owner-local saved CLI context for one invocation while retaining independent current-directory Campaign and Workspace detection.
@@ -1090,7 +1090,7 @@ A Sending has no whole-operation deadline (§5.7.1), so its ledger lease marks *
 | Outbound Sendings in flight | **Cancelled, or explicitly abandoned.** Reconciliation issues `tasks/cancel` to the recorded peer and records which happened: `Completed` when the remote confirmed, `a2a.outbound_remote_abandoned` when it could not be reached and may still be running and billing. |
 | An outbound Sending awaiting a peer callback | **Settled by the callback, in whichever process receives it.** The record carries the callback config id and the token digest, so a notification arriving after a restart is authenticated and settles the row (§5.7.1.4). |
 
-Both outcomes are visible through the normal durable-operation surfaces (`arcanum operations`, `GET /api/operations`), so "what happened to my Sending" is answerable after the fact rather than a guess.
+Both outcomes are visible through the normal durable-operation surfaces (`arcanum operation`, `GET /api/operations`), so "what happened to my Sending" is answerable after the fact rather than a guess.
 
 #### 5.7.1.3 Continuing a Sending
 

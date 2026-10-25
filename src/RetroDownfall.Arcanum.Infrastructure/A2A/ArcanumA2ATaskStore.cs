@@ -33,7 +33,6 @@ internal sealed class ArcanumA2ATaskStore(
     IServiceScopeFactory? scopeFactory,
     ILogger<ArcanumA2ATaskStore> logger) : ITaskStore
 {
-
     /// <summary>
     /// How many tasks this process keeps in memory. A code-owned retention bound, not an operator knob:
     /// it is a ceiling on what is kept for nothing, and an operator who lowered it would only be choosing
@@ -55,38 +54,28 @@ internal sealed class ArcanumA2ATaskStore(
 
     public async Task<AgentTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken = default)
     {
-
         if (string.IsNullOrWhiteSpace(taskId))
         {
-
             return null;
-
         }
 
         if (_live.TryGetValue(taskId, out RetainedTask? live))
         {
-
             return live.Task;
-
         }
 
         if (scopeFactory is null)
         {
-
             return null;
-
         }
 
         try
         {
-
             await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
 
             if (A2ASendingLedgerScope.Resolve(scope.ServiceProvider) is not { } ledger)
             {
-
                 return null;
-
             }
 
             // A read, not a claim: the SDK looks a task up on every store miss, and taking the record's
@@ -98,9 +87,7 @@ internal sealed class ArcanumA2ATaskStore(
 
             if (parked is null)
             {
-
                 return null;
-
             }
 
             logger.LogInformation(
@@ -128,24 +115,19 @@ internal sealed class ArcanumA2ATaskStore(
             Evict();
 
             return rehydrated;
-
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-
             // Best-effort, exactly like every other ledger read: a Grimoire that is unavailable degrades
             // to the pre-#68 behavior rather than failing the peer's request.
             logger.LogWarning(ex, "A2A: could not look up a durable record for task {TaskId}.", taskId);
 
             return null;
-
         }
-
     }
 
     public Task SaveTaskAsync(string taskId, AgentTask task, CancellationToken cancellationToken = default)
     {
-
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
 
         ArgumentNullException.ThrowIfNull(task);
@@ -155,7 +137,6 @@ internal sealed class ArcanumA2ATaskStore(
         Evict();
 
         return Task.CompletedTask;
-
     }
 
     /// <summary>
@@ -176,24 +157,18 @@ internal sealed class ArcanumA2ATaskStore(
     /// </remarks>
     private void Evict()
     {
-
         if (_live.Count <= RetainedTaskCap)
         {
-
             return;
-
         }
 
         lock (_evictionGate)
         {
-
             int excess = _live.Count - RetainedTaskCap;
 
             if (excess <= 0)
             {
-
                 return;
-
             }
 
             KeyValuePair<string, RetainedTask>[] evictable =
@@ -206,24 +181,18 @@ internal sealed class ArcanumA2ATaskStore(
 
             foreach (KeyValuePair<string, RetainedTask> entry in evictable)
             {
-
                 // Value-matched removal: a task re-saved since the snapshot carries a later sequence and
                 // is left exactly where it is.
                 _live.TryRemove(entry);
-
             }
-
         }
-
     }
 
     public Task DeleteTaskAsync(string taskId, CancellationToken cancellationToken = default)
     {
-
         _live.TryRemove(taskId, out _);
 
         return Task.CompletedTask;
-
     }
 
     /// <summary>
@@ -233,7 +202,7 @@ internal sealed class ArcanumA2ATaskStore(
     /// Durable records are deliberately absent: the ledger is a correspondence index keyed by task id,
     /// not a task archive, and a listing that mixed live tasks with skeletal rehydrated ones would report
     /// A2A task state this instance cannot actually produce. Operators observe an inbound Sending as the
-    /// Apprentice it is (§5.7.1.1) and its durable row through <c>arcanum operations</c>.
+    /// Apprentice it is (§5.7.1.1) and its durable row through <c>arcanum operation</c>.
     /// <para>
     /// The filters, the cursor, and the projection are all the store's own responsibility — the SDK
     /// hands the request straight through — so a peer that scopes its query to one context, asks for one
@@ -244,7 +213,6 @@ internal sealed class ArcanumA2ATaskStore(
         ListTasksRequest request,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
 
         // Newest first, with the id as a tiebreak so a cursor means the same thing on every page even
@@ -281,30 +249,23 @@ internal sealed class ArcanumA2ATaskStore(
             TotalSize = matches.Length,
             NextPageToken = next < matches.Length ? next.ToString(CultureInfo.InvariantCulture) : string.Empty,
         });
-
     }
 
     private static bool Matches(AgentTask task, ListTasksRequest request)
     {
-
         if (request.ContextId is { Length: > 0 } contextId
             && !string.Equals(task.ContextId, contextId, StringComparison.Ordinal))
         {
-
             return false;
-
         }
 
         if (request.Status is { } status && task.Status.State != status)
         {
-
             return false;
-
         }
 
         return request.StatusTimestampAfter is not { } after
             || (task.Status.Timestamp is { } timestamp && timestamp > after);
-
     }
 
     /// <summary>
@@ -322,18 +283,14 @@ internal sealed class ArcanumA2ATaskStore(
 
     private static List<Message>? TrimHistory(List<Message>? history, int? historyLength)
     {
-
         if (historyLength is not { } length)
         {
-
             return history;
-
         }
 
         return length <= 0 || history is null
             ? null
             : [.. history.TakeLast(length)];
-
     }
 
     /// <summary>
@@ -345,21 +302,16 @@ internal sealed class ArcanumA2ATaskStore(
     /// </remarks>
     private static int ParseCursor(string? pageToken)
     {
-
         if (string.IsNullOrEmpty(pageToken))
         {
-
             return 0;
-
         }
 
         return int.TryParse(pageToken, NumberStyles.None, CultureInfo.InvariantCulture, out int cursor)
             ? cursor
             : throw new A2AException($"Invalid pageToken: {pageToken}");
-
     }
 
     /// <summary>A retained task and the save that last touched it, which is the eviction order.</summary>
     private sealed record RetainedTask(long Sequence, AgentTask Task);
-
 }

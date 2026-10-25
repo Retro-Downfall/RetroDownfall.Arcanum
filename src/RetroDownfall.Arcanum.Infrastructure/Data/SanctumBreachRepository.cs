@@ -14,8 +14,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// <summary>
 /// Raw-SQL persistence for <see cref="SanctumBreachRecord"/> rows, reusing the scoped
 /// <see cref="ArcanumDbContext"/>'s connection. The <c>SanctumBreaches</c> table is not part of
-/// the compiled EF model (created by the embedded <c>InitialCreate.sql</c> schema baseline under
-/// <c>Data/Schema/Tables/</c>), so all access goes
+/// the compiled EF model (owned by the embedded
+/// <c>Data/Schema/Tables/SanctumBreaches.sql</c> schema object), so all access goes
 /// through <see cref="DbCommand"/> rather than LINQ, mirroring <see cref="UnseenServantWatermarkStore"/>.
 /// </summary>
 internal sealed class SanctumBreachRepository(ArcanumDbContext db) : ISanctumBreachRepository

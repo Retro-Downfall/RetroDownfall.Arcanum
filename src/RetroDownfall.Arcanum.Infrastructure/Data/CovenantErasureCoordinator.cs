@@ -3062,16 +3062,6 @@ internal sealed class CovenantErasureCoordinator(
         }
     }
 
-    /// <summary>
-    /// Performs one phase's step exactly once and records it, or returns the checkpoint untouched.
-    /// </summary>
-    /// <remarks>
-    /// The guard is the whole resume contract: a phase already recorded is a step already committed,
-    /// and re-running it would repeat an effect the filesystem cannot roll back. The ordering itself
-    /// is checked by <see cref="CovenantResetPhaseMachine.RequireAdvance"/> rather than by a
-    /// comparison written here, because "is this the next phase" has three silent wrong answers and
-    /// the phase machine is the only reader that knows all of them.
-    /// </remarks>
     private readonly GrimoireOfflineTransitionDatabaseReconciler _reconciler =
         reconciler ?? throw new ArgumentNullException(nameof(reconciler));
 
@@ -3148,6 +3138,14 @@ internal sealed class CovenantErasureCoordinator(
             : await phases.RecordClosedAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Runs and records the next phase, or returns a checkpoint that already records its completion.
+    /// </summary>
+    /// <remarks>
+    /// An in-flight phase resumes by replaying its idempotent or identity-bound effect. Completed
+    /// phases are skipped, and <see cref="CovenantResetPhaseMachine.RequireAdvance"/> validates
+    /// the next phase before any effect begins.
+    /// </remarks>
     private async Task<CovenantErasureCheckpointState> AdvanceAsync(
         GrimoireOfflineTransitionPhaseSession phases,
         CovenantErasureCheckpointState checkpoint,
@@ -4265,15 +4263,6 @@ internal sealed class CovenantErasureCoordinator(
         new(
             ErrorCodes.Covenant.MaintenanceFailed,
             "The Covenant erasure lifecycle could not be completed safely.");
-
-    /// <summary>
-    /// The mutable facts one run accumulates, kept out of the durable checkpoint on purpose.
-    /// </summary>
-    /// <remarks>
-    /// None of these belong in a checkpoint: two are derived from the phase already recorded there,
-    /// and the third is a dataset identity the database itself owns. A checkpoint that carried them
-    /// would be a second source for facts that already have one.
-    /// </remarks>
 }
 
 /// <summary>

@@ -9,8 +9,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// <summary>
 /// Raw-SQL persistence for <see cref="BatchRecord"/> rows, reusing the scoped
 /// <see cref="ArcanumDbContext"/>'s connection. The <c>Batches</c> table is not part of the compiled
-/// EF model (created by the embedded <c>InitialCreate.sql</c> schema baseline under
-/// <c>Data/Schema/Tables/</c>), so all access goes through <see cref="DbCommand"/> rather than LINQ
+/// EF model (owned by the embedded
+/// <c>Data/Schema/Tables/Batches.sql</c> schema object), so all access goes through <see cref="DbCommand"/> rather than LINQ
 /// — mirrors <see cref="UploadedFileRepository"/>.
 /// </summary>
 internal sealed class BatchRepository(ArcanumDbContext db) : IBatchRepository

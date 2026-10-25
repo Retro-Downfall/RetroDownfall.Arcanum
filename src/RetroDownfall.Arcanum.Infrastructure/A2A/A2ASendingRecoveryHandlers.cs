@@ -14,11 +14,10 @@ namespace RetroDownfall.Arcanum.Infrastructure.A2A;
 /// Issue #62 requires that an in-flight Sending across a restart is either continued or "explicitly
 /// failed with a reason", and that an outbound one records whether the remote task was cancelled or
 /// abandoned. These are those reasons, carried on the ledger row's terminal error code so
-/// <c>arcanum operations</c> shows what actually happened rather than a bare "abandoned".
+/// <c>arcanum operation</c> shows what actually happened rather than a bare "abandoned".
 /// </remarks>
 public static class A2ASendingRecoveryOutcomes
 {
-
     /// <summary>The Apprentice survived, but the A2A correspondence could not be re-established.</summary>
     public const string InboundRelayAbandoned = "a2a.inbound_relay_abandoned";
 
@@ -38,7 +37,6 @@ public static class A2ASendingRecoveryOutcomes
     /// </summary>
     public const string InboundParkedAwaitingAnswer =
         LongRunningOperationRecoveryOutcomes.A2AInboundParkedAwaitingAnswer;
-
 }
 
 /// <summary>
@@ -55,7 +53,6 @@ internal sealed class A2AInboundSendingRecoveryHandler(
     IApprenticeRepository apprentices,
     ILogger<A2AInboundSendingRecoveryHandler> logger) : ILongRunningOperationRecoveryHandler
 {
-
     public string Kind => LongRunningOperationKinds.A2AInboundSending;
 
     public int SupportedCheckpointVersion => A2ASendingLedger.CheckpointVersion;
@@ -64,14 +61,11 @@ internal sealed class A2AInboundSendingRecoveryHandler(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         if (A2ASendingLedger.TryRead(operation) is not { } record || record.ApprenticeId is not { } apprenticeId)
         {
-
             return LongRunningOperationRecoveryResult.Abandoned(A2ASendingRecoveryOutcomes.InboundApprenticeMissing);
-
         }
 
         Apprentice? apprentice = await apprentices
@@ -80,14 +74,12 @@ internal sealed class A2AInboundSendingRecoveryHandler(
 
         if (apprentice is null)
         {
-
             logger.LogInformation(
                 "A2A reconciliation: inbound task {TaskId} referenced Apprentice {ApprenticeId}, which no longer exists.",
                 record.TaskId,
                 apprenticeId);
 
             return LongRunningOperationRecoveryResult.Abandoned(A2ASendingRecoveryOutcomes.InboundApprenticeMissing);
-
         }
 
         // A parked Sending is not a lost relay: the Apprentice escalated, is deliberately not auto-resumed
@@ -95,7 +87,6 @@ internal sealed class A2AInboundSendingRecoveryHandler(
         // would close the only correspondence a post-restart continuation has to go on (issue #68).
         if (record.Parked && !IsFinished(apprentice))
         {
-
             logger.LogInformation(
                 "A2A reconciliation: inbound task {TaskId} is parked awaiting the peer's answer; "
                 + "Apprentice {ApprenticeId} stays resumable and the record stays open.",
@@ -104,7 +95,6 @@ internal sealed class A2AInboundSendingRecoveryHandler(
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 A2ASendingRecoveryOutcomes.InboundParkedAwaitingAnswer);
-
         }
 
         logger.LogInformation(
@@ -114,7 +104,6 @@ internal sealed class A2AInboundSendingRecoveryHandler(
             apprenticeId);
 
         return LongRunningOperationRecoveryResult.Abandoned(A2ASendingRecoveryOutcomes.InboundRelayAbandoned);
-
     }
 
     /// <summary>
@@ -124,7 +113,6 @@ internal sealed class A2AInboundSendingRecoveryHandler(
     private static bool IsFinished(Apprentice apprentice) =>
         Enum.TryParse(apprentice.Status, ignoreCase: true, out ApprenticeStatus status)
         && status is ApprenticeStatus.Completed or ApprenticeStatus.Failed or ApprenticeStatus.Cancelled;
-
 }
 
 /// <summary>
@@ -140,7 +128,6 @@ internal sealed class A2AOutboundSendingRecoveryHandler(
     IA2AClientService client,
     ILogger<A2AOutboundSendingRecoveryHandler> logger) : ILongRunningOperationRecoveryHandler
 {
-
     public string Kind => LongRunningOperationKinds.A2AOutboundSending;
 
     public int SupportedCheckpointVersion => A2ASendingLedger.CheckpointVersion;
@@ -149,15 +136,12 @@ internal sealed class A2AOutboundSendingRecoveryHandler(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(operation);
 
         if (A2ASendingLedger.TryRead(operation) is not { } record
             || string.IsNullOrWhiteSpace(record.AgentUrl))
         {
-
             return LongRunningOperationRecoveryResult.Abandoned(A2ASendingRecoveryOutcomes.OutboundRemoteAbandoned);
-
         }
 
         Result cancelled = await client
@@ -166,14 +150,12 @@ internal sealed class A2AOutboundSendingRecoveryHandler(
 
         if (cancelled.IsSuccess)
         {
-
             logger.LogInformation(
                 "A2A reconciliation: cancelled orphaned remote task {TaskId} on {AgentUrl}.",
                 record.TaskId,
                 record.AgentUrl);
 
             return LongRunningOperationRecoveryResult.Completed();
-
         }
 
         logger.LogWarning(
@@ -184,7 +166,5 @@ internal sealed class A2AOutboundSendingRecoveryHandler(
             cancelled.Error.Message);
 
         return LongRunningOperationRecoveryResult.Abandoned(A2ASendingRecoveryOutcomes.OutboundRemoteAbandoned);
-
     }
-
 }

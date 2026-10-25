@@ -28,7 +28,6 @@ internal sealed class CovenantTurnHeadProbe(
     CanonicalCampaignContext campaign,
     ICovenantSnapshotReadLease readLease) : ICovenantTurnHeadProbe
 {
-
     public ValueTask<Result<CovenantLaneHeadProbe>> ProbeAsync(
         CovenantLane lane,
         string normalizedKey,
@@ -50,37 +49,29 @@ internal sealed class CovenantTurnHeadProbe(
         string normalizedKey,
         CancellationToken cancellationToken)
     {
-
         Result<CovenantRetirementTarget> target = await store
             .ReadRetirementTargetAsync(campaign, lane, normalizedKey, readLease, cancellationToken)
             .ConfigureAwait(false);
 
         if (target.IsFailure)
         {
-
             return target.Error;
-
         }
 
         if (target.Value.IsPinned)
         {
-
             return new Error(
                 ErrorCodes.Covenant.ForbiddenAuthority,
                 CovenantAgentErasureGate.OperatorManagedRefusal);
-
         }
 
         if (CovenantAgentErasureGate.RefusalFor(target.Value.AgentErasure) is { } withheld)
         {
-
             return withheld;
-
         }
 
         try
         {
-
             return Result<CovenantRetirementPreflight>.Success(new CovenantRetirementPreflight(
                 target.Value.EntryId,
                 target.Value.VersionId,
@@ -102,28 +93,15 @@ internal sealed class CovenantTurnHeadProbe(
                     checked((ulong)target.Value.KeyEpoch),
                     target.Value.RenderedHash,
                     target.Value.GlobalFallbackApplies))));
-
         }
         catch (ArgumentException refused)
         {
-
             // The stored head failed the disclosure's own invariants, which means the row cannot be
             // described to an operator honestly. Refusing is the only answer that is not a guess.
             return new Error(ErrorCodes.Covenant.IntegrityFailure, refused.Message);
-
         }
-
     }
 
-    /// <summary>
-    /// Measures the turn's own Campaign Section, under the turn's own lease.
-    /// </summary>
-    /// <remarks>
-    /// The scope is derived from the captured Campaign rather than passed in, for the same reason the
-    /// head probe's is: a tool call must not be able to measure a Section its turn does not cover. A
-    /// Global-only turn has no Proposed Section to measure and no way to reach this, because the
-    /// capability that carries it refuses to exist without a Campaign binding.
-    /// </remarks>
     /// <summary>
     /// Measures the scope this turn writes into, under the turn's own lease.
     /// </summary>
@@ -142,6 +120,13 @@ internal sealed class CovenantTurnHeadProbe(
             readLease,
             cancellationToken);
 
+    /// <summary>
+    /// Measures a lane's Section in this turn's captured scope, under the turn's own lease.
+    /// </summary>
+    /// <remarks>
+    /// The caller chooses the lane; the scope comes from the captured Campaign binding, so the
+    /// probe never accepts a caller-supplied scope.
+    /// </remarks>
     public ValueTask<Result<CovenantSectionOccupancy>> ProbeSectionAsync(
         CovenantLane lane,
         ImmutableArray<string> excludedKeys,
@@ -155,5 +140,4 @@ internal sealed class CovenantTurnHeadProbe(
                 excludedKeys),
             readLease,
             cancellationToken);
-
 }
