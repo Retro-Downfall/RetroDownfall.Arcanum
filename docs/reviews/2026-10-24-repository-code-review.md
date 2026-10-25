@@ -3797,3 +3797,21 @@ Batch restored verification passed 227 tests without skips and a zero-warning bu
 The prior54-finding combined candidate `8dab3558` completed its Arcanum run with **2,841 passes, 2 failures and 1 Windows-only skip**, after a zero-warning build. Both failures correctly detect the spell import helper's five-parameter signature against its stale four-parameter acquisition catalog entry. This is a remediation integration omission being repaired without weakening the scanner; **that run is not green**, and its Forge stage did not run.
 
 The reviewed, locally integrated count is **60 of272 (22.1%)**:3 Critical,47 Important,10 Minor. **212 remain open**:29 Important,183 Minor. The catalog correction, newer combined qualification and full final CI/AOT/live gates remain outstanding.
+
+
+### Context, budget and integration-catalog checkpoint — 2026-10-25
+
+Independently approved context-error commit `78c773f6` and its reviewed Unicode repair `8e825457a7bfc710e4431193dd95668025973def` are integrated. The exact acquisition catalog correction `729567d59128fda5b355dbcf25080fc0904e2ba5` is also independently approved and integrated; candidate `87aca19bab06c5df2f4063106f6e2162e8327ef9` contains both.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-013 | fixed `8e825457` | OpenAI buffered/streamed errors distinguish true overflow (`invalid_request_error/context_length_exceeded`) from daily-budget refusal (`insufficient_quota`). Arbitrary error text remains sanitized; typed internal overflow metadata carries only bounded configured identifiers and numeric facts and is ignored by native serialization. |
+| RV-020 | fixed `8e825457` | Native numeric overflow returns400 with provider/model, counts, actual window and compaction/model/configuration remedies. Internal stale/cache/payload admissions have distinct errors; Covenant capacity409 and genuine rate/budget429 remain. |
+| RV-027 | fixed `8e825457` | Real Wizard buffered and streaming attachment-overflow paths preserve typed safe details through projections and an existing error wrapper. Stale admission cannot masquerade as deterministic context overflow; Saga retention and zero-provider-send controls preserve retry/authority boundaries. |
+| RV-089 | fixed `8e825457` | All four budget refusal paths name the configuration key and00:00UTC accounting boundary without promising readmission while prior-period outstanding/uncertain-paid reservations still count. Dated accounting tests verify the boundary. |
+
+Independent review exposed supplementary Unicode Format scalars bypassing char-level sanitization. Rune-based repair preserves valid supplementary characters, malformed-surrogate normalization and64/128-byte bounds; fourteen explicit-output regressions include decoded OpenAI JSON. Initial and mutation runs each reproduced four failures with ten controls. Final restored1295 tests passed with zero skips and a zero-warning build; the reviewer repeated its actual-Core-DLL probe and93 focused tests successfully.
+
+The acquisition correction changes only two stale enclosing-member strings from ImportCreateStagedAsync(4) to(5). Filesystem call arity3, exact negative database proof, scanner and closed count536 are unchanged. Existing guard RED, old-identity mutation RED, restored88 guard passes and zero-warning build support it. The earlier failed combined run remains recorded; a successful newer combined run is still required.
+
+The reviewed, locally integrated count is **64 of272 (23.5%)**:3 Critical,50 Important,11 Minor. **208 remain open**:26 Important,182 Minor. Full final qualification and delivery remain outstanding.
