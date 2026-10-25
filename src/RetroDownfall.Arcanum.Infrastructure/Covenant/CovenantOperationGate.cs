@@ -12,9 +12,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// The process-wide implementation of <see cref="ICovenantOperationGate"/>.
 /// </summary>
 /// <remarks>
-/// One lock protects one small map of live registrations and at most three closure slots. Acquiring
-/// and revalidating touch memory only: no secret store, no database, no logging of a Campaign ID or
-/// any Covenant content.
+/// One lock protects one small map of live registrations and at most three closure slots. Ordinary
+/// lease acquisition and revalidation touch memory only. Campaign-bound exclusive acquisitions
+/// resolve live Campaign and deletion metadata through the admitted database probe before closing
+/// the scope; a closed admission gate can throw <c>GrimoireMaintenanceUnavailableException</c>.
+/// The gate never logs a Campaign ID or Covenant content.
 ///
 /// <para>Closing is the interesting half. An exclusive acquisition atomically records its recovery
 /// owner and rejects new affected work <em>before</em> it starts waiting, then cancels and drains the
