@@ -39,6 +39,9 @@ internal sealed class BatchProcessingService(
 
     private const int RequestPageSize = 64;
 
+    private const string CancelledAfterDispatchDetail =
+        "The batch was cancelled after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.";
+
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
     private static readonly TimeSpan CancelWatchInterval = TimeSpan.FromSeconds(2);
@@ -608,7 +611,7 @@ internal sealed class BatchProcessingService(
         if (state.CancelledMidway)
         {
             await CompleteDispatchedLinesAsync(batchId, batches, CancellationToken.None,
-                "The batch was cancelled after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.").ConfigureAwait(false);
+                CancelledAfterDispatchDetail).ConfigureAwait(false);
 
             return;
         }
@@ -663,7 +666,7 @@ internal sealed class BatchProcessingService(
                     runStatus = InferenceRunStatus.Abandoned;
 
                     await CompleteDispatchedLinesAsync(batchId, batches, CancellationToken.None,
-                "The batch was cancelled after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.").ConfigureAwait(false);
+                CancelledAfterDispatchDetail).ConfigureAwait(false);
                 }
             }
         }
@@ -755,12 +758,19 @@ internal sealed class BatchProcessingService(
                 if (checkpoint.State == BatchLineCheckpointState.Dispatched)
 
                 {
+                    // Cancellation may have committed while the input was opening or being read.
+                    // Choose its explanation before this recovered checkpoint becomes terminal.
+                    string? detail = await IsBatchCancelledAsync(batchId, batches).ConfigureAwait(false)
+                        ? CancelledAfterDispatchDetail : null;
+
                     await CompleteInterruptedLineAsync(
                         checkpoint,
 
                         batches,
 
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+
+                        detail).ConfigureAwait(false);
                 }
                 continue;
             }
@@ -787,7 +797,7 @@ internal sealed class BatchProcessingService(
         return pendingProviderLines;
     }
 
-    private static async Task PersistNonProviderErrorAsync(
+    private static async Task<bool> PersistNonProviderErrorAsync(
         Guid batchId,
 
         PreparedBatchRequestLine prepared,
@@ -810,7 +820,7 @@ internal sealed class BatchProcessingService(
         // crash between two writes must not leave it Dispatched — restart recovery would seal that
         // as batch_interrupted_after_dispatch in the OUTPUT file and tell the operator the provider
         // may already have charged for a line that can never succeed.
-        _ = await batches.TryRecordTerminalLineAsync(
+        return await batches.TryRecordTerminalLineAsync(
             batchId,
 
             prepared.Line,
@@ -857,7 +867,9 @@ internal sealed class BatchProcessingService(
     /// <summary>
     /// Records an unexpected failure durably: every line left in doubt is sealed as interrupted (never
     /// replayed, since the provider may have charged it) with the exception type as the reason, and
-    /// the first known unstarted line carries a continuation note. If every page line started and
+    /// the first known unstarted line identifies the continuation boundary. Every note uses an
+    /// unused checkpoint slot, which may differ from that boundary on a resumed batch; its guidance
+    /// excludes already dispatched requests, including later checkpoints. If every page line started and
     /// EOF is unknown, the note marks a possible continuation boundary after the page; known EOF
     /// adds no checkpoint. With no prepared page, a read failure notes the line after
     /// <paramref name="lastFinishedLine"/>. An input-open failure instead uses an unused diagnostic
@@ -897,6 +909,8 @@ internal sealed class BatchProcessingService(
 
             PreparedBatchRequestLine[] lines = page is null ? [] : page.ToArray();
 
+            PreparedBatchRequestLine? firstUnstarted = null;
+
             if (lines.Length > 0)
             {
                 IReadOnlyList<BatchLineCheckpoint> checkpoints = await batches.ListLineCheckpointsAsync(
@@ -907,21 +921,9 @@ internal sealed class BatchProcessingService(
 
                 HashSet<long> started = [.. checkpoints.Select(static checkpoint => checkpoint.LineNumber)];
 
-                PreparedBatchRequestLine? firstUnstarted = lines.FirstOrDefault(line => !started.Contains(line.Line));
+                firstUnstarted = lines.FirstOrDefault(line => !started.Contains(line.Line));
 
-                if (firstUnstarted is not null)
-                {
-                    await PersistNonProviderErrorAsync(
-                        batchId,
-                        firstUnstarted,
-                        $"Processing stopped before this line after an unexpected host error (exception type {exceptionType}). Earlier lines were checkpointed; submit this line and the lines after it to continue.",
-                        batches,
-                        CancellationToken.None).ConfigureAwait(false);
-
-                    return true;
-                }
-
-                if (inputExhausted)
+                if (firstUnstarted is null && inputExhausted)
                 {
                     // Every prepared line is already accounted for and EOF was observed while
                     // preparing the page. There is no remaining input to invent a checkpoint for.
@@ -929,43 +931,61 @@ internal sealed class BatchProcessingService(
                 }
             }
 
-            long resumeLine = lines.Length > 0 ? checked(lines[^1].Line + 1) : checked(lastFinishedLine + 1);
+            long boundaryLine = firstUnstarted?.Line
+                ?? (lines.Length > 0 ? checked(lines[^1].Line + 1) : checked(lastFinishedLine + 1));
 
-            if (inputUnavailable)
+            long diagnosticLine = boundaryLine;
+
+            // A resumed batch can own paid results beyond the page being reread, including gaps.
+            // The continuation boundary and the note's unused storage slot are separate facts.
+            while (true)
             {
-                // A resumed batch may already own paid results at line 1 and beyond. The note
-                // needs an unused slot, never replacement authority over those checkpoints.
-                while (true)
+                IReadOnlyList<BatchLineCheckpoint> completed = await batches.ListLineCheckpointsAsync(
+                    batchId, BatchLineCheckpointState.Completed, diagnosticLine - 1, RequestPageSize,
+                    CancellationToken.None).ConfigureAwait(false);
+
+                foreach (BatchLineCheckpoint checkpoint in completed)
                 {
-                    IReadOnlyList<BatchLineCheckpoint> completed = await batches.ListLineCheckpointsAsync(
-                        batchId, BatchLineCheckpointState.Completed, resumeLine - 1, RequestPageSize,
-                        CancellationToken.None).ConfigureAwait(false);
-
-                    foreach (BatchLineCheckpoint checkpoint in completed)
-                    {
-                        if (checkpoint.LineNumber != resumeLine)
-                        {
-                            break;
-                        }
-
-                        resumeLine = checked(resumeLine + 1);
-                    }
-
-                    if (completed.Count == 0 || resumeLine <= completed[^1].LineNumber)
+                    if (checkpoint.LineNumber != diagnosticLine)
                     {
                         break;
                     }
+
+                    diagnosticLine = checked(diagnosticLine + 1);
+                }
+
+                if (completed.Count == 0 || diagnosticLine <= completed[^1].LineNumber)
+                {
+                    break;
                 }
             }
 
-            await PersistNonProviderErrorAsync(
+            string message = inputUnavailable
+                ? $"The batch input file is missing or unreadable (exception type {exceptionType}). Arcanum cannot determine a safe resubmission boundary from this input; this note occupies an unused diagnostic slot. Re-upload the input and create a new batch only after checking previously dispatched results."
+                : $"Processing stopped {(firstUnstarted is null ? "at or after" : "before")} line {boundaryLine} after an unexpected host error (exception type {exceptionType}). This diagnostic's line number alone does not identify an unstarted input record. Check all saved output and errors, including later lines; resubmit only input requests that were never dispatched.";
+
+            bool recorded = await PersistNonProviderErrorAsync(
                 batchId,
-                new PreparedBatchRequestLine(resumeLine, null, null),
-                inputUnavailable
-                    ? $"The batch input file is missing or unreadable (exception type {exceptionType}). Arcanum cannot determine a safe resubmission boundary from this input; this note occupies an unused diagnostic slot. Re-upload the input and create a new batch only after checking previously dispatched results."
-                    : $"Processing stopped at or after line {resumeLine} after an unexpected host error (exception type {exceptionType}). Earlier lines were checkpointed; submit any input lines from here on to continue.",
+                firstUnstarted?.Line == diagnosticLine ? firstUnstarted : new PreparedBatchRequestLine(diagnosticLine, null, null),
+                message,
                 batches,
                 CancellationToken.None).ConfigureAwait(false);
+
+            if (!recorded)
+            {
+                if (await IsBatchCancelledAsync(batchId, batches).ConfigureAwait(false))
+                {
+                    // Cancellation legitimately refuses new checkpoints. It still owns publication
+                    // of the already durable results, so do not strand those behind the original fault.
+                    logger.LogInformation(
+                        "Batch {BatchId} was cancelled before its failure diagnostic could be recorded; publishing its checkpointed results as cancelled.",
+                        batchId);
+
+                    return true;
+                }
+
+                throw new InvalidOperationException("The batch failure diagnostic could not claim its checkpoint slot.");
+            }
 
             return true;
         }

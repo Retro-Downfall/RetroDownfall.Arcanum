@@ -12,19 +12,25 @@ internal static class TestEncryptedBlobStore
 
     internal sealed class ReadFaultStore(
         IEncryptedBlobStore inner,
-        Action<string, CancellationToken> beforeRead) : IEncryptedBlobStore
+        Action<string, CancellationToken> beforeRead,
+        Func<string, CancellationToken, Task>? beforeReadAsync = null) : IEncryptedBlobStore
     {
         public Task<EncryptedBlobDescriptor> WriteAsync(string destinationPath, Stream plaintext,
             EncryptedBlobPurpose purpose, ReadOnlyMemory<byte> authenticatedMetadata = default,
             long? plaintextLength = null, CancellationToken cancellationToken = default) =>
             inner.WriteAsync(destinationPath, plaintext, purpose, authenticatedMetadata, plaintextLength, cancellationToken);
 
-        public Task<Stream> OpenReadAsync(string path, EncryptedBlobPurpose purpose,
+        public async Task<Stream> OpenReadAsync(string path, EncryptedBlobPurpose purpose,
             CancellationToken cancellationToken = default)
         {
             beforeRead(path, cancellationToken);
 
-            return inner.OpenReadAsync(path, purpose, cancellationToken);
+            if (beforeReadAsync is not null)
+            {
+                await beforeReadAsync(path, cancellationToken);
+            }
+
+            return await inner.OpenReadAsync(path, purpose, cancellationToken);
         }
 
         public Task<EncryptedBlobWriter> CreateWriterAsync(string destinationPath, EncryptedBlobPurpose purpose,
