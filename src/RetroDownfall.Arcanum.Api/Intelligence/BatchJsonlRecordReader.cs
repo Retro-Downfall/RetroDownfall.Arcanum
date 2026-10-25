@@ -78,6 +78,9 @@ internal static class BatchJsonlRecordReader
 
         private bool _endOfSource;
 
+        // An observation only: failure bookkeeping must not read more input to discover EOF.
+        internal bool EndOfInputKnown => _endOfSource;
+
         internal Cursor(
             Stream source,
             string? temporaryDirectory = null,

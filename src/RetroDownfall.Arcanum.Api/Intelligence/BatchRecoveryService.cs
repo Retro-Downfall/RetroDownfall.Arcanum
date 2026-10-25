@@ -36,6 +36,8 @@ internal enum BatchRecoveryStatus
 
     InputMissing,
 
+    InputUnreadable,
+
     ConcurrentModification,
 }
 
@@ -53,15 +55,28 @@ internal sealed class BatchRecoveryService(
 {
     private const int CheckpointPageSize = 64;
 
+    private enum BatchInputAvailability
+    {
+        Available,
+
+        Missing,
+
+        Unreadable,
+    }
+
     private readonly ConcurrentDictionary<Guid, byte> _operatorRecoveries = new();
 
     public async Task ReconcileStrandedAsync(CancellationToken cancellationToken = default)
     {
         using IServiceScope scope = scopeFactory.CreateScope();
+
         IBatchRepository batches = scope.ServiceProvider.GetRequiredService<IBatchRepository>();
+
         IUploadedFileRepository files = scope.ServiceProvider.GetRequiredService<IUploadedFileRepository>();
+
         IBatchAccountingRecoveryStore accountingRecovery =
             scope.ServiceProvider.GetRequiredService<IBatchAccountingRecoveryStore>();
+
         IReadOnlyList<BatchRecord> stranded = await batches
             .ListByStatusAsync(BatchStatuses.InProgress, cancellationToken)
             .ConfigureAwait(false);
@@ -89,10 +104,14 @@ internal sealed class BatchRecoveryService(
     public async Task<BatchRecoveryResult> ResetStuckBatchAsync(Guid batchId, CancellationToken cancellationToken = default)
     {
         using IServiceScope scope = scopeFactory.CreateScope();
+
         IBatchRepository batches = scope.ServiceProvider.GetRequiredService<IBatchRepository>();
+
         IUploadedFileRepository files = scope.ServiceProvider.GetRequiredService<IUploadedFileRepository>();
+
         IBatchAccountingRecoveryStore accountingRecovery =
             scope.ServiceProvider.GetRequiredService<IBatchAccountingRecoveryStore>();
+
         BatchRecord? record = await batches.GetByIdAsync(batchId, cancellationToken).ConfigureAwait(false);
 
         if (record is null)
@@ -130,9 +149,12 @@ internal sealed class BatchRecoveryService(
                 return new BatchRecoveryResult(BatchRecoveryStatus.InFlight, record);
             }
 
-            if (!await InputExistsAsync(record, files, cancellationToken).ConfigureAwait(false))
+            BatchInputAvailability input = await InspectInputAsync(record, files, cancellationToken).ConfigureAwait(false);
+
+            if (input != BatchInputAvailability.Available)
             {
-                return new BatchRecoveryResult(BatchRecoveryStatus.InputMissing, record);
+                return new BatchRecoveryResult(input == BatchInputAvailability.Missing
+                    ? BatchRecoveryStatus.InputMissing : BatchRecoveryStatus.InputUnreadable, record);
             }
 
             BatchAccountingRecoveryClaimStatus claim = await accountingRecovery
@@ -145,6 +167,7 @@ internal sealed class BatchRecoveryService(
             }
 
             await SealInterruptedLinesAsync(record.Id, batches, cancellationToken).ConfigureAwait(false);
+
             await ClearOutputAndErrorArtifactsAsync(record, files, cancellationToken).ConfigureAwait(false);
 
             bool completed = await accountingRecovery.TryCompleteRecoveryAsync(
@@ -180,10 +203,9 @@ internal sealed class BatchRecoveryService(
         IBatchAccountingRecoveryStore accountingRecovery,
         CancellationToken cancellationToken)
     {
-        bool inputExists = await InputExistsAsync(batch, files, cancellationToken).ConfigureAwait(false);
-        string? missingReason = inputExists
-            ? null
-            : await DescribeMissingInputAsync(batch, files, cancellationToken).ConfigureAwait(false);
+        BatchInputAvailability input = await InspectInputAsync(batch, files, cancellationToken).ConfigureAwait(false);
+
+        bool inputExists = input == BatchInputAvailability.Available;
 
         BatchAccountingRecoveryClaimStatus claim = await accountingRecovery
             .ClaimRecoveryAsync(batch.Id, cancellationToken)
@@ -195,6 +217,7 @@ internal sealed class BatchRecoveryService(
         }
 
         await SealInterruptedLinesAsync(batch.Id, batches, cancellationToken).ConfigureAwait(false);
+
         await ClearOutputAndErrorArtifactsAsync(batch, files, cancellationToken).ConfigureAwait(false);
 
         BatchAccountingRecoveryTarget target = inputExists
@@ -219,7 +242,7 @@ internal sealed class BatchRecoveryService(
             logger.LogWarning(
                 "Reconciled stranded batch {BatchId}: in_progress → failed ({Reason}).",
                 batch.Id,
-                missingReason);
+                input == BatchInputAvailability.Missing ? "input file missing" : "input file unreadable or undecryptable");
         }
     }
 
@@ -273,7 +296,7 @@ internal sealed class BatchRecoveryService(
         }
     }
 
-    private async Task<bool> InputExistsAsync(
+    private async Task<BatchInputAvailability> InspectInputAsync(
         BatchRecord batch,
         IUploadedFileRepository files,
         CancellationToken cancellationToken)
@@ -282,51 +305,44 @@ internal sealed class BatchRecoveryService(
 
         if (inputFile is null)
         {
-            return false;
+            return BatchInputAvailability.Missing;
         }
 
         string path = UploadedFileStorage.ResolvePath(batch.InputFileId);
-        if (!File.Exists(path))
-        {
-            return false;
-        }
 
         try
         {
+            // File.Exists also returns false for access failures. Only a genuine not-found
+            // exception establishes absence; present but inaccessible data needs a different remedy.
+            _ = File.GetAttributes(path);
+
             await using Stream input = await blobStore.OpenCompatibleReadAsync(
                     path,
                     EncryptedBlobPurpose.UploadedFile,
                     inputFile.EncryptionVersion,
                     cancellationToken)
                 .ConfigureAwait(false);
+
             await input.CopyToAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
-            return true;
+
+            return BatchInputAvailability.Available;
         }
-        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException
-                                   or InvalidDataException)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+            && ex is FileNotFoundException or DirectoryNotFoundException)
         {
-            return false;
+            return BatchInputAvailability.Missing;
         }
-    }
-
-    private static async Task<string> DescribeMissingInputAsync(
-        BatchRecord batch,
-        IUploadedFileRepository files,
-        CancellationToken cancellationToken)
-    {
-        UploadedFileRecord? inputFile = await files.GetByIdAsync(batch.InputFileId, cancellationToken).ConfigureAwait(false);
-
-        if (inputFile is null)
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested
+            && ex is System.Security.Cryptography.CryptographicException
+                or InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            return "UploadedFiles metadata missing for input file";
-        }
+            // Only the input read is contained. Recovery-claim, accounting and database failures
+            // still propagate rather than allowing startup with unverifiable durable authority.
+            logger.LogWarning(ex, "Batch {BatchId} input file {InputFileId} cannot be read or decrypted.",
+                batch.Id, batch.InputFileId);
 
-        if (!File.Exists(UploadedFileStorage.ResolvePath(batch.InputFileId)))
-        {
-            return "input file missing on disk";
+            return BatchInputAvailability.Unreadable;
         }
-
-        return "input file unavailable";
     }
 
     private static async Task ClearOutputAndErrorArtifactsAsync(

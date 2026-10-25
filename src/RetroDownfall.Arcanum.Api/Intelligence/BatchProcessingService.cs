@@ -370,120 +370,152 @@ internal sealed class BatchProcessingService(
         {
             string inputPath = UploadedFileStorage.ResolvePath(batch.InputFileId);
 
-            UploadedFileRecord? inputFile = await files.GetByIdAsync(batch.InputFileId, stoppingToken)
-                .ConfigureAwait(false);
+            Stream? openedInput = null;
 
-            if (inputFile is null || !File.Exists(inputPath))
+            try
             {
-                await batches.TryCompareAndSetStatusAsync(
-                    batch.Id, BatchStatuses.InProgress, BatchStatuses.Failed, DateTimeOffset.UtcNow,
-                    batch.OutputFileId, batch.ErrorFileId, CancellationToken.None).ConfigureAwait(false);
+                UploadedFileRecord? inputFile = await files.GetByIdAsync(batch.InputFileId, stoppingToken)
+                    .ConfigureAwait(false);
 
-                return BatchProcessingDisposition.Concluded;
+                if (inputFile is null)
+                {
+                    throw new FileNotFoundException("The batch input file metadata is missing.");
+                }
+
+                openedInput = await blobStore.OpenCompatibleReadAsync(
+                    inputPath, EncryptedBlobPurpose.UploadedFile, inputFile.EncryptionVersion, stoppingToken)
+                    .ConfigureAwait(false);
             }
-
-            await using Stream input = await blobStore.OpenCompatibleReadAsync(
-                inputPath, EncryptedBlobPurpose.UploadedFile, inputFile.EncryptionVersion, stoppingToken)
-                .ConfigureAwait(false);
-
-            using BatchJsonlRecordReader.Cursor reader = new(input);
-
-            // Rebuilt on every pass over the input, so a resumed batch sees the same first-wins
-            // duplicates it saw before.
-            BatchCustomIdTracker customIds = new();
-
-            // The physical line number of the last line of the last page this pass finished, so a
-            // failure that leaves no prepared line behind can still say where to resume.
-            long lastFinishedLine = 0;
-
-            while (true)
+            catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
             {
-                // The lookahead reads the input outside any page, so it is guarded like one: a stream
-                // that fails here would otherwise leave the batch in_progress with no note at all.
-                bool hasNextRecord;
+                logger.LogWarning(exception,
+                    "Batch {BatchId} cannot read input file {InputFileId}; recording an input diagnostic.",
+                    batch.Id, batch.InputFileId);
 
-                try
-                {
-                    hasNextRecord = await reader.HasNextRecordAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
-                {
-                    // The stop bookkeeping writes to the Grimoire, so it wins its own effect frontier
-                    // first, exactly as a page does. An admission refusal defers the batch: the
-                    // retry rereads the input and, if it still fails, records the stop then.
-                    if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? stopGroup))
-                    {
-                        return BatchProcessingDisposition.DeferredForMaintenance;
-                    }
-
-                    await using (stopGroup!)
-                    {
-                        if (!await TryStopAfterUnexpectedFailureAsync(
-                                batch.Id, null, lastFinishedLine, batches, exception).ConfigureAwait(false))
-                        {
-                            throw;
-                        }
-                    }
-
-                    // A note was recorded, so there is an error file to publish even when the
-                    // failure came before the first record could be read.
-                    state.HasRecords = true;
-
-                    state.UnexpectedFailure = true;
-
-                    break;
-                }
-
-                if (!hasNextRecord)
-                {
-                    break;
-                }
-
-                state.HasRecords = true;
-
-                if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? pageGroup))
+                if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? stopGroup))
                 {
                     return BatchProcessingDisposition.DeferredForMaintenance;
                 }
 
-                await using (pageGroup!)
+                await using (stopGroup!)
                 {
-                    IReadOnlyList<PreparedBatchRequestLine>? attemptedPage = null;
+                    if (!await TryStopAfterUnexpectedFailureAsync(
+                            batch.Id, null, 0, batches, exception, inputUnavailable: true).ConfigureAwait(false))
+                    {
+                        throw;
+                    }
+                }
+
+                state.HasRecords = true;
+
+                state.UnexpectedFailure = true;
+            }
+
+            if (openedInput is not null)
+            {
+                await using Stream input = openedInput;
+
+                using BatchJsonlRecordReader.Cursor reader = new(input);
+
+                // Rebuilt on every pass over the input, so a resumed batch sees the same first-wins
+                // duplicates it saw before.
+                BatchCustomIdTracker customIds = new();
+
+                // The physical line number of the last line of the last page this pass finished, so a
+                // failure that leaves no prepared line behind can still say where to resume.
+                long lastFinishedLine = 0;
+
+                while (true)
+                {
+                    // The lookahead reads the input outside any page, so it is guarded like one: a stream
+                    // that fails here would otherwise leave the batch in_progress with no note at all.
+                    bool hasNextRecord;
 
                     try
                     {
-                        IReadOnlyList<PreparedBatchRequestLine> page = await ReadRequestPageAsync(reader, batch.Endpoint, customIds, stoppingToken)
-                            .ConfigureAwait(false);
-
-                        attemptedPage = page;
-
-                        await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
-                            batches, settings, stoppingToken).ConfigureAwait(false);
-
-                        lastFinishedLine = page[^1].Line;
+                        hasNextRecord = await reader.HasNextRecordAsync(stoppingToken).ConfigureAwait(false);
                     }
                     catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
                     {
-                        // An unexpected failure would otherwise leave the batch in_progress until a
-                        // restart or a manual reset. Stop it here instead: seal what is in doubt,
-                        // note where it stopped, and publish what was checkpointed as failed. If
-                        // even that cannot be recorded, the original failure propagates and
-                        // startup reconciliation recovers the batch as before.
-                        if (!await TryStopAfterUnexpectedFailureAsync(
-                                batch.Id, attemptedPage, lastFinishedLine, batches, exception).ConfigureAwait(false))
+                        // The stop bookkeeping writes to the Grimoire, so it wins its own effect frontier
+                        // first, exactly as a page does. An admission refusal defers the batch: the
+                        // retry rereads the input and, if it still fails, records the stop then.
+                        if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? stopGroup))
                         {
-                            throw;
+                            return BatchProcessingDisposition.DeferredForMaintenance;
                         }
 
+                        await using (stopGroup!)
+                        {
+                            if (!await TryStopAfterUnexpectedFailureAsync(
+                                    batch.Id, null, lastFinishedLine, batches, exception).ConfigureAwait(false))
+                            {
+                                throw;
+                            }
+                        }
+
+                        // A note was recorded, so there is an error file to publish even when the
+                        // failure came before the first record could be read.
+                        state.HasRecords = true;
+
                         state.UnexpectedFailure = true;
+
+                        break;
+                    }
+
+                    if (!hasNextRecord)
+                    {
+                        break;
+                    }
+
+                    state.HasRecords = true;
+
+                    if (!lease.TryBeginExternalEffectGroup(out IGrimoireExternalEffectGroup? pageGroup))
+                    {
+                        return BatchProcessingDisposition.DeferredForMaintenance;
+                    }
+
+                    await using (pageGroup!)
+                    {
+                        IReadOnlyList<PreparedBatchRequestLine>? attemptedPage = null;
+
+                        try
+                        {
+                            IReadOnlyList<PreparedBatchRequestLine> page = await ReadRequestPageAsync(reader, batch.Endpoint, customIds, stoppingToken)
+                                .ConfigureAwait(false);
+
+                            attemptedPage = page;
+
+                            await ProcessRequestPageAsync(batch.Id, page, state, scope.ServiceProvider,
+                                batches, settings, stoppingToken).ConfigureAwait(false);
+
+                            lastFinishedLine = page[^1].Line;
+                        }
+                        catch (Exception exception) when (StopsAsUnexpectedFailure(exception, state, stoppingToken))
+                        {
+                            // An unexpected failure would otherwise leave the batch in_progress until a
+                            // restart or a manual reset. Stop it here instead: seal what is in doubt,
+                            // note where it stopped, and publish what was checkpointed as failed. If
+                            // even that cannot be recorded, the original failure propagates and
+                            // startup reconciliation recovers the batch as before.
+                            if (!await TryStopAfterUnexpectedFailureAsync(
+                                    batch.Id, attemptedPage, lastFinishedLine, batches, exception,
+                                    inputExhausted: reader.EndOfInputKnown).ConfigureAwait(false))
+                            {
+                                throw;
+                            }
+
+                            state.UnexpectedFailure = true;
+                        }
+                    }
+
+                    if (state.CancelledMidway || state.BudgetRejected || state.UnexpectedFailure)
+                    {
+                        break;
                     }
                 }
-
-                if (state.CancelledMidway || state.BudgetRejected || state.UnexpectedFailure)
-                {
-                    break;
-                }
             }
+
             state.ReadyToPublish = true;
         }
         state.CancelledMidway |= await IsBatchCancelledAsync(batch.Id, batches).ConfigureAwait(false);
@@ -575,7 +607,8 @@ internal sealed class BatchProcessingService(
 
         if (state.CancelledMidway)
         {
-            await CompleteDispatchedLinesAsync(batchId, batches, CancellationToken.None).ConfigureAwait(false);
+            await CompleteDispatchedLinesAsync(batchId, batches, CancellationToken.None,
+                "The batch was cancelled after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.").ConfigureAwait(false);
 
             return;
         }
@@ -629,7 +662,8 @@ internal sealed class BatchProcessingService(
                 {
                     runStatus = InferenceRunStatus.Abandoned;
 
-                    await CompleteDispatchedLinesAsync(batchId, batches, CancellationToken.None).ConfigureAwait(false);
+                    await CompleteDispatchedLinesAsync(batchId, batches, CancellationToken.None,
+                "The batch was cancelled after this request was durably marked for dispatch. Arcanum did not replay it because the provider may have completed and charged the request; submit this line again explicitly if another attempt is desired.").ConfigureAwait(false);
                 }
             }
         }
@@ -823,9 +857,11 @@ internal sealed class BatchProcessingService(
     /// <summary>
     /// Records an unexpected failure durably: every line left in doubt is sealed as interrupted (never
     /// replayed, since the provider may have charged it) with the exception type as the reason, and
-    /// the first line that never started carries a note in the error file saying where to resume.
-    /// When the failure left no prepared page behind, because reading the input is what failed, the
-    /// note goes on the line after <paramref name="lastFinishedLine"/>. Runs on
+    /// the first known unstarted line carries a continuation note. If every page line started and
+    /// EOF is unknown, the note marks a possible continuation boundary after the page; known EOF
+    /// adds no checkpoint. With no prepared page, a read failure notes the line after
+    /// <paramref name="lastFinishedLine"/>. An input-open failure instead uses an unused diagnostic
+    /// slot and explicitly cannot identify a safe resubmission boundary. Runs on
     /// <see cref="CancellationToken.None"/> because the failure has already happened and this is its
     /// bookkeeping. Returns <see langword="false"/> when the bookkeeping itself failed, so the caller
     /// can let the original failure propagate.
@@ -835,7 +871,9 @@ internal sealed class BatchProcessingService(
         IReadOnlyList<PreparedBatchRequestLine>? page,
         long lastFinishedLine,
         IBatchRepository batches,
-        Exception failure)
+        Exception failure,
+        bool inputUnavailable = false,
+        bool inputExhausted = false)
     {
         string exceptionType = failure.GetType().FullName ?? failure.GetType().Name;
 
@@ -879,19 +917,55 @@ internal sealed class BatchProcessingService(
                         $"Processing stopped before this line after an unexpected host error (exception type {exceptionType}). Earlier lines were checkpointed; submit this line and the lines after it to continue.",
                         batches,
                         CancellationToken.None).ConfigureAwait(false);
+
+                    return true;
+                }
+
+                if (inputExhausted)
+                {
+                    // Every prepared line is already accounted for and EOF was observed while
+                    // preparing the page. There is no remaining input to invent a checkpoint for.
+                    return true;
                 }
             }
-            else if (page is null)
-            {
-                long resumeLine = lastFinishedLine + 1;
 
-                await PersistNonProviderErrorAsync(
-                    batchId,
-                    new PreparedBatchRequestLine(resumeLine, null, null),
-                    $"Processing stopped while reading the input at or after line {resumeLine} after an unexpected host error (exception type {exceptionType}). Lines before it were checkpointed; submit the lines from here on to continue.",
-                    batches,
-                    CancellationToken.None).ConfigureAwait(false);
+            long resumeLine = lines.Length > 0 ? checked(lines[^1].Line + 1) : checked(lastFinishedLine + 1);
+
+            if (inputUnavailable)
+            {
+                // A resumed batch may already own paid results at line 1 and beyond. The note
+                // needs an unused slot, never replacement authority over those checkpoints.
+                while (true)
+                {
+                    IReadOnlyList<BatchLineCheckpoint> completed = await batches.ListLineCheckpointsAsync(
+                        batchId, BatchLineCheckpointState.Completed, resumeLine - 1, RequestPageSize,
+                        CancellationToken.None).ConfigureAwait(false);
+
+                    foreach (BatchLineCheckpoint checkpoint in completed)
+                    {
+                        if (checkpoint.LineNumber != resumeLine)
+                        {
+                            break;
+                        }
+
+                        resumeLine = checked(resumeLine + 1);
+                    }
+
+                    if (completed.Count == 0 || resumeLine <= completed[^1].LineNumber)
+                    {
+                        break;
+                    }
+                }
             }
+
+            await PersistNonProviderErrorAsync(
+                batchId,
+                new PreparedBatchRequestLine(resumeLine, null, null),
+                inputUnavailable
+                    ? $"The batch input file is missing or unreadable (exception type {exceptionType}). Arcanum cannot determine a safe resubmission boundary from this input; this note occupies an unused diagnostic slot. Re-upload the input and create a new batch only after checking previously dispatched results."
+                    : $"Processing stopped at or after line {resumeLine} after an unexpected host error (exception type {exceptionType}). Earlier lines were checkpointed; submit any input lines from here on to continue.",
+                batches,
+                CancellationToken.None).ConfigureAwait(false);
 
             return true;
         }
@@ -1214,6 +1288,7 @@ internal sealed class BatchProcessingService(
                         lineScope.ServiceProvider.GetRequiredService<IArcanumIntelligenceProvider>();
 
                     TurnAccountingHandle lineAccounting = batchAccounting.CreateNestedOperationHandle();
+
                     using (TurnAccountingAmbient.Push(lineAccounting, turnRunWriter))
                     {
                         await ProcessRequestLineAsync(
@@ -1299,6 +1374,7 @@ internal sealed class BatchProcessingService(
         if (present.Length == 1)
         {
             ExceptionDispatchInfo.Capture(present[0]).Throw();
+
             return;
         }
 
@@ -1534,15 +1610,18 @@ internal sealed class BatchProcessingService(
             newlyPublished.Add(new OwnedBatchArtifact(id, ownedFile));
 
             SecureFilePermissions.ApplyOwnerOnlyFile(path);
+
             await using Stream plaintext = await blobStore.OpenReadAsync(
                     path,
                     EncryptedBlobPurpose.BatchArtifact,
                     cancellationToken)
                 .ConfigureAwait(false);
+
             string plaintextSha256 = Convert.ToHexString(
                 await System.Security.Cryptography.SHA256
                     .HashDataAsync(plaintext, cancellationToken)
                     .ConfigureAwait(false));
+
             UploadedFileRecord record = new(
                 id,
                 filename,
@@ -1553,6 +1632,7 @@ internal sealed class BatchProcessingService(
                 descriptor.Version,
                 descriptor.KeyId,
                 plaintextSha256);
+
             publicationOwnsCleanup = true;
 
             await files
