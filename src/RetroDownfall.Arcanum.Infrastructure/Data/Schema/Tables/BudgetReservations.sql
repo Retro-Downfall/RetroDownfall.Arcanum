@@ -15,3 +15,5 @@ CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_BudgetPeriod_Status" ON "Budge
 CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_ExpiresAt" ON "BudgetReservations" ("ExpiresAt");
 
 CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_Status" ON "BudgetReservations" ("Status");
+
+CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_RunId_Norm" ON "BudgetReservations" (lower(replace("RunId", '-', '')));

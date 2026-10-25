@@ -23,3 +23,5 @@ CREATE TABLE IF NOT EXISTS "BillableOperations" (
 
 CREATE INDEX IF NOT EXISTS "IX_BillableOperations_CompletedAt" ON "BillableOperations" ("CompletedAt");
 CREATE INDEX IF NOT EXISTS "IX_BillableOperations_RunId" ON "BillableOperations" ("RunId");
+
+CREATE INDEX IF NOT EXISTS "IX_BillableOperations_RunId_Norm" ON "BillableOperations" (lower(replace("RunId", '-', '')));

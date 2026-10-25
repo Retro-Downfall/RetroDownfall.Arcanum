@@ -6,3 +6,9 @@ CREATE TABLE IF NOT EXISTS "CostAdjustments" (
     "Reason" TEXT NOT NULL,
     "CreatedAt" TEXT NOT NULL
 , "AmountUsd" TEXT NOT NULL DEFAULT '0' CHECK (typeof("AmountUsd") = 'text'));
+
+CREATE INDEX IF NOT EXISTS "IX_CostAdjustments_Id_Norm" ON "CostAdjustments" (lower(replace("Id", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_CostAdjustments_RunId_Norm" ON "CostAdjustments" (lower(replace("RunId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_CostAdjustments_BillableOperationId" ON "CostAdjustments" ("BillableOperationId");

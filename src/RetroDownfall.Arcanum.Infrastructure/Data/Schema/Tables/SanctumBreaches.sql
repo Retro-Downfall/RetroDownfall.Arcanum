@@ -12,3 +12,5 @@ CREATE TABLE IF NOT EXISTS "SanctumBreaches" (
 
 CREATE INDEX IF NOT EXISTS "IX_SanctumBreaches_CampaignId_OccurredAt"
     ON "SanctumBreaches" ("CampaignId", "OccurredAt" DESC);
+
+CREATE INDEX IF NOT EXISTS "IX_SanctumBreaches_Id_Norm" ON "SanctumBreaches" (lower(replace("Id", '-', '')));

@@ -21,3 +21,5 @@ CREATE INDEX IF NOT EXISTS "IX_InferenceRuns_IdempotencyClaimId" ON "InferenceRu
 -- predicate has, because that is how SQLite decides the index applies.
 CREATE INDEX IF NOT EXISTS "IX_InferenceRuns_SessionId_Norm"
   ON "InferenceRuns" (lower(replace("SessionId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_InferenceRuns_Id_Norm" ON "InferenceRuns" (lower(replace("Id", '-', '')));

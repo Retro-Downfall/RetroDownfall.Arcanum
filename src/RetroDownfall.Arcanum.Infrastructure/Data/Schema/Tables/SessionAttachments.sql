@@ -61,3 +61,5 @@ CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_SessionId_Norm"
 
 CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_Id_Norm"
   ON "SessionAttachments" (lower(replace("Id", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_SessionAttachments_EntryId_Norm" ON "SessionAttachments" (lower(replace("EntryId", '-', '')));

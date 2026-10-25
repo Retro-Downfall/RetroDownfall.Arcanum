@@ -28,7 +28,7 @@ internal static class CoreSchemaVersionTwentyOneFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects.Select(item => item.Name == "BudgetReservations"
+        .. CoreSchemaVersionTwentyTwoFixture.Objects.Select(item => item.Name == "BudgetReservations"
             ? item with { Sql = BudgetReservationsSql }
             : item),
     ];
