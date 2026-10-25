@@ -17,7 +17,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Treasury;
 /// </summary>
 public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
 {
-
     private readonly IArcanumConnection _connection;
 
     private readonly ITreasuryDataSource _dataSource;
@@ -55,7 +54,6 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         ICompendiumLauncher compendiumLauncher,
         IWhispersService whispers)
     {
-
         _connection = connection;
 
         _dataSource = dataSource;
@@ -71,10 +69,11 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         Title = "The Treasury";
 
         _connection.PropertyChanged += OnConnectionPropertyChanged;
-
     }
 
     public bool IsEnabled => Budget?.Enabled ?? false;
+
+    public bool IsEnforced => Budget?.Enforced ?? false;
 
     public decimal DailyLimitUsd => Budget?.DailyLimitUsd ?? 0m;
 
@@ -87,9 +86,11 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
     public int AlertThresholdPercent => Budget?.AlertThresholdPercent ?? 0;
 
     public string BudgetDisabledMessage =>
-        DisabledSettingPaths.FormatEnableMessage("Budget enforcement", DisabledSettingPaths.Budget);
+        $"Budget enforcement is disabled. Enable {DisabledSettingPaths.BudgetEnabled} and set {DisabledSettingPaths.BudgetDailyLimitUsd} to a positive amount.";
 
-    public string EmptyState => IsEnabled ? string.Empty : BudgetDisabledMessage;
+    public string EmptyState => !IsEnabled ? BudgetDisabledMessage
+        : IsEnforced ? string.Empty
+        : "Budget is not enforced. Set Arcanum:Cost:Budget:DailyLimitUsd to a positive amount, or turn Arcanum:Cost:Budget:Enabled off.";
 
     [RelayCommand]
     private async Task CopyDisabledPathsAsync(CancellationToken cancellationToken) =>
@@ -100,19 +101,18 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private void OpenCompendium()
     {
-
         CompendiumLaunchResult result = _compendiumLauncher.TryLaunch();
 
         _whispers.Show(
             result.Launched ? WhisperSeverity.Success : WhisperSeverity.Warning,
             result.Message);
-
     }
 
     partial void OnBudgetChanged(BudgetSummaryDto? value)
     {
-
         OnPropertyChanged(nameof(IsEnabled));
+
+        OnPropertyChanged(nameof(IsEnforced));
 
         OnPropertyChanged(nameof(DailyLimitUsd));
 
@@ -127,20 +127,17 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(BudgetDisabledMessage));
 
         OnPropertyChanged(nameof(EmptyState));
-
     }
 
     [RelayCommand]
     public async Task RefreshAsync(CancellationToken cancellationToken)
     {
-
         IsBusy = true;
 
         LastError = null;
 
         try
         {
-
             BudgetSummaryDto? budget = await _dataSource.GetBudgetAsync(cancellationToken).ConfigureAwait(true);
 
             Budget = budget;
@@ -149,47 +146,34 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
 
             if (budget is null)
             {
-
                 StatusText = "Budget unavailable.";
 
                 LastError = "Budget is unavailable.";
 
                 _foundryFloor.AppendLine("Treasury: budget unavailable.");
-
             }
             else
             {
-
-                StatusText = budget.Enabled ? "Budget loaded." : BudgetDisabledMessage;
-
+                StatusText = budget.Enforced ? "Budget loaded." : EmptyState;
             }
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Treasury refresh error: {ex.Message}");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     public void Dispose()
     {
-
         if (_disposed)
         {
-
             return;
-
         }
 
         _disposed = true;
@@ -197,19 +181,13 @@ public sealed partial class TreasuryViewModel : ViewModelBase, IDisposable
         _connection.PropertyChanged -= OnConnectionPropertyChanged;
 
         GC.SuppressFinalize(this);
-
     }
 
     private void OnConnectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-
         if (e.PropertyName == nameof(IArcanumConnection.State) && _connection.State == ConnectionState.Connected)
         {
-
             TaskUtilities.FireAndForget(RefreshAsync(CancellationToken.None));
-
         }
-
     }
-
 }

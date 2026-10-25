@@ -14,17 +14,14 @@ namespace RetroDownfall.Arcanum.Api.Health;
 
 internal static class BudgetEndpoints
 {
-
     public static RouteGroupBuilder MapBudgetEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet("/budget", async (
             IExternalSpendLedger externalSpend,
             IOptionsSnapshot<ArcanumSettings> settings,
             HttpContext httpContext,
             CancellationToken cancellationToken) =>
         {
-
             string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
 
             BudgetSettings budget = settings.Value.ResolveBudget();
@@ -38,24 +35,22 @@ internal static class BudgetEndpoints
             // Reported through the same authority the gate enforces on — committed BillableOperations for
             // the UTC day plus outstanding reservations — so an operator is never shown a figure that the
             // very next turn is refused on (DESIGN §22.2).
-            decimal localSpend = enabled && dailyLimit > 0
-                ? await DailySpendAuthority
-                    .ResolveLocalSpendAsync(httpContext.RequestServices, cancellationToken)
-                    .ConfigureAwait(false)
-                : 0m;
+            decimal localSpend = await DailySpendAuthority
+                .ResolveLocalSpendAsync(httpContext.RequestServices, cancellationToken)
+                .ConfigureAwait(false);
 
             // Delegated work is real money on someone else's hardware. Reported separately so an operator
             // can tell "we spent it" from "we delegated it", and so the unpriced count is not silently
             // rolled into a total that then looks complete (issue #69).
-            ExternalSpendSummary external = enabled && dailyLimit > 0
-                ? await externalSpend.GetTodayAsync(cancellationToken).ConfigureAwait(false)
-                : ExternalSpendSummary.None;
+            ExternalSpendSummary external = await externalSpend.GetTodayAsync(cancellationToken).ConfigureAwait(false);
 
             decimal todaySpend = localSpend + external.KnownCostUsd;
 
-            decimal remaining = Math.Max(0m, dailyLimit - todaySpend);
+            bool enforced = enabled && dailyLimit > 0;
 
-            int spentPercent = dailyLimit > 0
+            decimal remaining = enforced ? Math.Max(0m, dailyLimit - todaySpend) : 0m;
+
+            int spentPercent = enforced
                 ? (int)Math.Min(100, Math.Round(todaySpend * 100m / dailyLimit, MidpointRounding.AwayFromZero))
                 : 0;
 
@@ -75,12 +70,9 @@ internal static class BudgetEndpoints
             ApiResponse<BudgetSummaryDto> response = ApiResponse<BudgetSummaryDto>.FromResult(result, traceId);
 
             return Results.Ok(response);
-
         })
         .WithName("GetBudget");
 
         return apiGroup;
-
     }
-
 }

@@ -19,17 +19,14 @@ public sealed class BudgetCommands(
     IConsoleDispatcher console,
     ICliInvocationContext invocationContext)
 {
-
     public async Task<int> Show(CancellationToken cancellationToken)
     {
-
         Result<BudgetSummaryDto> result = await apiClient
             .GetBudgetAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (result.IsFailure)
         {
-
             console.WriteDiagnostic(result.Error.Message);
 
             // Exit 3 means "the host was unreachable". A missing key or a server-side domain error
@@ -37,52 +34,53 @@ public sealed class BudgetCommands(
             return result.Error.Code.StartsWith("Connection.", StringComparison.Ordinal)
                 ? (int)CliExitCode.NetworkError
                 : (int)CliExitCode.GenericError;
-
         }
 
         BudgetSummaryDto budget = result.Value;
 
         if (invocationContext.Options.Json)
         {
-
             console.WriteJson(budget, ArcanumJsonContext.Default.BudgetSummaryDto);
 
             return (int)CliExitCode.Success;
-
         }
 
         if (!budget.Enabled)
         {
-
             console.WritePayload("Budget: disabled (Arcanum:Cost:Budget:Enabled is off).");
-
-            return (int)CliExitCode.Success;
-
+        }
+        else if (!budget.Enforced)
+        {
+            console.WritePayload("Budget: not enforced. Set Arcanum:Cost:Budget:DailyLimitUsd to a positive amount, or turn Arcanum:Cost:Budget:Enabled off.");
         }
 
-        console.WritePayload($"Daily limit:   ${budget.DailyLimitUsd:0.00} USD");
+        if (budget.Enforced)
+        {
+            console.WritePayload($"Daily limit:   ${budget.DailyLimitUsd:0.00} USD");
+        }
 
-        console.WritePayload($"Spent today:   ${budget.TodaySpendUsd:0.00} USD ({budget.SpentPercent}%)");
+        string percentage = budget.Enforced ? $" ({budget.SpentPercent}%)" : string.Empty;
+
+        console.WritePayload($"Spent today:   ${budget.TodaySpendUsd:0.00} USD{percentage}");
 
         console.WritePayload($"  Local:       ${budget.LocalSpendUsd:0.00} USD");
 
         console.WritePayload($"  Delegated:   ${budget.ExternalSpendUsd:0.00} USD");
 
-        console.WritePayload($"Remaining:     ${budget.RemainingUsd:0.00} USD");
+        if (budget.Enforced)
+        {
+            console.WritePayload($"Remaining:     ${budget.RemainingUsd:0.00} USD");
 
-        console.WritePayload($"Alert at:      {budget.AlertThresholdPercent}%");
+            console.WritePayload($"Alert at:      {budget.AlertThresholdPercent}%");
+        }
 
         if (budget.UnpricedDelegatedSendings > 0)
         {
-
             console.WritePayload(
                 $"Unpriced:      {budget.UnpricedDelegatedSendings} delegated Sending(s) reported no cost, "
                 + "so actual spend is higher than the figures above.");
-
         }
 
         return (int)CliExitCode.Success;
-
     }
-
 }

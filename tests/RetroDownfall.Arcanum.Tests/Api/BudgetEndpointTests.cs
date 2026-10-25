@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RetroDownfall.Arcanum.Api.Models;
@@ -23,8 +24,37 @@ public sealed class BudgetEndpointTests
         _factory = factory;
     }
 
+    [Theory]
+    [InlineData(true, 0, HealthStatus.Degraded)]
+    [InlineData(false, 0, HealthStatus.Healthy)]
+    [InlineData(true, 10, HealthStatus.Healthy)]
+    public async Task Health_reports_budget_enforcement_with_a_remedy_without_refusing_the_host(bool enabled, int limit, HealthStatus expected)
+    {
+        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+            new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit }, todaySpend: 0m);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync("/api/health");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        ApiResponse<HealthReportDto>? envelope = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseHealthReportDto);
+
+        HealthComponentDto row = Assert.Single(envelope!.Data!.Components, component => component.Name == "Budget");
+
+        Assert.Equal(expected, row.Status);
+
+        if (expected == HealthStatus.Degraded)
+        {
+            Assert.Contains("not enforced", row.Detail, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("Arcanum:Cost:Budget:DailyLimitUsd", row.Detail, StringComparison.Ordinal);
+        }
+    }
+
     [Fact]
-    public async Task GetBudget_Disabled_ReturnsEnabledFalseAndZeroSpend()
+    public async Task GetBudget_Disabled_ReportsRealSpend()
     {
         await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
             new BudgetPolicySettings { Enabled = false, DailyLimitUsd = 10m },
@@ -45,7 +75,47 @@ public sealed class BudgetEndpointTests
 
         Assert.False(body.Data!.Enabled);
 
-        Assert.Equal(0m, body.Data.TodaySpendUsd);
+        Assert.Equal(999m, body.Data.TodaySpendUsd);
+    }
+
+    [Theory]
+    [InlineData(false, 10, false)]
+    [InlineData(true, 0, false)]
+    [InlineData(true, 20, true)]
+    public async Task Budget_enforcement_is_explicit_and_never_hides_recorded_spend(bool enabled, int limit, bool enforced)
+    {
+        await using ArcanumWebApplicationFactory factory = _factory.WithBudget(
+            new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit },
+            todaySpend: 4.5m,
+            outstandingReservations: 2m,
+            sessionProjectionSpend: 999m,
+            externalSpend: new ExternalSpendSummary(3.25m, 900, 2, 1));
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync("/api/budget");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        JsonElement data = document.RootElement.GetProperty("data");
+
+        Assert.Equal(6.5m, data.GetProperty("localSpendUsd").GetDecimal());
+
+        Assert.Equal(3.25m, data.GetProperty("externalSpendUsd").GetDecimal());
+
+        Assert.Equal(9.75m, data.GetProperty("todaySpendUsd").GetDecimal());
+
+        Assert.Equal(1, data.GetProperty("unpricedDelegatedSendings").GetInt32());
+
+        Assert.True(data.TryGetProperty("enforced", out JsonElement wireEnforced), "Budget status must distinguish enabled configuration from active enforcement.");
+
+        Assert.Equal(enforced, wireEnforced.GetBoolean());
+
+        Assert.Equal(enforced ? 10.25m : 0m, data.GetProperty("remainingUsd").GetDecimal());
+
+        Assert.Equal(enforced ? 49 : 0, data.GetProperty("spentPercent").GetInt32());
     }
 
     [Fact]

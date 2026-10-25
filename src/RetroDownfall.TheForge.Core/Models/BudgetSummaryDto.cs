@@ -5,7 +5,7 @@ namespace RetroDownfall.TheForge.Core.Models;
 /// <c>GET /api/budget</c>), used by The Treasury and The Anvil. Kept in TheForge.Core to avoid
 /// referencing the Api project.
 /// </summary>
-/// <param name="LocalSpendUsd">What this instance's own inference cost today.</param>
+/// <param name="LocalSpendUsd">Local committed cost for the UTC day plus outstanding reservations.</param>
 /// <param name="ExternalSpendUsd">What delegated (A2A) work cost today, as reported by peers.</param>
 /// <param name="UnpricedDelegatedSendings">
 /// Delegated Sendings that settled today whose peer reported nothing. Counted, never costed — a
@@ -20,4 +20,8 @@ public sealed record BudgetSummaryDto(
     int SpentPercent,
     decimal LocalSpendUsd = 0m,
     decimal ExternalSpendUsd = 0m,
-    int UnpricedDelegatedSendings = 0);
+    int UnpricedDelegatedSendings = 0)
+{
+    /// <summary>Whether the enabled policy has a positive daily limit; cap metrics apply only in this state.</summary>
+    public bool Enforced => Enabled && DailyLimitUsd > 0m;
+}

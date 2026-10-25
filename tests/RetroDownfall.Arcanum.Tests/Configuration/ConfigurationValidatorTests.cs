@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Tests.Support;
 using Microsoft.Extensions.Configuration;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -8,6 +10,30 @@ namespace RetroDownfall.Arcanum.Tests.Configuration;
 public sealed class ConfigurationValidatorTests
 {
     private readonly ConfigurationValidator _validator = new();
+
+    [Theory]
+    [InlineData(true, 0, true)]
+    [InlineData(false, 0, false)]
+    [InlineData(true, 10, false)]
+    public void Budget_enabled_without_a_positive_limit_warns_without_changing_legacy_validation(bool enabled, int limit, bool warningExpected)
+    {
+        TestCapturingLogger<ConfigurationValidator> logger = new();
+
+        ArcanumSettings settings = new()
+        {
+            Cost = new CostSettings { Budget = new BudgetPolicySettings { Enabled = enabled, DailyLimitUsd = limit } },
+        };
+
+        Result result = new ConfigurationValidator(logger).Validate(settings);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        bool warned = logger.Entries.Any(entry => entry.Level == LogLevel.Warning
+            && entry.Message.Contains("Arcanum:Cost:Budget:Enabled", StringComparison.Ordinal)
+            && entry.Message.Contains("Arcanum:Cost:Budget:DailyLimitUsd", StringComparison.Ordinal));
+
+        Assert.Equal(warningExpected, warned);
+    }
 
     [Fact]
     public void Validate_ValidOpenAiCompatibleProvider_ReturnsSuccess()

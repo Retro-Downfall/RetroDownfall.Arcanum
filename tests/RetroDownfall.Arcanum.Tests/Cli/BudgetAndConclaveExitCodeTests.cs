@@ -20,6 +20,41 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 [Collection("GlobalConsole")]
 public sealed class BudgetAndConclaveExitCodeTests
 {
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 10)]
+    public void Budget_unenforced_output_keeps_spend_and_does_not_present_an_exhausted_cap(bool enabled, int limit)
+    {
+        BudgetSummaryDto summary = new(enabled, limit, 80, 9.75m, 0m, 0, 6.5m, 3.25m, 1);
+
+        RecordingHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(JsonSerializer.SerializeToUtf8Bytes(
+                new ApiResponse<BudgetSummaryDto>(summary, true, null), ArcanumJsonContext.Default.ApiResponseBudgetSummaryDto)),
+        });
+
+        CliTestResult result = RunCommand(handler, ["budget", "--plain"]);
+
+        Assert.Equal((int)CliExitCode.Success, result.ExitCode);
+
+        Assert.Contains("9.75", result.Output, StringComparison.Ordinal);
+
+        Assert.Contains("Unpriced:", result.Output, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Remaining:", result.Output, StringComparison.Ordinal);
+
+        if (enabled)
+        {
+            Assert.Contains("not enforced", result.Output, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("Arcanum:Cost:Budget:DailyLimitUsd", result.Output, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("disabled", result.Output, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     [Fact]
     public void Budget_reports_a_server_side_failure_as_a_generic_error_not_a_network_error()
     {
