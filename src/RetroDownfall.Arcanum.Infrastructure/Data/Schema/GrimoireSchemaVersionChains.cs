@@ -4,7 +4,7 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// The three shipped version chains, built once from the catalog.
 /// </summary>
 /// <remarks>
-/// Core is at version 21 and declares twenty steps, Covenant canonical is at version 6 and declares five,
+/// Core is at version 22 and declares twenty-one steps, Covenant canonical is at version 6 and declares five,
 /// and the Covenant accelerator is still at version 1 and declares none. A tier that never left version 1
 /// keeps the cheapest state there is - the loader, the planner's evolve arm, the installer's step arm,
 /// and the backfill driver all run in production and find nothing to do - and a tier that has left it
@@ -136,9 +136,11 @@ internal static class GrimoireSchemaVersionChains
     /// Saga suppression links. Every table starts empty; existing subjects and claims are unchanged.</para>
     /// <para>Version 20 adds bounded exact Saga-use coordinates beside native successful assistant
     /// finalizations. Existing replies receive no exposure history or usefulness credit.</para>
-    /// </remarks>
     /// <para>Version 21 stores immutable retention snapshots as operation-owned bounded chunks.</para>
-    internal const int CoreSchemaVersion = 21;
+    /// <para>Version 22 indexes reservation status so outstanding-budget reads search current
+    /// reservations and unresolved paid work without scanning settled history.</para>
+    /// </remarks>
+    internal const int CoreSchemaVersion = 22;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -299,6 +301,10 @@ internal static class GrimoireSchemaVersionChains
             // Captured from the published v20 catalog before adding immutable retention snapshots.
             [(GrimoireSchemaTransactionTier.Core, 21)] =
                 "9416EC4081548FEECE664D293FFC8ED5CB97C6E62FF0003CF286DB04FCEAFA38",
+
+            // Captured from the published v21 catalog before indexing outstanding reservations.
+            [(GrimoireSchemaTransactionTier.Core, 22)] =
+                "868DC0B0ADF204E1037B2970EAF8BAB780029297C7E17F1336214D7DCABD4E42",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",

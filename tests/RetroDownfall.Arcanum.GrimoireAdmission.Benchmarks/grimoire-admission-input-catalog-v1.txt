@@ -1451,6 +1451,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/020_saga_
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/030_saga_committed_uses_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V21/010_data_retention_prune_snapshots.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V21/020_data_retention_prune_snapshots_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V22/010_budget_reservations_status_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/010_annal_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/011_annal_claims_subject_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/012_annal_claims_store_candidate_index.sql
