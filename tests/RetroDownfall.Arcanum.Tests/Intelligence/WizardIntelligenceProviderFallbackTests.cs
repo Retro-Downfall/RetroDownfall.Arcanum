@@ -1225,6 +1225,15 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
         CovenantDispatchGate? covenantDispatch,
         FakeInferenceAuditLogger? auditLogger,
         params ProviderSettings[] providers) =>
+        CreateCovenantWizard(factory, covenantDispatch, auditLogger, [], providers);
+
+    /// <summary>Composes a Covenant turn with its actual advertised MCP catalog.</summary>
+    internal static WizardIntelligenceProvider CreateCovenantWizard(
+        IChatClientFactory factory,
+        CovenantDispatchGate? covenantDispatch,
+        FakeInferenceAuditLogger? auditLogger,
+        IReadOnlyList<AITool> mcpTools,
+        params ProviderSettings[] providers) =>
         CreateWizard(
             factory,
             healthTracker: null,
@@ -1234,7 +1243,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             auditLogger,
             covenantToolCapabilities: null,
             turnCommitter: null,
-            mcpTools: null,
+            mcpTools: mcpTools,
             covenantEgressGuard: null,
             covenantAuthority: null,
             mcpConnectionManager: null,
@@ -2320,13 +2329,13 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult<SanctumChildProcessBoundary?>(null);
 
-public Task RecordResourceLimitBreachAsync(
-            string? workspaceRoot,
-            string toolName,
-            Core.Platform.ResourceLimitKind resource,
-            string limitValue,
-            string? actualValue,
-            CancellationToken ct = default) =>
-            Task.CompletedTask;
+        public Task RecordResourceLimitBreachAsync(
+                    string? workspaceRoot,
+                    string toolName,
+                    Core.Platform.ResourceLimitKind resource,
+                    string limitValue,
+                    string? actualValue,
+                    CancellationToken ct = default) =>
+                    Task.CompletedTask;
     }
 }

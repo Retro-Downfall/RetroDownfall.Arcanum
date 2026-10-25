@@ -7872,6 +7872,8 @@ public sealed partial class WizardIntelligenceProvider(
 
         ulong headroom = (ulong)Math.Max(0, contextWindowLimit - baseline);
 
+        // Request-wide options already consume baseline headroom. A fragment pays only for its own
+        // content and framing; charging the tool catalog again can withhold a Confirmed agreement.
         ulong Measure(string text) =>
             text.Length == 0
                 ? 0UL
@@ -7880,7 +7882,7 @@ public sealed partial class WizardIntelligenceProvider(
                         lease.Provider,
                         lease.ResolvedModel,
                         [new MeAiChatMessage(ChatRole.System, text)],
-                        chatOptions,
+                        new ChatOptions(),
                         0,
                         0))
                     .TotalTokens;
