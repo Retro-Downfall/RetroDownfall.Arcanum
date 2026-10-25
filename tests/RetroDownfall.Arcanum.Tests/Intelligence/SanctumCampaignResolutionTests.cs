@@ -679,7 +679,16 @@ public sealed class SanctumCampaignResolutionTests
         public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+        public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>

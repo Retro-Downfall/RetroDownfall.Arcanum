@@ -4837,6 +4837,8 @@ The desktop app does not run inference, open the Grimoire, or duplicate server b
 
 Campaign/Spell/Prompt endpoints → repositories → Grimoire; `CampaignBackedWorkspaceRegistry` bridges campaigns into `/api/workspaces`. Spell bodies remain on disk.
 
+Campaign mutations use parameterized, field-scoped SQLite updates on the scoped context's admitted connection and current transaction. Header edits own name (and normalized `NameLower`), type, description and settings; Sanctum edits own only `SanctumConfigJson`; bundle import owns only settings; workspace edits own only name and type. Each also writes the caller-supplied `UpdatedAt`, preserving the last writer's timestamp rather than treating it as a monotonic revision. The statement returns the stored row, so a stale detached read cannot overwrite another owner's fields. Any tracked copy of that Campaign is detached after the write attempt to prevent a subsequent EF save from replaying it. A missing row returns `Campaign.NotFound`; the authoritative `NameLower` unique-index collision returns `Campaign.DuplicateName`. The workspace bridge maps those outcomes to its existing workspace errors. Prompt updates likewise return `Prompt.NotFound` when deletion wins after their read, while retaining their unique-version and Campaign foreign-key mappings.
+
 ### 19.3 Key decisions
 
 - Operator term **Campaign** / `/api/campaigns` (no `/api/skills`).

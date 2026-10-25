@@ -271,11 +271,19 @@ internal static class CampaignEndpoints
 
                 existing.UpdatedAt = DateTimeOffset.UtcNow;
 
-                await repo.UpdateAsync(existing, ctx.RequestAborted).ConfigureAwait(false);
+                Result<Campaign> updated = await repo.UpdateHeaderAsync(existing, ctx.RequestAborted).ConfigureAwait(false);
+
+                if (updated.IsFailure)
+                {
+                    return Results.Json(
+                        ApiResponse<CampaignDto>.FromResult(Result<CampaignDto>.Failure(updated.Error), traceId),
+                        ArcanumJsonContext.Default.ApiResponseCampaignDto,
+                        statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(updated.Error.Code));
+                }
 
                 return Results.Ok(
                     ApiResponse<CampaignDto>.FromResult(
-                        Result<CampaignDto>.Success(CampaignPathPolicy.ToDto(existing)),
+                        Result<CampaignDto>.Success(CampaignPathPolicy.ToDto(updated.Value)),
                         traceId));
             })
         .WithName("UpdateCampaign");
@@ -671,7 +679,15 @@ internal static class CampaignEndpoints
 
                     campaign.UpdatedAt = DateTimeOffset.UtcNow;
 
-                    await repo.UpdateAsync(campaign, writeToken).ConfigureAwait(false);
+                    Result<Campaign> updated = await repo.UpdateSettingsAsync(campaign, writeToken).ConfigureAwait(false);
+
+                    if (updated.IsFailure)
+                    {
+                        return Results.Json(
+                            ApiResponse<CampaignImportResultDto>.FromResult(Result<CampaignImportResultDto>.Failure(updated.Error), traceId),
+                            ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto,
+                            statusCode: ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(updated.Error.Code));
+                    }
 
                     writeToken = CancellationToken.None;
                 }

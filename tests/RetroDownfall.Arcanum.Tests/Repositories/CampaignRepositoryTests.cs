@@ -186,7 +186,7 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
 
         first.Name = "Zulu Prime";
 
-        await repository.UpdateAsync(first, CancellationToken.None);
+        Assert.True((await repository.UpdateHeaderAsync(first, CancellationToken.None)).IsSuccess);
 
         Campaign? updated = await repository.GetByIdAsync(first.Id, CancellationToken.None);
 
@@ -506,6 +506,273 @@ public sealed class CampaignRepositoryTests : IAsyncLifetime
             elapsed.Elapsed < TimeSpan.FromSeconds(3),
             $"Cancellation took {elapsed.Elapsed}; expected one bounded acquisition attempt plus retry cancellation.");
     }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FieldWrites_header_and_sanctum_preserve_both_commits(bool sanctumFirst)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Campaign original = (await CreateRepository().AddAsync(NewCampaign("interleaved"))).Value;
+
+        await using ArcanumDbContext headerContext = _fixture.CreateContext(_dbPath);
+
+        await using ArcanumDbContext sanctumContext = _fixture.CreateContext(_dbPath);
+
+        CampaignRepository headers = CreateRepository(headerContext);
+
+        CampaignRepository sanctums = CreateRepository(sanctumContext);
+
+        Campaign header = (await headers.GetByIdAsync(original.Id))!;
+
+        Campaign sanctum = (await sanctums.GetByIdAsync(original.Id))!;
+
+        header.Name = "Renamed";
+
+        header.Type = WorkspaceType.Custom;
+
+        header.Description = "New description";
+
+        header.Settings = "{\"autoSummarize\":false}";
+
+        header.UpdatedAt = original.UpdatedAt.AddMinutes(1);
+
+        sanctum.SanctumConfigJson = "{\"enabled\":true}";
+
+        sanctum.UpdatedAt = original.UpdatedAt.AddMinutes(2);
+
+        if (sanctumFirst)
+        {
+            Assert.True((await WriteSanctumAsync(sanctums, sanctum)).IsSuccess);
+
+            Assert.True((await WriteHeaderAsync(headers, header)).IsSuccess);
+        }
+        else
+        {
+            Assert.True((await WriteHeaderAsync(headers, header)).IsSuccess);
+
+            Assert.True((await WriteSanctumAsync(sanctums, sanctum)).IsSuccess);
+        }
+
+        Campaign actual = (await CreateRepository().GetByIdAsync(original.Id))!;
+
+        Assert.Equal("{\"enabled\":true}", actual.SanctumConfigJson);
+
+        Assert.Equal("Renamed", actual.Name);
+
+        Assert.Equal("renamed", actual.NameLower);
+
+        Assert.Equal(WorkspaceType.Custom, actual.Type);
+
+        Assert.Equal("New description", actual.Description);
+
+        Assert.Equal("{\"autoSummarize\":false}", actual.Settings);
+
+        Assert.Equal(original.Path, actual.Path);
+
+        Assert.Equal(original.CreatedAt, actual.CreatedAt);
+
+        // UpdatedAt belongs to the last writer; it is not a monotonic revision or a database clock.
+        Assert.Equal(sanctumFirst ? header.UpdatedAt : sanctum.UpdatedAt, actual.UpdatedAt);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FieldWrites_settings_and_workspace_preserve_other_fields(bool settingsFirst)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Campaign original = (await CreateRepository().AddAsync(NewCampaign("settings-interleaved"))).Value;
+
+        await using ArcanumDbContext settingsContext = _fixture.CreateContext(_dbPath);
+
+        await using ArcanumDbContext workspaceContext = _fixture.CreateContext(_dbPath);
+
+        CampaignRepository settingsRepository = CreateRepository(settingsContext);
+
+        CampaignRepository workspaceRepository = CreateRepository(workspaceContext);
+
+        Campaign settings = (await settingsRepository.GetByIdAsync(original.Id))!;
+
+        Campaign workspace = (await workspaceRepository.GetByIdAsync(original.Id))!;
+
+        settings.Settings = "{\"autoSummarize\":false}";
+
+        workspace.Name = "Workspace rename";
+
+        workspace.Type = WorkspaceType.Custom;
+
+        // A third committed edit must survive both stale writers.
+        Campaign fresh = (await CreateRepository().GetByIdAsync(original.Id))!;
+
+        fresh.SanctumConfigJson = "{\"enabled\":true}";
+
+        await using ArcanumDbContext thirdContext = _fixture.CreateContext(_dbPath);
+
+        Assert.True((await WriteSanctumAsync(CreateRepository(thirdContext), fresh)).IsSuccess);
+
+        if (settingsFirst)
+        {
+            Assert.True((await WriteSettingsAsync(settingsRepository, settings)).IsSuccess);
+
+            Assert.True((await WriteWorkspaceAsync(workspaceRepository, workspace)).IsSuccess);
+        }
+        else
+        {
+            Assert.True((await WriteWorkspaceAsync(workspaceRepository, workspace)).IsSuccess);
+
+            Assert.True((await WriteSettingsAsync(settingsRepository, settings)).IsSuccess);
+        }
+
+        Campaign actual = (await CreateRepository().GetByIdAsync(original.Id))!;
+
+        Assert.Equal("{\"enabled\":true}", actual.SanctumConfigJson);
+
+        Assert.Equal("{\"autoSummarize\":false}", actual.Settings);
+
+        Assert.Equal("Workspace rename", actual.Name);
+
+        Assert.Equal("workspace rename", actual.NameLower);
+
+        Assert.Equal(WorkspaceType.Custom, actual.Type);
+    }
+
+    [SkippableFact]
+    public async Task FieldWrites_rename_unique_race_returns_DuplicateName_and_context_remains_usable()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CampaignRepository seed = CreateRepository();
+
+        Campaign first = (await seed.AddAsync(NewCampaign("rename-first"))).Value;
+
+        Campaign second = (await seed.AddAsync(NewCampaign("rename-second"))).Value;
+
+        await using ArcanumDbContext firstContext = _fixture.CreateContext(_dbPath);
+
+        await using ArcanumDbContext secondContext = _fixture.CreateContext(_dbPath);
+
+        CampaignRepository winner = CreateRepository(firstContext);
+
+        CampaignRepository loser = CreateRepository(secondContext);
+
+        Campaign firstRead = (await winner.GetByIdAsync(first.Id))!;
+
+        Campaign secondRead = (await loser.GetByIdAsync(second.Id))!;
+
+        Assert.Null(await winner.GetByNameAsync("contested"));
+
+        Assert.Null(await loser.GetByNameAsync("contested"));
+
+        firstRead.Name = "Contested";
+
+        secondRead.Name = " CONTESTED ";
+
+        Assert.True((await WriteHeaderAsync(winner, firstRead)).IsSuccess);
+
+        Result<Campaign> rejected = await WriteHeaderAsync(loser, secondRead);
+
+        Assert.True(rejected.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.DuplicateName, rejected.Error.Code);
+
+        Assert.Equal("rename-second", (await loser.GetByIdAsync(second.Id))!.Name);
+
+        secondRead.Name = "Uncontested";
+
+        Assert.True((await WriteHeaderAsync(loser, secondRead)).IsSuccess);
+
+        Assert.Equal("uncontested", (await loser.GetByIdAsync(second.Id))!.NameLower);
+    }
+
+    [SkippableTheory]
+    [InlineData("header")]
+    [InlineData("settings")]
+    [InlineData("sanctum")]
+    [InlineData("workspace")]
+    public async Task FieldWrites_deleted_after_read_returns_NotFound(string fields)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Campaign original = (await CreateRepository().AddAsync(NewCampaign("deleted"))).Value;
+
+        await using ArcanumDbContext writerContext = _fixture.CreateContext(_dbPath);
+
+        await using ArcanumDbContext deletingContext = _fixture.CreateContext(_dbPath);
+
+        CampaignRepository writer = CreateRepository(writerContext);
+
+        Campaign stale = (await writer.GetByIdAsync(original.Id))!;
+
+        Assert.True(await CreateRepository(deletingContext).DeleteAsync(original.Id));
+
+        Result<Campaign> result = fields switch
+        {
+            "header" => await WriteHeaderAsync(writer, stale),
+            "settings" => await WriteSettingsAsync(writer, stale),
+            "sanctum" => await WriteSanctumAsync(writer, stale),
+            _ => await WriteWorkspaceAsync(writer, stale),
+        };
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Campaign.NotFound, result.Error.Code);
+
+        Assert.Empty(writerContext.ChangeTracker.Entries<Campaign>());
+    }
+
+    [SkippableFact]
+    public async Task FieldWrites_join_transaction_and_do_not_replay_tracked_snapshots()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        CampaignRepository repository = CreateRepository();
+
+        Campaign original = (await repository.AddAsync(NewCampaign("tracked"))).Value;
+
+        string originalSettings = original.Settings;
+
+        await using (var transaction = await _db!.Database.BeginTransactionAsync())
+        {
+            original.Settings = "{\"defaultModel\":\"new-model\"}";
+
+            original.Name = "Must not be replayed";
+
+            Result<Campaign> updated = await repository.UpdateSettingsAsync(original);
+
+            Assert.True(updated.IsSuccess);
+
+            Assert.Equal("tracked", updated.Value.Name);
+
+            Assert.Equal(original.Settings, updated.Value.Settings);
+
+            Assert.Equal(EntityState.Detached, _db.Entry(original).State);
+
+            await _db.SaveChangesAsync();
+
+            await transaction.RollbackAsync();
+        }
+
+        Campaign actual = (await repository.GetByIdAsync(original.Id))!;
+
+        Assert.Equal("tracked", actual.Name);
+
+        Assert.Equal(originalSettings, actual.Settings);
+    }
+
+    private static Task<Result<Campaign>> WriteHeaderAsync(CampaignRepository repository, Campaign campaign) =>
+        repository.UpdateHeaderAsync(campaign);
+
+    private static Task<Result<Campaign>> WriteSettingsAsync(CampaignRepository repository, Campaign campaign) =>
+        repository.UpdateSettingsAsync(campaign);
+
+    private static Task<Result<Campaign>> WriteSanctumAsync(CampaignRepository repository, Campaign campaign) =>
+        repository.UpdateSanctumAsync(campaign);
+
+    private static Task<Result<Campaign>> WriteWorkspaceAsync(CampaignRepository repository, Campaign campaign) =>
+        repository.UpdateWorkspaceAsync(campaign);
 
     private Campaign NewCampaign(string suffix, bool createDirectory = true)
     {

@@ -16,6 +16,229 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class CampaignEndpointTests
 {
+    [SkippableTheory]
+    [InlineData("header")]
+    [InlineData("sanctum")]
+    [InlineData("import")]
+    [InlineData("workspace")]
+    public async Task FieldWrites_real_requests_preserve_interleaved_edits(string firstWriter)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        Func<Task>? afterRead = null;
+
+        int interleaved = 0;
+
+        int reads = 0;
+
+        factory.ServiceOverrides = services =>
+        {
+            services.RemoveAll<ICampaignRepository>();
+
+            services.AddScoped<ICampaignRepository>(provider => new InterleavingCampaignRepository(
+                ActivatorUtilities.CreateInstance<CampaignRepository>(provider),
+                async () =>
+                {
+                    if (afterRead is not null
+                        && (firstWriter != "workspace" || Interlocked.Increment(ref reads) == 2)
+                        && Interlocked.Exchange(ref interleaved, 1) == 0)
+                    {
+                        await afterRead();
+                    }
+                }));
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "field-writes");
+
+        string header = $"/api/campaigns/{campaign.Id}";
+
+        string sanctum = header + "/sanctum";
+
+        afterRead = async () =>
+        {
+            if (firstWriter is "sanctum" or "import")
+            {
+                using HttpResponseMessage renamed = await client.PutAsync(header, JsonBody("""{"name":"Concurrent rename","type":"custom","description":"New description"}"""));
+
+                Assert.Equal(HttpStatusCode.OK, renamed.StatusCode);
+            }
+
+            if (firstWriter != "sanctum")
+            {
+                using HttpResponseMessage enabled = await client.PutAsync(sanctum, JsonBody("""{"enabled":true}"""));
+
+                Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
+            }
+
+            if (firstWriter == "workspace")
+            {
+                using HttpResponseMessage settings = await client.PutAsync(header, JsonBody("""{"settings":{"defaultModel":"imported-model"},"description":"New description"}"""));
+
+                Assert.Equal(HttpStatusCode.OK, settings.StatusCode);
+            }
+        };
+
+        using HttpResponseMessage response = firstWriter switch
+        {
+            "header" => await client.PutAsync(header, JsonBody("""{"name":"Concurrent rename","type":"custom","description":"New description"}""")),
+            "sanctum" => await client.PutAsync(sanctum, JsonBody("""{"enabled":true}""")),
+            "workspace" => await client.PutAsync($"/api/workspaces/{campaign.Id}", JsonBody("""{"name":"Concurrent rename","type":"custom"}""")),
+            _ => await client.PostAsync(header + "/import", JsonBody("""{"strategy":"merge","payload":{"campaign":{"name":"Ignored bundle name","settings":{"defaultModel":"imported-model"}},"spells":[],"prompts":[]}}""")),
+        };
+
+        Assert.True(response.StatusCode == HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(1, interleaved);
+
+        using HttpResponseMessage read = await client.GetAsync(header);
+
+        ApiResponse<CampaignDto> body = JsonSerializer.Deserialize(await read.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.ApiResponseCampaignDto)!;
+
+        Assert.Equal("Concurrent rename", body.Data!.Name);
+
+        Assert.Equal(WorkspaceType.Custom, body.Data.Type);
+
+        Assert.Equal("New description", body.Data.Description);
+
+        using HttpResponseMessage readSanctum = await client.GetAsync(sanctum);
+
+        using JsonDocument sanctumJson = JsonDocument.Parse(await readSanctum.Content.ReadAsStringAsync());
+
+        Assert.True(sanctumJson.RootElement.GetProperty("data").GetProperty("enabled").GetBoolean());
+
+        if (firstWriter is "workspace" or "import")
+        {
+            Assert.Equal("imported-model", body.Data.Settings.DefaultModel);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("header")]
+    [InlineData("sanctum")]
+    [InlineData("import")]
+    [InlineData("workspace")]
+    public async Task FieldWrites_deleted_during_request_returns_typed_NotFound(string writer)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        Func<Task>? delete = null;
+
+        int reads = 0;
+
+        int deleted = 0;
+
+        factory.ServiceOverrides = services =>
+        {
+            services.RemoveAll<ICampaignRepository>();
+
+            services.AddScoped<ICampaignRepository>(provider => new InterleavingCampaignRepository(
+                ActivatorUtilities.CreateInstance<CampaignRepository>(provider),
+                async () =>
+                {
+                    if (delete is not null
+                        && (writer != "workspace" || Interlocked.Increment(ref reads) == 2)
+                        && Interlocked.Exchange(ref deleted, 1) == 0)
+                    {
+                        await delete();
+                    }
+                }));
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "deleted-race");
+
+        string path = $"/api/campaigns/{campaign.Id}";
+
+        delete = async () =>
+        {
+            using HttpResponseMessage removed = await client.DeleteAsync(path);
+
+            Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+        };
+
+        using HttpResponseMessage response = writer switch
+        {
+            "header" => await client.PutAsync(path, JsonBody("""{"description":"Late"}""")),
+            "sanctum" => await client.PutAsync(path + "/sanctum", JsonBody("""{"enabled":true}""")),
+            "workspace" => await client.PutAsync($"/api/workspaces/{campaign.Id}", JsonBody("""{"name":"Late"}""")),
+            _ => await client.PostAsync(path + "/import", JsonBody("""{"payload":{"campaign":{"settings":{"defaultModel":"late"}},"spells":[],"prompts":[]}}""")),
+        };
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(writer == "workspace" ? "Workspace.NotFound" : "Campaign.NotFound", body.RootElement.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FieldWrites_rename_loses_real_unique_race_returns_typed_BadRequest(bool workspace)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        Func<Task>? takeName = null;
+
+        int renamed = 0;
+
+        factory.ServiceOverrides = services =>
+        {
+            services.RemoveAll<ICampaignRepository>();
+
+            services.AddScoped<ICampaignRepository>(provider => new InterleavingCampaignRepository(
+                ActivatorUtilities.CreateInstance<CampaignRepository>(provider),
+                () => Task.CompletedTask,
+                async () =>
+                {
+                    if (takeName is not null && Interlocked.Exchange(ref renamed, 1) == 0)
+                    {
+                        await takeName();
+                    }
+                }));
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto loser = await CreateCampaignWithOnePromptAsync(factory, client, "rename-loser");
+
+        CampaignDto winner = await CreateCampaignWithOnePromptAsync(factory, client, "rename-winner");
+
+        takeName = async () =>
+        {
+            using HttpResponseMessage first = await client.PutAsync($"/api/campaigns/{winner.Id}", JsonBody("""{"name":"Contested"}"""));
+
+            Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        };
+
+        string path = workspace ? $"/api/workspaces/{loser.Id}" : $"/api/campaigns/{loser.Id}";
+
+        using HttpResponseMessage response = await client.PutAsync(path, JsonBody("""{"name":"CONTESTED"}"""));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(workspace ? "Workspace.NameDuplicate" : "Campaign.DuplicateName", body.RootElement.GetProperty("error").GetProperty("code").GetString());
+
+        using HttpResponseMessage read = await client.GetAsync($"/api/campaigns/{loser.Id}");
+
+        ApiResponse<CampaignDto> stored = JsonSerializer.Deserialize(await read.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.ApiResponseCampaignDto)!;
+
+        Assert.Equal(loser.Name, stored.Data!.Name);
+    }
+
+    private static StringContent JsonBody(string json) => new(json, Encoding.UTF8, "application/json");
+
     [SkippableFact]
     public async Task RegisterCampaign_repository_failure_maps_error_code()
     {
@@ -655,8 +878,17 @@ public sealed class CampaignEndpointTests
         public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+        public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
@@ -799,11 +1031,14 @@ public sealed class CampaignEndpointTests
         public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
             inner.AddAsync(campaign, cancellationToken);
 
-        public async Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default)
+        public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateHeaderAsync(campaign, cancellationToken);
+
+        public async Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default)
         {
             try
             {
-                Campaign updated = await inner.UpdateAsync(campaign, cancellationToken);
+                Result<Campaign> updated = await inner.UpdateSettingsAsync(campaign, cancellationToken);
 
                 settingsWritten.TrySetResult(true);
 
@@ -816,6 +1051,76 @@ public sealed class CampaignEndpointTests
                 throw;
             }
         }
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateSanctumAsync(campaign, cancellationToken);
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateWorkspaceAsync(campaign, cancellationToken);
+
+        public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(id, cancellationToken);
+
+        public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
+            inner.CountAsync(cancellationToken);
+    }
+
+    private sealed class InterleavingCampaignRepository(
+        CampaignRepository inner,
+        Func<Task> afterRead,
+        Func<Task>? afterNameRead = null) : ICampaignRepository
+    {
+        public async Task<Campaign?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            Campaign? snapshot = await inner.GetByIdAsync(id, cancellationToken);
+
+            await afterRead();
+
+            return snapshot;
+        }
+
+        public Task<Campaign?> GetByPathAsync(string path, CancellationToken cancellationToken = default) =>
+            inner.GetByPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetByContainedPathAsync(string path, CancellationToken cancellationToken = default) =>
+            inner.GetByContainedPathAsync(path, cancellationToken);
+
+        public Task<Campaign?> GetBySpelledPathAsync(string path, CancellationToken cancellationToken = default) =>
+            inner.GetBySpelledPathAsync(path, cancellationToken);
+
+        public async Task<Campaign?> GetByNameAsync(string name, CancellationToken cancellationToken = default)
+        {
+            Campaign? snapshot = await inner.GetByNameAsync(name, cancellationToken);
+
+            if (afterNameRead is not null)
+            {
+                await afterNameRead();
+            }
+
+            return snapshot;
+        }
+
+        public Task<ListPageResult<Campaign>> ListAsync(
+            WorkspaceType? typeFilter,
+            int? limit = null,
+            int offset = 0,
+            CancellationToken cancellationToken = default) =>
+            inner.ListAsync(typeFilter, limit, offset, cancellationToken);
+
+        public Task<Result<Campaign>> AddAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.AddAsync(campaign, cancellationToken);
+
+        public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateHeaderAsync(campaign, cancellationToken);
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateSettingsAsync(campaign, cancellationToken);
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateSanctumAsync(campaign, cancellationToken);
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+            inner.UpdateWorkspaceAsync(campaign, cancellationToken);
 
         public Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default) =>
             inner.DeleteAsync(id, cancellationToken);
@@ -957,10 +1262,25 @@ public sealed class CampaignEndpointTests
                         ErrorCodes.Campaign.MaxReached,
                         "Repository failure selected by code, not legacy exception text.")));
 
-        public Task<Campaign> UpdateAsync(
+        public Task<Result<Campaign>> UpdateHeaderAsync(
             Campaign campaign,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(campaign);
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSettingsAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateSanctumAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
+
+        public Task<Result<Campaign>> UpdateWorkspaceAsync(
+            Campaign campaign,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<Campaign>.Success(campaign));
 
         public Task<bool> DeleteAsync(
             Guid id,

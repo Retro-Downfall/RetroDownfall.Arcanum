@@ -478,17 +478,113 @@ public sealed class CampaignRepository : ICampaignRepository
         }
     }
 
-    public async Task<Campaign> UpdateAsync(Campaign campaign, CancellationToken cancellationToken = default)
+    public Task<Result<Campaign>> UpdateHeaderAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+        UpdateFieldsAsync(
+            campaign,
+            $"""
+            UPDATE "Campaigns" SET "Name" = $name, "NameLower" = $nameLower, "Type" = $type, "Description" = $description, "Settings" = $settings, "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id RETURNING {GrimoireEntitySql.CampaignColumns};
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$name", campaign.Name);
+
+                GrimoireEntitySql.AddParameter(command, "$nameLower", campaign.Name.Trim().ToLowerInvariant());
+
+                GrimoireEntitySql.AddParameter(command, "$type", (int)campaign.Type);
+
+                GrimoireEntitySql.AddParameter(command, "$description", campaign.Description);
+
+                GrimoireEntitySql.AddParameter(command, "$settings", campaign.Settings);
+            },
+            cancellationToken);
+
+    public Task<Result<Campaign>> UpdateSettingsAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+        UpdateFieldsAsync(
+            campaign,
+            $"""
+            UPDATE "Campaigns" SET "Settings" = $settings, "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id RETURNING {GrimoireEntitySql.CampaignColumns};
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$settings", campaign.Settings);
+            },
+            cancellationToken);
+
+    public Task<Result<Campaign>> UpdateSanctumAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+        UpdateFieldsAsync(
+            campaign,
+            $"""
+            UPDATE "Campaigns" SET "SanctumConfigJson" = $sanctumConfigJson, "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id RETURNING {GrimoireEntitySql.CampaignColumns};
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$sanctumConfigJson", campaign.SanctumConfigJson);
+            },
+            cancellationToken);
+
+    public Task<Result<Campaign>> UpdateWorkspaceAsync(Campaign campaign, CancellationToken cancellationToken = default) =>
+        UpdateFieldsAsync(
+            campaign,
+            $"""
+            UPDATE "Campaigns" SET "Name" = $name, "NameLower" = $nameLower, "Type" = $type, "UpdatedAt" = $updatedAt
+            WHERE "Id" = $id RETURNING {GrimoireEntitySql.CampaignColumns};
+            """,
+            command =>
+            {
+                GrimoireEntitySql.AddParameter(command, "$name", campaign.Name);
+
+                GrimoireEntitySql.AddParameter(command, "$nameLower", campaign.Name.Trim().ToLowerInvariant());
+
+                GrimoireEntitySql.AddParameter(command, "$type", (int)campaign.Type);
+            },
+            cancellationToken);
+
+    private async Task<Result<Campaign>> UpdateFieldsAsync(
+        Campaign campaign,
+        string commandText,
+        Action<SqliteCommand> bind,
+        CancellationToken cancellationToken)
     {
-        campaign.NameLower = campaign.Name.Trim().ToLowerInvariant();
+        try
+        {
+            return await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+                        _db, commandText, cancellationToken).ConfigureAwait(false);
 
-        _db.Campaigns.Update(campaign);
+                    bind(command);
 
-        _ = await EfSaveChangesRetry
-            .ExecuteAsync(_db, cancellationToken)
-            .ConfigureAwait(false);
+                    GrimoireEntitySql.AddParameter(command, "$id", GrimoireEntitySql.Format(campaign.Id));
 
-        return campaign;
+                    GrimoireEntitySql.AddParameter(command, "$updatedAt", GrimoireEntitySql.Format(campaign.UpdatedAt));
+
+                    await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                    return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                        ? Result<Campaign>.Success(GrimoireEntitySql.ReadCampaign(reader))
+                        : Result<Campaign>.Failure(new Error(ErrorCodes.Campaign.NotFound, "Campaign was not found."));
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception) when (exception.SqliteExtendedErrorCode == 2067
+            && exception.Message.Contains("Campaigns.NameLower", StringComparison.Ordinal))
+        {
+            return Result<Campaign>.Failure(
+                new Error(ErrorCodes.Campaign.DuplicateName, "A campaign with this name already exists."));
+        }
+        finally
+        {
+            // A caller can pass an entity tracked by AddAsync. Do not let a later SaveChanges replay
+            // its stale fields over this direct write, or retain a rejected rename as a pending write.
+            foreach (var entry in _db.ChangeTracker.Entries<Campaign>().Where(entry => entry.Entity.Id == campaign.Id).ToArray())
+            {
+                entry.State = EntityState.Detached;
+            }
+        }
     }
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
