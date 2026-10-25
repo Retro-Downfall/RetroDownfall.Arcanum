@@ -297,6 +297,8 @@ internal sealed class CommandCenterState
 
     public string? PendingAlternativePrompt { get; set; }
 
+    public PendingSessionFork? PendingFork { get; set; }
+
     public CommandCenterFocusRegion FocusRegion { get; set; } = CommandCenterFocusRegion.Composer;
 
     public CommandCenterOverlayKind Overlay { get; set; } = CommandCenterOverlayKind.None;
@@ -483,8 +485,30 @@ internal sealed class CommandCenterState
         }
     }
 
+    public int ClearStagedReferences()
+    {
+        lock (_stagedGate)
+        {
+            int count = _stagedAttachmentReferences.Count;
+            _stagedAttachmentReferences.Clear();
+            return count;
+        }
+    }
+
+    private void ClearSessionIntent()
+    {
+        int dropped = ClearStagedReferences();
+        PendingAlternativePrompt = null;
+        PendingFork = null;
+        if (dropped > 0)
+        {
+            FooterHint = $"Dropped {dropped} staged attachment reference(s) from the previous session.";
+        }
+    }
+
     public void ClearSessionBinding()
     {
+        ClearSessionIntent();
         SessionId = null;
         SessionTitle = null;
         SessionStatus = null;
@@ -509,6 +533,11 @@ internal sealed class CommandCenterState
         int? entryCount,
         Guid? forkedFromSessionId = null)
     {
+        if (SessionId != id)
+        {
+            ClearSessionIntent();
+        }
+
         SessionId = id;
         SelectedSessionId = id;
         // Host text, stored from a conversation: stripped here so no pane has to remember to.
@@ -612,3 +641,5 @@ internal enum CommandCenterUiUpdateKind
 }
 
 internal sealed record CommandCenterUiUpdate(CommandCenterUiUpdateKind Kind);
+
+internal sealed record PendingSessionFork(Guid SourceSessionId, ForkSessionRequest Request, string? AlternativePrompt, string CopyFingerprint);

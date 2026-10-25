@@ -14,6 +14,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Repositories;
 
@@ -32,7 +33,7 @@ internal sealed class SessionRepository(
     ISessionAttachmentStore attachments,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
     IGrimoireOrdinaryConnectionFactory connections,
-    ISessionAttachmentIndexQueue? attachmentIndexQueue = null) : ISessionRepository
+    ISessionAttachmentIndexQueue? attachmentIndexQueue = null) : ISessionRepository, ISessionForkPreview
 {
     /// <summary>
     /// Ceiling on how far a session-list page may widen to keep a one-timestamp tie group whole.
@@ -491,6 +492,130 @@ internal sealed class SessionRepository(
         return Result<Entry>.Success(entry);
     }
 
+    public async Task<Result<SessionForkPreviewDto>> PreviewForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct)
+    {
+        if (await ReadSessionAsync(sourceId, ct).ConfigureAwait(false) is null)
+        {
+            return Result<SessionForkPreviewDto>.Failure(new Error(ErrorCodes.Session.NotFound, "No session exists with that id."));
+        }
+        Result<long> cutoff = await ResolveForkCutoffAsync(sourceId, request, ct).ConfigureAwait(false);
+        if (cutoff.IsFailure)
+        {
+            return Result<SessionForkPreviewDto>.Failure(cutoff.Error);
+        }
+
+        return Result<SessionForkPreviewDto>.Success(await ReadForkPreviewAsync(sourceId, cutoff.Value,
+            request.UpToEntryId is null && request.BeforeEntryId is null, ct).ConfigureAwait(false));
+    }
+
+    private async Task<Result<long>> ResolveForkCutoffAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct)
+    {
+        if (request.UpToEntryId is not null && request.BeforeEntryId is not null)
+        {
+            return Result<long>.Failure(new Error(ErrorCodes.Session.InvalidForkCutoff, "Specify either upToEntryId or beforeEntryId, not both."));
+        }
+
+        if ((request.BeforeEntryId ?? request.UpToEntryId) is Guid cutoffId)
+        {
+            Entry? cutoff = await ReadEntryAsync(sourceId, cutoffId, ct).ConfigureAwait(false);
+            if (cutoff is null)
+            {
+                return Result<long>.Failure(new Error(ErrorCodes.Session.EntryNotFound, "The cutoff does not identify an entry in the source session."));
+            }
+
+            return Result<long>.Success(cutoff.Sequence - (request.BeforeEntryId is null ? 0 : 1));
+        }
+
+        return Result<long>.Success(await ReadMaximumSequenceAsync(sourceId, ct).ConfigureAwait(false));
+    }
+
+    private async Task<SessionForkPreviewDto> ReadForkPreviewAsync(Guid sourceId, long maximumSequence, bool includeEntrylessAttachments, CancellationToken ct)
+    {
+        using IncrementalHash fingerprint = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        fingerprint.AppendData(Encoding.UTF8.GetBytes(FormattableString.Invariant($"{sourceId:D}|{maximumSequence}|{includeEntrylessAttachments}\n")));
+        int count = 0;
+        long bytes = 0;
+        await foreach (IReadOnlyList<SessionAttachmentRecord> page in attachments.ReadBoundForForkPagesAsync(sourceId,
+            maximumSequence, includeEntrylessAttachments, ct).ConfigureAwait(false))
+        {
+            foreach (SessionAttachmentRecord attachment in page)
+            {
+                count = checked(count + 1);
+                bytes = checked(bytes + attachment.ByteLength);
+                fingerprint.AppendData(Encoding.UTF8.GetBytes(FormattableString.Invariant($"{attachment.Id:D}|{attachment.ByteLength}|{attachment.ContentSha256}\n")));
+            }
+        }
+
+        return new SessionForkPreviewDto(count, bytes, Convert.ToHexString(fingerprint.GetHashAndReset()));
+    }
+
+    private readonly record struct ForkBindings(SessionCampaignBinding Source, SessionCampaignBinding Destination);
+
+    private async Task<Result<ForkBindings>> ReadForkBindingAsync(Guid sourceId, Guid? explicitCampaignId, CancellationToken ct)
+    {
+        SessionCampaignBinding sourceBinding;
+        await using (SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(db,
+            "SELECT BindingKindCode, CampaignId FROM session_campaign_bindings WHERE SessionId = $source;", ct).ConfigureAwait(false))
+        {
+            GrimoireEntitySql.AddParameter(command, "$source", Format(sourceId));
+            await using SqliteDataReader row = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await row.ReadAsync(ct).ConfigureAwait(false))
+            {
+                return Result<ForkBindings>.Failure(SessionCampaignBindingErrors.NoBinding);
+            }
+
+            long kind = row.GetInt64(0);
+            Guid? campaign = null;
+            if (!row.IsDBNull(1))
+            {
+                if (!Guid.TryParse(row.GetString(1), out Guid identity) || identity == Guid.Empty)
+                {
+                    return Result<ForkBindings>.Failure(new Error(ErrorCodes.Covenant.IntegrityFailure, "The source Session Campaign binding is malformed."));
+                }
+                campaign = identity;
+            }
+
+            if (kind is < 1 or > 3 || (kind == (long)SessionCampaignBindingKind.Campaign) != (campaign is not null))
+            {
+                return Result<ForkBindings>.Failure(new Error(ErrorCodes.Covenant.IntegrityFailure, "The source Session Campaign binding is malformed."));
+            }
+            sourceBinding = SessionCampaignBinding.Create((SessionCampaignBindingKind)kind, campaign);
+        }
+
+        if (explicitCampaignId is null)
+        {
+            return Result<ForkBindings>.Success(new ForkBindings(sourceBinding, sourceBinding));
+        }
+        // An explicit override resolves a new destination, not a mutation of the source binding.
+        // Use the canonical policy and the same live registry-epoch proof as CampaignAvailabilityReader.
+        await using SqliteCommand availability = await GrimoireSqlCommandFactory.CreateAsync(db,
+            """
+            SELECT s.RegistryEpoch FROM campaign_registry_state AS s
+            WHERE s.StateKey = 1 AND EXISTS (SELECT 1 FROM "Campaigns" AS c WHERE c."Id" = $campaign);
+            """, ct).ConfigureAwait(false);
+        GrimoireEntitySql.AddParameter(availability, "$campaign", Format(explicitCampaignId.Value));
+        object? epoch = await availability.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        long? generation = epoch is null or DBNull ? null : Convert.ToInt64(epoch, CultureInfo.InvariantCulture);
+        Result<CanonicalCampaignContext> resolved = CanonicalCampaignResolutionPolicy.Resolve(null, explicitCampaignId, null, false, generation);
+        return resolved.IsSuccess ? Result<ForkBindings>.Success(new ForkBindings(sourceBinding, resolved.Value.Binding)) : Result<ForkBindings>.Failure(resolved.Error);
+    }
+
+    private async Task InsertForkBindingAsync(Guid sessionId, SessionCampaignBinding binding, DateTimeOffset boundAt, CancellationToken ct)
+    {
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(db,
+            """
+            INSERT INTO session_campaign_bindings(SessionId, BindingKindCode, CampaignId, BoundAtUtc)
+            VALUES($session, $kind, $campaign, $boundAt);
+            """, ct).ConfigureAwait(false);
+        using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance
+            .Authorize(command.Connection!, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+        GrimoireEntitySql.AddParameter(command, "$session", Format(sessionId));
+        GrimoireEntitySql.AddParameter(command, "$kind", (long)binding.Kind);
+        GrimoireEntitySql.AddParameter(command, "$campaign", binding.CampaignId is { } campaign ? Format(campaign) : null);
+        GrimoireEntitySql.AddParameter(command, "$boundAt", GrimoireEntitySql.Format(boundAt));
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     public async Task<Result<Session>> ForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct)
     {
         Guid forkSessionId = Guid.NewGuid();
@@ -515,27 +640,33 @@ internal sealed class SessionRepository(
                 "No session exists with that id."));
         }
 
-        Entry? cutoffEntry = null;
-
-        if (request.UpToEntryId is Guid cutoffId)
+        Result<ForkBindings> binding = await ReadForkBindingAsync(sourceId, request.CampaignId, ct).ConfigureAwait(false);
+        if (binding.IsFailure)
         {
-            cutoffEntry = await ReadEntryAsync(sourceId, cutoffId, ct).ConfigureAwait(false);
-
-            if (cutoffEntry is null)
-            {
-                return Result<Session>.Failure(new Error(
-                    ErrorCodes.Session.EntryNotFound,
-                    "upToEntryId does not identify an entry in the source session."));
-            }
+            return Result<Session>.Failure(binding.Error);
         }
 
-        long maximumSourceEntrySequence = cutoffEntry?.Sequence
-            ?? await ReadMaximumSequenceAsync(sourceId, ct).ConfigureAwait(false);
+        Result<long> cutoff = await ResolveForkCutoffAsync(sourceId, request, ct).ConfigureAwait(false);
+        if (cutoff.IsFailure)
+        {
+            return Result<Session>.Failure(cutoff.Error);
+        }
+
+        long maximumSourceEntrySequence = cutoff.Value;
+        bool includeEntrylessAttachments = request.UpToEntryId is null && request.BeforeEntryId is null;
+        if (request.ExpectedCopyFingerprint is { } expected)
+        {
+            SessionForkPreviewDto preview = await ReadForkPreviewAsync(sourceId, maximumSourceEntrySequence, includeEntrylessAttachments, ct).ConfigureAwait(false);
+            if (!string.Equals(expected, preview.CopyFingerprint, StringComparison.Ordinal))
+            {
+                return Result<Session>.Failure(new Error(ErrorCodes.Session.ForkChanged, "The fork selection changed. Preview and confirm it again."));
+            }
+        }
 
         Session fork = new()
         {
             Id = forkSessionId,
-            CampaignId = request.CampaignId ?? source.CampaignId,
+            CampaignId = binding.Value.Destination.CampaignId,
             Title = string.IsNullOrWhiteSpace(request.Title) ? BuildForkTitle(source.Title) : request.Title.Trim(),
             Status = "active",
             CreatedAt = now,
@@ -553,7 +684,7 @@ internal sealed class SessionRepository(
                                .ReadBoundForForkPagesAsync(
                                    sourceId,
                                    maximumSourceEntrySequence,
-                                   includeEntrylessAttachments: cutoffEntry is null,
+                                   includeEntrylessAttachments: includeEntrylessAttachments,
                                    ct)
                                .ConfigureAwait(false))
             {
@@ -574,6 +705,26 @@ internal sealed class SessionRepository(
                 await SqliteBusyRetry.ExecuteAsync(
                     () => InsertSessionAsync(fork, ct),
                     ct).ConfigureAwait(false);
+
+                Result<ForkBindings> currentBinding = await ReadForkBindingAsync(sourceId, request.CampaignId, ct).ConfigureAwait(false);
+                if (currentBinding.IsFailure || currentBinding.Value != binding.Value)
+                {
+                    await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                    return Result<Session>.Failure(currentBinding.IsFailure ? currentBinding.Error
+                        : new Error(ErrorCodes.Covenant.CampaignBindingConflict, "The source or destination Campaign binding changed during the fork."));
+                }
+
+                await InsertForkBindingAsync(fork.Id, currentBinding.Value.Destination, now, ct).ConfigureAwait(false);
+
+                if (request.ExpectedCopyFingerprint is { } confirmed)
+                {
+                    Result<SessionForkPreviewDto> current = await PreviewForkAsync(sourceId, request, ct).ConfigureAwait(false);
+                    if (current.IsFailure || !string.Equals(confirmed, current.Value.CopyFingerprint, StringComparison.Ordinal))
+                    {
+                        await tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                        return Result<Session>.Failure(current.IsFailure ? current.Error : new Error(ErrorCodes.Session.ForkChanged, "The fork selection changed. Preview and confirm it again."));
+                    }
+                }
 
                 int copiedEntryCount = 0;
 
@@ -619,7 +770,7 @@ internal sealed class SessionRepository(
                                    .ReadBoundForForkPagesAsync(
                                        sourceId,
                                        maximumSourceEntrySequence,
-                                       includeEntrylessAttachments: cutoffEntry is null,
+                                       includeEntrylessAttachments: includeEntrylessAttachments,
                                        ct)
                                    .ConfigureAwait(false))
                 {
@@ -653,7 +804,7 @@ internal sealed class SessionRepository(
                                .ReadBoundForForkPagesAsync(
                                    sourceId,
                                    maximumSourceEntrySequence,
-                                   includeEntrylessAttachments: cutoffEntry is null,
+                                   includeEntrylessAttachments: includeEntrylessAttachments,
                                    CancellationToken.None)
                                .ConfigureAwait(false))
             {

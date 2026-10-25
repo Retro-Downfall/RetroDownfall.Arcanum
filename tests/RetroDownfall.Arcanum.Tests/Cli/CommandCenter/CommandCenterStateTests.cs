@@ -5,6 +5,30 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class CommandCenterStateTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Changing_session_discards_staged_references_but_keeps_local_paths(bool clear)
+    {
+        CommandCenterState state = new(new SessionLogBuffer());
+        Guid source = Guid.NewGuid();
+        state.ApplySessionMeta(source, "Source", "Active", 1);
+        state.StageAttachmentReference(Guid.NewGuid());
+        state.StageAttachmentPath("/tmp/notes.txt");
+        state.ApplySessionMeta(source, "Renamed", "Active", 2);
+        Assert.Single(state.StagedAttachmentReferences);
+        if (clear)
+        {
+            state.ClearSessionBinding();
+        }
+        else
+        {
+            state.ApplySessionMeta(Guid.NewGuid(), "Other", "Active", 0);
+        }
+        Assert.Empty(state.StagedAttachmentReferences);
+        Assert.Single(state.StagedAttachmentPaths);
+    }
+
     /// <summary>
     /// Ctrl+C reaches the turn's token source from a fire-and-forget task, while the submit path's
     /// finally disposes it. Cancelling or reading the token of a disposed source throws, and in that task

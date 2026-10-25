@@ -1042,6 +1042,13 @@ public sealed class SessionWorkspaceServiceTests
         {
             string path = request.RequestUri?.AbsolutePath ?? "";
 
+            if (path.EndsWith("/fork/preview", StringComparison.Ordinal))
+            {
+                string json = JsonSerializer.Serialize(ApiResponse<SessionForkPreviewDto>.FromResult(
+                    Result<SessionForkPreviewDto>.Success(new SessionForkPreviewDto(0, 0, "empty"))), ArcanumJsonContext.Default.ApiResponseSessionForkPreviewDto);
+                return Task.FromResult(OkJson(json));
+            }
+
             if (request.Method == HttpMethod.Post && path.EndsWith("/fork", StringComparison.Ordinal))
             {
                 Result<SessionDetailDto> result = forkError is { } error

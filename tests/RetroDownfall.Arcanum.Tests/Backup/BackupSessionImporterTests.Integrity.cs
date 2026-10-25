@@ -234,6 +234,10 @@ public sealed partial class BackupSessionImporterTests
         SessionRepository sessions = new(db, attachmentStore, new TestOptionsMonitor<ArcanumSettings>(settings),
             FixtureOrdinaryConnectionFactory.For(db));
 
+        // This low-level plain-import fixture contains legacy rows without immutable bindings.
+        // Run the production upgrade backfill before testing the fork's attachment association.
+        await SessionBindingWriters.BackfillExistingAsync(db);
+
         Result<Session> forked = await sessions.ForkAsync(ArchivedSessionId,
             new ForkSessionRequest(UpToEntryId: cutoff), CancellationToken.None);
 
@@ -465,7 +469,6 @@ public sealed partial class BackupSessionImporterTests
 
             await transaction.CommitAsync();
         }
-
 
         return sourceSecret;
     }

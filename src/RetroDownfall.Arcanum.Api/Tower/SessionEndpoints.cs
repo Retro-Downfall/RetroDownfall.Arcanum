@@ -1422,6 +1422,17 @@ internal static class SessionEndpoints
         .RequireConditionalCovenantReadAuthority();
 
         apiGroup.MapPost(
+            "/sessions/{id:guid}/fork/preview",
+            async (Guid id, ForkSessionRequest? request, ISessionForkPreview preview, HttpContext ctx) =>
+            {
+                Result<SessionForkPreviewDto> result = await preview.PreviewForkAsync(id, request ?? new ForkSessionRequest(), ctx.RequestAborted).ConfigureAwait(false);
+                return Results.Json(ApiResponse<SessionForkPreviewDto>.FromResult(result, Activity.Current?.Id ?? ctx.TraceIdentifier),
+                    ArcanumJsonContext.Default.ApiResponseSessionForkPreviewDto,
+                    statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
+            })
+        .WithName("PreviewSessionFork");
+
+        apiGroup.MapPost(
             "/sessions/{id:guid}/fork",
             async (Guid id, ForkSessionRequest? request, ISessionRepository repo, HttpContext ctx) =>
             {
@@ -1544,156 +1555,156 @@ internal static class SessionEndpoints
 
                 using (sseLease)
                 {
-                SseStreamWriter.PrepareResponse(httpContext);
+                    SseStreamWriter.PrepareResponse(httpContext);
 
-                int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
-                    options.CurrentValue.ResolveEventBus().ChannelCapacity);
+                    int channelCapacity = ArcanumSettingClamps.EventBusChannelCapacity(
+                        options.CurrentValue.ResolveEventBus().ChannelCapacity);
 
-                // Overflow here is a slow client. The hub's channel, which logs its own overflow, never fills
-                // while this pump drains it, so this buffer is the only place a slow reader can be seen: it is
-                // reported as a Warning when it starts and again, with the count, once the client reads on.
-                LiveEventBuffer<Entry> liveBuffer = new(channelCapacity);
+                    // Overflow here is a slow client. The hub's channel, which logs its own overflow, never fills
+                    // while this pump drains it, so this buffer is the only place a slow reader can be seen: it is
+                    // reported as a Warning when it starts and again, with the count, once the client reads on.
+                    LiveEventBuffer<Entry> liveBuffer = new(channelCapacity);
 
-                // One buffer and one JSON writer serve every frame of this connection.
-                SessionEntrySseStreamWriter entryWriter = new(httpContext);
+                    // One buffer and one JSON writer serve every frame of this connection.
+                    SessionEntrySseStreamWriter entryWriter = new(httpContext);
 
-                ILogger logger = loggerFactory.CreateLogger(typeof(SessionEndpoints));
+                    ILogger logger = loggerFactory.CreateLogger(typeof(SessionEndpoints));
 
-                GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
+                    GrimoireStreamQuiescence quiescence = GrimoireStreamQuiescence.For(httpContext);
 
-                // Revocation reaches the pump and never the frame writes below. Cancelling the pump
-                // completes the channel, so the live loop observes an ordinary end of stream after
-                // whichever frame it was writing, rather than a cancellation inside one.
-                using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
+                    // Revocation reaches the pump and never the frame writes below. Cancelling the pump
+                    // completes the channel, so the live loop observes an ordinary end of stream after
+                    // whichever frame it was writing, rather than a cancellation inside one.
+                    using CancellationTokenSource pumpCts = quiescence.LinkProducer(httpContext.RequestAborted);
 
-                Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer, logger, pumpCts.Token);
+                    Task pumpTask = PumpSessionLiveAsync(id, eventHub, liveBuffer, logger, pumpCts.Token);
 
-                // Reports the entries lost in front of the one just read. Taking that read ended the overflow
-                // episode, so a later one is reported again.
-                Task WriteLiveEntryAsync(Entry liveEntry, CancellationToken ct)
-                {
-                    long dropped = liveBuffer.TakeDropped();
-
-                    if (dropped > 0)
+                    // Reports the entries lost in front of the one just read. Taking that read ended the overflow
+                    // episode, so a later one is reported again.
+                    Task WriteLiveEntryAsync(Entry liveEntry, CancellationToken ct)
                     {
-                        logger.LogWarning(
-                            "Session stream for {SessionId} dropped {Dropped} unread entr(ies) for a slow client.",
-                            id,
-                            dropped);
-                    }
+                        long dropped = liveBuffer.TakeDropped();
 
-                    return entryWriter.WriteEntryAsync(liveEntry, ct);
-                }
-
-                // The pump owns a SessionEventHub subscription that only its own cancellation
-                // releases, so everything from here on must sit inside the try whose finally cancels
-                // pumpCts. Leaving the Grimoire replay outside it let a fault there unwind through
-                // `using pumpCts` — disposing the linked source without cancelling it, which unlinks
-                // it from RequestAborted for good and strands the pump, its subscriber channel, and
-                // the per-session hub entry.
-                try
-                {
-                    HashSet<Guid> replayIds = [];
-
-                    SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
-
-                    int replayLimit = ArcanumSettingClamps.SessionStreamReplayLimit(
-                        sessionSettings.MaxStreamReplayEntries);
-
-                    if (sinceEntry is not null)
-                    {
-                        List<Entry> catchUp = await repo
-                            .GetEntriesAfterAsync(id, sinceEntry.Sequence, replayLimit, httpContext.RequestAborted)
-                            .ConfigureAwait(false);
-
-                        foreach (Entry entry in catchUp)
+                        if (dropped > 0)
                         {
-                            if (quiescence.IsQuiescing)
-                            {
-                                break;
-                            }
-
-                            replayIds.Add(entry.Id);
-
-                            await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            logger.LogWarning(
+                                "Session stream for {SessionId} dropped {Dropped} unread entr(ies) for a slow client.",
+                                id,
+                                dropped);
                         }
-                    }
-                    else
-                    {
-                        List<Entry> replay = await repo
-                            .GetEntriesAscendingAsync(id, replayLimit, httpContext.RequestAborted)
-                            .ConfigureAwait(false);
 
-                        replayIds = replay.Select(e => e.Id).ToHashSet();
-
-                        foreach (Entry entry in replay)
-                        {
-                            if (quiescence.IsQuiescing)
-                            {
-                                break;
-                            }
-
-                            await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
-                        }
+                        return entryWriter.WriteEntryAsync(liveEntry, ct);
                     }
 
-                    if (!quiescence.IsQuiescing)
-                    {
-                        // The replay/live boundary sentinel is a complete frame, so writing one while
-                        // the stream has already been told to stop is starting a next frame.
-                        await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
-
-                        await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
-                    }
-
-                    TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
-                        ArcanumSettingClamps.EventBusHeartbeatSeconds(
-                            options.CurrentValue.ResolveEventBus().HeartbeatSeconds));
-
-                    while (!quiescence.IsQuiescing
-                        && liveBuffer.Reader.TryRead(out Entry? buffered)
-                        && buffered is not null)
-                    {
-                        // A skipped replay duplicate never takes the drop count moved to its read; the
-                        // buffer carries that count to the next Entry this route writes instead of losing it.
-                        if (!replayIds.Contains(buffered.Id))
-                        {
-                            await WriteLiveEntryAsync(buffered, httpContext.RequestAborted).ConfigureAwait(false);
-                        }
-                    }
-
-                    await SseStreamWriter.StreamAsync(
-                        httpContext,
-                        liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
-                        WriteLiveEntryAsync,
-                        heartbeatInterval,
-                        quiescence,
-                        httpContext.RequestAborted).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
-                {
-                    // The client went away during replay, the buffered drain, or the live stream.
-                    // Break silently — no DONE frame to a dead socket. Mirrors the Chronicle stream
-                    // in ApprenticeEndpoints; the finally still cancels the pump CTS.
-                }
-                catch (OperationCanceledException)
-                {
-                    await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
-                }
-                finally
-                {
-                    await pumpCts.CancelAsync().ConfigureAwait(false);
-
+                    // The pump owns a SessionEventHub subscription that only its own cancellation
+                    // releases, so everything from here on must sit inside the try whose finally cancels
+                    // pumpCts. Leaving the Grimoire replay outside it let a fault there unwind through
+                    // `using pumpCts` — disposing the linked source without cancelling it, which unlinks
+                    // it from RequestAborted for good and strands the pump, its subscriber channel, and
+                    // the per-session hub entry.
                     try
                     {
-                        await pumpTask.ConfigureAwait(false);
+                        HashSet<Guid> replayIds = [];
+
+                        SessionSettings sessionSettings = options.CurrentValue.ResolveSessions();
+
+                        int replayLimit = ArcanumSettingClamps.SessionStreamReplayLimit(
+                            sessionSettings.MaxStreamReplayEntries);
+
+                        if (sinceEntry is not null)
+                        {
+                            List<Entry> catchUp = await repo
+                                .GetEntriesAfterAsync(id, sinceEntry.Sequence, replayLimit, httpContext.RequestAborted)
+                                .ConfigureAwait(false);
+
+                            foreach (Entry entry in catchUp)
+                            {
+                                if (quiescence.IsQuiescing)
+                                {
+                                    break;
+                                }
+
+                                replayIds.Add(entry.Id);
+
+                                await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            }
+                        }
+                        else
+                        {
+                            List<Entry> replay = await repo
+                                .GetEntriesAscendingAsync(id, replayLimit, httpContext.RequestAborted)
+                                .ConfigureAwait(false);
+
+                            replayIds = replay.Select(e => e.Id).ToHashSet();
+
+                            foreach (Entry entry in replay)
+                            {
+                                if (quiescence.IsQuiescing)
+                                {
+                                    break;
+                                }
+
+                                await entryWriter.WriteEntryAsync(entry, httpContext.RequestAborted).ConfigureAwait(false);
+                            }
+                        }
+
+                        if (!quiescence.IsQuiescing)
+                        {
+                            // The replay/live boundary sentinel is a complete frame, so writing one while
+                            // the stream has already been told to stop is starting a next frame.
+                            await httpContext.Response.Body.WriteAsync(SseLiveSentinel, httpContext.RequestAborted).ConfigureAwait(false);
+
+                            await httpContext.Response.Body.FlushAsync(httpContext.RequestAborted).ConfigureAwait(false);
+                        }
+
+                        TimeSpan heartbeatInterval = TimeSpan.FromSeconds(
+                            ArcanumSettingClamps.EventBusHeartbeatSeconds(
+                                options.CurrentValue.ResolveEventBus().HeartbeatSeconds));
+
+                        while (!quiescence.IsQuiescing
+                            && liveBuffer.Reader.TryRead(out Entry? buffered)
+                            && buffered is not null)
+                        {
+                            // A skipped replay duplicate never takes the drop count moved to its read; the
+                            // buffer carries that count to the next Entry this route writes instead of losing it.
+                            if (!replayIds.Contains(buffered.Id))
+                            {
+                                await WriteLiveEntryAsync(buffered, httpContext.RequestAborted).ConfigureAwait(false);
+                            }
+                        }
+
+                        await SseStreamWriter.StreamAsync(
+                            httpContext,
+                            liveBuffer.Reader.ReadAllAsync(httpContext.RequestAborted),
+                            WriteLiveEntryAsync,
+                            heartbeatInterval,
+                            quiescence,
+                            httpContext.RequestAborted).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ClientDisconnect.IsClientDisconnect(ex, httpContext))
+                    {
+                        // The client went away during replay, the buffered drain, or the live stream.
+                        // Break silently — no DONE frame to a dead socket. Mirrors the Chronicle stream
+                        // in ApprenticeEndpoints; the finally still cancels the pump CTS.
                     }
                     catch (OperationCanceledException)
                     {
+                        await SseStreamWriter.WriteDoneAsync(httpContext).ConfigureAwait(false);
                     }
-                }
+                    finally
+                    {
+                        await pumpCts.CancelAsync().ConfigureAwait(false);
 
-                return Results.Empty;
+                        try
+                        {
+                            await pumpTask.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                        }
+                    }
+
+                    return Results.Empty;
                 }
             })
         .WithName("StreamSession")
@@ -2194,9 +2205,9 @@ internal static class SessionEndpoints
 
         bool payloadTooLarge = exception is BadHttpRequestException
 
-            {
-                StatusCode: StatusCodes.Status413PayloadTooLarge,
-            }
+        {
+            StatusCode: StatusCodes.Status413PayloadTooLarge,
+        }
 
             || exception is InvalidDataException
 

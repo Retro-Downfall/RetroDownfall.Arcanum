@@ -72,7 +72,6 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 
 public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 {
-
     private const int Dimensions = 64;
 
     private readonly GrimoireFixture _fixture;
@@ -91,14 +90,11 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 
     public SessionAttachmentIdentitySpellingTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _attachmentsRoot = Path.Combine(
@@ -111,26 +107,18 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 
         _settings = new ArcanumSettings
         {
-
             Features = new FeatureSettings
             {
-
                 AttachmentRetrieval = true,
-
             },
 
             Integrations = new IntegrationSettings
             {
-
                 Embeddings = new EmbeddingIntegrationSettings
                 {
-
                     Dimensions = Dimensions,
-
                 },
-
             },
-
         };
 
         _attachments = new SessionAttachmentStore(
@@ -143,33 +131,24 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             _db, new WeaveIndexAvailability(), new TestOptionsMonitor<ArcanumSettings>(_settings));
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
 
         if (Directory.Exists(_attachmentsRoot))
         {
-
             Directory.Delete(_attachmentsRoot, recursive: true);
-
         }
-
     }
 
     /// <summary>
@@ -185,7 +164,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task An_indexed_attachment_holds_one_spelling_from_its_row_to_its_chunks()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -225,7 +203,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         Assert.Equal(
             Legacy(sessionId),
             await ScalarStringAsync("SELECT RetrievalScope FROM session_attachment_chunks LIMIT 1"));
-
     }
 
     /// <summary>
@@ -247,7 +224,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task Abandoning_the_index_removes_a_staged_generation_it_can_only_reach_through_its_attachment()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (Guid sessionId, _) = await SeedSessionAndEntryAsync();
@@ -272,7 +248,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         Assert.Equal(0, await ScalarIntAsync("SELECT COUNT(*) FROM session_attachment_chunks"));
 
         Assert.Equal(1, await ScalarIntAsync("SELECT COUNT(*) FROM \"SessionAttachments\""));
-
     }
 
     /// <summary>
@@ -282,7 +257,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task An_attachment_bound_to_an_entry_names_it_in_the_spelling_the_entry_holds()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (Guid sessionId, Guid entryId) = await SeedSessionAndEntryAsync();
@@ -313,7 +287,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
                 SELECT COUNT(*) FROM "SessionAttachments" a
                 JOIN "Entries" e ON e."Id" = a."EntryId";
                 """));
-
     }
 
     /// <summary>
@@ -333,7 +306,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_fork_cut_off_at_an_entry_still_copies_the_attachment_bound_to_it()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         SessionRepository sessions = new(
@@ -350,7 +322,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 
         Entry cutoff = new()
         {
-
             Id = Guid.NewGuid(),
 
             SessionId = source.Id,
@@ -364,7 +335,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             CreatedAt = DateTimeOffset.UtcNow,
 
             Sequence = 1,
-
         };
 
         _db!.Entries.Add(cutoff);
@@ -385,6 +355,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 
         await _attachments.PromotePendingAsync(pendingTurnId, source.Id, cutoff.Id);
 
+        await SessionBindingWriters.BackfillExistingAsync(_db!);
+
         Result<Session> forked = await sessions.ForkAsync(
             source.Id,
             new ForkSessionRequest(UpToEntryId: cutoff.Id),
@@ -403,7 +375,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
                 "SELECT \"SessionId\" FROM \"SessionAttachments\" WHERE \"Id\" = '"
                 + Canonical(copied.Id)
                 + "'"));
-
     }
 
     /// <summary>
@@ -413,7 +384,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_recorded_consultation_still_finds_the_attachment_it_names()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (Guid sessionId, Guid entryId) = await SeedSessionAndEntryAsync();
@@ -439,7 +409,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
                 CancellationToken.None));
 
         Assert.Equal(AttachmentSourceAvailability.Available, reloaded.Availability);
-
     }
 
     /// <summary>
@@ -449,7 +418,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_saga_memory_written_with_provenance_still_finds_its_attachment()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (Guid sessionId, _) = await SeedSessionAndEntryAsync();
@@ -483,7 +451,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         Assert.Equal(
             AttachmentSourceAvailability.Available,
             Assert.IsType<AttachmentMemoryProvenance>(memory.AttachmentProvenance).Availability);
-
     }
 
     /// <summary>
@@ -493,7 +460,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     [SkippableFact]
     public async Task A_lexicon_fact_written_with_provenance_still_finds_its_attachment()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         (Guid sessionId, _) = await SeedSessionAndEntryAsync();
@@ -533,7 +499,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             Assert.IsType<LexiconFactProvenance[]>(entry.FactProvenance));
 
         Assert.Equal(AttachmentSourceAvailability.Available, fact.Source.Availability);
-
     }
 
     /// <summary>The canonical spelling: uppercase, dashed, 36 characters, as the provider renders it.</summary>
@@ -561,10 +526,8 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     /// </summary>
     private async Task<(Guid SessionId, Guid EntryId)> SeedSessionAndEntryAsync()
     {
-
         Session session = new()
         {
-
             Id = Guid.NewGuid(),
 
             Status = "active",
@@ -572,12 +535,10 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
 
             UpdatedAt = DateTimeOffset.UtcNow,
-
         };
 
         Entry entry = new()
         {
-
             Id = Guid.NewGuid(),
 
             SessionId = session.Id,
@@ -591,7 +552,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             CreatedAt = DateTimeOffset.UtcNow,
 
             Sequence = 1,
-
         };
 
         _db!.Sessions.Add(session);
@@ -601,7 +561,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         _ = await _db.SaveChangesAsync();
 
         return (session.Id, entry.Id);
-
     }
 
     private Task<SessionAttachmentRecord> PersistAsync(Guid sessionId, string logicalKey) =>
@@ -621,7 +580,6 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
     /// </summary>
     private async Task StageOneUnpublishedChunkAsync(SessionAttachmentRecord attachment)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         await _index!.SetPendingAsync(attachment, 1, CancellationToken.None);
@@ -646,12 +604,10 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             now,
             now,
             CancellationToken.None);
-
     }
 
     private async Task IndexAsync(SessionAttachmentRecord attachment, Guid sessionId)
     {
-
         SessionAttachmentIndexProcessor processor = new(
             new TestOptionsMonitor<ArcanumSettings>(_settings),
             new ConstantWeaveService(),
@@ -664,12 +620,10 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(SessionAttachmentIndexStatus.Indexed, outcome.Status);
-
     }
 
     private async Task<string?> ScalarStringAsync(string sql)
     {
-
         await using System.Data.Common.DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
 
         command.CommandText = sql;
@@ -677,12 +631,10 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
         return value is null or DBNull ? null : (string)value;
-
     }
 
     private async Task<int> ScalarIntAsync(string sql)
     {
-
         await using System.Data.Common.DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
 
         command.CommandText = sql;
@@ -690,21 +642,17 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
         return Convert.ToInt32(
             await command.ExecuteScalarAsync(CancellationToken.None),
             System.Globalization.CultureInfo.InvariantCulture);
-
     }
 
     /// <summary>An index queue that drops what it is handed, because no case here is about indexing.</summary>
     private sealed class NullAttachmentIndexQueue : ISessionAttachmentIndexQueue
     {
-
         public bool TryEnqueue(SessionAttachmentIndexRequest request) => true;
-
     }
 
     /// <summary>An embedder that answers instantly, because none of these cases is about embeddings.</summary>
     private sealed class ConstantWeaveService : IWeaveService
     {
-
         public bool IsAvailable => true;
 
         public Task<Result<Embedding<float>>> EmbedAsync(
@@ -726,15 +674,11 @@ public sealed class SessionAttachmentIdentitySpellingTests : IAsyncLifetime
 
         private static float[] Vector()
         {
-
             float[] vector = new float[Dimensions];
 
             vector[0] = 1f;
 
             return vector;
-
         }
-
     }
-
 }

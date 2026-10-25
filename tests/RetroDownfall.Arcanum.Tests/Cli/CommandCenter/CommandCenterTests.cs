@@ -18,6 +18,10 @@ using RetroDownfall.Arcanum.Core.Intelligence.Spells;
 
 using RetroDownfall.Arcanum.Core.Primitives;
 
+using RetroDownfall.Arcanum.Core.Tower;
+
+using RetroDownfall.Arcanum.Core.Storage;
+
 using RetroDownfall.Arcanum.Core.Security;
 
 using RetroDownfall.Arcanum.Core.Wards;
@@ -423,6 +427,137 @@ public sealed class CommandCenterAppSizeGateTests
 public sealed class ShellCommandDispatcherTests
 {
     [Theory]
+    [InlineData("/fork at", false, false)]
+    [InlineData("/fork alternative", true, false)]
+    [InlineData("/fork alternative", true, true)]
+    public async Task Fork_confirmation_preserves_cutoff_and_alternative(string command, bool alternative, bool previousPage)
+    {
+        ForkHandler handler = new();
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(handler.SourceId, "Source", "Active", 2);
+        EntryDto prompt = new(Guid.NewGuid(), handler.SourceId, "user", "question", null, null, DateTimeOffset.UtcNow);
+        EntryDto answer = prompt with { Id = Guid.NewGuid(), Role = "assistant", Content = "answer" };
+        state.LoadedTranscriptEntries = previousPage ? [answer] : [prompt, answer];
+        state.HasOlderTranscriptEntries = true;
+        handler.OlderEntries = [prompt];
+        state.SelectedTranscriptEntryId = answer.Id;
+        await dispatcher.DispatchAsync(command, state, CancellationToken.None);
+        Assert.Empty(handler.ForkBodies);
+        state.SelectedTranscriptEntryId = prompt.Id;
+        await dispatcher.DispatchAsync("/fork confirm", state, CancellationToken.None);
+        using JsonDocument body = JsonDocument.Parse(Assert.Single(handler.ForkBodies));
+        Assert.Equal(alternative ? prompt.Id : answer.Id,
+            body.RootElement.GetProperty(alternative ? "beforeEntryId" : "upToEntryId").GetGuid());
+        Assert.Equal(alternative ? "question" : null, state.PendingAlternativePrompt);
+    }
+
+    [Fact]
+    public async Task Fork_confirm_without_pending_intent_does_not_create_a_branch()
+    {
+        ForkHandler handler = new();
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(handler.SourceId, "Source", "Active", 2);
+        await CreateDispatcher(handler).DispatchAsync("/fork confirm", state, CancellationToken.None);
+        Assert.Empty(handler.ForkBodies);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Pending_fork_is_cleared_when_session_changes(bool clear)
+    {
+        ForkHandler handler = new();
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(handler.SourceId, "Source", "Active", 0);
+        await dispatcher.DispatchAsync("/fork", state, CancellationToken.None);
+        if (clear)
+        {
+            state.ClearSessionBinding();
+        }
+        else
+        {
+            state.ApplySessionMeta(Guid.NewGuid(), "Other", "Active", 0);
+        }
+
+        await dispatcher.DispatchAsync("/fork confirm", state, CancellationToken.None);
+        Assert.Empty(handler.ForkBodies);
+    }
+
+    [Fact]
+    public async Task Changed_fork_preview_requires_fresh_confirmation()
+    {
+        ForkHandler handler = new();
+        ShellCommandDispatcher dispatcher = CreateDispatcher(handler);
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(handler.SourceId, "Source", "Active", 0);
+        await dispatcher.DispatchAsync("/fork", state, CancellationToken.None);
+        handler.Fingerprint = "changed";
+        await dispatcher.DispatchAsync("/fork confirm", state, CancellationToken.None);
+        Assert.Empty(handler.ForkBodies);
+        await dispatcher.DispatchAsync("/fork confirm", state, CancellationToken.None);
+        Assert.Single(handler.ForkBodies);
+    }
+
+    [Fact]
+    public async Task Small_selected_copy_does_not_require_confirmation_for_unselected_attachments()
+    {
+        ForkHandler handler = new() { PreviewCount = 1 };
+        CommandCenterState state = new(new SessionLogBuffer());
+        state.ApplySessionMeta(handler.SourceId, "Source", "Active", 2);
+        state.SelectedTranscriptEntryId = Guid.NewGuid();
+        await CreateDispatcher(handler).DispatchAsync("/fork at", state, CancellationToken.None);
+        Assert.Single(handler.ForkBodies);
+        Assert.NotEqual(handler.SourceId, state.SessionId);
+    }
+
+    private sealed class ForkHandler : HttpMessageHandler
+    {
+        public Guid SourceId { get; } = Guid.NewGuid();
+        private readonly Guid _forkId = Guid.NewGuid();
+        public List<string> ForkBodies { get; } = [];
+        public EntryDto[] OlderEntries { get; set; } = [];
+        public string Fingerprint { get; set; } = "stable";
+        public int PreviewCount { get; set; } = 10;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            string path = request.RequestUri!.AbsolutePath;
+            string payload;
+            if (path.EndsWith("/fork/preview", StringComparison.Ordinal))
+            {
+                payload = "{\"isSuccess\":true,\"data\":{\"attachmentCount\":" + PreviewCount + ",\"attachmentBytes\":100,\"copyFingerprint\":\"" + Fingerprint + "\"}}";
+            }
+            else if (path.EndsWith("/attachments", StringComparison.Ordinal))
+            {
+                SessionAttachmentDto[] attachments = Enumerable.Range(0, 10).Select(i => new SessionAttachmentDto(
+                    Guid.NewGuid(), "notes" + i, "notes", 1, "notes", "text/plain", 10,
+                    SessionAttachmentKind.Text, "hash", DateTimeOffset.UtcNow)).ToArray();
+                payload = JsonSerializer.Serialize(ApiResponse<SessionAttachmentDto[]>.FromResult(Result<SessionAttachmentDto[]>.Success(attachments), "test"), ArcanumJsonContext.Default.ApiResponseSessionAttachmentDtoArray);
+            }
+            else if (path.EndsWith("/entries", StringComparison.Ordinal))
+            {
+                payload = JsonSerializer.Serialize(ApiResponse<EntryDto[]>.FromResult(Result<EntryDto[]>.Success(request.RequestUri!.Query.Contains("beforeId", StringComparison.Ordinal) ? OlderEntries : []), "test"), ArcanumJsonContext.Default.ApiResponseEntryDtoArray);
+            }
+            else if (path.EndsWith("/sessions", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+            }
+            else
+            {
+                if (path.EndsWith("/fork", StringComparison.Ordinal))
+                {
+                    ForkBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+                }
+                SessionDetailDto detail = new(_forkId, null, "Branch", "active", 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, 0, SourceId);
+                payload = JsonSerializer.Serialize(ApiResponse<SessionDetailDto>.FromResult(Result<SessionDetailDto>.Success(detail), "test"), ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json") };
+        }
+    }
+
+    [Theory]
     [InlineData("allow", true, "allowed")]
     [InlineData("deny", false, "denied")]
     public async Task Ward_resolution_with_explicit_id_posts_to_the_retained_api(
@@ -459,6 +594,32 @@ public sealed class ShellCommandDispatcherTests
             $"Ward {wardId} {expectedStatus}.",
             state.Log.RenderPlainText(),
             StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/fork")]
+    [InlineData("/branch parent")]
+    [InlineData("/branch child")]
+    [InlineData("/session archive 44444444-4444-4444-4444-444444444444")]
+    public async Task Branch_mutations_while_generating_are_denied(string command)
+    {
+        CommandCenterState state = new(new SessionLogBuffer());
+        Guid source = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        state.ApplySessionMeta(source, "Busy", "Active", 1, Guid.NewGuid());
+        Assert.True(state.TryBeginTurn());
+        await CreateDispatcher().DispatchAsync(command, state, CancellationToken.None);
+        Assert.Equal(source, state.SessionId);
+        Assert.Equal(CommandCenterSessionMutationGuard.GeneratingDenyMessage, state.FooterHint);
+    }
+
+    [Fact]
+    public void Reasoning_with_removed_anchor_appends_without_losing_the_turn()
+    {
+        SessionLogBuffer log = new();
+        SessionLogEntry anchor = log.Append(SessionLogEntryKind.Assistant, "answer");
+        log.Clear();
+        log.InsertBefore(anchor, SessionLogEntryKind.Reasoning, "thinking");
+        Assert.Contains("thinking", log.RenderPlainText(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1016,9 +1177,9 @@ public sealed class ShellCommandDispatcherTests
                 ArcanumJsonContext.Default.ApiResponseWardResolutionDto);
 
             return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-                {
-                    Content = new ByteArrayContent(payload),
-                };
+            {
+                Content = new ByteArrayContent(payload),
+            };
         }
     }
 

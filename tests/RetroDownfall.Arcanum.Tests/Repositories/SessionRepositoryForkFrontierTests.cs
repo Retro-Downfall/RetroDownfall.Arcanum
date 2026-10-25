@@ -1,4 +1,6 @@
 using System.Data.Common;
+using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
 using Microsoft.EntityFrameworkCore;
 
@@ -36,6 +38,99 @@ public sealed class SessionRepositoryForkFrontierTests(GrimoireFixture fixture) 
         File.Delete(_databasePath);
     }
 
+    [SkippableTheory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task Fork_preserves_the_immutable_binding_not_mutable_navigation(int kind)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        SessionRepository repository = Repository();
+        Session source = await repository.CreateAsync(Guid.NewGuid(), "source", CancellationToken.None);
+        Guid? campaign = kind == 2 ? Guid.NewGuid() : null;
+        await SeedBindingAsync(source.Id, kind, campaign);
+        Result<Session> result = await repository.ForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None);
+        Assert.True(result.IsSuccess, result.Error.Message);
+        await using DbCommand read = _database.Database.GetDbConnection().CreateCommand();
+        read.CommandText = "SELECT BindingKindCode, CampaignId FROM session_campaign_bindings WHERE SessionId = $id;";
+        DbParameter id = read.CreateParameter();
+        id.ParameterName = "$id";
+        id.Value = result.Value.Id.ToString("D").ToUpperInvariant();
+        read.Parameters.Add(id);
+        await using DbDataReader row = await read.ExecuteReaderAsync();
+        Assert.True(await row.ReadAsync());
+        Assert.Equal(kind, row.GetInt32(0));
+        Assert.Equal(campaign, row.IsDBNull(1) ? null : Guid.Parse(row.GetString(1)));
+        Assert.Equal(campaign, result.Value.CampaignId);
+    }
+
+    [SkippableFact]
+    public async Task Fork_refuses_a_source_without_an_immutable_binding()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        SessionRepository repository = Repository();
+        Session source = await repository.CreateAsync(null, "missing binding", CancellationToken.None);
+        Result<Session> result = await repository.ForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None);
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task Fork_refuses_corrupt_binding_instead_of_treating_it_as_global()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        SessionRepository repository = Repository();
+        Session source = await repository.CreateAsync(null, "corrupt", CancellationToken.None);
+        await _database.Database.OpenConnectionAsync();
+        await using DbCommand pragma = _database.Database.GetDbConnection().CreateCommand();
+        pragma.CommandText = "PRAGMA ignore_check_constraints = ON;";
+        await pragma.ExecuteNonQueryAsync();
+        try
+        {
+            await SeedBindingAsync(source.Id, 99, null);
+        }
+        finally
+        {
+            pragma.CommandText = "PRAGMA ignore_check_constraints = OFF;";
+            await pragma.ExecuteNonQueryAsync();
+        }
+        Result<Session> result = await repository.ForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None);
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task Fork_rolls_back_the_new_binding_with_the_branch_when_entry_copy_fails()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        SessionRepository repository = Repository();
+        Session source = await repository.CreateAsync(null, "rollback", CancellationToken.None);
+        await SeedBindingAsync(source.Id, 1, null);
+        await AddAsync(repository, source.Id, "source entry");
+        await using DbCommand command = _database.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "CREATE TEMP TRIGGER reject_fork_entries BEFORE INSERT ON Entries BEGIN SELECT RAISE(ABORT, 'reject entry copy'); END;";
+        await command.ExecuteNonQueryAsync();
+        await Assert.ThrowsAsync<SqliteException>(() => repository.ForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None));
+        command.CommandText = "SELECT count(*) FROM session_campaign_bindings;";
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+        command.CommandText = "SELECT count(*) FROM Sessions;";
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+    }
+
+    private async Task SeedBindingAsync(Guid sessionId, int kind, Guid? campaign)
+    {
+        await _database.Database.OpenConnectionAsync();
+        SqliteConnection connection = (SqliteConnection)_database.Database.GetDbConnection();
+        using CovenantSqliteAuthorizationScope authorization = CovenantSqliteConnectionInitializer.Instance.Authorize(connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO session_campaign_bindings(SessionId, BindingKindCode, CampaignId, BoundAtUtc) VALUES($session, $kind, $campaign, $now);";
+        command.Parameters.AddWithValue("$session", sessionId.ToString("D").ToUpperInvariant());
+        command.Parameters.AddWithValue("$kind", kind);
+        command.Parameters.AddWithValue("$campaign", campaign is { } value ? value.ToString("D").ToUpperInvariant() : DBNull.Value);
+        command.Parameters.AddWithValue("$now", "2026-01-01T00:00:00.0000000Z");
+        await command.ExecuteNonQueryAsync();
+    }
+
     [SkippableFact]
     public async Task A_cutoff_fork_records_the_exact_copied_sequence_in_its_transaction()
     {
@@ -44,6 +139,8 @@ public sealed class SessionRepositoryForkFrontierTests(GrimoireFixture fixture) 
         SessionRepository repository = Repository();
 
         Session source = await repository.CreateAsync(null, "source", CancellationToken.None);
+
+        await SessionBindingWriters.BackfillExistingAsync(_database);
 
         Entry first = await AddAsync(repository, source.Id, "first");
 
@@ -78,6 +175,8 @@ public sealed class SessionRepositoryForkFrontierTests(GrimoireFixture fixture) 
 
         Session source = await repository.CreateAsync(null, "source", CancellationToken.None);
 
+        await SessionBindingWriters.BackfillExistingAsync(_database);
+
         _ = await AddAsync(repository, source.Id, "root");
 
         Result<Session> child = await repository.ForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None);
@@ -103,6 +202,8 @@ public sealed class SessionRepositoryForkFrontierTests(GrimoireFixture fixture) 
         SessionRepository repository = Repository();
 
         Session source = await repository.CreateAsync(null, "empty", CancellationToken.None);
+
+        await SessionBindingWriters.BackfillExistingAsync(_database);
 
         Result<Session> fork = await repository.ForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None);
 

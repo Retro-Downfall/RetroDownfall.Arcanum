@@ -217,8 +217,8 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/session archive <id>` | Archive a session; archiving the active one starts a fresh thread. |
 | `/campaign list [offset]` | List a 50-line terminal page of campaigns. When more state exists, the result prints the exact next offset command. |
 | `/fork` | Fork the complete active session and open the branch. |
-| `/fork confirm` | Confirm a large attachment-bearing fork. |
-| `/fork alternative` | Fork before the selected answer and regenerate. |
+| `/fork confirm` | Confirm the pending fork with its original source, cutoff, and alternative intent; a changed selected attachment set requires confirmation again. |
+| `/fork alternative` | Fork before the user prompt preceding the selected answer, then submit that prompt once to regenerate. |
 | `/fork at [<entry-id>]` | Fork through the supplied or selected transcript entry. |
 | `/branch parent`, `/branch child` | Open the visible parent or newest child branch. |
 | `/attach <path>` | Stage a local text file or image for the next turn. Neither `/attach` nor `@path` stages a Comprehension document (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, their macro-enabled variants, `.pdf`, or `.arccomp`) as text: the file stays unstaged, and the status line says to store it with `arcanum attachment add <path>` and reference it with `arcanum run --attachment <id>` or `/attachments add <name>`. |
@@ -235,6 +235,8 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/ward allow <id>` | Explicitly allow one retained active compatibility Ward. |
 | `/ward deny <id>` | Explicitly deny one retained active compatibility Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
+
+Fork confirmation counts only attachments selected by the cutoff (at least ten attachments or 10 MiB). Session changes discard pending confirmation and staged session attachment references, reporting how many references were dropped; staged local file paths remain. Clear, resume, fork, branch navigation, and archiving the active session require the generating turn to finish or be cancelled first.
 
 Ward stream frames are informational Incantation notes. Command Center opens no Ward modal, consumes no allow/deny keys, keeps no session allowlist, and posts no automatic resolution. The explicit `/ward` commands above remain available only for the retained active-record compatibility API.
 

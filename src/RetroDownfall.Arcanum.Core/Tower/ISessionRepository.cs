@@ -58,3 +58,9 @@ public interface ISessionRepository
 
     Task ArchiveAsync(Guid id, CancellationToken ct);
 }
+
+/// <summary>Read-only selection preview for the repository's fork contract.</summary>
+public interface ISessionForkPreview
+{
+    Task<Result<SessionForkPreviewDto>> PreviewForkAsync(Guid sourceId, ForkSessionRequest request, CancellationToken ct);
+}
