@@ -16,6 +16,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -50,6 +52,134 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableTheory]
+    [InlineData("initial", null)]
+    [InlineData("pending-journal", null)]
+    [InlineData("clear-journal", null)]
+    [InlineData("cursor", null)]
+    [InlineData("clear-journal", "checkpoint")]
+    [InlineData("clear-journal", "owner")]
+    [InlineData("clear-journal", "expired")]
+    public async Task ReconcilePruneAsync_CancellationImmediatelyBeforeCheckpoint_StopsOnlyWithoutAuthorityConflict(
+        string boundary, string? conflict)
+    {
+        RequireSqlCipher();
+
+        bool cursor = boundary == "cursor";
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        List<string> files = [];
+
+        if (cursor)
+        {
+            _ = await SeedEntryEmbeddingBatchAsync(PruneCheckpointIntervalInTest + 1);
+
+            settings.Retention.SessionEntryEmbeddings = EnabledRule();
+        }
+        else
+        {
+            for (int index = 0; index < 2; index++)
+            {
+                QuarantineRecoveryCandidate candidate = await SeedQuarantineRecoveryCandidateAsync("uploaded-file");
+
+                files.Add(candidate.OriginalPath);
+            }
+
+            settings.Retention.UploadedFiles = EnabledRule();
+        }
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionPrune, LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Interrupted prune checkpoint race.", now.AddMinutes(-5)));
+
+        _ = await store.TryAcquireLeaseAsync(operation.Id, "dead-owner", now.AddMinutes(-5), now.AddMinutes(-4));
+
+        int targetSave = boundary == "initial" ? 1 : boundary == "clear-journal" ? 3 : 2;
+
+        int saves = 0;
+
+        HeartbeatCountingOperationStore observed = new(store)
+        {
+            BeforeSaveCheckpoint = expectedVersion =>
+            {
+                if (++saves != targetSave)
+                {
+                    return;
+                }
+
+                // This hook is after every prior recovery poll and immediately before the real SQL save.
+                LongRunningOperation current = store.GetAsync(operation.Id).GetAwaiter().GetResult()!;
+
+                Assert.Equal(LongRunningOperationState.Running, current.State);
+
+                Assert.Equal(expectedVersion, current.CheckpointVersion);
+
+                Assert.True(store.RequestCancellationAsync(operation.Id, current.Revision, now).GetAwaiter().GetResult());
+
+                if (conflict is not null)
+                {
+                    using System.Data.Common.DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
+
+                    command.CommandText = conflict switch
+                    {
+                        "checkpoint" => "UPDATE LongRunningOperations SET CheckpointVersion = CheckpointVersion + 1, Revision = Revision + 1",
+                        "owner" => "UPDATE LongRunningOperations SET LeaseOwner = 'other-owner', Revision = Revision + 1",
+                        _ => "UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z', Revision = Revision + 1",
+                    };
+
+                    Assert.Equal(1, command.ExecuteNonQuery());
+                }
+            },
+        };
+
+        DataRetentionService service = CreateService(settings, operationStore: observed);
+
+        LongRunningOperationReconciler reconciler = new(store,
+            [new DataRetentionRecoveryHandler(service)], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+            now, "recovery-owner", maxOperations: 10, maxConcurrency: 1);
+
+        LongRunningOperation settled = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(targetSave, saves);
+
+        Assert.Equal(conflict switch
+        {
+            null => LongRunningOperationState.Abandoned,
+            "owner" => LongRunningOperationState.Cancelling,
+            _ => LongRunningOperationState.ReconciliationRequired,
+        }, settled.State);
+
+        Assert.Equal(conflict is null ? 1 : 0, summary.Abandoned);
+
+        Assert.Equal(conflict is null ? "operation.cancelled"
+            : conflict == "owner" ? null : LongRunningOperationErrorCodes.RecoveryFailed, settled.TerminalErrorCode);
+
+        int remaining = boundary is "initial" or "pending-journal" ? 2 : 1;
+
+        Assert.Equal(remaining, await CountAllAsync(cursor ? "entry_embeddings" : "UploadedFiles"));
+
+        if (!cursor)
+        {
+            Assert.Equal(remaining, files.Count(File.Exists));
+
+            Assert.Empty(Directory.EnumerateDirectories(_filesRoot, ".arcanum-retention-*"));
+        }
+
+        if (boundary == "clear-journal")
+        {
+            // The refused journal-clear write retains the last durable journal; its file cleanup is done.
+            Assert.Contains("\nP:", Encoding.UTF8.GetString(settled.CheckpointPayload!), StringComparison.Ordinal);
+        }
+    }
+
     [SkippableFact]
     public async Task RecoverPruneAsync_CancellationDuringCandidate_CompletesCleanupAndPreservesNextCandidate()
     {
