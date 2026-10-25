@@ -14,6 +14,8 @@ using Microsoft.Extensions.DependencyInjection;
 
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
+using RetroDownfall.Arcanum.Api.Intelligence;
+
 using RetroDownfall.Arcanum.Api.Models;
 
 using RetroDownfall.Arcanum.Api.Serialization;
@@ -31,6 +33,8 @@ using RetroDownfall.Arcanum.Core.Platform;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 using RetroDownfall.Arcanum.Core.Sanctum;
+
+using RetroDownfall.Arcanum.Core.Storage;
 
 using RetroDownfall.Arcanum.Core.Storage.Entities;
 
@@ -1450,6 +1454,189 @@ public sealed class WebWorkflowEndpointTests
         Assert.False(string.IsNullOrWhiteSpace(envelope.Data.AttachmentError));
     }
 
+    [SkippableFact]
+    public async Task Research_long_discovery_keeps_source_room_and_closed_frames()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        StubWebProvider provider = new()
+        {
+            ChangingCitationRounds = 10,
+            SearchAnswer = new string('s', 3_500) + " [1]",
+        };
+        StubIntelligence intelligence = new();
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research",
+            new WebResearchWorkflowRequest { Question = "What changed?", TokenBudget = 1_200 },
+            ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        string ndjson = await response.Content.ReadAsStringAsync();
+        WebResearchStreamFrame terminal = ParseResearchFrames(ndjson).Last();
+        Assert.Equal(WebResearchStreamFrameType.Result, terminal.Type);
+        Assert.True(provider.ReadCalls > 0, "no source was fetched at all");
+        Assert.NotEmpty(terminal.Result!.Citations);
+        string prompt = intelligence.Request!.Prompt;
+        Assert.True(prompt.Length <= 32_768);
+        Assert.Contains("Rendered evidence.", prompt);
+        Assert.Equal(0, (prompt.Split("\n```\n").Length - 1) % 2);
+        foreach (WebWorkflowCitation citation in terminal.Result.Citations)
+        {
+            Assert.Contains($"Source [{citation.Index}]", prompt);
+        }
+    }
+
+    [SkippableFact]
+    public async Task Research_summaries_do_not_borrow_provider_citation_numbers()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        StubWebProvider provider = new()
+        {
+            SearchResults =
+            [
+                new WebSearchResult("Alpha [1] and Beta [2]", [new(1, "https://a.test/1", "Alpha"), new(2, "https://a.test/2", "Beta")], new()),
+                new WebSearchResult("Gamma is true [1]; Alpha [2]; unknown [9]. Published 2026-10-20; event 2026-10-18; retrieved 2026-10-25.", [new(1, "https://c.test/3", "Gamma"), new(2, "https://a.test/1", "Alpha")], new()),
+            ],
+        };
+        StubIntelligence intelligence = new();
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence);
+        using HttpResponseMessage response = await factory.CreateAuthenticatedClient().PostAsJsonAsync(
+            "/api/web/research",
+            new WebResearchWorkflowRequest { Question = "What changed?", TokenBudget = 1_200 },
+            ArcanumJsonContext.Default.WebResearchWorkflowRequest);
+        WebResearchStreamFrame terminal = ParseResearchFrames(await response.Content.ReadAsStringAsync()).Last();
+        Assert.Equal(WebResearchStreamFrameType.Result, terminal.Type);
+        Assert.Equal("https://c.test/3", terminal.Result!.Citations.Single(c => c.Index == 3).Url);
+        string summaries = intelligence.Request!.Prompt.Split("Sources (untrusted data):")[0];
+        Assert.Contains("Gamma is true", summaries);
+        Assert.Contains("Published 2026-10-20; event 2026-10-18; retrieved 2026-10-25.", summaries);
+        Assert.DoesNotContain("[1]", summaries);
+        Assert.DoesNotContain("[2]", summaries);
+        Assert.DoesNotContain("[9]", summaries);
+    }
+
+    private static IEnumerable<WebResearchStreamFrame> ParseResearchFrames(string ndjson) =>
+        ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(static line => JsonSerializer.Deserialize(line, ArcanumJsonContext.Default.WebResearchStreamFrame)!);
+
+    [SkippableTheory]
+    [InlineData("search", "limit")]
+    [InlineData("browse", "limit")]
+    [InlineData("research", "limit")]
+    [InlineData("search", "generic")]
+    [InlineData("browse", "generic")]
+    [InlineData("research", "generic")]
+    [InlineData("search", "canceled")]
+    [InlineData("browse", "canceled")]
+    [InlineData("research", "canceled")]
+    public async Task Workflows_return_paid_results_when_attachment_store_throws(string workflow, string failure)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        Exception exception = failure switch
+        {
+            "limit" => new AttachmentLimitExceededException("private attachment path"),
+            "canceled" => new OperationCanceledException("private attachment path"),
+            _ => new IOException("private attachment path"),
+        };
+        StubWebProvider provider = new();
+        StubIntelligence intelligence = new();
+        await using ArcanumWebApplicationFactory factory = Factory(provider, intelligence, attachmentFailure: exception);
+        HttpClient client = factory.CreateAuthenticatedClient();
+        Guid sessionId = await CreateSessionAsync(client);
+        using HttpResponseMessage response = workflow switch
+        {
+            "search" => await client.PostAsJsonAsync("/api/web/search", new WebSearchWorkflowRequest
+            { Query = "current facts", AttachToSessionId = sessionId }, ArcanumJsonContext.Default.WebSearchWorkflowRequest),
+            "browse" => await client.PostAsJsonAsync("/api/web/browse", new WebBrowseWorkflowRequest
+            { Url = "https://example.test/article", AttachToSessionId = sessionId }, ArcanumJsonContext.Default.WebBrowseWorkflowRequest),
+            _ => await client.PostAsJsonAsync("/api/web/research", new WebResearchWorkflowRequest
+            { Question = "current facts", SourceTarget = 1, TokenBudget = 1_200, AttachToSessionId = sessionId }, ArcanumJsonContext.Default.WebResearchWorkflowRequest),
+        };
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        string body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("private attachment path", body);
+        if (workflow == "research")
+        {
+            WebResearchStreamFrame[] frames = ParseResearchFrames(body).ToArray();
+            Assert.Contains(frames, frame => frame.Stage == "attachment_failed");
+            Assert.Equal(WebResearchStreamFrameType.Result, frames.Last().Type);
+            Assert.Equal("Synthesized answer [1].", frames.Last().Result!.Answer);
+            Assert.Null(frames.Last().Result!.AttachmentId);
+            Assert.NotNull(intelligence.Request);
+        }
+        else if (workflow == "search")
+        {
+            var result = JsonSerializer.Deserialize(body, ArcanumJsonContext.Default.ApiResponseWebSearchWorkflowResult)!.Data!;
+            Assert.Equal(provider.SearchAnswer, result.Answer);
+            Assert.Null(result.AttachmentId);
+            Assert.False(string.IsNullOrWhiteSpace(result.AttachmentError));
+            Assert.Equal(1, provider.SearchCalls);
+        }
+        else
+        {
+            var result = JsonSerializer.Deserialize(body, ArcanumJsonContext.Default.ApiResponseWebBrowseWorkflowResult)!.Data!;
+            Assert.Equal("Rendered evidence.", result.Markdown);
+            Assert.Null(result.AttachmentId);
+            Assert.False(string.IsNullOrWhiteSpace(result.AttachmentError));
+            Assert.Equal(1, provider.ReadCalls);
+        }
+        Assert.Contains(failure == "limit" ? "The session attachment storage limit would be exceeded." : "The answer could not be attached to the Session.", body);
+        if (workflow == "research")
+        {
+            Assert.Contains(failure == "limit" ? ErrorCodes.Attachment.LimitExceeded : ErrorCodes.Hub.Error, body);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("search")]
+    [InlineData("browse")]
+    [InlineData("research")]
+    public async Task Workflows_propagate_caller_cancellation_during_attachment_persistence(string workflow)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        using CancellationTokenSource caller = new();
+        await using ArcanumWebApplicationFactory factory = Factory(new StubWebProvider(), new StubIntelligence(),
+            attachmentFailure: new OperationCanceledException(caller.Token), beforeAttachmentFailure: caller.Cancel);
+        Guid sessionId = await CreateSessionAsync(factory.CreateAuthenticatedClient());
+        using IServiceScope scope = factory.Services.CreateScope();
+        WebResearchWorkflowService service = scope.ServiceProvider.GetRequiredService<WebResearchWorkflowService>();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            if (workflow == "search")
+            {
+                await service.SearchAsync(new WebSearchWorkflowRequest { Query = "facts", AttachToSessionId = sessionId }, caller.Token);
+            }
+            else if (workflow == "browse")
+            {
+                await service.BrowseAsync(new WebBrowseWorkflowRequest { Url = "https://example.test/article", AttachToSessionId = sessionId }, caller.Token);
+            }
+            else
+            {
+                await foreach (WebResearchStreamFrame frame in service.ResearchAsync(new WebResearchWorkflowRequest
+                { Question = "facts", SourceTarget = 1, TokenBudget = 1_200, AttachToSessionId = sessionId }, caller.Token))
+                {
+                    Assert.NotEqual(WebResearchStreamFrameType.Result, frame.Type);
+                }
+            }
+        });
+        Assert.True(caller.IsCancellationRequested);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Research_summaries_cannot_cite_denied_or_unemitted_sources(bool denied)
+    {
+        WebSearchResult[] searches = [new("Missing claim [2]. Published 2026-10-20.", [], new())];
+        WebResearchWorkflowService.ResearchSource[] sources = denied ? [] :
+        [new(1, "https://a.test/1", "Alpha", new string('x', 1_000)), new(2, "https://b.test/2", "Missing", "missing evidence")];
+        var prompt = WebResearchWorkflowService.BuildSynthesisPrompt("facts", searches, sources, 500);
+        Assert.DoesNotContain(2, prompt.EmittedSourceIndexes);
+        Assert.DoesNotContain("[2]", prompt.Text);
+        Assert.Contains("Missing claim", prompt.Text);
+        Assert.Contains("Published 2026-10-20.", prompt.Text);
+        Assert.True(prompt.Text.Length <= 500);
+        Assert.Equal(0, (prompt.Text.Split("\n```\n").Length - 1) % 2);
+    }
+
     private static async Task<Guid> CreateSessionAsync(HttpClient client)
     {
         HttpResponseMessage created = await client.PostAsJsonAsync(
@@ -1534,7 +1721,9 @@ public sealed class WebWorkflowEndpointTests
         StubIntelligence intelligence,
         bool attachmentsEnabled = true,
         StubSanctumGuard? sanctum = null,
-        int vanishSessionAfterCalls = 0) =>
+        int vanishSessionAfterCalls = 0,
+        Exception? attachmentFailure = null,
+        Action? beforeAttachmentFailure = null) =>
         new()
         {
             SettingsOverride = settings => settings with
@@ -1585,6 +1774,12 @@ public sealed class WebWorkflowEndpointTests
                     services.RemoveAll<ISanctumGuard>();
 
                     services.AddScoped<ISanctumGuard>(_ => sanctum);
+                }
+
+                if (attachmentFailure is not null)
+                {
+                    services.RemoveAll<ISessionAttachmentStore>();
+                    services.AddScoped<ISessionAttachmentStore>(_ => new ThrowingAttachmentStore(attachmentFailure, beforeAttachmentFailure));
                 }
 
                 if (vanishSessionAfterCalls > 0)
@@ -1689,6 +1884,10 @@ public sealed class WebWorkflowEndpointTests
     {
         public int ChangingCitationRounds { get; init; }
 
+        public string SearchAnswer { get; init; } = "Search summary [1].";
+
+        public WebSearchResult[]? SearchResults { get; init; }
+
         /// <summary>1-based search call that throws instead of returning, or 0 to never throw.</summary>
         public int ThrowOnSearchCall { get; init; }
 
@@ -1718,6 +1917,11 @@ public sealed class WebWorkflowEndpointTests
                 throw new InvalidOperationException("citation index exploded");
             }
 
+            if (SearchResults is { Length: > 0 })
+            {
+                return Task.FromResult(Result<WebSearchResult>.Success(SearchResults[Math.Min(SearchCalls - 1, SearchResults.Length - 1)]));
+            }
+
             int citationNumber = ChangingCitationRounds > 0
                 ? Math.Min(SearchCalls, ChangingCitationRounds)
                 : 1;
@@ -1725,7 +1929,7 @@ public sealed class WebWorkflowEndpointTests
             return Task.FromResult(
                 Result<WebSearchResult>.Success(
                     new WebSearchResult(
-                        "Search summary [1].",
+                        SearchAnswer,
                         [
                             new WebCitation(
                                 1,
@@ -1861,6 +2065,123 @@ public sealed class WebWorkflowEndpointTests
             await Task.CompletedTask;
 
             yield break;
+        }
+    }
+
+    private sealed class ThrowingAttachmentStore(Exception failure, Action? beforeFailure) : ISessionAttachmentStore
+    {
+        public Task ValidateReferencesAsync(Guid sessionId, IReadOnlyList<Guid> attachmentIds, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<SessionAttachmentRecord> PersistNewAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            FailPersistence();
+
+        private Task<SessionAttachmentRecord> FailPersistence()
+        {
+            beforeFailure?.Invoke();
+            throw failure;
+        }
+
+        public Task<SessionAttachmentPersistence> PersistNewWithOutcomeAsync(
+            Guid? sessionId,
+            string? pendingTurnId,
+            Guid? entryId,
+            string logicalNameHint,
+            string originalFileName,
+            ReadOnlyMemory<byte> bytes,
+            string mimeType,
+            SessionAttachmentKind kind,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<bool> DeleteCreatedAttachmentAsync(
+            SessionAttachmentRecord created,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task PromotePendingAsync(
+            string pendingTurnId,
+            Guid sessionId,
+            Guid? entryId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentRecord?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<SessionAttachmentRecord?> GetByLogicalAsync(
+            Guid sessionId,
+            string logicalKey,
+            int? version,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundAsync(
+            Guid sessionId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<SessionAttachmentIndexItem>> BuildIndexAsync(
+            Guid sessionId,
+            int maxItems,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ReadOnlyMemory<byte>> ReadBytesAsync(
+            SessionAttachmentRecord record,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeleteStalePendingAsync(TimeSpan olderThan, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IDisposable> AcquireSessionGateAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IDisposable>(EmptyDisposable.Instance);
+
+        public bool TryDeleteSessionDirectory(Guid sessionId) => true;
+
+        public Task ClearEntryIdsInAmbientTransactionAsync(
+            Guid sessionId,
+            IReadOnlyList<Guid> entryIds,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<SessionAttachmentRecord>> ListBoundForForkAsync(
+            Guid sourceSessionId,
+            IReadOnlySet<Guid>? copiedSourceEntryIds,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<SessionAttachmentRecord>>([]);
+
+        public Task CopyBytesForForkAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task InsertForkRowsInAmbientTransactionAsync(
+            Guid forkSessionId,
+            IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        private sealed class EmptyDisposable : IDisposable
+        {
+            public static readonly EmptyDisposable Instance = new();
+
+            public void Dispose()
+            {
+            }
         }
     }
 }

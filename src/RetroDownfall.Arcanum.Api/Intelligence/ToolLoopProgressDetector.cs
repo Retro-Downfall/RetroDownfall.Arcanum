@@ -19,7 +19,6 @@ internal readonly record struct ToolLoopProgressEntry(
 /// </summary>
 internal sealed class ToolLoopProgressDetector
 {
-
     /// <summary>
     /// How many completed rounds the current round is compared against. Small and fixed so memory
     /// stays constant; wide enough to catch the two- and three-round oscillations models fall into.
@@ -36,19 +35,34 @@ internal sealed class ToolLoopProgressDetector
     /// </summary>
     public string? RepeatedSignature { get; private set; }
 
+    private byte[]? _protectedKey;
+
+    /// <summary>Preserves equality within this turn without retaining protected text or a stable digest.</summary>
+    public ToolLoopProgressEntry CreateEntry(string toolName, string argumentsJson, string resultText, bool protect)
+    {
+        if (!protect)
+        {
+            return new(toolName, argumentsJson, resultText);
+        }
+
+        _protectedKey ??= RandomNumberGenerator.GetBytes(32);
+
+        return new(toolName, Protect(argumentsJson), Protect(resultText));
+    }
+
+    private string Protect(string content) =>
+        Convert.ToHexString(HMACSHA256.HashData(_protectedKey!, Encoding.UTF8.GetBytes(content)));
+
     public bool ObserveCompletedRound(
         IReadOnlyList<ToolLoopProgressEntry> entries)
     {
-
         ArgumentNullException.ThrowIfNull(entries);
 
         if (entries.Count == 0)
         {
-
             throw new ArgumentException(
                 "A completed tool round must contain at least one entry.",
                 nameof(entries));
-
         }
 
         byte[] fingerprint = ComputeFingerprint(entries);
@@ -57,38 +71,30 @@ internal sealed class ToolLoopProgressDetector
 
         foreach (byte[]? previous in _recentFingerprints)
         {
-
             if (previous is not null
                 && CryptographicOperations.FixedTimeEquals(previous, fingerprint))
             {
-
                 repeated = true;
 
                 break;
-
             }
-
         }
 
         _recentFingerprints[_nextSlot] = fingerprint;
 
         _nextSlot = (_nextSlot + 1) % RecentRoundWindow;
 
-        if (repeated)
+        if (repeated && _protectedKey is null)
         {
-
             RepeatedSignature = Convert.ToHexString(fingerprint.AsSpan(0, 8));
-
         }
 
         return repeated;
-
     }
 
     private static byte[] ComputeFingerprint(
         IReadOnlyList<ToolLoopProgressEntry> entries)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(
             HashAlgorithmName.SHA256);
 
@@ -96,43 +102,35 @@ internal sealed class ToolLoopProgressDetector
 
         foreach (ToolLoopProgressEntry entry in entries)
         {
-
             AppendString(hash, entry.ToolName);
 
             AppendString(hash, entry.ArgumentsJson);
 
             AppendString(hash, entry.ResultText);
-
         }
 
         return hash.GetHashAndReset();
-
     }
 
     private static void AppendString(
         IncrementalHash hash,
         string value)
     {
-
         byte[] bytes = Encoding.UTF8.GetBytes(value);
 
         AppendInt32(hash, bytes.Length);
 
         hash.AppendData(bytes);
-
     }
 
     private static void AppendInt32(
         IncrementalHash hash,
         int value)
     {
-
         Span<byte> bytes = stackalloc byte[sizeof(int)];
 
         BinaryPrimitives.WriteInt32LittleEndian(bytes, value);
 
         hash.AppendData(bytes);
-
     }
-
 }

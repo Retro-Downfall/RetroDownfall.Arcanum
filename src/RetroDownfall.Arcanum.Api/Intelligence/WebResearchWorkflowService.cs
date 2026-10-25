@@ -782,22 +782,16 @@ public sealed class WebResearchWorkflowService(
     /// </summary>
     private static int ResolveRetainedContentBudget(IReadOnlyList<WebSearchResult> searches)
     {
-        int consumedBySummaries = 0;
-
-        foreach (WebSearchResult search in searches)
-        {
-            consumedBySummaries = int.CreateSaturating(
-                (long)consumedBySummaries + search.Answer.Length);
-        }
-
         int synthesisBudget = Math.Min(
             MaximumResearchPromptCharacters,
             ArcanumSettingClamps.MaxPingPromptChars(
                 ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars));
 
-        return Math.Max(
-            0,
-            synthesisBudget - SynthesisInstruction.Length - consumedBySummaries);
+        long summaryCharacters = searches.Sum(static search => (long)search.Answer.Length);
+
+        int consumedBySummaries = (int)Math.Min(summaryCharacters, synthesisBudget / 3);
+
+        return Math.Max(0, synthesisBudget - SynthesisInstruction.Length - consumedBySummaries);
     }
 
     /// <summary>
@@ -912,20 +906,29 @@ public sealed class WebResearchWorkflowService(
                 "The attachment target session was not found.");
         }
 
-        SessionAttachmentRecord record = await attachments
-            .PersistNewAsync(
-                sessionId,
-                pendingTurnId: null,
-                entryId: null,
-                fileName,
-                fileName,
-                Encoding.UTF8.GetBytes(content),
-                "text/markdown",
-                SessionAttachmentKind.Text,
-                cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            SessionAttachmentRecord record = await attachments
+                .PersistNewAsync(
+                    sessionId,
+                    pendingTurnId: null,
+                    entryId: null,
+                    fileName,
+                    fileName,
+                    Encoding.UTF8.GetBytes(content),
+                    "text/markdown",
+                    SessionAttachmentKind.Text,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-        return Result<Guid?>.Success(record.Id);
+            return Result<Guid?>.Success(record.Id);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return exception is AttachmentLimitExceededException
+                ? Failure<Guid?>(ErrorCodes.Attachment.LimitExceeded, "The session attachment storage limit would be exceeded.")
+                : Failure<Guid?>(ErrorCodes.Hub.Error, "The answer could not be attached to the Session.");
+        }
     }
 
     private static string BuildFollowUpQuery(string question, int pass) =>
@@ -1156,13 +1159,16 @@ public sealed class WebResearchWorkflowService(
 
         _ = builder.AppendLine("Search summaries (untrusted data):");
 
-        for (int index = 0; index < searches.Count; index++)
+        // Reserve most prompt space for fetched sources and prefer newer summary evidence.
+        int summaryBudget = builder.Length + Math.Max(0, contentBudget - builder.Length) / 3;
+
+        for (int index = searches.Count - 1; index >= 0; index--)
         {
             _ = AppendUntrustedBounded(
                 builder,
                 string.Create(CultureInfo.InvariantCulture, $"Search summary {index + 1}"),
-                searches[index].Answer,
-                contentBudget);
+                StripSummaryCitationMarkers(searches[index].Answer),
+                summaryBudget);
         }
 
         _ = builder.AppendLine("Sources (untrusted data):");
@@ -1195,6 +1201,36 @@ public sealed class WebResearchWorkflowService(
         return new SynthesisPrompt(
             text,
             [.. emitted.Where(entry => entry.End <= text.Length).Select(static entry => entry.Index)]);
+    }
+
+    /// <summary>Provider-local citation numbers cannot identify the globally numbered research sources.</summary>
+    private static string StripSummaryCitationMarkers(string answer)
+    {
+        StringBuilder builder = new(answer.Length);
+
+        for (int index = 0; index < answer.Length; index++)
+        {
+            if (answer[index] == '[')
+            {
+                int end = index + 1;
+
+                while (end < answer.Length && char.IsAsciiDigit(answer[end]))
+                {
+                    end++;
+                }
+
+                if (end > index + 1 && end < answer.Length && answer[end] == ']')
+                {
+                    index = end;
+
+                    continue;
+                }
+            }
+
+            _ = builder.Append(answer[index]);
+        }
+
+        return builder.ToString();
     }
 
     /// <summary>The synthesis prompt and the source indexes it actually carries.</summary>
