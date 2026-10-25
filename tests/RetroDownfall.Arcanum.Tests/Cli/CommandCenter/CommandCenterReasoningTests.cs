@@ -23,6 +23,29 @@ public sealed class CommandCenterReasoningTests
     private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
 
     [Fact]
+    public async Task A_human_question_remains_in_the_ephemeral_transcript_after_its_prompt_closes()
+    {
+        const string question = "Review the deployment plan before proceeding. Which option should I take: A, B or C?";
+
+        CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(
+            SerializeFrames(
+                new IntelligenceEvent(IntelligenceEventType.ToolCall, "ask_human", ToolCall: new IntelligenceToolCallEvent(
+                    "question-call", "ask_human", $"{{\"question\":\"{question}\",\"promptId\":\"question-id\"}}")),
+                new IntelligenceEvent(IntelligenceEventType.Result, "done", "done"))));
+
+        CommandCenterState state = new(new SessionLogBuffer());
+
+        Channel<CommandCenterUiUpdate> updates = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        await runner.RunTurnAsync("question", state, updates.Writer, CancellationToken.None);
+
+        SessionLogEntry entry = Assert.Single(state.Log.Snapshot(), entry => entry.Kind == SessionLogEntryKind.Status
+            && entry.Text.Contains(question, StringComparison.Ordinal));
+
+        Assert.Null(entry.SourceEntryId);
+    }
+
+    [Fact]
     public async Task Runner_streams_reasoning_into_separate_entry_and_keeps_answer_clean()
     {
         CommandCenterChatRunner runner = CreateRunner(new StaticNdjsonHandler(

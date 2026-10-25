@@ -2361,6 +2361,15 @@ internal sealed class CommandCenterHost(
         {
             KeyChord humanChord = ToChord(e);
 
+            if (e == Key.PageUp || e == Key.PageDown)
+            {
+                e.Handled = true;
+
+                window.PageHumanPromptQuestion(e == Key.PageDown);
+
+                return true;
+            }
+
             // A line break belongs in the answer, never the composer that still holds the keyboard.
             if (humanChord.IsNewLine)
             {

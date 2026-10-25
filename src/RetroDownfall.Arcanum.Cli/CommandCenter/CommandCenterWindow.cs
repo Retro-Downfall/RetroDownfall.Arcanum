@@ -45,6 +45,10 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
     private bool _overlayHumanPrompt;
 
+    private IReadOnlyList<string> _humanPromptLines = [];
+
+    private int _humanPromptWrapWidth;
+
     /// <summary>
     /// Which overlay is on screen. Kept separately from <c>OverlayPane.Title</c> because
     /// <see cref="UpdateFocusChrome"/> rewrites that title to carry the focus dot, so any refresh
@@ -387,6 +391,16 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         };
         ConfigureComposerTextView(OverlayAnswer);
 #pragma warning restore CS0618
+
+        OverlayAnswer.KeyDown += (_, key) =>
+        {
+            if (_overlayHumanPrompt && (key == Key.PageUp || key == Key.PageDown))
+            {
+                key.Handled = true;
+
+                PageHumanPromptQuestion(key == Key.PageDown);
+            }
+        };
 
         OverlayPane.Add(OverlayFilter, OverlayBody, OverlayList, OverlayAnswer);
 
@@ -1047,7 +1061,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         OverlayPane.Visible = true;
         OverlayFilter.Visible = false;
         OverlayFilter.Text = string.Empty;
-        OverlayList.Visible = false;
+        OverlayList.Visible = true;
 
         List<string> lines =
         [
@@ -1062,39 +1076,42 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
             lines.Add(statusMessage!);
         }
 
-        int longest = 0;
-        foreach (string line in lines)
-        {
-            int cells = TerminalCellMetrics.MeasureWidth(line);
-            if (cells > longest)
-            {
-                longest = cells;
-            }
-        }
+        _humanPromptLines = lines.SelectMany(static line => line.Split('\n')).ToArray();
 
-        int overlayW = OverlayLayout.MeasureWidth(_cols, longest);
-        int innerWidth = Math.Max(8, overlayW - 2);
-        IReadOnlyList<string> displayLines = OverlayLayout.WrapLines(lines, innerWidth);
-
-        _overlayLines.Clear();
-        foreach (string line in displayLines)
-        {
-            _overlayLines.Add(line);
-        }
+        _humanPromptWrapWidth = 0;
 
         int answerRows = HumanPromptOverlayContent.AnswerViewportRows;
-        OverlayBody.Visible = true;
-        OverlayBody.Y = 0;
-        OverlayBody.Height = Math.Max(1, displayLines.Count);
-        OverlayBody.Text = string.Join('\n', displayLines);
+        OverlayBody.Visible = false;
+        OverlayList.Y = 0;
 
         OverlayAnswer.Visible = true;
-        OverlayAnswer.Y = displayLines.Count;
         OverlayAnswer.Height = answerRows;
         OverlayAnswer.Width = Dim.Fill();
 
         ApplyAbsoluteLayout(_cols, _rows);
+
+        OverlayList.SelectedItem = 0;
+
+        OverlayList.EnsureSelectedItemVisible();
+
         OverlayAnswer.SetFocus();
+    }
+
+    public void PageHumanPromptQuestion(bool down)
+    {
+        if (_overlayLines.Count == 0)
+        {
+            return;
+        }
+
+        int pageRows = Math.Max(1, OverlayList.Viewport.Height - 1);
+
+        OverlayList.SelectedItem = Math.Clamp(
+            (OverlayList.SelectedItem ?? 0) + (down ? pageRows : -pageRows),
+            0,
+            _overlayLines.Count - 1);
+
+        OverlayList.EnsureSelectedItemVisible();
     }
 
     public string GetHumanPromptAnswer()
@@ -1145,6 +1162,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
 
         _overlayShowFilter = false;
         _overlayHumanPrompt = false;
+        _humanPromptLines = [];
+        _humanPromptWrapWidth = 0;
         _overlayLines.Clear();
     }
 
@@ -2002,15 +2021,38 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         Footer.Height = footerH;
 
         int longestOverlay = 0;
-        foreach (string line in _overlayLines)
+        foreach (string line in _overlayHumanPrompt ? _humanPromptLines : _overlayLines)
         {
-            if (line.Length > longestOverlay)
+            int cells = _overlayHumanPrompt ? TerminalCellMetrics.MeasureWidth(line) : line.Length;
+
+            if (cells > longestOverlay)
             {
-                longestOverlay = line.Length;
+                longestOverlay = cells;
             }
         }
 
         int overlayW = OverlayLayout.MeasureWidth(_cols, longestOverlay);
+
+        // The question viewport reserves one column for its scrollbar in addition to the frame.
+        // Reflow from the complete sanitized text when the terminal width changes.
+        int questionWidth = Math.Max(8, overlayW - 3);
+
+        if (_overlayHumanPrompt && questionWidth != _humanPromptWrapWidth)
+        {
+            int selected = OverlayList.SelectedItem ?? 0;
+
+            _humanPromptWrapWidth = questionWidth;
+
+            _overlayLines.Clear();
+
+            foreach (string line in OverlayLayout.WrapLines(_humanPromptLines, questionWidth, maxWrappedRows: null))
+            {
+                _overlayLines.Add(line);
+            }
+
+            OverlayList.SelectedItem = Math.Clamp(selected, 0, Math.Max(0, _overlayLines.Count - 1));
+        }
+
         int contentRows = _overlayLines.Count;
         if (_overlayHumanPrompt)
         {
@@ -2034,7 +2076,7 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
         {
             int answerRows = HumanPromptOverlayContent.AnswerViewportRows;
             int bodyRows = Math.Max(1, overlayH - 2 - answerRows);
-            OverlayBody.Height = bodyRows;
+            OverlayList.Height = bodyRows;
             OverlayAnswer.Y = bodyRows;
             OverlayAnswer.Height = answerRows;
         }

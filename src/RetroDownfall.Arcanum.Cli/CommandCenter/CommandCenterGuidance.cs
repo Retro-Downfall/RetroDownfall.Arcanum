@@ -26,7 +26,7 @@ internal static class CommandCenterGuidance
     /// The footer while an ask_human prompt owns the keyboard. The answer follows the composer's keys,
     /// and Esc does not dismiss the hard modal, so Ctrl+C is the only way out it names.
     /// </summary>
-    public const string HumanPromptFooter = "Enter submit · Ctrl+J newline · Ctrl+C cancel turn";
+    public const string HumanPromptFooter = "Enter submit · PgUp/PgDn question · Ctrl+J newline · Ctrl+C cancel turn";
 
     private const string ModelControlHint = "Shift+Tab model";
 
@@ -136,6 +136,7 @@ internal static class CommandCenterGuidance
     public static IReadOnlyList<string> HumanPromptHints { get; } =
     [
         "Enter submit",
+        "PgUp/PgDn question",
         "Ctrl+J newline",
         "Ctrl+C cancel turn",
     ];

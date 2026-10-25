@@ -229,7 +229,7 @@ internal sealed class CommandCenterChatRunner(
                                 new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshIncantations),
                                 cancellationToken)
                             .ConfigureAwait(false);
-                        TryBeginHumanPrompt(evt);
+                        TryBeginHumanPrompt(evt, state);
                         break;
 
                     case IntelligenceEventType.ToolResult:
@@ -472,7 +472,7 @@ internal sealed class CommandCenterChatRunner(
             .ConfigureAwait(false);
     }
 
-    private void TryBeginHumanPrompt(IntelligenceEvent evt)
+    private void TryBeginHumanPrompt(IntelligenceEvent evt, CommandCenterState state)
     {
         string toolName = NormalizeToolName(evt.ToolCall?.Name ?? evt.Message);
         // Do not route petition_dungeon_master / send_commlink_alert (or aliases) through ask_human.
@@ -492,6 +492,8 @@ internal sealed class CommandCenterChatRunner(
         {
             return;
         }
+
+        state.Log.Append(SessionLogEntryKind.Status, $"Mage asks: {args.Question.Trim()}");
 
         humanPromptCoordinator.BeginPrompt(
             new HumanPromptRequest(callId, args.PromptId.Trim(), args.Question.Trim()));
