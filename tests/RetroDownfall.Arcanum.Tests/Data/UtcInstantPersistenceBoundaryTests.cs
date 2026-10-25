@@ -803,6 +803,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
     {
         string[] expectedOwners =
         [
+            // Memory search formats parsed Guid workspace identities only; it writes no timestamp.
+            "src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchRepository.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.Lifecycle.cs",

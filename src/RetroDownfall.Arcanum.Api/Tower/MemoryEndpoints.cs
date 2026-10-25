@@ -529,6 +529,28 @@ internal static class MemoryEndpoints
                 statusCode: StatusCodes.Status404NotFound);
         }
 
+        (string Path, string Label)? workspace = null;
+
+        if (Includes(request.Scope, MemorySearchScope.Workspace)
+            && !string.IsNullOrWhiteSpace(request.WorkspaceId))
+        {
+            workspace = await ResolveSearchWorkspaceAsync(
+                connection,
+                request.WorkspaceId,
+                context.RequestAborted).ConfigureAwait(false);
+
+            if (workspace is null)
+            {
+                Result<MemorySearchResponse> missing = Result<MemorySearchResponse>.Failure(
+                    new Error(ErrorCodes.Workspace.NotFound, "The workspace was not found."));
+
+                return Results.Json(
+                    ApiResponse<MemorySearchResponse>.FromResult(missing, TraceId(context)),
+                    ArcanumJsonContext.Default.ApiResponseMemorySearchResponse,
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+        }
+
         string query = request.Query.Trim();
 
         // One budget for the whole request, not one per scope: a per-scope ceiling would still let
@@ -590,7 +612,7 @@ internal static class MemoryEndpoints
                 await SearchWorkspaceAsync(
                     connection,
                     query,
-                    request.WorkspaceId,
+                    workspace,
                     results,
                     slice + 1,
                     bytes,
@@ -1369,44 +1391,42 @@ internal static class MemoryEndpoints
         }
     }
 
+    private static async Task<(string Path, string Label)?> ResolveSearchWorkspaceAsync(
+        DbConnection connection,
+        string workspaceId,
+        CancellationToken cancellationToken)
+    {
+        string selector = workspaceId.Trim();
+
+        bool isId = Guid.TryParse(selector, out Guid id);
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = isId
+            ? "SELECT Path, Name FROM Campaigns WHERE Id = @id LIMIT 1"
+            : "SELECT Path, Name FROM Campaigns WHERE NameLower = lower(@id) LIMIT 1";
+
+        AddParameter(command, "@id", isId ? GrimoireEntitySql.Format(id) : selector);
+
+        await using DbDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? (reader.GetString(0), reader.GetString(1))
+            : null;
+    }
+
     private static async Task SearchWorkspaceAsync(
         DbConnection connection,
         string query,
-        string? workspaceId,
+        (string Path, string Label)? workspace,
         List<MemorySearchResultDto> results,
         int limit,
         ResultByteBudget bytes,
         CancellationToken cancellationToken)
     {
-        string? workspacePath = null;
-
-        string? workspaceLabel = null;
-
-        if (!string.IsNullOrWhiteSpace(workspaceId))
-        {
-            await using DbCommand resolve = connection.CreateCommand();
-
-            resolve.CommandText =
-                "SELECT Path, Name FROM Campaigns WHERE Id = @id OR NameLower = lower(@id)";
-
-            AddParameter(resolve, "@id", workspaceId.Trim());
-
-            await using DbDataReader resolver = await resolve
-                .ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (await resolver.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                workspacePath = resolver.GetString(0);
-
-                workspaceLabel = resolver.GetString(1);
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(workspaceId) && workspacePath is null)
-        {
-            return;
-        }
+        string? workspacePath = workspace?.Path;
 
         await using DbCommand command = connection.CreateCommand();
 
@@ -1436,7 +1456,7 @@ internal static class MemoryEndpoints
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            string label = workspaceLabel ?? "indexed workspace";
+            string label = workspace?.Label ?? "indexed workspace";
 
             string content = reader.GetString(4);
 
