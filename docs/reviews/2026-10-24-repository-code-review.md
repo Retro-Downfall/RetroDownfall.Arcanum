@@ -3815,3 +3815,15 @@ Independent review exposed supplementary Unicode Format scalars bypassing char-l
 The acquisition correction changes only two stale enclosing-member strings from ImportCreateStagedAsync(4) to(5). Filesystem call arity3, exact negative database proof, scanner and closed count536 are unchanged. Existing guard RED, old-identity mutation RED, restored88 guard passes and zero-warning build support it. The earlier failed combined run remains recorded; a successful newer combined run is still required.
 
 The reviewed, locally integrated count is **64 of272 (23.5%)**:3 Critical,50 Important,11 Minor. **208 remain open**:26 Important,182 Minor. Full final qualification and delivery remain outstanding.
+
+### Campaign closure cost checkpoint — 2026-10-25
+
+Independently approved RV-057 candidate `5e53796c4325b2fe96ed6358aba548029f453fa7` is integrated in `85331593d609d9ed13eeaf91d14115744b5af33e`.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-057 | fixed `fc2dd15d`, reviewed prerequisite merge `5e53796c` | Complete Campaign closure now hashes legacy-framed rows incrementally with bounded Unicode encoding and adds exact keys directly to the planner-owned set. Redundant snapshot key strings are removed after tracing all in-memory and persistence consumers. Core24 adds all four indexes required by the full closure predicate, with frozen Core23 identity and atomic rollback/retry. No row cap, historical provenance loss or authority relaxation. |
+
+Initial behavioral RED exposed scan plans and 48,640,720 allocated bytes; the corrected 20,004-row fixture allocates 10,259,120 bytes. Deliberate regression reproduced four failures with five compatibility controls, followed by exact restored source checks. Affected verification passed 482 tests, catalog/package verification passed 150, and post-prerequisite verification passed 88; these filters overlap. The independent reviewer rebuilt and passed 52 focused checks, verified all reported log hashes, complete closure framing, snapshot consumers, index coverage, schema transitions and catalog shape. Builds have zero warnings/errors.
+
+The reviewed, locally integrated count is **65 of 272 (23.9%)**: 3 Critical, 51 Important, 11 Minor. **207 remain open**: 25 Important and 182 Minor. The prior combined run remains failed as recorded; a newer combined run and all final qualification/delivery gates are still required. RV-056 manifest storage remains separately open.
