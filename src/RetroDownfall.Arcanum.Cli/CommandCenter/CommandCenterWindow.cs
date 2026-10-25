@@ -1040,7 +1040,8 @@ internal sealed class CommandCenterWindow : Window, ICommandCenterSessionActionW
     }
 
     /// <summary>
-    /// Hard-modal HumanPrompt: question/promptId in the body Label; multiline answer TextView below.
+    /// Hard-modal HumanPrompt: complete question and prompt ID in a scrollable ListView;
+    /// multiline answer TextView below.
     /// </summary>
     public void ShowHumanPromptOverlay(string question, string promptId, string? statusMessage)
     {
