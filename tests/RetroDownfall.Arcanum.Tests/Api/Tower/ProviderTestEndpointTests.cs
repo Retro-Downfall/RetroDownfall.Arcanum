@@ -1,10 +1,14 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -18,7 +22,7 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 /// <summary>
 /// <c>POST /api/providers/test</c> — verifies the response-size cap (a hostile/misconfigured
 /// "OpenAI-compatible" endpoint must not be buffered unbounded) and that outbound URL validation
-/// failures return a generic client-facing message rather than the raw guard detail.
+/// failures return sanitized, actionable diagnostics rather than raw guard details.
 /// </summary>
 [Collection("ApiHost")]
 public sealed class ProviderTestEndpointTests : IAsyncLifetime
@@ -28,6 +32,8 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     private readonly ArcanumWebApplicationFactory _factory = new();
 
     private readonly RecordingDnsResolver _dns = new();
+
+    private readonly RecordingLogger _validationLogger = new();
 
     private HttpListener? _listener;
 
@@ -53,7 +59,12 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
     public ProviderTestEndpointTests()
     {
-        _factory.ServiceOverrides = services => services.AddSingleton<IDnsResolver>(_dns);
+        _factory.ServiceOverrides = services =>
+        {
+            services.AddSingleton<IDnsResolver>(_dns);
+
+            services.AddSingleton<ILoggerFactory>(new ProbeLoggerFactory(_validationLogger));
+        };
     }
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -259,7 +270,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Test_BlockedUrl_ReturnsGenericMessage_NotRawGuardDetail()
+    public async Task Test_UnresolvableUrl_ReturnsSanitizedDnsRemedy()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -286,9 +297,10 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         Assert.False(body!.IsSuccess);
 
-        // The generic client-facing message must not echo the raw guard detail (which can carry
-        // resolved hosts/IPs); the detailed reason is logged server-side only.
-        Assert.Contains("failed validation", body.Error?.Message, StringComparison.OrdinalIgnoreCase);
+        // A fixed reason and remedy must not echo the raw guard detail or resolved address.
+        Assert.Contains("DnsFailed", body.Error?.Message, StringComparison.Ordinal);
+
+        Assert.Contains("hostname", body.Error?.Message, StringComparison.Ordinal);
 
         Assert.DoesNotContain(UnresolvableHostName, body.Error?.Message ?? string.Empty, StringComparison.Ordinal);
 
@@ -297,6 +309,251 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         // resolves the name, the guard passes, and the endpoint issues a real outbound request from
         // the CI machine.
         Assert.Contains(UnresolvableHostName, _dns.Queries);
+    }
+
+    [Theory]
+    [InlineData("<html>not a provider</html>")]
+    [InlineData("{}")]
+    [InlineData("{\"data\":null}")]
+    [InlineData("{\"data\":[null]}")]
+    [InlineData("{\"data\":[{}]}")]
+    public async Task Test_MalformedModelList_IsUnreachableWithSanitizedRemedy(string payload)
+    {
+        string endpoint = StartListener(payload);
+
+        RecordingLogger logger = new();
+
+        ProviderTestResult result = await ProbeAsync(endpoint, logger);
+
+        Assert.False(result.IsReachable);
+
+        Assert.Contains("NotAModelList", result.Error);
+
+        Assert.Contains("/v1", result.Error);
+
+        AssertWarning(logger, "NotAModelList");
+    }
+
+    [Fact]
+    public async Task Test_ValidEmptyModelList_RemainsReachable()
+    {
+        ProviderTestResult result = await ProbeAsync(StartListener("{\"data\":[]}"), new RecordingLogger());
+
+        Assert.True(result.IsReachable);
+
+        Assert.Empty(result.ModelsFound);
+
+        Assert.Null(result.Error);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    public async Task Test_AuthenticationRefusal_ExplainsApiKeyWithoutLoggingSecrets(int status)
+    {
+        string endpoint = StartListener("secret provider body", status);
+
+        RecordingLogger logger = new();
+
+        ProviderTestResult result = await ProbeAsync(endpoint + "?token=query-secret", logger);
+
+        Assert.False(result.IsReachable);
+
+        Assert.Contains("Unauthorized", result.Error);
+
+        Assert.Contains("apiKey", result.Error);
+
+        AssertWarning(logger, "Unauthorized");
+
+        Assert.Contains("127.0.0.1", logger.Entries.Single().Message);
+
+        Assert.DoesNotContain("query-secret", logger.Entries.Single().Message);
+
+        Assert.DoesNotContain("secret provider body", logger.Entries.Single().Message);
+    }
+
+    [Fact]
+    public async Task Test_StoppedProvider_ExplainsConnectionFailureWithoutLoggingException()
+    {
+        // A just-stopped loopback listener reproduces a stopped local provider.
+        int port = GetFreeTcpPort();
+
+        RecordingLogger logger = new();
+
+        ProviderTestResult result = await ProbeAsync($"http://userinfo-secret:password-secret@provider.test:{port}/v1?token=query-secret", logger);
+
+        Assert.False(result.IsReachable);
+
+        Assert.Contains("ConnectionRefused", result.Error);
+
+        Assert.Contains("running", result.Error);
+
+        AssertWarning(logger, "ConnectionRefused");
+
+        Assert.DoesNotContain("query-secret", logger.Entries.Single().Message);
+
+        Assert.DoesNotContain("userinfo-secret", logger.Entries.Single().Message);
+
+        Assert.DoesNotContain("password-secret", logger.Entries.Single().Message);
+
+        Assert.DoesNotContain("127.0.0.1", logger.Entries.Single().Message);
+    }
+
+    [Theory]
+    [InlineData("http://no-such-host.invalid/v1", "DnsFailed")]
+    [InlineData("http://blocked.test/v1", "Blocked")]
+    public async Task Test_ConnectTimeDnsAndPolicyFailures_RemainDistinct(string endpoint, string reason)
+    {
+        RecordingLogger logger = new();
+
+        ProviderTestResult result = await ProbeAsync(endpoint, logger);
+
+        Assert.False(result.IsReachable);
+
+        Assert.Contains(reason, result.Error);
+
+        AssertWarning(logger, reason);
+
+        Assert.DoesNotContain("169.254.169.254", result.Error);
+
+        Assert.DoesNotContain("169.254.169.254", logger.Entries.Single().Message);
+
+        Assert.Single(_dns.Queries);
+    }
+
+    [Fact]
+    public async Task Test_UntrustedProviderCertificate_ExplainsTlsWithoutLoggingCertificateOrException()
+    {
+        using RSA key = RSA.Create(2048);
+
+        CertificateRequest certificateRequest = new("CN=private-certificate-secret", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+
+        using X509Certificate2 certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(5));
+
+        using TcpListener server = new(IPAddress.Loopback, 0);
+
+        server.Start();
+
+        int port = ((IPEndPoint)server.LocalEndpoint).Port;
+
+        using CancellationTokenSource cleanup = new(TimeSpan.FromSeconds(10));
+
+        Task handshake = Task.Run(async () =>
+        {
+            using TcpClient connection = await server.AcceptTcpClientAsync(cleanup.Token);
+
+            await using SslStream tls = new(connection.GetStream());
+
+            try
+            {
+                await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate }, cleanup.Token);
+            }
+            catch (Exception ex) when (ex is IOException or System.Security.Authentication.AuthenticationException)
+            {
+                // The production client refuses this self-signed certificate.
+            }
+        });
+
+        RecordingLogger logger = new();
+
+        try
+        {
+            ProviderTestResult result = await ProbeAsync($"https://provider.test:{port}/v1", logger);
+
+            Assert.False(result.IsReachable);
+
+            Assert.Contains("Tls", result.Error);
+
+            Assert.Contains("certificate", result.Error);
+
+            AssertWarning(logger, "Tls");
+
+            Assert.DoesNotContain("private-certificate-secret", logger.Entries.Single().Message);
+        }
+        finally
+        {
+            await cleanup.CancelAsync();
+
+            try
+            {
+                await handshake;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("localhost:11434/v1", "Validation.InvalidUrl", "InvalidUrl", "http")]
+    [InlineData("https://no-such-host.invalid/v1", "Provider.DnsFailed", "DnsFailed", "hostname")]
+    [InlineData("http://169.254.169.254/v1", "Security.BlockedOutboundUrl", "Blocked", "permitted")]
+    public async Task Test_UrlFailures_AreDistinctAndSanitized(string endpoint, string code, string reason, string remedy)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync("/api/providers/test", new StringContent(
+            JsonSerializer.Serialize(new ProviderTestRequest(endpoint, "api-secret", AiProviderKind.OpenAICompatible), ArcanumJsonContext.Default.ProviderTestRequest), Encoding.UTF8, "application/json"));
+
+        ApiResponse<ProviderTestResult>? body = JsonSerializer.Deserialize(await response.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.ApiResponseProviderTestResult);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(code, body!.Error?.Code);
+
+        Assert.Contains(reason, body.Error?.Message);
+
+        Assert.Contains(remedy, body.Error?.Message);
+
+        Assert.DoesNotContain(endpoint, body.Error?.Message ?? string.Empty);
+
+        Assert.True(_dns.Queries.Count <= 1);
+
+        AssertWarning(_validationLogger, reason);
+    }
+
+    private async Task<ProviderTestResult> ProbeAsync(string endpoint, RecordingLogger logger)
+    {
+        MethodInfo method = typeof(ProviderTestEndpoints).GetMethod("ProbeProviderAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
+
+        return await (Task<ProviderTestResult>)method.Invoke(null,
+            [new ProviderTestRequest(endpoint, "api-secret", AiProviderKind.OpenAICompatible), _dns, logger, CancellationToken.None])!;
+    }
+
+    private static void AssertWarning(RecordingLogger logger, string reason)
+    {
+        var entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, entry.Level);
+
+        Assert.Contains(reason, entry.Message);
+
+        Assert.Null(entry.Exception);
+
+        Assert.DoesNotContain("api-secret", entry.Message);
+    }
+
+    private sealed class ProbeLoggerFactory(RecordingLogger logger) : ILoggerFactory
+    {
+        public ILogger CreateLogger(string categoryName) => categoryName == "RetroDownfall.Arcanum.Api.Tower.ProviderTest" ? logger : NullLogger.Instance;
+
+        public void AddProvider(ILoggerProvider provider) { }
+
+        public void Dispose() { }
+    }
+
+    private sealed class RecordingLogger : ILogger
+    {
+        public List<(LogLevel Level, string Message, Exception? Exception)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add((logLevel, formatter(state, exception), exception));
     }
 
     /// <summary>
@@ -427,7 +684,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     }
 
     /// <summary>Starts a loopback HTTP listener that returns <paramref name="responseBody"/> for a single request, and returns its base URL.</summary>
-    private string StartListener(string responseBody)
+    private string StartListener(string responseBody, int statusCode = 200)
     {
         (HttpListener listener, int port) = BindLoopbackListener(GetFreeTcpPort, attempts: 5);
 
@@ -458,7 +715,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
             {
                 byte[] bytes = Encoding.UTF8.GetBytes(responseBody);
 
-                ctx.Response.StatusCode = 200;
+                ctx.Response.StatusCode = statusCode;
 
                 ctx.Response.ContentType = "application/json";
 
@@ -486,7 +743,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     private sealed class RecordingDnsResolver : IDnsResolver
     {
         private readonly Dictionary<string, IPAddress[]> _map =
-            new(StringComparer.OrdinalIgnoreCase) { ["127.0.0.1"] = [IPAddress.Loopback] };
+            new(StringComparer.OrdinalIgnoreCase) { ["127.0.0.1"] = [IPAddress.Loopback], ["provider.test"] = [IPAddress.Loopback], ["blocked.test"] = [IPAddress.Parse("169.254.169.254")] };
 
         public List<string> Queries { get; } = new();
 

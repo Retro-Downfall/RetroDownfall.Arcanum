@@ -71,6 +71,16 @@ public static class OutboundUrlGuard
         ValidateUrlAsync(url, allowPrivateAndLoopback: true, dnsResolver, cancellationToken);
 
     /// <summary>
+    /// Shares provider validation and resolution with the legacy guard, retaining typed URL and DNS
+    /// failure codes for the connectivity probe. Existing guard entry points keep their error contract.
+    /// </summary>
+    internal static Task<Result> ValidateProviderEndpointForProbeAsync(
+        string? url,
+        IDnsResolver dnsResolver,
+        CancellationToken cancellationToken = default) =>
+        ValidateUrlCoreAsync(url, allowPrivateAndLoopback: true, dnsResolver, diagnosticCodes: true, cancellationToken);
+
+    /// <summary>
     /// Validates public provider endpoints referenced by <see cref="ArcanumSettings"/> before
     /// persistence. Secret-backed targets such as CommLink are resolved and validated only at
     /// their dispatch boundary.
@@ -128,11 +138,19 @@ public static class OutboundUrlGuard
             DefaultDnsResolver,
             cancellationToken).ConfigureAwait(false);
 
-    public static async Task<Result<IReadOnlyList<IPAddress>>> ResolveValidatedAddressesAsync(
+    public static Task<Result<IReadOnlyList<IPAddress>>> ResolveValidatedAddressesAsync(
         string host,
         bool allowPrivateAndLoopback,
         IDnsResolver dnsResolver,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ResolveValidatedAddressesCoreAsync(host, allowPrivateAndLoopback, dnsResolver, diagnosticCodes: false, cancellationToken);
+
+    private static async Task<Result<IReadOnlyList<IPAddress>>> ResolveValidatedAddressesCoreAsync(
+        string host,
+        bool allowPrivateAndLoopback,
+        IDnsResolver dnsResolver,
+        bool diagnosticCodes,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dnsResolver);
 
@@ -157,13 +175,13 @@ public static class OutboundUrlGuard
         catch (SocketException)
         {
             return Result<IReadOnlyList<IPAddress>>.Failure(
-                new Error(BlockedErrorCode, $"Could not resolve host '{host}'."));
+                new Error(diagnosticCodes ? ErrorCodes.Provider.DnsFailed : BlockedErrorCode, $"Could not resolve host '{host}'."));
         }
 
         if (addresses.Length == 0)
         {
             return Result<IReadOnlyList<IPAddress>>.Failure(
-                new Error(BlockedErrorCode, $"Could not resolve host '{host}'."));
+                new Error(diagnosticCodes ? ErrorCodes.Provider.DnsFailed : BlockedErrorCode, $"Could not resolve host '{host}'."));
         }
 
         List<IPAddress> validated = new(addresses.Length);
@@ -251,38 +269,47 @@ public static class OutboundUrlGuard
             DefaultDnsResolver,
             cancellationToken).ConfigureAwait(false);
 
-    public static async Task<Result> ValidateUrlAsync(
+    public static Task<Result> ValidateUrlAsync(
         string? url,
         bool allowPrivateAndLoopback,
         IDnsResolver dnsResolver,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ValidateUrlCoreAsync(url, allowPrivateAndLoopback, dnsResolver, diagnosticCodes: false, cancellationToken);
+
+    private static async Task<Result> ValidateUrlCoreAsync(
+        string? url,
+        bool allowPrivateAndLoopback,
+        IDnsResolver dnsResolver,
+        bool diagnosticCodes,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(dnsResolver);
 
         if (string.IsNullOrWhiteSpace(url))
         {
-            return Result.Failure(new Error(BlockedErrorCode, "URL is required."));
+            return Result.Failure(new Error(diagnosticCodes ? ErrorCodes.Validation.InvalidUrl : BlockedErrorCode, "URL is required."));
         }
 
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out Uri? uri))
         {
-            return Result.Failure(new Error(BlockedErrorCode, "URL must be an absolute http or https URI."));
+            return Result.Failure(new Error(diagnosticCodes ? ErrorCodes.Validation.InvalidUrl : BlockedErrorCode, "URL must be an absolute http or https URI."));
         }
 
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
         {
-            return Result.Failure(new Error(BlockedErrorCode, "URL must use the http or https scheme."));
+            return Result.Failure(new Error(diagnosticCodes ? ErrorCodes.Validation.InvalidUrl : BlockedErrorCode, "URL must use the http or https scheme."));
         }
 
         if (string.IsNullOrWhiteSpace(uri.Host))
         {
-            return Result.Failure(new Error(BlockedErrorCode, "URL must include a host."));
+            return Result.Failure(new Error(diagnosticCodes ? ErrorCodes.Validation.InvalidUrl : BlockedErrorCode, "URL must include a host."));
         }
 
-        Result<IReadOnlyList<IPAddress>> resolved = await ResolveValidatedAddressesAsync(
+        Result<IReadOnlyList<IPAddress>> resolved = await ResolveValidatedAddressesCoreAsync(
             uri.Host,
             allowPrivateAndLoopback,
             dnsResolver,
+            diagnosticCodes,
             cancellationToken).ConfigureAwait(false);
 
         if (resolved.IsFailure)
@@ -348,10 +375,11 @@ public static class OutboundUrlGuard
 
         try
         {
-            resolved = await ResolveValidatedAddressesAsync(
+            resolved = await ResolveValidatedAddressesCoreAsync(
                 host,
                 allowPrivateAndLoopback,
                 dnsResolver,
+                diagnosticCodes: true,
                 connectToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ConnectDeadlineElapsed(connectScope, cancellationToken))
@@ -361,7 +389,7 @@ public static class OutboundUrlGuard
 
         if (resolved.IsFailure)
         {
-            throw new OutboundConnectException(resolved.Error.Message);
+            throw new OutboundConnectException(resolved.Error.Message) { ErrorCode = resolved.Error.Code };
         }
 
         IReadOnlyList<IPAddress> pinned = _pinnedAddressRewriterForTests is null
@@ -374,7 +402,7 @@ public static class OutboundUrlGuard
         {
             if (IsBlockedAddress(address, allowPrivateAndLoopback))
             {
-                throw new OutboundConnectException(BlockedMessage);
+                throw new OutboundConnectException(BlockedMessage) { ErrorCode = BlockedErrorCode };
             }
 
             Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)

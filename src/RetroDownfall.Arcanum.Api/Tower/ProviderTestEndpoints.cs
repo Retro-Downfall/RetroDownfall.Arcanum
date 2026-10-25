@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
@@ -60,25 +62,19 @@ internal static class ProviderTestEndpoints
                 }
 
                 Result urlValidation = await OutboundUrlGuard
-                    .ValidateProviderEndpointAsync(body.Endpoint, dnsResolver, ctx.RequestAborted)
+                    .ValidateProviderEndpointForProbeAsync(body.Endpoint, dnsResolver, ctx.RequestAborted)
                     .ConfigureAwait(false);
 
                 if (urlValidation.IsFailure)
                 {
-                    // Matches the sanitized posture already used below for probe connectivity
-                    // failures (W3.5): keep the detailed guard reason (which can carry resolved
-                    // hosts/IPs) in the server log; return a generic, non-revealing message to the
-                    // client.
-                    loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.Tower.ProviderTest")
-                        .LogDebug(
-                            "Provider test endpoint {Endpoint} failed outbound URL validation: {Reason}",
-                            body.Endpoint,
-                            urlValidation.Error.Message);
+                    (string reason, string message) = ValidationDiagnostic(urlValidation.Error.Code);
+
+                    LogFailure(loggerFactory.CreateLogger("RetroDownfall.Arcanum.Api.Tower.ProviderTest"), body.Endpoint, reason);
 
                     return Results.BadRequest(
                         ApiResponse<ProviderTestResult>.FromResult(
                             Result<ProviderTestResult>.Failure(
-                                new Error(urlValidation.Error.Code, "The endpoint URL failed validation (invalid, unresolvable, or blocked). See server logs for detail.")),
+                                new Error(urlValidation.Error.Code, message)),
                             traceId));
                 }
 
@@ -138,11 +134,11 @@ internal static class ProviderTestEndpoints
 
             if (!response.IsSuccessStatusCode)
             {
-                return new ProviderTestResult(
-                    false,
-                    stopwatch.ElapsedMilliseconds,
-                    [],
-                    $"Endpoint returned HTTP {(int)response.StatusCode}.");
+                return response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                    ? Failed("Unauthorized", "Unauthorized: Check apiKey and the provider's access permissions.")
+                    : OutboundUrlGuard.IsRedirectStatusCode(response.StatusCode)
+                        ? Failed("Blocked", "Blocked: Provider redirects are not followed. Use a permitted direct endpoint URL.")
+                        : Failed("HttpStatus", $"HttpStatus: Endpoint returned HTTP {(int)response.StatusCode}. Check the provider's /v1 base URL.");
             }
 
             string? payload = await TryReadCappedStringAsync(response.Content, MaxProbeResponseBytes, deadline.Token)
@@ -150,16 +146,14 @@ internal static class ProviderTestEndpoints
 
             if (payload is null)
             {
-                return new ProviderTestResult(
-                    false,
-                    stopwatch.ElapsedMilliseconds,
-                    [],
-                    "Endpoint response exceeded the maximum allowed size and was not read.");
+                return Failed("ResponseTooLarge", "Endpoint response exceeded the maximum allowed size and was not read.");
             }
 
-            string[] models = ParseOpenAiModels(payload);
+            string[]? models = ParseOpenAiModels(payload);
 
-            return new ProviderTestResult(true, stopwatch.ElapsedMilliseconds, models, null);
+            return models is null
+                ? Failed("NotAModelList", "NotAModelList: Expected an OpenAI model list. Check the provider's /v1 base URL.")
+                : new ProviderTestResult(true, stopwatch.ElapsedMilliseconds, models, null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -169,34 +163,65 @@ internal static class ProviderTestEndpoints
         {
             stopwatch.Stop();
 
-            return new ProviderTestResult(false, stopwatch.ElapsedMilliseconds, [], "The provider probe timed out.");
+            return Failed("Timeout", "The provider probe timed out.");
         }
         catch (HttpRequestException ex)
         {
             stopwatch.Stop();
 
-            // W3.5: keep the detail (which can carry internal hostnames/paths) in the server log;
-            // return a generic message to the client, matching the sanitized llama-pull posture.
-            logger.LogDebug(ex, "Provider probe to {Endpoint} failed with a connection error.", request.Endpoint);
+            for (Exception? cause = ex; cause is not null; cause = cause.InnerException)
+            {
+                if (cause is OutboundConnectException { ErrorCode: { } code })
+                {
+                    (string reason, string message) = ValidationDiagnostic(code);
 
-            return new ProviderTestResult(
-                false,
-                stopwatch.ElapsedMilliseconds,
-                [],
-                "The provider probe failed (connection, DNS, or TLS error). See server logs for detail.");
+                    return Failed(reason, message);
+                }
+
+                if (cause is SocketException { SocketErrorCode: SocketError.ConnectionRefused })
+                {
+                    return Failed("ConnectionRefused", "ConnectionRefused: Check that the provider is running and the endpoint port is correct.");
+                }
+            }
+
+            return ex.HttpRequestError switch
+            {
+                HttpRequestError.SecureConnectionError => Failed("Tls", "Tls: Check the endpoint's https scheme and trusted certificate configuration."),
+                HttpRequestError.NameResolutionError => Failed("DnsFailed", "DnsFailed: Check the endpoint hostname and DNS configuration."),
+                _ => Failed("ConnectionFailed", "ConnectionFailed: Check that the provider is running and the endpoint address and port are correct."),
+            };
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             stopwatch.Stop();
 
-            logger.LogWarning(ex, "Provider probe to {Endpoint} failed unexpectedly.", request.Endpoint);
-
-            return new ProviderTestResult(
-                false,
-                stopwatch.ElapsedMilliseconds,
-                [],
-                "The provider probe failed. See server logs for detail.");
+            return Failed("ProbeFailed", "ProbeFailed: Check the endpoint URL and provider configuration.");
         }
+
+        ProviderTestResult Failed(string reason, string message)
+        {
+            LogFailure(logger, request.Endpoint, reason);
+
+            return new ProviderTestResult(false, stopwatch.ElapsedMilliseconds, [], message);
+        }
+    }
+
+    private static (string Reason, string Message) ValidationDiagnostic(string code) => code switch
+    {
+        ErrorCodes.Validation.InvalidUrl => ("InvalidUrl", "InvalidUrl: Use an absolute http:// or https:// endpoint URL."),
+        ErrorCodes.Provider.DnsFailed => ("DnsFailed", "DnsFailed: Check the endpoint hostname and DNS configuration."),
+        _ => ("Blocked", "Blocked: Use an endpoint address permitted by the outbound URL policy."),
+    };
+
+    private static void LogFailure(ILogger logger, string endpoint, string reason)
+    {
+        string host = Uri.TryCreate(endpoint.Trim(), UriKind.Absolute, out Uri? uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && uri.Host.Length <= 253
+                ? uri.Host
+                : "unavailable";
+
+        logger.LogWarning("Provider test host {Host} failed: {Reason}.", host, reason);
     }
 
     /// <summary>
@@ -245,25 +270,23 @@ internal static class ProviderTestEndpoints
         }
     }
 
-    private static string[] ParseOpenAiModels(string json)
+    private static string[]? ParseOpenAiModels(string json)
     {
         try
         {
             OpenAiModelListResponse? response = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.OpenAiModelListResponse);
 
-            if (response?.Data is not { Count: > 0 } data)
+            if (response?.Data is not { } data
+                || data.Any(static model => model is null || string.IsNullOrWhiteSpace(model.Id)))
             {
-                return [];
+                return null;
             }
 
-            return data
-                .Select(static model => model.Id)
-                .Where(static id => !string.IsNullOrEmpty(id))
-                .ToArray();
+            return data.Select(static model => model.Id).ToArray();
         }
         catch (JsonException)
         {
-            return [];
+            return null;
         }
     }
 }

@@ -13,6 +13,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Security;
 /// </remarks>
 internal sealed class OutboundConnectException : HttpRequestException
 {
+    /// <summary>Typed policy or DNS refusal; transport failures have no policy code.</summary>
+    internal string? ErrorCode { get; init; }
+
     public OutboundConnectException(string message)
         : base(message)
     {
