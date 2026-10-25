@@ -3888,10 +3888,11 @@ public sealed partial class WizardIntelligenceProvider(
                                             AskHumanUnavailableMessage);
 
                                         toolLoopProgressEntries.Add(
-                                            new ToolLoopProgressEntry(
+                                            toolLoopProgressDetector.CreateEntry(
                                                 denied.ToolName,
-                                                covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty,
-                                                covenantScope?.Protection is null ? denied.ResultText : string.Empty));
+                                                denied.ArgsSnapshot,
+                                                denied.ResultText,
+                                                covenantScope?.Protection is not null));
 
                                         if (!streaming)
                                         {
@@ -4067,10 +4068,11 @@ public sealed partial class WizardIntelligenceProvider(
                                 }
 
                                 toolLoopProgressEntries.Add(
-                                    new ToolLoopProgressEntry(
+                                    toolLoopProgressDetector.CreateEntry(
                                         processed.ToolName,
-                                        covenantScope?.Protection is null ? processed.ArgsSnapshot : string.Empty,
-                                        covenantScope?.Protection is null ? processed.ResultText : string.Empty));
+                                        processed.ArgsSnapshot,
+                                        processed.ResultText,
+                                        covenantScope?.Protection is not null));
 
                                 (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
 
@@ -4256,9 +4258,16 @@ public sealed partial class WizardIntelligenceProvider(
                             ErrorCodes.Hub.NoProgressDetected,
                             "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.");
 
-                        logger.LogWarning(
-                            "Tool loop stopped for no progress; recurring round signature {ProgressSignature}.",
-                            toolLoopProgressDetector.RepeatedSignature);
+                        if (covenantScope?.Protection is null)
+                        {
+                            logger.LogWarning(
+                                "Tool loop stopped for no progress; recurring round signature {ProgressSignature}.",
+                                toolLoopProgressDetector.RepeatedSignature);
+                        }
+                        else
+                        {
+                            logger.LogWarning("Protected tool loop stopped for no progress.");
+                        }
 
                         inferenceTypedError = noProgressError;
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using RetroDownfall.Arcanum.Tests.Support;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Core.Intelligence.Models;
@@ -294,8 +295,13 @@ public sealed partial class WizardIntelligenceProviderTests
         var child = (await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).Value;
         await child.DisposeAsync();
         using var caller = new CancellationTokenSource();
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true,
-            StatelessMessages = [new CoreChatMessage("user", "parent")] };
+        var request = BaseRequest() with
+        {
+            Prompt = "parent",
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")]
+        };
         var binding = new MemoryDelegationRootBinding(request, h.Source.Invocation, h.RootId, root, h.Coordinator);
         var usage = new UsageDetails { InputTokenCount = 11, OutputTokenCount = 7, TotalTokenCount = 18 };
         const string marker = "protected late provider text";
@@ -418,8 +424,13 @@ public sealed partial class WizardIntelligenceProviderTests
         await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
         await using var root = await h.PrepareAsync();
         using var caller = new CancellationTokenSource();
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true,
-            StatelessMessages = [new CoreChatMessage("user", "parent")] };
+        var request = BaseRequest() with
+        {
+            Prompt = "parent",
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")]
+        };
         var binding = new MemoryDelegationRootBinding(request, h.Source.Invocation, h.RootId, root, h.Coordinator);
         var chat = new ScriptingChatClient();
         chat.EnqueueToolCall(ArcanumBuiltInToolNames.DelegateTask, "child", new()
@@ -469,8 +480,15 @@ public sealed partial class WizardIntelligenceProviderTests
         await using var root = await h.PrepareAsync();
         await using var child = (await h.Coordinator.ConsumeAsync(root, h.RootId, Guid.NewGuid(), h.Digest)).Value;
         using var schema = System.Text.Json.JsonDocument.Parse("""{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}""");
-        var request = BaseRequest() with { Prompt = "parent", SkipSpellRouting = true, DisableMcpTools = true,
-            StatelessMessages = [new CoreChatMessage("user", "parent")], ResponseFormat = "json_schema", ResponseFormatJsonSchema = StrictJsonSchema(schema.RootElement) };
+        var request = BaseRequest() with
+        {
+            Prompt = "parent",
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")],
+            ResponseFormat = "json_schema",
+            ResponseFormatJsonSchema = StrictJsonSchema(schema.RootElement)
+        };
         var chat = new ScriptingChatClient();
         chat.EnqueueResponse(new ChatResponse(new ChatMessage(ChatRole.Assistant, "invalid json"))
         {
@@ -501,6 +519,78 @@ public sealed partial class WizardIntelligenceProviderTests
         Assert.Equal("structured-output-retry", rows.GetString(0));
         Assert.Equal((13L, 5L), (rows.GetInt64(1), rows.GetInt64(2)));
         Assert.False(await rows.ReadAsync());
+    }
+
+    [SkippableTheory]
+    [InlineData("arguments")]
+    [InlineData("results")]
+    [InlineData("repeat")]
+    [InlineData("oscillate")]
+    [InlineData("denied-arguments")]
+    [InlineData("denied-repeat")]
+    public async Task MemoryDelegation_protected_tool_progress_preserves_equality_without_diagnostics(string scenario)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+        await using var root = await h.PrepareAsync();
+        var request = BaseRequest() with
+        {
+            Prompt = "parent",
+            SkipSpellRouting = true,
+            StatelessMessages = [new CoreChatMessage("user", "parent")]
+        };
+        var binding = new MemoryDelegationRootBinding(request, h.Source.Invocation, h.RootId, root, h.Coordinator);
+        var chat = new ScriptingChatClient();
+        chat.EnqueueToolCall(ArcanumBuiltInToolNames.DelegateTask, "child", new()
+        {
+            ["prompt"] = "explicit child input",
+            ["max_tokens"] = 100,
+            ["memory_grant"] = "memory",
+        });
+        bool denied = scenario.StartsWith("denied", StringComparison.Ordinal);
+        string toolName = denied ? "ask_human" : "read_file_chunk";
+        string argumentName = denied ? "question" : "relativePath";
+        chat.EnqueueToolCall(toolName, "read-a", new() { [argumentName] = "protected-a" });
+        chat.EnqueueToolCall(toolName, "read-b", new() { [argumentName] = scenario is "arguments" or "oscillate" or "denied-arguments" ? "protected-b" : "protected-a" });
+        if (scenario == "oscillate")
+        {
+            chat.EnqueueToolCall("read_file_chunk", "read-a-again", new() { ["relativePath"] = "protected-a" });
+        }
+        chat.EnqueueText("parent complete");
+        int reads = 0;
+        FakeMcpConnectionManager mcp = new();
+        mcp.Tools.Add(AIFunctionFactory.Create((string relativePath) =>
+        {
+            reads++;
+            return scenario == "results" ? $"protected-result-{reads}" : "protected-result";
+        }, "read_file_chunk", "reads protected evidence"));
+        TestCapturingLogger<WizardIntelligenceProvider> logger = new();
+        var wizard = CreateWizard(chat, mcp: mcp, logger: logger,
+            covenantDispatch: WizardIntelligenceProviderCovenantTests.EmptyDisclosureGate(),
+            subagentRunner: new MemoryDelegationCapturingRunner());
+        using var scope = MemoryDelegationRootBinding.Enter(binding);
+        InferenceAuditContext audit = new() { RequestType = "protected-progress" };
+        var result = await wizard.ExecutePromptAsync(request, h.Source.Invocation, default, audit);
+        Assert.True(root.IsConsumed);
+        Assert.Equal(scenario == "oscillate" ? 4 : 3, audit.ToolArgumentsJson.Count);
+
+        Assert.All(audit.ToolArgumentsJson, arguments => Assert.Equal(string.Empty, arguments));
+        if (scenario is "repeat" or "oscillate" or "denied-repeat")
+        {
+            Assert.True(result.IsFailure);
+            Assert.Equal(ErrorCodes.Hub.NoProgressDetected, result.Error.Code);
+            Assert.Equal(scenario == "oscillate" ? 4 : 3, chat.BufferedCallCount);
+            Assert.Contains(logger.Entries, entry => entry.Message.Contains("no progress", StringComparison.Ordinal));
+            Assert.DoesNotContain(logger.Entries, entry => entry.Message.Contains("signature", StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.ToString() : "");
+            Assert.Equal("parent complete", result.Value.Text);
+            Assert.Equal(4, chat.BufferedCallCount);
+        }
+        Assert.Equal(denied ? 0 : scenario == "oscillate" ? 3 : 2, reads);
+        Assert.DoesNotContain(logger.Entries, entry => entry.Message.Contains("protected-a", StringComparison.Ordinal)
+            || entry.Message.Contains("protected-b", StringComparison.Ordinal) || entry.Message.Contains("protected-result", StringComparison.Ordinal));
     }
 
     private sealed class BlockingDelegationUsageWriter(ITurnRunWriter inner, bool failAccounting) : ITurnRunWriter

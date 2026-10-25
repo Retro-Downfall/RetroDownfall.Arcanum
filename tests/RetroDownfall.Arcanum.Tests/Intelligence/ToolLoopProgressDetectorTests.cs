@@ -9,23 +9,19 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class ToolLoopProgressDetectorTests
 {
-
     [Fact]
     public void ObserveCompletedRound_flags_an_immediately_repeated_round()
     {
-
         ToolLoopProgressDetector detector = new();
 
         Assert.False(detector.ObserveCompletedRound(Round("a.cs")));
 
         Assert.True(detector.ObserveCompletedRound(Round("a.cs")));
-
     }
 
     [Fact]
     public void ObserveCompletedRound_flags_a_two_round_oscillation()
     {
-
         ToolLoopProgressDetector detector = new();
 
         // The classic confused-model cycle: read a, read b, read a, … Comparing only against the
@@ -37,13 +33,11 @@ public sealed class ToolLoopProgressDetectorTests
         Assert.True(detector.ObserveCompletedRound(Round("a.cs")));
 
         Assert.NotNull(detector.RepeatedSignature);
-
     }
 
     [Fact]
     public void ObserveCompletedRound_flags_a_three_round_oscillation()
     {
-
         ToolLoopProgressDetector detector = new();
 
         Assert.False(detector.ObserveCompletedRound(Round("a.cs")));
@@ -53,29 +47,38 @@ public sealed class ToolLoopProgressDetectorTests
         Assert.False(detector.ObserveCompletedRound(Round("c.cs")));
 
         Assert.True(detector.ObserveCompletedRound(Round("a.cs")));
-
     }
 
     [Fact]
     public void ObserveCompletedRound_never_stops_a_productive_loop()
     {
-
         ToolLoopProgressDetector detector = new();
 
         for (int round = 0; round < 64; round++)
         {
-
             Assert.False(
                 detector.ObserveCompletedRound(
                     Round($"file-{round.ToString(CultureInfo.InvariantCulture)}.cs")));
-
         }
 
         Assert.Null(detector.RepeatedSignature);
+    }
 
+    [Fact]
+    public void Protected_entries_keep_only_turn_local_keyed_equality_and_no_diagnostic_signature()
+    {
+        ToolLoopProgressDetector first = new();
+        ToolLoopProgressDetector second = new();
+        ToolLoopProgressEntry entry = first.CreateEntry("read_file", "protected-argument", "protected-result", protect: true);
+        Assert.Equal(entry, first.CreateEntry("read_file", "protected-argument", "protected-result", protect: true));
+        Assert.NotEqual(entry, second.CreateEntry("read_file", "protected-argument", "protected-result", protect: true));
+        Assert.DoesNotContain("protected-argument", entry.ArgumentsJson);
+        Assert.DoesNotContain("protected-result", entry.ResultText);
+        Assert.False(first.ObserveCompletedRound([entry]));
+        Assert.True(first.ObserveCompletedRound([entry]));
+        Assert.Null(first.RepeatedSignature);
     }
 
     private static IReadOnlyList<ToolLoopProgressEntry> Round(string path) =>
         [new ToolLoopProgressEntry("read_file", $$"""{"path":"{{path}}"}""", $"contents of {path}")];
-
 }
