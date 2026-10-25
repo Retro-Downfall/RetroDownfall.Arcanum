@@ -10,6 +10,44 @@ internal static class TestEncryptedBlobStore
             new FixedKeyProvider(),
             new EncryptedBlobStoreOptions { ChunkSize = chunkSize });
 
+    internal sealed class ReadFaultStore(
+        IEncryptedBlobStore inner,
+        Action<string, CancellationToken> beforeRead,
+        Func<string, CancellationToken, Task>? beforeReadAsync = null) : IEncryptedBlobStore
+    {
+        public Task<EncryptedBlobDescriptor> WriteAsync(string destinationPath, Stream plaintext,
+            EncryptedBlobPurpose purpose, ReadOnlyMemory<byte> authenticatedMetadata = default,
+            long? plaintextLength = null, CancellationToken cancellationToken = default) =>
+            inner.WriteAsync(destinationPath, plaintext, purpose, authenticatedMetadata, plaintextLength, cancellationToken);
+
+        public async Task<Stream> OpenReadAsync(string path, EncryptedBlobPurpose purpose,
+            CancellationToken cancellationToken = default)
+        {
+            beforeRead(path, cancellationToken);
+
+            if (beforeReadAsync is not null)
+            {
+                await beforeReadAsync(path, cancellationToken);
+            }
+
+            return await inner.OpenReadAsync(path, purpose, cancellationToken);
+        }
+
+        public Task<EncryptedBlobWriter> CreateWriterAsync(string destinationPath, EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default, CancellationToken cancellationToken = default) =>
+            inner.CreateWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken);
+
+        public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(string path,
+            EncryptedBlobPurpose purpose, CancellationToken cancellationToken = default) =>
+            inner.InspectAuthenticatedAsync(path, purpose, cancellationToken);
+
+        public Task<EncryptedBlobDescriptor> InspectAsync(string path, EncryptedBlobPurpose purpose,
+            bool verifyAllChunks, CancellationToken cancellationToken = default) =>
+            inner.InspectAsync(path, purpose, verifyAllChunks, cancellationToken);
+
+        public bool HasEnvelope(string path) => inner.HasEnvelope(path);
+    }
+
     private sealed class FixedKeyProvider : IFileEncryptionKeyProvider
     {
         private readonly FileEncryptionKeyMaterial _material = FileEncryptionKeyMaterial.Create(

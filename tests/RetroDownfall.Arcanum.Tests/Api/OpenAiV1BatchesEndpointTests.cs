@@ -550,6 +550,56 @@ public sealed class OpenAiV1BatchesEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResetBatch_UnavailableInput_DistinguishesCorruptionFromMissing(bool missing)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        OpenAiFileObject inputFile = await UploadInputFileAsync(client, "{}");
+
+        OpenAiBatchObject created = await CreateBatchAsync(client, inputFile.Id);
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        IBatchRepository batches = scope.ServiceProvider.GetRequiredService<IBatchRepository>();
+
+        Guid batchId = Guid.Parse(created.Id.AsSpan(6));
+
+        await batches.UpdateStatusAsync(batchId, BatchStatuses.InProgress, null, null, null);
+
+        string path = UploadedFileStorage.ResolvePath(Guid.Parse(inputFile.Id.AsSpan(5)));
+
+        if (missing)
+        {
+            File.Delete(path);
+        }
+        else
+        {
+            await File.WriteAllTextAsync(path, "not an encrypted envelope");
+        }
+
+        HttpResponseMessage response = await client.PostAsync($"/v1/batches/{created.Id}/reset", content: null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(missing ? "input file is missing" : "cannot be read or decrypted", json, StringComparison.Ordinal);
+
+        if (!missing)
+        {
+            Assert.Contains("re-upload", json, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("input file is missing", json, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(BatchStatuses.InProgress, (await batches.GetByIdAsync(batchId))!.Status);
+    }
+
     private static StringContent JsonContentOf(OpenAiBatchRequest request) =>
         new(JsonSerializer.Serialize(request, ArcanumJsonContext.Default.OpenAiBatchRequest), Encoding.UTF8, "application/json");
 

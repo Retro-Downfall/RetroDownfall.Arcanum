@@ -91,6 +91,14 @@ internal static partial class OpenAiV1Endpoints
                     "input_file_id",
                     StatusCodes.Status400BadRequest);
 
+            case BatchRecoveryStatus.InputUnreadable:
+                return JsonError(
+                    $"Batch '{id}' input file is present but cannot be read or decrypted; re-upload and create a new batch.",
+                    "invalid_request_error",
+                    "invalid_value",
+                    "input_file_id",
+                    StatusCodes.Status400BadRequest);
+
             case BatchRecoveryStatus.Succeeded:
                 break;
 

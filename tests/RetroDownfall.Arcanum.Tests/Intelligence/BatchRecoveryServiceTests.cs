@@ -261,6 +261,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = await SeedInputFileAsync("{}");
+
         Guid batchId = Guid.NewGuid();
 
         await _batches!.CreateAsync(
@@ -289,6 +290,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             await _batches.GetByIdAsync(batchId, CancellationToken.None));
 
         Assert.Equal(BatchStatuses.Validating, loaded.Status);
+
         Assert.Equal(
             BatchAccountingRecoveryClaimStatus.NotRecoverable,
             await accountingRecovery.ClaimRecoveryAsync(batchId, CancellationToken.None));
@@ -388,6 +390,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = await SeedInputFileAsync("{}");
+
         Guid batchId = Guid.NewGuid();
 
         await _batches!.CreateAsync(
@@ -403,7 +406,9 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         BlockingBatchAccountingRecovery accountingRecovery = new();
+
         ConcurrentBag<ScopedDatabaseIdentity> databases = [];
+
         BatchRecoveryService recovery = CreateRecoveryService(
             context => accountingRecovery.Wrap(
                 new BatchAccountingRecoveryStore(context, TimeProvider.System)),
@@ -420,6 +425,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Equal(BatchRecoveryStatus.InFlight, second.Status);
+
         Assert.Equal(1, accountingRecovery.ClaimCalls);
 
         accountingRecovery.ReleaseClaim();
@@ -427,15 +433,19 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         BatchRecoveryResult completed = await first;
 
         Assert.Equal(BatchRecoveryStatus.Succeeded, completed.Status);
+
         Assert.Equal(BatchStatuses.Validating, completed.Record!.Status);
+
         Assert.Equal(1, accountingRecovery.ClaimCalls);
 
         Assert.Equal(2, databases.Count);
+
         Assert.Equal(
             databases.Count,
             databases.Select(database => database.Context)
                 .Distinct(ReferenceEqualityComparer.Instance)
                 .Count());
+
         Assert.Equal(
             databases.Count,
             databases.Select(database => database.Connection)
@@ -469,8 +479,11 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid inputFileId = await SeedInputFileAsync("{}");
+
         Guid outputFileId = await SeedInputFileAsync("existing output");
+
         string outputPath = UploadedFileStorage.ResolvePath(outputFileId);
+
         Guid batchId = Guid.NewGuid();
 
         await _batches!.CreateAsync(
@@ -507,7 +520,9 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             CancellationToken.None));
 
         Assert.Equal(BatchLineCheckpointState.Dispatched, checkpoint.State);
+
         Assert.NotNull(await _files!.GetByIdAsync(outputFileId, CancellationToken.None));
+
         Assert.True(File.Exists(outputPath));
 
         BatchRecord unchanged = Assert.IsType<BatchRecord>(
@@ -555,10 +570,144 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         Assert.Equal(BatchStatuses.Validating, loaded!.Status);
     }
 
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconcileStrandedAsync_InputReadFailure_ContainsFailureAndContinues(bool accessDenied)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid lockedInput = await SeedInputFileAsync("{}");
+
+        Guid healthyInput = await SeedInputFileAsync("{}");
+
+        Guid lockedId = Guid.NewGuid();
+
+        Guid healthyId = Guid.NewGuid();
+
+        await _batches!.CreateAsync(new BatchRecord(lockedId, lockedInput, "/v1/chat/completions",
+            BatchStatuses.InProgress, DateTimeOffset.UtcNow.AddMinutes(-1), null, null, null));
+
+        await _batches.CreateAsync(new BatchRecord(healthyId, healthyInput, "/v1/chat/completions",
+            BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null));
+
+        TestEncryptedBlobStore.ReadFaultStore store = new(_blobStore, (path, _) =>
+        {
+            if (path == UploadedFileStorage.ResolvePath(lockedInput))
+            {
+                throw accessDenied ? new UnauthorizedAccessException("injected unreadable input")
+                    : new IOException("injected unreadable input");
+            }
+        });
+
+        await CreateRecoveryService(blobStore: store).ReconcileStrandedAsync();
+
+        Assert.Equal(BatchStatuses.Failed, (await _batches.GetByIdAsync(lockedId))!.Status);
+
+        Assert.Equal(BatchStatuses.Validating, (await _batches.GetByIdAsync(healthyId))!.Status);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Recovery_InputReadCancellation_PropagatesWithoutChangingAuthority(bool reset)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputId = await SeedInputFileAsync("{}");
+
+        Guid batchId = Guid.NewGuid();
+
+        await _batches!.CreateAsync(new BatchRecord(batchId, inputId, "/v1/chat/completions",
+            BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null));
+
+        Assert.True(await _batches.TryBeginLineAsync(batchId, 1, "paid-unknown"));
+
+        using CancellationTokenSource cancellation = new();
+
+        TestEncryptedBlobStore.ReadFaultStore store = new(_blobStore, (_, token) =>
+        {
+            cancellation.Cancel();
+
+            token.ThrowIfCancellationRequested();
+        });
+
+        BatchRecoveryService recovery = CreateRecoveryService(blobStore: store);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reset
+            ? recovery.ResetStuckBatchAsync(batchId, cancellation.Token)
+            : recovery.ReconcileStrandedAsync(cancellation.Token));
+
+        Assert.Equal(BatchStatuses.InProgress, (await _batches.GetByIdAsync(batchId))!.Status);
+
+        BatchLineCheckpoint checkpoint = Assert.Single(await _batches.ListLineCheckpointsAsync(batchId, 1, 1));
+
+        Assert.Equal(BatchLineCheckpointState.Dispatched, checkpoint.State);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResetStuckBatchAsync_InputReadFailure_ReportsUnreadableWithoutClaiming(bool accessDenied)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputId = await SeedInputFileAsync("{}");
+
+        Guid batchId = Guid.NewGuid();
+
+        await _batches!.CreateAsync(new BatchRecord(batchId, inputId, "/v1/chat/completions",
+            BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null));
+
+        Assert.True(await _batches.TryBeginLineAsync(batchId, 1, "paid-unknown"));
+
+        TestEncryptedBlobStore.ReadFaultStore store = new(_blobStore, (_, _) =>
+        {
+            throw accessDenied ? new UnauthorizedAccessException("injected unreadable input")
+                : new IOException("injected unreadable input");
+        });
+
+        BatchRecoveryResult result = await CreateRecoveryService(blobStore: store).ResetStuckBatchAsync(batchId);
+
+        Assert.Equal(BatchRecoveryStatus.InputUnreadable, result.Status);
+
+        Assert.Equal(BatchStatuses.InProgress, (await _batches.GetByIdAsync(batchId))!.Status);
+
+        BatchLineCheckpoint checkpoint = Assert.Single(await _batches.ListLineCheckpointsAsync(batchId, 1, 1));
+
+        Assert.Equal(BatchLineCheckpointState.Dispatched, checkpoint.State);
+
+        BatchAccountingRecoveryStore accounting = new(_db!, TimeProvider.System);
+
+        Assert.Equal(BatchAccountingRecoveryClaimStatus.Claimed, await accounting.ClaimRecoveryAsync(batchId));
+    }
+
+    [SkippableFact]
+    public async Task ReconcileStrandedAsync_AccountingFailure_StillBlocksStartup()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid inputId = await SeedInputFileAsync("{}");
+
+        Guid batchId = Guid.NewGuid();
+
+        await _batches!.CreateAsync(new BatchRecord(batchId, inputId, "/v1/chat/completions",
+            BatchStatuses.InProgress, DateTimeOffset.UtcNow, null, null, null));
+
+        IOException failure = new("injected accounting-store failure");
+
+        BatchRecoveryService recovery = CreateRecoveryService(_ => new RejectingBatchAccountingRecoveryStore(failure));
+
+        Assert.Same(failure, await Assert.ThrowsAsync<IOException>(() => recovery.ReconcileStrandedAsync()));
+
+        Assert.Equal(BatchStatuses.InProgress, (await _batches.GetByIdAsync(batchId))!.Status);
+    }
+
     private BatchRecoveryService CreateRecoveryService(
         Func<ArcanumDbContext, IBatchAccountingRecoveryStore>? accountingRecoveryFactory = null,
         ConcurrentBag<ScopedDatabaseIdentity>? scopedDatabases = null,
-        Action<BatchProcessingService>? observeProcessing = null)
+        Action<BatchProcessingService>? observeProcessing = null,
+        IEncryptedBlobStore? blobStore = null)
     {
         ServiceCollection services = new();
 
@@ -603,16 +752,17 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         return new BatchRecoveryService(
             root.GetRequiredService<IServiceScopeFactory>(),
             processing,
-            _blobStore,
+            blobStore ?? _blobStore,
             NullLogger<BatchRecoveryService>.Instance);
     }
 
-    private sealed class RejectingBatchAccountingRecoveryStore : IBatchAccountingRecoveryStore
+    private sealed class RejectingBatchAccountingRecoveryStore(Exception? failure = null) : IBatchAccountingRecoveryStore
     {
         public Task<BatchAccountingRecoveryClaimStatus> ClaimRecoveryAsync(
             Guid batchId,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(BatchAccountingRecoveryClaimStatus.NotRecoverable);
+            failure is null ? Task.FromResult(BatchAccountingRecoveryClaimStatus.NotRecoverable)
+                : Task.FromException<BatchAccountingRecoveryClaimStatus>(failure);
 
         public Task<bool> TryCompleteRecoveryAsync(
             Guid batchId,
@@ -650,7 +800,9 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
             CancellationToken cancellationToken = default)
         {
             _ = Interlocked.Increment(ref _claimCalls);
+
             _claimEntered.TrySetResult();
+
             await _releaseClaim.Task.WaitAsync(cancellationToken);
 
             return await inner.ClaimRecoveryAsync(batchId, cancellationToken);
@@ -682,6 +834,7 @@ public sealed class BatchRecoveryServiceTests : IAsyncLifetime
         string path = UploadedFileStorage.ResolvePath(id);
 
         byte[] plaintext = System.Text.Encoding.UTF8.GetBytes(jsonlContent);
+
         EncryptedBlobDescriptor descriptor = await _blobStore.WriteAsync(
             path,
             new MemoryStream(plaintext),
