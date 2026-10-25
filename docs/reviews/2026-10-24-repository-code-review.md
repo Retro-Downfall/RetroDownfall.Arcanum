@@ -3777,3 +3777,23 @@ RV-074 is fixed by independently approved commit `c836932a8fc566d4f272670fd350d8
 Initial behavioral RED and a deliberate production revert each failed seven cases with six controls passing. Exact restored verification passed 314 related CLI/documentation tests without skips; the build and required style checks passed with zero warnings/errors. Independent review checked all source/log hashes and reran 21 focused tests successfully. Pagination remains a separate open finding.
 
 The reviewed, locally integrated count is **54 of 272 (19.9%)**: 3 Critical, 45 Important, 6 Minor. **218 remain open**: 31 Important and 187 Minor. The latest bounded combined evidence still belongs to `cd4dfc1d`; newer combined qualification and final CI/AOT/live delivery gates are pending.
+
+
+### Batch and erasure-guidance checkpoint — 2026-10-25
+
+Independently reviewed batch commit `0cacf6b6` plus review repair `61b2425d3e0710d87a04cbf9693a214cad477753`, and erasure-guidance commit `300a0558f2bdd9325f4295240ab8b3c90f859b77`, are integrated locally in candidate `bb5857b62dda19759c35ba2fc9c8917cd87d584a`.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-005 | fixed `61b2425d` | Missing, unreadable and undecryptable batch input reaches failure bookkeeping and a published diagnostic. Reset preserves those distinctions. Original and mutation failures precede restored tests. |
+| RV-080 | fixed `61b2425d` | Unexpected faults after a fully started page expose an honest continuation boundary when EOF is unknown. Known EOF does not invent a request. Independent review repaired occupied-note collisions on resumed paid checkpoints; diagnostic slots remain separate from input boundaries and guidance prohibits replay of saved results, including later gaps. Refused diagnostic insertion no longer silently succeeds. |
+| RV-081 | fixed `61b2425d` | Per-batch input I/O/access/decryption faults no longer abort startup reconciliation of other batches. Cancellation and accounting/storage authority failures remain outside the containment catch. |
+| RV-087 | fixed `61b2425d` | Missing input produces an inspectable error artifact and content-free batch/input identification in logs, without provider dispatch or overwriting paid checkpoint authority. |
+| RV-088 | fixed `61b2425d` | Operator cancellation uses cancellation-specific text while preserving provider-charge uncertainty. Independent review exposed current-page sealing before cancellation inspection; deterministic authenticated-open cancellation now verifies that path and retains genuine host-interruption text in the control. |
+| RV-058 | fixed `300a0558` | Diagnosis selects erasure guidance from each operation's recorded kind, checkpoint version and terminal code before grouping. Ordinary and erasure classes with equal kind/error keep separate counts and instructions; no operation IDs or checkpoint contents enter public health detail. Existing recovery authority is unchanged. |
+
+Batch restored verification passed 227 tests without skips and a zero-warning build. The subsequent 83-documentation-test run overlaps those 227 and is not an additional unique count. Round-1 mutation reproduced four failures with two controls. Erasure-guidance RED/mutation each reproduced eight failures with ten controls, restored190 checks passed, and independent review reran29 tests successfully.
+
+The prior54-finding combined candidate `8dab3558` completed its Arcanum run with **2,841 passes, 2 failures and 1 Windows-only skip**, after a zero-warning build. Both failures correctly detect the spell import helper's five-parameter signature against its stale four-parameter acquisition catalog entry. This is a remediation integration omission being repaired without weakening the scanner; **that run is not green**, and its Forge stage did not run.
+
+The reviewed, locally integrated count is **60 of272 (22.1%)**:3 Critical,47 Important,10 Minor. **212 remain open**:29 Important,183 Minor. The catalog correction, newer combined qualification and full final CI/AOT/live gates remain outstanding.
