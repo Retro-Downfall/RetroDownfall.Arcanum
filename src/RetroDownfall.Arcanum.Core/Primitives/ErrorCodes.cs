@@ -518,8 +518,14 @@ public static class ErrorCodes
     /// <summary>Codex — the per-campaign CODEX context document.</summary>
     public static class Codex
     {
-        /// <summary>The submitted CODEX body exceeds the configured UTF-8 byte ceiling.</summary>
+        /// <summary>The CODEX body exceeds the effective UTF-8 byte ceiling.</summary>
         public const string ContentTooLarge = "Codex.ContentTooLarge";
+
+        /// <summary>The CODEX file is not valid UTF-8 text.</summary>
+        public const string InvalidEncoding = "Codex.InvalidEncoding";
+
+        /// <summary>The CODEX file could not be read securely as an unaliased regular file.</summary>
+        public const string Unreadable = "Codex.Unreadable";
 
         /// <summary>
         /// <c>CODEX.md</c> is a link resolving outside its campaign root or the Grimoire directory. A

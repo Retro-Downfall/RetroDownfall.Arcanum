@@ -42,6 +42,7 @@
 
       <TextBox Grid.Column="0"
                Text="{Binding Content}"
+               IsReadOnly="{Binding !CanSave}"
                AcceptsReturn="True"
                TextWrapping="Wrap"
                FontFamily="{DynamicResource ForgeCodeFontFamily}"

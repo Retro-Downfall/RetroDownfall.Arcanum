@@ -15,7 +15,6 @@ namespace RetroDownfall.TheForge.Ux.ViewModels.Workbench;
 /// </summary>
 public sealed partial class CodexViewModel : ViewModelBase
 {
-
     private readonly ICodexDataSource _dataSource;
 
     private readonly FoundryFloorViewModel _foundryFloor;
@@ -32,7 +31,14 @@ public sealed partial class CodexViewModel : ViewModelBase
     private bool _exists;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
     private bool _isBusy;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand))]
+    private bool _isLoaded;
 
     [ObservableProperty]
     private string? _lastError;
@@ -61,7 +67,6 @@ public sealed partial class CodexViewModel : ViewModelBase
         FoundryFloorViewModel foundryFloor,
         IConfirmationDialogService confirmationDialog)
     {
-
         CampaignId = campaignId;
 
         _dataSource = dataSource;
@@ -73,7 +78,6 @@ public sealed partial class CodexViewModel : ViewModelBase
         Title = campaignId is { } id
             ? $"Codex: {id:D}"
             : "Codex: global";
-
     }
 
     public override DocumentKind? Kind => DocumentKind.Codex;
@@ -81,6 +85,8 @@ public sealed partial class CodexViewModel : ViewModelBase
     public Guid? CampaignId { get; }
 
     public bool IsGlobal => CampaignId is null;
+
+    public bool CanSave => IsLoaded && !IsBusy;
 
     public bool IsSourceVisible => MarkdownViewModeHelper.IsSourceVisible(ViewMode);
 
@@ -94,6 +100,7 @@ public sealed partial class CodexViewModel : ViewModelBase
     [RelayCommand]
     public async Task LoadAsync(CancellationToken cancellationToken)
     {
+        IsLoaded = false;
 
         IsBusy = true;
 
@@ -101,63 +108,46 @@ public sealed partial class CodexViewModel : ViewModelBase
 
         try
         {
-
             DataSourceResult<CodexContentDto> result = CampaignId is { } campaignId
                 ? await _dataSource.GetCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(true)
                 : await _dataSource.GetGlobalCodexAsync(cancellationToken).ConfigureAwait(true);
 
             if (result.Success && result.Data is { } dto)
             {
-
                 ApplyDto(dto);
 
+                IsLoaded = true;
+
                 StatusText = Exists ? "Loaded." : "Codex not found — empty editor ready.";
-
-            }
-            else if (result.Success)
-            {
-
-                Content = string.Empty;
-
-                Exists = false;
-
-                CodexPath = null;
-
-                StatusText = "Codex not found — empty editor ready.";
-
             }
             else
             {
-
                 LastError = result.ErrorMessage ?? "Failed to load Codex.";
 
                 StatusText = "Load failed.";
 
                 _foundryFloor.AppendLine($"Codex load failed: {LastError}");
-
             }
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Codex load error: {ex.Message}");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanSave))]
     public async Task SaveAsync(CancellationToken cancellationToken)
     {
+        if (!CanSave)
+        {
+            return;
+        }
 
         IsBusy = true;
 
@@ -165,60 +155,46 @@ public sealed partial class CodexViewModel : ViewModelBase
 
         try
         {
-
             DataSourceResult<CodexContentDto> result = CampaignId is { } campaignId
                 ? await _dataSource.PutCampaignCodexAsync(campaignId, Content, cancellationToken).ConfigureAwait(true)
                 : await _dataSource.PutGlobalCodexAsync(Content, cancellationToken).ConfigureAwait(true);
 
             if (result.Success && result.Data is { } dto)
             {
-
                 ApplyDto(dto);
 
                 StatusText = "Saved.";
-
             }
             else if (result.Success)
             {
-
                 Exists = true;
 
                 StatusText = "Saved.";
-
             }
             else
             {
-
                 LastError = result.ErrorMessage ?? "Failed to save Codex.";
 
                 StatusText = "Save failed.";
 
                 _foundryFloor.AppendLine($"Codex save failed: {LastError}");
-
             }
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Codex save error: {ex.Message}");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     [RelayCommand]
     public async Task DeleteAsync(CancellationToken cancellationToken)
     {
-
         // Deleting CODEX.md throws away hand-authored campaign guidance that this editor cannot
         // restore, so it is confirmed like every other destructive Workbench action.
         bool confirmed = await _confirmationDialog
@@ -233,9 +209,7 @@ public sealed partial class CodexViewModel : ViewModelBase
 
         if (!confirmed)
         {
-
             return;
-
         }
 
         IsBusy = true;
@@ -244,53 +218,41 @@ public sealed partial class CodexViewModel : ViewModelBase
 
         try
         {
-
             DataSourceResult<bool> result = CampaignId is { } campaignId
                 ? await _dataSource.DeleteCampaignCodexAsync(campaignId, cancellationToken).ConfigureAwait(true)
                 : await _dataSource.DeleteGlobalCodexAsync(cancellationToken).ConfigureAwait(true);
 
             if (result.Success)
             {
-
                 Content = string.Empty;
 
                 Exists = false;
 
                 StatusText = "Deleted.";
-
             }
             else
             {
-
                 LastError = result.ErrorMessage ?? "Failed to delete Codex.";
 
                 StatusText = "Delete failed.";
 
                 _foundryFloor.AppendLine($"Codex delete failed: {LastError}");
-
             }
-
         }
         catch (Exception ex)
         {
-
             LastError = ex.Message;
 
             _foundryFloor.AppendLine($"Codex delete error: {ex.Message}");
-
         }
         finally
         {
-
             IsBusy = false;
-
         }
-
     }
 
     private void ApplyDto(CodexContentDto dto)
     {
-
         Content = dto.Content ?? string.Empty;
 
         Exists = dto.Exists;
@@ -299,11 +261,7 @@ public sealed partial class CodexViewModel : ViewModelBase
 
         if (!string.IsNullOrWhiteSpace(dto.Path))
         {
-
             Title = IsGlobal ? $"Codex: {dto.Path}" : $"Codex: {dto.Path}";
-
         }
-
     }
-
 }

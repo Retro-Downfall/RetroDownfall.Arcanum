@@ -96,6 +96,116 @@ public sealed class CodexEndpointTests : IDisposable
         Assert.Equal("Codex.PathNotContained", codex.Error.Code);
     }
 
+    [Theory]
+    [InlineData(false, "Codex.InvalidEncoding")]
+    [InlineData(true, "Codex.ContentTooLarge")]
+    public async Task ReadCodexDtoAsync_refuses_unreadable_content_without_changing_bytes(bool overCap, string code)
+    {
+        string path = Path.Combine(_root, "CODEX.md");
+
+        byte[] original = overCap ? new byte[256 * 1024 + 1] : [0x23, 0x20, 0xE9];
+
+        await File.WriteAllBytesAsync(path, original);
+
+        Result<CodexContentDto> result = await CodexEndpoints.ReadCodexDtoAsync(_root, path, CancellationToken.None);
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(path));
+
+        Assert.True(result.IsFailure, "An unreadable CODEX must not become an editable empty success.");
+
+        Assert.Equal(code, result.Error.Code);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReadCodexDtoAsync_absent_and_valid_empty_files_are_successful(bool exists)
+    {
+        string path = Path.Combine(_root, "CODEX.md");
+
+        if (exists)
+        {
+            await File.WriteAllTextAsync(path, string.Empty);
+        }
+
+        Result<CodexContentDto> result = await CodexEndpoints.ReadCodexDtoAsync(_root, path, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(exists, result.Value.Exists);
+
+        Assert.Equal(string.Empty, result.Value.Content);
+    }
+
+    [SkippableFact]
+    public async Task ReadCodexDtoAsync_refuses_a_contained_symlink_without_changing_target()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege on Windows.");
+
+        string path = Path.Combine(_root, "CODEX.md");
+
+        string target = Path.Combine(_root, "guidance.md");
+
+        await File.WriteAllTextAsync(target, "original guidance");
+
+        File.CreateSymbolicLink(path, target);
+
+        Result<CodexContentDto> result = await CodexEndpoints.ReadCodexDtoAsync(_root, path, CancellationToken.None);
+
+        Assert.Equal("original guidance", await File.ReadAllTextAsync(target));
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Codex.Unreadable", result.Error.Code);
+    }
+
+    [SkippableFact]
+    public async Task ReadCodexDtoAsync_refuses_a_file_without_read_permission()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Skip.If(true, "Unix permissions are unavailable on Windows.");
+
+            return;
+        }
+
+        string path = Path.Combine(_root, "CODEX.md");
+
+        await File.WriteAllTextAsync(path, "original guidance");
+
+        File.SetUnixFileMode(path, UnixFileMode.UserWrite);
+
+        try
+        {
+            Result<CodexContentDto> result = await CodexEndpoints.ReadCodexDtoAsync(_root, path, CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal("Codex.Unreadable", result.Error.Code);
+        }
+        finally
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        Assert.Equal("original guidance", await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task ReadCodexDtoAsync_preserves_caller_cancellation()
+    {
+        string path = Path.Combine(_root, "CODEX.md");
+
+        await File.WriteAllTextAsync(path, "original guidance");
+
+        using CancellationTokenSource cancelled = new();
+
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => CodexEndpoints.ReadCodexDtoAsync(_root, path, cancelled.Token));
+    }
+
     [Fact]
     public async Task WriteCodexAsync_then_ReadCodexDtoAsync_round_trips_a_contained_codex()
     {
