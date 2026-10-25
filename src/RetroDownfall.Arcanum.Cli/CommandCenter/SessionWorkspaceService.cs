@@ -56,7 +56,8 @@ internal enum SessionForkOutcome
 internal sealed record SessionForkResult(
     SessionForkOutcome Outcome,
     Guid? ForkSessionId = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    SessionForkPreviewDto? Preview = null);
 
 /// <summary>
 /// Session list / resume / new / startup restore for Command Center.
@@ -458,7 +459,8 @@ internal sealed class SessionWorkspaceService(
         CommandCenterState state,
         ForkSessionRequest request,
         CancellationToken cancellationToken,
-        bool attachmentCopyConfirmed = false)
+        bool attachmentCopyConfirmed = false,
+        string? confirmedCopyFingerprint = null)
     {
         ArgumentNullException.ThrowIfNull(state);
         if (state.SessionId is not { } sourceId)
@@ -469,23 +471,28 @@ internal sealed class SessionWorkspaceService(
         state.TransientStatus = "Forking session…";
         try
         {
-            Result<SessionAttachmentDto[]> sourceAttachments = await apiClient
-                .GetSessionAttachmentsAsync(sourceId, cancellationToken).ConfigureAwait(false);
-            if (!sourceAttachments.IsSuccess)
+            Result<SessionForkPreviewDto> previewResult = await apiClient
+                .PreviewSessionForkAsync(sourceId, request, cancellationToken).ConfigureAwait(false);
+            if (previewResult.IsFailure)
             {
-                string message = FormatForkError(sourceAttachments.Error);
-                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: message);
+                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: FormatForkError(previewResult.Error));
+            }
+            SessionForkPreviewDto preview = previewResult.Value;
+            bool changed = confirmedCopyFingerprint is not null
+                && !string.Equals(confirmedCopyFingerprint, preview.CopyFingerprint, StringComparison.Ordinal);
+            if (changed || (!attachmentCopyConfirmed && (preview.AttachmentCount >= 10 || preview.AttachmentBytes >= 10 * 1024 * 1024)))
+            {
+                string message = (changed ? "The fork selection changed. " : string.Empty)
+                    + $"This fork will copy {preview.AttachmentCount} attachment(s) ({preview.AttachmentBytes / 1024d / 1024d:F1} MiB). "
+                    + "Run `/fork confirm` to continue.";
+                return new SessionForkResult(SessionForkOutcome.ConfirmationRequired, ErrorMessage: message, Preview: preview);
             }
 
-            SessionAttachmentDto[] attachments = sourceAttachments.Value ?? [];
-            long attachmentBytes = attachments.Sum(static attachment => attachment.ByteLength);
-            if (!attachmentCopyConfirmed && (attachments.Length >= 10 || attachmentBytes >= 10 * 1024 * 1024))
+            if (state.SessionId != sourceId)
             {
-                string message =
-                    $"This fork will copy {attachments.Length} attachment(s) ({attachmentBytes / 1024d / 1024d:F1} MiB). "
-                    + "Run `/fork confirm` to continue.";
-                return new SessionForkResult(SessionForkOutcome.ConfirmationRequired, ErrorMessage: message);
+                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: "The active session changed. Start the fork again.");
             }
+            request = request with { ExpectedCopyFingerprint = preview.CopyFingerprint };
 
             Result<SessionDetailDto> forkResult = await apiClient
                 .ForkSessionAsync(sourceId, request, cancellationToken).ConfigureAwait(false);
@@ -668,7 +675,7 @@ internal sealed class SessionWorkspaceService(
 
         if (state.SessionId != sessionId)
         {
-            state.SessionId = sessionId;
+            state.ApplySessionMeta(sessionId, state.SessionTitle, state.SessionStatus, state.SessionEntryCount);
         }
 
         if (string.IsNullOrWhiteSpace(state.SessionTitle))

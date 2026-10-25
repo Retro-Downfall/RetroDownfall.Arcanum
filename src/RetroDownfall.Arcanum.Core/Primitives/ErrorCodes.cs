@@ -288,6 +288,10 @@ public static class ErrorCodes
         public const string EmptyContent = "Session.EmptyContent";
 
         /// <summary>The source session's fork lineage reached the code-owned depth limit.</summary>
+        public const string InvalidForkCutoff = "Session.InvalidForkCutoff";
+
+        public const string ForkChanged = "Session.ForkChanged";
+
         public const string ForkDepthExceeded = "Session.ForkDepthExceeded";
 
         /// <summary>The optional <c>upToEntryId</c> fork cutoff does not identify an entry belonging to the source session.</summary>

@@ -376,6 +376,8 @@ public sealed class SessionAttachmentIndexingTests : IAsyncLifetime
             "text/plain",
             "fork me");
 
+        await SessionBindingWriters.BackfillExistingAsync(_db!);
+
         Result<Session> result = await sessions.ForkAsync(
             source.Id,
             new ForkSessionRequest(),

@@ -59,6 +59,16 @@ internal sealed class ShellCommandDispatcher(
     {
         ParsedShellCommand parsed = parser.Parse(input);
 
+        bool changesSession = parsed.Kind is ShellCommandKind.Clear or ShellCommandKind.SessionResume
+            or ShellCommandKind.SessionFork or ShellCommandKind.BranchParent or ShellCommandKind.BranchChild
+            || (parsed.Kind == ShellCommandKind.SessionArchive
+                && Guid.TryParse(parsed.Argument, out Guid archiveId) && archiveId == state.SessionId);
+        if (changesSession && CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out _))
+        {
+            state.Log.Append(SessionLogEntryKind.Status, CommandCenterSessionMutationGuard.GeneratingDenyMessage);
+            return ShellDispatchResult.Continue;
+        }
+
         switch (parsed.Kind)
         {
             case ShellCommandKind.Exit:
@@ -70,16 +80,6 @@ internal sealed class ShellCommandDispatcher(
             // Claude's /clear starts a fresh conversation rather than only wiping the view, so it
             // absorbs what used to be /session new.
             case ShellCommandKind.Clear:
-                if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? denyClear))
-                {
-                    if (denyClear is not null)
-                    {
-                        state.Log.Append(SessionLogEntryKind.Status, CommandCenterSessionMutationGuard.GeneratingDenyMessage);
-                    }
-
-                    return ShellDispatchResult.Continue;
-                }
-
                 state.Log.Clear();
                 state.Incantations.Clear();
                 sessionWorkspace.StartNewSession(state);
@@ -218,97 +218,13 @@ internal sealed class ShellCommandDispatcher(
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.SessionResume:
-                if (CommandCenterSessionMutationGuard.TryDenySessionMutationWhileGenerating(state, out CommandCenterUiUpdate? denyUpdate))
-                {
-                    if (denyUpdate is not null)
-                    {
-                        state.Log.Append(SessionLogEntryKind.Status, CommandCenterSessionMutationGuard.GeneratingDenyMessage);
-                    }
-
-                    return ShellDispatchResult.Continue;
-                }
-
                 return await ResumeSessionAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
 
             case ShellCommandKind.SessionArchive:
                 return await ArchiveSessionAsync(state, parsed.Argument, cancellationToken).ConfigureAwait(false);
 
             case ShellCommandKind.SessionFork:
-                Guid? cutoff = null;
-                string? alternativePrompt = null;
-                if (parsed.SecondaryArgument == "alternative")
-                {
-                    int answerIndex = state.LoadedTranscriptEntries
-                        .ToList()
-                        .FindIndex(entry => entry.Id == state.SelectedTranscriptEntryId);
-                    if (answerIndex <= 0
-                        || !state.LoadedTranscriptEntries[answerIndex].Role.Equals(
-                            "assistant", StringComparison.OrdinalIgnoreCase))
-                    {
-                        state.Log.Append(
-                            SessionLogEntryKind.Error,
-                            "Select an assistant answer, then run `/fork alternative`.");
-                        return ShellDispatchResult.Continue;
-                    }
-
-                    int promptIndex = answerIndex - 1;
-                    while (promptIndex >= 0
-                           && !state.LoadedTranscriptEntries[promptIndex].Role.Equals(
-                               "user", StringComparison.OrdinalIgnoreCase))
-                    {
-                        promptIndex--;
-                    }
-
-                    if (promptIndex < 0)
-                    {
-                        state.Log.Append(SessionLogEntryKind.Error, "No user prompt precedes the selected answer.");
-                        return ShellDispatchResult.Continue;
-                    }
-
-                    cutoff = state.LoadedTranscriptEntries[promptIndex].Id;
-                    alternativePrompt = state.LoadedTranscriptEntries[promptIndex].Content;
-                }
-
-                if (parsed.SecondaryArgument == "selected")
-                {
-                    cutoff = state.SelectedTranscriptEntryId;
-                    if (cutoff is null)
-                    {
-                        state.Log.Append(
-                            SessionLogEntryKind.Error,
-                            "Select a transcript entry, then run `/fork at` again.");
-                        return ShellDispatchResult.Continue;
-                    }
-                }
-
-                if (parsed.Argument is not null && !Guid.TryParse(parsed.Argument, out _))
-                {
-                    state.Log.Append(SessionLogEntryKind.Error, "Usage: /fork [at <entry-id>]");
-                    return ShellDispatchResult.Continue;
-                }
-
-                if (parsed.Argument is not null)
-                {
-                    cutoff = Guid.Parse(parsed.Argument);
-                }
-                SessionForkResult fork = await sessionWorkspace
-                    .ForkSessionAsync(
-                        state,
-                        new ForkSessionRequest(UpToEntryId: cutoff),
-                        cancellationToken,
-                        attachmentCopyConfirmed: parsed.SecondaryArgument == "confirm")
-                    .ConfigureAwait(false);
-                state.Log.Append(
-                    fork.Outcome == SessionForkOutcome.Success ? SessionLogEntryKind.Status : SessionLogEntryKind.Error,
-                    fork.Outcome == SessionForkOutcome.Success
-                        ? $"Opened branch {fork.ForkSessionId:D}."
-                        : fork.ErrorMessage ?? "Fork failed.");
-                if (fork.Outcome == SessionForkOutcome.Success && alternativePrompt is not null)
-                {
-                    state.PendingAlternativePrompt = alternativePrompt;
-                }
-
-                return ShellDispatchResult.Continue;
+                return await ForkSessionAsync(state, parsed, cancellationToken).ConfigureAwait(false);
 
             case ShellCommandKind.BranchParent:
                 if (state.ForkedFromSessionId is not { } parentId)
@@ -364,6 +280,112 @@ internal sealed class ShellCommandDispatcher(
             default:
                 state.Log.Append(SessionLogEntryKind.Error, "Unhandled command kind.");
                 return ShellDispatchResult.Continue;
+        }
+    }
+
+    private async Task<ShellDispatchResult> ForkSessionAsync(CommandCenterState state, ParsedShellCommand parsed, CancellationToken cancellationToken)
+    {
+        bool confirming = parsed.SecondaryArgument == "confirm";
+        PendingSessionFork? pending = state.PendingFork;
+        if (confirming && (pending is null || pending.SourceSessionId != state.SessionId))
+        {
+            state.PendingFork = null;
+            state.Log.Append(SessionLogEntryKind.Error, "There is no pending fork for this session. Start the fork again.");
+            return ShellDispatchResult.Continue;
+        }
+        ForkSessionRequest request = confirming ? pending!.Request : new ForkSessionRequest();
+        string? alternativePrompt = confirming ? pending!.AlternativePrompt : null;
+        if (!confirming)
+        {
+            state.PendingFork = null;
+            if (parsed.SecondaryArgument == "alternative")
+            {
+                EntryDto? prompt = await FindAlternativePromptAsync(state, cancellationToken).ConfigureAwait(false);
+                if (prompt is null)
+                {
+                    state.Log.Append(SessionLogEntryKind.Error, "Select an assistant answer with a preceding user prompt, then run `/fork alternative`.");
+                    return ShellDispatchResult.Continue;
+                }
+                request = new ForkSessionRequest(BeforeEntryId: prompt.Id);
+                alternativePrompt = prompt.Content;
+            }
+            else if (parsed.SecondaryArgument == "selected")
+            {
+                if (state.SelectedTranscriptEntryId is not { } selected)
+                {
+                    state.Log.Append(SessionLogEntryKind.Error, "Select a transcript entry, then run `/fork at` again.");
+                    return ShellDispatchResult.Continue;
+                }
+                request = new ForkSessionRequest(UpToEntryId: selected);
+            }
+            else if (parsed.Argument is not null)
+            {
+                if (!Guid.TryParse(parsed.Argument, out Guid cutoff))
+                {
+                    state.Log.Append(SessionLogEntryKind.Error, "Usage: /fork [at <entry-id>]");
+                    return ShellDispatchResult.Continue;
+                }
+                request = new ForkSessionRequest(UpToEntryId: cutoff);
+            }
+        }
+        Guid? sourceId = state.SessionId;
+        SessionForkResult fork = await sessionWorkspace.ForkSessionAsync(state, request, cancellationToken,
+            attachmentCopyConfirmed: confirming, confirmedCopyFingerprint: confirming ? pending!.CopyFingerprint : null).ConfigureAwait(false);
+        state.PendingFork = fork.Outcome == SessionForkOutcome.ConfirmationRequired && sourceId is { } source
+            && sourceId == state.SessionId && fork.Preview is { } preview
+            ? new PendingSessionFork(source, request, alternativePrompt, preview.CopyFingerprint)
+            : null;
+        state.Log.Append(fork.Outcome == SessionForkOutcome.Success ? SessionLogEntryKind.Status : SessionLogEntryKind.Error,
+            fork.Outcome == SessionForkOutcome.Success ? $"Opened branch {fork.ForkSessionId:D}." : fork.ErrorMessage ?? "Fork failed.");
+        if (fork.Outcome == SessionForkOutcome.Success && alternativePrompt is not null)
+        {
+            state.PendingAlternativePrompt = alternativePrompt;
+        }
+
+        return ShellDispatchResult.Continue;
+    }
+
+    private async Task<EntryDto?> FindAlternativePromptAsync(CommandCenterState state, CancellationToken cancellationToken)
+    {
+        if (state.SessionId is not { } sourceId)
+        {
+            return null;
+        }
+
+        IReadOnlyList<EntryDto> entries = state.LoadedTranscriptEntries;
+        int answerIndex = entries.ToList().FindIndex(entry => entry.Id == state.SelectedTranscriptEntryId);
+        if (answerIndex < 0 || !entries[answerIndex].Role.Equals("assistant", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        for (int index = answerIndex - 1; index >= 0; index--)
+        {
+            if (entries[index].Role.Equals("user", StringComparison.OrdinalIgnoreCase))
+            {
+                return entries[index];
+            }
+        }
+
+        if (!state.HasOlderTranscriptEntries)
+        {
+            return null;
+        }
+        EntryDto before = entries[0];
+        while (true)
+        {
+            Result<EntryDto[]> page = await apiClient.GetSessionEntriesAsync(sourceId, 0,
+                CommandCenterState.TranscriptPageSize, cancellationToken, before.CreatedAt, before.Id).ConfigureAwait(false);
+            if (page.IsFailure || page.Value.Length == 0)
+            {
+                return null;
+            }
+            EntryDto? prompt = page.Value.FirstOrDefault(entry => entry.Role.Equals("user", StringComparison.OrdinalIgnoreCase));
+            if (prompt is not null)
+            {
+                return prompt;
+            }
+            before = page.Value[^1];
         }
     }
 

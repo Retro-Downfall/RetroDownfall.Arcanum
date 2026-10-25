@@ -1802,6 +1802,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
                 sp.GetService<ISessionAttachmentIndexQueue>()));
 
+        services.AddScoped<ISessionForkPreview>(static sp => (ISessionForkPreview)sp.GetRequiredService<ISessionRepository>());
+
         services.AddSingleton<SessionEventHub>();
 
         services.AddSingleton<IFileSystemBrowser, PhysicalFileSystemBrowser>();

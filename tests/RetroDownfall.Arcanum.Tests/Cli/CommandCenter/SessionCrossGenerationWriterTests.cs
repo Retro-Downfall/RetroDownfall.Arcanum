@@ -210,6 +210,12 @@ public sealed class SessionCrossGenerationWriterTests
 
             string path = request.RequestUri!.AbsolutePath;
 
+            if (path.EndsWith("/fork/preview", StringComparison.Ordinal))
+            {
+                return Task.FromResult(Json(JsonSerializer.Serialize(ApiResponse<SessionForkPreviewDto>.FromResult(
+                    Result<SessionForkPreviewDto>.Success(new SessionForkPreviewDto(0, 0, "empty"))), ArcanumJsonContext.Default.ApiResponseSessionForkPreviewDto)));
+            }
+
             if (request.Method == HttpMethod.Post
                 && path == $"/api/sessions/{PriorSessionId:D}/fork")
             {

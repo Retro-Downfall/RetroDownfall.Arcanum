@@ -78,6 +78,52 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     /// would silently fall through to the keyset arm and still return rows.</para>
     /// </remarks>
     [SkippableFact]
+    public async Task Fork_preview_selects_only_bound_rows_within_the_durable_cutoff()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+        string root = Path.Combine(Path.GetTempPath(), "arcanum-fork-preview-" + Guid.NewGuid().ToString("N"));
+        SessionAttachmentStore store = new(_db!, Microsoft.Extensions.Options.Options.Create(new ArcanumSettings()), root, TestEncryptedBlobStore.Create());
+        SessionRepository repository = new(_db!, store, _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
+        try
+        {
+            Session source = await repository.CreateAsync(null, "Selection", CancellationToken.None);
+            DateTimeOffset timestamp = DateTimeOffset.Parse("2026-01-01T01:02:03Z");
+            Entry first = new() { Id = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff"), Role = MessageRole.User, Content = "first", CreatedAt = timestamp };
+            Entry second = new() { Id = Guid.Parse("11111111-1111-1111-1111-111111111111"), Role = MessageRole.Assistant, Content = "second", CreatedAt = timestamp };
+            Entry third = new() { Id = Guid.NewGuid(), Role = MessageRole.User, Content = "later sequence with old provenance", CreatedAt = timestamp.AddDays(-1) };
+            foreach (Entry entry in new[] { first, second, third })
+            {
+                Assert.True((await repository.AddEntryAsync(source.Id, entry, CancellationToken.None)).IsSuccess);
+                await store.PersistNewAsync(source.Id, null, entry.Id, entry.Content, "notes.txt", "bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+            }
+
+            await store.PersistNewAsync(source.Id, null, null, "entryless", "entryless.txt", "bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+            Result<SessionForkPreviewDto> full = await repository.PreviewForkAsync(source.Id, new ForkSessionRequest(), CancellationToken.None);
+            Result<SessionForkPreviewDto> inclusive = await repository.PreviewForkAsync(source.Id, new ForkSessionRequest(UpToEntryId: second.Id), CancellationToken.None);
+            Result<SessionForkPreviewDto> exclusive = await repository.PreviewForkAsync(source.Id, new ForkSessionRequest(BeforeEntryId: second.Id), CancellationToken.None);
+            Assert.Equal(4, full.Value.AttachmentCount);
+            Assert.Equal(2, inclusive.Value.AttachmentCount);
+            Assert.Equal(10, inclusive.Value.AttachmentBytes);
+            Assert.Equal(1, exclusive.Value.AttachmentCount);
+            await SessionBindingWriters.BackfillExistingAsync(_db!);
+
+            Result<Session> fork = await repository.ForkAsync(source.Id, new ForkSessionRequest(UpToEntryId: second.Id, ExpectedCopyFingerprint: inclusive.Value.CopyFingerprint), CancellationToken.None);
+            Assert.True(fork.IsSuccess, fork.Error.Message);
+            List<Entry> copied = await repository.GetEntriesAscendingAsync(fork.Value.Id, 10);
+            Assert.Equal(new[] { "first", "second" }, copied.Select(e => e.Content));
+            Assert.All(copied, e => Assert.Equal(timestamp, e.CreatedAt));
+            Assert.Equal(2, (await store.ListBoundAsync(fork.Value.Id)).Count);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [SkippableFact]
     public async Task An_imported_Session_pages_its_entries_over_the_spelling_its_writer_stored()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -362,6 +408,8 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             SessionRepository repository = new(
                 _db, store, _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
 
+            await SessionBindingWriters.BackfillExistingAsync(_db!);
+
             Result<Session> result = await repository.ForkAsync(sourceId, new ForkSessionRequest(), CancellationToken.None);
 
             Assert.True(result.IsSuccess, result.Error.Code);
@@ -457,6 +505,8 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
             SessionRepository repository = new(
                 _db, store, _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
+
+            await SessionBindingWriters.BackfillExistingAsync(_db!);
 
             Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => repository.ForkAsync(
                 sourceId, new ForkSessionRequest(), CancellationToken.None));
@@ -609,6 +659,8 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             _fixture.CreateOptionsMonitor(),
             FixtureOrdinaryConnectionFactory.For(_db!),
             indexQueue);
+
+        await SessionBindingWriters.BackfillExistingAsync(_db!);
 
         Result<Session> result = await repository.ForkAsync(
             sourceSessionId,

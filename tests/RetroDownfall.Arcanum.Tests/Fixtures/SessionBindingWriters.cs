@@ -17,10 +17,10 @@ using Xunit;
 namespace RetroDownfall.Arcanum.Tests.Fixtures;
 
 /// <summary>
-/// The two production writers of <c>session_campaign_bindings</c>, driven rather than imitated.
+/// The original creation and upgrade writers of <c>session_campaign_bindings</c>, driven rather than imitated.
 /// </summary>
 /// <remarks>
-/// There are exactly two, and every installation holds rows from both: the turn-begin repository writes
+/// This fixture exercises the original creation and upgrade paths: the turn-begin repository writes
 /// one for each Session created since the binding table shipped, and the core data initializer backfills
 /// one for each Session that predates it. They disagreed about how to spell
 /// <c>session_campaign_bindings.CampaignId</c> - the initializer canonicalized and the repository bound
@@ -120,6 +120,21 @@ internal static class SessionBindingWriters
         await transaction.CommitAsync(cancellationToken);
 
         return sessionId;
+    }
+
+    /// <summary>Backfills honest legacy Session seeds through the production upgrade writer.</summary>
+    internal static async Task BackfillExistingAsync(ArcanumDbContext db, CancellationToken cancellationToken = default)
+    {
+        SqliteConnection connection = (SqliteConnection)db.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken);
+        }
+
+        await using SqliteTransaction transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await new CoreGrimoireSchemaDataInitializer().InitializeAsync(connection, transaction,
+            GrimoireSchemaTestInstaller.CreateContext(), cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     /// <summary>The spelling the object-relational writer renders, which both columns above hold.</summary>

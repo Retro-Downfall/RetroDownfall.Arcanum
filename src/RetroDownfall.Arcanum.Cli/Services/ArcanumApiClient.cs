@@ -1305,6 +1305,38 @@ public sealed partial class ArcanumApiClient(
             cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<Result<SessionForkPreviewDto>> PreviewSessionForkAsync(
+        Guid sourceId,
+        ForkSessionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(
+            request, ArcanumJsonContext.Default.ForkSessionRequest);
+
+        return await SendRequestAsync(
+            HttpMethod.Post,
+            $"api/sessions/{sourceId:D}/fork/preview",
+            json,
+            JsonUtf8ContentType,
+            ArcanumJsonContext.Default.ApiResponseSessionForkPreviewDto,
+            static (response, _, envelope) =>
+            {
+                if (response.IsSuccessStatusCode && envelope is { IsSuccess: true, Data: not null })
+                {
+                    return Result<SessionForkPreviewDto>.Success(envelope.Data);
+                }
+
+                if (envelope is { IsSuccess: false, Error: not null })
+                {
+                    return Result<SessionForkPreviewDto>.Failure(envelope.Error.Value);
+                }
+
+                return Result<SessionForkPreviewDto>.Failure(
+                    new Error("Api.HttpError", $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}"));
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<Result<SessionDetailDto>> ForkSessionAsync(
         Guid sourceId,
         ForkSessionRequest request,

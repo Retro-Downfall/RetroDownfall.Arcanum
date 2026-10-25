@@ -146,7 +146,7 @@ internal sealed class SessionLogBuffer
             int index = _entries.FindIndex(candidate => ReferenceEquals(candidate, before));
             if (index < 0)
             {
-                throw new ArgumentException("The anchor entry does not belong to this log.", nameof(before));
+                index = _entries.Count;
             }
 
             _entries.Insert(index, entry);

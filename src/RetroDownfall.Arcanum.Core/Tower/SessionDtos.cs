@@ -45,12 +45,18 @@ public sealed record SessionDetailDto(
 /// Body for <c>POST /api/sessions/{id}/fork</c>. All fields optional: <paramref name="Title"/>
 /// defaults to <c>"Fork of {source title}"</c>; <paramref name="UpToEntryId"/> copies only entries
 /// up to and including that entry (must belong to the source session) instead of the full
-/// transcript; <paramref name="CampaignId"/> defaults to the source session's campaign.
+/// transcript; <paramref name="BeforeEntryId"/> instead excludes that entry, allowing an empty prefix.
+/// The cutoff fields are mutually exclusive. <paramref name="CampaignId"/> defaults to the source
+/// session's campaign. <paramref name="ExpectedCopyFingerprint"/> rejects a changed preview selection.
 /// </summary>
 public sealed record ForkSessionRequest(
     string? Title = null,
     Guid? UpToEntryId = null,
-    Guid? CampaignId = null);
+    Guid? CampaignId = null,
+    Guid? BeforeEntryId = null,
+    string? ExpectedCopyFingerprint = null);
+
+public sealed record SessionForkPreviewDto(int AttachmentCount, long AttachmentBytes, string CopyFingerprint);
 
 public sealed record EntryDto(
     Guid Id,
@@ -94,13 +100,11 @@ public sealed record SessionAnalytics(
 [JsonConverter(typeof(JsonStringEnumConverter<SessionExportFormat>))]
 public enum SessionExportFormat
 {
-
     [JsonStringEnumMemberName("json")]
     Json,
 
     [JsonStringEnumMemberName("markdown")]
     Markdown,
-
 }
 
 public sealed record SessionExportResult(

@@ -152,6 +152,8 @@ namespace RetroDownfall.Arcanum.Api.Serialization;
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Storage.Entities.MessageRole), TypeInfoPropertyName = "StorageMessageRole")]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.CreateSessionRequest))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.ForkSessionRequest))]
+[JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.SessionForkPreviewDto))]
+[JsonSerializable(typeof(ApiResponse<RetroDownfall.Arcanum.Core.Tower.SessionForkPreviewDto>))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.UpdateSessionRequest))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.AppendEntryRequest))]
 [JsonSerializable(typeof(RetroDownfall.Arcanum.Core.Tower.SessionQueryRequest))]
