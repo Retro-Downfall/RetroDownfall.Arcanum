@@ -268,6 +268,33 @@ public static class LongRunningOperationRecoveryRegistry
         Matrix.TryGetValue(kind, out LongRunningOperationRecoveryDescriptor? descriptor) ? descriptor : null;
 
     /// <summary>
+    /// Selects public-safe repair guidance from the operation's recorded recovery class. Checkpoint
+    /// versions identify an offline erasure launch even when its terminal code is absent or generic.
+    /// This is diagnostic classification only; it grants no recovery or mutation authority.
+    /// </summary>
+    public static string GetManualRepairGuidance(LongRunningOperation operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+
+        bool retentionErasure = operation.Kind is LongRunningOperationKinds.DataRetentionMutation
+            or LongRunningOperationKinds.DataRetentionFactoryReset;
+
+        bool offlineLaunch = (operation.Kind == LongRunningOperationKinds.DataRetentionMutation && operation.CheckpointVersion == 4)
+            || (operation.Kind == LongRunningOperationKinds.DataRetentionFactoryReset && operation.CheckpointVersion == 2);
+
+        if (retentionErasure && (offlineLaunch || operation.TerminalErrorCode?.StartsWith("Covenant.", StringComparison.Ordinal) == true))
+        {
+            return "Inspect 'arcanum operation list --state ReconciliationRequired' and 'arcanum operation show <id>'. "
+                + "Admission stays closed on purpose until erasure recovery proves safe reopening. "
+                + "Do not start a second reset or factory erasure. Resolve the recorded blocker, then restart "
+                + "the host to resume the same operation.";
+        }
+
+        return Find(operation.Kind)?.ManualRepairGuidance
+            ?? "This operation kind is not in the recovery registry; report it as a defect.";
+    }
+
+    /// <summary>
     /// Kinds ordered the way a startup pass must apply them: restore-class work first, then ordinary
     /// reconciliation, each group in stable declaration order.
     /// </summary>
