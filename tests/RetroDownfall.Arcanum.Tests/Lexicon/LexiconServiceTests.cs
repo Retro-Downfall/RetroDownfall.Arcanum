@@ -26,7 +26,6 @@ namespace RetroDownfall.Arcanum.Tests.Lexicon;
 [Trait("Category", "Integration")]
 public sealed class LexiconServiceTests : IAsyncLifetime
 {
-
     private const int FormerMaxFactsPerUpsert = 32;
 
     private const int FormerMaxFactsRetainedPerEntry = 256;
@@ -40,6 +39,83 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     private ArcanumDbContext? _db;
 
     private LexiconService? _service;
+
+    [SkippableTheory]
+    [InlineData("empty", false, false)]
+    [InlineData("empty", true, false)]
+    [InlineData("active-global", false, true)]
+    [InlineData("active-global", true, true)]
+    [InlineData("active-campaign", false, false)]
+    [InlineData("active-campaign", true, true)]
+    [InlineData("other-campaign", true, false)]
+    [InlineData("retired-global", true, false)]
+    [InlineData("retired-campaign", true, false)]
+    [InlineData("retired-campaign-active-global", true, true)]
+    public async Task Eligibility_probe_matches_active_retrieval_tiers(string contents, bool campaignScope, bool expected)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid campaignId = Guid.NewGuid();
+
+        LexiconScope campaign = LexiconScope.ForCampaign(campaignId);
+
+        if (contents != "empty")
+        {
+            LexiconScope storedScope = contents switch
+            {
+                "active-global" or "retired-global" => LexiconScope.Global,
+                "other-campaign" => LexiconScope.ForCampaign(Guid.NewGuid()),
+                _ => campaign,
+            };
+
+            Assert.True((await _service!.UpsertAsync("Entity", "Project", ["A fact"], storedScope)).IsSuccess);
+
+            if (contents.StartsWith("retired-", StringComparison.Ordinal))
+            {
+                await ExecuteFixtureSqlAsync("UPDATE lexicon_entries SET RetiredAtUtc = '2026-09-01T00:00:00.0000000Z';");
+            }
+
+            if (contents == "retired-campaign-active-global")
+            {
+                Assert.True((await _service.UpsertAsync("Entity", "Project", ["A global fact"], LexiconScope.Global)).IsSuccess);
+            }
+        }
+
+        LexiconScope scope = campaignScope ? campaign : LexiconScope.Global;
+
+        Result<bool> result = await ((ILexiconService)_service!).HasEligibleEntriesAsync(scope);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(expected, result.Value);
+
+        Result<IReadOnlyList<LexiconEntryDto>> matched = await _service!.MatchEntitiesAsync(["Entity"], 5, scope);
+
+        Assert.True(matched.IsSuccess, matched.IsFailure ? matched.Error.Message : null);
+
+        Assert.Equal(matched.Value.Count > 0, result.Value);
+    }
+
+    [SkippableFact]
+    public async Task Eligibility_probe_distinguishes_storage_failure_from_empty_and_propagates_cancellation()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using CancellationTokenSource cancelled = new();
+
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ((ILexiconService)_service!).HasEligibleEntriesAsync(LexiconScope.Global, cancelled.Token));
+
+        await ExecuteFixtureSqlAsync("DROP TABLE lexicon_entries;");
+
+        Result<bool> result = await ((ILexiconService)_service!).HasEligibleEntriesAsync(LexiconScope.Global);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Lexicon.SearchFailed, result.Error.Code);
+    }
 
     [SkippableFact]
     public async Task Operational_exact_reads_exclude_retired_rows()
@@ -120,14 +196,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
     public LexiconServiceTests(GrimoireFixture fixture)
     {
-
         _fixture = fixture;
-
     }
 
     public Task InitializeAsync()
     {
-
         _dbPath = _fixture.CopyDatabase();
 
         _db = _fixture.CreateContext(_dbPath);
@@ -139,32 +212,24 @@ public sealed class LexiconServiceTests : IAsyncLifetime
             MemoryErasureTestKeys.Isolated());
 
         return Task.CompletedTask;
-
     }
 
     public async Task DisposeAsync()
     {
-
         if (_db is not null)
         {
-
             await _db.DisposeAsync();
-
         }
 
         if (File.Exists(_dbPath))
         {
-
             File.Delete(_dbPath);
-
         }
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_CreatesNewEntityWithGeneralType()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Result<LexiconEntryDto> result = await _service!.UpsertAsync("Alice", null, ["Prefers concise answers."], LexiconScope.Global, CancellationToken.None);
@@ -178,14 +243,12 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Single(result.Value.Facts);
 
         Assert.Equal("Prefers concise answers.", result.Value.Facts[0]);
-
     }
 
     [SkippableFact]
 
     public async Task UpsertAsync_AttachmentDerivedFact_RoundTripsTypedProvenanceAsUnavailableWhenSourceWasDeleted()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid sessionId = Guid.NewGuid();
@@ -225,13 +288,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Equal(deletedAttachmentId, factProvenance.Source.AttachmentId);
 
         Assert.Equal(AttachmentSourceAvailability.Unavailable, factProvenance.Source.Availability);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_IsCaseInsensitiveByName()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Alice", "Person", ["Likes blue."], LexiconScope.Global, CancellationToken.None);
@@ -249,13 +310,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         LexiconEntryDto entry = Assert.Single(matches.Value);
 
         Assert.Equal(2, entry.Facts.Length);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_AppendsNonDuplicateFactsAndPreservesTypeWhenBlank()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL."], LexiconScope.Global, CancellationToken.None);
@@ -269,13 +328,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Equal(2, updated.Value.Facts.Length);
 
         Assert.Contains("Deployment target is Linux.", updated.Value.Facts);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_RefreshesTypeWhenProvided()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Bob", "Person", ["Initial."], LexiconScope.Global, CancellationToken.None);
@@ -283,13 +340,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Result<LexiconEntryDto> updated = await _service.UpsertAsync("Bob", "Contributor", ["Another."], LexiconScope.Global, CancellationToken.None);
 
         Assert.Equal("Contributor", updated.Value.Type);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_RejectsEmptyName()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Result<LexiconEntryDto> result = await _service!.UpsertAsync("  ", "Person", ["Fact."], LexiconScope.Global, CancellationToken.None);
@@ -297,13 +352,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Lexicon.InvalidName, result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_RejectsEmptyFacts()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Result<LexiconEntryDto> result = await _service!.UpsertAsync("Carol", "Person", ["  ", ""], LexiconScope.Global, CancellationToken.None);
@@ -311,13 +364,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Lexicon.InvalidFact, result.Error.Code);
-
     }
 
     [SkippableFact]
     public async Task DeleteByNameAsync_RemovesEntryAndFtsRow()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Deletable", "Project", ["Will be removed."], LexiconScope.Global, CancellationToken.None);
@@ -337,7 +388,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(secondDelete.IsSuccess);
 
         Assert.False(secondDelete.Value);
-
     }
 
     /// <summary>
@@ -350,7 +400,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task DeleteByNameAsync_RollsBackWhenTheCallerCancelsMidTransaction()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Abandoned", "Project", ["Written before the abort."], LexiconScope.Global, CancellationToken.None);
@@ -366,16 +415,12 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         // observe the cancellation. That is exactly the aborted-request window.
         strdelegate_trace trace = (object _, string statement) =>
         {
-
             if (armed && statement.Contains("BEGIN IMMEDIATE", StringComparison.Ordinal))
             {
-
                 armed = false;
 
                 cts.Cancel();
-
             }
-
         };
 
         raw.sqlite3_trace(connection.Handle, trace, null);
@@ -385,13 +430,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         // sqlite3_get_autocommit returns 0 while an explicit transaction is open.
         Assert.NotEqual(0, raw.sqlite3_get_autocommit(connection.Handle));
-
     }
 
     [SkippableFact]
     public async Task MatchEntitiesAsync_ExactNameHitsSurfaceBeforeFtsHits()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Alice", "Person", ["Works on Arcanum."], LexiconScope.Global, CancellationToken.None);
@@ -407,13 +450,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Equal("Alice", matches.Value[0].Name);
 
         Assert.Equal("Project Phoenix", matches.Value[1].Name);
-
     }
 
     [SkippableFact]
     public async Task MatchEntitiesAsync_MatchesByFactTextViaFts()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Project Phoenix", "Project", ["Uses PostgreSQL for persistence."], LexiconScope.Global, CancellationToken.None);
@@ -423,13 +464,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         LexiconEntryDto entry = Assert.Single(matches.Value);
 
         Assert.Equal("Project Phoenix", entry.Name);
-
     }
 
     [SkippableFact]
     public async Task MatchEntitiesAsync_EmptyEntityListReturnsEmpty()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Result<IReadOnlyList<LexiconEntryDto>> matches = await _service!.MatchEntitiesAsync([], 10, LexiconScope.Global, CancellationToken.None);
@@ -437,13 +476,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(matches.IsSuccess);
 
         Assert.Empty(matches.Value);
-
     }
 
     [SkippableFact]
     public async Task MatchEntitiesAsync_SanitizesFtsSpecialCharacters()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Stable", "Project", ["Holds daemon_state."], LexiconScope.Global, CancellationToken.None);
@@ -451,13 +488,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Result<IReadOnlyList<LexiconEntryDto>> matches = await _service.MatchEntitiesAsync(["daemon_state:foo OR *"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.True(matches.IsSuccess);
-
     }
 
     [SkippableFact]
     public async Task UpdateFtsText_RetiresOldFactAndIndexesNewFact()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await _service!.UpsertAsync("Eve", "Person", ["Old fact about turtles."], LexiconScope.Global, CancellationToken.None);
@@ -471,13 +506,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Result<IReadOnlyList<LexiconEntryDto>> parrotMatch = await _service.MatchEntitiesAsync(["parrots"], 10, LexiconScope.Global, CancellationToken.None);
 
         Assert.Single(parrotMatch.Value);
-
     }
 
     [SkippableFact]
     public async Task GetByNameAsync_ReturnsNullWhenMissing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Result<LexiconEntryDto?> result = await _service!.GetByNameAsync("Nobody", LexiconScope.Global, CancellationToken.None);
@@ -485,13 +518,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Null(result.Value);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_preserves_facts_beyond_the_former_request_total()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         List<string> many = Enumerable.Range(0, FormerMaxFactsPerUpsert + 5)
@@ -508,13 +539,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Equal(many, result.Value.Facts);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_preserves_old_and_new_facts_beyond_the_former_retained_total()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         List<string> allFacts = Enumerable
@@ -524,7 +553,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         foreach (string[] page in allFacts.Chunk(FormerMaxFactsPerUpsert))
         {
-
             Result<LexiconEntryDto> appended = await _service!.UpsertAsync(
                 "Durable",
                 "Project",
@@ -533,7 +561,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
                 CancellationToken.None);
 
             Assert.True(appended.IsSuccess);
-
         }
 
         Result<LexiconEntryDto?> reloaded = await _service!.GetByNameAsync(
@@ -544,13 +571,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(reloaded.IsSuccess);
 
         Assert.Equal(allFacts, reloaded.Value!.Facts);
-
     }
 
     [SkippableFact]
     public async Task UpsertAsync_preserves_fact_text_beyond_the_former_scalar_limit()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string longFact = new('x', FormerMaxFactLength + 257);
@@ -565,14 +590,12 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.True(result.IsSuccess);
 
         Assert.Equal(longFact, Assert.Single(result.Value.Facts));
-
     }
 
     [SkippableFact]
 
     public async Task ListInspectionAsync_ReturnsEveryEntityInStableNameOrder()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         _ = await _service!.UpsertAsync(
@@ -597,7 +620,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Equal(
             ["alpha", "Zebra"],
             result.Value.Value.Select(static entry => entry.Name).ToArray());
-
     }
 
     /// <summary>
@@ -611,7 +633,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task UpsertAsync_DoesNotRewriteProvenanceWhenNothingAboutItChanged()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         AttachmentMemoryProvenance provenance = new(
@@ -666,7 +687,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         Assert.Equal("Ships on Tuesday.", surviving.Fact);
 
         Assert.Equal(provenance.AttachmentId, surviving.Source.AttachmentId);
-
     }
 
     private static bool IsProvenanceWrite(string statement) =>
@@ -676,7 +696,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     [SkippableFact]
     public async Task ListInspectionAsync_HydratesProvenanceForEveryEntityWithOneQuery()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedProvenancedEntitiesAsync(SeededEntityCount);
@@ -692,13 +711,11 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         AssertProvenanceMatchesFacts(result.Value.Value);
 
         Assert.Equal(1, CountProvenanceQueries(statements));
-
     }
 
     [SkippableFact]
     public async Task MatchEntitiesAsync_HydratesProvenanceForEveryMatchWithOneQuery()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         string[] names = await SeedProvenancedEntitiesAsync(SeededEntityCount);
@@ -718,21 +735,18 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         AssertProvenanceMatchesFacts(matches.Value);
 
         Assert.Equal(1, CountProvenanceQueries(statements));
-
     }
 
     private const int SeededEntityCount = 5;
 
     private async Task<string[]> SeedProvenancedEntitiesAsync(int count)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         string[] names = new string[count];
 
         for (int index = 0; index < count; index++)
         {
-
             AttachmentMemoryProvenance provenance = new(
                 sessionId,
                 Guid.NewGuid(),
@@ -754,25 +768,19 @@ public sealed class LexiconServiceTests : IAsyncLifetime
                 CancellationToken.None);
 
             Assert.True(seeded.IsSuccess);
-
         }
 
         return names;
-
     }
 
     private static void AssertProvenanceMatchesFacts(IReadOnlyList<LexiconEntryDto> entries)
     {
-
         foreach (LexiconEntryDto entry in entries)
         {
-
             LexiconFactProvenance provenance = Assert.Single(entry.FactProvenance ?? []);
 
             Assert.Equal(Assert.Single(entry.Facts), provenance.Fact);
-
         }
-
     }
 
     /// <summary>
@@ -782,7 +790,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     /// </summary>
     private List<string> CaptureStatements()
     {
-
         List<string> statements = [];
 
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
@@ -792,7 +799,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         raw.sqlite3_trace(connection.Handle, trace, null);
 
         return statements;
-
     }
 
     private static int CountProvenanceQueries(List<string> statements) =>
@@ -813,7 +819,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     [Fact]
     public async Task A_rollback_that_fails_unexpectedly_never_replaces_the_original_failure()
     {
-
         MethodInfo rollback = typeof(LexiconService).GetMethod(
                 "TryRollbackAsync",
                 BindingFlags.Instance | BindingFlags.NonPublic)
@@ -825,7 +830,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
         await (Task)rollback.Invoke(_service!, [connection, "entity"])!;
 
         Assert.True(connection.RollbackAttempted);
-
     }
 
     /// <summary>
@@ -833,7 +837,6 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     /// </summary>
     private sealed class HostileConnection : DbConnection
     {
-
         public bool RollbackAttempted { get; private set; }
 
         [AllowNull]
@@ -862,18 +865,14 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         protected override DbCommand CreateDbCommand()
         {
-
             RollbackAttempted = true;
 
             return new HostileCommand(this);
-
         }
-
     }
 
     private sealed class HostileCommand(DbConnection connection) : DbCommand
     {
-
         [AllowNull]
         public override string CommandText { get; set; } = string.Empty;
 
@@ -906,12 +905,10 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         protected override DbDataReader ExecuteDbDataReader(CommandBehavior behavior) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class HostileParameterCollection : DbParameterCollection
     {
-
         private readonly List<object> _items = [];
 
         public override int Count => _items.Count;
@@ -920,11 +917,9 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         public override int Add(object value)
         {
-
             _items.Add(value);
 
             return _items.Count - 1;
-
         }
 
         public override void AddRange(Array values) => throw new NotSupportedException();
@@ -959,7 +954,5 @@ public sealed class LexiconServiceTests : IAsyncLifetime
 
         protected override void SetParameter(string parameterName, DbParameter value) =>
             throw new NotSupportedException();
-
     }
-
 }

@@ -12,7 +12,6 @@ namespace RetroDownfall.Arcanum.Core.Lexicon;
 /// </summary>
 public interface ILexiconService
 {
-
     /// <summary>
     /// Creates a new entity or appends non-duplicate facts to an existing entity matched by
     /// case-insensitive name. Type semantics: new entity + blank type defaults to
@@ -98,6 +97,17 @@ public interface ILexiconService
             "Agent Lexicon deletion lookup is unavailable.")));
 
     /// <summary>
+    /// Reports whether the same active tiers used by operational retrieval contain any entries.
+    /// A Campaign scope includes its own tier and Global; Global never reads another Campaign.
+    /// Failure is unavailable storage, not evidence that the Lexicon is empty.
+    /// </summary>
+    Task<Result<bool>> HasEligibleEntriesAsync(
+        LexiconScope scope,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<bool>.Failure(new Error(ErrorCodes.Lexicon.SearchFailed,
+            "Lexicon eligibility lookup is unavailable.")));
+
+    /// <summary>
     /// Eligible active rows only: exact <c>NameNormalized</c> matches first, then column-weighted FTS5
     /// (<c>bm25(lexicon_fts, 3.0, 2.0, 1.0)</c>) for unresolved terms. Deduplicated by Id; exact
     /// hits ordered before FTS hits. Empty entity input returns an empty result without querying.
@@ -145,5 +155,4 @@ public interface ILexiconService
         string name,
         LexiconScope scope,
         CancellationToken cancellationToken = default);
-
 }

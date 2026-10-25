@@ -504,6 +504,44 @@ internal sealed partial class LexiconService(
         }
     }
 
+    public async Task<Result<bool>> HasEligibleEntriesAsync(
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            bool exists = await SqliteBusyRetry.ExecuteAsync(
+                async () =>
+                {
+                    DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                    return await GrimoireCoreSchemaVersion.InSnapshotAsync(connection, async () =>
+                    {
+                        bool curation = await HasCurationAsync(connection, cancellationToken).ConfigureAwait(false);
+
+                        await using DbCommand command = connection.CreateCommand();
+
+                        command.CommandText = $"SELECT 1 FROM lexicon_entries WHERE ScopeCampaignId IN (@scopeKey, @globalKey) {(curation ? "AND RetiredAtUtc IS NULL" : "")} LIMIT 1";
+
+                        AddParameter(command, "@scopeKey", scope.Key);
+
+                        AddParameter(command, "@globalKey", LexiconScope.Global.Key);
+
+                        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
+                    }, cancellationToken).ConfigureAwait(false);
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            return Result<bool>.Success(exists);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning("Lexicon eligibility lookup failed (exception type {ExceptionType}).", exception.GetType().FullName);
+
+            return new Error(ErrorCodes.Lexicon.SearchFailed, "Lexicon eligibility lookup failed.");
+        }
+    }
+
     public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
         IReadOnlyList<string> entities,
         int limit,

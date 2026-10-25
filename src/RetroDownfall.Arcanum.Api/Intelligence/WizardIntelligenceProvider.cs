@@ -5558,9 +5558,9 @@ public sealed partial class WizardIntelligenceProvider(
 
     /// <summary>
     /// Best-effort Lexicon retrieval for the current inference turn. Uses router-extracted entities
-    /// when present; otherwise runs <see cref="LexiconEntityExtractor"/> on the fast model (when
-    /// configured) for non-router paths. Failures (DB or extractor) are logged and swallowed —
-    /// Lexicon never fails the inference turn. Returns null when disabled, gated out, or no matches.
+    /// when present; otherwise probes the active scope before running <see cref="LexiconEntityExtractor"/>
+    /// on the fast model (when configured). Operational failures are logged and contained;
+    /// caller cancellation propagates. Returns null when disabled, gated out, empty, or no matches.
     /// </summary>
     private async Task<IReadOnlyList<LexiconEntryDto>?> RetrieveLexiconEntriesAsync(
         PingRequest request,
@@ -5581,6 +5581,14 @@ public sealed partial class WizardIntelligenceProvider(
             return null;
         }
 
+        // The tier resolved first is the turn's own Campaign, then the global one. With the gate off
+        // this is the global tier alone, which is every match this surface has ever made.
+        LexiconScope lexiconScope = MemoryScope
+            .Resolve(
+                settings.Value.Features.CampaignScopedMemory,
+                invocationContext.Campaign?.CampaignId)
+            .ToLexiconScope();
+
         IReadOnlyList<string> entities = routerEntities;
 
         if (entities.Count == 0)
@@ -5598,6 +5606,21 @@ public sealed partial class WizardIntelligenceProvider(
 
             try
             {
+                Result<bool> eligible = await lexiconService.HasEligibleEntriesAsync(lexiconScope, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (eligible.IsFailure)
+                {
+                    logger.LogWarning("Lexicon eligibility lookup failed ({ErrorCode}); continuing without Lexicon context.", eligible.Error.Code);
+
+                    return null;
+                }
+
+                if (!eligible.Value)
+                {
+                    return null;
+                }
+
                 if (settings.Value.ResolveIntelligence().UseFastModelForSpellRouting
                     && !string.IsNullOrWhiteSpace(settings.Value.FastModel))
                 {
@@ -5672,14 +5695,6 @@ public sealed partial class WizardIntelligenceProvider(
 
         int limit = ArcanumSettingClamps.LexiconMaxMatchedEntries(
             settings.Value.ResolveIntelligence().LexiconMaxMatchedEntries);
-
-        // The tier resolved first is the turn's own Campaign, then the global one. With the gate off
-        // this is the global tier alone, which is every match this surface has ever made.
-        LexiconScope lexiconScope = MemoryScope
-            .Resolve(
-                settings.Value.Features.CampaignScopedMemory,
-                invocationContext.Campaign?.CampaignId)
-            .ToLexiconScope();
 
         Result<IReadOnlyList<LexiconEntryDto>> match = await lexiconService
             .MatchEntitiesAsync(entities, limit, lexiconScope, cancellationToken)

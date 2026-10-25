@@ -11,7 +11,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// </summary>
 public sealed class FakeLexiconService : ILexiconService, ILexiconCurationService
 {
-
     /// <summary>
     /// Keyed by tier and then name, the way the real table's unique index now is: one name may exist
     /// once per scope, so a fake keyed by name alone would let a Campaign write silently overwrite the
@@ -26,7 +25,6 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         string trimmedName = name.Trim();
 
         if (trimmedName.Length == 0)
@@ -92,7 +90,6 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         string normalized = name.Trim().ToUpperInvariant();
 
         bool removed = _entries.Remove((scope.Key, normalized));
@@ -107,13 +104,23 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         CancellationToken cancellationToken = default) =>
         DeleteByNameAsync(name, scope, cancellationToken);
 
+    public Task<Result<bool>> HasEligibleEntriesAsync(
+        LexiconScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return Task.FromResult(Result<bool>.Success(_entries.Values.Any(entry =>
+            entry.Eligibility == LexiconRetrievalEligibility.Eligible
+            && (entry.ScopeCampaignId is null || entry.ScopeCampaignId == scope.CampaignId))));
+    }
+
     public Task<Result<IReadOnlyList<LexiconEntryDto>>> MatchEntitiesAsync(
         IReadOnlyList<string> entities,
         int limit,
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         // The Campaign tier first, then whatever global names it has not answered: the same shadowing
         // the real service applies, so a test using this fake cannot pass on a merge the real one
         // refuses to perform.
@@ -123,10 +130,8 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
 
         foreach (string scopeKey in scope.IsGlobal ? [LexiconScope.Global.Key] : new[] { scope.Key, LexiconScope.Global.Key })
         {
-
             foreach (((string Scope, string Name) key, LexiconEntryDto entry) in _entries)
             {
-
                 if (!string.Equals(key.Scope, scopeKey, StringComparison.Ordinal)
                     || !shadowed.Add(key.Name)
                     || results.Count >= limit)
@@ -135,9 +140,7 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
                 }
 
                 results.Add(entry);
-
             }
-
         }
 
         return Task.FromResult<Result<IReadOnlyList<LexiconEntryDto>>>(
@@ -149,14 +152,11 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         string normalized = name.Trim().ToUpperInvariant();
 
         if (!_entries.TryGetValue((scope.Key, normalized), out LexiconEntryDto? entry) && !scope.IsGlobal)
         {
-
             _ = _entries.TryGetValue((LexiconScope.Global.Key, normalized), out entry);
-
         }
 
         return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
@@ -167,7 +167,6 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         LexiconScope scope,
         CancellationToken cancellationToken = default)
     {
-
         _ = _entries.TryGetValue((scope.Key, name.Trim().ToUpperInvariant()), out LexiconEntryDto? entry);
 
         return Task.FromResult(Result<LexiconEntryDto?>.Success(entry));
@@ -177,7 +176,6 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         ICovenantSnapshotReadLease? readLease,
         CancellationToken cancellationToken = default)
     {
-
         IReadOnlyList<LexiconEntryDto> entries = _entries.Values
             .OrderBy(static entry => entry.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(static entry => entry.ScopeCampaignId?.ToString("D") ?? string.Empty, StringComparer.Ordinal)
@@ -186,7 +184,6 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
 
         return Task.FromResult(
             Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>.Success(new(entries, false)));
-
     }
 
     public async Task<Result<LexiconInspectionResult<IReadOnlyList<LexiconEntryDto>>>> SearchInspectionAsync(
@@ -254,5 +251,4 @@ public sealed class FakeLexiconService : ILexiconService, ILexiconCurationServic
         return new LexiconInspectionResult<LexiconEntryDetail>(new(entry, scope, null, lifecycle, entry.Eligibility,
             entry.CurationGeneration, digest, target, [], []), false);
     }
-
 }

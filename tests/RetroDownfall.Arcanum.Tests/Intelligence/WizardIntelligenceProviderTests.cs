@@ -6385,6 +6385,123 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.False(reservations.WasReleased);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Lexicon_empty_store_does_not_spend_an_extraction_call(bool streaming, bool unrelatedCampaignOnly)
+    {
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with { Lexicon = true },
+        };
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("the actual answer");
+
+        chat.EnqueueText("the actual answer");
+
+        chat.EnqueueStreamTokens("the actual answer");
+
+        FakeLexiconService lexicon = new();
+
+        if (unrelatedCampaignOnly)
+        {
+            Assert.True((await lexicon.UpsertAsync("Other Campaign", "Project", ["Unrelated fact"], LexiconScope.ForCampaign(Guid.NewGuid()))).IsSuccess);
+        }
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, lexiconService: lexicon);
+
+        PingRequest request = BaseRequest() with
+        {
+            Prompt = "What should I do next?",
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+            WorkingDirectory = string.Empty,
+        };
+
+        if (streaming)
+        {
+            List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+            Assert.Contains(events, static item => item.Type == IntelligenceEventType.Token && item.Data == "the actual answer");
+
+            Assert.Equal(1, chat.StreamingCallCount);
+
+            Assert.Equal(0, chat.BufferedCallCount);
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+            Assert.Equal(1, chat.BufferedCallCount);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Lexicon_populated_scope_keeps_extraction_and_injects_matching_context(bool streaming)
+    {
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with { Lexicon = true },
+        };
+
+        FakeLexiconService lexicon = new();
+
+        Assert.True((await lexicon.UpsertAsync("Existing entity", "Project", ["Existing fact"], LexiconScope.Global)).IsSuccess);
+
+        ScriptingChatClient chat = new();
+
+        chat.EnqueueText("""{"entities":["Existing entity"]}""");
+
+        chat.EnqueueText("the actual answer");
+
+        chat.EnqueueStreamTokens("the actual answer");
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, lexiconService: lexicon);
+
+        PingRequest request = BaseRequest() with
+        {
+            Prompt = "Tell me about Existing entity.",
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+            WorkingDirectory = string.Empty,
+        };
+
+        IReadOnlyList<MeAiChatMessage> sent;
+
+        if (streaming)
+        {
+            List<IntelligenceEvent> events = await CollectStreamAsync(wizard, request);
+
+            Assert.Contains(events, static item => item.Type == IntelligenceEventType.Token && item.Data == "the actual answer");
+
+            Assert.Equal(1, chat.StreamingCallCount);
+
+            Assert.Equal(1, chat.BufferedCallCount);
+
+            sent = Assert.Single(chat.AllStreamingCalls);
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+            Assert.Equal(2, chat.BufferedCallCount);
+
+            sent = chat.LastBufferedMessages;
+        }
+
+        Assert.Contains("Existing fact", ExtractSystemPromptText(sent), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Accounting_ExtractionUsage_IgnoresCancellationAfterProviderCompletion()
     {
@@ -6416,9 +6533,14 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         RecordingTurnRunWriter turnRuns = new() { CancelBeforeRecord = callerCancellation };
         RecordingBudgetReservationService reservations = new();
 
+        FakeLexiconService lexicon = new();
+
+        Assert.True((await lexicon.UpsertAsync("Existing entity", "Project", ["Existing fact"], LexiconScope.Global)).IsSuccess);
+
         WizardIntelligenceProvider wizard = CreateWizard(
             chat,
             settings,
+            lexiconService: lexicon,
             turnRunWriter: turnRuns,
             budgetReservationService: reservations);
 
@@ -10662,7 +10784,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         } = MandatoryToolInteractionAppendOutcome.NewlyCommitted;
 
         public Func<MandatoryToolInteraction, CancellationToken, Task>?
-            MandatoryAppendHandler { get; init; }
+            MandatoryAppendHandler
+        { get; init; }
 
         public List<MandatoryToolInteraction> MandatoryInteractions
         {
@@ -10686,7 +10809,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Action? OnDiscard { get; init; }
 
         public Func<CancellationToken, Task>?
-            AppendToolInteractionHandler { get; init; }
+            AppendToolInteractionHandler
+        { get; init; }
 
         public string LastFinalizedContent { get; private set; } = string.Empty;
 
@@ -11391,13 +11515,13 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult<SanctumChildProcessBoundary?>(null);
 
-public Task RecordResourceLimitBreachAsync(
-            string? workspaceRoot,
-            string toolName,
-            Core.Platform.ResourceLimitKind resource,
-            string limitValue,
-            string? actualValue,
-            CancellationToken ct = default) =>
-            Task.CompletedTask;
+        public Task RecordResourceLimitBreachAsync(
+                    string? workspaceRoot,
+                    string toolName,
+                    Core.Platform.ResourceLimitKind resource,
+                    string limitValue,
+                    string? actualValue,
+                    CancellationToken ct = default) =>
+                    Task.CompletedTask;
     }
 }
