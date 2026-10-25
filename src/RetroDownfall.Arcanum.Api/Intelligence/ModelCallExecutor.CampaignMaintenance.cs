@@ -106,7 +106,7 @@ public sealed partial class ModelCallExecutor
     }
 
     private static Error ClosedCampaignAdmissionError() =>
-        new(ErrorCodes.Hub.ContextBudgetExceeded,
+        new(ErrorCodes.Covenant.StaleSnapshot,
             "The Campaign provider payload changed after context admission; refusing the stale breakdown.");
 
     private static string ReadClosedCampaignText(ChatResponse response)

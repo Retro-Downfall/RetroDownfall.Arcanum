@@ -22,6 +22,46 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed partial class WizardIntelligenceProviderTests
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task A_real_executor_stale_admission_cannot_be_deferred_into_main_dispatch(bool streaming, bool campaignStage)
+    {
+        CampaignWizardHarness harness = CreateCampaignWizardHarness();
+
+        Result<CampaignRollupMaintenanceResult> refused = await CampaignRollupMaintenanceTests.OperationalFailureAsync("admission", campaignStage);
+
+        harness.Maintenance.SessionResult = campaignStage ? null : refused;
+
+        harness.Maintenance.CampaignResult = campaignStage ? refused : null;
+
+        if (streaming)
+        {
+            List<IntelligenceEvent> frames = [];
+
+            await foreach (IntelligenceEvent frame in harness.Wizard.StreamPromptAsync(harness.Request, CampaignInvocation(), CancellationToken.None))
+            {
+                frames.Add(frame);
+            }
+
+            Assert.Contains(frames, frame => frame.Type is IntelligenceEventType.Error);
+
+            Assert.DoesNotContain(frames, frame => frame.Type is IntelligenceEventType.Result);
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await harness.Wizard.ExecutePromptAsync(harness.Request, CampaignInvocation(), CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+        }
+
+        Assert.Equal(0, harness.Chat.BufferedCallCount + harness.Chat.StreamingCallCount);
+    }
+
+    [Theory]
     [InlineData("read")]
     [InlineData("validation")]
     [InlineData("configuration")]

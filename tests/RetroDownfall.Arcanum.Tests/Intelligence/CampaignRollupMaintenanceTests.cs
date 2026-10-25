@@ -27,6 +27,10 @@ public sealed class CampaignRollupMaintenanceTests
 
             harness.Provider.Responses.Enqueue("{\"summary\":\"/api/health\"}");
         }
+        else if (failure == "admission")
+        {
+            harness.Executor.SubstitutePayload = true;
+        }
         else
         {
             harness.Provider.BeforeResponse = () => throw new HttpRequestException("provider unavailable");
@@ -35,6 +39,24 @@ public sealed class CampaignRollupMaintenanceTests
         return campaign
             ? await harness.Service.ProcessCampaignAsync(Campaign, null, CancellationToken.None)
             : await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_stale_executor_payload_is_fatal_before_the_maintenance_provider_dispatch()
+    {
+        Harness harness = new();
+
+        harness.Executor.SubstitutePayload = true;
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Equal(0, harness.Provider.Calls);
+
+        Assert.Empty(harness.Store.Outputs);
     }
 
     [Fact]
@@ -869,6 +891,8 @@ public sealed class CampaignRollupMaintenanceTests
 
     private sealed class ExecutorProbe(IModelCallExecutor inner) : IModelCallExecutor
     {
+        public bool SubstitutePayload { get; set; }
+
         public int GenericCalls { get; private set; }
 
         public int ClosedCalls { get; private set; }
@@ -878,7 +902,9 @@ public sealed class CampaignRollupMaintenanceTests
         {
             ClosedCalls++;
 
-            return inner.ExecuteCampaignMaintenanceAsync(chatClient, payload, budget, beforeSend, cancellationToken, context);
+            return inner.ExecuteCampaignMaintenanceAsync(chatClient,
+                SubstitutePayload ? new(payload.SystemPrompt, "substituted facts") : payload,
+                budget, beforeSend, cancellationToken, context);
         }
 
         public Task<ModelCallOutcome> ExecuteBufferedAsync(IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options,

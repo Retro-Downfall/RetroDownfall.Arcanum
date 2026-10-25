@@ -32,6 +32,14 @@ internal sealed class Loremaster(
 {
     private int _sweepRunning;
 
+    // Sweep ownership serializes these content-free discovery cursors. A rejected admission
+    // never advances one; exhausting a lane wraps it for the following sweep.
+    private Guid? _rollupAfterSessionId;
+
+    private Guid? _legacyAfterSessionId;
+
+    private bool _rollupsFirst;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -134,48 +142,85 @@ internal sealed class Loremaster(
                 .GetSessionsNeedingSummarizationAsync(threshold, idleCutoff, cancellationToken)
                 .ConfigureAwait(false);
 
+            bool rollupsFirst = _rollupsFirst;
+
+            _rollupsFirst = !rollupsFirst;
+
+            if (!rollupsFirst)
+            {
+                QueueLegacySessions(ids, cancellationToken);
+            }
+
             if (options.CurrentValue.ResolveIntelligence().EnableCampaignRollups)
             {
                 ICampaignRollupStore rollups = scope.ServiceProvider.GetRequiredService<ICampaignRollupStore>();
 
-                Guid? afterSessionId = null;
+                await QueueContributionsAsync(rollups, new DateTimeOffset(idleCutoff, TimeSpan.Zero), cancellationToken).ConfigureAwait(false);
+            }
 
-                while (true)
-                {
-                    IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
-                        new DateTimeOffset(idleCutoff, TimeSpan.Zero), 128, cancellationToken, afterSessionId).ConfigureAwait(false);
-
-                    if (contributionIds.Count == 0)
-                    {
-                        break;
-                    }
-
-                    foreach (Guid id in contributionIds)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        _ = queue.TryQueue(id);
-                    }
-
-                    afterSessionId = contributionIds[^1];
-                }
+            if (rollupsFirst)
+            {
+                QueueLegacySessions(ids, cancellationToken);
             }
 
             hostLogger.LogInformation(
-                "Campaign Logger sweep executed. Found {Count} sessions to consolidate.",
+                "Campaign Logger sweep executed. Found {Count} legacy sessions to consolidate.",
                 ids.Count);
-
-            foreach (Guid id in ids.Distinct())
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Fail-open: rejected ids remain eligible for a later sweep.
-                _ = queue.TryQueue(id);
-            }
         }
         finally
         {
             Interlocked.Exchange(ref _sweepRunning, 0);
+        }
+    }
+
+    private void QueueLegacySessions(List<Guid> ids, CancellationToken cancellationToken)
+    {
+        foreach (Guid id in ids.Distinct().Order())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_legacyAfterSessionId is { } after && id.CompareTo(after) <= 0)
+            {
+                continue;
+            }
+
+            if (!queue.TryQueue(id))
+            {
+                return;
+            }
+
+            _legacyAfterSessionId = id;
+        }
+
+        _legacyAfterSessionId = null;
+    }
+
+    private async Task QueueContributionsAsync(ICampaignRollupStore rollups, DateTimeOffset idleCutoff,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
+                idleCutoff, 128, cancellationToken, _rollupAfterSessionId).ConfigureAwait(false);
+
+            if (contributionIds.Count == 0)
+            {
+                _rollupAfterSessionId = null;
+
+                return;
+            }
+
+            foreach (Guid id in contributionIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!queue.TryQueue(id))
+                {
+                    return;
+                }
+
+                _rollupAfterSessionId = id;
+            }
         }
     }
 

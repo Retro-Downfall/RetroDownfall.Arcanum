@@ -94,21 +94,116 @@ public sealed class LoremasterTests
         Assert.Equal(1, harness.Queue.PendingCountForTesting);
     }
 
-    [Fact]
-    public async Task Pending_discovery_traverses_past_a_full_page_without_expanding_the_queue()
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task Saturated_sweeps_eventually_execute_a_later_healthy_Campaign_without_growing_the_queue(bool blockedRollups, bool healthyRollup)
     {
         LoremasterHarness harness = new();
 
         harness.Settings.Features.CampaignRollups = true;
 
-        harness.CampaignMaintenance.Pending = Enumerable.Range(1, 129)
-            .Select(index => Guid.Parse($"{index:x8}-0000-4000-8000-000000000000")).ToArray();
+        Guid healthy = Guid.Parse("00000100-0000-4000-8000-000000000000");
+
+        Guid[] blocked = Enumerable.Range(1, 128).Select(index => Guid.Parse($"{index:x8}-0000-4000-8000-000000000000")).ToArray();
+
+        harness.Repository.Session.Id = healthy;
+
+        harness.CampaignMaintenance.HealthySession = healthy;
+
+        harness.CampaignMaintenance.Pending = [.. (blockedRollups ? blocked : []), .. (healthyRollup ? new[] { healthy } : [])];
+
+        harness.Repository.Pending = [.. (blockedRollups ? [] : blocked), .. (healthyRollup ? [] : new[] { healthy })];
+
+        using SemaphoreSlim permits = new(0);
+
+        Channel<Guid> waiting = Channel.CreateUnbounded<Guid>();
+
+        harness.CampaignMaintenance.BeforeSessionAsync = async (session, token) =>
+        {
+            waiting.Writer.TryWrite(session);
+
+            await permits.WaitAsync(token);
+        };
 
         await harness.Service.RunSweepAsync(100, CancellationToken.None);
 
+        await harness.NextStepAsync("sweep");
+
+        await harness.NextStepAsync("scope-dispose");
+
         Assert.Equal(100, harness.Queue.PendingCountForTesting);
 
-        Assert.Equal(3, harness.CampaignMaintenance.DiscoveryCalls);
+        TaskCompletionSource firstHeld = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        harness.OnStepAsync = (step, token) => step == "sweep" ? firstHeld.Task.WaitAsync(token) : Task.CompletedTask;
+
+        await harness.Service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            _ = await waiting.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+            firstHeld.SetResult();
+
+            await harness.NextStepAsync("sweep");
+
+            await harness.NextStepAsync("scope-dispose");
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+
+            for (int pass = 0; pass < 3; pass++)
+            {
+                int pending = harness.Queue.PendingCountForTesting;
+
+                // One consumer may hold an identity in addition to the 100 bounded channel slots.
+                Assert.InRange(pending, 1, 101);
+
+                int released = pass < 2 ? pending - 1 : pending;
+
+                permits.Release(released);
+
+                for (int index = 0; index < released; index++)
+                {
+                    _ = await harness.CampaignMaintenance.ExecutedSessions.Reader.ReadAsync(timeout.Token);
+
+                    if (pass < 2)
+                    {
+                        _ = await waiting.Reader.ReadAsync(timeout.Token);
+                    }
+                }
+
+                if (pass < 2)
+                {
+                    // Keep one identity parked in the real consumer while discovery saturates
+                    // the bounded channel again; consumer scheduling cannot rescue a skipped ID.
+                    Assert.Equal(1, harness.Queue.PendingCountForTesting);
+
+                    await harness.Service.RunSweepAsync(100, timeout.Token);
+                }
+                else
+                {
+                    while (harness.Queue.PendingCountForTesting > 0)
+                    {
+                        await Task.Delay(1, timeout.Token);
+                    }
+                }
+            }
+
+            Assert.Contains(healthy, harness.CampaignMaintenance.ProcessedSessions);
+
+            Assert.Contains(LoremasterCampaignMaintenance.HealthyCampaign, harness.CampaignMaintenance.FoldedCampaigns);
+
+            Assert.Equal(healthy, harness.Repository.LastRollupSessionId);
+
+            Assert.True(harness.Intelligence.Calls > 0);
+        }
+        finally
+        {
+            await harness.Service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        }
     }
 
     [Fact]
@@ -179,6 +274,18 @@ public sealed class LoremasterTests
     {
         public IReadOnlyList<Guid> Pending { get; set; } = [];
 
+        public static readonly Guid HealthyCampaign = Guid.Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+
+        public Guid? HealthySession { get; set; }
+
+        public Func<Guid, CancellationToken, Task> BeforeSessionAsync { get; set; } = static (_, _) => Task.CompletedTask;
+
+        public Channel<Guid> ExecutedSessions { get; } = Channel.CreateUnbounded<Guid>();
+
+        public ConcurrentQueue<Guid> ProcessedSessions { get; } = new();
+
+        public ConcurrentQueue<Guid> FoldedCampaigns { get; } = new();
+
         public int DiscoveryCalls { get; private set; }
 
         public int SessionCalls { get; private set; }
@@ -225,19 +332,27 @@ public sealed class LoremasterTests
         }
 
         public ValueTask<Result<SessionCampaignBindingRecord?>> FindAsync(Guid? sessionId, CancellationToken cancellationToken) =>
-            ValueTask.FromResult(Result<SessionCampaignBindingRecord?>.Success(new(harness.Repository.Session.Id, SessionCampaignBinding.ForCampaign(Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")))));
+            ValueTask.FromResult(Result<SessionCampaignBindingRecord?>.Success(new(sessionId!.Value, SessionCampaignBinding.ForCampaign(sessionId == HealthySession ? HealthyCampaign : Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")))));
 
         public Task<Result<CampaignRollupMaintenanceCapability>> CreateCapabilityAsync(ArcanumInvocationContext invocation, SessionTurnClaimLease claimLease,
             CanonicalCampaignContext campaign, CovenantTurnLease maintenanceTurnLease, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<Result<CampaignRollupMaintenanceResult>> ProcessSessionAsync(Guid sessionId, long? upperSequence,
+        public async Task<Result<CampaignRollupMaintenanceResult>> ProcessSessionAsync(Guid sessionId, long? upperSequence,
             CampaignRollupMaintenanceCapability? capability, CancellationToken cancellationToken)
         {
             Assert.Null(capability);
 
+            await BeforeSessionAsync(sessionId, cancellationToken);
+
             SessionCalls++;
 
-            return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(Deferred ? 0 : ContributionPages, Deferred, Deferred ? "Protected" : null)));
+            ProcessedSessions.Enqueue(sessionId);
+
+            ExecutedSessions.Writer.TryWrite(sessionId);
+
+            bool deferred = Deferred || HealthySession is not null && sessionId != HealthySession;
+
+            return Result<CampaignRollupMaintenanceResult>.Success(new(deferred ? 0 : ContributionPages, deferred, deferred ? "Protected" : null));
         }
 
         public Task<Result<CampaignRollupMaintenanceResult>> ProcessCampaignAsync(Guid campaignId,
@@ -246,6 +361,8 @@ public sealed class LoremasterTests
             Assert.Null(capability);
 
             CampaignCalls++;
+
+            FoldedCampaigns.Enqueue(campaignId);
 
             return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(FoldDeferred ? 0 : 1, FoldDeferred, FoldDeferred ? "Protected" : null)));
         }
@@ -1241,6 +1358,8 @@ public sealed class LoremasterTests
 
         internal Guid? LastRollupSessionId { get; private set; }
 
+        internal List<Guid> Pending { get; set; } = [];
+
         internal bool ReturnSession { get; set; } = true;
 
         internal Exception? RollupException { get; set; }
@@ -1272,7 +1391,7 @@ public sealed class LoremasterTests
         {
             await harness.StepAsync("sweep", cancellationToken);
 
-            return [];
+            return [.. Pending];
         }
 
         public async Task<Session?> GetSessionHeaderAsync(
