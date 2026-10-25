@@ -291,13 +291,9 @@ internal sealed class CommandCenterState
 
     public IReadOnlyList<EntryDto> LoadedTranscriptEntries { get; set; } = [];
 
-    public int TranscriptEntryOffset { get; set; }
+    public bool HasOlderTranscriptEntries { get; set; }
 
-    public bool HasOlderTranscriptEntries =>
-        SessionEntryCount is { } total
-        && TranscriptEntryOffset + LoadedTranscriptEntries.Count < total;
-
-    public bool HasNewerTranscriptEntries => TranscriptEntryOffset > 0;
+    public bool HasNewerTranscriptEntries { get; set; }
 
     public string? PendingAlternativePrompt { get; set; }
 
@@ -499,7 +495,9 @@ internal sealed class CommandCenterState
 
         LoadedTranscriptEntries = [];
 
-        TranscriptEntryOffset = 0;
+        HasNewerTranscriptEntries = false;
+
+        HasOlderTranscriptEntries = false;
 
         SessionAttachments = [];
     }

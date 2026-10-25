@@ -240,7 +240,7 @@ Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/cont
 
 List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another page exists, Command Center states that server/durable state was not changed and prints the exact next command instead of silently truncating the list.
 
-The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page; these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and `Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads older entries and `Ctrl+PgDn` returns toward the latest entries. Paging uses exact server cursors/offsets, refuses a repeated or missing checkpoint as no progress, honors cancellation, and rebuilds Incantations from the current transcript page.
+The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page; these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and `Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads entries strictly before the oldest loaded entry's `(createdAt, id)` cursor, so new turns cannot shift an older page or hide the oldest history. Each read requests one extra entry to determine whether older history remains, independently of the session's displayed entry count. `Ctrl+PgDn` from an older transcript page reloads the latest page, including newly persisted turns. Paging honors cancellation and rebuilds Incantations from the current transcript page.
 
 ### Command palette and slash menu
 
