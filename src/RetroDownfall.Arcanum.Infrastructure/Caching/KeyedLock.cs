@@ -10,14 +10,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Caching;
 /// </summary>
 internal sealed class KeyedLock<TKey> where TKey : notnull
 {
-
     private readonly ConcurrentDictionary<TKey, LockState> _map;
 
     public KeyedLock(IEqualityComparer<TKey>? comparer = null)
     {
-
         _map = new(comparer ?? EqualityComparer<TKey>.Default);
-
     }
 
     /// <summary>
@@ -26,46 +23,62 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
     /// </summary>
     public async Task<IDisposable> AcquireAsync(TKey key, CancellationToken cancellationToken = default)
     {
-
         while (true)
         {
-
             LockState state = _map.GetOrAdd(key, static _ => new LockState());
 
             lock (state.Sync)
             {
-
                 // A state removed between GetOrAdd and this lock must not be reused.
                 if (!_map.TryGetValue(key, out LockState? current) || !ReferenceEquals(current, state))
                 {
-
                     continue;
-
                 }
 
                 state.RefCount++;
-
             }
 
             try
             {
-
                 await state.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
 
                 return new Releaser(_map, key, state);
-
             }
             catch (OperationCanceledException)
             {
-
                 ReleaseRef(_map, key, state);
 
                 throw;
+            }
+        }
+    }
 
+    /// <summary>Attempts acquisition without waiting, retaining the same eviction protection as an async waiter.</summary>
+    internal IDisposable? TryAcquire(TKey key)
+    {
+        while (true)
+        {
+            LockState state = _map.GetOrAdd(key, static _ => new LockState());
+
+            lock (state.Sync)
+            {
+                if (!_map.TryGetValue(key, out LockState? current) || !ReferenceEquals(current, state))
+                {
+                    continue;
+                }
+
+                state.RefCount++;
             }
 
-        }
+            if (state.Semaphore.Wait(0))
+            {
+                return new Releaser(_map, key, state);
+            }
 
+            ReleaseRef(_map, key, state);
+
+            return null;
+        }
     }
 
     /// <summary>
@@ -75,9 +88,7 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
     /// </summary>
     internal bool IsHeld(TKey key)
     {
-
         return _map.TryGetValue(key, out LockState? state) && state.Semaphore.CurrentCount == 0;
-
     }
 
     /// <summary>Current entry count of the underlying map; for assertions in the test suite.</summary>
@@ -85,37 +96,28 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
 
     private static void ReleaseRef(ConcurrentDictionary<TKey, LockState> map, TKey key, LockState state)
     {
-
         lock (state.Sync)
         {
-
             state.RefCount--;
 
             if (state.RefCount <= 0)
             {
-
                 _ = map.TryRemove(new KeyValuePair<TKey, LockState>(key, state));
-
             }
-
         }
-
     }
 
     private sealed class LockState
     {
-
         public object Sync { get; } = new();
 
         public SemaphoreSlim Semaphore { get; } = new(1, 1);
 
         public int RefCount;
-
     }
 
     private sealed class Releaser : IDisposable
     {
-
         private readonly ConcurrentDictionary<TKey, LockState> _map;
 
         private readonly TKey _key;
@@ -126,31 +128,23 @@ internal sealed class KeyedLock<TKey> where TKey : notnull
 
         public Releaser(ConcurrentDictionary<TKey, LockState> map, TKey key, LockState state)
         {
-
             _map = map;
 
             _key = key;
 
             _state = state;
-
         }
 
         public void Dispose()
         {
-
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
             {
-
                 return;
-
             }
 
             _state.Semaphore.Release();
 
             ReleaseRef(_map, _key, _state);
-
         }
-
     }
-
 }

@@ -18,6 +18,19 @@ internal sealed class NoOpSessionAttachmentStore(
     Func<Exception>? lookupFailure = null,
     Func<Guid, string, int?, SessionAttachmentRecord?>? logicalLookup = null) : ISessionAttachmentStore
 {
+    public SessionAttachmentForkScope BeginForkCopyScope(Guid forkSessionId) => new NoOpForkScope();
+
+    private sealed class NoOpForkScope : SessionAttachmentForkScope
+    {
+        public override void Complete()
+        {
+        }
+
+        public override void Dispose()
+        {
+        }
+    }
+
     public int PersistNewCallCount { get; private set; }
 
     public Task<SessionAttachmentRecord> PersistNewAsync(

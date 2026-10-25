@@ -170,6 +170,17 @@ public sealed record SessionAttachmentPersistence(
     SessionAttachmentRecord Record,
     bool NewVersionCreated);
 
+/// <summary>
+/// Owns copied artifacts across every page of one fork until its database transaction commits.
+/// Disposal before completion performs best-effort cleanup restricted to captured file identities.
+/// </summary>
+public abstract class SessionAttachmentForkScope : IDisposable
+{
+    public abstract void Complete();
+
+    public abstract void Dispose();
+}
+
 public interface ISessionAttachmentStore
 {
     Task<SessionAttachmentRecord> PersistNewAsync(
@@ -415,9 +426,14 @@ public interface ISessionAttachmentStore
         throw new NotSupportedException(
             "Paged fork attachment enumeration is not supported by this store.");
 
+    /// <summary>Begins ownership tracking for one fork; the caller holds its Session gate through disposal.</summary>
+    SessionAttachmentForkScope BeginForkCopyScope(Guid forkSessionId) =>
+        throw new NotSupportedException("This attachment store does not support owned fork cleanup.");
+
     /// <summary>
     /// Copies and hash-verifies attachment bytes into the fork session tree before the DB transaction.
-    /// On failure, deletes any partially written fork tree.
+    /// The caller holds the fork Session gate through copying and ambient transaction completion.
+    /// Publication refuses existing destinations; failure removes only captured copies owned by this call.
     /// </summary>
     Task CopyBytesForForkAsync(
         Guid forkSessionId,

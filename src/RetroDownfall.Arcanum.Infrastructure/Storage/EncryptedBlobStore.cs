@@ -295,11 +295,26 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
         }
     }
 
-    public async Task<EncryptedBlobWriter> CreateWriterAsync(
+    public Task<EncryptedBlobWriter> CreateWriterAsync(
         string destinationPath,
         EncryptedBlobPurpose purpose,
         ReadOnlyMemory<byte> authenticatedMetadata = default,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        CreateWriterCoreAsync(destinationPath, purpose, authenticatedMetadata, createNew: false, cancellationToken);
+
+    public Task<EncryptedBlobWriter> CreateNewWriterAsync(
+        string destinationPath,
+        EncryptedBlobPurpose purpose,
+        ReadOnlyMemory<byte> authenticatedMetadata = default,
+        CancellationToken cancellationToken = default) =>
+        CreateWriterCoreAsync(destinationPath, purpose, authenticatedMetadata, createNew: true, cancellationToken);
+
+    private async Task<EncryptedBlobWriter> CreateWriterCoreAsync(
+        string destinationPath,
+        EncryptedBlobPurpose purpose,
+        ReadOnlyMemory<byte> authenticatedMetadata,
+        bool createNew,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
         ValidatePurpose(purpose);
@@ -342,7 +357,8 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                     fullDestinationPath,
                     purpose,
                     header,
-                    purposeKey);
+                    purposeKey,
+                    createNew);
             }
             catch
             {
@@ -1001,6 +1017,8 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
     {
         private readonly EncryptedBlobStore _store;
 
+        private readonly bool _createNew;
+
         private readonly FileStream _output;
 
         private readonly string _tempPath;
@@ -1038,9 +1056,11 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
             string destinationPath,
             EncryptedBlobPurpose purpose,
             byte[] header,
-            byte[] purposeKey)
+            byte[] purposeKey,
+            bool createNew)
         {
             _store = store;
+            _createNew = createNew;
             _output = output;
             _tempPath = tempPath;
             _destinationPath = destinationPath;
@@ -1144,7 +1164,14 @@ public sealed class EncryptedBlobStore : IEncryptedBlobStore
                     .ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 SecureFilePermissions.ApplyOwnerOnlyFile(_tempPath);
-                _store.PublishTemporary(_tempPath, _destinationPath);
+                if (_createNew)
+                {
+                    File.Move(_tempPath, _destinationPath, overwrite: false);
+                }
+                else
+                {
+                    _store.PublishTemporary(_tempPath, _destinationPath);
+                }
             }
             catch
             {

@@ -236,6 +236,81 @@ internal sealed partial class SessionAttachmentStore
             cancellationToken).ConfigureAwait(false);
     }
 
+    public SessionAttachmentForkScope BeginForkCopyScope(Guid forkSessionId)
+    {
+        ForkCopyScope scope = new(this, forkSessionId);
+
+        if (!_forkCopyScopes.TryAdd(forkSessionId, scope))
+        {
+            throw new InvalidOperationException("A fork copy scope already owns this Session.");
+        }
+
+        return scope;
+    }
+
+    private sealed class ForkCopyScope(SessionAttachmentStore store, Guid sessionId) : SessionAttachmentForkScope
+    {
+        private readonly List<IdentityOwnedFileSystemArtifact> _copies = [];
+
+        private bool _completed;
+
+        private int _disposed;
+
+        public void Track(IdentityOwnedFileSystemArtifact copy)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+            if (_completed)
+            {
+                throw new InvalidOperationException("A completed fork cannot register more copies.");
+            }
+
+            _copies.Add(copy);
+        }
+
+        public override void Complete()
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+            _completed = true;
+        }
+
+        public override void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _ = store._forkCopyScopes.TryRemove(new KeyValuePair<Guid, ForkCopyScope>(sessionId, this));
+
+            if (!_completed)
+            {
+                foreach (IdentityOwnedFileSystemArtifact copy in _copies)
+                {
+                    try
+                    {
+                        _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+                    }
+                    catch (Exception exception)
+                    {
+                        // Compensation must preserve the original fork failure even if filesystem
+                        // cleanup or its diagnostic sink fails. Reconciliation can retry abandoned bytes.
+                        try
+                        {
+                            store._logger.LogWarning(exception, "Owned fork copy cleanup failed for Session {SessionId}.", sessionId);
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
+                }
+            }
+
+            _copies.Clear();
+        }
+    }
+
     public async Task CopyBytesForForkAsync(
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
@@ -247,6 +322,8 @@ internal sealed partial class SessionAttachmentStore
         {
             return;
         }
+
+        List<IdentityOwnedFileSystemArtifact> copies = [];
 
         try
         {
@@ -266,15 +343,16 @@ internal sealed partial class SessionAttachmentStore
                 string newRelative = BuildRelativePath(
                     forkSessionId,
                     pendingTurnId: null,
-                    plan.Source.LogicalKey,
-                    plan.Source.Version,
-                    plan.Source.OriginalFileName);
+                    plan.NewAttachmentId);
 
                 string destAbsolute = ResolveUnderRoot(newRelative);
 
-                await AtomicCopyFileAsync(sourceAbsolute, destAbsolute, cancellationToken).ConfigureAwait(false);
+                if (BeforeForkCopyForTesting is not null)
+                {
+                    await BeforeForkCopyForTesting(destAbsolute, cancellationToken).ConfigureAwait(false);
+                }
 
-                await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
+                await AtomicCopyFileAsync(sourceAbsolute, destAbsolute, cancellationToken).ConfigureAwait(false);
 
                 if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                         destAbsolute,
@@ -284,6 +362,15 @@ internal sealed partial class SessionAttachmentStore
                     throw new IOException(
                         "Fork copy could not capture the owned attachment blob identity.");
                 }
+
+                copies.Add(blobAuthority);
+
+                if (_forkCopyScopes.TryGetValue(forkSessionId, out ForkCopyScope? scope))
+                {
+                    scope.Track(blobAuthority);
+                }
+
+                await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
 
                 _forkBlobAuthorities.Remove(plan);
 
@@ -299,7 +386,13 @@ internal sealed partial class SessionAttachmentStore
                 _forkBlobAuthorities.Remove(plan);
             }
 
-            _ = TryDeleteSessionDirectory(forkSessionId);
+            if (!_forkCopyScopes.ContainsKey(forkSessionId))
+            {
+                foreach (IdentityOwnedFileSystemArtifact copy in copies)
+                {
+                    _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+                }
+            }
 
             throw;
         }
@@ -325,9 +418,7 @@ internal sealed partial class SessionAttachmentStore
                 string relativePath = NormalizeRelativePath(BuildRelativePath(
                     forkSessionId,
                     pendingTurnId: null,
-                    plan.Source.LogicalKey,
-                    plan.Source.Version,
-                    plan.Source.OriginalFileName));
+                    plan.NewAttachmentId));
 
                 ForkBlobAuthority authority;
 
@@ -728,10 +819,9 @@ internal sealed partial class SessionAttachmentStore
     /// its blob. Guarded by the same <c>State</c>/<c>RelativePath</c> predicate as a sweep delete, so a
     /// row that was promoted (or otherwise rewritten) in the meantime is left alone. The derived index
     /// rows go with it through their <c>ON DELETE CASCADE</c> keys. The blob unlink is best effort: the
-    /// orphan-file sweep reclaims it if it fails. It runs while the attachment gate is still held: once
-    /// the row is gone a concurrent persist of the same logical key can reuse the freed version number
-    /// and so this path, and an unlink after the gate was released could remove that persist's fresh
-    /// bytes and leave its row pointing at nothing.
+    /// orphan-file sweep reclaims it if it fails. It runs while the attachment gate is still held,
+    /// keeping row deletion and blob cleanup serialized with subsequent versions of the logical key.
+    /// New snapshots receive distinct opaque paths even when a logical version number is reused.
     /// </summary>
     public async Task<bool> DeleteCreatedAttachmentAsync(
         SessionAttachmentRecord created,
