@@ -162,10 +162,10 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     {
         AttachmentSourceResolution resolution = _sourceResolver is null
             ? new(AttachmentSourceMetadata.SnapshotOnly with
-                {
-                    Status = AttachmentSourceStatus.WorkspaceUnavailable,
-                    DiagnosticReason = "No host attachment source resolver is available.",
-                }, ReadOnlyMemory<byte>.Empty)
+            {
+                Status = AttachmentSourceStatus.WorkspaceUnavailable,
+                DiagnosticReason = "No host attachment source resolver is available.",
+            }, ReadOnlyMemory<byte>.Empty)
             : await _sourceResolver.ResolveForPersistenceAsync(source, bytes, cancellationToken).ConfigureAwait(false);
 
         PersistNewCoreResult persisted = await PersistNewCoreAsync(
@@ -2143,18 +2143,6 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
             // path that is no longer registered is claimed by a row the re-read can see.
             if (IsPromotionInFlight(absolute))
             {
-                continue;
-            }
-
-            // Promotion stages as `destination + ".tmp"`, but EncryptedBlobStore stages as
-            // `"." + fileName + ".tmp." + guid`, which no suffix test can match — hence the infix check.
-            string fileName = Path.GetFileName(absolute);
-
-            if (fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
-                || fileName.Contains(".tmp.", StringComparison.OrdinalIgnoreCase))
-            {
-                TryDeleteFile(absolute);
-
                 continue;
             }
 

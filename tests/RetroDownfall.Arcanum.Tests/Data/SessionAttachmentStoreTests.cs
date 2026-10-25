@@ -2478,6 +2478,43 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         Assert.Equal(sessionId, cleared.SessionId);
     }
 
+    [SkippableTheory]
+    [InlineData("notes.tmp")]
+    [InlineData("data.tmp.csv")]
+    [InlineData("Report.TMP.md")]
+    [InlineData("notes.txt")]
+    public async Task ReconcileAsync_preserves_bound_temporary_looking_names(string name)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "temporary-looking-name");
+
+        byte[] bytes = Encoding.UTF8.GetBytes("bound snapshot content");
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            sessionId, null, null, name, name, bytes, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        File.SetLastWriteTimeUtc(absolute, DateTime.UtcNow.AddHours(-2));
+
+        string orphan = Path.Combine(Path.GetDirectoryName(absolute)!, ".abandoned.tmp." + Guid.NewGuid().ToString("N"));
+
+        await File.WriteAllTextAsync(orphan, "abandoned staging");
+
+        File.SetLastWriteTimeUtc(orphan, DateTime.UtcNow.AddHours(-2));
+
+        await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+        Assert.NotNull(await _store.GetByIdAsync(record.Id));
+
+        Assert.Equal(bytes, (await _store.ReadBytesAsync(record)).ToArray());
+
+        Assert.False(File.Exists(orphan));
+    }
+
     [SkippableFact]
     public async Task ReconcileAsync_deletes_row_whose_file_is_missing()
     {
