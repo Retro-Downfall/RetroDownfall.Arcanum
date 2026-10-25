@@ -98,6 +98,129 @@ public sealed class DurableOperationDiagnosticsTests
         Assert.Equal(1, report.OperationsAwaitingRepair);
     }
 
+    [Theory]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, null)]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 4, "Data.ReconciliationFailed")]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 2, "Covenant.MaintenanceFailed")]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 2, "Covenant.ErasureIncomplete")]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, null)]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 2, "operation.checkpoint_corrupt")]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 0, "Covenant.ManualArtifactErasureRequired")]
+    public async Task Erasure_recovery_guidance_keeps_the_existing_operation_authoritative(
+        string kind,
+        int checkpointVersion,
+        string? terminalCode)
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore store = new(time);
+
+        LongRunningOperation operation = SeedRepair(store, kind, checkpointVersion, terminalCode);
+
+        DurableOperationDiagnosticsReport report = await Create(store, time).InspectAsync(time.GetUtcNow());
+
+        DurableOperationRepairItem item = Assert.Single(report.RepairItems);
+
+        Assert.Equal(1, item.Count);
+
+        Assert.Contains("arcanum operation show <id>", item.Guidance, StringComparison.Ordinal);
+
+        Assert.Contains("Admission stays closed", item.Guidance, StringComparison.Ordinal);
+
+        Assert.Contains("Do not start a second", item.Guidance, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("data retention show", item.Guidance, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("re-applying", item.Guidance, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("Re-run the factory reset", item.Guidance, StringComparison.Ordinal);
+
+        string detail = report.Describe();
+
+        Assert.Contains(item.Guidance, detail, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(operation.Id.ToString(), detail, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain(operation.PublicSummary, detail, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 0, "Data.ReconciliationFailed")]
+    [InlineData(LongRunningOperationKinds.DataRetentionMutation, 2, "Data.ReconciliationFailed")]
+    [InlineData(LongRunningOperationKinds.DataRetentionFactoryReset, 0, "Data.ReconciliationFailed")]
+    [InlineData(LongRunningOperationKinds.BackupCreate, 4, "Covenant.MaintenanceFailed")]
+    public async Task Other_recovery_classes_keep_their_registered_guidance(string kind, int checkpointVersion, string terminalCode)
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore store = new(time);
+
+        _ = SeedRepair(store, kind, checkpointVersion, terminalCode);
+
+        DurableOperationDiagnosticsReport report = await Create(store, time).InspectAsync(time.GetUtcNow());
+
+        Assert.Equal(LongRunningOperationRecoveryRegistry.Find(kind)!.ManualRepairGuidance, Assert.Single(report.RepairItems).Guidance);
+    }
+
+    [Fact]
+    public async Task Same_kind_and_error_do_not_merge_different_recovery_classes()
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore store = new(time);
+
+        _ = SeedRepair(store, LongRunningOperationKinds.DataRetentionMutation, 4, "Data.ReconciliationFailed");
+
+        _ = SeedRepair(store, LongRunningOperationKinds.DataRetentionMutation, 2, "Data.ReconciliationFailed");
+
+        _ = SeedRepair(store, LongRunningOperationKinds.DataRetentionMutation, 4, "Data.ReconciliationFailed");
+
+        DurableOperationDiagnosticsReport report = await Create(store, time).InspectAsync(time.GetUtcNow());
+
+        Assert.Equal(3, report.OperationsAwaitingRepair);
+
+        Assert.Equal(2, report.RepairItems.Count);
+
+        DurableOperationRepairItem erasure = Assert.Single(report.RepairItems,
+            static item => item.Guidance.Contains("Do not start a second", StringComparison.Ordinal));
+
+        Assert.Equal(2, erasure.Count);
+
+        DurableOperationRepairItem ordinary = Assert.Single(report.RepairItems,
+            static item => !item.Guidance.Contains("Do not start a second", StringComparison.Ordinal));
+
+        Assert.Equal(1, ordinary.Count);
+
+        Assert.Equal(LongRunningOperationRecoveryRegistry.Find(LongRunningOperationKinds.DataRetentionMutation)!.ManualRepairGuidance, ordinary.Guidance);
+    }
+
+    [Fact]
+    public async Task Unknown_kind_guidance_does_not_guess_a_recovery_path()
+    {
+        FakeTimeProvider time = new();
+
+        FakeLongRunningOperationStore store = new(time);
+
+        _ = SeedRepair(store, "future-operation-kind", 4, "Covenant.MaintenanceFailed");
+
+        DurableOperationDiagnosticsReport report = await Create(store, time).InspectAsync(time.GetUtcNow());
+
+        Assert.Equal("This operation kind is not in the recovery registry; report it as a defect.", Assert.Single(report.RepairItems).Guidance);
+    }
+
+    private static LongRunningOperation SeedRepair(FakeLongRunningOperationStore store, string kind, int checkpointVersion, string? terminalCode)
+    {
+        LongRunningOperation operation = store.Seed(kind, LongRunningOperationRecoveryPolicy.ReconcileAndComplete,
+            LongRunningOperationState.ReconciliationRequired, checkpointVersion) with
+        {
+            TerminalErrorCode = terminalCode,
+        };
+
+        store.Add(operation);
+
+        return operation;
+    }
+
     /// <summary>
     /// A kind with no owning handler is a build-time registration bug; the doctor names it rather
     /// than waiting for an operation of that kind to strand in production.

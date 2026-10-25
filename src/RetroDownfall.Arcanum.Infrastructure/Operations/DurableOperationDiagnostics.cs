@@ -46,14 +46,18 @@ internal sealed class DurableOperationDiagnostics(
         DurableOperationRepairItem[] items =
         [
             .. needsRepair
-                .GroupBy(static operation => (operation.Kind, operation.TerminalErrorCode))
+                .GroupBy(static operation => (
+                    operation.Kind,
+                    operation.TerminalErrorCode,
+                    Guidance: LongRunningOperationRecoveryRegistry.GetManualRepairGuidance(operation)))
                 .Select(static group => new DurableOperationRepairItem(
                     group.Key.Kind,
                     group.Count(),
                     group.Key.TerminalErrorCode,
-                    LongRunningOperationRecoveryRegistry.Find(group.Key.Kind)?.ManualRepairGuidance
-                        ?? "This operation kind is not in the recovery registry; report it as a defect."))
-                .OrderBy(static item => item.Kind, StringComparer.Ordinal),
+                    group.Key.Guidance))
+                .OrderBy(static item => item.Kind, StringComparer.Ordinal)
+                .ThenBy(static item => item.TerminalErrorCode, StringComparer.Ordinal)
+                .ThenBy(static item => item.Guidance, StringComparer.Ordinal),
         ];
 
         return new DurableOperationDiagnosticsReport(
