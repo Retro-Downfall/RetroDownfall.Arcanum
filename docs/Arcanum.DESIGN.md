@@ -4823,6 +4823,7 @@ Campaign/Spell/Prompt endpoints → repositories → Grimoire; `CampaignBackedWo
 ### 19.3 Key decisions
 
 - Operator term **Campaign** / `/api/campaigns` (no `/api/skills`).
+- The read-only provider connectivity probe uses one five-second deadline for its outbound HTTP request and capped response-body read, including a body that stalls after headers. Caller cancellation propagates independently; deadline expiry returns an unreachable probe result. The response cap remains 4 MiB and does not buffer a declared oversized body.
 - `SPELL.json` preferred; writes never create `SKILL.json`.
 - Export wire `spellJson` (legacy `skillJson` on import).
 - Prompt `/test` = assemble only (`SkipSpellRouting`) and return the model-aware `ContextTokenBreakdown` for the assembled system/user messages, current MCP tool schemas, provider framing, safety margin, and reserved answer; `/execute(-stream)` = live inference.
