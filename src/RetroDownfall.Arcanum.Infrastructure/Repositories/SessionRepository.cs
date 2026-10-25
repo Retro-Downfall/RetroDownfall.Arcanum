@@ -547,7 +547,7 @@ internal sealed class SessionRepository(
             ForkedFromSessionId = sourceId,
         };
 
-        try
+        using (SessionAttachmentForkScope forkCopies = attachments.BeginForkCopyScope(forkSessionId))
         {
             await foreach (IReadOnlyList<SessionAttachmentRecord> sourcePage in attachments
                                .ReadBoundForForkPagesAsync(
@@ -636,6 +636,8 @@ internal sealed class SessionRepository(
                 }
 
                 await tx.CommitAsync(ct).ConfigureAwait(false);
+
+                forkCopies.Complete();
             }
             catch
             {
@@ -643,12 +645,6 @@ internal sealed class SessionRepository(
 
                 throw;
             }
-        }
-        catch
-        {
-            _ = attachments.TryDeleteSessionDirectory(forkSessionId);
-
-            throw;
         }
 
         if (attachmentIndexQueue is not null)

@@ -68,6 +68,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     private readonly ConditionalWeakTable<SessionAttachmentForkCopyPlan, ForkBlobAuthority>
         _forkBlobAuthorities = new();
 
+    private readonly ConcurrentDictionary<Guid, ForkCopyScope> _forkCopyScopes = new();
+
     private int _boundRecordPageReadCountForTesting;
 
     private int _latestLogicalKeyQueryPageCountForTesting;
@@ -102,6 +104,8 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     internal Func<CancellationToken, Task>? AfterOrphanPathSnapshotForTesting { get; set; }
 
     internal Func<string, CancellationToken, Task>? BeforeOrphanFileDeleteForTesting { get; set; }
+
+    internal Func<string, CancellationToken, Task>? BeforeForkCopyForTesting { get; set; }
 
     /// <summary>
     /// Test seam: runs inside <see cref="DeleteCreatedAttachmentAsync"/>, after the row is deleted and

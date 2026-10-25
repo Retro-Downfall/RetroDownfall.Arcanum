@@ -236,6 +236,81 @@ internal sealed partial class SessionAttachmentStore
             cancellationToken).ConfigureAwait(false);
     }
 
+    public SessionAttachmentForkScope BeginForkCopyScope(Guid forkSessionId)
+    {
+        ForkCopyScope scope = new(this, forkSessionId);
+
+        if (!_forkCopyScopes.TryAdd(forkSessionId, scope))
+        {
+            throw new InvalidOperationException("A fork copy scope already owns this Session.");
+        }
+
+        return scope;
+    }
+
+    private sealed class ForkCopyScope(SessionAttachmentStore store, Guid sessionId) : SessionAttachmentForkScope
+    {
+        private readonly List<IdentityOwnedFileSystemArtifact> _copies = [];
+
+        private bool _completed;
+
+        private int _disposed;
+
+        public void Track(IdentityOwnedFileSystemArtifact copy)
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+            if (_completed)
+            {
+                throw new InvalidOperationException("A completed fork cannot register more copies.");
+            }
+
+            _copies.Add(copy);
+        }
+
+        public override void Complete()
+        {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+            _completed = true;
+        }
+
+        public override void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _ = store._forkCopyScopes.TryRemove(new KeyValuePair<Guid, ForkCopyScope>(sessionId, this));
+
+            if (!_completed)
+            {
+                foreach (IdentityOwnedFileSystemArtifact copy in _copies)
+                {
+                    try
+                    {
+                        _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+                    }
+                    catch (Exception exception)
+                    {
+                        // Compensation must preserve the original fork failure even if filesystem
+                        // cleanup or its diagnostic sink fails. Reconciliation can retry abandoned bytes.
+                        try
+                        {
+                            store._logger.LogWarning(exception, "Owned fork copy cleanup failed for Session {SessionId}.", sessionId);
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
+                }
+            }
+
+            _copies.Clear();
+        }
+    }
+
     public async Task CopyBytesForForkAsync(
         Guid forkSessionId,
         IReadOnlyList<SessionAttachmentForkCopyPlan> plans,
@@ -272,6 +347,11 @@ internal sealed partial class SessionAttachmentStore
 
                 string destAbsolute = ResolveUnderRoot(newRelative);
 
+                if (BeforeForkCopyForTesting is not null)
+                {
+                    await BeforeForkCopyForTesting(destAbsolute, cancellationToken).ConfigureAwait(false);
+                }
+
                 await AtomicCopyFileAsync(sourceAbsolute, destAbsolute, cancellationToken).ConfigureAwait(false);
 
                 if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -284,6 +364,11 @@ internal sealed partial class SessionAttachmentStore
                 }
 
                 copies.Add(blobAuthority);
+
+                if (_forkCopyScopes.TryGetValue(forkSessionId, out ForkCopyScope? scope))
+                {
+                    scope.Track(blobAuthority);
+                }
 
                 await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
 
@@ -301,9 +386,12 @@ internal sealed partial class SessionAttachmentStore
                 _forkBlobAuthorities.Remove(plan);
             }
 
-            foreach (IdentityOwnedFileSystemArtifact copy in copies)
+            if (!_forkCopyScopes.ContainsKey(forkSessionId))
             {
-                _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+                foreach (IdentityOwnedFileSystemArtifact copy in copies)
+                {
+                    _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+                }
             }
 
             throw;

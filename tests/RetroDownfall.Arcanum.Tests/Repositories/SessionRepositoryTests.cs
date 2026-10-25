@@ -339,6 +339,173 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task ForkAsync_success_retains_owned_copies_and_releases_cleanup_scope()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string root = Path.Combine(Path.GetTempPath(), "arcanum-fork-success-" + Guid.NewGuid().ToString("N"));
+
+        Guid sourceId = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(sourceId, "fork source", DateTimeOffset.UtcNow));
+
+        await _db.SaveChangesAsync();
+
+        SessionAttachmentStore store = new(
+            _db, Microsoft.Extensions.Options.Options.Create(new ArcanumSettings()), root, TestEncryptedBlobStore.Create());
+
+        try
+        {
+            await store.PersistNewAsync(
+                sourceId, null, null, "source", "source.txt", "source bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+            SessionRepository repository = new(
+                _db, store, _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
+
+            Result<Session> result = await repository.ForkAsync(sourceId, new ForkSessionRequest(), CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.Error.Code);
+
+            SessionAttachmentRecord copied = Assert.Single(await store.ListBoundAsync(result.Value.Id));
+
+            Assert.Equal("source bytes"u8.ToArray(), (await store.ReadBytesAsync(copied)).ToArray());
+
+            using SessionAttachmentForkScope nextScope = store.BeginForkCopyScope(result.Value.Id);
+
+            nextScope.Complete();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ForkAsync_failure_reclaims_owned_pages_and_preserves_unowned_files(bool failTransaction)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string root = Path.Combine(Path.GetTempPath(), "arcanum-fork-ownership-" + Guid.NewGuid().ToString("N"));
+
+        Guid sourceId = Guid.NewGuid();
+
+        _db!.Sessions.Add(NewSession(sourceId, "fork ownership source", DateTimeOffset.UtcNow));
+
+        await _db.SaveChangesAsync();
+
+        SessionAttachmentStore store = new(_db, Microsoft.Extensions.Options.Options.Create(new ArcanumSettings()), root, TestEncryptedBlobStore.Create());
+
+        List<SessionAttachmentRecord> sourceRecords = [];
+
+        try
+        {
+            for (int index = 0; index < 129; index++)
+            {
+                sourceRecords.Add(await store.PersistNewAsync(
+                    sourceId, null, null, "source-" + index, "source.txt", "source bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text));
+            }
+
+            if (failTransaction)
+            {
+                await _db.Database.OpenConnectionAsync();
+
+                using DbCommand trigger = _db.Database.GetDbConnection().CreateCommand();
+
+                trigger.CommandText = """
+                    CREATE TEMP TRIGGER refuse_test_fork BEFORE INSERT ON "Sessions"
+                    WHEN NEW."ForkedFromSessionId" IS NOT NULL
+                    BEGIN SELECT RAISE(ABORT, 'test fork transaction refusal'); END
+                    """;
+
+                await trigger.ExecuteNonQueryAsync();
+            }
+
+            List<string> attempted = [];
+
+            string? sentinel = null;
+
+            string? preserved = null;
+
+            store.BeforeForkCopyForTesting = async (destination, token) =>
+            {
+                attempted.Add(destination);
+
+                if (attempted.Count != 129)
+                {
+                    return;
+                }
+
+                Assert.True(File.Exists(attempted[0]), "The first successful page must still own its copies before page two.");
+
+                sentinel = Path.Combine(Path.GetDirectoryName(destination)!, "unrelated-sentinel");
+
+                await File.WriteAllTextAsync(sentinel, "unrelated bytes", token);
+
+                preserved = failTransaction ? attempted[0] : destination;
+
+                string replacement = Path.Combine(Path.GetDirectoryName(destination)!, "replacement-staging");
+
+                await File.WriteAllTextAsync(replacement, "occupied bytes", token);
+
+                File.Move(replacement, preserved, overwrite: failTransaction);
+            };
+
+            SessionRepository repository = new(
+                _db, store, _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
+
+            Exception failure = await Assert.ThrowsAnyAsync<Exception>(() => repository.ForkAsync(
+                sourceId, new ForkSessionRequest(), CancellationToken.None));
+
+            if (failTransaction)
+            {
+                Assert.IsType<Microsoft.Data.Sqlite.SqliteException>(failure);
+
+                Assert.Contains("test fork transaction refusal", failure.Message, StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.IsType<IOException>(failure);
+            }
+
+            Assert.Equal(129, attempted.Count);
+
+            Assert.NotNull(sentinel);
+
+            Assert.True(File.Exists(sentinel), "Repository failure cleanup deleted unrelated bytes.");
+
+            Assert.Equal("unrelated bytes", await File.ReadAllTextAsync(sentinel));
+
+            Assert.NotNull(preserved);
+
+            Assert.Equal("occupied bytes", await File.ReadAllTextAsync(preserved));
+
+            foreach (string owned in attempted.Where(path => path != preserved))
+            {
+                Assert.False(File.Exists(owned), "Repository failure cleanup leaked an owned copy from an earlier page.");
+            }
+
+            Assert.False(await _db.Sessions.AsNoTracking().AnyAsync(session => session.ForkedFromSessionId == sourceId));
+
+            foreach (SessionAttachmentRecord source in sourceRecords)
+            {
+                Assert.Equal("source bytes"u8.ToArray(), (await store.ReadBytesAsync(source)).ToArray());
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [SkippableFact]
     public async Task ForkAsync_large_source_pages_entries_and_attachments_without_aggregate_tracking()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
