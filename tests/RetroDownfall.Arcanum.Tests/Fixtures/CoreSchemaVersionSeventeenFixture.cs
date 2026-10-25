@@ -686,7 +686,7 @@ internal static class CoreSchemaVersionSeventeenFixture
 
     internal static IReadOnlyList<GrimoireSchemaObject> Objects =>
     [
-        .. GrimoireSchemaCatalog.CoreObjects
+        .. CoreSchemaVersionTwentyOneFixture.Objects
             .Where(static definition => PublishedObjects.Contains(definition.Name))
             .Select(static definition => definition.Name == "external_disclosure_receipts"
                 ? definition with { Sql = PublishedDisclosureReceiptSchema.Sql }

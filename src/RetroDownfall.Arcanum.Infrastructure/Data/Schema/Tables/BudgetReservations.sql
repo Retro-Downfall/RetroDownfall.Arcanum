@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS "BudgetReservations" (
 
 CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_BudgetPeriod_Status" ON "BudgetReservations" ("BudgetPeriod", "Status");
 CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_ExpiresAt" ON "BudgetReservations" ("ExpiresAt");
+
+CREATE INDEX IF NOT EXISTS "IX_BudgetReservations_Status" ON "BudgetReservations" ("Status");

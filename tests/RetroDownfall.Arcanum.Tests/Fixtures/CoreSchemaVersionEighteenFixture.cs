@@ -466,7 +466,7 @@ internal static class CoreSchemaVersionEighteenFixture
         UNION ALL SELECT 'long_rest_provider_effects' AS TableName, 'UpdatedAtUtc' AS ColumnName;
         """;
 
-    internal static IReadOnlyList<GrimoireSchemaObject> Objects => GrimoireSchemaCatalog.CoreObjects.Where(value => PublishedObjects.Contains(value.Name)).Select(value => value.Name == "grimoire_utc_instant_columns" ? value with { Sql = FrozenUtcView }
+    internal static IReadOnlyList<GrimoireSchemaObject> Objects => CoreSchemaVersionTwentyOneFixture.Objects.Where(value => PublishedObjects.Contains(value.Name)).Select(value => value.Name == "grimoire_utc_instant_columns" ? value with { Sql = FrozenUtcView }
         : value.Name == "external_disclosure_receipts" ? value with { Sql = PublishedDisclosureReceiptSchema.Sql } : value).ToArray();
 
     internal static string Fingerprint => GrimoireSchemaCatalog.ComputeSourceFingerprint(Objects);

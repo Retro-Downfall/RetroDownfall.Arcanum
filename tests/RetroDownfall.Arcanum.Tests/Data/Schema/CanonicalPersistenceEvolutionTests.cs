@@ -216,8 +216,10 @@ public sealed class CanonicalPersistenceEvolutionTests
 
         await using SqliteConnection freshConnection = await freshFile.OpenAsync(CancellationToken.None);
 
+        // Compare the version-9 evolution with a fresh version-9 catalog; later versions add indexes.
         GrimoireSchemaInstallResult fresh = await GrimoireSchemaTestInstaller.InstallAsync(
             freshConnection,
+            CoreSchemaVersionNineFixture.ChainSet(),
             1536,
             CancellationToken.None);
 
