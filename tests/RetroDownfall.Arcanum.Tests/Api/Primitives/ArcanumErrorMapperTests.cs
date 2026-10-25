@@ -213,6 +213,16 @@ public sealed class ArcanumErrorMapperTests
         Assert.Equal(expected, actual);
     }
 
+    [Theory]
+    [InlineData(ErrorCodes.Hub.InvalidAdmission)]
+    [InlineData(ErrorCodes.LongRest.InvalidAdmission)]
+    public void InvalidAdmission_IsInternalFailureOnBothMappingPaths(string code)
+    {
+        Assert.Equal(500, ArcanumErrorMapper.ResolveStatusCode(code));
+
+        Assert.Equal(500, ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(code));
+    }
+
     [Fact]
     public void ResolveStatusCodeDefaultBadRequest_UnknownCode_Returns400()
     {

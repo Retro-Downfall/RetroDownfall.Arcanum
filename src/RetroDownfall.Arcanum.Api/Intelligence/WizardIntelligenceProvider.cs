@@ -523,7 +523,7 @@ public sealed partial class WizardIntelligenceProvider(
                     // is only the backstop for a frame that arrives without one.
                     yield return new RunFailed(
                         correlation,
-                        new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message),
+                        new Error(frame.Data ?? ErrorCodes.Hub.Error, frame.Message) { ContextOverflow = frame.ContextOverflow },
                         TurnTerminationReason.ProviderFailure,
                         frame.Usage,
                         frame.Warnings,
@@ -1623,7 +1623,8 @@ public sealed partial class WizardIntelligenceProvider(
             partialReplyDropped
                 ? $"{error.Message} The partial reply was dropped because the turn ended before it could be committed."
                 : error.Message,
-            error.Code);
+            error.Code)
+        { ContextOverflow = error.ContextOverflow };
 
     /// <summary>
     /// Frames a candidate can emit before it has committed anything. <c>Context</c> belongs here:
@@ -3014,11 +3015,12 @@ public sealed partial class WizardIntelligenceProvider(
                             attachmentLabel = materialization.Record.Id.ToString();
                         }
 
-                        Error boundaryError = new(
-                            attachmentAdmission.Error.Code,
-                            $"Attachment '{attachmentLabel}' cannot fit in the resolved provider context. "
-                            + attachmentAdmission.Error.Message
-                            + " Use a larger-context model or reference fewer attachments in this turn.");
+                        Error boundaryError = attachmentAdmission.Error with
+                        {
+                            Message = $"Attachment '{attachmentLabel}' cannot fit in the resolved provider context. "
+                                + attachmentAdmission.Error.Message
+                                + " Use a larger-context model or reference fewer attachments in this turn.",
+                        };
 
                         if (!streaming)
                         {

@@ -30,6 +30,7 @@ public sealed class LongRestProviderCallTests
         Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
             _ => { fences++; return Task.CompletedTask; }, admission, CancellationToken.None);
         Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.LongRest.InvalidRequest, result.Error.Code);
 
         Assert.Equal(0, fences);
 
@@ -64,6 +65,7 @@ public sealed class LongRestProviderCallTests
         Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
             _ => { fences++; return Task.CompletedTask; }, new LongRestProviderAdmission.Chat(context), CancellationToken.None);
         Assert.True(result.IsFailure);
+        Assert.Equal(change == "context" ? ErrorCodes.LongRest.InvalidRequest : ErrorCodes.LongRest.InvalidAdmission, result.Error.Code);
 
         Assert.Equal(0, fences);
 
@@ -92,6 +94,7 @@ public sealed class LongRestProviderCallTests
         Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
             _ => throw new InvalidOperationException("Fence must not run"), admitted, CancellationToken.None);
         Assert.True(result.IsFailure);
+        Assert.Equal(change is "dimensions" or "model" ? ErrorCodes.LongRest.InvalidRequest : ErrorCodes.LongRest.InvalidAdmission, result.Error.Code);
 
         Assert.Equal(0, f.Handler.SendCount);
 
@@ -129,6 +132,7 @@ public sealed class LongRestProviderCallTests
         }
 
         Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.LongRest.InvalidAdmission, result.Error.Code);
 
         Assert.Equal(0, fences);
 

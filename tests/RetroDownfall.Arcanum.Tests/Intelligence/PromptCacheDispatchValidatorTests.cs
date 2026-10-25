@@ -542,7 +542,7 @@ public sealed class PromptCacheDispatchValidatorTests
             actual = outcome.Error;
         }
 
-        Assert.Equal(change == "integrity" ? integrity.Code : ErrorCodes.Hub.ContextBudgetExceeded, actual.Code);
+        Assert.Equal(change == "integrity" ? integrity.Code : "Hub.InvalidAdmission", actual.Code);
 
         Assert.Equal(originalAuthority, f.Authority.Snapshot);
 

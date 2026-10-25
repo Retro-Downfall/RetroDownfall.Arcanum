@@ -31,6 +31,20 @@ internal static class OpenAiStreamErrorMapper
 
         return internalCode switch
         {
+            ErrorCodes.Hub.ContextBudgetExceeded =>
+                new OpenAiErrorDetail(
+                    error?.ContextOverflow?.ToPublicMessage() ?? "Context budget exceeded. " + ContextOverflowDetails.Remedy,
+                    "invalid_request_error",
+                    Param: null,
+                    Code: "context_length_exceeded"),
+
+            ErrorCodes.Budget.Exceeded =>
+                new OpenAiErrorDetail(
+                    "Daily budget limit exceeded. " + BudgetErrorMessages.Guidance,
+                    "insufficient_quota",
+                    Param: null,
+                    Code: "insufficient_quota"),
+
             ErrorCodes.ClientTools.ModelUnsupported =>
                 new OpenAiErrorDetail(
                     PublicInferenceErrorMessages.ToolChoiceModelUnsupported,

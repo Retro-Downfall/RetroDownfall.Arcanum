@@ -20,7 +20,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 /// </remarks>
 public sealed class CovenantErrorContractTests
 {
-
     /// <summary>
     /// Every code the approved contract freezes, with the exact wire string. A renamed constant is
     /// invisible to a compiler and catastrophic to a client.
@@ -97,7 +96,7 @@ public sealed class CovenantErrorContractTests
             { ErrorCodes.Session.CampaignBindingRequired, StatusCodes.Status409Conflict },
             { ErrorCodes.Campaign.PathIdentityRequired, StatusCodes.Status409Conflict },
 
-            { ErrorCodes.Hub.ContextBudgetExceeded, StatusCodes.Status429TooManyRequests },
+            { ErrorCodes.Hub.ContextBudgetExceeded, StatusCodes.Status400BadRequest },
 
             { ErrorCodes.Covenant.Unavailable, StatusCodes.Status503ServiceUnavailable },
             { ErrorCodes.Covenant.OperatorAuthorityUnavailable, StatusCodes.Status503ServiceUnavailable },
@@ -136,11 +135,8 @@ public sealed class CovenantErrorContractTests
     [Fact]
     public void The_mcp_only_code_has_no_http_arm()
     {
-
         Assert.Equal(
             StatusCodes.Status500InternalServerError,
             ArcanumErrorMapper.ResolveStatusCode(ErrorCodes.Covenant.IneligibleTurn));
-
     }
-
 }

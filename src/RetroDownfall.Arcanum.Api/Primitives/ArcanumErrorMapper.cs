@@ -132,7 +132,7 @@ internal static class ArcanumErrorMapper
                 StatusCodes.Status503ServiceUnavailable,
 
             ErrorCodes.Hub.ContextBudgetExceeded =>
-                StatusCodes.Status429TooManyRequests,
+                StatusCodes.Status400BadRequest,
 
             // 409 rather than 500: the data change applied and nothing is left on disk, so the only
             // thing still open is the durable operation row and asking again is safe. Reporting it
@@ -390,6 +390,8 @@ internal static class ArcanumErrorMapper
             or ErrorCodes.Lexicon.WriteFailed
             or ErrorCodes.Covenant.WriteFailed
             or ErrorCodes.MemoryErasure.ErasureIncomplete
+            or ErrorCodes.Hub.InvalidAdmission
+            or ErrorCodes.LongRest.InvalidAdmission
             or ErrorCodes.Hub.Error)
         {
             return ResolveStatusCode(errorCode);

@@ -596,13 +596,13 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
         if (validation.Value == PromptCacheDispatchStatus.OptimizationUnavailable)
         {
-            return (new Error(ErrorCodes.Hub.ContextBudgetExceeded,
+            return (new Error(ErrorCodes.Hub.InvalidAdmission,
                 "Optional cache proof is unavailable; admit the ordinary payload before dispatch."),
                 ModelCallRetryDirective.OrdinaryPromptCacheFallback);
         }
 
         return validation.Value == PromptCacheDispatchStatus.Current ? null : (new Error(
-            ErrorCodes.Hub.ContextBudgetExceeded,
+            ErrorCodes.Hub.InvalidAdmission,
             "The provider payload or its authority changed after materialization; replan before dispatch."), ModelCallRetryDirective.None);
     }
 
@@ -650,7 +650,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         return validTarget
             ? null
             : new Error(
-                ErrorCodes.Hub.ContextBudgetExceeded,
+                ErrorCodes.Hub.InvalidAdmission,
                 "The prompt-cache plan does not match the selected provider payload.");
     }
 
@@ -742,7 +742,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         if (_tokenEstimator is null)
         {
             return new Error(
-                ErrorCodes.Hub.ContextBudgetExceeded,
+                ErrorCodes.Hub.InvalidAdmission,
                 "The precomputed context breakdown cannot be validated.");
         }
 
@@ -775,7 +775,7 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         return valid
             ? null
             : new Error(
-                ErrorCodes.Hub.ContextBudgetExceeded,
+                ErrorCodes.Hub.InvalidAdmission,
                 "The provider payload changed after context admission; refusing the stale breakdown.");
     }
 

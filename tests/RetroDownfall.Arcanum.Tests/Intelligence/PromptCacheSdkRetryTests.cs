@@ -77,7 +77,7 @@ public sealed class PromptCacheSdkRetryTests
                 await foreach (var update in f.Executor.ExecuteStreamingAsync(lease.ChatClient, messages, options,
                     UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, cancellation.Token, context)) updates.Add(update);
 
-                if (transition == "epoch") Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, Assert.Single(updates.OfType<ModelCallFailureUpdate>()).Error.Code);
+                if (transition == "epoch") Assert.Equal("Hub.InvalidAdmission", Assert.Single(updates.OfType<ModelCallFailureUpdate>()).Error.Code);
                 else Assert.Empty(updates.OfType<ModelCallFailureUpdate>());
             }
             else
@@ -85,7 +85,7 @@ public sealed class PromptCacheSdkRetryTests
                 var result = await f.Executor.ExecuteBufferedAsync(lease.ChatClient, messages, options,
                     UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, cancellation.Token, context);
 
-                if (transition == "epoch") Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+                if (transition == "epoch") Assert.Equal("Hub.InvalidAdmission", result.Error.Code);
                 else if (transition == "cancel") Assert.True(result.IsFailure);
                 else Assert.True(result.IsSuccess);
             }
@@ -173,7 +173,7 @@ public sealed class PromptCacheSdkRetryTests
         Assert.Equal(1, f.Handler.Sends);
 
         if (canonical) Assert.Equal(expected, actual);
-        else Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, actual.Code);
+        else Assert.Equal("Hub.InvalidAdmission", actual.Code);
 
         Assert.Equal(canonical ? ModelCallRetryDirective.None : ModelCallRetryDirective.OrdinaryPromptCacheFallback, directive);
     }
@@ -216,14 +216,14 @@ public sealed class PromptCacheSdkRetryTests
                 await foreach (var update in f.Executor.ExecuteStreamingAsync(lease.ChatClient, messages, options,
                     UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, CancellationToken.None, context)) updates.Add(update);
 
-                Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, Assert.Single(updates.OfType<ModelCallFailureUpdate>()).Error.Code);
+                Assert.Equal("Hub.InvalidAdmission", Assert.Single(updates.OfType<ModelCallFailureUpdate>()).Error.Code);
             }
             else
             {
                 var result = await f.Executor.ExecuteBufferedAsync(lease.ChatClient, messages, options,
                     UnrestrictedTurnBudget.Instance, ModelCallPurpose.MainInference, CancellationToken.None, context);
 
-                Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+                Assert.Equal("Hub.InvalidAdmission", result.Error.Code);
             }
         }
 

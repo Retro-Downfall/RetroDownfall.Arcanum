@@ -482,7 +482,7 @@ public sealed class CampaignRollupMaintenance(
                                 return Stale();
                             }
 
-                            return outcome.Error.Code is ErrorCodes.Hub.Error or ErrorCodes.Hub.ContextBudgetExceeded
+                            return outcome.Error.Code is ErrorCodes.Hub.Error or ErrorCodes.Hub.ContextBudgetExceeded or ErrorCodes.Hub.InvalidAdmission
                                 ? await DeferPageAsync(outcome.Error, page, prepare, capability, frozenConfiguration.Digest, cancellationToken).ConfigureAwait(false)
                                 : outcome.Error;
                         }

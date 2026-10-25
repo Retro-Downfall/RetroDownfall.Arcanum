@@ -251,29 +251,20 @@ public sealed class ModelTokenEstimatorTests
 
     public void EstimateContext_ReportsRequiredContextSourceTelemetryFields()
     {
-
         TextContent refreshed = new("refreshed attachment bytes")
         {
-
             AdditionalProperties = new AdditionalPropertiesDictionary
             {
-
                 ["arcanum.context_source"] = "refreshedFile",
-
             },
-
         };
 
         TextContent explicitAttachment = new("explicit attachment bytes")
         {
-
             AdditionalProperties = new AdditionalPropertiesDictionary
             {
-
                 ["arcanum.context_source"] = "explicitAttachment",
-
             },
-
         };
 
         ContextTokenBreakdown breakdown = CreateEstimator().EstimateContext(
@@ -309,7 +300,6 @@ public sealed class ModelTokenEstimatorTests
         Assert.Equal(
             breakdown.Source(ContextTokenSource.WorkspaceRag).TokenCount,
             breakdown.WorkspaceRagTokens);
-
     }
 
     [Fact]
@@ -612,7 +602,7 @@ public sealed class ModelTokenEstimatorTests
             new ModelCallContext(provider, "gpt-4o", 32, 0, stale));
 
         Assert.True(outcome.IsFailure);
-        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, outcome.Error.Code);
+        Assert.Equal("Hub.InvalidAdmission", outcome.Error.Code);
         Assert.Equal(0, counting.EstimateCount);
         Assert.Equal(0, chat.CallCount);
     }
@@ -649,7 +639,7 @@ public sealed class ModelTokenEstimatorTests
 
         ModelCallFailureUpdate failure = Assert.IsType<ModelCallFailureUpdate>(
             Assert.Single(updates));
-        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, failure.Error.Code);
+        Assert.Equal("Hub.InvalidAdmission", failure.Error.Code);
         Assert.Equal(0, chat.CallCount);
     }
 

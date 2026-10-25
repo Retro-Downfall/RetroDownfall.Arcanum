@@ -166,6 +166,8 @@ public static class ErrorCodes
     {
         public const string ContextBudgetExceeded = "Hub.ContextBudgetExceeded";
 
+        public const string InvalidAdmission = "Hub.InvalidAdmission";
+
         public const string RepetitionDetected = "Hub.RepetitionDetected";
 
         public const string TurnLimitExceeded = "Hub.TurnLimitExceeded";

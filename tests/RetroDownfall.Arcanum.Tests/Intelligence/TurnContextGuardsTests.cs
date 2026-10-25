@@ -14,7 +14,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class TurnContextGuardsTests
 {
-
     [Fact]
     public void ExpandDeletionToCompleteToolGroups_IncludesToolResultPartner()
     {
@@ -83,6 +82,19 @@ public sealed class TurnContextGuardsTests
 
         Assert.True(result.IsFailure);
         Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+        Assert.Equal(400, RetroDownfall.Arcanum.Api.Primitives.ArcanumErrorMapper.ResolveStatusCode(result.Error.Code));
+        Assert.Contains("provider", result.Error.Message);
+        Assert.Contains("model", result.Error.Message);
+        Assert.Contains("10024", result.Error.Message);
+        Assert.Contains("9000", result.Error.Message);
+        Assert.Contains("1024", result.Error.Message);
+        Assert.Contains("8192", result.Error.Message);
+        Assert.Contains("arcanum session compact", result.Error.Message);
+        Assert.Contains("providers[].contextWindowLimit", result.Error.Message);
+        var mapped = RetroDownfall.Arcanum.Api.Intelligence.OpenAi.OpenAiStreamErrorMapper.Map(result.Error);
+        Assert.Equal("invalid_request_error", mapped.Type);
+        Assert.Equal("context_length_exceeded", mapped.Code);
+        Assert.Equal(result.Error.Message, mapped.Message);
     }
 
     [Fact]
@@ -258,5 +270,4 @@ public sealed class TurnContextGuardsTests
 
         return transcript;
     }
-
 }
