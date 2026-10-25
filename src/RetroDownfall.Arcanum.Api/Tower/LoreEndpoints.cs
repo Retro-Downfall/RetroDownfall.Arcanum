@@ -13,10 +13,8 @@ namespace RetroDownfall.Arcanum.Api.Tower;
 
 internal static class LoreEndpoints
 {
-
     public static RouteGroupBuilder MapLoreEndpoints(this RouteGroupBuilder apiGroup)
     {
-
         apiGroup.MapGet(
             "/lore",
             async (
@@ -38,41 +36,11 @@ internal static class LoreEndpoints
             })
         .WithName("GetLore");
 
-        apiGroup.MapGet(
-            "/lore/{key}",
-            async (string key, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
-            {
-                string normalizedKey = key.Trim();
+        apiGroup.MapGet("/lore/{key}", GetLoreByKeyAsync)
+            .WithName("GetLoreByKey");
 
-                if (normalizedKey.Length == 0 || normalizedKey.Length > 256)
-                {
-                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                    Result<LoreDto> invalid = Result<LoreDto>.Failure(
-                        new Error(ErrorCodes.Validation.InvalidKey, "Key must be between 1 and 256 characters."));
-
-                    return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, badTraceId));
-                }
-
-                LoreDto? lore = await grimoire.GetLoreAsync(normalizedKey, cancellationToken).ConfigureAwait(false);
-
-                if (lore is null)
-                {
-                    string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                    Result<LoreDto> notFound = Result<LoreDto>.Failure(
-                        new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
-
-                    return Results.NotFound(ApiResponse<LoreDto>.FromResult(notFound, traceId));
-                }
-
-                string okTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                Result<LoreDto> ok = Result<LoreDto>.Success(lore);
-
-                return Results.Ok(ApiResponse<LoreDto>.FromResult(ok, okTraceId));
-            })
-        .WithName("GetLoreByKey");
+        apiGroup.MapGet("/lore/entries/by-key", GetLoreByKeyAsync)
+            .WithName("GetLoreEntryByKey");
 
         apiGroup.MapPost(
             "/lore",
@@ -100,12 +68,10 @@ internal static class LoreEndpoints
 
                 if (body is null)
                 {
-
                     Result<LoreDto> invalid = Result<LoreDto>.Failure(
                         new Error(ErrorCodes.Validation.InvalidBody, ApiRequestJson.DefaultInvalidBodyMessage));
 
                     return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, traceId));
-
                 }
 
                 if (string.IsNullOrWhiteSpace(body.Key)
@@ -138,41 +104,84 @@ internal static class LoreEndpoints
         .WithName("UpsertLore")
         .WithLargeRequestBody();
 
-        apiGroup.MapDelete(
-            "/lore/{key}",
-            async (string key, IGrimoireRepository grimoire, HttpContext httpContext, CancellationToken cancellationToken) =>
-            {
-                string normalizedKey = key.Trim();
+        apiGroup.MapDelete("/lore/{key}", DeleteLoreByKeyAsync)
+            .WithName("DeleteLore");
 
-                if (normalizedKey.Length == 0 || normalizedKey.Length > 256)
-                {
-                    string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                    Result<bool> invalid = Result<bool>.Failure(
-                        new Error(ErrorCodes.Validation.InvalidKey, "Key must be between 1 and 256 characters."));
-
-                    return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, badTraceId));
-                }
-
-                bool removed = await grimoire.DeleteLoreAsync(normalizedKey, cancellationToken).ConfigureAwait(false);
-
-                string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
-
-                if (!removed)
-                {
-                    Result<bool> notFound = Result<bool>.Failure(
-                        new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
-
-                    return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
-                }
-
-                Result<bool> ok = Result<bool>.Success(true);
-
-                return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
-            })
-        .WithName("DeleteLore");
+        apiGroup.MapDelete("/lore/entries/by-key", DeleteLoreByKeyAsync)
+            .WithName("DeleteLoreEntryByKey");
 
         return apiGroup;
     }
 
+    private static async Task<IResult> GetLoreByKeyAsync(
+        string? key,
+        IGrimoireRepository grimoire,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        string normalizedKey = key?.Trim() ?? string.Empty;
+
+        if (normalizedKey.Length == 0 || normalizedKey.Length > 256)
+        {
+            string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            Result<LoreDto> invalid = Result<LoreDto>.Failure(
+                new Error(ErrorCodes.Validation.InvalidKey, "Key must be between 1 and 256 characters."));
+
+            return Results.BadRequest(ApiResponse<LoreDto>.FromResult(invalid, badTraceId));
+        }
+
+        LoreDto? lore = await grimoire.GetLoreAsync(normalizedKey, cancellationToken).ConfigureAwait(false);
+
+        if (lore is null)
+        {
+            string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            Result<LoreDto> notFound = Result<LoreDto>.Failure(
+                new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
+
+            return Results.NotFound(ApiResponse<LoreDto>.FromResult(notFound, traceId));
+        }
+
+        string okTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        Result<LoreDto> ok = Result<LoreDto>.Success(lore);
+
+        return Results.Ok(ApiResponse<LoreDto>.FromResult(ok, okTraceId));
+    }
+
+    private static async Task<IResult> DeleteLoreByKeyAsync(
+        string? key,
+        IGrimoireRepository grimoire,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        string normalizedKey = key?.Trim() ?? string.Empty;
+
+        if (normalizedKey.Length == 0 || normalizedKey.Length > 256)
+        {
+            string badTraceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+            Result<bool> invalid = Result<bool>.Failure(
+                new Error(ErrorCodes.Validation.InvalidKey, "Key must be between 1 and 256 characters."));
+
+            return Results.BadRequest(ApiResponse<bool>.FromResult(invalid, badTraceId));
+        }
+
+        bool removed = await grimoire.DeleteLoreAsync(normalizedKey, cancellationToken).ConfigureAwait(false);
+
+        string traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+
+        if (!removed)
+        {
+            Result<bool> notFound = Result<bool>.Failure(
+                new Error(ErrorCodes.Grimoire.LoreNotFound, "No lore exists with that key."));
+
+            return Results.NotFound(ApiResponse<bool>.FromResult(notFound, traceId));
+        }
+
+        Result<bool> ok = Result<bool>.Success(true);
+
+        return Results.Ok(ApiResponse<bool>.FromResult(ok, traceId));
+    }
 }

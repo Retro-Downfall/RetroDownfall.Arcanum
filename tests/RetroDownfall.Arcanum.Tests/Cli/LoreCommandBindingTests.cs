@@ -81,7 +81,7 @@ public sealed class LoreCommandBindingTests
 
         Assert.Equal(HttpMethod.Get, request.Method);
 
-        Assert.Equal("/api/lore/ward.color", request.RequestUri!.AbsolutePath);
+        Assert.Equal("/api/lore/entries/by-key?key=ward.color", request.RequestUri!.PathAndQuery);
     }
 
     /// <summary>
@@ -148,7 +148,7 @@ public sealed class LoreCommandBindingTests
 
         Assert.Equal(HttpMethod.Delete, request.Method);
 
-        Assert.Equal("/api/lore/ward.color", request.RequestUri!.AbsolutePath);
+        Assert.Equal("/api/lore/entries/by-key?key=ward.color", request.RequestUri!.PathAndQuery);
     }
 
     /// <summary>An irreversible delete must ask before it acts.</summary>
