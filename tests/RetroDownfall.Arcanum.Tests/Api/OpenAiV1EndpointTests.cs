@@ -175,6 +175,79 @@ public sealed class OpenAiV1EndpointTests
         Assert.NotEqual("context_length_exceeded", OpenAiStreamErrorMapper.Map(error).Code);
     }
 
+    public static TheoryData<int, string, string> ContextIdentifierScalarCases
+    {
+        get
+        {
+            TheoryData<int, string, string> cases = new();
+
+            foreach (int byteLimit in new[] { 64, 128 })
+            {
+                cases.Add(byteLimit, "a\U000E0001b\U000E0061c", "a_b_c");
+
+                cases.Add(byteLimit, "a\U0001F680\U00010400b", "a\U0001F680\U00010400b");
+
+                cases.Add(byteLimit, "bad\uD800x\uDC00", "bad\uFFFDx\uFFFD");
+
+                cases.Add(byteLimit, new string('a', byteLimit - 4) + "\U0001F680tail", new string('a', byteLimit - 4) + "\U0001F680");
+
+                cases.Add(byteLimit, new string('a', byteLimit - 3) + "\U0001F680tail", new string('a', byteLimit - 3));
+
+                cases.Add(byteLimit, new string('a', byteLimit - 4) + "\U000E007Ftail", new string('a', byteLimit - 4) + "_");
+
+                cases.Add(byteLimit, new string('a', byteLimit - 3) + "\uD800tail", new string('a', byteLimit - 3) + "\uFFFD");
+            }
+
+            return cases;
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(ContextIdentifierScalarCases))]
+    public void ContextOverflowIdentifiers_SanitizeScalarsAndPreserveValidUnicodeWithinByteLimit(
+        int byteLimit, string identifier, string expected)
+    {
+        ContextOverflowDetails overflow = new(
+            byteLimit == 64 ? identifier : "provider",
+            byteLimit == 128 ? identifier : "model",
+            9000, 1024, 10024, 8192);
+
+        Error error = new(ErrorCodes.Hub.ContextBudgetExceeded, overflow.ToPublicMessage()) { ContextOverflow = overflow };
+
+        OpenAiErrorDetail mapped = OpenAiStreamErrorMapper.Map(error);
+
+        Assert.Equal(error.Message, mapped.Message);
+
+        string json = JsonSerializer.Serialize(mapped, ArcanumJsonContext.Default.OpenAiErrorDetail);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        string decodedMessage = document.RootElement.GetProperty("message").GetString()!;
+
+        string field = byteLimit == 64 ? "provider" : "model";
+
+        string prefix = field + " '";
+
+        int start = decodedMessage.IndexOf(prefix, StringComparison.Ordinal) + prefix.Length;
+
+        string actual = decodedMessage[start..decodedMessage.IndexOf("'", start, StringComparison.Ordinal)];
+
+        Assert.Equal(expected, actual);
+
+        UTF8Encoding strictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+        Assert.InRange(strictUtf8.GetByteCount(actual), 0, byteLimit);
+
+        Assert.Equal(actual, strictUtf8.GetString(strictUtf8.GetBytes(actual)));
+
+        foreach (Rune scalar in decodedMessage.EnumerateRunes())
+        {
+            Assert.NotEqual(System.Globalization.UnicodeCategory.Format, Rune.GetUnicodeCategory(scalar));
+
+            Assert.NotEqual(System.Globalization.UnicodeCategory.Control, Rune.GetUnicodeCategory(scalar));
+        }
+    }
+
     [Fact]
     public void ContextOverflowIdentifiers_AreBoundedAndControlSanitized()
     {

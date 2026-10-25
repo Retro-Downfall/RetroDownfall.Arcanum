@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -53,9 +54,9 @@ public readonly record struct ContextOverflowDetails(
     {
         string bounded = Utf8Truncation.TruncateToUtf8ByteBudget(Utf8Truncation.NormalizeInvalidUtf16(value ?? string.Empty), maxUtf8Bytes);
 
-        return string.Concat(bounded.Select(static character => char.IsControl(character)
-            || char.GetUnicodeCategory(character) is System.Globalization.UnicodeCategory.Format
-            || character is '\u2028' or '\u2029' or '\'' ? '_' : character));
+        return string.Concat(bounded.EnumerateRunes().Select(static scalar => Rune.IsControl(scalar)
+            || Rune.GetUnicodeCategory(scalar) is System.Globalization.UnicodeCategory.Format
+            || scalar.Value is 0x2028 or 0x2029 or 0x27 ? "_" : scalar.ToString()));
     }
 }
 
