@@ -3768,3 +3768,12 @@ Implementation also exposed equivalent-path and parent/nested-workspace invalida
 The independently reviewed Core23 integration assertion repair `d459d8ef`, merged at `4c095882`, changes only two current-head version expectations from 20 to 23; all historical fingerprints, data and catalog-equivalence guards remain. It repairs drift introduced by this remediation's schema transitions and closes no additional finding.
 
 The count is now **53 of 272 integrated (19.5%)**: 3 Critical, 44 Important and 6 Minor. **219 remain open**: 32 Important and 187 Minor. The last combined verification belongs to `cd4dfc1d` (47 findings); combined verification of the newer candidate and all final delivery gates remain outstanding.
+
+
+### Operation listing checkpoint — 2026-10-25
+
+RV-074 is fixed by independently approved commit `c836932a8fc566d4f272670fd350d88897c80cb4`, integrated at `f419240e44be1834611b94cf8bb50b02ce9ded9d`. The real CLI preserves complete operation IDs, states and attempt counts at 80/120 columns in normal, plain and JSON modes. It omits Summary and then Kind with stderr notices, retaining full details at wide widths and the existing JSON text envelope. Reusing the established listing component also fixes a separately reproduced terminal-control rendering defect in operation summaries.
+
+Initial behavioral RED and a deliberate production revert each failed seven cases with six controls passing. Exact restored verification passed 314 related CLI/documentation tests without skips; the build and required style checks passed with zero warnings/errors. Independent review checked all source/log hashes and reran 21 focused tests successfully. Pagination remains a separate open finding.
+
+The reviewed, locally integrated count is **54 of 272 (19.9%)**: 3 Critical, 45 Important, 6 Minor. **218 remain open**: 31 Important and 187 Minor. The latest bounded combined evidence still belongs to `cd4dfc1d`; newer combined qualification and final CI/AOT/live delivery gates are pending.
