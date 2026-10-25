@@ -417,7 +417,8 @@ public interface ISessionAttachmentStore
 
     /// <summary>
     /// Copies and hash-verifies attachment bytes into the fork session tree before the DB transaction.
-    /// On failure, deletes any partially written fork tree.
+    /// The caller holds the fork Session gate through copying and ambient transaction completion.
+    /// Publication refuses existing destinations; failure removes only captured copies owned by this call.
     /// </summary>
     Task CopyBytesForForkAsync(
         Guid forkSessionId,

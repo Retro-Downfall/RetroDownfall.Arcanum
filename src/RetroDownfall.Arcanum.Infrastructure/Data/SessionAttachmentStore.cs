@@ -43,12 +43,12 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     internal static readonly KeyedLock<string> AttachmentGates = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// Absolute destinations of promoted copies that are on disk (or about to be) while the rows that will claim
-    /// them are not yet committed. The orphan sweep leaves these alone: it deliberately takes no gate per file
-    /// (gate order is session, then pending turn), so this registry and the commit-time blob revalidation are
-    /// what keep it from unlinking a copy the promotion is about to publish.
+    /// Absolute destinations of uploads and promoted copies that are on disk (or about to be) while the rows that
+    /// will claim them are not yet committed. The orphan sweep also tries each Session gate without waiting;
+    /// this registry protects Pending uploads and their uniquely named staging files through commit or abandonment.
+    /// Commit-time blob revalidation remains an independent publication defense.
     /// </summary>
-    private static readonly ConcurrentDictionary<string, byte> PromotionsInFlight = new(
+    private static readonly ConcurrentDictionary<string, byte> PublicationsInFlight = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     private readonly ArcanumDbContext _db;
@@ -101,11 +101,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// </summary>
     internal Func<CancellationToken, Task>? AfterOrphanPathSnapshotForTesting { get; set; }
 
+    internal Func<string, CancellationToken, Task>? BeforeOrphanFileDeleteForTesting { get; set; }
+
     /// <summary>
     /// Test seam: runs inside <see cref="DeleteCreatedAttachmentAsync"/>, after the row is deleted and
     /// before its blob is unlinked. Used to observe whether the unlink still holds the attachment gate,
-    /// since a concurrent persist of the same logical key can reuse the freed version and path the
-    /// moment the gate is released.
+    /// since deletion and a subsequent persist of the same logical key must remain serialized even
+    /// when the subsequent snapshot receives a new opaque path.
     /// </summary>
     internal Func<CancellationToken, Task>? AfterCreatedRowDeletedForTesting { get; set; }
 
@@ -448,18 +450,20 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 + "or retry with a smaller attachment.");
         }
 
-        string relativePath = BuildRelativePath(sessionId, validatedPendingTurnId, logicalKey, nextVersion, safeFileName);
+        Guid id = Guid.NewGuid();
+
+        string relativePath = BuildRelativePath(sessionId, validatedPendingTurnId, id);
 
         string absolutePath = ResolveUnderRoot(relativePath);
 
-        Guid id = Guid.NewGuid();
+        using IDisposable publication = RegisterPublication(absolutePath);
 
         DateTimeOffset createdAt = DateTimeOffset.UtcNow;
 
         EncryptedBlobDescriptor descriptor;
 
         await using (EncryptedBlobWriter writer = await _blobStore
-            .CreateWriterAsync(
+            .CreateNewWriterAsync(
                 absolutePath,
                 EncryptedBlobPurpose.SessionAttachment,
                 id.ToByteArray(),
@@ -599,9 +603,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 string newRelative = BuildRelativePath(
                     sessionId,
                     pendingTurnId: null,
-                    row.LogicalKey,
-                    row.Version,
-                    row.OriginalFileName);
+                    row.Id);
 
                 string newAbsolute = ResolveUnderRoot(newRelative);
 
@@ -611,7 +613,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 }
 
                 // Registered before the first byte lands, so the sweep can never observe the copy unprotected.
-                _ = PromotionsInFlight.TryAdd(newAbsolute, 0);
+                _ = PublicationsInFlight.TryAdd(newAbsolute, 0);
 
                 registeredDestinations.Add(newAbsolute);
 
@@ -718,7 +720,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
         {
             foreach (string destination in registeredDestinations)
             {
-                _ = PromotionsInFlight.TryRemove(destination, out _);
+                _ = PublicationsInFlight.TryRemove(destination, out _);
             }
         }
 
@@ -1353,7 +1355,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                     $"Attachment plaintext length mismatch for '{record.Id}'.");
             }
 
-            return decrypted;
+            return new AttachmentReadStream(decrypted, record.ByteLength, record.ContentSha256);
         }
         catch
         {
@@ -1361,6 +1363,171 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Binds a fully consumed plaintext stream to its persisted snapshot digest with bounded memory.
+    /// Earlier reads can precede whole-content verification; the final-length read cannot succeed with a mismatch.
+    /// </summary>
+    private sealed class AttachmentReadStream : Stream
+    {
+        private readonly Stream _inner;
+
+        private readonly long _length;
+
+        private readonly byte[] _expectedHash;
+
+        private readonly IncrementalHash _hash;
+
+        private long _position;
+
+        private bool _verified;
+
+        private bool _failed;
+
+        public AttachmentReadStream(Stream inner, long length, string expectedHash)
+        {
+            if (length < 0 || expectedHash.Length != 64)
+            {
+                throw new InvalidDataException("Attachment snapshot metadata is invalid.");
+            }
+
+            try
+            {
+                _expectedHash = Convert.FromHexString(expectedHash);
+            }
+            catch (FormatException exception)
+            {
+                throw new InvalidDataException("Attachment snapshot digest is invalid.", exception);
+            }
+
+            _inner = inner;
+
+            _length = length;
+
+            _hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        }
+
+        public override bool CanRead => _inner.CanRead;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _length;
+
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+        public override int Read(Span<byte> buffer)
+        {
+            EnsureValid();
+
+            if (buffer.IsEmpty)
+            {
+                return 0;
+            }
+
+            int read = _inner.Read(buffer);
+
+            ValidateRead(buffer[..read]);
+
+            return read;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            EnsureValid();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (buffer.IsEmpty)
+            {
+                return 0;
+            }
+
+            int read = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            ValidateRead(buffer.Span[..read]);
+
+            return read;
+        }
+
+        private void EnsureValid()
+        {
+            if (_failed)
+            {
+                throw new InvalidDataException("Attachment snapshot integrity verification failed.");
+            }
+        }
+
+        private void ValidateRead(ReadOnlySpan<byte> bytes)
+        {
+            _position = checked(_position + bytes.Length);
+
+            if (_position > _length || (bytes.IsEmpty && _position != _length))
+            {
+                _failed = true;
+
+                throw new InvalidDataException("Attachment snapshot length mismatch.");
+            }
+
+            if (_verified)
+            {
+                return;
+            }
+
+            _hash.AppendData(bytes);
+
+            if (_position == _length)
+            {
+                if (!CryptographicOperations.FixedTimeEquals(_hash.GetHashAndReset(), _expectedHash))
+                {
+                    _failed = true;
+
+                    throw new InvalidDataException("Attachment snapshot digest mismatch.");
+                }
+
+                _verified = true;
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _hash.Dispose();
+
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            _hash.Dispose();
+
+            await _inner.DisposeAsync().ConfigureAwait(false);
+
+            GC.SuppressFinalize(this);
+        }
+
+        public override void Flush() => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     public async Task<ReadOnlyMemory<byte>> ReadBytesAsync(
@@ -2090,7 +2257,7 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     /// from the snapshot but newer than it belongs to a write still in flight, and that also spares
     /// <c>EncryptedBlobStore</c>'s staging temporaries. Second, a file that is about to be unlinked is
     /// re-checked against the live table, so a row committed since the snapshot keeps its bytes. Third, a
-    /// promotion's copies are registered in <see cref="PromotionsInFlight"/> from before the copy until its rows
+    /// promotion's copies are registered in <see cref="PublicationsInFlight"/> from before the copy until its rows
     /// commit, because a copy can predate the snapshot and still have no committed row; the promotion also
     /// revalidates its copies inside the commit transaction, so a copy that is unlinked anyway aborts the
     /// promotion with the original intact instead of publishing a row for missing bytes.
@@ -2118,6 +2285,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         HashSet<string> knownPaths = await ListAllRelativePathsAsync(cancellationToken).ConfigureAwait(false);
 
+        HashSet<FileHandleIdentity> knownIdentities = [];
+
+        if (!TryCaptureClaimedIdentities(knownPaths, knownIdentities))
+        {
+            return;
+        }
+
         if (AfterOrphanPathSnapshotForTesting is not null)
         {
             await AfterOrphanPathSnapshotForTesting(cancellationToken).ConfigureAwait(false);
@@ -2139,16 +2313,34 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 continue;
             }
 
-            // Checked before the live-row re-read below: a promotion unregisters only after its rows commit, so a
-            // path that is no longer registered is claimed by a row the re-read can see.
-            if (IsPromotionInFlight(absolute))
+            string relative = NormalizeRelativePath(Path.GetRelativePath(_attachmentsRoot, absolute));
+
+            string[] segments = relative.Split('/');
+
+            bool sessionOwned = Guid.TryParseExact(segments[0], "N", out Guid sessionId);
+
+            using IDisposable? sessionGate = sessionOwned
+                ? AttachmentGates.TryAcquire(SessionGateKey(sessionId))
+                : null;
+
+            if (sessionOwned && sessionGate is null)
             {
                 continue;
             }
 
-            string relative = NormalizeRelativePath(Path.GetRelativePath(_attachmentsRoot, absolute));
+            // Capture before checking publication ownership: a subsequently replaced path must never
+            // transfer destructive authority to the replacement, even under a pending-directory alias.
+            if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    absolute,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact candidate)
+                || knownIdentities.Contains(candidate.Metadata.Identity))
+            {
+                continue;
+            }
 
-            if (knownPaths.Contains(relative))
+            // Registration ends only after commit or abandonment; re-read the live claim afterwards.
+            if (IsPublicationInFlight(absolute) || knownPaths.Contains(relative))
             {
                 continue;
             }
@@ -2158,18 +2350,115 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
                 continue;
             }
 
-            TryDeleteFile(absolute);
+            // Legacy names may enumerate with a different spelling on this volume. Re-read their
+            // physical claims as well as their SQL spelling, so a post-snapshot row remains protected.
+            if (segments.Length > 2)
+            {
+                HashSet<string> livePaths = await ListAllRelativePathsAsync(cancellationToken).ConfigureAwait(false);
+
+                HashSet<FileHandleIdentity> liveIdentities = [];
+
+                if (!TryCaptureClaimedIdentities(livePaths, liveIdentities)
+                    || liveIdentities.Contains(candidate.Metadata.Identity))
+                {
+                    continue;
+                }
+            }
+
+            if (BeforeOrphanFileDeleteForTesting is not null)
+            {
+                await BeforeOrphanFileDeleteForTesting(absolute, cancellationToken).ConfigureAwait(false);
+            }
+
+            _ = IdentityOwnedFileSystemCleanup.TryDelete(candidate);
         }
     }
 
+    private bool TryCaptureClaimedIdentities(IEnumerable<string> paths, HashSet<FileHandleIdentity> identities)
+    {
+        foreach (string path in paths)
+        {
+            try
+            {
+                if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
+                        ResolveUnderRoot(path),
+                        FileSystemObjectKind.RegularFile,
+                        out IdentityOwnedFileSystemArtifact artifact))
+                {
+                    return false;
+                }
+
+                identities.Add(artifact.Metadata.Identity);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /// <summary>
-    /// Whether <paramref name="absolutePath"/> is a promoted copy, or its <c>.tmp</c> staging file, whose row has
-    /// not committed yet.
+    /// Whether <paramref name="absolutePath"/> is an active publication or its uniquely named staging file.
+    /// Filesystem identities preserve this protection when a pending directory enumerates with another spelling.
     /// </summary>
-    private static bool IsPromotionInFlight(string absolutePath) =>
-        PromotionsInFlight.ContainsKey(absolutePath)
-        || (absolutePath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
-            && PromotionsInFlight.ContainsKey(absolutePath[..^".tmp".Length]));
+    private static bool IsPublicationInFlight(string absolutePath)
+    {
+        if (PublicationPathIsRegistered(absolutePath))
+        {
+            return true;
+        }
+
+        string fileName = Path.GetFileName(absolutePath);
+
+        int marker = fileName.LastIndexOf(".tmp.", StringComparison.Ordinal);
+
+        return fileName.StartsWith('.')
+            && marker > 1
+            && Guid.TryParseExact(fileName.AsSpan(marker + 5), "N", out _)
+            && PublicationPathIsRegistered(Path.Combine(Path.GetDirectoryName(absolutePath)!, fileName[1..marker]));
+    }
+
+    private static bool PublicationPathIsRegistered(string path)
+    {
+        if (PublicationsInFlight.ContainsKey(path))
+        {
+            return true;
+        }
+
+        string fileName = Path.GetFileName(path);
+
+        foreach (string registered in PublicationsInFlight.Keys)
+        {
+            if (string.Equals(fileName, Path.GetFileName(registered), StringComparison.Ordinal)
+                && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(Path.GetDirectoryName(path)!, out FileHandleMetadata candidate)
+                && FileHandleIdentityInterop.TryGetPathMetadataNoFollow(Path.GetDirectoryName(registered)!, out FileHandleMetadata owner)
+                && candidate.Kind == FileSystemObjectKind.Directory
+                && owner.Kind == FileSystemObjectKind.Directory
+                && FileHandleIdentity.IdentitiesMatch(candidate.Identity, owner.Identity))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IDisposable RegisterPublication(string path)
+    {
+        if (!PublicationsInFlight.TryAdd(path, 0))
+        {
+            throw new IOException("Attachment publication already owns this destination.");
+        }
+
+        return new PublicationRegistration(path);
+    }
+
+    private sealed class PublicationRegistration(string path) : IDisposable
+    {
+        public void Dispose() => PublicationsInFlight.TryRemove(path, out _);
+    }
 
     /// <summary>
     /// Whether <paramref name="absolutePath"/> was last written at or after <paramref name="threshold"/>.
@@ -2318,37 +2607,36 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
 
         SecureFilePermissions.EnsureOwnerOnlyDirectoryExists(parentDir);
 
-        string tempPath = destination + ".tmp";
+        string tempPath = Path.Combine(parentDir, "." + Path.GetFileName(destination) + ".tmp." + Guid.NewGuid().ToString("N"));
 
-        if (File.Exists(tempPath))
+        using IDisposable staging = RegisterPublication(tempPath);
+
+        try
         {
-            File.Delete(tempPath);
-        }
+            await using (FileStream destStream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
+            await using (FileStream srcStream = new(
+                             source,
+                             FileMode.Open,
+                             FileAccess.Read,
+                             FileShare.Read,
+                             bufferSize: 4096,
+                             useAsync: true))
+            {
+                await srcStream.CopyToAsync(destStream, cancellationToken).ConfigureAwait(false);
 
-        await using (FileStream destStream = SecureFilePermissions.CreateOwnerOnlyTempFile(tempPath))
-        await using (FileStream srcStream = new(
-                         source,
-                         FileMode.Open,
-                         FileAccess.Read,
-                         FileShare.Read,
-                         bufferSize: 4096,
-                         useAsync: true))
+                await destStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
+
+            File.Move(tempPath, destination, overwrite: false);
+
+            SecureFilePermissions.ApplyOwnerOnlyFile(destination);
+        }
+        finally
         {
-            await srcStream.CopyToAsync(destStream, cancellationToken).ConfigureAwait(false);
-
-            await destStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            TryDeleteFile(tempPath);
         }
-
-        SecureFilePermissions.ApplyOwnerOnlyFile(tempPath);
-
-        if (File.Exists(destination))
-        {
-            File.Delete(destination);
-        }
-
-        File.Move(tempPath, destination);
-
-        SecureFilePermissions.ApplyOwnerOnlyFile(destination);
     }
 
     private static void TryDeleteFile(string absolutePath)
@@ -2381,15 +2669,13 @@ internal sealed partial class SessionAttachmentStore : ISessionAttachmentStore
     private static string BuildRelativePath(
         Guid? sessionId,
         string? pendingTurnId,
-        string logicalKey,
-        int version,
-        string originalFileName)
+        Guid attachmentId)
     {
         string ownerSegment = sessionId is not null
             ? sessionId.Value.ToString("N")
             : Path.Combine("_pending", pendingTurnId!);
 
-        return Path.Combine(ownerSegment, logicalKey, "v" + version.ToString(CultureInfo.InvariantCulture), originalFileName);
+        return Path.Combine(ownerSegment, attachmentId.ToString("N"));
     }
 
     private static string NormalizeRelativePath(string relativePath) =>

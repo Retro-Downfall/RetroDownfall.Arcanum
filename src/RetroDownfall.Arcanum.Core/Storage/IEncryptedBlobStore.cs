@@ -76,6 +76,14 @@ public interface IEncryptedBlobStore
         ReadOnlyMemory<byte> authenticatedMetadata = default,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Creates a streaming writer whose publication refuses an existing destination.</summary>
+    Task<EncryptedBlobWriter> CreateNewWriterAsync(
+        string destinationPath,
+        EncryptedBlobPurpose purpose,
+        ReadOnlyMemory<byte> authenticatedMetadata = default,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This blob store does not support create-new publication.");
+
     Task<EncryptedBlobDescriptor> InspectAsync(
         string path,
         EncryptedBlobPurpose purpose,

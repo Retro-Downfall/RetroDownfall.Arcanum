@@ -4,61 +4,88 @@ namespace RetroDownfall.Arcanum.Tests.Infrastructure;
 
 public sealed class KeyedLockTests
 {
+    [Fact]
+    public async Task TryAcquire_preserves_exclusion_and_releases_failed_acquisition_references()
+    {
+        KeyedLock<string> keyedLock = new();
+
+        IDisposable held = await keyedLock.AcquireAsync("shared");
+
+        Task<IDisposable> waiting = keyedLock.AcquireAsync("shared");
+
+        for (int index = 0; index < 100; index++)
+        {
+            Assert.Null(keyedLock.TryAcquire("shared"));
+        }
+
+        held.Dispose();
+
+        using (await waiting)
+        {
+            Assert.Null(keyedLock.TryAcquire("shared"));
+        }
+
+        Assert.Equal(0, keyedLock.CountForTesting);
+
+        using (IDisposable acquired = Assert.IsAssignableFrom<IDisposable>(keyedLock.TryAcquire("shared")))
+        {
+            Assert.Null(keyedLock.TryAcquire("shared"));
+
+            using CancellationTokenSource canceled = new();
+
+            canceled.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => keyedLock.AcquireAsync("shared", canceled.Token));
+
+            Assert.Null(keyedLock.TryAcquire("shared"));
+        }
+
+        Assert.Equal(0, keyedLock.CountForTesting);
+    }
 
     [Fact]
 
     public async Task AcquireAndRelease_SameKeyRepeatedly_MapCountStaysBounded()
     {
-
         KeyedLock<string> keyedLock = new();
 
         for (int i = 0; i < 10_000; i++)
         {
-
             using IDisposable releaser = await keyedLock.AcquireAsync("hot-key");
 
             Assert.True(keyedLock.CountForTesting <= 1);
-
         }
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public async Task AcquireAndRelease_ManyDistinctKeys_MapCountReturnsToZero()
     {
-
         KeyedLock<int> keyedLock = new();
 
         List<IDisposable> releasers = new(500);
 
         for (int i = 0; i < 500; i++)
         {
-
             releasers.Add(await keyedLock.AcquireAsync(i));
-
         }
 
         Assert.Equal(500, keyedLock.CountForTesting);
 
         foreach (IDisposable releaser in releasers)
         {
-
             releaser.Dispose();
-
         }
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public async Task Contention_SameKey_MutualExclusionHoldsAndMapEvictsAfter()
     {
-
         KeyedLock<string> keyedLock = new();
 
         const int concurrency = 64;
@@ -72,7 +99,6 @@ public sealed class KeyedLockTests
         Task[] tasks = Enumerable.Range(0, concurrency)
             .Select(_ => Task.Run(async () =>
             {
-
                 using IDisposable releaser = await keyedLock.AcquireAsync("shared").ConfigureAwait(false);
 
                 int observed = Interlocked.Increment(ref currentConcurrent);
@@ -84,7 +110,6 @@ public sealed class KeyedLockTests
                 await Task.Yield();
 
                 Interlocked.Decrement(ref currentConcurrent);
-
             }))
             .ToArray();
 
@@ -95,14 +120,12 @@ public sealed class KeyedLockTests
         Assert.Equal(1, maxConcurrent);
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public async Task NoEvict_WhileWaiterBlocked_EntrySurvivesUntilLastRelease()
     {
-
         KeyedLock<string> keyedLock = new();
 
         IDisposable first = await keyedLock.AcquireAsync("k");
@@ -113,13 +136,11 @@ public sealed class KeyedLockTests
 
         Task secondAcquire = Task.Run(async () =>
         {
-
             using IDisposable releaser = await keyedLock.AcquireAsync("k").ConfigureAwait(false);
 
             secondGotLock.SetResult(true);
 
             await secondMayRelease.Task.ConfigureAwait(false);
-
         });
 
         await Task.Delay(50);
@@ -141,14 +162,12 @@ public sealed class KeyedLockTests
         await secondAcquire;
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public async Task Releaser_DoubleDispose_IsIdempotentAndDoesNotOverRelease()
     {
-
         KeyedLock<string> keyedLock = new();
 
         IDisposable releaser = await keyedLock.AcquireAsync("k");
@@ -162,14 +181,12 @@ public sealed class KeyedLockTests
         using IDisposable second = await keyedLock.AcquireAsync("k");
 
         Assert.Equal(1, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public async Task Cancellation_WhileWaiting_DoesNotAcquireAndBestEffortEvicts()
     {
-
         KeyedLock<string> keyedLock = new();
 
         IDisposable holder = await keyedLock.AcquireAsync("k");
@@ -178,22 +195,18 @@ public sealed class KeyedLockTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
         {
-
             await keyedLock.AcquireAsync("k", cts.Token);
-
         });
 
         holder.Dispose();
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public async Task CancelStorm_WithSuccessfulAcquires_PreservesMutualExclusionAndClearsMap()
     {
-
         KeyedLock<string> keyedLock = new();
 
         const int concurrency = 64;
@@ -209,19 +222,15 @@ public sealed class KeyedLockTests
         Task[] tasks = Enumerable.Range(0, concurrency)
             .Select(i => Task.Run(async () =>
             {
-
                 using CancellationTokenSource cts = new();
 
                 if (i % 3 == 0)
                 {
-
                     cts.CancelAfter(TimeSpan.FromMilliseconds(1));
-
                 }
 
                 try
                 {
-
                     using IDisposable releaser = await keyedLock.AcquireAsync("shared", cts.Token).ConfigureAwait(false);
 
                     int observed = Interlocked.Increment(ref currentConcurrent);
@@ -233,15 +242,11 @@ public sealed class KeyedLockTests
                     await Task.Delay(5).ConfigureAwait(false);
 
                     Interlocked.Decrement(ref currentConcurrent);
-
                 }
                 catch (OperationCanceledException)
                 {
-
                     Interlocked.Increment(ref cancelCount);
-
                 }
-
             }))
             .ToArray();
 
@@ -254,39 +259,29 @@ public sealed class KeyedLockTests
         Assert.Equal(1, maxConcurrent);
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     [Fact]
 
     public void Constructor_NullComparer_UsesDefaultComparer()
     {
-
         KeyedLock<string> keyedLock = new(comparer: null);
 
         Assert.Equal(0, keyedLock.CountForTesting);
-
     }
 
     private static void InterlockedMax(ref int target, int value)
     {
-
         int initial;
 
         do
         {
-
             initial = target;
 
             if (value <= initial)
             {
-
                 return;
-
             }
-
         } while (Interlocked.CompareExchange(ref target, value, initial) != initial);
-
     }
-
 }

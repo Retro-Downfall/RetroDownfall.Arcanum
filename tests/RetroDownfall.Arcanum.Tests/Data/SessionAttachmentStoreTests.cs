@@ -718,7 +718,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         Assert.StartsWith(sessionId.ToString("N") + Path.DirectorySeparatorChar, record.RelativePath.Replace('/', Path.DirectorySeparatorChar), StringComparison.Ordinal);
 
-        Assert.Contains($"{Path.DirectorySeparatorChar}v1{Path.DirectorySeparatorChar}", record.RelativePath.Replace('/', Path.DirectorySeparatorChar), StringComparison.Ordinal);
+        Assert.Equal(sessionId.ToString("N") + "/" + record.Id.ToString("N"), record.RelativePath);
 
         ReadOnlyMemory<byte> loaded = await _store.ReadBytesAsync(record);
 
@@ -1059,6 +1059,494 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Attachment_integrity_upload_collision_preserves_existing_destination()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        InstrumentedEncryptedBlobStore blobs = new(CreateEncryptedBlobStore()) { OccupyDestination = true };
+
+        SessionAttachmentStore store = new(_db!, Options.Create(_settings), _attachmentsRoot, blobs);
+
+        await Assert.ThrowsAsync<IOException>(() => store.PersistNewAsync(
+            Guid.NewGuid(), null, null, "collision", "notes.txt", "new snapshot"u8.ToArray(), "text/plain", SessionAttachmentKind.Text));
+
+        string occupied = Assert.Single(Directory.EnumerateFiles(_attachmentsRoot, "*", SearchOption.AllDirectories));
+
+        Assert.Equal("existing destination", await File.ReadAllTextAsync(occupied));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Attachment_integrity_reads_legacy_plaintext_and_metadata_free_envelopes(bool encrypted)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        byte[] bytes = "legacy snapshot"u8.ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            Guid.NewGuid(), null, null, "legacy", "legacy.txt", bytes, "text/plain", SessionAttachmentKind.Text);
+
+        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        if (encrypted)
+        {
+            using MemoryStream input = new(bytes);
+
+            _ = await CreateEncryptedBlobStore().WriteAsync(absolute, input, EncryptedBlobPurpose.SessionAttachment);
+        }
+        else
+        {
+            await File.WriteAllBytesAsync(absolute, bytes);
+
+            record = record with { EncryptionVersion = 0, EncryptionKeyId = null };
+        }
+
+        Assert.Equal(bytes, (await _store.ReadBytesAsync(record)).ToArray());
+
+        await using Stream stream = await _store.OpenReadAsync(record);
+
+        using MemoryStream copied = new();
+
+        await stream.CopyToAsync(copied);
+
+        Assert.Equal(bytes, copied.ToArray());
+    }
+
+    [SkippableTheory]
+    [InlineData(0)]
+    [InlineData(193)]
+    public async Task Attachment_integrity_zero_length_read_does_not_finalize_digest(int length)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        byte[] bytes = Enumerable.Repeat((byte)9, length).ToArray();
+
+        SessionAttachmentRecord record = await _store!.PersistNewAsync(
+            Guid.NewGuid(), null, null, "zero-read", "read.txt", bytes, "text/plain", SessionAttachmentKind.Text);
+
+        await using Stream stream = await _store.OpenReadAsync(record);
+
+        Assert.Equal(0, stream.Read(Span<byte>.Empty));
+
+        Assert.Equal(0, await stream.ReadAsync(Memory<byte>.Empty));
+
+        using MemoryStream copied = new();
+
+        await stream.CopyToAsync(copied);
+
+        Assert.Equal(bytes, copied.ToArray());
+
+        Assert.Equal(length, stream.Position);
+    }
+
+    [SkippableFact]
+    public async Task Attachment_integrity_failed_fork_verification_removes_only_its_owned_copy()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            Guid.NewGuid(), null, null, "source", "source.txt", "source bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        string sourcePath = Path.Combine(_attachmentsRoot, source.RelativePath);
+
+        byte[] corrupt = await File.ReadAllBytesAsync(sourcePath);
+
+        corrupt[^1] ^= 1;
+
+        await File.WriteAllBytesAsync(sourcePath, corrupt);
+
+        Guid forkSession = Guid.NewGuid();
+
+        SessionAttachmentForkCopyPlan plan = new(source, Guid.NewGuid(), null);
+
+        string destination = Path.Combine(_attachmentsRoot, forkSession.ToString("N"), plan.NewAttachmentId.ToString("N"));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+
+        string unrelated = Path.Combine(Path.GetDirectoryName(destination)!, "unrelated");
+
+        await File.WriteAllTextAsync(unrelated, "retain this file");
+
+        await Assert.ThrowsAnyAsync<CryptographicException>(() => _store.CopyBytesForForkAsync(forkSession, [plan]));
+
+        Assert.False(File.Exists(destination), "A failed fork left its rejected ciphertext behind.");
+
+        Assert.Equal("retain this file", await File.ReadAllTextAsync(unrelated));
+
+        Assert.Equal(corrupt, await File.ReadAllBytesAsync(sourcePath));
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Attachment_integrity_copy_collision_preserves_existing_destination(bool fork)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid destinationSession = Guid.NewGuid();
+
+        string turn = "collision-turn";
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            fork ? Guid.NewGuid() : null, fork ? null : turn, null,
+            "notes", "notes.txt", "source bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentForkCopyPlan plan = new(source, Guid.NewGuid(), null);
+
+        string destination = Path.Combine(_attachmentsRoot, destinationSession.ToString("N"), (fork ? plan.NewAttachmentId : source.Id).ToString("N"));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+
+        await File.WriteAllTextAsync(destination, "existing destination");
+
+        await Assert.ThrowsAsync<IOException>(() => fork
+            ? _store.CopyBytesForForkAsync(destinationSession, [plan])
+            : _store.PromotePendingAsync(turn, destinationSession, null));
+
+        Assert.Equal("existing destination", await File.ReadAllTextAsync(destination));
+
+        Assert.Equal("source bytes", Encoding.UTF8.GetString((await _store.ReadBytesAsync(source)).Span));
+    }
+
+    [SkippableFact]
+    public async Task Attachment_integrity_sweep_preserves_upload_waiting_to_insert_its_row()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "upload-in-flight");
+
+        await using ArcanumDbContext sweepDb = _fixture.CreateContext(_dbPath);
+
+        SessionAttachmentStore sweepStore = new(sweepDb, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore());
+
+        _store!.AfterBytesCommittedBeforeDbForTesting = async token =>
+        {
+            string published = Assert.Single(Directory.EnumerateFiles(_attachmentsRoot, "*", SearchOption.AllDirectories));
+
+            File.SetLastWriteTimeUtc(published, DateTime.UtcNow.AddHours(-2));
+
+            await sweepStore.DeleteStalePendingAsync(TimeSpan.FromHours(24), token);
+
+            Assert.True(File.Exists(published), "The sweep removed a published upload before its row could commit.");
+        };
+
+        SessionAttachmentRecord record = await _store.PersistNewAsync(
+            sessionId, null, null, "upload", "upload.txt", "in flight"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        Assert.Equal("in flight", Encoding.UTF8.GetString((await _store.ReadBytesAsync(record)).Span));
+    }
+
+    [SkippableFact]
+    public async Task Attachment_integrity_sweep_holds_session_gate_until_destructive_check_finishes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "sweep-before-fork");
+
+        string orphan = Path.Combine(_attachmentsRoot, sessionId.ToString("N"), Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(orphan)!);
+
+        await File.WriteAllTextAsync(orphan, "abandoned bytes");
+
+        File.SetLastWriteTimeUtc(orphan, DateTime.UtcNow.AddHours(-2));
+
+        Task<IDisposable>? forkGate = null;
+
+        _store!.BeforeOrphanFileDeleteForTesting = (path, _) =>
+        {
+            Assert.Equal(orphan, path);
+
+            forkGate = _store.AcquireSessionGateAsync(sessionId);
+
+            Assert.False(forkGate.IsCompleted, "A new fork acquired ownership while the sweep was about to unlink its candidate.");
+
+            return Task.CompletedTask;
+        };
+
+        try
+        {
+            await _store.DeleteStalePendingAsync(TimeSpan.FromHours(24));
+
+            Assert.False(File.Exists(orphan));
+
+            Assert.NotNull(forkGate);
+
+            using IDisposable acquired = await forkGate.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            _store.BeforeOrphanFileDeleteForTesting = null;
+
+            if (forkGate is { IsCompletedSuccessfully: true })
+            {
+                (await forkGate).Dispose();
+            }
+        }
+    }
+
+    [SkippableFact]
+    public async Task Attachment_integrity_sweep_preserves_fork_until_ambient_transaction_commits()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sourceSession = Guid.NewGuid();
+
+        Guid forkSession = Guid.NewGuid();
+
+        await EnsureSessionAsync(sourceSession, "fork-source");
+
+        await EnsureSessionAsync(forkSession, "fork-destination");
+
+        SessionAttachmentRecord source = await _store!.PersistNewAsync(
+            sourceSession, null, null, "source", "source.txt", "fork bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentForkCopyPlan plan = new(source, Guid.NewGuid(), null);
+
+        await using ArcanumDbContext sweepDb = _fixture.CreateContext(_dbPath);
+
+        SessionAttachmentStore sweepStore = new(sweepDb, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore());
+
+        using (await _store.AcquireSessionGateAsync(forkSession))
+        {
+            await _store.CopyBytesForForkAsync(forkSession, [plan]);
+
+            string copy = Path.Combine(_attachmentsRoot, forkSession.ToString("N"), plan.NewAttachmentId.ToString("N"));
+
+            File.SetLastWriteTimeUtc(copy, DateTime.UtcNow.AddHours(-2));
+
+            await sweepStore.DeleteStalePendingAsync(TimeSpan.FromHours(24));
+
+            Assert.True(File.Exists(copy), "The fork session gate must protect its unpublished copies.");
+
+            await using IDbContextTransaction transaction = await _db!.Database.BeginTransactionAsync();
+
+            await _store.InsertForkRowsInAmbientTransactionAsync(forkSession, [plan]);
+
+            await sweepStore.DeleteStalePendingAsync(TimeSpan.FromHours(24));
+
+            Assert.True(File.Exists(copy), "The fork remains protected until the ambient transaction commits.");
+
+            await transaction.CommitAsync();
+        }
+
+        await sweepStore.DeleteStalePendingAsync(TimeSpan.FromHours(24));
+
+        SessionAttachmentRecord forked = Assert.IsType<SessionAttachmentRecord>(await _store.GetByIdAsync(plan.NewAttachmentId));
+
+        Assert.Equal("fork bytes", Encoding.UTF8.GetString((await _store.ReadBytesAsync(forked)).Span));
+    }
+
+    [SkippableFact]
+    public async Task Attachment_integrity_pending_alias_preserves_in_flight_upload()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string existingDirectory = Path.Combine(_attachmentsRoot, "_pending", "TURN");
+
+        Directory.CreateDirectory(existingDirectory);
+
+        Skip.IfNot(Directory.Exists(Path.Combine(_attachmentsRoot, "_pending", "turn")), "This volume distinguishes directory case.");
+
+        await using ArcanumDbContext sweepDb = _fixture.CreateContext(_dbPath);
+
+        SessionAttachmentStore sweepStore = new(sweepDb, Options.Create(_settings), _attachmentsRoot, CreateEncryptedBlobStore());
+
+        _store!.AfterBytesCommittedBeforeDbForTesting = async token =>
+        {
+            string published = Assert.Single(Directory.EnumerateFiles(_attachmentsRoot, "*", SearchOption.AllDirectories));
+
+            File.SetLastWriteTimeUtc(published, DateTime.UtcNow.AddHours(-2));
+
+            await sweepStore.DeleteStalePendingAsync(TimeSpan.FromHours(24), token);
+
+            Assert.True(File.Exists(published), "A differently spelled pending directory hid the active publication.");
+        };
+
+        SessionAttachmentRecord record = await _store.PersistNewAsync(
+            null, "turn", null, "upload", "upload.txt", "in flight"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        Assert.Equal("in flight", Encoding.UTF8.GetString((await _store.ReadBytesAsync(record)).Span));
+    }
+
+    [SkippableTheory]
+    [InlineData("README.md", "README.md", "readme.md", "readme.md")]
+    [InlineData("Report", "a.txt", "report", "b.txt")]
+    [InlineData("café", "a.txt", "cafe\u0301", "b.txt")]
+    public async Task Attachment_integrity_distinct_logical_names_keep_distinct_snapshots(
+        string firstKey, string firstName, string secondKey, string secondName)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "distinct-snapshots");
+
+        SessionAttachmentRecord first = await _store!.PersistNewAsync(
+            sessionId, null, null, firstKey, firstName, "FIRST-note"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord second = await _store.PersistNewAsync(
+            sessionId, null, null, secondKey, secondName, "OTHER-note"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        Assert.Equal("FIRST-note", Encoding.UTF8.GetString((await _store.ReadBytesAsync(first)).Span));
+
+        foreach (string file in Directory.EnumerateFiles(_attachmentsRoot, "*", SearchOption.AllDirectories))
+        {
+            File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddHours(-2));
+        }
+
+        await _store.ReconcileAsync(TimeSpan.FromHours(24));
+
+        Assert.NotNull(await _store.GetByIdAsync(first.Id));
+
+        Assert.NotNull(await _store.GetByIdAsync(second.Id));
+
+        Assert.Equal("FIRST-note", Encoding.UTF8.GetString((await _store.ReadBytesAsync(first)).Span));
+
+        Assert.Equal("OTHER-note", Encoding.UTF8.GetString((await _store.ReadBytesAsync(second)).Span));
+    }
+
+    [SkippableTheory]
+    [InlineData("materialized")]
+    [InlineData("sync")]
+    [InlineData("async")]
+    [InlineData("sync-array")]
+    [InlineData("async-array")]
+    public async Task Attachment_integrity_rejects_equal_length_valid_envelope_substitution(string readMode)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord first = await _store!.PersistNewAsync(
+            sessionId, null, null, "first", "first.txt", new byte[193], "text/plain", SessionAttachmentKind.Text);
+
+        SessionAttachmentRecord other = await _store.PersistNewAsync(
+            sessionId, null, null, "other", "other.txt", Enumerable.Repeat((byte)42, 193).ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+        File.Copy(Path.Combine(_attachmentsRoot, other.RelativePath), Path.Combine(_attachmentsRoot, first.RelativePath), overwrite: true);
+
+        await Assert.ThrowsAsync<InvalidDataException>(async () =>
+        {
+            if (readMode == "materialized")
+            {
+                _ = await _store.ReadBytesAsync(first);
+
+                return;
+            }
+
+            await using Stream stream = await _store.OpenReadAsync(first);
+
+            byte[] page = new byte[31];
+
+            Assert.Equal(0, stream.Read(Span<byte>.Empty));
+
+            Assert.Equal(0, await stream.ReadAsync(Memory<byte>.Empty));
+
+            int read;
+
+            do
+            {
+                read = readMode switch
+                {
+                    "sync" => stream.Read(page.AsSpan()),
+                    "sync-array" => stream.Read(page, 0, page.Length),
+                    "async-array" => await stream.ReadAsync(page, 0, page.Length),
+                    _ => await stream.ReadAsync(page.AsMemory()),
+                };
+            }
+
+            while (read != 0);
+        });
+    }
+
+    [SkippableTheory]
+    [InlineData("Report", "report", false)]
+    [InlineData("Report", "report", true)]
+    [InlineData("café", "cafe\u0301", false)]
+    [InlineData("café", "cafe\u0301", true)]
+    public async Task Attachment_integrity_reconcile_preserves_legacy_filesystem_aliases(string diskKey, string rowKey, bool afterSnapshot)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid sessionId = Guid.NewGuid();
+
+        await EnsureSessionAsync(sessionId, "legacy-alias");
+
+        SessionAttachmentRecord? record = null;
+
+        string? orphan = null;
+
+        async Task CreateLegacyAsync()
+        {
+            record = await _store!.PersistNewAsync(
+                sessionId, null, null, "legacy", "notes.txt", "legacy bytes"u8.ToArray(), "text/plain", SessionAttachmentKind.Text);
+
+            string diskRelative = sessionId.ToString("N") + "/" + diskKey + "/v1/notes.txt";
+
+            string rowRelative = sessionId.ToString("N") + "/" + rowKey + "/v1/notes.txt";
+
+            string diskPath = Path.Combine(_attachmentsRoot, diskRelative);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(diskPath)!);
+
+            File.Move(Path.Combine(_attachmentsRoot, record.RelativePath), diskPath);
+
+            Skip.IfNot(File.Exists(Path.Combine(_attachmentsRoot, rowRelative)), "This volume distinguishes the supplied path spellings.");
+
+            await _db!.Database.OpenConnectionAsync();
+
+            using (System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand())
+            {
+                command.CommandText = "UPDATE SessionAttachments SET RelativePath = @path WHERE Id = @id";
+
+                command.Parameters.Add(new SqliteParameter("@path", rowRelative));
+
+                command.Parameters.Add(new SqliteParameter("@id", record.Id.ToString().ToUpperInvariant()));
+
+                Assert.Equal(1, await command.ExecuteNonQueryAsync());
+            }
+
+            File.SetLastWriteTimeUtc(diskPath, DateTime.UtcNow.AddHours(-2));
+
+            orphan = Path.Combine(Path.GetDirectoryName(diskPath)!, "orphan.txt");
+
+            await File.WriteAllTextAsync(orphan, "orphan");
+
+            File.SetLastWriteTimeUtc(orphan, DateTime.UtcNow.AddHours(-2));
+        }
+
+        if (afterSnapshot)
+        {
+            _store!.AfterOrphanPathSnapshotForTesting = async _ =>
+            {
+                _store.AfterOrphanPathSnapshotForTesting = null;
+
+                await CreateLegacyAsync();
+            };
+        }
+        else
+        {
+            await CreateLegacyAsync();
+        }
+
+        await _store!.ReconcileAsync(TimeSpan.FromHours(24));
+
+        SessionAttachmentRecord reloaded = Assert.IsType<SessionAttachmentRecord>(await _store.GetByIdAsync(record!.Id));
+
+        Assert.Equal(sessionId.ToString("N") + "/" + rowKey + "/v1/notes.txt", reloaded.RelativePath);
+
+        Assert.Equal("legacy bytes", Encoding.UTF8.GetString((await _store.ReadBytesAsync(reloaded)).Span));
+
+        Assert.False(File.Exists(orphan));
+    }
+
+    [SkippableFact]
     public async Task OpenReadAsync_returns_live_decrypted_stream_and_enforces_plaintext_length()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -1147,6 +1635,8 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     private sealed class InstrumentedEncryptedBlobStore(IEncryptedBlobStore inner)
         : IEncryptedBlobStore
     {
+        public bool OccupyDestination { get; init; }
+
         public bool RejectWholeStreamWrite { get; init; }
 
         public bool RejectCopyToRead { get; set; }
@@ -1198,21 +1688,39 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
                 : stream;
         }
 
-        public async Task<EncryptedBlobWriter> CreateWriterAsync(
+        public Task<EncryptedBlobWriter> CreateWriterAsync(
             string destinationPath,
             EncryptedBlobPurpose purpose,
             ReadOnlyMemory<byte> authenticatedMetadata = default,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default) =>
+            CreateWriterCoreAsync(destinationPath, purpose, authenticatedMetadata, false, cancellationToken);
+
+        public Task<EncryptedBlobWriter> CreateNewWriterAsync(
+            string destinationPath,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata = default,
+            CancellationToken cancellationToken = default) =>
+            CreateWriterCoreAsync(destinationPath, purpose, authenticatedMetadata, true, cancellationToken);
+
+        private async Task<EncryptedBlobWriter> CreateWriterCoreAsync(
+            string destinationPath,
+            EncryptedBlobPurpose purpose,
+            ReadOnlyMemory<byte> authenticatedMetadata,
+            bool createNew,
+            CancellationToken cancellationToken)
         {
             CreateWriterCallCount++;
 
-            EncryptedBlobWriter writer = await inner
-                .CreateWriterAsync(
-                    destinationPath,
-                    purpose,
-                    authenticatedMetadata,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            EncryptedBlobWriter writer = createNew
+                ? await inner.CreateNewWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken)
+                    .ConfigureAwait(false)
+                : await inner.CreateWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (OccupyDestination)
+            {
+                await File.WriteAllTextAsync(destinationPath, "existing destination", cancellationToken);
+            }
 
             return CancelWriterAfterWriteCall is { } cancelAfter
                 && WriterCancellation is { } writerCancellation
@@ -1727,9 +2235,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         string expectedBoundAbsolute = Path.Combine(
             _attachmentsRoot,
             sessionId.ToString("N"),
-            "notes.txt",
-            "v1",
-            "notes.txt");
+            pending.Id.ToString("N"));
 
         _store.AfterBytesCommittedBeforeDbForTesting = _ =>
             throw new InvalidOperationException("simulated exhausted DB failure");
@@ -1759,12 +2265,8 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
 
         _store!.AfterBytesCommittedBeforeDbForTesting = _ =>
         {
-            capturedPath = Path.Combine(
-                _attachmentsRoot,
-                sessionId.ToString("N"),
-                "orphan.txt",
-                "v1",
-                "orphan.txt");
+            capturedPath = Assert.Single(Directory.EnumerateFiles(
+                Path.Combine(_attachmentsRoot, sessionId.ToString("N")), "*", SearchOption.AllDirectories));
 
             Assert.True(File.Exists(capturedPath));
 
@@ -2218,10 +2720,9 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
     /// exactly as it was.
     /// </summary>
     /// <remarks>
-    /// A fork's copies are not in the promotion in-flight set the orphan sweep consults, so a sweep that races a
-    /// fork can unlink a copy that predates its snapshot. What keeps that from publishing a row for missing bytes
-    /// is the revalidation of the captured blob identity inside the insert, which this pins: the fork fails, no
-    /// row is written for it, and the source attachment still reads back.
+    /// The Session gate protects a production fork from the orphan sweep, while commit-time identity validation
+    /// independently refuses externally removed bytes. This pins that second boundary: the fork fails, no row
+    /// is written for it, and the source attachment still reads back.
     /// </remarks>
     [SkippableFact]
     public async Task InsertForkRowsInAmbientTransactionAsync_refuses_a_copy_unlinked_after_it_was_made_and_leaves_the_source_intact()
@@ -2496,7 +2997,30 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
         SessionAttachmentRecord record = await _store!.PersistNewAsync(
             sessionId, null, null, name, name, bytes, "text/plain", SessionAttachmentKind.Text);
 
-        string absolute = Path.Combine(_attachmentsRoot, record.RelativePath);
+        string originalPath = Path.Combine(_attachmentsRoot, record.RelativePath);
+
+        string legacyRelative = sessionId.ToString("N") + "/legacy/v1/" + name;
+
+        string absolute = Path.Combine(_attachmentsRoot, legacyRelative);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
+
+        File.Move(originalPath, absolute);
+
+        await _db!.Database.OpenConnectionAsync();
+
+        using (System.Data.Common.DbCommand command = _db.Database.GetDbConnection().CreateCommand())
+        {
+            command.CommandText = "UPDATE SessionAttachments SET RelativePath = @path WHERE Id = @id";
+
+            command.Parameters.Add(new SqliteParameter("@path", legacyRelative));
+
+            command.Parameters.Add(new SqliteParameter("@id", record.Id.ToString().ToUpperInvariant()));
+
+            Assert.Equal(1, await command.ExecuteNonQueryAsync());
+        }
+
+        record = record with { RelativePath = legacyRelative };
 
         File.SetLastWriteTimeUtc(absolute, DateTime.UtcNow.AddHours(-2));
 

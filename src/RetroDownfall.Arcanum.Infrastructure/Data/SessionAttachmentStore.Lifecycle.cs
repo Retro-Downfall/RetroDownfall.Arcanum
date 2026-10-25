@@ -248,6 +248,8 @@ internal sealed partial class SessionAttachmentStore
             return;
         }
 
+        List<IdentityOwnedFileSystemArtifact> copies = [];
+
         try
         {
             foreach (SessionAttachmentForkCopyPlan plan in plans)
@@ -266,15 +268,11 @@ internal sealed partial class SessionAttachmentStore
                 string newRelative = BuildRelativePath(
                     forkSessionId,
                     pendingTurnId: null,
-                    plan.Source.LogicalKey,
-                    plan.Source.Version,
-                    plan.Source.OriginalFileName);
+                    plan.NewAttachmentId);
 
                 string destAbsolute = ResolveUnderRoot(newRelative);
 
                 await AtomicCopyFileAsync(sourceAbsolute, destAbsolute, cancellationToken).ConfigureAwait(false);
-
-                await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
 
                 if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                         destAbsolute,
@@ -284,6 +282,10 @@ internal sealed partial class SessionAttachmentStore
                     throw new IOException(
                         "Fork copy could not capture the owned attachment blob identity.");
                 }
+
+                copies.Add(blobAuthority);
+
+                await VerifyCopiedFileAsync(destAbsolute, plan.Source, cancellationToken).ConfigureAwait(false);
 
                 _forkBlobAuthorities.Remove(plan);
 
@@ -299,7 +301,10 @@ internal sealed partial class SessionAttachmentStore
                 _forkBlobAuthorities.Remove(plan);
             }
 
-            _ = TryDeleteSessionDirectory(forkSessionId);
+            foreach (IdentityOwnedFileSystemArtifact copy in copies)
+            {
+                _ = IdentityOwnedFileSystemCleanup.TryDelete(copy);
+            }
 
             throw;
         }
@@ -325,9 +330,7 @@ internal sealed partial class SessionAttachmentStore
                 string relativePath = NormalizeRelativePath(BuildRelativePath(
                     forkSessionId,
                     pendingTurnId: null,
-                    plan.Source.LogicalKey,
-                    plan.Source.Version,
-                    plan.Source.OriginalFileName));
+                    plan.NewAttachmentId));
 
                 ForkBlobAuthority authority;
 
@@ -728,10 +731,9 @@ internal sealed partial class SessionAttachmentStore
     /// its blob. Guarded by the same <c>State</c>/<c>RelativePath</c> predicate as a sweep delete, so a
     /// row that was promoted (or otherwise rewritten) in the meantime is left alone. The derived index
     /// rows go with it through their <c>ON DELETE CASCADE</c> keys. The blob unlink is best effort: the
-    /// orphan-file sweep reclaims it if it fails. It runs while the attachment gate is still held: once
-    /// the row is gone a concurrent persist of the same logical key can reuse the freed version number
-    /// and so this path, and an unlink after the gate was released could remove that persist's fresh
-    /// bytes and leave its row pointing at nothing.
+    /// orphan-file sweep reclaims it if it fails. It runs while the attachment gate is still held,
+    /// keeping row deletion and blob cleanup serialized with subsequent versions of the logical key.
+    /// New snapshots receive distinct opaque paths even when a logical version number is reused.
     /// </summary>
     public async Task<bool> DeleteCreatedAttachmentAsync(
         SessionAttachmentRecord created,
