@@ -123,7 +123,11 @@ public sealed class SessionContextPinMaterializer(
                     pin, sessionId, workingDirectory, Math.Min(MaxBytesPerPin, remaining), cancellationToken)
                     .ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
             {
                 materialized = new(SessionContextPinStatus.Error, null, DescribeFailure(ex));
             }
@@ -1142,6 +1146,7 @@ public sealed class SessionContextPinMaterializer(
     private static string DescribeFailure(Exception failure) =>
         failure switch
         {
+            InvalidDataException or CryptographicException => "The pin source is corrupt or unreadable.",
             UnauthorizedAccessException => "Access to the pin source was denied.",
             IOException => "An I/O error prevented reading the pin source.",
             _ => "The pin source could not be materialized.",

@@ -48,6 +48,13 @@ public sealed class LongRestProviderClientFactory : IDisposable
 
         if (selection.Provider.Type != AiProviderKind.OpenAICompatible) return Unsupported();
 
+        OutputTokenLimitWireDialect dialect = selection.Provider.OutputTokenLimitWireDialect;
+
+        if (!Enum.IsDefined(dialect))
+        {
+            throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
+        }
+
         Result<string?> key = await ResolveCredentialAsync(selection.Provider, ct).ConfigureAwait(false);
 
         if (key.IsFailure) return key.Error;
@@ -55,6 +62,8 @@ public sealed class LongRestProviderClientFactory : IDisposable
         ct.ThrowIfCancellationRequested();
 
         OpenAIClientOptions options = Options(selection);
+
+        options.AddPolicy(new OutputTokenLimitWirePolicy(dialect), PipelinePosition.PerCall);
 
         OpenAI.Chat.ChatClient client = new(selection.Model, new ApiKeyCredential(key.Value ?? "no-key"), options);
 

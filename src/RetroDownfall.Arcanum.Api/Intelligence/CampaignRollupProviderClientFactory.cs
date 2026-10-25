@@ -67,9 +67,7 @@ public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProvide
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
-        ArcanumSettings configuration = JsonSerializer.Deserialize(
-            JsonSerializer.SerializeToUtf8Bytes(_settings.CurrentValue, ConfigurationJsonContext.Default.ArcanumSettings),
-            ConfigurationJsonContext.Default.ArcanumSettings)!;
+        ArcanumSettings configuration = _settings.CurrentValue;
 
         if (!ProviderResolver.TryResolveProviderForModel(configuration, targetModel, out ProviderSettings? provider, out string model)
             || provider is null)
@@ -80,6 +78,11 @@ public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProvide
         if (provider.Type is not AiProviderKind.OpenAICompatible)
         {
             return Result<ChatClientLease?>.Success(null);
+        }
+
+        if (!Enum.IsDefined(provider.OutputTokenLimitWireDialect))
+        {
+            throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
         }
 
         provider = JsonSerializer.Deserialize(
@@ -94,6 +97,8 @@ public sealed class CampaignRollupProviderClientFactory : ICampaignRollupProvide
             Transport = new HttpClientPipelineTransport(_httpClient),
             RetryPolicy = new ClientRetryPolicy(0),
         };
+
+        options.AddPolicy(new OutputTokenLimitWirePolicy(provider.OutputTokenLimitWireDialect), PipelinePosition.PerCall);
 
         OpenAI.Chat.ChatClient client = new(model, new ApiKeyCredential(key ?? "no-key"), options);
 
