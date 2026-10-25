@@ -4032,8 +4032,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     /// schedule until the provider recovers, rather than being abandoned. The embedding-provider outage has
     /// its own test below.
     /// </summary>
-    [SkippableFact]
-    public async Task ExecuteAsync_ProviderOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery()
+    [SkippableTheory]
+    [InlineData(ErrorCodes.Hub.Error)]
+    [InlineData(ErrorCodes.Hub.InvalidAdmission)]
+    public async Task ExecuteAsync_ProviderOutageBeyondLadder_StillExtractsOrdinaryMemoryOnRecovery(string refusalCode)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -4045,11 +4047,24 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         FakeWeaveService weave = new();
 
+        TaskCompletionSource sixthAttempt = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         FakeIntelligenceProvider intelligence = new()
         {
             FailureForCall = callCount => callCount <= 5
-                ? new Error(ErrorCodes.Hub.Error, "Simulated extraction provider outage.")
+                ? new Error(refusalCode, "Simulated pre-dispatch admission refusal or provider outage.")
                 : null,
+            BeforeResultAsync = async (callCount, cancellationToken) =>
+            {
+                if (callCount == 6)
+                {
+                    sixthAttempt.TrySetResult();
+
+                    await release.Task.WaitAsync(cancellationToken);
+                }
+            },
             NextText = """{ "memories": [{ "content": "The operator prefers tabs over spaces.", "attachmentId": null }] }""",
         };
 
@@ -4077,6 +4092,22 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
                     HadUnprovenancedAttachmentContent: false,
                     AfterEntrySequenceExclusive: 0,
                     ThroughEntrySequence: throughSequence));
+
+            await sixthAttempt.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Empty(service.AbandonedSegmentsForTests(sessionId));
+
+            Assert.Null(await GetExtractionCursorAsync(sessionId));
+
+            Assert.Equal(0, await CountMemoriesAsync());
+
+            Assert.Equal(0, weave.EmbedCallCount);
+
+            Assert.Single(service.PendingRequestsForTests);
+
+            Assert.All(intelligence.StatelessUserContents, content => Assert.Equal(intelligence.StatelessUserContents[0], content));
+
+            release.TrySetResult();
 
             using CancellationTokenSource completionTimeout = new(TimeSpan.FromSeconds(10));
 
@@ -4292,8 +4323,10 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
     /// abandonment and ends the billable ladder after the bounded attempts instead of retrying for as long as
     /// the process lives.
     /// </summary>
-    [SkippableFact]
-    public async Task ExecuteAsync_GuardrailRejectingEveryAnswer_AbandonsAfterBoundedAttempts()
+    [SkippableTheory]
+    [InlineData(ErrorCodes.Guardrails.Blocked)]
+    [InlineData(ErrorCodes.Hub.ContextBudgetExceeded)]
+    public async Task ExecuteAsync_GuardrailRejectingEveryAnswer_AbandonsAfterBoundedAttempts(string refusalCode)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -4305,7 +4338,7 @@ public sealed class SagaExtractionServiceTests : IAsyncLifetime
 
         FakeIntelligenceProvider intelligence = new()
         {
-            NextFailure = new Error(ErrorCodes.Guardrails.Blocked, "The answer was rejected by a guardrail."),
+            NextFailure = new Error(refusalCode, "The answer was rejected by a guardrail."),
         };
 
         (IServiceScopeFactory scopeFactory, _, ArcanumSettings settings) = BuildScope(weave, intelligence);

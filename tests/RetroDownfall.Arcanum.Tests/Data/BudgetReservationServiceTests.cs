@@ -128,6 +128,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Result<BudgetReservation> refused = await recovered.ReserveAsync(new BudgetReservationRequest(Guid.NewGuid(), 3m, DateTimeOffset.UtcNow.AddHours(1), BudgetReservationService.UtcBudgetPeriod(DateTimeOffset.UtcNow)));
 
         Assert.True(refused.IsFailure);
+        Assert.Contains("Outstanding reservations from prior days may still count", refused.Error.Message);
 
         Assert.Equal((BudgetReservationStatus.UncertainPaid, 0m), await ReadReservationStateAsync(held.Id));
 
@@ -275,7 +276,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(overLimit.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, overLimit.Error.Code);
         Assert.Equal(
-            "Daily budget limit of $1.00 USD would be exceeded (committed+reserved: $1.00 USD).",
+            "Daily budget limit of $1.00 USD would be exceeded (committed+reserved: $1.00 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
             overLimit.Error.Message);
         Assert.Equal(1L, await CountReservationsAsync());
     }
@@ -381,6 +382,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(ignoredLower.IsSuccess);
         Assert.True(rejected.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, rejected.Error.Code);
+        Assert.Contains("00:00 UTC", rejected.Error.Message);
         Assert.Equal(9m, await service.GetTodayOutstandingReservationsAsync());
     }
 
@@ -714,7 +716,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(withDelegated.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, withDelegated.Error.Code);
         Assert.Equal(
-            "Daily budget limit of $1.00 USD would be exceeded (committed+reserved+delegated: $1.05 USD).",
+            "Daily budget limit of $1.00 USD would be exceeded (committed+reserved+delegated: $1.05 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
             withDelegated.Error.Message);
         Assert.True(underLoweredLimit.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, underLoweredLimit.Error.Code);
@@ -769,16 +771,16 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(newDayOver.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, newDayOver.Error.Code);
         Assert.Equal(
-            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved+delegated: $10.10 USD).",
+            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved+delegated: $10.10 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
             newDayOver.Error.Message);
         Assert.True(withTodaysDelegated.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, withTodaysDelegated.Error.Code);
         Assert.Equal(
-            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved+delegated: $10.10 USD).",
+            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved+delegated: $10.10 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
             withTodaysDelegated.Error.Message);
         Assert.True(admittedDayOver.IsFailure);
         Assert.Equal(
-            "Daily budget limit of $2.40 USD would be exceeded (committed+reserved+delegated: $2.50 USD).",
+            "Daily budget limit of $2.40 USD would be exceeded (committed+reserved+delegated: $2.50 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
             admittedDayOver.Error.Message);
     }
 
@@ -859,7 +861,7 @@ public sealed class BudgetReservationServiceTests : IAsyncLifetime
         Assert.True(refused.IsFailure);
         Assert.Equal(ErrorCodes.Budget.Exceeded, refused.Error.Code);
         Assert.Equal(
-            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved: $10.00 USD).",
+            "Daily budget limit of $10.00 USD would be exceeded (committed+reserved: $10.00 USD). The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.",
             refused.Error.Message);
         service.UtcNowForTesting = () => admittedAt;
         Assert.Equal(1.00m, await service.GetTodayOutstandingReservationsAsync());

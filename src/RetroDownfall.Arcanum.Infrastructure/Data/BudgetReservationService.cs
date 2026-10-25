@@ -142,7 +142,7 @@ internal sealed class BudgetReservationService(
         {
             return Result<BudgetReservation>.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
-                $"Daily budget limit of ${ex.DailyLimit:0.00} USD would be exceeded (committed+reserved: ${ex.Current:0.00} USD)."));
+                $"Daily budget limit of ${ex.DailyLimit:0.00} USD would be exceeded (committed+reserved: ${ex.Current:0.00} USD)." + " " + BudgetErrorMessages.Guidance));
         }
     }
 
@@ -280,7 +280,7 @@ internal sealed class BudgetReservationService(
         {
             return Result.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
-                $"Daily budget limit of ${ex.DailyLimit:0.00} USD would be exceeded (committed+reserved: ${ex.Current:0.00} USD)."));
+                $"Daily budget limit of ${ex.DailyLimit:0.00} USD would be exceeded (committed+reserved: ${ex.Current:0.00} USD)." + " " + BudgetErrorMessages.Guidance));
         }
     }
 
@@ -393,7 +393,7 @@ internal sealed class BudgetReservationService(
             ErrorCodes.Budget.Exceeded,
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"Daily budget limit of ${dailyLimit:0.00} USD would be exceeded (committed+reserved+delegated: ${total:0.00} USD).")));
+                $"Daily budget limit of ${dailyLimit:0.00} USD would be exceeded (committed+reserved+delegated: ${total:0.00} USD).") + " " + BudgetErrorMessages.Guidance));
 
     public Task ExtendExpiryAsync(Guid reservationId, DateTimeOffset expiresAt, CancellationToken cancellationToken = default)
     {

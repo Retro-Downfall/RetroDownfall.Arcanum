@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 internal static class TurnContextGuards
 {
-
     public const string IdempotencyTerminalItemKey = "Arcanum.IdempotencyTerminal";
 
     /// <summary>
@@ -210,11 +209,13 @@ internal static class TurnContextGuards
             return Result.Success();
         }
 
-        return Result.Failure(new Error(
-            ErrorCodes.Hub.ContextBudgetExceeded,
-            $"Context budget exceeded: {breakdown.TotalTokens} accounted tokens "
-            + $"({breakdown.InputTokens} input + {breakdown.ReservedTokens} reserved) exceed "
-            + $"the {limit}-token window using profile '{breakdown.Profile.ProfileId}'."));
+        ContextOverflowDetails overflow = new(breakdown.Provider, breakdown.Model,
+            breakdown.InputTokens, breakdown.ReservedTokens, breakdown.TotalTokens, limit);
+
+        return Result.Failure(new Error(ErrorCodes.Hub.ContextBudgetExceeded, overflow.ToPublicMessage())
+        {
+            ContextOverflow = overflow,
+        });
     }
 
     public static bool ResolveContinueThenReplay(HttpContext httpContext, DisconnectPolicy policy)
@@ -240,5 +241,4 @@ internal static class TurnContextGuards
 
     public static bool IsIdempotencyNeverCache(HttpContext httpContext) =>
         httpContext.Items.TryGetValue(IdempotencyNeverCacheItemKey, out object? value) && value is true;
-
 }

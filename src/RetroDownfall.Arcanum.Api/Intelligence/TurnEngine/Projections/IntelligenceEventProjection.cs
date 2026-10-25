@@ -189,7 +189,7 @@ internal sealed class IntelligenceEventProjection
                 new IntelligenceEvent(
                     IntelligenceEventType.Error,
                     failed.Error.Message,
-                    failed.Error.Code),
+                    failed.Error.Code) { ContextOverflow = failed.Error.ContextOverflow },
             ],
 
             RunAbandoned abandoned =>
@@ -197,7 +197,7 @@ internal sealed class IntelligenceEventProjection
                 new IntelligenceEvent(
                     IntelligenceEventType.Error,
                     abandoned.Error?.Message ?? "Turn abandoned.",
-                    abandoned.Error?.Code ?? ErrorCodes.Hub.Error),
+                    abandoned.Error?.Code ?? ErrorCodes.Hub.Error) { ContextOverflow = abandoned.Error?.ContextOverflow },
             ],
 
             _ => [],

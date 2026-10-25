@@ -5697,10 +5697,14 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+        Assert.Contains("arcanum session compact", result.Error.Message);
+        Assert.Contains("providers[].contextWindowLimit", result.Error.Message);
     }
 
-    [Fact]
-    public async Task ExplicitAttachmentReferences_StopMaterializingAtResolvedProviderContextBoundary()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitAttachmentReferences_StopMaterializingAtResolvedProviderContextBoundary(bool streaming)
     {
         Guid sessionId = Guid.NewGuid();
 
@@ -5756,6 +5760,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                 DefaultProvider() with { ContextWindowLimit = 4_096 },
             ],
         };
+
         ScriptingChatClient chat = new();
 
         chat.EnqueueText("must not be called");
@@ -5769,26 +5774,53 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             },
             sessionAttachmentStore: store);
 
-        Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(
-            BaseRequest() with
+        PingRequest request = BaseRequest() with
+        {
+            Prompt = "Compare the referenced notes.",
+            SessionId = sessionId,
+            AttachmentReferences = [.. attachmentIds],
+            SkipSpellRouting = true,
+            DisableMcpTools = true,
+            MaxOutputTokens = 128,
+        };
+
+        Error error;
+
+        if (streaming)
+        {
+            List<IntelligenceEvent> frames = [];
+
+            await foreach (IntelligenceEvent frame in wizard.StreamPromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None))
             {
-                Prompt = "Compare the referenced notes.",
-                SessionId = sessionId,
-                AttachmentReferences = [.. attachmentIds],
-                SkipSpellRouting = true,
-                DisableMcpTools = true,
-                MaxOutputTokens = 128,
-            },
-            InvocationContexts.AttendedSession(),
-            CancellationToken.None);
+                frames.Add(frame);
+            }
+            IntelligenceEvent failed = Assert.Single(frames, frame => frame.Type == IntelligenceEventType.Error);
 
-        Assert.True(result.IsFailure);
+            error = new Error(failed.Data!, failed.Message) { ContextOverflow = failed.ContextOverflow };
+        }
+        else
+        {
+            Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(request, InvocationContexts.AttendedSession(), CancellationToken.None);
 
-        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, result.Error.Code);
+            Assert.True(result.IsFailure);
+
+            error = result.Error;
+        }
+        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, error.Code);
+
+        Assert.NotNull(error.ContextOverflow);
+
+        Assert.Contains("arcanum session compact", error.Message);
+
+        Assert.Contains("providers[].contextWindowLimit", error.Message);
+
+        Assert.Equal(error.ContextOverflow.Value.ToPublicMessage(), RetroDownfall.Arcanum.Api.Intelligence.OpenAi.OpenAiStreamErrorMapper.Map(error).Message);
 
         Assert.InRange(materializedReferences, 1, attachmentIds.Length - 1);
 
         Assert.Equal(0, chat.BufferedCallCount);
+
+        Assert.Equal(0, chat.StreamingCallCount);
     }
 
     [Fact]

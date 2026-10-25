@@ -269,7 +269,8 @@ internal static partial class OpenAiV1Endpoints
 
         if (result.IsFailure)
         {
-            if (OpenAiStreamErrorMapper.IsRequestValidationCode(result.Error.Code))
+            if (OpenAiStreamErrorMapper.IsRequestValidationCode(result.Error.Code)
+                || result.Error.Code is ErrorCodes.Hub.ContextBudgetExceeded or ErrorCodes.Budget.Exceeded)
             {
                 OpenAiErrorDetail requestError = OpenAiStreamErrorMapper.Map(result.Error);
 
@@ -651,7 +652,8 @@ internal static partial class OpenAiV1Endpoints
                                     systemFingerprint,
                                     new Error(
                                         ev.Data ?? ErrorCodes.Hub.Error,
-                                        ev.Message),
+                                        ev.Message)
+                                    { ContextOverflow = ev.ContextOverflow },
                                     ct).ConfigureAwait(false);
                                 streamErrored = true;
                                 // This is a failure frame, not a completed
@@ -1179,6 +1181,8 @@ internal static partial class OpenAiV1Endpoints
     private static (string Type, string Code) MapPublicOpenAiError(string internalCode) =>
         internalCode switch
         {
+            ErrorCodes.Hub.ContextBudgetExceeded => ("invalid_request_error", "context_length_exceeded"),
+            ErrorCodes.Budget.Exceeded => ("insufficient_quota", "insufficient_quota"),
             ErrorCodes.Hub.Model => ("api_error", "model_not_found"),
             ErrorCodes.Validation.InvalidPrompt => ("api_error", "missing_required_parameter"),
             ErrorCodes.Validation.AttachedFiles => ("api_error", "invalid_value"),

@@ -69,6 +69,205 @@ public sealed class OpenAiV1EndpointTests
         Assert.Equal(0, factory.FakeIntelligence.StreamPromptCallCount);
     }
 
+    [SkippableTheory]
+    [InlineData(false, ErrorCodes.Hub.ContextBudgetExceeded, 400, "invalid_request_error", "context_length_exceeded", "arcanum session compact")]
+    [InlineData(true, ErrorCodes.Hub.ContextBudgetExceeded, 200, "invalid_request_error", "context_length_exceeded", "arcanum session compact")]
+    [InlineData(false, ErrorCodes.Budget.Exceeded, 429, "insufficient_quota", "insufficient_quota", "Arcanum:Cost:Budget:DailyLimitUsd")]
+    [InlineData(true, ErrorCodes.Budget.Exceeded, 200, "insufficient_quota", "insufficient_quota", "Arcanum:Cost:Budget:DailyLimitUsd")]
+    public async Task PostChatCompletions_ContextAndBudgetRefusals_AreActionableWithoutLeakingMessages(
+        bool stream, string code, int status, string type, string publicCode, string remedy)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        const string canary = "SECRET_PROVIDER_RESPONSE_AND_PROMPT";
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        factory.FakeIntelligence.NextFailure = new Error(code, canary);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        string payload = $$"""{"model":"mistral:latest","messages":[{"role":"user","content":"hello"}],"stream":{{stream.ToString().ToLowerInvariant()}}}""";
+
+        using HttpResponseMessage response = await client.PostAsync("/v1/chat/completions", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        string wire = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(status, (int)response.StatusCode);
+
+        OpenAiErrorDetail detail = stream
+            ? Assert.Single(ParseSseChunks(wire), chunk => chunk.Error is not null).Error!
+            : JsonSerializer.Deserialize(wire, ArcanumJsonContext.Default.OpenAiErrorResponse)!.Error;
+
+        Assert.Equal(type, detail.Type);
+
+        Assert.Equal(publicCode, detail.Code);
+
+        Assert.Contains(remedy, detail.Message);
+
+        Assert.DoesNotContain(canary, wire);
+
+        if (stream)
+        {
+            Assert.Contains("data: [DONE]", wire);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PostChatCompletions_TypedContextOverflow_PreservesSafeCountsAcrossTransports(bool stream)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        ContextOverflowDetails overflow = new("configured-provider", "configured-model", 9000, 1024, 10024, 8192);
+
+        factory.FakeIntelligence.NextFailure = new Error(ErrorCodes.Hub.ContextBudgetExceeded, "SECRET_RESPONSE") { ContextOverflow = overflow };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        string payload = $$"""{"model":"mistral:latest","messages":[{"role":"user","content":"hello"}],"stream":{{stream.ToString().ToLowerInvariant()}}}""";
+
+        using HttpResponseMessage response = await client.PostAsync("/v1/chat/completions", new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        string wire = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(stream ? HttpStatusCode.OK : HttpStatusCode.BadRequest, response.StatusCode);
+
+        OpenAiErrorDetail detail = stream
+            ? Assert.Single(ParseSseChunks(wire), chunk => chunk.Error is not null).Error!
+            : JsonSerializer.Deserialize(wire, ArcanumJsonContext.Default.OpenAiErrorResponse)!.Error;
+
+        Assert.Equal(overflow.ToPublicMessage(), detail.Message);
+
+        Assert.Contains("configured-provider", detail.Message);
+
+        Assert.Contains("configured-model", detail.Message);
+
+        Assert.Contains("10024", detail.Message);
+
+        Assert.Contains("8192", detail.Message);
+
+        Assert.DoesNotContain("SECRET_RESPONSE", wire);
+
+        Assert.DoesNotContain("contextOverflow", wire);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Hub.Error)]
+    [InlineData(ErrorCodes.Hub.InvalidAdmission)]
+    [InlineData(ErrorCodes.LongRest.InvalidAdmission)]
+    [InlineData(ErrorCodes.Budget.Exceeded)]
+    public void NonOverflowErrors_NeverConsumeAttachedOverflowMetadata(string code)
+    {
+        Error error = new(code, "SECRET_RESPONSE") { ContextOverflow = new("UNRELATED_PROVIDER", "UNRELATED_MODEL", 9000, 1024, 10024, 8192) };
+
+        string message = OpenAiStreamErrorMapper.Map(error).Message;
+
+        Assert.DoesNotContain("SECRET_RESPONSE", message);
+
+        Assert.DoesNotContain("UNRELATED", message);
+
+        Assert.DoesNotContain("10024", message);
+
+        Assert.NotEqual("context_length_exceeded", OpenAiStreamErrorMapper.Map(error).Code);
+    }
+
+    public static TheoryData<int, string, string> ContextIdentifierScalarCases
+    {
+        get
+        {
+            TheoryData<int, string, string> cases = new();
+
+            foreach (int byteLimit in new[] { 64, 128 })
+            {
+                cases.Add(byteLimit, "a\U000E0001b\U000E0061c", "a_b_c");
+
+                cases.Add(byteLimit, "a\U0001F680\U00010400b", "a\U0001F680\U00010400b");
+
+                cases.Add(byteLimit, "bad\uD800x\uDC00", "bad\uFFFDx\uFFFD");
+
+                cases.Add(byteLimit, new string('a', byteLimit - 4) + "\U0001F680tail", new string('a', byteLimit - 4) + "\U0001F680");
+
+                cases.Add(byteLimit, new string('a', byteLimit - 3) + "\U0001F680tail", new string('a', byteLimit - 3));
+
+                cases.Add(byteLimit, new string('a', byteLimit - 4) + "\U000E007Ftail", new string('a', byteLimit - 4) + "_");
+
+                cases.Add(byteLimit, new string('a', byteLimit - 3) + "\uD800tail", new string('a', byteLimit - 3) + "\uFFFD");
+            }
+
+            return cases;
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(ContextIdentifierScalarCases))]
+    public void ContextOverflowIdentifiers_SanitizeScalarsAndPreserveValidUnicodeWithinByteLimit(
+        int byteLimit, string identifier, string expected)
+    {
+        ContextOverflowDetails overflow = new(
+            byteLimit == 64 ? identifier : "provider",
+            byteLimit == 128 ? identifier : "model",
+            9000, 1024, 10024, 8192);
+
+        Error error = new(ErrorCodes.Hub.ContextBudgetExceeded, overflow.ToPublicMessage()) { ContextOverflow = overflow };
+
+        OpenAiErrorDetail mapped = OpenAiStreamErrorMapper.Map(error);
+
+        Assert.Equal(error.Message, mapped.Message);
+
+        string json = JsonSerializer.Serialize(mapped, ArcanumJsonContext.Default.OpenAiErrorDetail);
+
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        string decodedMessage = document.RootElement.GetProperty("message").GetString()!;
+
+        string field = byteLimit == 64 ? "provider" : "model";
+
+        string prefix = field + " '";
+
+        int start = decodedMessage.IndexOf(prefix, StringComparison.Ordinal) + prefix.Length;
+
+        string actual = decodedMessage[start..decodedMessage.IndexOf("'", start, StringComparison.Ordinal)];
+
+        Assert.Equal(expected, actual);
+
+        UTF8Encoding strictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+        Assert.InRange(strictUtf8.GetByteCount(actual), 0, byteLimit);
+
+        Assert.Equal(actual, strictUtf8.GetString(strictUtf8.GetBytes(actual)));
+
+        foreach (Rune scalar in decodedMessage.EnumerateRunes())
+        {
+            Assert.NotEqual(System.Globalization.UnicodeCategory.Format, Rune.GetUnicodeCategory(scalar));
+
+            Assert.NotEqual(System.Globalization.UnicodeCategory.Control, Rune.GetUnicodeCategory(scalar));
+        }
+    }
+
+    [Fact]
+    public void ContextOverflowIdentifiers_AreBoundedAndControlSanitized()
+    {
+        ContextOverflowDetails overflow = new("provider\n\u001b\u202e'" + new string('p', 300), "model\r\u2028\0" + new string('m', 300), 9000, 1024, 10024, 8192);
+
+        string message = OpenAiStreamErrorMapper.Map(new Error(ErrorCodes.Hub.ContextBudgetExceeded, "SECRET_PROFILE_AND_RESPONSE") { ContextOverflow = overflow }).Message;
+
+        Assert.Contains("provider____", message);
+
+        Assert.Contains("model___", message);
+
+        Assert.DoesNotContain(new string('p', 65), message);
+
+        Assert.DoesNotContain(new string('m', 129), message);
+
+        Assert.DoesNotContain("SECRET", message);
+
+        Assert.DoesNotContain(message, character => char.IsControl(character) || char.GetUnicodeCategory(character) == System.Globalization.UnicodeCategory.Format);
+    }
+
     [SkippableFact]
     public async Task PostChatCompletions_WithoutApiKey_Returns401()
     {

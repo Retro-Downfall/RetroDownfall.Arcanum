@@ -13,11 +13,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class BudgetMonitorTests
 {
-
     [Fact]
     public async Task CheckAsync_Disabled_ReturnsSuccessWithoutCheckingSpend()
     {
-
         BudgetPolicySettings budget = new() { Enabled = false, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 999m };
@@ -39,13 +37,11 @@ public sealed class BudgetMonitorTests
         Assert.Empty(commLink.Dispatched);
 
         Assert.Equal(0, grimoire.TodaySpendCalls);
-
     }
 
     [Fact]
     public async Task CheckAsync_ZeroLimit_ReturnsSuccess()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 0m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 5m };
@@ -61,13 +57,11 @@ public sealed class BudgetMonitorTests
         Assert.True(result.IsSuccess);
 
         Assert.Equal(0, grimoire.TodaySpendCalls);
-
     }
 
     [Fact]
     public async Task CheckAsync_SpendAtLimit_ReturnsExceededFailure()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 10m };
@@ -85,15 +79,16 @@ public sealed class BudgetMonitorTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
+        Assert.Contains("00:00 UTC", result.Error.Message);
+        Assert.Contains("Arcanum:Cost:Budget:DailyLimitUsd", result.Error.Message);
+        Assert.Contains("Outstanding reservations from prior days may still count", result.Error.Message);
 
         Assert.Contains(commLink.Dispatched, m => m.Severity == CommLinkSeverity.Critical);
-
     }
 
     [Fact]
     public async Task CheckAsync_SpendAboveLimit_ReturnsExceededFailure()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 15m };
@@ -109,13 +104,14 @@ public sealed class BudgetMonitorTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
+        Assert.Contains("00:00 UTC", result.Error.Message);
+        Assert.Contains("Arcanum:Cost:Budget:DailyLimitUsd", result.Error.Message);
+        Assert.Contains("Outstanding reservations from prior days may still count", result.Error.Message);
     }
 
     [Fact]
     public async Task CheckAsync_SpendAboveAlertThreshold_DispatchesWarningAndRecords()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 8m };
@@ -139,13 +135,11 @@ public sealed class BudgetMonitorTests
         Assert.Equal(CommLinkSeverity.Warning, commLink.Dispatched[0].Severity);
 
         Assert.Contains(alerts.AlertedThresholdsToday, t => t == 80);
-
     }
 
     [Fact]
     public async Task CheckAsync_AlreadyAlertedToday_DoesNotRedispatch()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 8m };
@@ -167,13 +161,11 @@ public sealed class BudgetMonitorTests
         Assert.True(result.IsSuccess);
 
         Assert.Empty(commLink.Dispatched);
-
     }
 
     [Fact]
     public async Task CheckAsync_SpendBelowThreshold_ReturnsSuccessWithoutAlert()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 5m };
@@ -195,7 +187,6 @@ public sealed class BudgetMonitorTests
         Assert.Empty(commLink.Dispatched);
 
         Assert.Empty(alerts.AlertedThresholdsToday);
-
     }
 
     private static ArcanumSettings Settings(BudgetPolicySettings budget) =>
@@ -212,7 +203,6 @@ public sealed class BudgetMonitorTests
     [Fact]
     public async Task CheckAsync_CeilingReachedPartlyThroughDelegation_ReturnsExceeded()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 6m };
@@ -235,13 +225,14 @@ public sealed class BudgetMonitorTests
         Assert.True(result.IsFailure);
 
         Assert.Equal(ErrorCodes.Budget.Exceeded, result.Error.Code);
-
+        Assert.Contains("00:00 UTC", result.Error.Message);
+        Assert.Contains("Arcanum:Cost:Budget:DailyLimitUsd", result.Error.Message);
+        Assert.Contains("Outstanding reservations from prior days may still count", result.Error.Message);
     }
 
     [Fact]
     public async Task CheckAsync_UnpricedDelegation_IsAllowedAndFlaggedRatherThanCharged()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 3m };
@@ -257,13 +248,11 @@ public sealed class BudgetMonitorTests
 
         // Allow-and-flag: three unpriced Sendings are neither charged as zero nor treated as a refusal.
         Assert.True((await monitor.CheckAsync(CancellationToken.None)).IsSuccess);
-
     }
 
     [Fact]
     public async Task CheckAsync_AtTheCeilingWithUnpricedDelegation_SaysTheFigureIsAFloor()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 10m };
@@ -283,13 +272,11 @@ public sealed class BudgetMonitorTests
 
         // "Do not silently allow": the operator is told the number they hit the ceiling on is incomplete.
         Assert.Contains("reported no cost", result.Error.Message, StringComparison.Ordinal);
-
     }
 
     [Fact]
     public async Task CheckAsync_WithoutAnExternalSpendLedger_BehavesExactlyAsBefore()
     {
-
         BudgetPolicySettings budget = new() { Enabled = true, DailyLimitUsd = 10m };
 
         TrackingGrimoireRepository grimoire = new() { TodaySpend = 1m };
@@ -301,7 +288,6 @@ public sealed class BudgetMonitorTests
             NullLogger<BudgetMonitor>.Instance);
 
         Assert.True((await monitor.CheckAsync(CancellationToken.None)).IsSuccess);
-
     }
 
     private static IServiceScopeFactory CreateScopeFactory(
@@ -309,7 +295,6 @@ public sealed class BudgetMonitorTests
         IBudgetAlertRepository budgetAlerts,
         IExternalSpendLedger? externalSpend = null)
     {
-
         ServiceCollection services = new();
 
         services.AddScoped(_ => grimoire);
@@ -318,26 +303,20 @@ public sealed class BudgetMonitorTests
 
         if (externalSpend is not null)
         {
-
             services.AddScoped(_ => externalSpend);
-
         }
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
-
     }
 
     private sealed class StubExternalSpendLedger(ExternalSpendSummary summary) : IExternalSpendLedger
     {
-
         public Task<ExternalSpendSummary> GetTodayAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(summary);
-
     }
 
     private sealed class TrackingGrimoireRepository : IGrimoireRepository
     {
-
         public decimal TodaySpend { get; set; }
 
         public int TodaySpendCalls { get; private set; }
@@ -433,7 +412,5 @@ public sealed class BudgetMonitorTests
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
-
 }

@@ -52,6 +52,10 @@ public sealed record IntelligenceEvent(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     WardResolutionOrigin? Origin = null)
 {
+    /// <summary>In-process context admission data for safe transport projection; never serialized.</summary>
+    [JsonIgnore]
+    public RetroDownfall.Arcanum.Core.Primitives.ContextOverflowDetails? ContextOverflow { get; init; }
+
     public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 

@@ -20,7 +20,6 @@ public sealed class BudgetMonitor(
     IOptionsMonitor<ArcanumSettings> settings,
     ILogger<BudgetMonitor> logger)
 {
-
     /// <summary>
     /// Checks today's spend against the configured budget. Returns a failure result with
     /// <see cref="ErrorCodes.Budget.Exceeded"/> when the daily limit has been reached; otherwise
@@ -28,14 +27,11 @@ public sealed class BudgetMonitor(
     /// </summary>
     public async Task<Result> CheckAsync(CancellationToken cancellationToken = default)
     {
-
         BudgetSettings budget = settings.CurrentValue.ResolveBudget();
 
         if (!budget.Enabled || budget.DailyLimitUsd <= 0)
         {
-
             return Result.Success();
-
         }
 
         decimal dailyLimit = ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd);
@@ -59,7 +55,6 @@ public sealed class BudgetMonitor(
 
         if (spend >= dailyLimit)
         {
-
             await TryDispatchAlertAsync(
                 budgetAlerts,
                 threshold: 100,
@@ -71,15 +66,13 @@ public sealed class BudgetMonitor(
             return Result.Failure(new Error(
                 ErrorCodes.Budget.Exceeded,
                 $"Daily budget limit of ${dailyLimit:0.00} USD has been reached (current spend: ${spend:0.00} USD)."
-                + DescribeUnpricedDelegation(external)));
-
+                + DescribeUnpricedDelegation(external) + " " + BudgetErrorMessages.Guidance));
         }
 
         decimal alertTriggerSpend = dailyLimit * alertThreshold / 100m;
 
         if (spend >= alertTriggerSpend)
         {
-
             await TryDispatchAlertAsync(
                 budgetAlerts,
                 threshold: alertThreshold,
@@ -87,11 +80,9 @@ public sealed class BudgetMonitor(
                 dailyLimit,
                 CommLinkSeverity.Warning,
                 cancellationToken).ConfigureAwait(false);
-
         }
 
         return Result.Success();
-
     }
 
     /// <summary>
@@ -126,21 +117,17 @@ public sealed class BudgetMonitor(
         CommLinkSeverity severity,
         CancellationToken cancellationToken)
     {
-
         try
         {
-
             bool recorded = await budgetAlerts.RecordAlertAsync(threshold, spend, dailyLimit, cancellationToken).ConfigureAwait(false);
 
             if (!recorded)
             {
-
                 logger.LogDebug(
                     "Budget alert for threshold {Threshold} was already recorded today by another concurrent turn; skipping duplicate notification.",
                     threshold);
 
                 return;
-
             }
 
             string title = threshold >= 100
@@ -152,21 +139,14 @@ public sealed class BudgetMonitor(
             CommLinkMessage message = new(title, body, severity, "budget");
 
             await commLink.DispatchAsync(message, cancellationToken).ConfigureAwait(false);
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
             logger.LogWarning(ex, "Failed to dispatch budget alert for threshold {Threshold}.", threshold);
-
         }
-
     }
-
 }

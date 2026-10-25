@@ -252,7 +252,7 @@ public sealed class ModelCallExecutorTests
                 PromptCachePlan: plan));
 
         Assert.True(outcome.IsFailure);
-        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, outcome.Error.Code);
+        Assert.Equal("Hub.InvalidAdmission", outcome.Error.Code);
         Assert.Equal(0, chat.CallCount);
     }
 

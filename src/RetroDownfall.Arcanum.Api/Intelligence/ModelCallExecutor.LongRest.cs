@@ -232,7 +232,7 @@ public sealed partial class ModelCallExecutor
     private static LongRestProviderUsage LongRestUsage(UsageDetails? usage) => new(usage?.InputTokenCount ?? 0, usage?.OutputTokenCount ?? 0,
         usage?.TotalTokenCount ?? ((usage?.InputTokenCount ?? 0) + (usage?.OutputTokenCount ?? 0)), usage?.CachedInputTokenCount ?? 0, usage?.ReasoningTokenCount ?? 0);
 
-    private static Error ClosedLongRestAdmissionError() => new(ErrorCodes.Hub.ContextBudgetExceeded, "The exact Long Rest provider admission is invalid or stale.");
+    private static Error ClosedLongRestAdmissionError() => new(ErrorCodes.LongRest.InvalidAdmission, "The exact Long Rest provider admission is invalid or stale.");
 
     private static LongRestProviderResult InvalidLongRestOutput(LongRestProviderPayloadKind kind, LongRestProviderUsage usage) =>
         new(kind, LongRestProviderResultDisposition.Invalid, null, null, [], usage, ErrorCodes.LongRest.InvalidOutput);

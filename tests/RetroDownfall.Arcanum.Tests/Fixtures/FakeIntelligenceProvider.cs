@@ -208,7 +208,8 @@ public sealed class FakeIntelligenceProvider : IArcanumIntelligenceProvider, ICo
             yield return new IntelligenceEvent(
                 IntelligenceEventType.Error,
                 failure.Message,
-                failure.Code);
+                failure.Code)
+            { ContextOverflow = failure.ContextOverflow };
 
             yield break;
         }

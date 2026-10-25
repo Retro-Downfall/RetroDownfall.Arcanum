@@ -9,6 +9,31 @@ namespace RetroDownfall.Arcanum.Tests.Primitives;
 public sealed class ResultTests
 {
     [Fact]
+    public void ContextOverflowMetadata_IsValueComparedAndNeverSerialized()
+    {
+        ContextOverflowDetails overflow = new("provider", "model", 9000, 1024, 10024, 8192);
+
+        Error metadataOnly = Error.None with { ContextOverflow = overflow };
+
+        Assert.False(metadataOnly.IsNone);
+
+        Assert.NotEqual(Error.None, metadataOnly);
+
+        Assert.Equal(metadataOnly, Error.None with { ContextOverflow = new("provider", "model", 9000, 1024, 10024, 8192) });
+
+        Assert.NotEqual(metadataOnly, metadataOnly with { ContextOverflow = overflow with { WindowTokens = 4096 } });
+
+        Assert.Equal(JsonSerializer.Serialize(Error.None, ArcanumJsonContext.Default.Error),
+            JsonSerializer.Serialize(metadataOnly, ArcanumJsonContext.Default.Error));
+
+        var frame = new RetroDownfall.Arcanum.Core.Intelligence.Models.IntelligenceEvent(
+            RetroDownfall.Arcanum.Core.Intelligence.Models.IntelligenceEventType.Error, "safe", ErrorCodes.Hub.ContextBudgetExceeded);
+
+        Assert.Equal(JsonSerializer.Serialize(frame, ArcanumJsonContext.Default.IntelligenceEvent),
+            JsonSerializer.Serialize(frame with { ContextOverflow = overflow }, ArcanumJsonContext.Default.IntelligenceEvent));
+    }
+
+    [Fact]
     public void Success_HasNoError()
     {
         Result result = Result.Success();

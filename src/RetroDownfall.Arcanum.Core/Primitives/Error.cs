@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Text;
 using System.Text.Json.Serialization;
 using RetroDownfall.Arcanum.Core.Configuration;
 
@@ -19,14 +20,48 @@ public readonly record struct Error(
     public IReadOnlyList<ConfigurationValidationError>? Details { get; init; } =
         Details is null ? null : System.Array.AsReadOnly<ConfigurationValidationError>([.. Details]);
 
+    /// <summary>In-process, content-free context admission data; never part of the error wire shape.</summary>
+    [JsonIgnore]
+    public ContextOverflowDetails? ContextOverflow { get; init; }
+
     public static readonly Error None = new(string.Empty, string.Empty);
 
     /// <summary>
     /// Whether this error has exactly the field values of <see cref="None"/>: empty code, empty
-    /// message and no details. It is the same answer as <c>this == None</c>, read from the three
+    /// message, no details and no context overflow. It is the same answer as <c>this == None</c>, read from the
     /// fields so a caller never runs the generated record comparison, which would compare
     /// <see cref="Details"/> through its interface.
     /// </summary>
     [JsonIgnore]
-    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null;
+    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null;
+}
+
+/// <summary>Only configured public identities and numeric context-window accounting, never prompt or response text.</summary>
+public readonly record struct ContextOverflowDetails(
+    string Provider,
+    string Model,
+    int InputTokens,
+    int ReservedTokens,
+    int TotalTokens,
+    int WindowTokens)
+{
+    public const string Remedy = "Shorten the prompt, run arcanum session compact, start a new Session, choose a model with a larger context window, or raise providers[].contextWindowLimit to the model's actual capacity.";
+
+    public string ToPublicMessage() => FormattableString.Invariant(
+        $"Context budget exceeded for provider '{PublicIdentifier(Provider, 64)}', model '{PublicIdentifier(Model, 128)}': {TotalTokens} accounted tokens ({InputTokens} input + {ReservedTokens} reserved) exceed the {WindowTokens}-token window. {Remedy}");
+
+    private static string PublicIdentifier(string value, int maxUtf8Bytes)
+    {
+        string bounded = Utf8Truncation.TruncateToUtf8ByteBudget(Utf8Truncation.NormalizeInvalidUtf16(value ?? string.Empty), maxUtf8Bytes);
+
+        return string.Concat(bounded.EnumerateRunes().Select(static scalar => Rune.IsControl(scalar)
+            || Rune.GetUnicodeCategory(scalar) is System.Globalization.UnicodeCategory.Format
+            || scalar.Value is 0x2028 or 0x2029 or 0x27 ? "_" : scalar.ToString()));
+    }
+}
+
+/// <summary>Shared operator guidance for every enforced daily budget refusal.</summary>
+public static class BudgetErrorMessages
+{
+    public const string Guidance = "The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.";
 }
