@@ -32,6 +32,14 @@ internal sealed class Loremaster(
 {
     private int _sweepRunning;
 
+    // Sweep ownership serializes these content-free discovery cursors. A rejected admission
+    // never advances one; exhausting a lane wraps it for the following sweep.
+    private Guid? _rollupAfterSessionId;
+
+    private Guid? _legacyAfterSessionId;
+
+    private bool _rollupsFirst;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
@@ -134,31 +142,85 @@ internal sealed class Loremaster(
                 .GetSessionsNeedingSummarizationAsync(threshold, idleCutoff, cancellationToken)
                 .ConfigureAwait(false);
 
+            bool rollupsFirst = _rollupsFirst;
+
+            _rollupsFirst = !rollupsFirst;
+
+            if (!rollupsFirst)
+            {
+                QueueLegacySessions(ids, cancellationToken);
+            }
+
             if (options.CurrentValue.ResolveIntelligence().EnableCampaignRollups)
             {
                 ICampaignRollupStore rollups = scope.ServiceProvider.GetRequiredService<ICampaignRollupStore>();
 
-                IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
-                    new DateTimeOffset(idleCutoff, TimeSpan.Zero), 256, cancellationToken).ConfigureAwait(false);
+                await QueueContributionsAsync(rollups, new DateTimeOffset(idleCutoff, TimeSpan.Zero), cancellationToken).ConfigureAwait(false);
+            }
 
-                ids.AddRange(contributionIds);
+            if (rollupsFirst)
+            {
+                QueueLegacySessions(ids, cancellationToken);
             }
 
             hostLogger.LogInformation(
-                "Campaign Logger sweep executed. Found {Count} sessions to consolidate.",
+                "Campaign Logger sweep executed. Found {Count} legacy sessions to consolidate.",
                 ids.Count);
-
-            foreach (Guid id in ids.Distinct())
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Fail-open: rejected ids remain eligible for a later sweep.
-                _ = queue.TryQueue(id);
-            }
         }
         finally
         {
             Interlocked.Exchange(ref _sweepRunning, 0);
+        }
+    }
+
+    private void QueueLegacySessions(List<Guid> ids, CancellationToken cancellationToken)
+    {
+        foreach (Guid id in ids.Distinct().Order())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_legacyAfterSessionId is { } after && id.CompareTo(after) <= 0)
+            {
+                continue;
+            }
+
+            if (!queue.TryQueue(id))
+            {
+                return;
+            }
+
+            _legacyAfterSessionId = id;
+        }
+
+        _legacyAfterSessionId = null;
+    }
+
+    private async Task QueueContributionsAsync(ICampaignRollupStore rollups, DateTimeOffset idleCutoff,
+        CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
+                idleCutoff, 128, cancellationToken, _rollupAfterSessionId).ConfigureAwait(false);
+
+            if (contributionIds.Count == 0)
+            {
+                _rollupAfterSessionId = null;
+
+                return;
+            }
+
+            foreach (Guid id in contributionIds)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!queue.TryQueue(id))
+                {
+                    return;
+                }
+
+                _rollupAfterSessionId = id;
+            }
         }
     }
 
@@ -266,22 +328,29 @@ internal sealed class Loremaster(
                     Result<CampaignRollupMaintenanceResult> contribution = await maintenance.ProcessSessionAsync(
                         sessionId, null, null, stoppingToken).ConfigureAwait(false);
 
-                    if (contribution.IsFailure || contribution.Value.Deferred)
+                    if (contribution.IsFailure)
                     {
-                        hostLogger.LogDebug("Campaign Logger: Contribution maintenance remains pending for Session {SessionId}.", sessionId);
+                        hostLogger.LogWarning("Campaign Logger: Contribution maintenance failed for Campaign {CampaignId}, Session {SessionId} ({Code}).",
+                            campaignId, sessionId, contribution.Error.Code);
 
-                        // Background work has no Covenant authority. In particular it must not fall
-                        // through into the ordinary Summary/Entry lane after protected deferral.
                         return LoremasterSessionDisposition.Concluded;
                     }
 
                     Result<CampaignRollupMaintenanceResult> folded = await maintenance.ProcessCampaignAsync(
                         campaignId, null, stoppingToken).ConfigureAwait(false);
 
-                    if (folded.IsFailure || folded.Value.Deferred)
+                    if (folded.IsFailure)
                     {
-                        hostLogger.LogDebug("Campaign Logger: Campaign continuity remains pending for Campaign {CampaignId}.", campaignId);
+                        hostLogger.LogWarning("Campaign Logger: Campaign continuity failed for Campaign {CampaignId} ({Code}).", campaignId, folded.Error.Code);
 
+                        return LoremasterSessionDisposition.Concluded;
+                    }
+
+                    if (contribution.Value.Deferred || folded.Value.Deferred)
+                    {
+                        hostLogger.LogDebug("Campaign Logger: Summary maintenance remains pending for Campaign {CampaignId}, Session {SessionId}.", campaignId, sessionId);
+
+                        // A deferred source must never fall through into ordinary Summary/Entry reads.
                         return LoremasterSessionDisposition.Concluded;
                     }
                 }

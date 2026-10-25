@@ -121,14 +121,25 @@ public sealed class CampaignRollupMaintenance(
                 configuration.Settings.ResolveIntelligence().CampaignLogIdleTimeoutMinutes))
             : DateTimeOffset.MaxValue;
 
-        // Each successful contribution drains its pending native range. No fixed page count limits
-        // Campaign lifetime progress; an unavailable source is left pending for an authorized retry.
-        IReadOnlyList<Guid> pending = await store.FindPendingContributionsForCampaignAsync(
-            campaignId, cutoff, 256, cancellationToken).ConfigureAwait(false);
+        // Keyset traversal attempts each Session once, including beyond a full blocked page.
+        Guid? afterSessionId = null;
 
-        while (pending.Count > 0)
+        while (true)
         {
-            bool progressed = false;
+            Result fence = await ValidateAuthorityAsync(capability, configuration.Digest, cancellationToken).ConfigureAwait(false);
+
+            if (fence.IsFailure)
+            {
+                return fence.Error;
+            }
+
+            IReadOnlyList<Guid> pending = await store.FindPendingContributionsForCampaignAsync(
+                campaignId, cutoff, 128, cancellationToken, afterSessionId).ConfigureAwait(false);
+
+            if (pending.Count == 0)
+            {
+                break;
+            }
 
             foreach (Guid sessionId in pending)
             {
@@ -141,17 +152,9 @@ public sealed class CampaignRollupMaintenance(
                 }
 
                 published += contribution.Value.PublishedPages;
-
-                progressed |= contribution.Value.PublishedPages > 0;
             }
 
-            if (!progressed)
-            {
-                break;
-            }
-
-            pending = await store.FindPendingContributionsForCampaignAsync(
-                campaignId, cutoff, 256, cancellationToken).ConfigureAwait(false);
+            afterSessionId = pending[^1];
         }
 
         return await ProcessPagesAsync(
@@ -244,7 +247,7 @@ public sealed class CampaignRollupMaintenance(
 
             if (result.Value is null)
             {
-                return Deferred(published, "This provider cannot prove one frozen physical maintenance attempt.");
+                return Deferred(published, "Campaign summary maintenance remains pending.");
             }
 
             if (result.Value.Value)
@@ -396,6 +399,8 @@ public sealed class CampaignRollupMaintenance(
 
                         int sent = 0;
 
+                        bool dispatchFenceCompleted = false;
+
                         async Task BeforeSendAsync(CancellationToken token)
                         {
                             if (Interlocked.Exchange(ref sent, 1) != 0)
@@ -458,6 +463,8 @@ public sealed class CampaignRollupMaintenance(
                                     throw new InvalidOperationException(valid.Error.Message);
                                 }
                             }
+
+                            dispatchFenceCompleted = true;
                         }
 
                         long auditStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -468,7 +475,16 @@ public sealed class CampaignRollupMaintenance(
 
                         if (outcome.IsFailure)
                         {
-                            return outcome.Error;
+                            // The executor maps callback exceptions to Hub.Error too. Never turn an
+                            // unfinished authority/disclosure/source fence into an operational deferral.
+                            if (outcome.Error.Code == ErrorCodes.Hub.Error && !dispatchFenceCompleted)
+                            {
+                                return Stale();
+                            }
+
+                            return outcome.Error.Code is ErrorCodes.Hub.Error or ErrorCodes.Hub.ContextBudgetExceeded
+                                ? await DeferPageAsync(outcome.Error, page, prepare, capability, frozenConfiguration.Digest, cancellationToken).ConfigureAwait(false)
+                                : outcome.Error;
                         }
 
                         // Billing and the successful publication suffix survive cancellation after paid output.
@@ -488,7 +504,8 @@ public sealed class CampaignRollupMaintenance(
                         {
                             if (correction == 1)
                             {
-                                return summary.Error;
+                                return await DeferPageAsync(summary.Error, page, prepare, capability,
+                                    frozenConfiguration.Digest, cancellationToken).ConfigureAwait(false);
                             }
 
                             continue;
@@ -583,25 +600,55 @@ public sealed class CampaignRollupMaintenance(
 
     private sealed record FrozenConfiguration(ArcanumSettings Settings, CovenantDigest Digest);
 
+    private async Task<Result<bool?>> DeferPageAsync(Error error, Page page,
+        Func<CancellationToken, Task<Result<Page?>>> prepare, CampaignRollupMaintenanceCapability? capability,
+        CovenantDigest configurationDigest, CancellationToken cancellationToken)
+    {
+        Result current = await CheckCurrentAsync(page, prepare, capability, configurationDigest, cancellationToken).ConfigureAwait(false);
+
+        if (current.IsFailure)
+        {
+            return current.Error;
+        }
+
+        logger.LogWarning("Campaign summary maintenance remains pending for Campaign {CampaignId}, Session {SessionId} ({Code}).",
+            page.CampaignId, page.SessionId, error.Code);
+
+        return Result<bool?>.Success(null);
+    }
+
     private async Task EnsureCurrentAsync(Page expected, Func<CancellationToken, Task<Result<Page?>>> prepare,
+        CampaignRollupMaintenanceCapability? capability, CovenantDigest configurationDigest, CancellationToken cancellationToken)
+    {
+        Result current = await CheckCurrentAsync(expected, prepare, capability, configurationDigest, cancellationToken).ConfigureAwait(false);
+
+        if (current.IsFailure)
+        {
+            throw new InvalidOperationException("Campaign maintenance lost its exact dispatch fence.");
+        }
+    }
+
+    private async Task<Result> CheckCurrentAsync(Page expected, Func<CancellationToken, Task<Result<Page?>>> prepare,
         CampaignRollupMaintenanceCapability? capability, CovenantDigest configurationDigest, CancellationToken cancellationToken)
     {
         Result valid = await ValidateAuthorityAsync(capability, configurationDigest, cancellationToken).ConfigureAwait(false);
 
         if (valid.IsFailure || !Enabled)
         {
-            throw new InvalidOperationException("Campaign maintenance authority changed before dispatch.");
+            return valid.IsFailure ? valid.Error : Stale();
         }
 
         Result<Page?> current = await prepare(cancellationToken).ConfigureAwait(false);
 
-        if (current.IsFailure || current.Value is not { } page
+        if (current.IsFailure)
+        {
+            return current.Error;
+        }
+
+        return current.Value is not { } page
             || page.CampaignId != expected.CampaignId || page.SessionId != expected.SessionId
             || page.ExpectedRevision != expected.ExpectedRevision || page.Generation != expected.Generation
-            || page.Manifest != expected.Manifest)
-        {
-            throw new InvalidOperationException("Campaign maintenance sources changed before dispatch.");
-        }
+            || page.Manifest != expected.Manifest ? Stale() : Result.Success();
     }
 
     private async Task<Result> ValidateAuthorityAsync(CampaignRollupMaintenanceCapability? capability,
@@ -770,5 +817,4 @@ public sealed class CampaignRollupMaintenance(
         CovenantDigest Manifest, ContentSensitivity Sensitivity, GenerationProvenance Provenance,
         bool HasMore, CovenantMaintenanceStep Step, string Payload,
         Func<string, CampaignMaintenancePublication?, ICovenantSnapshotReadLease?, CancellationToken, Task<Result<CampaignRollupArtifact>>> Publish);
-
 }

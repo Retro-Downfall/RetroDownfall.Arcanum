@@ -7,13 +7,11 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// <summary>Code-owned allocation limits; pages bound work, never Campaign lifetime progress.</summary>
 public static class CampaignRollupLimits
 {
-
     public const int SummaryUtf8Bytes = 8192;
 
     public const int InputPageUtf8Bytes = 32768;
 
     public const int OutputTokens = 2048;
-
 }
 
 /// <summary>An immutable summary and the exact inputs that gave it its authority and sensitivity.</summary>
@@ -42,7 +40,9 @@ public sealed record CampaignContributionEntry(
     CovenantDigest ContentDigest,
     CovenantDigest SensitivityDigest,
     ContentSensitivity Sensitivity,
-    GenerationProvenance Provenance);
+    GenerationProvenance Provenance,
+    CovenantDigest? OriginalContentDigest = null,
+    int? OmittedContentBytes = null);
 
 /// <summary>A bounded, immutable page to replace one Session's own Campaign contribution.</summary>
 public sealed record CampaignContributionInput(
@@ -57,7 +57,6 @@ public sealed record CampaignContributionInput(
     CovenantDigest SourceManifestDigest,
     bool HasMore)
 {
-
     public ContentSensitivity Sensitivity
     {
         get
@@ -87,7 +86,6 @@ public sealed record CampaignContributionInput(
             return current;
         }
     }
-
 }
 
 /// <summary>A bounded fold page over persisted contribution artifacts, never raw Session history.</summary>
@@ -101,7 +99,6 @@ public sealed record CampaignRollupInput(
     Guid? LastFoldedSessionId,
     bool HasMore)
 {
-
     public ContentSensitivity Sensitivity
     {
         get
@@ -131,7 +128,6 @@ public sealed record CampaignRollupInput(
             return current;
         }
     }
-
 }
 
 /// <summary>Content-free projection for inspection, retention, and pending-work discovery.</summary>
@@ -151,7 +147,6 @@ public sealed record CampaignRollupStatus(
 /// </summary>
 public interface ICampaignRollupStore
 {
-
     Task<Result<CampaignRollupArtifact?>> ReadCurrentAsync(
         Guid campaignId,
         ICovenantSnapshotReadLease? authority,
@@ -194,12 +189,13 @@ public interface ICampaignRollupStore
     Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(
         DateTimeOffset idleCutoffUtc,
         int pageSize,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        Guid? afterSessionId = null);
 
     Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(
         Guid campaignId,
         DateTimeOffset idleCutoffUtc,
         int pageSize,
-        CancellationToken cancellationToken);
-
+        CancellationToken cancellationToken,
+        Guid? afterSessionId = null);
 }

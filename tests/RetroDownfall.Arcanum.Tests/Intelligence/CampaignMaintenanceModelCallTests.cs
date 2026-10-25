@@ -102,7 +102,7 @@ public sealed class CampaignMaintenanceModelCallTests
             CancellationToken.None, new(provider, "gpt-4o", 2048, 0, estimate));
 
         Assert.True(outcome.IsFailure);
-        Assert.Equal(ErrorCodes.Hub.ContextBudgetExceeded, outcome.Error.Code);
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, outcome.Error.Code);
         Assert.Equal(0, fences);
         Assert.Equal(0, chat.CallCount);
     }

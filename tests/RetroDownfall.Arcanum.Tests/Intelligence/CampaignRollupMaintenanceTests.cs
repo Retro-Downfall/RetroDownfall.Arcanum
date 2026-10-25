@@ -17,6 +17,170 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class CampaignRollupMaintenanceTests
 {
+    internal static async Task<Result<CampaignRollupMaintenanceResult>> OperationalFailureAsync(string failure, bool campaign)
+    {
+        Harness harness = new();
+
+        if (failure == "invalid")
+        {
+            harness.Provider.Responses.Enqueue("{\"summary\":\"/api/health\"}");
+
+            harness.Provider.Responses.Enqueue("{\"summary\":\"/api/health\"}");
+        }
+        else if (failure == "admission")
+        {
+            harness.Executor.SubstitutePayload = true;
+        }
+        else
+        {
+            harness.Provider.BeforeResponse = () => throw new HttpRequestException("provider unavailable");
+        }
+
+        return campaign
+            ? await harness.Service.ProcessCampaignAsync(Campaign, null, CancellationToken.None)
+            : await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task A_stale_executor_payload_is_fatal_before_the_maintenance_provider_dispatch()
+    {
+        Harness harness = new();
+
+        harness.Executor.SubstitutePayload = true;
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Equal(0, harness.Provider.Calls);
+
+        Assert.Empty(harness.Store.Outputs);
+    }
+
+    [Fact]
+    public async Task A_failed_exact_attempt_callback_remains_fatal_even_when_the_source_and_claim_are_current()
+    {
+        Harness harness = new();
+
+        harness.Store.Protected = true;
+
+        await using CovenantTurnLease authority = await harness.AuthorityAsync();
+
+        CampaignRollupMaintenanceCapability capability = await harness.CapabilityAsync(authority);
+
+        harness.Runs.OnStart = () => harness.Checkpoints.AttemptLost = true;
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, capability, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Equal(0, harness.Provider.Calls);
+
+        Assert.Empty(harness.Store.Outputs);
+    }
+
+    [Theory]
+    [InlineData("configuration", false)]
+    [InlineData("source", false)]
+    [InlineData("claim", true)]
+    public async Task An_operational_error_cannot_hide_a_lost_maintenance_fence(string change, bool protectedInput)
+    {
+        Harness harness = new();
+
+        harness.Store.Protected = protectedInput;
+
+        await using CovenantTurnLease authority = await harness.AuthorityAsync();
+
+        CampaignRollupMaintenanceCapability? capability = protectedInput ? await harness.CapabilityAsync(authority) : null;
+
+        harness.Provider.BeforeResponse = () =>
+        {
+            if (change == "configuration")
+            {
+                harness.Settings.FastModel = "changed";
+            }
+            else if (change == "source")
+            {
+                harness.Store.Generation++;
+            }
+            else
+            {
+                harness.Checkpoints.ClaimLost = true;
+            }
+
+            throw new HttpRequestException("provider unavailable");
+        };
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, capability, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.NotEqual(ErrorCodes.Hub.Error, result.Error.Code);
+
+        Assert.Empty(harness.Store.Outputs);
+    }
+
+    [Theory]
+    [InlineData(1, false, false)]
+    [InlineData(128, false, false)]
+    [InlineData(128, true, false)]
+    [InlineData(128, false, true)]
+    public async Task Campaign_traversal_passes_blocked_sessions_once_and_folds_surviving_contributions(int blocked, bool protectedSources, bool allBlocked)
+    {
+        Harness harness = new();
+
+        harness.Store.PendingSessions = Enumerable.Range(1, blocked + (allBlocked ? 0 : 1))
+            .Select(index => Guid.Parse($"{index:x8}-0000-4000-8000-000000000000")).ToList();
+
+        harness.Store.BlockedSessions = harness.Store.PendingSessions.Take(blocked).ToHashSet();
+
+        harness.Store.DeferBlocked = protectedSources;
+
+        harness.Provider.ResponseFactory = () => harness.Store.PreparedSession is { } session && harness.Store.BlockedSessions.Contains(session)
+            ? "{\"summary\":\"/api/health\"}" : "{\"summary\":\"Healthy decisions.\"}";
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessCampaignAsync(Campaign, null, CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(allBlocked ? 0 : 2, result.Value.PublishedPages);
+
+        Assert.Equal(allBlocked ? 0 : 1, harness.Store.FoldPublications);
+
+        Assert.Equal(blocked * (protectedSources ? 0 : 2) + (allBlocked ? 0 : 2), harness.Provider.Calls);
+
+        Assert.Equal(allBlocked ? 0 : 1, harness.Store.PublishedSessions.Count);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_provider_outage_or_context_limit_defers_without_publishing(bool contextLimit)
+    {
+        Harness harness = new();
+
+        if (contextLimit)
+        {
+            harness.Settings.Providers[0].ContextWindowLimit = 1;
+        }
+        else
+        {
+            harness.Provider.BeforeResponse = () => throw new HttpRequestException("provider unavailable");
+        }
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.True(result.Value.Deferred);
+
+        Assert.Empty(harness.Store.Outputs);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
@@ -497,7 +661,9 @@ public sealed class CampaignRollupMaintenanceTests
 
         Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
 
-        Assert.True(result.IsFailure);
+        Assert.True(result.IsSuccess);
+
+        Assert.True(result.Value.Deferred);
 
         Assert.Equal(2, harness.Provider.Calls);
 
@@ -725,6 +891,8 @@ public sealed class CampaignRollupMaintenanceTests
 
     private sealed class ExecutorProbe(IModelCallExecutor inner) : IModelCallExecutor
     {
+        public bool SubstitutePayload { get; set; }
+
         public int GenericCalls { get; private set; }
 
         public int ClosedCalls { get; private set; }
@@ -734,7 +902,9 @@ public sealed class CampaignRollupMaintenanceTests
         {
             ClosedCalls++;
 
-            return inner.ExecuteCampaignMaintenanceAsync(chatClient, payload, budget, beforeSend, cancellationToken, context);
+            return inner.ExecuteCampaignMaintenanceAsync(chatClient,
+                SubstitutePayload ? new(payload.SystemPrompt, "substituted facts") : payload,
+                budget, beforeSend, cancellationToken, context);
         }
 
         public Task<ModelCallOutcome> ExecuteBufferedAsync(IChatClient chatClient, IList<ChatMessage> messages, ChatOptions options,
@@ -806,6 +976,8 @@ public sealed class CampaignRollupMaintenanceTests
 
         public Queue<string> Responses { get; } = new();
 
+        public Func<string>? ResponseFactory { get; set; }
+
         public Action? BeforeResponse { get; set; }
 
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
@@ -819,7 +991,7 @@ public sealed class CampaignRollupMaintenanceTests
             BeforeResponse?.Invoke();
 
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant,
-                Responses.Count > 0 ? Responses.Dequeue() : "{\"summary\":\"Keep the bounded contribution.\"}"))
+                ResponseFactory is not null ? ResponseFactory() : Responses.Count > 0 ? Responses.Dequeue() : "{\"summary\":\"Keep the bounded contribution.\"}"))
             {
                 Usage = new UsageDetails { InputTokenCount = 40, OutputTokenCount = 10 },
             });
@@ -914,19 +1086,23 @@ public sealed class CampaignRollupMaintenanceTests
     {
         private ulong _ordinal;
 
+        public bool ClaimLost { get; set; }
+
+        public bool AttemptLost { get; set; }
+
         public CovenantDigest? Disclosure { get; private set; }
 
         public Task<Result> ValidateClaimAsync(SessionTurnClaimLease claimLease, CanonicalCampaignContext campaign, CancellationToken cancellationToken) =>
             Task.FromResult(Result.Success());
 
         public Task<Result<SessionTurnClaimLease>> RenewClaimAsync(SessionTurnClaimLease claimLease, CanonicalCampaignContext campaign, CancellationToken cancellationToken) =>
-            Task.FromResult(Result<SessionTurnClaimLease>.Success(claimLease));
+            Task.FromResult(ClaimLost ? Result<SessionTurnClaimLease>.Failure(new(ErrorCodes.Covenant.StaleSnapshot, "Claim lost.")) : Result<SessionTurnClaimLease>.Success(claimLease));
 
         public Task<Result<CampaignMaintenanceAttempt>> PrepareAttemptAsync(CampaignMaintenanceIdentity identity, CovenantDigest providerCallDigest, CancellationToken cancellationToken) =>
             Task.FromResult(Result<CampaignMaintenanceAttempt>.Success(new(identity, 0, ++_ordinal, providerCallDigest, CovenantMaintenanceCheckpoint.Prepared, null, null)));
 
         public Task<Result> ValidateAttemptAsync(CampaignMaintenanceAttempt attempt, CancellationToken cancellationToken) =>
-            Task.FromResult(Result.Success());
+            Task.FromResult(AttemptLost ? Result.Failure(new(ErrorCodes.Covenant.StaleSnapshot, "Attempt lost.")) : Result.Success());
 
         public Task<Result<CampaignMaintenanceAttempt>> RecordDisclosureAsync(CampaignMaintenanceAttempt attempt, CovenantDigest disclosureReceiptDigest, CancellationToken cancellationToken)
         {
@@ -938,7 +1114,21 @@ public sealed class CampaignRollupMaintenanceTests
 
     private sealed class StoreDouble : ICampaignRollupStore
     {
+        public List<Guid>? PendingSessions { get; set; }
+
+        public HashSet<Guid> BlockedSessions { get; set; } = [];
+
+        public HashSet<Guid> PublishedSessions { get; } = [];
+
+        public Guid? PreparedSession { get; private set; }
+
+        public bool DeferBlocked { get; set; }
+
+        public int FoldPublications { get; private set; }
+
         public bool Protected { get; set; }
+
+        public long Generation { get; set; }
 
         public int RemainingPages { get; set; } = 1;
 
@@ -966,6 +1156,13 @@ public sealed class CampaignRollupMaintenanceTests
 
             LastUpperSequence = throughSequence;
 
+            PreparedSession = sessionId;
+
+            if (DeferBlocked && BlockedSessions.Contains(sessionId))
+            {
+                return Task.FromResult(Result<CampaignContributionInput?>.Failure(new(ErrorCodes.Covenant.ForbiddenAuthority, "Protected payload withheld.")));
+            }
+
             if (Protected && authority is null)
             {
                 return Task.FromResult(Result<CampaignContributionInput?>.Failure(new(ErrorCodes.Covenant.ForbiddenAuthority, "Protected payload withheld.")));
@@ -977,7 +1174,7 @@ public sealed class CampaignRollupMaintenanceTests
             }
 
             return Task.FromResult(Result<CampaignContributionInput?>.Success(RemainingPages == 0 ? null :
-                new(Session, Campaign, Outputs.Count, 0, 0, 0, null,
+                new(sessionId, Campaign, Outputs.Count, Generation, 0, 0, null,
                     [.. Entries.Select(entry => entry with { Sensitivity = Sensitivity, Provenance = Provenance })], Digest((byte)(Outputs.Count + 1)), RemainingPages > 1)));
         }
 
@@ -985,12 +1182,14 @@ public sealed class CampaignRollupMaintenanceTests
         {
             Reads++;
 
-            return Task.FromResult(Result<CampaignRollupInput?>.Success(RemainingPages == 0 ? null :
+            PreparedSession = null;
+
+            return Task.FromResult(Result<CampaignRollupInput?>.Success((PendingSessions is not null ? PublishedSessions.Count == 0 || FoldPublications > 0 : RemainingPages == 0) ? null :
                 new(Campaign, Outputs.Count, 0, null, [Artifact(null)], Digest((byte)(Outputs.Count + 1)), Session, RemainingPages > 1)));
         }
 
         public Task<Result<CampaignRollupArtifact>> PublishContributionAsync(CampaignContributionInput input, string content, CampaignMaintenancePublication? maintenancePublication, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) =>
-            PublishAsync(Session, content, maintenancePublication, cancellationToken);
+            PublishAsync(input.SessionId, content, maintenancePublication, cancellationToken);
 
         public Task<Result<CampaignRollupArtifact>> PublishRollupAsync(CampaignRollupInput input, string content, CampaignMaintenancePublication? maintenancePublication, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) =>
             PublishAsync(null, content, maintenancePublication, cancellationToken);
@@ -1003,7 +1202,18 @@ public sealed class CampaignRollupMaintenanceTests
 
             PublishTokens.Add(token);
 
-            RemainingPages--;
+            if (PendingSessions is null)
+            {
+                RemainingPages--;
+            }
+            else if (session is { } sessionId)
+            {
+                PublishedSessions.Add(sessionId);
+            }
+            else
+            {
+                FoldPublications++;
+            }
 
             return Task.FromResult(Result<CampaignRollupArtifact>.Success(Artifact(session)));
         }
@@ -1017,9 +1227,9 @@ public sealed class CampaignRollupMaintenanceTests
 
         public Task<Result<CampaignRollupStatus>> ReadStatusAsync(Guid campaignId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) => throw new NotSupportedException();
 
-        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<Guid>>([]);
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) =>
+            Task.FromResult<IReadOnlyList<Guid>>(PendingSessions?.Where(session => !PublishedSessions.Contains(session) && (afterSessionId is null || string.CompareOrdinal(session.ToString(), afterSessionId.Value.ToString()) > 0)).Take(Math.Min(pageSize, 128)).ToArray() ?? []);
     }
 }

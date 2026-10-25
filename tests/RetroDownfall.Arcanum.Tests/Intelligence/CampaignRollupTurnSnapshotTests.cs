@@ -357,6 +357,8 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         public CampaignRollupArtifact? Current { get; set; }
 
+        public Error? ReadError { get; set; }
+
         public CampaignRollupArtifact? LastValidated { get; private set; }
 
         public Result Validation { get; set; } = Result.Success();
@@ -367,7 +369,7 @@ public sealed class CampaignRollupTurnSnapshotTests
 
             Actions.Add("read");
 
-            return Task.FromResult(Result<CampaignRollupArtifact?>.Success(Current));
+            return Task.FromResult(ReadError is { } error ? Result<CampaignRollupArtifact?>.Failure(error) : Result<CampaignRollupArtifact?>.Success(Current));
         }
 
         public Task<Result> ValidateAsync(CampaignRollupArtifact artifact, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken)
@@ -387,8 +389,8 @@ public sealed class CampaignRollupTurnSnapshotTests
 
         public Task<Result<CampaignRollupStatus>> ReadStatusAsync(Guid campaignId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
-        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) => throw new NotSupportedException();
 
-        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) => throw new NotSupportedException();
     }
 }
