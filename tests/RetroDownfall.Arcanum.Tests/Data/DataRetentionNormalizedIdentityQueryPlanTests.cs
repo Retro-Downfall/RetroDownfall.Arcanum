@@ -281,6 +281,41 @@ public sealed class DataRetentionNormalizedIdentityQueryPlanTests : IAsyncLifeti
     /// <summary>The Session delete's statement for one session-keyed table, exactly as it is executed.</summary>
     private static string SessionKeyedDelete(string table) => $"DELETE FROM {table} WHERE {SessionKeyPredicate}";
 
+    [SkippableTheory]
+    [InlineData("UploadedFiles", "Id")]
+    [InlineData("Entries", "Id")]
+    [InlineData("Sessions", "Id")]
+    [InlineData("IdempotencyClaims", "Id")]
+    [InlineData("InferenceRuns", "Id")]
+    [InlineData("LongRunningOperations", "Id")]
+    [InlineData("Batches", "Id")]
+    [InlineData("CostAdjustments", "Id")]
+    [InlineData("BudgetAlerts", "Id")]
+    [InlineData("SanctumBreaches", "Id")]
+    [InlineData("SessionAttachments", "EntryId")]
+    [InlineData("BudgetReservations", "RunId")]
+    [InlineData("BillableOperations", "RunId")]
+    [InlineData("CostAdjustments", "RunId")]
+    [InlineData("LongRunningOperations", "SessionId")]
+    public async Task Retention_candidate_and_accounting_lookups_search_exact_normalized_indexes(string table, string column)
+    {
+        RequireSqlCipher();
+
+        Assert.Equal(
+            $"SEARCH {table} USING INDEX IX_{table}_{column}_Norm (<expr>=?)",
+            await ExplainAsync($"SELECT * FROM {table} WHERE lower(replace({column}, '-', '')) = @id"));
+    }
+
+    [SkippableFact]
+    public async Task Retention_cost_adjustment_billable_lookup_searches_its_index()
+    {
+        RequireSqlCipher();
+
+        Assert.Equal(
+            "SEARCH CostAdjustments USING INDEX IX_CostAdjustments_BillableOperationId (BillableOperationId=?)",
+            await ExplainAsync("SELECT * FROM CostAdjustments WHERE BillableOperationId = @id"));
+    }
+
     private async Task<string> ExplainAsync(string sql)
     {
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();

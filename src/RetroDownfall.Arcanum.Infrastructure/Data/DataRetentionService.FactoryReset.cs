@@ -34,6 +34,12 @@ internal sealed partial class DataRetentionService
         new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("campaign_rollup_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_maintenance_checkpoints", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_rollup_sources", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_rollup_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
+        new("campaign_contribution_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_contribution_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
 
         new("Sessions", RetentionDataClass.ActiveSessions, FactoryRecordKind.Physical, "lower(Status) <> 'archived'"),
         new("Sessions", RetentionDataClass.ArchivedSessions, FactoryRecordKind.Physical, "lower(Status) = 'archived'"),
@@ -116,6 +122,12 @@ internal sealed partial class DataRetentionService
         new("memory_evaluation_reports", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluation_sources", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("memory_evaluations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
+        new("campaign_rollup_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_maintenance_checkpoints", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_rollup_sources", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_rollup_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
+        new("campaign_contribution_state", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Derived),
+        new("campaign_contribution_artifacts", RetentionDataClass.CampaignSummaries, FactoryRecordKind.Physical),
 
         new("long_rest_discovery_generations", RetentionDataClass.Annals, FactoryRecordKind.Derived),
         new("long_rest_clean_fts", RetentionDataClass.Annals, FactoryRecordKind.Derived),
@@ -1004,13 +1016,14 @@ internal sealed partial class DataRetentionService
     }
 
     /// <summary>
-    /// Empties one factory-reset table, holding the retention authorization for Sessions alone.
+    /// Empties one factory-reset table, holding retention authorization for guarded owner data.
     /// </summary>
     /// <remarks>
     /// Emptying Sessions cascades into the per-Session turn capacity ledger, whose delete guard
     /// begins denied on every connection, including a pooled one handed back out, so the parent
-    /// delete has to hold the scope itself. Only that one table needs the grant, so the scope opens
-    /// and closes around its own statement rather than spanning the sweep or the commit.
+    /// delete has to hold the scope itself. Campaign contribution/rollup state, sources, artifacts, and maintenance
+    /// checkpoints require the same grant. Each scope covers its own statement, not the sweep or commit;
+    /// clearing rollup state first releases its current-artifact foreign key before artifact erasure.
     /// </remarks>
     private static async Task<int> ClearFactoryTableAsync(
         DbConnection connection,
@@ -1028,7 +1041,9 @@ internal sealed partial class DataRetentionService
         }
 
         using CovenantSqliteAuthorizationScope? retention =
-            string.Equals(table.Table, "Sessions", StringComparison.Ordinal)
+            table.Table is "Sessions" or "campaign_rollup_state" or "campaign_maintenance_checkpoints"
+                or "campaign_rollup_sources" or "campaign_rollup_artifacts"
+                or "campaign_contribution_state" or "campaign_contribution_artifacts"
                 ? CovenantSqliteConnectionInitializer.Instance.Authorize(
                     (SqliteConnection)connection,
                     CovenantSqliteAuthorizationKind.SessionRetention)

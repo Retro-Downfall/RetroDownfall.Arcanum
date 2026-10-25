@@ -49,3 +49,7 @@ CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_RunId"
 
 CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_BudgetReservationId"
     ON "LongRunningOperations" ("BudgetReservationId");
+
+CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_Id_Norm" ON "LongRunningOperations" (lower(replace("Id", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_LongRunningOperations_SessionId_Norm" ON "LongRunningOperations" (lower(replace("SessionId", '-', '')));

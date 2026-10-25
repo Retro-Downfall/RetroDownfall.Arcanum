@@ -17,3 +17,5 @@ CREATE TABLE IF NOT EXISTS "IdempotencyClaims" (
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_IdempotencyClaims_ClaimKeyHash" ON "IdempotencyClaims" ("ClaimKeyHash");
 CREATE INDEX IF NOT EXISTS "IX_IdempotencyClaims_State_LeaseExpiresAt" ON "IdempotencyClaims" ("State", "LeaseExpiresAt");
+
+CREATE INDEX IF NOT EXISTS "IX_IdempotencyClaims_Id_Norm" ON "IdempotencyClaims" (lower(replace("Id", '-', '')));

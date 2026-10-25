@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS "UploadedFiles" (
 CREATE INDEX IF NOT EXISTS "IX_UploadedFiles_Purpose" ON "UploadedFiles" ("Purpose");
 
 CREATE INDEX IF NOT EXISTS "IX_UploadedFiles_CreatedAt" ON "UploadedFiles" ("CreatedAt");
+
+CREATE INDEX IF NOT EXISTS "IX_UploadedFiles_Id_Norm" ON "UploadedFiles" (lower(replace("Id", '-', '')));

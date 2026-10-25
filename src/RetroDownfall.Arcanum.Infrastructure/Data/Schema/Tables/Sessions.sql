@@ -31,3 +31,5 @@ CREATE INDEX IF NOT EXISTS "IX_Sessions_CampaignId_Status_UpdatedAt" ON "Session
 CREATE INDEX IF NOT EXISTS "IX_Sessions_UnsummarizedEntryCount" ON "Sessions" ("UnsummarizedEntryCount");
 
 CREATE INDEX IF NOT EXISTS "IX_Sessions_ForkedFromSessionId" ON "Sessions" ("ForkedFromSessionId");
+
+CREATE INDEX IF NOT EXISTS "IX_Sessions_Id_Norm" ON "Sessions" (lower(replace("Id", '-', '')));

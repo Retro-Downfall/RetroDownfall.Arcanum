@@ -7,3 +7,5 @@ CREATE TABLE IF NOT EXISTS "BudgetAlerts" (
     "DailyLimitUsd" TEXT NOT NULL DEFAULT '0' CHECK (typeof("DailyLimitUsd") = 'text'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS "IX_BudgetAlerts_Threshold_Date" ON "BudgetAlerts" ("Threshold", date("AlertedAt"));
+
+CREATE INDEX IF NOT EXISTS "IX_BudgetAlerts_Id_Norm" ON "BudgetAlerts" (lower(replace("Id", '-', '')));

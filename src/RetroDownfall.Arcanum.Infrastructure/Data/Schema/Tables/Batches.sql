@@ -51,3 +51,5 @@ CREATE INDEX IF NOT EXISTS "IX_Batches_OutputFileId_Norm"
 
 CREATE INDEX IF NOT EXISTS "IX_Batches_ErrorFileId_Norm"
   ON "Batches" (lower(replace("ErrorFileId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_Batches_Id_Norm" ON "Batches" (lower(replace("Id", '-', '')));

@@ -901,22 +901,22 @@ internal sealed partial class DataRetentionService
 
         string sessionConflictPredicate =
             $"""
-            EXISTS (
-                SELECT 1
+            lower(replace(entry.SessionId, '-', '')) IN (
+                SELECT lower(replace(operation.SessionId, '-', ''))
                 FROM LongRunningOperations operation
-                WHERE lower(replace(operation.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                WHERE operation.SessionId IS NOT NULL
                   AND operation.State IN ({string.Join(",", ActiveOperationStates)}))
-            OR EXISTS (
-                SELECT 1
+            OR lower(replace(entry.SessionId, '-', '')) IN (
+                SELECT lower(replace(run.SessionId, '-', ''))
                 FROM InferenceRuns run
-                WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                WHERE run.SessionId IS NOT NULL
                   AND run.Status = @entryDiagnosticRunning)
-            OR EXISTS (
-                SELECT 1
+            OR lower(replace(entry.SessionId, '-', '')) IN (
+                SELECT lower(replace(run.SessionId, '-', ''))
                 FROM BudgetReservations reservation
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
-                WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                WHERE run.SessionId IS NOT NULL
                   AND reservation.Status IN (@entryDiagnosticReserved, @uncertainPaid))
             """;
 
@@ -1057,22 +1057,22 @@ internal sealed partial class DataRetentionService
 
         string sessionConflictPredicate =
             $"""
-            EXISTS (
-                SELECT 1
+            lower(replace(attachment.SessionId, '-', '')) IN (
+                SELECT lower(replace(operation.SessionId, '-', ''))
                 FROM LongRunningOperations operation
-                WHERE lower(replace(operation.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
+                WHERE operation.SessionId IS NOT NULL
                   AND operation.State IN ({string.Join(",", ActiveOperationStates)}))
-            OR EXISTS (
-                SELECT 1
+            OR lower(replace(attachment.SessionId, '-', '')) IN (
+                SELECT lower(replace(run.SessionId, '-', ''))
                 FROM InferenceRuns run
-                WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
+                WHERE run.SessionId IS NOT NULL
                   AND run.Status = @attachmentDiagnosticRunning)
-            OR EXISTS (
-                SELECT 1
+            OR lower(replace(attachment.SessionId, '-', '')) IN (
+                SELECT lower(replace(run.SessionId, '-', ''))
                 FROM BudgetReservations reservation
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
-                WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
+                WHERE run.SessionId IS NOT NULL
                   AND reservation.Status IN (@attachmentDiagnosticReserved, @uncertainPaid))
             """;
 
@@ -1193,22 +1193,22 @@ internal sealed partial class DataRetentionService
 
         string sessionConflictPredicate =
             $"""
-            EXISTS (
-                SELECT 1
+            lower(replace(entry.SessionId, '-', '')) IN (
+                SELECT lower(replace(operation.SessionId, '-', ''))
                 FROM LongRunningOperations operation
-                WHERE lower(replace(operation.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                WHERE operation.SessionId IS NOT NULL
                   AND operation.State IN ({string.Join(",", ActiveOperationStates)}))
-            OR EXISTS (
-                SELECT 1
+            OR lower(replace(entry.SessionId, '-', '')) IN (
+                SELECT lower(replace(run.SessionId, '-', ''))
                 FROM InferenceRuns run
-                WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                WHERE run.SessionId IS NOT NULL
                   AND run.Status = @embeddingDiagnosticRunning)
-            OR EXISTS (
-                SELECT 1
+            OR lower(replace(entry.SessionId, '-', '')) IN (
+                SELECT lower(replace(run.SessionId, '-', ''))
                 FROM BudgetReservations reservation
                 JOIN InferenceRuns run
                   ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
-                WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                WHERE run.SessionId IS NOT NULL
                   AND reservation.Status IN (@embeddingDiagnosticReserved, @uncertainPaid))
             """;
 
@@ -1470,22 +1470,22 @@ internal sealed partial class DataRetentionService
                   WHERE pin.Kind = @kind
                     AND lower(replace(pin.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
                     AND lower(replace(pin.TargetIdentifier, '-', '')) = lower(replace(entry.Id, '-', '')))
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(entry.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(operation.SessionId, '-', ''))
                   FROM LongRunningOperations operation
-                  WHERE lower(replace(operation.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                  WHERE operation.SessionId IS NOT NULL
                     AND operation.State IN ({string.Join(",", ActiveOperationStates)}))
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(entry.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(run.SessionId, '-', ''))
                   FROM InferenceRuns run
-                  WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                  WHERE run.SessionId IS NOT NULL
                     AND run.Status = @running)
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(entry.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(run.SessionId, '-', ''))
                   FROM BudgetReservations reservation
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
-                  WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                  WHERE run.SessionId IS NOT NULL
                     AND reservation.Status IN (@reserved, @uncertainPaid))
               {protectedClause}
               {selectedClause}
@@ -1719,22 +1719,22 @@ internal sealed partial class DataRetentionService
                     AND (
                         lower(replace(pin.TargetIdentifier, '-', '')) = lower(replace(attachment.Id, '-', ''))
                         OR pin.TargetIdentifier = attachment.LogicalKey))
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(attachment.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(operation.SessionId, '-', ''))
                   FROM LongRunningOperations operation
-                  WHERE lower(replace(operation.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
+                  WHERE operation.SessionId IS NOT NULL
                     AND operation.State IN ({string.Join(",", ActiveOperationStates)}))
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(attachment.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(run.SessionId, '-', ''))
                   FROM InferenceRuns run
-                  WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
+                  WHERE run.SessionId IS NOT NULL
                     AND run.Status = @running)
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(attachment.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(run.SessionId, '-', ''))
                   FROM BudgetReservations reservation
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
-                  WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(attachment.SessionId, '-', ''))
+                  WHERE run.SessionId IS NOT NULL
                     AND reservation.Status IN (@reserved, @uncertainPaid))
             ORDER BY attachment.CreatedAt, attachment.Id
             LIMIT @limit
@@ -1891,22 +1891,22 @@ internal sealed partial class DataRetentionService
                   WHERE pin.Kind = @kind
                     AND lower(replace(pin.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
                     AND lower(replace(pin.TargetIdentifier, '-', '')) = lower(replace(entry.Id, '-', '')))
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(entry.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(operation.SessionId, '-', ''))
                   FROM LongRunningOperations operation
-                  WHERE lower(replace(operation.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                  WHERE operation.SessionId IS NOT NULL
                     AND operation.State IN ({string.Join(",", ActiveOperationStates)}))
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(entry.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(run.SessionId, '-', ''))
                   FROM InferenceRuns run
-                  WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                  WHERE run.SessionId IS NOT NULL
                     AND run.Status = @running)
-              AND NOT EXISTS (
-                  SELECT 1
+              AND lower(replace(entry.SessionId, '-', '')) NOT IN (
+                  SELECT lower(replace(run.SessionId, '-', ''))
                   FROM BudgetReservations reservation
                   JOIN InferenceRuns run
                     ON lower(replace(run.Id, '-', '')) = lower(replace(reservation.RunId, '-', ''))
-                  WHERE lower(replace(run.SessionId, '-', '')) = lower(replace(entry.SessionId, '-', ''))
+                  WHERE run.SessionId IS NOT NULL
                     AND reservation.Status IN (@reserved, @uncertainPaid))
               {protectedClause}
               {selectedClause}
@@ -1958,11 +1958,13 @@ internal sealed partial class DataRetentionService
             }
         }
 
+        HashSet<string> selectedEntries = new(candidates.Where(static candidate =>
+            candidate.StartsWith(EntryCandidatePrefix, StringComparison.Ordinal)), StringComparer.Ordinal);
+
         foreach ((string entryId, Guid sessionId, bool pinned) in rows)
         {
             if (selectedSessions.Contains(sessionId)
-                || candidates.Any(candidate =>
-                    candidate == EntryCandidatePrefix + NormalizeGuid(entryId)))
+                || selectedEntries.Contains(EntryCandidatePrefix + NormalizeGuid(entryId)))
             {
                 continue;
             }
@@ -2646,36 +2648,47 @@ internal sealed partial class DataRetentionService
 
         command.CommandText =
             """
+            WITH billable_counts AS (
+                SELECT lower(replace(RunId, '-', '')) AS RunKey, COUNT(*) AS Rows
+                FROM BillableOperations
+                GROUP BY lower(replace(RunId, '-', ''))),
+            reservation_counts AS (
+                SELECT lower(replace(RunId, '-', '')) AS RunKey, COUNT(*) AS Rows,
+                       MAX(Status IN (@reserved, @uncertainPaid)) AS HasOutstanding
+                FROM BudgetReservations
+                GROUP BY lower(replace(RunId, '-', ''))),
+            adjustment_memberships AS (
+                SELECT lower(replace(adjustment.RunId, '-', '')) AS RunKey, adjustment.Id
+                FROM CostAdjustments adjustment
+                WHERE adjustment.RunId IS NOT NULL
+                UNION
+                SELECT lower(replace(billable.RunId, '-', '')) AS RunKey, adjustment.Id
+                FROM CostAdjustments adjustment
+                JOIN BillableOperations billable ON billable.Id = adjustment.BillableOperationId),
+            adjustment_counts AS (
+                SELECT RunKey, COUNT(*) AS Rows
+                FROM adjustment_memberships
+                GROUP BY RunKey)
             SELECT run.Id, run.Status,
                    EXISTS(
                        SELECT 1
                        FROM Sessions session
                        WHERE lower(replace(session.Id, '-', '')) = lower(replace(run.SessionId, '-', ''))),
-                   (SELECT COUNT(*) FROM BillableOperations billable
-                    WHERE lower(replace(billable.RunId, '-', '')) = lower(replace(run.Id, '-', ''))),
-                   (SELECT COUNT(*) FROM BudgetReservations reservation
-                    WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))),
-                   (SELECT COUNT(*) FROM CostAdjustments adjustment
-                    WHERE lower(replace(adjustment.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                       OR adjustment.BillableOperationId IN (
-                           SELECT Id FROM BillableOperations billable
-                           WHERE lower(replace(billable.RunId, '-', '')) = lower(replace(run.Id, '-', '')))),
-                   EXISTS(
-                       SELECT 1 FROM BudgetReservations reservation
-                       WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                         AND reservation.Status IN (@reserved, @uncertainPaid))
+                   COALESCE(billable_counts.Rows, 0),
+                   COALESCE(reservation_counts.Rows, 0),
+                   COALESCE(adjustment_counts.Rows, 0),
+                   COALESCE(reservation_counts.HasOutstanding, 0)
             FROM InferenceRuns run
+            LEFT JOIN billable_counts ON billable_counts.RunKey = lower(replace(run.Id, '-', ''))
+            LEFT JOIN reservation_counts ON reservation_counts.RunKey = lower(replace(run.Id, '-', ''))
+            LEFT JOIN adjustment_counts ON adjustment_counts.RunKey = lower(replace(run.Id, '-', ''))
             WHERE julianday(COALESCE(run.CompletedAt, run.StartedAt)) <= julianday(@cutoff)
               AND run.Status <> @running
               AND NOT EXISTS (
                   SELECT 1
                   FROM Sessions session
                   WHERE lower(replace(session.Id, '-', '')) = lower(replace(run.SessionId, '-', '')))
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM BudgetReservations reservation
-                  WHERE lower(replace(reservation.RunId, '-', '')) = lower(replace(run.Id, '-', ''))
-                    AND reservation.Status IN (@reserved, @uncertainPaid))
+              AND COALESCE(reservation_counts.HasOutstanding, 0) = 0
             ORDER BY COALESCE(run.CompletedAt, run.StartedAt), run.Id
             LIMIT @limit
             """;

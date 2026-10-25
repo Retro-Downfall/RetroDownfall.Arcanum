@@ -31,3 +31,5 @@ CREATE INDEX IF NOT EXISTS "IX_Entries_SessionId_IsPinned" ON "Entries" ("Sessio
 -- for character the shape the predicate has, because that is how SQLite decides the index applies.
 CREATE INDEX IF NOT EXISTS "IX_Entries_SessionId_Norm"
   ON "Entries" (lower(replace("SessionId", '-', '')));
+
+CREATE INDEX IF NOT EXISTS "IX_Entries_Id_Norm" ON "Entries" (lower(replace("Id", '-', '')));
