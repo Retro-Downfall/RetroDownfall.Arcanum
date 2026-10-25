@@ -172,7 +172,7 @@ On a fresh installation, the foreground command explains before the operating sy
 | `Tab` / `Shift+Tab` | Cycle Composer → Sessions → Transcript → Incantations → Model; `Shift+Tab` from the composer reaches the Model control directly. |
 | `Ctrl+R` / `F5` | Refresh. |
 | `Ctrl+C` | Cancel the turn, else clear the composer, else show the quit hint. |
-| `Ctrl+Q` | Quit (asks first while a turn is generating). |
+| `Ctrl+Q` | Quit (asks first while a turn is generating). While a Mage prompt is pending, answer it or use `Ctrl+C` to cancel the turn before quitting; the prompt keeps its typed answer. |
 | `Esc` | Close an overlay or return to the composer. |
 | `F1` | Help, scrolled with `↑`/`↓` and `PgUp`/`PgDn`. |
 
@@ -183,6 +183,8 @@ The bottom row shows the hints for the focused region that fit, most important f
 `/model <name>` needs you to know the model id before you can type it. That is fine for models you wrote into `arcanum.json` yourself, but a Familiar's catalogue belongs to the vendor and changes without a configuration edit, so Command Center also carries a model control in the header.
 
 All Command Center choice lists use `>` for the pending row that `Enter` will choose. The model and session lists separately mark the active item with `●`, so browsing another row does not imply it is already active. The cursor stays visible while the type-ahead field has focus, including in monochrome. This applies to Models, Sessions, the command palette, and the slash-command menu.
+
+When the Mage asks a question, the full question wraps into a scrollable area above the answer editor and reflows when the terminal narrows. `PgUp` and `PgDn` scroll that question while the answer keeps keyboard focus; `Enter` submits the answer, `Ctrl+J` inserts a newline, and `Ctrl+C` cancels the turn. The question also appears as a Status entry in the current in-memory transcript so it remains readable after the prompt closes. This display copy is not written to application logs or persisted as a new Session entry.
 
 It is a full focus region: `Tab` / `Shift+Tab` reach it alongside Composer, Sessions, Transcript, and Incantations. `Enter`, `Space`, or `↓` opens it; typing narrows by model name or provider name; `↑`/`↓` (or `k`/`j`) move; `Enter` selects; `Esc` cancels back to the composer. No mouse anywhere.
 
@@ -240,7 +242,7 @@ Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/cont
 
 List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another page exists, Command Center states that server/durable state was not changed and prints the exact next command instead of silently truncating the list.
 
-The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page; these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and `Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads older entries and `Ctrl+PgDn` returns toward the latest entries. Paging uses exact server cursors/offsets, refuses a repeated or missing checkpoint as no progress, honors cancellation, and rebuilds Incantations from the current transcript page.
+The Sessions pane keeps one 40-session page and the Transcript pane keeps one 200-entry page; these are view allocations, not history totals. In Sessions, `Ctrl+PgDn` loads older sessions and `Ctrl+PgUp` returns toward recent sessions. In Transcript, `Ctrl+PgUp` loads entries strictly before the oldest loaded entry's `(createdAt, id)` cursor, so new turns cannot shift an older page or hide the oldest history. Each read requests one extra entry to determine whether older history remains, independently of the session's displayed entry count. `Ctrl+PgDn` from an older transcript page reloads the latest page, including newly persisted turns. Paging honors cancellation and rebuilds Incantations from the current transcript page.
 
 ### Command palette and slash menu
 

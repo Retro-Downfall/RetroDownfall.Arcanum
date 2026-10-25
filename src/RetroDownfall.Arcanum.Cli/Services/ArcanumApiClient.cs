@@ -1359,7 +1359,9 @@ public sealed partial class ArcanumApiClient(
         Guid sessionId,
         int? offset = null,
         int? limit = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? beforeCreatedAt = null,
+        Guid? beforeId = null)
     {
         string query = $"api/sessions/{sessionId:D}/entries";
 
@@ -1373,6 +1375,16 @@ public sealed partial class ArcanumApiClient(
         if (limit is int lim)
         {
             queryParts.Add($"limit={lim}");
+        }
+
+        if (beforeCreatedAt is { } before)
+        {
+            queryParts.Add("beforeCreatedAt=" + Uri.EscapeDataString(before.ToString("O", System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        if (beforeId is { } entryId)
+        {
+            queryParts.Add($"beforeId={entryId:D}");
         }
 
         if (queryParts.Count > 0)

@@ -286,7 +286,7 @@ internal sealed class SessionWorkspaceService(
                 .GetSessionEntriesAsync(
                     sessionId,
                     offset: 0,
-                    limit: CommandCenterState.TranscriptPageSize,
+                    limit: CommandCenterState.TranscriptPageSize + 1,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
@@ -302,7 +302,7 @@ internal sealed class SessionWorkspaceService(
 
             EntryDto[] descending = entriesResult.Value ?? [];
 
-            bool hadOlder = detail.EntryCount > descending.Length;
+            bool hadOlder = descending.Length > CommandCenterState.TranscriptPageSize;
 
             ArcanumClientMutationResult<CliContextDocument> persisted =
                 await lastSessionStore
@@ -319,7 +319,6 @@ internal sealed class SessionWorkspaceService(
 
             if (!persisted.IsCompleted)
             {
-
                 string message = persisted.Error.Message;
 
                 state.LastError = message;
@@ -329,14 +328,13 @@ internal sealed class SessionWorkspaceService(
                 return new SessionResumeResult(
                     SessionResumeOutcome.Failed,
                     message);
-
             }
 
             // Commit only after successful load.
             state.ApplySessionMeta(
                 detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
 
-            ApplyTranscriptPage(state, descending, offset: 0);
+            ApplyTranscriptPage(state, descending, hasNewer: false);
 
             return new SessionResumeResult(
                 SessionResumeOutcome.Success,
@@ -367,10 +365,9 @@ internal sealed class SessionWorkspaceService(
             return Task.FromResult(false);
         }
 
-        int nextOffset = checked(
-            state.TranscriptEntryOffset + state.LoadedTranscriptEntries.Count);
+        EntryDto oldest = state.LoadedTranscriptEntries[0];
 
-        return LoadTranscriptPageAsync(state, nextOffset, cancellationToken);
+        return LoadTranscriptPageAsync(state, cancellationToken, oldest);
     }
 
     public Task<bool> LoadNewerTranscriptPageAsync(
@@ -384,17 +381,13 @@ internal sealed class SessionWorkspaceService(
             return Task.FromResult(false);
         }
 
-        int nextOffset = Math.Max(
-            0,
-            state.TranscriptEntryOffset - CommandCenterState.TranscriptPageSize);
-
-        return LoadTranscriptPageAsync(state, nextOffset, cancellationToken);
+        return LoadTranscriptPageAsync(state, cancellationToken);
     }
 
     private async Task<bool> LoadTranscriptPageAsync(
         CommandCenterState state,
-        int offset,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        EntryDto? before = null)
     {
         if (state.SessionId is not { } sessionId)
         {
@@ -408,9 +401,11 @@ internal sealed class SessionWorkspaceService(
             Result<EntryDto[]> result = await apiClient
                 .GetSessionEntriesAsync(
                     sessionId,
-                    offset,
-                    CommandCenterState.TranscriptPageSize,
-                    cancellationToken)
+                    offset: 0,
+                    limit: CommandCenterState.TranscriptPageSize + 1,
+                    cancellationToken,
+                    beforeCreatedAt: before?.CreatedAt,
+                    beforeId: before?.Id)
                 .ConfigureAwait(false);
 
             if (result.IsFailure)
@@ -432,7 +427,7 @@ internal sealed class SessionWorkspaceService(
                 return false;
             }
 
-            ApplyTranscriptPage(state, descending, offset);
+            ApplyTranscriptPage(state, descending, hasNewer: before is not null);
 
             state.LastError = null;
 
@@ -442,9 +437,8 @@ internal sealed class SessionWorkspaceService(
         {
             logger.LogDebug(
                 ex,
-                "Transcript page load failed for {SessionId} at offset {Offset}.",
-                sessionId,
-                offset);
+                "Transcript page load failed for {SessionId}.",
+                sessionId);
 
             state.LastError = ex.Message;
 
@@ -507,7 +501,7 @@ internal sealed class SessionWorkspaceService(
                 .GetSessionAsync(forkId, cancellationToken).ConfigureAwait(false);
             Result<EntryDto[]> entriesResult = await apiClient
                 .GetSessionEntriesAsync(
-                    forkId, 0, CommandCenterState.TranscriptPageSize, cancellationToken)
+                    forkId, 0, CommandCenterState.TranscriptPageSize + 1, cancellationToken)
                 .ConfigureAwait(false);
             Result<SessionAttachmentDto[]> attachmentsResult = await apiClient
                 .GetSessionAttachmentsAsync(forkId, cancellationToken).ConfigureAwait(false);
@@ -542,7 +536,6 @@ internal sealed class SessionWorkspaceService(
 
             if (!persisted.IsCompleted)
             {
-
                 string message = persisted.Error.Message;
 
                 state.LastError = message;
@@ -550,13 +543,12 @@ internal sealed class SessionWorkspaceService(
                 return new SessionForkResult(
                     SessionForkOutcome.Failed,
                     ErrorMessage: message);
-
             }
 
             state.ApplySessionMeta(
                 detail.Id, detail.Title, detail.Status, detail.EntryCount, detail.ForkedFromSessionId);
 
-            ApplyTranscriptPage(state, descending, offset: 0);
+            ApplyTranscriptPage(state, descending, hasNewer: false);
 
             state.LastError = null;
             await RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
@@ -663,7 +655,6 @@ internal sealed class SessionWorkspaceService(
 
         if (!persisted.IsCompleted)
         {
-
             string message = "Warning: " + persisted.Error.Message;
 
             state.LastError = message;
@@ -671,7 +662,6 @@ internal sealed class SessionWorkspaceService(
             state.Log.Append(SessionLogEntryKind.Error, message);
 
             return false;
-
         }
 
         state.SelectedSessionId = sessionId;
@@ -683,16 +673,12 @@ internal sealed class SessionWorkspaceService(
 
         if (string.IsNullOrWhiteSpace(state.SessionTitle))
         {
-
             state.SessionTitle = "Untitled";
-
         }
 
         if (string.IsNullOrWhiteSpace(state.SessionStatus))
         {
-
             state.SessionStatus = "Active";
-
         }
 
         return true;
@@ -701,9 +687,11 @@ internal sealed class SessionWorkspaceService(
     private static void ApplyTranscriptPage(
         CommandCenterState state,
         IReadOnlyList<EntryDto> descending,
-        int offset)
+        bool hasNewer)
     {
-        EntryDto[] chronological = descending.Reverse().ToArray();
+        state.HasOlderTranscriptEntries = descending.Count > CommandCenterState.TranscriptPageSize;
+
+        EntryDto[] chronological = descending.Take(CommandCenterState.TranscriptPageSize).Reverse().ToArray();
 
         List<(SessionLogEntryKind Kind, string Text, Guid? SourceEntryId)> mapped = [];
 
@@ -731,7 +719,7 @@ internal sealed class SessionWorkspaceService(
 
         state.LoadedTranscriptEntries = chronological;
 
-        state.TranscriptEntryOffset = offset;
+        state.HasNewerTranscriptEntries = hasNewer;
 
         state.Log.ReplaceWithApiHistory(
             mapped,

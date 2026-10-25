@@ -11,6 +11,7 @@ internal static class HumanPromptOverlayContent
     [
         string.Empty,
         "Enter = submit answer",
+        "PgUp/PgDn = scroll question",
         "Ctrl+J = new line (also Alt+Enter, Shift+Enter)",
         "Ctrl+C = cancel turn",
     ];

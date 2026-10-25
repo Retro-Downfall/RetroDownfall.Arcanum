@@ -59,7 +59,7 @@ public sealed class CommandCenterKeyModelWindowTests
 
         window.ShowHumanPromptOverlay("Which port should I use?", "prompt-1", statusMessage: null);
 
-        string shown = window.OverlayBody.Text;
+        string shown = string.Join('\n', window.GetOverlayLinesSnapshot());
 
         Assert.Contains("Enter = submit answer", shown, StringComparison.Ordinal);
 
@@ -191,7 +191,7 @@ public sealed class CommandCenterKeyModelWindowTests
 
         IReadOnlyList<string> rows = window.GetOverlayLinesSnapshot();
 
-        Assert.Contains($"ask_human: {CommandCenterGuidance.HumanPromptFooter}", rows);
+        Assert.Contains($"ask_human: {CommandCenterGuidance.HumanPromptFooter}", string.Join(string.Empty, rows), StringComparison.Ordinal);
 
         window.Layout(new Size(80, 24));
 

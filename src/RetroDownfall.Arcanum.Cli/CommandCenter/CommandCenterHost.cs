@@ -1115,40 +1115,40 @@ internal sealed class CommandCenterHost(
                 break;
 
             case CommandCenterAction.ExecutePaletteItem:
-            {
-                // Reached from an Enter key handler with nothing awaited yet, so the window is read and
-                // the palette closed on the UI thread, before any gate is waited on.
-                if (state.PaletteMode == CommandPaletteMode.Slash)
                 {
-                    // The same path as typing the line and sending it, so drift refresh, alternative
-                    // prompts and parser errors behave exactly as they do from the composer.
-                    if (CommitSlashMenu(state, window))
+                    // Reached from an Enter key handler with nothing awaited yet, so the window is read and
+                    // the palette closed on the UI thread, before any gate is waited on.
+                    if (state.PaletteMode == CommandPaletteMode.Slash)
                     {
-                        submitFromInput();
+                        // The same path as typing the line and sending it, so drift refresh, alternative
+                        // prompts and parser errors behave exactly as they do from the composer.
+                        if (CommitSlashMenu(state, window))
+                        {
+                            submitFromInput();
+                        }
+
+                        break;
+                    }
+
+                    CommandPaletteEntry? entry = SelectedPaletteEntry(state, window);
+
+                    ClosePaletteNow(state, window, composerText: null);
+
+                    if (entry is not null)
+                    {
+                        await RunPaletteActionAsync(
+                                entry,
+                                state,
+                                ui,
+                                app,
+                                window,
+                                linked,
+                                submitFromInput)
+                            .ConfigureAwait(false);
                     }
 
                     break;
                 }
-
-                CommandPaletteEntry? entry = SelectedPaletteEntry(state, window);
-
-                ClosePaletteNow(state, window, composerText: null);
-
-                if (entry is not null)
-                {
-                    await RunPaletteActionAsync(
-                            entry,
-                            state,
-                            ui,
-                            app,
-                            window,
-                            linked,
-                            submitFromInput)
-                        .ConfigureAwait(false);
-                }
-
-                break;
-            }
 
             case CommandCenterAction.ConfirmPending:
                 await ConfirmPendingAsync(state, window, app, ui, linked).ConfigureAwait(false);
@@ -1583,6 +1583,11 @@ internal sealed class CommandCenterHost(
 
     private void RequestQuit(CommandCenterState state, CommandCenterWindow window, IApplication app)
     {
+        if (BlockAuxiliaryWhileHardModal(state, window, app))
+        {
+            return;
+        }
+
         if (state.Generating)
         {
             _pendingConfirm = new PendingConfirm(PendingConfirmKind.Quit, null);
@@ -2355,6 +2360,15 @@ internal sealed class CommandCenterHost(
         if (state.Overlay == CommandCenterOverlayKind.HumanPrompt)
         {
             KeyChord humanChord = ToChord(e);
+
+            if (e == Key.PageUp || e == Key.PageDown)
+            {
+                e.Handled = true;
+
+                window.PageHumanPromptQuestion(e == Key.PageDown);
+
+                return true;
+            }
 
             // A line break belongs in the answer, never the composer that still holds the keyboard.
             if (humanChord.IsNewLine)

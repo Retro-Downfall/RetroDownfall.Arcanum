@@ -11,6 +11,81 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 /// </summary>
 public sealed class CommandCenterWindowOverlayTests
 {
+    [Theory]
+    [InlineData(80, 24, 578)]
+    [InlineData(120, 40, 578)]
+    [InlineData(80, 24, 4000)]
+    [InlineData(120, 40, 4000)]
+    internal void A_long_human_question_is_complete_and_scrollable_while_the_answer_stays_visible(int columns, int rows, int questionLength)
+    {
+        using CommandCenterWindow window = new();
+
+        window.ApplyAbsoluteLayout(columns, rows);
+
+        const string decision = "Which option should I take: A, B or C?";
+
+        string prefix = string.Concat(Enumerable.Repeat("Consider the different deployment constraints and explain the tradeoffs before choosing. ", 50));
+
+        string question = prefix[..(questionLength - decision.Length)] + decision;
+
+        window.ShowHumanPromptOverlay(question, "long-question", statusMessage: null);
+
+        Assert.True(window.Layout(new System.Drawing.Size(columns, rows)));
+
+        Assert.Contains("Which option should I take: A, B or C?", string.Join(string.Empty, window.GetOverlayLinesSnapshot()), StringComparison.Ordinal);
+
+        Assert.True(window.OverlayList.Visible);
+
+        Assert.True(window.OverlayList.Viewport.Height > 0);
+
+        Assert.All(window.GetOverlayLinesSnapshot(), line =>
+            Assert.InRange(TerminalCellMetrics.MeasureWidth(line), 0, window.OverlayList.Viewport.Width));
+
+        Assert.True(window.OverlayAnswer.Visible);
+
+        Assert.True(window.OverlayAnswer.Viewport.Height > 0);
+
+        window.OverlayAnswer.Text = "8080";
+
+        bool SawDecision() => string.Join(string.Empty, window.GetOverlayLinesSnapshot()
+            .Skip(window.OverlayList.Viewport.Y).Take(window.OverlayList.Viewport.Height))
+            .Contains("Which option should I take: A, B or C?", StringComparison.Ordinal);
+
+        bool sawDecision = SawDecision();
+
+        for (int index = 0; index < 20; index++)
+        {
+            _ = window.OverlayAnswer.NewKeyDownEvent(new Terminal.Gui.Input.Key(Terminal.Gui.Input.Key.PageDown.KeyCode));
+
+            sawDecision |= SawDecision();
+        }
+
+        Assert.True(sawDecision, "The question's final choice must enter the visible question viewport.");
+
+        for (int index = 0; index < 20; index++)
+        {
+            _ = window.OverlayAnswer.NewKeyDownEvent(new Terminal.Gui.Input.Key(Terminal.Gui.Input.Key.PageUp.KeyCode));
+        }
+
+        Assert.Equal(0, window.OverlayList.Viewport.Y);
+
+        Assert.Equal("8080", window.GetHumanPromptAnswer());
+
+        Assert.True(window.OverlayAnswer.HasFocus);
+
+        if (columns > 80)
+        {
+            window.ApplyAbsoluteLayout(80, 24);
+
+            _ = window.Layout(new System.Drawing.Size(80, 24));
+
+            Assert.All(window.GetOverlayLinesSnapshot(), line =>
+                Assert.InRange(TerminalCellMetrics.MeasureWidth(line), 0, window.OverlayList.Viewport.Width));
+
+            Assert.Equal("8080", window.GetHumanPromptAnswer());
+        }
+    }
+
     /// <summary>
     /// Terminal.Gui refuses focus to a view whose SuperView cannot focus, so an unfocusable overlay
     /// pane makes the <c>ask_human</c> answer editor impossible to type into — every printable key

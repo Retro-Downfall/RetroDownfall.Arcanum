@@ -45,10 +45,14 @@ internal static class OverlayLayout
 
     /// <summary>
     /// Wraps long lines to <paramref name="innerWidth"/> display cells; truncates a single logical line
-    /// to <see cref="MaxWrappedPreviewRows"/> wrapped rows with an ellipsis on the last row.
+    /// to <paramref name="maxWrappedRows"/> wrapped rows with an ellipsis on the last row; a null
+    /// row limit preserves complete content for scrollable question bodies.
     /// Slices land on grapheme boundaries, so a wide glyph is never split and never overflows the frame.
     /// </summary>
-    public static List<string> WrapLines(IReadOnlyList<string> lines, int innerWidth)
+    public static List<string> WrapLines(
+        IReadOnlyList<string> lines,
+        int innerWidth,
+        int? maxWrappedRows = MaxWrappedPreviewRows)
     {
         ArgumentNullException.ThrowIfNull(lines);
         int width = Math.Max(8, innerWidth);
@@ -70,10 +74,10 @@ internal static class OverlayLayout
 
             int offset = 0;
             int rows = 0;
-            while (offset < line.Length && rows < MaxWrappedPreviewRows)
+            while (offset < line.Length && (maxWrappedRows is null || rows < maxWrappedRows.Value))
             {
                 CellSlice chunk = TerminalCellMetrics.TakeCells(line, offset, width);
-                bool lastAllowed = rows == MaxWrappedPreviewRows - 1;
+                bool lastAllowed = maxWrappedRows is { } maxRows && rows == maxRows - 1;
                 if (lastAllowed && !chunk.ReachedEnd)
                 {
                     CellSlice head = TerminalCellMetrics.TakeCells(line, offset, Math.Max(1, width - 1));
