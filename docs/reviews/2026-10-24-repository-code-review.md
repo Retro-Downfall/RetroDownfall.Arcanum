@@ -3749,3 +3749,22 @@ These independently reviewed changes bring the integrated count to **47 of 272 f
 RV-040 is fixed in independently approved commit `6ece737dc8272b23ab18a286cb577982a76ac3c4` and integrated locally. Typed, sanitized diagnostics distinguish invalid URLs, DNS, blocked addresses, transport/TLS, HTTP authentication and malformed model-list responses; Forge retains the failed-envelope reason. Warning logs contain the configured host and fixed reason rather than raw URLs, credentials, resolved addresses or exception detail. Existing URL-guard contracts, pinned connections, the five-second shared headers/body deadline, caller cancellation and the response cap remain intact. Fourteen API and one Forge behavioral RED cases recur under mutation; restored verification passed 345 API/security/documentation and 106 Forge tests with no skips and a zero-warning solution build. The review audited the logs and historical source binding.
 
 The count is now **48 of 272 integrated** (3 Critical, 39 Important, 6 Minor), with **224 open** (37 Important, 187 Minor). The last combined verification above belongs to the earlier `cd4dfc1d` candidate; combined verification including this provider change and all final delivery gates remains outstanding.
+
+
+### Spell catalog checkpoint — 2026-10-25
+
+Independently approved commit `acb0ab1f4ada617df406cb08d229c18d19d612a4` was integrated locally at `4f286f5ae9958818905066ef4f3e7016f33429bc`. Task verification passed 349 tests with one conditional builtin-clone skip and a zero-warning solution build. The independent reviewer checked the exact source/diff, initial and mutation failures, restored test logs and historical source binding.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-025 | fixed `acb0ab1f` | Existing metadata cache now uses a 300-second production default; a human-paced six-second repeat avoids metadata opens. Explicit zero remains uncached. Cold misses still traverse the allowed tree; external discovery changes have a documented five-minute freshness window. |
+| RV-028 | fixed `acb0ab1f` | Campaign import takes one workspace lock and one fresh collision inventory, tracks successful published names and invalidates even after partial failure. Repeated parse/open work and duplicate-name publication failures have behavioral regressions. |
+| RV-029 | fixed `acb0ab1f` | Export takes one metadata inventory and securely hydrates each selected spell directly. Existing containment, current-file identity, omission reporting and byte limits remain. Mutation repeats eleven sentinel opens against a maximum of four. |
+| RV-031 | fixed `acb0ab1f` | Spell search consumes the shared production TTL while retaining existing Campaign/source filtering before traversal. Selected-Campaign coverage includes nineteen excluded roots. No credit is claimed for introducing already-existing filters. |
+| RV-032 | fixed `acb0ab1f` | Repository/routing lookups reuse discovery metadata; first-party writers invalidate before releasing their workspace lock. Current file identity/content remains execution authority. Retained execute preflight preserves error semantics. |
+
+Implementation also exposed equivalent-path and parent/nested-workspace invalidation gaps. Canonical intersecting-root generations and unique tokens across the bounded 64-root registry repair them; delayed-flight, eviction and unrelated-root controls preserve cache isolation. These additional repairs do not add review finding closures. The full production revert failed eight strengthened cases; generation/overlap mutations failed four cases while the unrelated-root control passed.
+
+The independently reviewed Core23 integration assertion repair `d459d8ef`, merged at `4c095882`, changes only two current-head version expectations from 20 to 23; all historical fingerprints, data and catalog-equivalence guards remain. It repairs drift introduced by this remediation's schema transitions and closes no additional finding.
+
+The count is now **53 of 272 integrated (19.5%)**: 3 Critical, 44 Important and 6 Minor. **219 remain open**: 32 Important and 187 Minor. The last combined verification belongs to `cd4dfc1d` (47 findings); combined verification of the newer candidate and all final delivery gates remain outstanding.
