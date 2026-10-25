@@ -1737,790 +1737,742 @@ public sealed partial class WizardIntelligenceProvider(
                 settings.Value.Features.ReasoningSummaries,
                 streaming);
 
-        IChatClient chatClient = lease.ChatClient;
+            IChatClient chatClient = lease.ChatClient;
 
-        bool humanInteractionAvailable = streaming && !request.UnattendedMode;
+            bool humanInteractionAvailable = streaming && !request.UnattendedMode;
 
-        bool streamModelDeclaresToolsUnsupported =
-            ModelDeclaresToolsUnsupported(lease);
+            bool streamModelDeclaresToolsUnsupported =
+                ModelDeclaresToolsUnsupported(lease);
 
-        List<AITool>? prevalidatedClientToolSet = null;
+            List<AITool>? prevalidatedClientToolSet = null;
 
-        if (request.ForwardClientTools)
-        {
-            prevalidatedClientToolSet = request.DisableAllTools
-                || streamModelDeclaresToolsUnsupported
-                ? []
-                : BuildClientForwardedToolSet(request);
+            if (request.ForwardClientTools)
+            {
+                prevalidatedClientToolSet = request.DisableAllTools
+                    || streamModelDeclaresToolsUnsupported
+                    ? []
+                    : BuildClientForwardedToolSet(request);
 
-            IReadOnlyList<AITool> preflightClientTools = ApplyInferenceToolFilters(
-                request,
-                prevalidatedClientToolSet,
-                humanInteractionAvailable);
-
-            Result clientToolAvailability =
-                ClientToolCapabilityValidator.ValidateEffectiveToolSet(
+                IReadOnlyList<AITool> preflightClientTools = ApplyInferenceToolFilters(
                     request,
-                    preflightClientTools);
+                    prevalidatedClientToolSet,
+                    humanInteractionAvailable);
 
-            if (clientToolAvailability.IsFailure)
-            {
-                if (!streaming)
+                Result clientToolAvailability =
+                    ClientToolCapabilityValidator.ValidateEffectiveToolSet(
+                        request,
+                        preflightClientTools);
+
+                if (clientToolAvailability.IsFailure)
                 {
-                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                        clientToolAvailability.Error);
-                }
-
-                yield return await FailureFrameAsync(clientToolAvailability.Error);
-
-                yield break;
-            }
-        }
-
-        if (streaming)
-            {
-                yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
-            }
-
-        CampaignRollupTurnSnapshot? campaignTurn = null;
-
-        // A server tool can add protected sensitivity after the first dispatch. Reserve genuine Session ownership
-        // before any tool executes, even when no memory is currently admitted and maintenance is disabled.
-        bool requireProtectedToolPersistence = memoryDelegation is not null
-            || (covenantDispatch is not null && !request.DisableAllTools && !request.ForwardClientTools
-                && !streamModelDeclaresToolsUnsupported && request.ToolPolicy is not ToolPolicy.NoTools);
-
-        if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext, requireProtectedToolPersistence: requireProtectedToolPersistence)
-            || (TurnIdempotencyAmbient.RequestIdentity is not null && campaignRollups is not null))
-        {
-            if (campaignRollups is null || covenantScope is null)
-            {
-                Error unavailable = new(ErrorCodes.Covenant.Unavailable, "Campaign summary turn preparation is unavailable.");
-
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(unavailable);
-
-                yield return await FailureFrameAsync(unavailable);
-
-                yield break;
-            }
-
-            // Only a streaming turn has a client to tell, so only a streaming turn holds the preparer for the telling.
-            CampaignPreparationProgress preparationProgress = new(holdUntilAcknowledged: streaming);
-
-            covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
-                request, invocationContext, streaming, inferenceToken,
-                CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value), preparationProgress,
-                requireProtectedToolPersistence: requireProtectedToolPersistence);
-
-            Task<Result<CampaignRollupTurnSnapshot?>> preparation = covenantScope.CampaignPreparation;
-
-            // Protected Long Rest maintenance finishes under this turn before the assistant begins, and can take a while. Say so once,
-            // before it starts, to a client that is streaming; a turn with no protected maintenance to finish never reaches this event.
-            if (streaming
-                && !preparation.IsCompleted
-                && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
-            {
-                try
-                {
-                    yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
-                }
-                finally
-                {
-                    // The client has been told (or has gone away): the held protected request may now begin.
-                    preparationProgress.AcknowledgeProtectedMaintenance();
-                }
-            }
-
-            Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);
-
-            if (prepared.IsFailure)
-            {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(prepared.Error);
-
-                yield return await FailureFrameAsync(prepared.Error);
-
-                yield break;
-            }
-
-            campaignTurn = prepared.Value;
-
-            if (campaignTurn is not null)
-            {
-                request = request with { SessionId = campaignTurn.SessionId };
-
-                if (campaignTurn.Artifact is { } campaignArtifact)
-                {
-                    covenantScope.BindCampaignArtifact(campaignArtifact);
-                }
-
-                if (campaignTurn.Replay is { } replay)
-                {
-                    classification.BufferedTerminal = replay;
-
-                    if (replay.IsFailure)
+                    if (!streaming)
                     {
-                        yield return await FailureFrameAsync(replay.Error);
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                            clientToolAvailability.Error);
                     }
-                    else if (streaming)
-                    {
-                        yield return new IntelligenceEvent(IntelligenceEventType.SessionBound, "Session", campaignTurn.SessionId?.ToString("D"));
 
-                        yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, replay.Value.Text);
-
-                        yield return new IntelligenceEvent(IntelligenceEventType.Result, "Complete", "0", FinishReason: "stop");
-                    }
+                    yield return await FailureFrameAsync(clientToolAvailability.Error);
 
                     yield break;
                 }
             }
-        }
-
-        // One thread snapshot for the whole run (DESIGN §10.7.2), taken before any candidate begins
-        // the turn. A later candidate reloading it would read the turn's own user Entry, and with
-        // the prompt appended again the fallback provider would be sent it twice.
-        Session? thread;
-
-        if (seed is { ThreadLoaded: true })
-        {
-            thread = seed.Thread;
-        }
-        else
-        {
-            thread = await inferenceContextBuilder
-                .LoadThreadAsync(request, inferenceToken)
-                .ConfigureAwait(false);
-
-            if (seed is not null)
-            {
-                seed.Thread = thread;
-
-                seed.ThreadLoaded = true;
-            }
-        }
-
-        bool attachmentsEnabled = settings.Value.ResolveAttachments().Enabled;
-
-        string? streamPendingTurnId = null;
-
-        if (attachmentsEnabled
-            && request.SessionId is null
-            && HasSessionAttachmentPayload(request))
-        {
-            streamPendingTurnId = Guid.NewGuid().ToString("N");
-        }
-
-        bool streamTurnBegunEarly = false;
-
-        // A retried candidate inherits the turn the run already opened (DESIGN §10.7.2). Beginning
-        // it again would insert a second user Entry — and, for a session-less request, a second
-        // orphaned Session — because interrupted-turn cleanup only discards the empty assistant row.
-        // A handle some exit path already finalized is dead: its assistant row is resolved and its
-        // Session lease released, so it is never adopted, and this candidate begins its own turn.
-        if (seed?.Turn is { IsFinalized: false } seededTurn)
-        {
-            grimoireTurn = seededTurn;
-
-            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
-
-            streamTurnBegunEarly = true;
-        }
-        else if (!streaming)
-        {
-            Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
-                .BeginBufferedAssistantReplyAsync(
-                    request,
-                    invocationContext,
-                    prompt,
-                    targetModel,
-                    inferenceToken,
-                    claimLease: campaignTurn?.ClaimLease)
-                .ConfigureAwait(false);
-
-            if (begun.IsFailure)
-            {
-                // Fail before prompt construction, tool advertisement, or provider dispatch. A turn
-                // whose Session or Campaign binding could not be honoured has no answer to give, and
-                // continuing would produce one nothing durable is attached to (§10.12). The typed
-                // begin failure is the terminal result: without it the drain reports the generic
-                // Hub.Error, and a client racing two turns on one Session never sees its 409.
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(begun.Error);
-
-                yield return await FailureFrameAsync(begun.Error);
-
-                yield break;
-            }
-
-            grimoireTurn = begun.Value;
-
-            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
-
-            campaignTurn?.MarkBegun();
-
-            streamTurnBegunEarly = true;
-
-            if (seed is not null)
-            {
-                seed.Turn = grimoireTurn;
-            }
-        }
-        else if (attachmentsEnabled && !InferenceContextBuilder.HasStatelessMessages(request))
-        {
-            Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
-                .BeginStreamedAssistantReplyAsync(
-                    request,
-                    invocationContext,
-                    prompt,
-                    targetModel,
-                    inferenceToken,
-                    claimLease: campaignTurn?.ClaimLease)
-                .ConfigureAwait(false);
-
-            if (begun.IsFailure)
-            {
-                yield return await FailureFrameAsync(begun.Error);
-
-                yield break;
-            }
-
-            grimoireTurn = begun.Value;
-
-            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
-
-            campaignTurn?.MarkBegun();
-
-            streamTurnBegunEarly = true;
-
-            if (seed is not null)
-            {
-                seed.Turn = grimoireTurn;
-            }
-        }
-
-        SessionAttachmentTurnPreparation streamAttachmentPrep = await SessionAttachmentTurnService
-            .PrepareAsync(
-                request,
-                sessionAttachmentStore,
-                settings.Value,
-                grimoireTurn.SessionId,
-                grimoireTurn.AssistantEntryId,
-                streamPendingTurnId,
-                inferenceToken,
-                logger)
-            .ConfigureAwait(false);
-
-        SessionContextPinMaterialization streamPinMaterialization =
-            sessionContextPinMaterializer is not null
-            && (grimoireTurn.SessionId ?? request.SessionId) is { } contextPinSessionId
-                ? await sessionContextPinMaterializer.MaterializeAsync(
-                    contextPinSessionId, request.WorkingDirectory, inferenceToken).ConfigureAwait(false)
-                : new SessionContextPinMaterialization([], 0, 0);
-
-        if (streamAttachmentPrep.ErrorMessage is not null)
-        {
-            if (!streaming)
-            {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                    new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
-            }
 
             if (streaming)
             {
-                yield return await FailureFrameAsync(
-                    new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
+                yield return new IntelligenceEvent(IntelligenceEventType.Status, "Mage is generating response...");
             }
 
-            await grimoireTurnWriter
-                .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
-                .ConfigureAwait(false);
+            CampaignRollupTurnSnapshot? campaignTurn = null;
 
-            yield break;
-        }
+            // A server tool can add protected sensitivity after the first dispatch. Reserve genuine Session ownership
+            // before any tool executes, even when no memory is currently admitted and maintenance is disabled.
+            bool requireProtectedToolPersistence = memoryDelegation is not null
+                || (covenantDispatch is not null && !request.DisableAllTools && !request.ForwardClientTools
+                    && !streamModelDeclaresToolsUnsupported && request.ToolPolicy is not ToolPolicy.NoTools);
 
-        streamTurnAmbients.AttachmentBudgetTurn = SessionAttachmentTurnBudget.BeginTurn();
-
-        AttachmentsSettings streamAttachmentSettings = settings.Value.ResolveAttachments();
-
-        EmbeddingSettings streamEmbeddingSettings = settings.Value.ResolveEmbeddings();
-
-        AttachmentEmbeddingSettings streamRetrievalSettings = streamEmbeddingSettings.Attachments;
-
-        ContextMaterializationLedger streamMaterializationLedger = new(
-            grimoireTurn.SessionId ?? request.SessionId,
-            new ContextMaterializationLimits(
-                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedChunks(
-                    streamRetrievalSettings.MaxRetrievedChunks),
-                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedAttachments(
-                    streamRetrievalSettings.MaxRetrievedAttachments),
-                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedBytes(
-                    streamRetrievalSettings.MaxRetrievedBytes),
-                ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedTokens(
-                    streamRetrievalSettings.MaxRetrievedTokens)));
-
-        streamTurnAmbients.MaterializationTurn = ContextMaterializationLedgerAmbient.Begin(streamMaterializationLedger);
-
-        List<AIContent> acceptedAppendedContext = [];
-
-        HashSet<int> acceptedAttachedFileIndices = [];
-
-        HashSet<int> acceptedScryingFocusIndices = [];
-
-        List<(SessionAttachmentExplicitMaterialization Materialization,
-            ContextMaterializationIdentity Identity)> deferredAttachmentMaterializations = [];
-
-        if (!attachmentsEnabled && request.AttachedFiles is { Count: > 0 } directAttachedFiles)
-        {
-            for (int index = 0; index < directAttachedFiles.Count; index++)
+            if (CampaignRollupTurnPreparer.IsLiveEligible(settings.Value, request, invocationContext, requireProtectedToolPersistence: requireProtectedToolPersistence)
+                || (TurnIdempotencyAmbient.RequestIdentity is not null && campaignRollups is not null))
             {
-                AttachedFileDto file = directAttachedFiles[index];
-
-                byte[] bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
-
-                string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-                ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
-                    new ContextMaterializationCandidate(
-                        grimoireTurn.SessionId ?? request.SessionId,
-                        ContextMaterializationSourceKind.CurrentTurnAttachment,
-                        $"current:{index.ToString(CultureInfo.InvariantCulture)}",
-                        hash,
-                        VersionOrdinal: null,
-                        ContextMaterializationRange.Whole,
-                        ContextMaterializationOrigin.Explicit,
-                        file.RelativePath,
-                        hash,
-                        EstimateMaterializedTokens(bytes.Length),
-                        bytes.Length,
-                ContextMaterializationTrust.UntrustedData),
-                materialized: true);
-
-                if (accepted.Accepted)
+                if (campaignRollups is null || covenantScope is null)
                 {
-                    _ = streamMaterializationLedger.TryMarkInjected(
-                        accepted.Identity,
-                        providerRound: 0);
+                    Error unavailable = new(ErrorCodes.Covenant.Unavailable, "Campaign summary turn preparation is unavailable.");
 
-                    acceptedAttachedFileIndices.Add(index);
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(unavailable);
+
+                    yield return await FailureFrameAsync(unavailable);
+
+                    yield break;
+                }
+
+                // Only a streaming turn has a client to tell, so only a streaming turn holds the preparer for the telling.
+                CampaignPreparationProgress preparationProgress = new(holdUntilAcknowledged: streaming);
+
+                covenantScope.CampaignPreparation ??= campaignRollups.PrepareLiveAsync(
+                    request, invocationContext, streaming, inferenceToken,
+                    CampaignRollupTurnPreparer.ConfigurationDigest(settings.Value), preparationProgress,
+                    requireProtectedToolPersistence: requireProtectedToolPersistence);
+
+                Task<Result<CampaignRollupTurnSnapshot?>> preparation = covenantScope.CampaignPreparation;
+
+                // Protected Long Rest maintenance finishes under this turn before the assistant begins, and can take a while. Say so once,
+                // before it starts, to a client that is streaming; a turn with no protected maintenance to finish never reaches this event.
+                if (streaming
+                    && !preparation.IsCompleted
+                    && await Task.WhenAny(preparation, preparationProgress.ProtectedMaintenanceStarted).ConfigureAwait(false) != preparation)
+                {
+                    try
+                    {
+                        yield return new IntelligenceEvent(IntelligenceEventType.Status, "Finishing protected memory maintenance...");
+                    }
+                    finally
+                    {
+                        // The client has been told (or has gone away): the held protected request may now begin.
+                        preparationProgress.AcknowledgeProtectedMaintenance();
+                    }
+                }
+
+                Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);
+
+                if (prepared.IsFailure)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(prepared.Error);
+
+                    yield return await FailureFrameAsync(prepared.Error);
+
+                    yield break;
+                }
+
+                campaignTurn = prepared.Value;
+
+                if (campaignTurn is not null)
+                {
+                    request = request with { SessionId = campaignTurn.SessionId };
+
+                    if (campaignTurn.Artifact is { } campaignArtifact)
+                    {
+                        covenantScope.BindCampaignArtifact(campaignArtifact);
+                    }
+
+                    if (campaignTurn.Replay is { } replay)
+                    {
+                        classification.BufferedTerminal = replay;
+
+                        if (replay.IsFailure)
+                        {
+                            yield return await FailureFrameAsync(replay.Error);
+                        }
+                        else if (streaming)
+                        {
+                            yield return new IntelligenceEvent(IntelligenceEventType.SessionBound, "Session", campaignTurn.SessionId?.ToString("D"));
+
+                            yield return new IntelligenceEvent(IntelligenceEventType.Token, string.Empty, replay.Value.Text);
+
+                            yield return new IntelligenceEvent(IntelligenceEventType.Result, "Complete", "0", FinishReason: "stop");
+                        }
+
+                        yield break;
+                    }
                 }
             }
-        }
 
-        if (!attachmentsEnabled && request.ScryingFoci is { Count: > 0 } directScryingFoci)
-        {
-            for (int index = 0; index < directScryingFoci.Count; index++)
+            // One thread snapshot for the whole run (DESIGN §10.7.2), taken before any candidate begins
+            // the turn. A later candidate reloading it would read the turn's own user Entry, and with
+            // the prompt appended again the fallback provider would be sent it twice.
+            Session? thread;
+
+            if (seed is { ThreadLoaded: true })
             {
-                byte[] bytes = Convert.FromBase64String(directScryingFoci[index].Data);
+                thread = seed.Thread;
+            }
+            else
+            {
+                thread = await inferenceContextBuilder
+                    .LoadThreadAsync(request, inferenceToken)
+                    .ConfigureAwait(false);
 
-                string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+                if (seed is not null)
+                {
+                    seed.Thread = thread;
+
+                    seed.ThreadLoaded = true;
+                }
+            }
+
+            bool attachmentsEnabled = settings.Value.ResolveAttachments().Enabled;
+
+            string? streamPendingTurnId = null;
+
+            if (attachmentsEnabled
+                && request.SessionId is null
+                && HasSessionAttachmentPayload(request))
+            {
+                streamPendingTurnId = Guid.NewGuid().ToString("N");
+            }
+
+            bool streamTurnBegunEarly = false;
+
+            // A retried candidate inherits the turn the run already opened (DESIGN §10.7.2). Beginning
+            // it again would insert a second user Entry — and, for a session-less request, a second
+            // orphaned Session — because interrupted-turn cleanup only discards the empty assistant row.
+            // A handle some exit path already finalized is dead: its assistant row is resolved and its
+            // Session lease released, so it is never adopted, and this candidate begins its own turn.
+            if (seed?.Turn is { IsFinalized: false } seededTurn)
+            {
+                grimoireTurn = seededTurn;
+
+                grimoireTurn.OutputProtection = () => covenantScope?.Protection;
+
+                streamTurnBegunEarly = true;
+            }
+            else if (!streaming)
+            {
+                Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
+                    .BeginBufferedAssistantReplyAsync(
+                        request,
+                        invocationContext,
+                        prompt,
+                        targetModel,
+                        inferenceToken,
+                        claimLease: campaignTurn?.ClaimLease)
+                    .ConfigureAwait(false);
+
+                if (begun.IsFailure)
+                {
+                    // Fail before prompt construction, tool advertisement, or provider dispatch. A turn
+                    // whose Session or Campaign binding could not be honoured has no answer to give, and
+                    // continuing would produce one nothing durable is attached to (§10.12). The typed
+                    // begin failure is the terminal result: without it the drain reports the generic
+                    // Hub.Error, and a client racing two turns on one Session never sees its 409.
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(begun.Error);
+
+                    yield return await FailureFrameAsync(begun.Error);
+
+                    yield break;
+                }
+
+                grimoireTurn = begun.Value;
+
+                grimoireTurn.OutputProtection = () => covenantScope?.Protection;
+
+                campaignTurn?.MarkBegun();
+
+                streamTurnBegunEarly = true;
+
+                if (seed is not null)
+                {
+                    seed.Turn = grimoireTurn;
+                }
+            }
+            else if (attachmentsEnabled && !InferenceContextBuilder.HasStatelessMessages(request))
+            {
+                Result<GrimoireTurnWriter.TurnHandle> begun = await grimoireTurnWriter
+                    .BeginStreamedAssistantReplyAsync(
+                        request,
+                        invocationContext,
+                        prompt,
+                        targetModel,
+                        inferenceToken,
+                        claimLease: campaignTurn?.ClaimLease)
+                    .ConfigureAwait(false);
+
+                if (begun.IsFailure)
+                {
+                    yield return await FailureFrameAsync(begun.Error);
+
+                    yield break;
+                }
+
+                grimoireTurn = begun.Value;
+
+                grimoireTurn.OutputProtection = () => covenantScope?.Protection;
+
+                campaignTurn?.MarkBegun();
+
+                streamTurnBegunEarly = true;
+
+                if (seed is not null)
+                {
+                    seed.Turn = grimoireTurn;
+                }
+            }
+
+            SessionAttachmentTurnPreparation streamAttachmentPrep = await SessionAttachmentTurnService
+                .PrepareAsync(
+                    request,
+                    sessionAttachmentStore,
+                    settings.Value,
+                    grimoireTurn.SessionId,
+                    grimoireTurn.AssistantEntryId,
+                    streamPendingTurnId,
+                    inferenceToken,
+                    logger)
+                .ConfigureAwait(false);
+
+            SessionContextPinMaterialization streamPinMaterialization =
+                sessionContextPinMaterializer is not null
+                && (grimoireTurn.SessionId ?? request.SessionId) is { } contextPinSessionId
+                    ? await sessionContextPinMaterializer.MaterializeAsync(
+                        contextPinSessionId, request.WorkingDirectory, inferenceToken).ConfigureAwait(false)
+                    : new SessionContextPinMaterialization([], 0, 0);
+
+            if (streamAttachmentPrep.ErrorMessage is not null)
+            {
+                if (!streaming)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                        new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
+                }
+
+                if (streaming)
+                {
+                    yield return await FailureFrameAsync(
+                        new Error(ErrorCodes.Validation.AttachedFiles, streamAttachmentPrep.ErrorMessage));
+                }
+
+                await grimoireTurnWriter
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                yield break;
+            }
+
+            streamTurnAmbients.AttachmentBudgetTurn = SessionAttachmentTurnBudget.BeginTurn();
+
+            AttachmentsSettings streamAttachmentSettings = settings.Value.ResolveAttachments();
+
+            EmbeddingSettings streamEmbeddingSettings = settings.Value.ResolveEmbeddings();
+
+            AttachmentEmbeddingSettings streamRetrievalSettings = streamEmbeddingSettings.Attachments;
+
+            ContextMaterializationLedger streamMaterializationLedger = new(
+                grimoireTurn.SessionId ?? request.SessionId,
+                new ContextMaterializationLimits(
+                    ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedChunks(
+                        streamRetrievalSettings.MaxRetrievedChunks),
+                    ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedAttachments(
+                        streamRetrievalSettings.MaxRetrievedAttachments),
+                    ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedBytes(
+                        streamRetrievalSettings.MaxRetrievedBytes),
+                    ArcanumSettingClamps.EmbeddingsAttachmentMaxRetrievedTokens(
+                        streamRetrievalSettings.MaxRetrievedTokens)));
+
+            streamTurnAmbients.MaterializationTurn = ContextMaterializationLedgerAmbient.Begin(streamMaterializationLedger);
+
+            List<AIContent> acceptedAppendedContext = [];
+
+            HashSet<int> acceptedAttachedFileIndices = [];
+
+            HashSet<int> acceptedScryingFocusIndices = [];
+
+            List<(SessionAttachmentExplicitMaterialization Materialization,
+                ContextMaterializationIdentity Identity)> deferredAttachmentMaterializations = [];
+
+            if (!attachmentsEnabled && request.AttachedFiles is { Count: > 0 } directAttachedFiles)
+            {
+                for (int index = 0; index < directAttachedFiles.Count; index++)
+                {
+                    AttachedFileDto file = directAttachedFiles[index];
+
+                    byte[] bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
+
+                    string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+                    ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                        new ContextMaterializationCandidate(
+                            grimoireTurn.SessionId ?? request.SessionId,
+                            ContextMaterializationSourceKind.CurrentTurnAttachment,
+                            $"current:{index.ToString(CultureInfo.InvariantCulture)}",
+                            hash,
+                            VersionOrdinal: null,
+                            ContextMaterializationRange.Whole,
+                            ContextMaterializationOrigin.Explicit,
+                            file.RelativePath,
+                            hash,
+                            EstimateMaterializedTokens(bytes.Length),
+                            bytes.Length,
+                    ContextMaterializationTrust.UntrustedData),
+                    materialized: true);
+
+                    if (accepted.Accepted)
+                    {
+                        _ = streamMaterializationLedger.TryMarkInjected(
+                            accepted.Identity,
+                            providerRound: 0);
+
+                        acceptedAttachedFileIndices.Add(index);
+                    }
+                }
+            }
+
+            if (!attachmentsEnabled && request.ScryingFoci is { Count: > 0 } directScryingFoci)
+            {
+                for (int index = 0; index < directScryingFoci.Count; index++)
+                {
+                    byte[] bytes = Convert.FromBase64String(directScryingFoci[index].Data);
+
+                    string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+                    ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                        new ContextMaterializationCandidate(
+                            grimoireTurn.SessionId ?? request.SessionId,
+                            ContextMaterializationSourceKind.CurrentTurnAttachment,
+                            $"current-image:{index.ToString(CultureInfo.InvariantCulture)}",
+                            hash,
+                            VersionOrdinal: null,
+                            ContextMaterializationRange.Whole,
+                            ContextMaterializationOrigin.Explicit,
+                            $"image-{index.ToString(CultureInfo.InvariantCulture)}",
+                            hash,
+                            EstimateMaterializedTokens(bytes.Length),
+                            bytes.Length,
+                            ContextMaterializationTrust.UntrustedData),
+                        materialized: true);
+
+                    if (accepted.Accepted)
+                    {
+                        _ = streamMaterializationLedger.TryMarkInjected(
+                            accepted.Identity,
+                            providerRound: 0);
+
+                        acceptedScryingFocusIndices.Add(index);
+                    }
+                }
+            }
+
+            foreach (SessionAttachmentExplicitMaterialization materialization
+                     in streamAttachmentPrep.ExplicitMaterializations ?? [])
+            {
+                SessionAttachmentRecord record = materialization.Record;
 
                 ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
                     new ContextMaterializationCandidate(
-                        grimoireTurn.SessionId ?? request.SessionId,
-                        ContextMaterializationSourceKind.CurrentTurnAttachment,
-                        $"current-image:{index.ToString(CultureInfo.InvariantCulture)}",
-                        hash,
-                        VersionOrdinal: null,
+                        record.SessionId ?? grimoireTurn.SessionId ?? request.SessionId,
+                        materialization.SourceKind,
+                        record.Id.ToString("N"),
+                        record.Version.ToString(CultureInfo.InvariantCulture),
+                        record.Version,
                         ContextMaterializationRange.Whole,
                         ContextMaterializationOrigin.Explicit,
-                        $"image-{index.ToString(CultureInfo.InvariantCulture)}",
-                        hash,
-                        EstimateMaterializedTokens(bytes.Length),
-                        bytes.Length,
+                        record.OriginalFileName,
+                        record.ContentSha256,
+                        EstimateMaterializedTokens(record.ByteLength),
+                        int.CreateSaturating(record.ByteLength),
+                        ContextMaterializationTrust.UntrustedData)
+                    {
+                        AttachmentProvenance = BuildAttachmentMemoryProvenance(record),
+                    },
+                    materialized: true);
+
+                if (!accepted.Accepted)
+                {
+                    continue;
+                }
+
+                if (record.Source is
+                    {
+                        Kind: AttachmentSourceKind.WorkspaceFile,
+                        WorkspaceRelativePath: { Length: > 0 } workspaceRelativePath,
+                    })
+                {
+                    streamMaterializationLedger.RegisterExplicitWorkspaceSource(
+                        workspaceRelativePath);
+                }
+
+                if (materialization.RequiresMaterialization)
+                {
+                    deferredAttachmentMaterializations.Add((materialization, accepted.Identity));
+
+                    continue;
+                }
+
+                _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
+
+                acceptedAppendedContext.AddRange(materialization.Contents);
+
+                if (materialization.AttachedFileIndex is { } attachedFileIndex)
+                {
+                    acceptedAttachedFileIndices.Add(attachedFileIndex);
+                }
+
+                if (materialization.ScryingFocusIndex is { } scryingFocusIndex)
+                {
+                    acceptedScryingFocusIndices.Add(scryingFocusIndex);
+                }
+            }
+
+            int deferredAttachmentInsertionIndex = acceptedAppendedContext.Count;
+
+            foreach (ContextPinMaterializedItem pin in streamPinMaterialization.Items ?? [])
+            {
+                ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
+                    new ContextMaterializationCandidate(
+                        grimoireTurn.SessionId ?? request.SessionId,
+                        ContextMaterializationSourceKind.ExplicitContextPin,
+                        Guid.TryParse(pin.SourceId, out Guid pinSourceId)
+                            ? pinSourceId.ToString("N")
+                            : pin.SourceId,
+                        pin.VersionOrdinal?.ToString(CultureInfo.InvariantCulture)
+                            ?? pin.ContentHash,
+                        pin.VersionOrdinal,
+                        ContextMaterializationRange.Whole,
+                        ContextMaterializationOrigin.Explicit,
+                        pin.SourceLabel,
+                        pin.ContentHash,
+                        EstimateMaterializedTokens(pin.MaterializedBytes),
+                        pin.MaterializedBytes,
                         ContextMaterializationTrust.UntrustedData),
                     materialized: true);
 
                 if (accepted.Accepted)
                 {
-                    _ = streamMaterializationLedger.TryMarkInjected(
-                        accepted.Identity,
-                        providerRound: 0);
+                    _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
 
-                    acceptedScryingFocusIndices.Add(index);
+                    acceptedAppendedContext.Add(pin.Content);
+
+                    if (pin.Kind == SessionContextPinKind.File)
+                    {
+                        streamMaterializationLedger.RegisterExplicitWorkspaceSource(pin.SourceId);
+                    }
                 }
             }
-        }
 
-        foreach (SessionAttachmentExplicitMaterialization materialization
-                 in streamAttachmentPrep.ExplicitMaterializations ?? [])
-        {
-            SessionAttachmentRecord record = materialization.Record;
+            HashSet<AIContent> trackedPinContents = new(ReferenceEqualityComparer.Instance);
 
-            ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
-                new ContextMaterializationCandidate(
-                    record.SessionId ?? grimoireTurn.SessionId ?? request.SessionId,
-                    materialization.SourceKind,
-                    record.Id.ToString("N"),
-                    record.Version.ToString(CultureInfo.InvariantCulture),
-                    record.Version,
-                    ContextMaterializationRange.Whole,
-                    ContextMaterializationOrigin.Explicit,
-                    record.OriginalFileName,
-                    record.ContentSha256,
-                    EstimateMaterializedTokens(record.ByteLength),
-                    int.CreateSaturating(record.ByteLength),
-                    ContextMaterializationTrust.UntrustedData)
-                {
-                    AttachmentProvenance = BuildAttachmentMemoryProvenance(record),
-                },
-                materialized: true);
+            trackedPinContents.UnionWith(
+                (streamPinMaterialization.Items ?? []).Select(static item => item.Content));
 
-            if (!accepted.Accepted)
-            {
-                continue;
-            }
+            acceptedAppendedContext.AddRange(
+                streamPinMaterialization.Contents.Where(content => !trackedPinContents.Contains(content)));
 
-            if (record.Source is
-                {
-                    Kind: AttachmentSourceKind.WorkspaceFile,
-                    WorkspaceRelativePath: { Length: > 0 } workspaceRelativePath,
-                })
-            {
-                streamMaterializationLedger.RegisterExplicitWorkspaceSource(
-                    workspaceRelativePath);
-            }
+            IReadOnlyList<AIContent> streamAppendedContext = acceptedAppendedContext;
 
-            if (materialization.RequiresMaterialization)
-            {
-                deferredAttachmentMaterializations.Add((materialization, accepted.Identity));
-
-                continue;
-            }
-
-            _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
-
-            acceptedAppendedContext.AddRange(materialization.Contents);
-
-            if (materialization.AttachedFileIndex is { } attachedFileIndex)
-            {
-                acceptedAttachedFileIndices.Add(attachedFileIndex);
-            }
-
-            if (materialization.ScryingFocusIndex is { } scryingFocusIndex)
-            {
-                acceptedScryingFocusIndices.Add(scryingFocusIndex);
-            }
-        }
-
-        int deferredAttachmentInsertionIndex = acceptedAppendedContext.Count;
-
-        foreach (ContextPinMaterializedItem pin in streamPinMaterialization.Items ?? [])
-        {
-            ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
-                new ContextMaterializationCandidate(
-                    grimoireTurn.SessionId ?? request.SessionId,
-                    ContextMaterializationSourceKind.ExplicitContextPin,
-                    Guid.TryParse(pin.SourceId, out Guid pinSourceId)
-                        ? pinSourceId.ToString("N")
-                        : pin.SourceId,
-                    pin.VersionOrdinal?.ToString(CultureInfo.InvariantCulture)
-                        ?? pin.ContentHash,
-                    pin.VersionOrdinal,
-                    ContextMaterializationRange.Whole,
-                    ContextMaterializationOrigin.Explicit,
-                    pin.SourceLabel,
-                    pin.ContentHash,
-                    EstimateMaterializedTokens(pin.MaterializedBytes),
-                    pin.MaterializedBytes,
-                    ContextMaterializationTrust.UntrustedData),
-                materialized: true);
-
-            if (accepted.Accepted)
-            {
-                _ = streamMaterializationLedger.TryMarkInjected(accepted.Identity, providerRound: 0);
-
-                acceptedAppendedContext.Add(pin.Content);
-
-                if (pin.Kind == SessionContextPinKind.File)
-                {
-                    streamMaterializationLedger.RegisterExplicitWorkspaceSource(pin.SourceId);
-                }
-            }
-        }
-
-        HashSet<AIContent> trackedPinContents = new(ReferenceEqualityComparer.Instance);
-
-        trackedPinContents.UnionWith(
-            (streamPinMaterialization.Items ?? []).Select(static item => item.Content));
-
-        acceptedAppendedContext.AddRange(
-            streamPinMaterialization.Contents.Where(content => !trackedPinContents.Contains(content)));
-
-        IReadOnlyList<AIContent> streamAppendedContext = acceptedAppendedContext;
-
-        List<AttachedFileDto>? streamAcceptedAttachedFiles = request.AttachedFiles is null
-            ? null
-            : request.AttachedFiles
-                .Where((_, index) => acceptedAttachedFileIndices.Contains(index))
-                .ToList();
-
-        PingRequest streamContextRequest = request with
-        {
-            ScryingFoci = request.ScryingFoci is null
+            List<AttachedFileDto>? streamAcceptedAttachedFiles = request.AttachedFiles is null
                 ? null
-                : request.ScryingFoci
-                    .Where((_, index) => acceptedScryingFocusIndices.Contains(index))
-                    .ToList(),
-        };
+                : request.AttachedFiles
+                    .Where((_, index) => acceptedAttachedFileIndices.Contains(index))
+                    .ToList();
 
-        Result<TurnAccountingHandle> streamAccountingBegin;
-
-        if (TurnAccountingAmbient.Current is { } streamAmbientAccounting)
-        {
-            streamAccountingBegin = Result<TurnAccountingHandle>.Success(streamAmbientAccounting);
-        }
-        else
-        {
-            streamAccountingBegin = await TurnAccountingHandle.BeginAsync(
-                    turnRunWriter,
-                    budgetReservationService,
-                    settings.Value.ResolvePricing(),
-                    targetModel,
-                    grimoireTurn.SessionId ?? request.SessionId,
-                    surface: streaming ? "stream" : "buffered",
-                    purpose: "chat",
-                    requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
-                    cancellationToken: inferenceToken,
-                    maxOutputTokens: request.MaxOutputTokens,
-                    reasoningBudgetTokens: request.Reasoning?.BudgetTokens)
-                .ConfigureAwait(false);
-        }
-
-        if (streamAccountingBegin.IsFailure)
-        {
-            SessionAttachmentTurnBudget.EndTurn();
-
-            ContextMaterializationLedgerAmbient.End(streamTurnAmbients.MaterializationTurn);
-
-            streamTurnAmbients.MaterializationTurn = null;
-
-            if (!streaming)
+            PingRequest streamContextRequest = request with
             {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamAccountingBegin.Error);
+                ScryingFoci = request.ScryingFoci is null
+                    ? null
+                    : request.ScryingFoci
+                        .Where((_, index) => acceptedScryingFocusIndices.Contains(index))
+                        .ToList(),
+            };
+
+            Result<TurnAccountingHandle> streamAccountingBegin;
+
+            if (TurnAccountingAmbient.Current is { } streamAmbientAccounting)
+            {
+                streamAccountingBegin = Result<TurnAccountingHandle>.Success(streamAmbientAccounting);
+            }
+            else
+            {
+                streamAccountingBegin = await TurnAccountingHandle.BeginAsync(
+                        turnRunWriter,
+                        budgetReservationService,
+                        settings.Value.ResolvePricing(),
+                        targetModel,
+                        grimoireTurn.SessionId ?? request.SessionId,
+                        surface: streaming ? "stream" : "buffered",
+                        purpose: "chat",
+                        requestId: Activity.Current?.Id ?? Guid.NewGuid().ToString("N"),
+                        cancellationToken: inferenceToken,
+                        maxOutputTokens: request.MaxOutputTokens,
+                        reasoningBudgetTokens: request.Reasoning?.BudgetTokens)
+                    .ConfigureAwait(false);
             }
 
-            if (streaming)
+            if (streamAccountingBegin.IsFailure)
             {
-                yield return await FailureFrameAsync(streamAccountingBegin.Error);
-            }
+                SessionAttachmentTurnBudget.EndTurn();
 
-            await grimoireTurnWriter
-                .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
-                .ConfigureAwait(false);
+                ContextMaterializationLedgerAmbient.End(streamTurnAmbients.MaterializationTurn);
 
-            yield break;
-        }
+                streamTurnAmbients.MaterializationTurn = null;
 
-        TurnAccountingHandle streamAccountingLocal = streamAccountingBegin.Value;
-
-        streamAccounting = streamAccountingLocal;
-
-        if (previousAmbient is null)
-        {
-            TurnAccountingAmbient.Publish(streamAccountingLocal, turnRunWriter);
-            publishedStreamAmbient = true;
-        }
-
-        streamTurnAmbients.SetAccounting(
-            streamAccountingLocal,
-            publishedStreamAmbient ? turnRunWriter : previousAmbientWriter);
-
-        List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
-            streamContextRequest,
-            thread,
-            prompt);
-
-        string? streamCodexContent = await CodexReader
-            .ReadCodexAsync(
-                request.WorkingDirectory,
-                ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(),
-                inferenceToken)
-            .ConfigureAwait(false);
-
-        ResolvedSpell? streamResolvedSpell;
-
-        if (request.SkipSpellRouting)
-        {
-            streamResolvedSpell = null;
-        }
-        else
-        {
-            string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy.TryNormalizeWorkspace(
-                request.WorkingDirectory,
-                out string? streamSpellRoot,
-                out _)
-                ? streamSpellRoot
-                : null;
-
-            Result<ResolvedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
-                request,
-                chatClient,
-                lease.Provider,
-                targetModel,
-                streamSpellWorkspaceRoot,
-                inferenceToken).ConfigureAwait(false);
-
-            if (streamRoutedSpell.IsFailure)
-            {
                 if (!streaming)
                 {
-                    await grimoireTurnWriter
-                        .ResolveInterruptedAndMarkFinalizedAsync(
-                            grimoireTurn,
-                            null,
-                            CancellationToken.None)
-                        .ConfigureAwait(false);
-
-                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamRoutedSpell.Error);
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamAccountingBegin.Error);
                 }
 
                 if (streaming)
                 {
-                    yield return await FailureFrameAsync(streamRoutedSpell.Error);
+                    yield return await FailureFrameAsync(streamAccountingBegin.Error);
                 }
+
+                await grimoireTurnWriter
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
 
                 yield break;
             }
 
-            streamResolvedSpell = streamRoutedSpell.Value;
-        }
+            TurnAccountingHandle streamAccountingLocal = streamAccountingBegin.Value;
 
-        ParsedSpell? streamActiveSpell = streamResolvedSpell?.Primary;
+            streamAccounting = streamAccountingLocal;
 
-        IReadOnlyList<ParsedSpell>? streamResonants = streamResolvedSpell?.Resonants;
-
-        Embedding<float>? streamQueryEmbedding;
-
-        // Provider-independent and billed through TryRecordAuxiliaryUsageAsync, so the run resolves
-        // it once and every fallback candidate reuses it (DESIGN §10.7.2).
-        if (seed is { QueryEmbeddingResolved: true })
-        {
-            streamQueryEmbedding = seed.QueryEmbedding;
-        }
-        else
-        {
-            streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
-
-            if (seed is not null)
+            if (previousAmbient is null)
             {
-                seed.QueryEmbedding = streamQueryEmbedding;
-
-                seed.QueryEmbeddingResolved = true;
+                TurnAccountingAmbient.Publish(streamAccountingLocal, turnRunWriter);
+                publishedStreamAmbient = true;
             }
-        }
 
-        SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
+            streamTurnAmbients.SetAccounting(
+                streamAccountingLocal,
+                publishedStreamAmbient ? turnRunWriter : previousAmbientWriter);
 
-        SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, invocationContext, inferenceToken).ConfigureAwait(false);
+            List<MeAiChatMessage> chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
+                streamContextRequest,
+                thread,
+                prompt);
 
-        SessionAttachmentRetrievedChunk[]? streamAttachmentContext = await RetrieveSessionAttachmentContextAsync(
-            request,
-            streamQueryEmbedding,
-            inferenceToken).ConfigureAwait(false);
+            string? streamCodexContent = await CodexReader
+                .ReadCodexAsync(
+                    request.WorkingDirectory,
+                    ArcanumSettingClamps.EffectiveCodexMaxSizeBytes(),
+                    inferenceToken)
+                .ConfigureAwait(false);
 
-        streamAttachmentContext = AcceptAttachmentRagMaterializations(
-            streamMaterializationLedger,
-            streamAttachmentContext,
-            lease.Provider,
-            lease.ResolvedModel);
+            ResolvedSpell? streamResolvedSpell;
 
-        streamSemanticContext = AcceptWorkspaceRagMaterializations(
-            streamMaterializationLedger,
-            streamSemanticContext,
-            lease.Provider,
-            lease.ResolvedModel,
-            grimoireTurn.SessionId ?? request.SessionId);
+            if (request.SkipSpellRouting)
+            {
+                streamResolvedSpell = null;
+            }
+            else
+            {
+                string? streamSpellWorkspaceRoot = RetroDownfall.Arcanum.Infrastructure.Security.WorkspacePathPolicy.TryNormalizeWorkspace(
+                    request.WorkingDirectory,
+                    out string? streamSpellRoot,
+                    out _)
+                    ? streamSpellRoot
+                    : null;
 
-        streamSagaMemories = AcceptSagaMaterializations(
-            streamMaterializationLedger,
-            streamSagaMemories,
-            lease.Provider,
-            lease.ResolvedModel,
-            grimoireTurn.SessionId ?? request.SessionId);
+                Result<ResolvedSpell?> streamRoutedSpell = await ResolveRoutedSpellAsync(
+                    request,
+                    chatClient,
+                    lease.Provider,
+                    targetModel,
+                    streamSpellWorkspaceRoot,
+                    inferenceToken).ConfigureAwait(false);
 
-        // Admitted last of the semantic sources so an exact raw leaf already in the ledger wins the
-        // duplicate-content check against a Tapestry node covering the same text (DESIGN §21.11).
-        TapestryContextNode[]? streamTapestryContext = AcceptTapestryMaterializations(
-            streamMaterializationLedger,
-            await RetrieveTapestryContextAsync(request, streamQueryEmbedding, inferenceToken)
-                .ConfigureAwait(false),
-            lease.Provider,
-            lease.ResolvedModel,
-            grimoireTurn.SessionId ?? request.SessionId);
+                if (streamRoutedSpell.IsFailure)
+                {
+                    if (!streaming)
+                    {
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAndMarkFinalizedAsync(
+                                grimoireTurn,
+                                null,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
 
-        IReadOnlyList<LexiconEntryDto>? streamLexiconEntries = await RetrieveLexiconEntriesAsync(
-            request,
-            streamResolvedSpell?.Entities ?? Array.Empty<string>(),
-            chatClient,
-            lease.Provider,
-            targetModel,
-            invocationContext,
-            inferenceToken).ConfigureAwait(false);
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(streamRoutedSpell.Error);
+                    }
 
-        int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
-            streamAttachmentSettings.MaxIndexItemsInPrompt);
+                    if (streaming)
+                    {
+                        yield return await FailureFrameAsync(streamRoutedSpell.Error);
+                    }
 
-        int streamMaxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
-            streamAttachmentSettings.MaxIndexBytesInPrompt);
+                    yield break;
+                }
 
-        // Declared here so that every prompt build in this attempt reads the same admitted content,
-        // and resolved once below, at the first point where the attempt's own tool surface and options
-        // exist: measuring head-room without them would overstate what fits.
-        CovenantDispatchPlan streamCovenantDispatch = CovenantDispatchPlan.Empty;
+                streamResolvedSpell = streamRoutedSpell.Value;
+            }
 
-        CovenantPromptContent? streamCovenantContent = null;
+            ParsedSpell? streamActiveSpell = streamResolvedSpell?.Primary;
 
-        SystemPromptDocument baseSystemPromptDocument = SystemPromptBuilder.BuildDocument(
-            request,
-            streamCodexContent,
-            streamActiveSpell,
-            streamAcceptedAttachedFiles,
-            dependencySpells: streamResonants,
-            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
-                ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
-            semanticContext: streamSemanticContext,
-            sagaMemories: streamSagaMemories,
-            lexiconEntries: streamLexiconEntries,
-            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
-                settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
-            sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
-            maxIndexItems: streamMaxIndexItems,
-            maxIndexBytes: streamMaxIndexBytes,
-            sessionAttachmentContext: streamAttachmentContext,
-            tapestryContext: streamTapestryContext,
-            covenant: streamCovenantContent,
-                campaignRollup: campaignTurn?.Artifact?.Content,
-                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
-                campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
-        baseSystemPromptDocument = MemoryDelegationMaterializer.Append(baseSystemPromptDocument, covenantScope?.MemorySources);
+            IReadOnlyList<ParsedSpell>? streamResonants = streamResolvedSpell?.Resonants;
 
-        SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
+            Embedding<float>? streamQueryEmbedding;
 
-        SystemPromptDocument ordinarySystemPromptDocument = baseSystemPromptDocument;
+            // Provider-independent and billed through TryRecordAuxiliaryUsageAsync, so the run resolves
+            // it once and every fallback candidate reuses it (DESIGN §10.7.2).
+            if (seed is { QueryEmbeddingResolved: true })
+            {
+                streamQueryEmbedding = seed.QueryEmbedding;
+            }
+            else
+            {
+                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
 
-        PromptCachePreparedPrompt? streamCachePrepared = null;
+                if (seed is not null)
+                {
+                    seed.QueryEmbedding = streamQueryEmbedding;
 
-        bool ordinaryCacheFallbackSelected = false;
+                    seed.QueryEmbeddingResolved = true;
+                }
+            }
 
-        bool cacheV2Enabled = settings.Value.Features.DynamicContextInjectionV2
-            && invocationContext.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn or ArcanumExecutionSurface.StatelessOperatorTurn
-            && !SubagentExecutionAmbient.IsIsolated;
+            SemanticContextChunk[]? streamSemanticContext = await RetrieveSemanticContextAsync(request, streamQueryEmbedding, inferenceToken).ConfigureAwait(false);
 
-        PromptCacheDispatchValidator? cacheValidator = cacheV2Enabled
-            ? serviceProvider.GetService<PromptCacheDispatchValidator>() : null;
+            SagaMemory[]? streamSagaMemories = await RetrieveSagaMemoriesAsync(streamQueryEmbedding, invocationContext, inferenceToken).ConfigureAwait(false);
 
-        string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
+            SessionAttachmentRetrievedChunk[]? streamAttachmentContext = await RetrieveSessionAttachmentContextAsync(
+                request,
+                streamQueryEmbedding,
+                inferenceToken).ConfigureAwait(false);
 
-        bool streamContextUsesCompressedSummary = false;
+            streamAttachmentContext = AcceptAttachmentRagMaterializations(
+                streamMaterializationLedger,
+                streamAttachmentContext,
+                lease.Provider,
+                lease.ResolvedModel);
 
-        InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
+            streamSemanticContext = AcceptWorkspaceRagMaterializations(
+                streamMaterializationLedger,
+                streamSemanticContext,
+                lease.Provider,
+                lease.ResolvedModel,
+                grimoireTurn.SessionId ?? request.SessionId);
 
-        void RebuildMaterializedSystemPrompt()
-        {
-            streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
+            streamSagaMemories = AcceptSagaMaterializations(
+                streamMaterializationLedger,
+                streamSagaMemories,
+                lease.Provider,
+                lease.ResolvedModel,
+                grimoireTurn.SessionId ?? request.SessionId);
+
+            // Admitted last of the semantic sources so an exact raw leaf already in the ledger wins the
+            // duplicate-content check against a Tapestry node covering the same text (DESIGN §21.11).
+            TapestryContextNode[]? streamTapestryContext = AcceptTapestryMaterializations(
+                streamMaterializationLedger,
+                await RetrieveTapestryContextAsync(request, streamQueryEmbedding, inferenceToken)
+                    .ConfigureAwait(false),
+                lease.Provider,
+                lease.ResolvedModel,
+                grimoireTurn.SessionId ?? request.SessionId);
+
+            IReadOnlyList<LexiconEntryDto>? streamLexiconEntries = await RetrieveLexiconEntriesAsync(
+                request,
+                streamResolvedSpell?.Entities ?? Array.Empty<string>(),
+                chatClient,
+                lease.Provider,
+                targetModel,
+                invocationContext,
+                inferenceToken).ConfigureAwait(false);
+
+            int streamMaxIndexItems = ArcanumSettingClamps.AttachmentsMaxIndexItemsInPrompt(
+                streamAttachmentSettings.MaxIndexItemsInPrompt);
+
+            int streamMaxIndexBytes = ArcanumSettingClamps.AttachmentsMaxIndexBytesInPrompt(
+                streamAttachmentSettings.MaxIndexBytesInPrompt);
+
+            // Declared here so that every prompt build in this attempt reads the same admitted content,
+            // and resolved once below, at the first point where the attempt's own tool surface and options
+            // exist: measuring head-room without them would overstate what fits.
+            CovenantDispatchPlan streamCovenantDispatch = CovenantDispatchPlan.Empty;
+
+            CovenantPromptContent? streamCovenantContent = null;
+
+            SystemPromptDocument baseSystemPromptDocument = SystemPromptBuilder.BuildDocument(
                 request,
                 streamCodexContent,
                 streamActiveSpell,
                 streamAcceptedAttachedFiles,
-                sessionSummary: streamContextUsesCompressedSummary ? thread?.Summary : null,
                 dependencySpells: streamResonants,
                 maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
                     ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
@@ -2535,77 +2487,93 @@ public sealed partial class WizardIntelligenceProvider(
                 sessionAttachmentContext: streamAttachmentContext,
                 tapestryContext: streamTapestryContext,
                 covenant: streamCovenantContent,
-                campaignRollup: campaignTurn?.Artifact?.Content,
-                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
-                campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
+                    campaignRollup: campaignTurn?.Artifact?.Content,
+                    enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                    campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
+            baseSystemPromptDocument = MemoryDelegationMaterializer.Append(baseSystemPromptDocument, covenantScope?.MemorySources);
 
-            streamSystemPromptDocument = MemoryDelegationMaterializer.Append(streamSystemPromptDocument, covenantScope?.MemorySources);
+            SystemPromptDocument streamSystemPromptDocument = baseSystemPromptDocument;
 
-            ordinarySystemPromptDocument = streamSystemPromptDocument;
+            SystemPromptDocument ordinarySystemPromptDocument = baseSystemPromptDocument;
 
-            if (!streamContextUsesCompressedSummary)
+            PromptCachePreparedPrompt? streamCachePrepared = null;
+
+            bool ordinaryCacheFallbackSelected = false;
+
+            bool cacheV2Enabled = settings.Value.Features.DynamicContextInjectionV2
+                && invocationContext.Surface is ArcanumExecutionSurface.SessionBackedOperatorTurn or ArcanumExecutionSurface.StatelessOperatorTurn
+                && !SubagentExecutionAmbient.IsIsolated;
+
+            PromptCacheDispatchValidator? cacheValidator = cacheV2Enabled
+                ? serviceProvider.GetService<PromptCacheDispatchValidator>() : null;
+
+            string streamBuiltSystemPrompt = streamSystemPromptDocument.Render();
+
+            bool streamContextUsesCompressedSummary = false;
+
+            InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
+
+            void RebuildMaterializedSystemPrompt()
             {
-                baseSystemPromptDocument = ordinarySystemPromptDocument;
+                streamSystemPromptDocument = SystemPromptBuilder.BuildDocument(
+                    request,
+                    streamCodexContent,
+                    streamActiveSpell,
+                    streamAcceptedAttachedFiles,
+                    sessionSummary: streamContextUsesCompressedSummary ? thread?.Summary : null,
+                    dependencySpells: streamResonants,
+                    maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
+                        ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
+                    semanticContext: streamSemanticContext,
+                    sagaMemories: streamSagaMemories,
+                    lexiconEntries: streamLexiconEntries,
+                    maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                        settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
+                    sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+                    maxIndexItems: streamMaxIndexItems,
+                    maxIndexBytes: streamMaxIndexBytes,
+                    sessionAttachmentContext: streamAttachmentContext,
+                    tapestryContext: streamTapestryContext,
+                    covenant: streamCovenantContent,
+                    campaignRollup: campaignTurn?.Artifact?.Content,
+                    enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                    campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
+
+                streamSystemPromptDocument = MemoryDelegationMaterializer.Append(streamSystemPromptDocument, covenantScope?.MemorySources);
+
+                ordinarySystemPromptDocument = streamSystemPromptDocument;
+
+                if (!streamContextUsesCompressedSummary)
+                {
+                    baseSystemPromptDocument = ordinarySystemPromptDocument;
+                }
+
+                streamCachePrepared = streamCachePrepared?.Rebuild(ordinarySystemPromptDocument);
+                streamSystemPromptDocument = streamCachePrepared?.Document ?? ordinarySystemPromptDocument;
+
+                streamBuiltSystemPrompt = streamCachePrepared?.Build.Prompt ?? streamSystemPromptDocument.Render();
+
+                if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
+                {
+                    chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
+                }
             }
 
-            streamCachePrepared = streamCachePrepared?.Rebuild(ordinarySystemPromptDocument);
-            streamSystemPromptDocument = streamCachePrepared?.Document ?? ordinarySystemPromptDocument;
+            ContentSensitivity ResolveCallSensitivity() => covenantScope is { } scope
+                ? CovenantDispatchGate.ResolveSensitivity(scope, streamCovenantDispatch).Level
+                : campaignTurn?.Artifact?.Sensitivity ?? ContentSensitivity.None;
 
-            streamBuiltSystemPrompt = streamCachePrepared?.Build.Prompt ?? streamSystemPromptDocument.Render();
-
-            if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
+            bool TrySelectOrdinaryCacheFallback(ModelCallRetryDirective directive)
             {
-                chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
-            }
-        }
+                if (directive != ModelCallRetryDirective.OrdinaryPromptCacheFallback
+                    || ordinaryCacheFallbackSelected || streamCachePrepared is null)
+                {
+                    return false;
+                }
 
-        ContentSensitivity ResolveCallSensitivity() => covenantScope is { } scope
-            ? CovenantDispatchGate.ResolveSensitivity(scope, streamCovenantDispatch).Level
-            : campaignTurn?.Artifact?.Sensitivity ?? ContentSensitivity.None;
+                // One ordinary restart per provider attempt. Keep later rounds ordinary after proof loss.
+                ordinaryCacheFallbackSelected = true;
 
-        bool TrySelectOrdinaryCacheFallback(ModelCallRetryDirective directive)
-        {
-            if (directive != ModelCallRetryDirective.OrdinaryPromptCacheFallback
-                || ordinaryCacheFallbackSelected || streamCachePrepared is null)
-            {
-                return false;
-            }
-
-            // One ordinary restart per provider attempt. Keep later rounds ordinary after proof loss.
-            ordinaryCacheFallbackSelected = true;
-
-            streamCachePrepared = null;
-
-            streamSystemPromptDocument = ordinarySystemPromptDocument;
-
-            streamBuiltSystemPrompt = ordinarySystemPromptDocument.Render();
-
-            chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
-
-            return true;
-        }
-
-        async ValueTask RefreshCacheLayoutAsync(ChatOptions options, CancellationToken ct)
-        {
-            if (!cacheV2Enabled)
-            {
-                return;
-            }
-
-            streamCachePrepared = cacheValidator is null || ordinaryCacheFallbackSelected ? null : await cacheValidator.PrepareAsync(
-                lease, ordinarySystemPromptDocument, options, invocationContext.Campaign, ResolveCallSensitivity(), ct).ConfigureAwait(false);
-
-            streamSystemPromptDocument = streamCachePrepared?.Document ?? ordinarySystemPromptDocument;
-
-            streamBuiltSystemPrompt = streamCachePrepared?.Build.Prompt ?? streamSystemPromptDocument.Render();
-
-            if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
-            {
-                chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
-            }
-
-            if (streamCachePrepared is { } prepared && !prepared.CanBind(chatMessages, options))
-            {
                 streamCachePrepared = null;
 
                 streamSystemPromptDocument = ordinarySystemPromptDocument;
@@ -2613,638 +2581,670 @@ public sealed partial class WizardIntelligenceProvider(
                 streamBuiltSystemPrompt = ordinarySystemPromptDocument.Render();
 
                 chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
-            }
-        }
 
-        bool RemoveSemanticMaterialization(ContextMaterializationEntry removed)
-        {
-            bool changed = removed.SourceKind switch
-            {
-                ContextMaterializationSourceKind.AttachmentRag =>
-                    RemoveAttachmentRagChunk(ref streamAttachmentContext, removed),
-
-                ContextMaterializationSourceKind.WorkspaceRag =>
-                    RemoveWorkspaceRagChunk(ref streamSemanticContext, removed),
-
-                ContextMaterializationSourceKind.SagaMemory =>
-                    RemoveSagaMemory(ref streamSagaMemories, removed),
-
-                ContextMaterializationSourceKind.TapestryMemory =>
-                    RemoveTapestryNode(ref streamTapestryContext, removed),
-
-                _ => false,
-            };
-
-            if (!changed)
-            {
-                return false;
+                return true;
             }
 
-            RebuildMaterializedSystemPrompt();
-
-            return true;
-        }
-
-        void ReconcileSuppressedSemanticContext()
-        {
-            bool changed = PruneSuppressedAttachmentRag(
-                ref streamAttachmentContext,
-                streamMaterializationLedger);
-
-            changed |= PruneSuppressedWorkspaceRag(
-                ref streamSemanticContext,
-                streamMaterializationLedger);
-
-            if (!changed)
+            async ValueTask RefreshCacheLayoutAsync(ChatOptions options, CancellationToken ct)
             {
-                return;
+                if (!cacheV2Enabled)
+                {
+                    return;
+                }
+
+                streamCachePrepared = cacheValidator is null || ordinaryCacheFallbackSelected ? null : await cacheValidator.PrepareAsync(
+                    lease, ordinarySystemPromptDocument, options, invocationContext.Campaign, ResolveCallSensitivity(), ct).ConfigureAwait(false);
+
+                streamSystemPromptDocument = streamCachePrepared?.Document ?? ordinarySystemPromptDocument;
+
+                streamBuiltSystemPrompt = streamCachePrepared?.Build.Prompt ?? streamSystemPromptDocument.Render();
+
+                if (chatMessages.Count > 0 && chatMessages[0].Role == ChatRole.System)
+                {
+                    chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
+                }
+
+                if (streamCachePrepared is { } prepared && !prepared.CanBind(chatMessages, options))
+                {
+                    streamCachePrepared = null;
+
+                    streamSystemPromptDocument = ordinarySystemPromptDocument;
+
+                    streamBuiltSystemPrompt = ordinarySystemPromptDocument.Render();
+
+                    chatMessages[0] = new MeAiChatMessage(ChatRole.System, streamBuiltSystemPrompt);
+                }
             }
 
-            RebuildMaterializedSystemPrompt();
-        }
-
-        if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
-        {
-            Result<GrimoireTurnWriter.TurnHandle> lateBegun = await grimoireTurnWriter
-                .BeginStreamedAssistantReplyAsync(
-                    request,
-                    invocationContext,
-                    prompt,
-                    targetModel,
-                    inferenceToken,
-                    claimLease: campaignTurn?.ClaimLease)
-                .ConfigureAwait(false);
-
-            if (lateBegun.IsFailure)
+            bool RemoveSemanticMaterialization(ContextMaterializationEntry removed)
             {
-                yield return await FailureFrameAsync(lateBegun.Error);
+                bool changed = removed.SourceKind switch
+                {
+                    ContextMaterializationSourceKind.AttachmentRag =>
+                        RemoveAttachmentRagChunk(ref streamAttachmentContext, removed),
+
+                    ContextMaterializationSourceKind.WorkspaceRag =>
+                        RemoveWorkspaceRagChunk(ref streamSemanticContext, removed),
+
+                    ContextMaterializationSourceKind.SagaMemory =>
+                        RemoveSagaMemory(ref streamSagaMemories, removed),
+
+                    ContextMaterializationSourceKind.TapestryMemory =>
+                        RemoveTapestryNode(ref streamTapestryContext, removed),
+
+                    _ => false,
+                };
+
+                if (!changed)
+                {
+                    return false;
+                }
+
+                RebuildMaterializedSystemPrompt();
+
+                return true;
+            }
+
+            void ReconcileSuppressedSemanticContext()
+            {
+                bool changed = PruneSuppressedAttachmentRag(
+                    ref streamAttachmentContext,
+                    streamMaterializationLedger);
+
+                changed |= PruneSuppressedWorkspaceRag(
+                    ref streamSemanticContext,
+                    streamMaterializationLedger);
+
+                if (!changed)
+                {
+                    return;
+                }
+
+                RebuildMaterializedSystemPrompt();
+            }
+
+            if (streaming && !streamTurnBegunEarly && !InferenceContextBuilder.HasStatelessMessages(request))
+            {
+                Result<GrimoireTurnWriter.TurnHandle> lateBegun = await grimoireTurnWriter
+                    .BeginStreamedAssistantReplyAsync(
+                        request,
+                        invocationContext,
+                        prompt,
+                        targetModel,
+                        inferenceToken,
+                        claimLease: campaignTurn?.ClaimLease)
+                    .ConfigureAwait(false);
+
+                if (lateBegun.IsFailure)
+                {
+                    yield return await FailureFrameAsync(lateBegun.Error);
+
+                    yield break;
+                }
+
+                grimoireTurn = lateBegun.Value;
+
+                grimoireTurn.OutputProtection = () => covenantScope?.Protection;
+
+                campaignTurn?.MarkBegun();
+
+                if (seed is not null)
+                {
+                    seed.Turn = grimoireTurn;
+                }
+            }
+
+            if (grimoireTurn.SessionId is { } bcid)
+            {
+                if (streaming)
+                {
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.SessionBound,
+                        "Session started",
+                        bcid.ToString());
+
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.ConversationBound,
+                        "Conversation started",
+                        bcid.ToString());
+                }
+
+                if (streamAttachmentPrep.PendingTurnId is not null)
+                {
+                    string? promoteError = await SessionAttachmentTurnService
+                        .PromotePendingAsync(
+                            sessionAttachmentStore,
+                            streamAttachmentPrep.PendingTurnId,
+                            bcid,
+                            grimoireTurn.AssistantEntryId,
+                            inferenceToken,
+                            logger)
+                        .ConfigureAwait(false);
+
+                    if (promoteError is not null)
+                    {
+                        if (!streaming)
+                        {
+                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                                new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
+                        }
+
+                        if (streaming)
+                        {
+                            yield return await FailureFrameAsync(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
+                        }
+
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAndMarkFinalizedAsync(
+                                grimoireTurn,
+                                null,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+
+                        yield break;
+                    }
+                }
+            }
+
+            // Per-turn live HITL emitter — created before server tool-set assembly. The availability bit
+            // was fixed before auxiliary inference so a required client ask_human can fail without a
+            // routing or Lexicon model call when this surface cannot provide a live response channel.
+            // Also published via AsyncLocal for the tool-call site: in-process tools read it directly, and
+            // SdkMcpClientWrapper.CallToolAsync hands it to the connection's McpElicitationSink so the MCP
+            // ElicitationHandler, which runs on the SDK receive loop where the ambient is never visible,
+            // can emit ask_human-shaped frames on this same channel during nested tool calls.
+            Func<IntelligenceEvent, CancellationToken, Task>? liveHumanPromptEmit = null;
+
+            // Buffered turns never have a live HITL channel — ask_human would deadlock until timeout.
+            if (streaming && !request.UnattendedMode)
+            {
+                liveHumanPromptChannel = Channel.CreateUnbounded<IntelligenceEvent>();
+
+                // One emitter instance per turn: the MCP connection's elicitation sink tells turns apart
+                // by emitter identity, so every tool call of this turn must present the same instance.
+                liveHumanPromptEmitter = new ChannelHumanPromptLiveEmitter(liveHumanPromptChannel);
+
+                liveHumanPromptEmit = async (evt, ct) =>
+                {
+                    await liveHumanPromptChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
+                };
+
+                // V-2: NOT set here. This method is an async iterator, and an AsyncLocal write does
+                // not survive a `yield return` — only an `await` does. The very next yield (the
+                // ToolCall frame, before any tool executes) would silently discard this assignment,
+                // so every tool invocation would observe HumanPromptLiveEmitterAmbient.Current as
+                // null regardless. It is captured on the turn's ambient set instead and (re-)established
+                // inside ProcessWithLiveWardsAsync, a plain non-yielding local function invoked with
+                // zero intervening yields after each tool call's own ToolCall frame — see the comment
+                // there. R-008 extended the same treatment to every other per-turn ambient.
+                streamTurnAmbients.HumanPromptEmitter = liveHumanPromptEmitter;
+            }
+
+            List<AITool> streamToolSet = request.DisableAllTools
+                || streamModelDeclaresToolsUnsupported
+                ? []
+                : request.ForwardClientTools
+                    ? prevalidatedClientToolSet ?? []
+                    : await BuildToolSetWithMcpAsync(
+                        request,
+                        streamResolvedSpell,
+                        grimoireTurn.SessionId ?? request.SessionId,
+                        grimoireTurn.AssistantEntryId,
+                        inferenceToken,
+                        memoryDelegation: memoryDelegation,
+                        recallInvocation: invocationContext,
+                        recallTurn: covenantScope).ConfigureAwait(false);
+
+            ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
+                request,
+                streamToolSet,
+                humanInteractionAvailable,
+                grimoireTurn,
+                targetModel,
+                streamAttachmentPrep.VisibleAttachmentIds,
+                invocationContext,
+                inferenceToken).ConfigureAwait(false);
+
+            Result effectiveClientTools = ClientToolCapabilityValidator.ValidateEffectiveToolSet(
+                request,
+                streamTurnContext.InferenceTools);
+
+            if (effectiveClientTools.IsFailure)
+            {
+                if (!streaming)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                        effectiveClientTools.Error);
+                }
+
+                await grimoireTurnWriter
+                    .ResolveInterruptedAndMarkFinalizedAsync(
+                        grimoireTurn,
+                        null,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                yield return await FailureFrameAsync(effectiveClientTools.Error);
 
                 yield break;
             }
 
-            grimoireTurn = lateBegun.Value;
+            bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
 
-            grimoireTurn.OutputProtection = () => covenantScope?.Protection;
-
-            campaignTurn?.MarkBegun();
-
-            if (seed is not null)
+            if (deferredAttachmentMaterializations.Count > 0)
             {
-                seed.Turn = grimoireTurn;
-            }
-        }
-
-        if (grimoireTurn.SessionId is { } bcid)
-        {
-            if (streaming)
-            {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.SessionBound,
-                    "Session started",
-                    bcid.ToString());
-
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.ConversationBound,
-                    "Conversation started",
-                    bcid.ToString());
-            }
-
-            if (streamAttachmentPrep.PendingTurnId is not null)
-            {
-                string? promoteError = await SessionAttachmentTurnService
-                    .PromotePendingAsync(
-                        sessionAttachmentStore,
-                        streamAttachmentPrep.PendingTurnId,
-                        bcid,
-                        grimoireTurn.AssistantEntryId,
-                        inferenceToken,
-                        logger)
-                    .ConfigureAwait(false);
-
-                if (promoteError is not null)
-                {
-                    if (!streaming)
-                    {
-                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                            new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
-                    }
-
-                    if (streaming)
-                    {
-                        yield return await FailureFrameAsync(new Error(ErrorCodes.Validation.AttachedFiles, promoteError));
-                    }
-
-                    await grimoireTurnWriter
-                        .ResolveInterruptedAndMarkFinalizedAsync(
-                            grimoireTurn,
-                            null,
-                            CancellationToken.None)
-                        .ConfigureAwait(false);
-
-                    yield break;
-                }
-            }
-        }
-
-        // Per-turn live HITL emitter — created before server tool-set assembly. The availability bit
-        // was fixed before auxiliary inference so a required client ask_human can fail without a
-        // routing or Lexicon model call when this surface cannot provide a live response channel.
-        // Also published via AsyncLocal for the tool-call site: in-process tools read it directly, and
-        // SdkMcpClientWrapper.CallToolAsync hands it to the connection's McpElicitationSink so the MCP
-        // ElicitationHandler, which runs on the SDK receive loop where the ambient is never visible,
-        // can emit ask_human-shaped frames on this same channel during nested tool calls.
-        Func<IntelligenceEvent, CancellationToken, Task>? liveHumanPromptEmit = null;
-
-        // Buffered turns never have a live HITL channel — ask_human would deadlock until timeout.
-        if (streaming && !request.UnattendedMode)
-        {
-            liveHumanPromptChannel = Channel.CreateUnbounded<IntelligenceEvent>();
-
-            // One emitter instance per turn: the MCP connection's elicitation sink tells turns apart
-            // by emitter identity, so every tool call of this turn must present the same instance.
-            liveHumanPromptEmitter = new ChannelHumanPromptLiveEmitter(liveHumanPromptChannel);
-
-            liveHumanPromptEmit = async (evt, ct) =>
-            {
-                await liveHumanPromptChannel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
-            };
-
-            // V-2: NOT set here. This method is an async iterator, and an AsyncLocal write does
-            // not survive a `yield return` — only an `await` does. The very next yield (the
-            // ToolCall frame, before any tool executes) would silently discard this assignment,
-            // so every tool invocation would observe HumanPromptLiveEmitterAmbient.Current as
-            // null regardless. It is captured on the turn's ambient set instead and (re-)established
-            // inside ProcessWithLiveWardsAsync, a plain non-yielding local function invoked with
-            // zero intervening yields after each tool call's own ToolCall frame — see the comment
-            // there. R-008 extended the same treatment to every other per-turn ambient.
-            streamTurnAmbients.HumanPromptEmitter = liveHumanPromptEmitter;
-        }
-
-        List<AITool> streamToolSet = request.DisableAllTools
-            || streamModelDeclaresToolsUnsupported
-            ? []
-            : request.ForwardClientTools
-                ? prevalidatedClientToolSet ?? []
-                : await BuildToolSetWithMcpAsync(
+                ChatOptions attachmentAdmissionOptions = CreateInferenceChatOptions(
+                    streamUsesTools,
+                    streamTurnContext.InferenceTools,
                     request,
-                    streamResolvedSpell,
-                    grimoireTurn.SessionId ?? request.SessionId,
-                    grimoireTurn.AssistantEntryId,
-                    inferenceToken,
-                    memoryDelegation: memoryDelegation,
-                    recallInvocation: invocationContext,
-                    recallTurn: covenantScope).ConfigureAwait(false);
+                    lease);
 
-        ToolExecutionPipeline.TurnContext streamTurnContext = await BuildTurnContextAsync(
-            request,
-            streamToolSet,
-            humanInteractionAvailable,
-            grimoireTurn,
-            targetModel,
-            streamAttachmentPrep.VisibleAttachmentIds,
-            invocationContext,
-            inferenceToken).ConfigureAwait(false);
+                foreach ((SessionAttachmentExplicitMaterialization materialization,
+                         ContextMaterializationIdentity identity)
+                         in deferredAttachmentMaterializations)
+                {
+                    SessionAttachmentReferenceMaterialization reference =
+                        await SessionAttachmentTurnService.MaterializeReferenceAsync(
+                            materialization.Record,
+                            sessionAttachmentStore,
+                            settings.Value,
+                            lease.ResolvedModel,
+                            inferenceToken).ConfigureAwait(false);
 
-        Result effectiveClientTools = ClientToolCapabilityValidator.ValidateEffectiveToolSet(
-            request,
-            streamTurnContext.InferenceTools);
+                    if (reference.ErrorMessage is not null)
+                    {
+                        Error referenceError = new(
+                            ErrorCodes.Validation.AttachedFiles,
+                            reference.ErrorMessage);
 
-        if (effectiveClientTools.IsFailure)
-        {
-            if (!streaming)
-            {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                    effectiveClientTools.Error);
+                        if (!streaming)
+                        {
+                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(referenceError);
+                        }
+
+                        if (streaming)
+                        {
+                            yield return await FailureFrameAsync(referenceError);
+                        }
+
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAndMarkFinalizedAsync(
+                                grimoireTurn,
+                                null,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+
+                        yield break;
+                    }
+
+                    List<AIContent> candidateAppendedContext = [.. acceptedAppendedContext];
+
+                    candidateAppendedContext.InsertRange(
+                        deferredAttachmentInsertionIndex,
+                        reference.Contents);
+
+                    List<MeAiChatMessage> admissionMessages = chatMessages
+                        .Select(static message => new MeAiChatMessage(
+                            message.Role,
+                            [.. message.Contents])
+                        {
+                            AuthorName = message.AuthorName,
+                        })
+                        .ToList();
+
+                    InferenceContextBuilder.AppendContentsToLastMessage(
+                        admissionMessages,
+                        candidateAppendedContext);
+
+                    ModelCallContext attachmentAdmissionContext = BuildModelCallContext(lease, request);
+
+                    (bool admissionCompressed, List<MeAiChatMessage> preparedAdmissionMessages) =
+                        inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
+                            new ContextCompressionRequest
+                            {
+                                Request = request,
+
+                                Messages = admissionMessages,
+
+                                Thread = thread,
+
+                                NewUserPrompt = prompt,
+
+                                Lease = lease,
+
+                                ChatOptions = attachmentAdmissionOptions,
+
+                                CodexContent = streamCodexContent,
+
+                                ActiveSpell = streamActiveSpell,
+
+                                DependencySpells = streamResonants,
+
+                                ReservedAnswerTokens = attachmentAdmissionContext.ReservedAnswerTokens,
+
+                                ReservedReasoningTokens = attachmentAdmissionContext.ReservedReasoningTokens,
+
+                                AppendedContents = candidateAppendedContext,
+
+                                SemanticContext = streamSemanticContext,
+
+                                SagaMemories = streamSagaMemories,
+
+                                SessionAttachmentContext = streamAttachmentContext,
+
+                                TapestryContext = streamTapestryContext,
+
+                                LexiconEntries = streamLexiconEntries,
+
+                                SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
+
+                                MaxIndexItems = streamMaxIndexItems,
+
+                                MaxIndexBytes = streamMaxIndexBytes,
+
+                                ScryingFoci = streamContextRequest.ScryingFoci,
+
+                                CampaignRollup = campaignTurn?.Artifact,
+
+                                EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                            });
+
+                    bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
+                    {
+                        bool changed = RemoveSemanticMaterialization(removed);
+
+                        if (!changed)
+                        {
+                            return false;
+                        }
+
+                        SystemPromptDocument admissionSystemPrompt = SystemPromptBuilder.BuildDocument(
+                            request,
+                            streamCodexContent,
+                            streamActiveSpell,
+                            streamAcceptedAttachedFiles,
+                            sessionSummary: admissionCompressed ? thread?.Summary : null,
+                            dependencySpells: streamResonants,
+                            maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
+                                ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
+                            semanticContext: streamSemanticContext,
+                            sagaMemories: streamSagaMemories,
+                            lexiconEntries: streamLexiconEntries,
+                            maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
+                                settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
+                            sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
+                            maxIndexItems: streamMaxIndexItems,
+                            maxIndexBytes: streamMaxIndexBytes,
+                            sessionAttachmentContext: streamAttachmentContext,
+                            tapestryContext: streamTapestryContext,
+                    covenant: streamCovenantContent,
+                    campaignRollup: campaignTurn?.Artifact?.Content,
+                    enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                    campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
+
+                        admissionSystemPrompt = MemoryDelegationMaterializer.Append(admissionSystemPrompt, covenantScope?.MemorySources);
+
+                        if (preparedAdmissionMessages.Count > 0
+                            && preparedAdmissionMessages[0].Role == ChatRole.System)
+                        {
+                            preparedAdmissionMessages[0] = new MeAiChatMessage(
+                                ChatRole.System,
+                                admissionSystemPrompt.Render());
+                        }
+
+                        return true;
+                    }
+
+                    Result attachmentAdmission = EnsureContextBudgetWithMaterializations(
+                        preparedAdmissionMessages,
+                        attachmentAdmissionOptions,
+                        lease,
+                        request,
+                        streamMaterializationLedger,
+                        RemoveSemanticForAttachmentAdmission,
+                        out _);
+
+                    if (attachmentAdmission.IsFailure)
+                    {
+                        string attachmentLabel = SystemPromptBuilder.HardenAttachmentIndexName(
+                            materialization.Record.OriginalFileName);
+
+                        if (attachmentLabel.Length == 0)
+                        {
+                            attachmentLabel = materialization.Record.Id.ToString();
+                        }
+
+                        Error boundaryError = new(
+                            attachmentAdmission.Error.Code,
+                            $"Attachment '{attachmentLabel}' cannot fit in the resolved provider context. "
+                            + attachmentAdmission.Error.Message
+                            + " Use a larger-context model or reference fewer attachments in this turn.");
+
+                        if (!streaming)
+                        {
+                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(boundaryError);
+                        }
+
+                        if (streaming)
+                        {
+                            yield return await FailureFrameAsync(boundaryError);
+                        }
+
+                        await grimoireTurnWriter
+                            .ResolveInterruptedAndMarkFinalizedAsync(
+                                grimoireTurn,
+                                null,
+                                CancellationToken.None)
+                            .ConfigureAwait(false);
+
+                        yield break;
+                    }
+
+                    acceptedAppendedContext.InsertRange(
+                        deferredAttachmentInsertionIndex,
+                        reference.Contents);
+
+                    deferredAttachmentInsertionIndex += reference.Contents.Count;
+
+                    _ = streamMaterializationLedger.TryMarkInjected(identity, providerRound: 0);
+                }
             }
 
-            await grimoireTurnWriter
-                .ResolveInterruptedAndMarkFinalizedAsync(
-                    grimoireTurn,
-                    null,
-                    CancellationToken.None)
-                .ConfigureAwait(false);
+            string? inferenceError;
 
-            yield return await FailureFrameAsync(effectiveClientTools.Error);
+            Error? inferenceTypedError = null;
 
-            yield break;
-        }
+            string? streamFinishReason = null;
 
-        bool streamUsesTools = !request.DisableAllTools && streamTurnContext.InferenceTools.Count > 0;
+            ChatCompletionUsage? streamAccumulatedUsage = null;
 
-        if (deferredAttachmentMaterializations.Count > 0)
-        {
-            ChatOptions attachmentAdmissionOptions = CreateInferenceChatOptions(
-                streamUsesTools,
-                streamTurnContext.InferenceTools,
-                request,
-                lease);
+            StructuredOutputSettings structuredOutput = ResolveStructuredOutputPolicy(request);
+            GuardrailsSettings guardrails = settings.Value.ResolveGuardrails();
+            GuardrailsStreamingMode guardrailsStreamingMode = guardrails.StreamingMode;
 
-            foreach ((SessionAttachmentExplicitMaterialization materialization,
-                     ContextMaterializationIdentity identity)
-                     in deferredAttachmentMaterializations)
+            bool guardrailsOutputActive = guardrails.Enabled
+                && (guardrails.BlockToxicity
+                    || guardrails.BlockedTopics is { Length: > 0 });
+
+            if (streaming && guardrailsOutputActive && guardrailsStreamingMode == GuardrailsStreamingMode.Passthrough)
             {
-                SessionAttachmentReferenceMaterialization reference =
-                    await SessionAttachmentTurnService.MaterializeReferenceAsync(
-                        materialization.Record,
-                        sessionAttachmentStore,
-                        settings.Value,
-                        lease.ResolvedModel,
-                        inferenceToken).ConfigureAwait(false);
+                logger.LogWarning(
+                    "Internal guardrail streaming mode resolved to Passthrough; blocked assistant output may reach the client before the post-hoc filter runs. Public configuration fixes this policy to Buffered.");
+            }
 
-                if (reference.ErrorMessage is not null)
+            bool bufferTokens = streaming
+                && ((guardrailsStreamingMode == GuardrailsStreamingMode.Buffered && guardrailsOutputActive)
+                    || (request.ResponseFormat is "json_schema"
+                        && structuredOutput.Enabled
+                        && structuredOutput.StrictMode));
+
+            BufferedOutputFrameAccumulator bufferedOutputFrames = new();
+
+            bool replacementOutputPreservesContentOrder = false;
+
+            bool suppressInvocationFailures =
+                streaming || settings.Value.ResolveIntelligence().TolerateToolFailures;
+
+            ChatOptions? lastInferenceChatOptions = null;
+
+            bool streamingContextPrepared = false;
+
+            bool streamToolCompatibilityRetry = false;
+
+            ToolLoopProgressDetector toolLoopProgressDetector = new();
+
+            while (true)
+            {
+                bool streamOuterRestart = false;
+
+                // The outer loop repeats only for the pre-commit no-tools compatibility restart.
+                streamAccumulator.Clear();
+
+                ephemeralReasoningSegments.Clear();
+
+                bufferedOutputFrames.Clear();
+
+                replacementOutputPreservesContentOrder = false;
+
+                streamAccumulatedUsage = null;
+
+                bufferedFinalResponse = null;
+
+                if (!streaming)
                 {
-                    Error referenceError = new(
-                        ErrorCodes.Validation.AttachedFiles,
-                        reference.ErrorMessage);
+                    // Buffered no-tools restart rebuilds the message list each outer attempt.
+                    chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
+                        streamContextRequest,
+                        thread,
+                        prompt);
 
-                    if (!streaming)
-                    {
-                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(referenceError);
-                    }
+                    InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
 
-                    if (streaming)
-                    {
-                        yield return await FailureFrameAsync(referenceError);
-                    }
-
-                    await grimoireTurnWriter
-                        .ResolveInterruptedAndMarkFinalizedAsync(
-                            grimoireTurn,
-                            null,
-                            CancellationToken.None)
-                        .ConfigureAwait(false);
-
-                    yield break;
+                    streamSystemPromptDocument = baseSystemPromptDocument;
+                    ordinarySystemPromptDocument = baseSystemPromptDocument;
+                    streamCachePrepared = null;
                 }
 
-                List<AIContent> candidateAppendedContext = [.. acceptedAppendedContext];
+                ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
 
-                candidateAppendedContext.InsertRange(
-                    deferredAttachmentInsertionIndex,
-                    reference.Contents);
-
-                List<MeAiChatMessage> admissionMessages = chatMessages
-                    .Select(static message => new MeAiChatMessage(
-                        message.Role,
-                        [.. message.Contents])
-                    {
-                        AuthorName = message.AuthorName,
-                    })
-                    .ToList();
-
-                InferenceContextBuilder.AppendContentsToLastMessage(
-                    admissionMessages,
-                    candidateAppendedContext);
-
-                ModelCallContext attachmentAdmissionContext = BuildModelCallContext(lease, request);
-
-                (bool admissionCompressed, List<MeAiChatMessage> preparedAdmissionMessages) =
-                    inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
-                        new ContextCompressionRequest
-                        {
-                            Request = request,
-
-                            Messages = admissionMessages,
-
-                            Thread = thread,
-
-                            NewUserPrompt = prompt,
-
-                            Lease = lease,
-
-                            ChatOptions = attachmentAdmissionOptions,
-
-                            CodexContent = streamCodexContent,
-
-                            ActiveSpell = streamActiveSpell,
-
-                            DependencySpells = streamResonants,
-
-                            ReservedAnswerTokens = attachmentAdmissionContext.ReservedAnswerTokens,
-
-                            ReservedReasoningTokens = attachmentAdmissionContext.ReservedReasoningTokens,
-
-                            AppendedContents = candidateAppendedContext,
-
-                            SemanticContext = streamSemanticContext,
-
-                            SagaMemories = streamSagaMemories,
-
-                            SessionAttachmentContext = streamAttachmentContext,
-
-                            TapestryContext = streamTapestryContext,
-
-                            LexiconEntries = streamLexiconEntries,
-
-                            SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
-
-                            MaxIndexItems = streamMaxIndexItems,
-
-                            MaxIndexBytes = streamMaxIndexBytes,
-
-                            ScryingFoci = streamContextRequest.ScryingFoci,
-
-                            CampaignRollup = campaignTurn?.Artifact,
-
-                            EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
-                        });
-
-                bool RemoveSemanticForAttachmentAdmission(ContextMaterializationEntry removed)
+                if (streamCovenantContent is not null)
                 {
-                    bool changed = RemoveSemanticMaterialization(removed);
+                    // Head-room is measured against the transcript as it stands, and only a Covenant-free
+                    // transcript makes that measurement honest. A restart inheriting the previous attempt's
+                    // Covenant bytes counts them as somebody else's context and admits less than fits, and
+                    // if the shrunken head-room refuses outright, the rebuild below is skipped and this
+                    // attempt would dispatch the very content its own planner declined.
+                    streamCovenantContent = null;
 
-                    if (!changed)
-                    {
-                        return false;
-                    }
-
-                    SystemPromptDocument admissionSystemPrompt = SystemPromptBuilder.BuildDocument(
-                        request,
-                        streamCodexContent,
-                        streamActiveSpell,
-                        streamAcceptedAttachedFiles,
-                        sessionSummary: admissionCompressed ? thread?.Summary : null,
-                        dependencySpells: streamResonants,
-                        maxResonantBytes: ArcanumSettingClamps.MaxResonantBytes(
-                            ArcanumRuntimeDefaults.Spells.MaxResonantBytes),
-                        semanticContext: streamSemanticContext,
-                        sagaMemories: streamSagaMemories,
-                        lexiconEntries: streamLexiconEntries,
-                        maxLexiconInjectedBytes: ArcanumSettingClamps.LexiconMaxInjectedBytes(
-                            settings.Value.ResolveIntelligence().LexiconMaxInjectedBytes),
-                        sessionAttachmentsIndex: streamAttachmentPrep.IndexItems,
-                        maxIndexItems: streamMaxIndexItems,
-                        maxIndexBytes: streamMaxIndexBytes,
-                        sessionAttachmentContext: streamAttachmentContext,
-                        tapestryContext: streamTapestryContext,
-                covenant: streamCovenantContent,
-                campaignRollup: campaignTurn?.Artifact?.Content,
-                enableCampaignRollups: settings.Value.ResolveIntelligence().EnableCampaignRollups,
-                campaignRollupSensitive: campaignTurn?.Artifact?.Sensitivity is ContentSensitivity.CovenantDerived);
-
-                    admissionSystemPrompt = MemoryDelegationMaterializer.Append(admissionSystemPrompt, covenantScope?.MemorySources);
-
-                    if (preparedAdmissionMessages.Count > 0
-                        && preparedAdmissionMessages[0].Role == ChatRole.System)
-                    {
-                        preparedAdmissionMessages[0] = new MeAiChatMessage(
-                            ChatRole.System,
-                            admissionSystemPrompt.Render());
-                    }
-
-                    return true;
+                    RebuildMaterializedSystemPrompt();
                 }
 
-                Result attachmentAdmission = EnsureContextBudgetWithMaterializations(
-                    preparedAdmissionMessages,
-                    attachmentAdmissionOptions,
+                streamCovenantDispatch = ResolveCovenantAdmission(
+                    covenantScope,
                     lease,
                     request,
-                    streamMaterializationLedger,
-                    RemoveSemanticForAttachmentAdmission,
-                    out _);
-
-                if (attachmentAdmission.IsFailure)
-                {
-                    string attachmentLabel = SystemPromptBuilder.HardenAttachmentIndexName(
-                        materialization.Record.OriginalFileName);
-
-                    if (attachmentLabel.Length == 0)
-                    {
-                        attachmentLabel = materialization.Record.Id.ToString();
-                    }
-
-                    Error boundaryError = new(
-                        attachmentAdmission.Error.Code,
-                        $"Attachment '{attachmentLabel}' cannot fit in the resolved provider context. "
-                        + attachmentAdmission.Error.Message
-                        + " Use a larger-context model or reference fewer attachments in this turn.");
-
-                    if (!streaming)
-                    {
-                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(boundaryError);
-                    }
-
-                    if (streaming)
-                    {
-                        yield return await FailureFrameAsync(boundaryError);
-                    }
-
-                    await grimoireTurnWriter
-                        .ResolveInterruptedAndMarkFinalizedAsync(
-                            grimoireTurn,
-                            null,
-                            CancellationToken.None)
-                        .ConfigureAwait(false);
-
-                    yield break;
-                }
-
-                acceptedAppendedContext.InsertRange(
-                    deferredAttachmentInsertionIndex,
-                    reference.Contents);
-
-                deferredAttachmentInsertionIndex += reference.Contents.Count;
-
-                _ = streamMaterializationLedger.TryMarkInjected(identity, providerRound: 0);
-            }
-        }
-
-        string? inferenceError;
-
-        Error? inferenceTypedError = null;
-
-        string? streamFinishReason = null;
-
-        ChatCompletionUsage? streamAccumulatedUsage = null;
-
-        StructuredOutputSettings structuredOutput = ResolveStructuredOutputPolicy(request);
-        GuardrailsSettings guardrails = settings.Value.ResolveGuardrails();
-        GuardrailsStreamingMode guardrailsStreamingMode = guardrails.StreamingMode;
-
-        bool guardrailsOutputActive = guardrails.Enabled
-            && (guardrails.BlockToxicity
-                || guardrails.BlockedTopics is { Length: > 0 });
-
-        if (streaming && guardrailsOutputActive && guardrailsStreamingMode == GuardrailsStreamingMode.Passthrough)
-        {
-            logger.LogWarning(
-                "Internal guardrail streaming mode resolved to Passthrough; blocked assistant output may reach the client before the post-hoc filter runs. Public configuration fixes this policy to Buffered.");
-        }
-
-        bool bufferTokens = streaming
-            && ((guardrailsStreamingMode == GuardrailsStreamingMode.Buffered && guardrailsOutputActive)
-                || (request.ResponseFormat is "json_schema"
-                    && structuredOutput.Enabled
-                    && structuredOutput.StrictMode));
-
-        BufferedOutputFrameAccumulator bufferedOutputFrames = new();
-
-        bool replacementOutputPreservesContentOrder = false;
-
-        bool suppressInvocationFailures =
-            streaming || settings.Value.ResolveIntelligence().TolerateToolFailures;
-
-        ChatOptions? lastInferenceChatOptions = null;
-
-        bool streamingContextPrepared = false;
-
-        bool streamToolCompatibilityRetry = false;
-
-        ToolLoopProgressDetector toolLoopProgressDetector = new();
-
-        while (true)
-        {
-            bool streamOuterRestart = false;
-
-            // The outer loop repeats only for the pre-commit no-tools compatibility restart.
-            streamAccumulator.Clear();
-
-            ephemeralReasoningSegments.Clear();
-
-            bufferedOutputFrames.Clear();
-
-            replacementOutputPreservesContentOrder = false;
-
-            streamAccumulatedUsage = null;
-
-            bufferedFinalResponse = null;
-
-            if (!streaming)
-            {
-                // Buffered no-tools restart rebuilds the message list each outer attempt.
-                chatMessages = InferenceContextBuilder.BuildInitialMeAiChatMessages(
-                    streamContextRequest,
-                    thread,
-                    prompt);
-
-                InferenceContextBuilder.PrependDynamicSystemMessage(chatMessages, streamBuiltSystemPrompt);
-
-                streamSystemPromptDocument = baseSystemPromptDocument;
-                ordinarySystemPromptDocument = baseSystemPromptDocument;
-                streamCachePrepared = null;
-            }
-
-            ChatOptions streamChatOptions = CreateInferenceChatOptions(streamUsesTools, streamTurnContext.InferenceTools, request, lease);
-
-            if (streamCovenantContent is not null)
-            {
-                // Head-room is measured against the transcript as it stands, and only a Covenant-free
-                // transcript makes that measurement honest. A restart inheriting the previous attempt's
-                // Covenant bytes counts them as somebody else's context and admits less than fits, and
-                // if the shrunken head-room refuses outright, the rebuild below is skipped and this
-                // attempt would dispatch the very content its own planner declined.
-                streamCovenantContent = null;
-
-                RebuildMaterializedSystemPrompt();
-            }
-
-            streamCovenantDispatch = ResolveCovenantAdmission(
-                covenantScope,
-                lease,
-                request,
-                chatMessages,
-                streamChatOptions);
-
-            if (streamCovenantDispatch.HasAdmittedContent)
-            {
-                streamCovenantContent = streamCovenantDispatch.Content;
-
-                RebuildMaterializedSystemPrompt();
-            }
-
-            if (streamCovenantDispatch.Admission is { ConfirmedAdmitted: true } streamCovenantAdmission)
-            {
-                // Recorded whether or not anything was dropped: zero is a measurement here, and an
-                // operator asking why a preference was not honored needs to see that the answer is
-                // "nothing was pressured" rather than "nobody looked".
-                streamMaterializationLedger.RecordCovenantPressure(
-                    streamCovenantAdmission.ProposedRemovals,
-                    (int)Math.Min(int.MaxValue, streamCovenantAdmission.PressuredProposedTokens));
-            }
-            else if (streamCovenantDispatch.Admission is not null)
-            {
-                // A refusal marks every candidate Pressured and counts every Proposed entry as a
-                // removal, but nothing was trimmed: Confirmed is all-or-fail, so the entire section
-                // was withheld. Reporting those counts as Proposed pressure would tell an operator
-                // their standing agreement was honored minus a few preferences, when none of it was
-                // sent at all -- the one outcome that must never be silent.
-                streamMaterializationLedger.RecordCovenantConfirmedNoFit();
-            }
-
-            lastInferenceChatOptions = streamChatOptions;
-
-            if (!streaming || !streamingContextPrepared)
-            {
-                ModelCallContext preparationContext = BuildModelCallContext(lease, request);
-                InferenceContextBuilder.AppendContentsToLastMessage(
                     chatMessages,
-                    streamAppendedContext);
-                (bool compressed, List<MeAiChatMessage> preparedMessages) =
-                    inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
-                        new ContextCompressionRequest
-                        {
-                            Request = request,
-                            Messages = chatMessages,
-                            Thread = thread,
-                            NewUserPrompt = prompt,
-                            Lease = lease,
-                            ChatOptions = streamChatOptions,
-                            CodexContent = streamCodexContent,
-                            ActiveSpell = streamActiveSpell,
-                            DependencySpells = streamResonants,
-                            ReservedAnswerTokens = preparationContext.ReservedAnswerTokens,
-                            ReservedReasoningTokens = preparationContext.ReservedReasoningTokens,
-                            AppendedContents = streamAppendedContext,
-                            SemanticContext = streamSemanticContext,
-                            SagaMemories = streamSagaMemories,
-                            SessionAttachmentContext = streamAttachmentContext,
-                            TapestryContext = streamTapestryContext,
-                            LexiconEntries = streamLexiconEntries,
-                            SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
-                            MaxIndexItems = streamMaxIndexItems,
-                            MaxIndexBytes = streamMaxIndexBytes,
-                            ScryingFoci = streamContextRequest.ScryingFoci,
+                    streamChatOptions);
 
-                            CampaignRollup = campaignTurn?.Artifact,
-
-                            EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
-                            Covenant = streamCovenantContent,
-                        });
-                chatMessages = preparedMessages;
-                streamingContextPrepared = true;
-
-                if (compressed)
+                if (streamCovenantDispatch.HasAdmittedContent)
                 {
-                    streamContextUsesCompressedSummary = true;
+                    streamCovenantContent = streamCovenantDispatch.Content;
 
-                    // The one rebuild path, rather than a second copy of the same call. Compression
-                    // replaced the whole transcript, so the document and chatMessages[0] have to be
-                    // rewritten together: the dispatch gate compares them and fails the turn closed on
-                    // any divergence, so a rebuild that refreshed only the document would refuse every
-                    // compressed turn that carried Covenant content.
                     RebuildMaterializedSystemPrompt();
+                }
 
-                    if (streaming)
+                if (streamCovenantDispatch.Admission is { ConfirmedAdmitted: true } streamCovenantAdmission)
+                {
+                    // Recorded whether or not anything was dropped: zero is a measurement here, and an
+                    // operator asking why a preference was not honored needs to see that the answer is
+                    // "nothing was pressured" rather than "nobody looked".
+                    streamMaterializationLedger.RecordCovenantPressure(
+                        streamCovenantAdmission.ProposedRemovals,
+                        (int)Math.Min(int.MaxValue, streamCovenantAdmission.PressuredProposedTokens));
+                }
+                else if (streamCovenantDispatch.Admission is not null)
+                {
+                    // A refusal marks every candidate Pressured and counts every Proposed entry as a
+                    // removal, but nothing was trimmed: Confirmed is all-or-fail, so the entire section
+                    // was withheld. Reporting those counts as Proposed pressure would tell an operator
+                    // their standing agreement was honored minus a few preferences, when none of it was
+                    // sent at all -- the one outcome that must never be silent.
+                    streamMaterializationLedger.RecordCovenantConfirmedNoFit();
+                }
+
+                lastInferenceChatOptions = streamChatOptions;
+
+                if (!streaming || !streamingContextPrepared)
+                {
+                    ModelCallContext preparationContext = BuildModelCallContext(lease, request);
+                    InferenceContextBuilder.AppendContentsToLastMessage(
+                        chatMessages,
+                        streamAppendedContext);
+                    (bool compressed, List<MeAiChatMessage> preparedMessages) =
+                        inferenceContextBuilder.TryApplyContextCompressionIfNeeded(
+                            new ContextCompressionRequest
+                            {
+                                Request = request,
+                                Messages = chatMessages,
+                                Thread = thread,
+                                NewUserPrompt = prompt,
+                                Lease = lease,
+                                ChatOptions = streamChatOptions,
+                                CodexContent = streamCodexContent,
+                                ActiveSpell = streamActiveSpell,
+                                DependencySpells = streamResonants,
+                                ReservedAnswerTokens = preparationContext.ReservedAnswerTokens,
+                                ReservedReasoningTokens = preparationContext.ReservedReasoningTokens,
+                                AppendedContents = streamAppendedContext,
+                                SemanticContext = streamSemanticContext,
+                                SagaMemories = streamSagaMemories,
+                                SessionAttachmentContext = streamAttachmentContext,
+                                TapestryContext = streamTapestryContext,
+                                LexiconEntries = streamLexiconEntries,
+                                SessionAttachmentsIndex = streamAttachmentPrep.IndexItems,
+                                MaxIndexItems = streamMaxIndexItems,
+                                MaxIndexBytes = streamMaxIndexBytes,
+                                ScryingFoci = streamContextRequest.ScryingFoci,
+
+                                CampaignRollup = campaignTurn?.Artifact,
+
+                                EnableCampaignRollups = settings.Value.ResolveIntelligence().EnableCampaignRollups,
+                                Covenant = streamCovenantContent,
+                            });
+                    chatMessages = preparedMessages;
+                    streamingContextPrepared = true;
+
+                    if (compressed)
                     {
-                        yield return new IntelligenceEvent(
-                            IntelligenceEventType.Status,
-                            IntelligenceStatusMessages.MemoryCompressionNotice);
-                    }
-                    else
-                    {
-                        logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
+                        streamContextUsesCompressedSummary = true;
+
+                        // The one rebuild path, rather than a second copy of the same call. Compression
+                        // replaced the whole transcript, so the document and chatMessages[0] have to be
+                        // rewritten together: the dispatch gate compares them and fails the turn closed on
+                        // any divergence, so a rebuild that refreshed only the document would refuse every
+                        // compressed turn that carried Covenant content.
+                        RebuildMaterializedSystemPrompt();
+
+                        if (streaming)
+                        {
+                            yield return new IntelligenceEvent(
+                                IntelligenceEventType.Status,
+                                IntelligenceStatusMessages.MemoryCompressionNotice);
+                        }
+                        else
+                        {
+                            logger.LogInformation(IntelligenceStatusMessages.MemoryCompressionNotice);
+                        }
                     }
                 }
-            }
 
-            int streamToolRoundCount = 0;
+                int streamToolRoundCount = 0;
 
-            inferenceError = null;
+                inferenceError = null;
 
-            inferenceTypedError = null;
+                inferenceTypedError = null;
 
-            Exception? streamingMoveNextFailure = null;
+                Exception? streamingMoveNextFailure = null;
 
                 while (true)
                 {
@@ -3489,794 +3489,794 @@ public sealed partial class WizardIntelligenceProvider(
                     }
                     else
                     {
-                    IAsyncEnumerator<ModelCallUpdate> streamEnumerator = ModelCallExecutor
-                            .ExecuteStreamingAsync(
-                                chatClient,
-                                chatMessages,
-                                streamChatOptions,
-                                streamAccountingLocal.Budget,
-                                streamPurpose,
-                                inferenceToken,
-                                BuildModelCallContext(
-                                    lease,
-                                    request,
-                                    callBreakdown,
-                                    streamPromptCachePlan,
-                                    ResolveCallSensitivity(),
-                                    streamCachePrepared?.Bind(chatMessages, streamChatOptions),
-                                    streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                        roundProtection))
-                        .GetAsyncEnumerator(inferenceToken);
-
-                try
-                {
-                    while (true)
-                    {
-                        bool hasNext;
+                        IAsyncEnumerator<ModelCallUpdate> streamEnumerator = ModelCallExecutor
+                                .ExecuteStreamingAsync(
+                                    chatClient,
+                                    chatMessages,
+                                    streamChatOptions,
+                                    streamAccountingLocal.Budget,
+                                    streamPurpose,
+                                    inferenceToken,
+                                    BuildModelCallContext(
+                                        lease,
+                                        request,
+                                        callBreakdown,
+                                        streamPromptCachePlan,
+                                        ResolveCallSensitivity(),
+                                        streamCachePrepared?.Bind(chatMessages, streamChatOptions),
+                                        streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                            roundProtection))
+                            .GetAsyncEnumerator(inferenceToken);
 
                         try
                         {
-                            hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
-                        {
-                            // Filtered on the caller's token, as ModelCallExecutor's buffered path
-                            // is: a provider timeout surfaces as a cancellation while the caller is
-                            // still listening, and it belongs in the generic catch below, which
-                            // classifies it as connectivity so the turn defers to the next
-                            // candidate instead of being finalized on the way out.
-                            //
-                            // A client disconnect must not make a round that already
-                            // streamed real provider bytes look like it spent nothing — that
-                            // both loses the spend from budget accounting and returns the
-                            // reservation via ReleaseAsync instead of ReconcileAsync.
-                            await RecordPartialRoundUsageAsync(
-                                    roundUpdates,
-                                    streamAccountingLocal,
-                                    lease.Provider.Name,
-                                    targetModel,
-                                    streamPurpose, roundUsageCommit)
-                                .ConfigureAwait(false);
-
-                            throw;
-                        }
-                        catch (Exception ex)
-                        {
-                            // The same spend rule for a round the provider ended: a timeout or a
-                            // dropped connection after usage arrived still cost what it reported.
-                            await RecordPartialRoundUsageAsync(
-                                    roundUpdates,
-                                    streamAccountingLocal,
-                                    lease.Provider.Name,
-                                    targetModel,
-                                    streamPurpose, roundUsageCommit)
-                                .ConfigureAwait(false);
-
-                            streamingMoveNextFailure = ex;
-
-                            logger.LogError(
-                                "Streaming read failed; exception type {ExceptionType}.",
-                                ex.GetType().FullName);
-
-                            inferenceError = BuildInferenceFailureMessage(lease, ex);
-
-                            // Only a genuine connectivity failure should trigger provider fallback.
-                            classification.IsConnectivityFailure = roundProtection?.Revocation.IsCancellationRequested != true
-                                && IsConnectivityFailure(ex, callerToken);
-
-                            break;
-                        }
-
-                        if (!hasNext)
-                        {
-                            break;
-                        }
-
-                        ModelCallUpdate modelUpdate = streamEnumerator.Current;
-
-                        if (modelUpdate is ModelCallContextUpdate contextUpdate)
-                        {
-                            contextBreakdownsByCall[contextUpdate.ModelCallId] = contextUpdate.Breakdown;
-                            if (streaming)
+                            while (true)
                             {
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.Context,
-                                    "Context token accounting",
-                                    ContextBreakdown: contextUpdate.Breakdown);
-                            }
+                                bool hasNext;
 
-                            continue;
-                        }
-
-                        if (modelUpdate is ModelCallFailureUpdate failureUpdate)
-                        {
-                            if (TrySelectOrdinaryCacheFallback(failureUpdate.RetryDirective))
-                            {
-                                restartWithOrdinaryCache = true;
-
-                                break;
-                            }
-
-                            inferenceTypedError = failureUpdate.Error;
-                            inferenceError = failureUpdate.Error.Message;
-                            streamAccountingStatus = InferenceRunStatus.Failed;
-                            break;
-                        }
-
-                        if (ProviderAttemptCommitTracker.CommitsProviderAttempt(modelUpdate))
-                        {
-                            // Semantic updates precede their raw response update, so commitment always
-                            // happens before any client-visible Token (including buffered guardrails).
-                            classification.ProviderCommitted = true;
-                        }
-
-                        if (modelUpdate is ModelCallReasoningUpdate reasoningUpdate
-                            && (reasoningUpdate.VisibleText.Length > 0 || reasoningUpdate.HasProtectedData))
-                        {
-                            ephemeralReasoningSegments.Append(reasoningUpdate);
-
-                            if (streaming
-                                && TryProjectClientReasoning(
-                                    reasoningUpdate.VisibleText,
-                                    clientReasoningOutput,
-                                    out ReasoningContentSegment? projectedReasoning))
-                            {
-                                if (bufferTokens)
+                                try
                                 {
-                                    bufferedOutputFrames.AppendReasoning(
-                                        reasoningUpdate.ModelCallId,
-                                        projectedReasoning);
+                                    hasNext = await streamEnumerator.MoveNextAsync().ConfigureAwait(false);
                                 }
-                                else
+                                catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
                                 {
-                                    yield return new IntelligenceEvent(
-                                        IntelligenceEventType.Reasoning,
-                                        projectedReasoning.Text,
-                                        Reasoning: projectedReasoning);
-                                }
-                            }
-                        }
-
-                        if (modelUpdate is ModelCallTextDelta textDelta)
-                        {
-                            _ = streamAccumulator.Append(textDelta.Text);
-
-                            if (bufferTokens)
-                            {
-                                bufferedOutputFrames.AppendToken(
-                                    textDelta.ModelCallId,
-                                    textDelta.Text);
-                            }
-                            else
-                            {
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.Token,
-                                    string.Empty,
-                                    textDelta.Text);
-                            }
-
-                            continue;
-                        }
-
-                        if (modelUpdate is not ModelCallResponseUpdate responseUpdate)
-                        {
-                            continue;
-                        }
-
-                        ChatResponseUpdate update = responseUpdate.Update;
-
-                        roundUpdates.Add(update);
-                    }
-                }
-                finally
-                {
-                    await streamEnumerator.DisposeAsync().ConfigureAwait(false);
-                }
-                    }
-
-                if (restartWithOrdinaryCache)
-                {
-                    continue;
-                }
-
-                if (inferenceError is not null)
-                {
-                    // An explicit SupportsTools=false declaration is handled before tool discovery
-                    // and before the first provider call. This compatibility restart is only for an
-                    // undeclared model whose provider rejects the advertised tools at runtime.
-                    bool providerRejectedTools = streamUsesTools
-                        && streamingMoveNextFailure is { Message: var moveMsg }
-                        && LooksLikeModelDoesNotSupportTools(moveMsg)
-                        && !classification.ProviderCommitted
-                        && (streaming ? streamAccumulator.Length == 0 : true);
-
-                    bool requiredClientToolCall =
-                        ClientToolCapabilityValidator.RequiresToolCall(request);
-
-                    bool allowNoToolsRestart = providerRejectedTools
-                        && !requiredClientToolCall
-                        && memoryDelegation is null;
-
-                    if (providerRejectedTools && memoryDelegation is not null)
-                    {
-                        Error unavailable = MemoryDelegationNativeCandidates.Unavailable();
-
-                        inferenceTypedError = unavailable;
-
-                        inferenceError = unavailable.Message;
-
-                        classification.IsConnectivityFailure = false;
-                    }
-                    else if (providerRejectedTools && requiredClientToolCall)
-                    {
-                        Error modelUnsupportedError = ClientToolCapabilityValidator.CreateModelUnsupportedError(
-                            lease.ResolvedModel,
-                            lease.Provider.Name);
-
-                        inferenceTypedError = modelUnsupportedError;
-
-                        inferenceError = modelUnsupportedError.Message;
-
-                        classification.IsConnectivityFailure = false;
-                    }
-                    else if (allowNoToolsRestart)
-                    {
-                        logger.LogInformation(
-                            "Model does not support tools; retrying without local tools (exception type {ExceptionType}).",
-                            streamingMoveNextFailure!.GetType().FullName);
-
-                        if (streaming)
-                        {
-                            yield return new IntelligenceEvent(
-                                IntelligenceEventType.Status,
-                                "This model does not support tools; continuing without local tools.");
-                        }
-
-                        streamUsesTools = false;
-
-                        streamToolCompatibilityRetry = true;
-
-                        inferenceError = null;
-
-                        streamingMoveNextFailure = null;
-
-                        classification.IsConnectivityFailure = false;
-
-                        streamOuterRestart = true;
-                    }
-                    else if (!streaming && streamingMoveNextFailure is not null)
-                    {
-                        logger.LogError(
-                            "Hub inference failed; exception type {ExceptionType}.",
-                            streamingMoveNextFailure.GetType().FullName);
-
-                        if (!ShouldDeferTurnToNextCandidate(
-                                seed,
-                                canFallBack,
-                                classification,
-                                streamAccumulator.Length))
-                        {
-                            await grimoireTurnWriter
-                                .ResolveInterruptedAndMarkFinalizedAsync(
-                                    grimoireTurn,
-                                    null,
-                                    CancellationToken.None)
-                                .ConfigureAwait(false);
-                        }
-
-                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                            inferenceTypedError ?? new Error(
-                                ErrorCodes.Hub.Error,
-                                BuildInferenceFailureMessage(lease, streamingMoveNextFailure)));
-                    }
-
-                    break;
-                }
-
-                ChatResponse combinedRound = bufferedRoundResponse ?? roundUpdates.ToChatResponse();
-
-                if (streaming)
-                {
-                    ChatCompletionUsage? streamingUsage = MapUsageDetails(combinedRound.Usage);
-
-                    await RecordProviderCallUsageAsync(
-                            streamAccountingLocal,
-                            streamingUsage,
-                            lease.Provider.Name,
-                            targetModel,
-                            streamPurpose,
-                            CancellationToken.None, roundUsageCommit)
-                        .ConfigureAwait(false);
-
-                    SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
-
-                    streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, streamingUsage);
-                }
-
-                List<FunctionCallContent> toolCalls = ToolExecutionPipeline.CollectActionableFunctionCalls(combinedRound);
-                IReadOnlyList<TextReasoningContent> rawRoundReasoning =
-                    CollectRawReasoningContent(combinedRound);
-
-                bool roundHasText = streamAccumulator.Length > 0 || !string.IsNullOrEmpty(combinedRound.Text);
-
-                if (ProviderAttemptCommitTracker.CommitsOnCompleteToolProposal(toolCalls.Count > 0))
-                {
-                    // Commit before ToolCall yield / authorize.
-                    classification.ProviderCommitted = true;
-                }
-                else if (ProviderAttemptCommitTracker.CommitsOnEmptySuccessfulRound(roundHasText, hasToolCalls: false))
-                {
-                    classification.ProviderCommitted = true;
-                }
-
-                if (toolCalls.Count == 0)
-                {
-                    streamFinishReason = MapChatFinishReasonToOpenAi(combinedRound.FinishReason);
-
-                    break;
-                }
-
-                if (request.ForwardClientTools)
-                {
-                    int forwardToolCallIndex = 0;
-
-                    foreach (FunctionCallContent fcc in toolCalls)
-                    {
-                        string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
-
-                        string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
-
-                        string callId = toolExecutionPipeline.ResolveCallId(fcc);
-
-                        (observedToolCalls ??= []).Add(new PromptToolCall(callId, fcc.Name ?? string.Empty, argsSnapshot));
-
-                        if (streaming)
-                        {
-                            yield return new IntelligenceEvent(
-                                IntelligenceEventType.ToolCall,
-                                fcc.Name ?? string.Empty,
-                                toolCallData,
-                                null,
-                                new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, forwardToolCallIndex, PreserveProviderCallId: true));
-                        }
-
-                        forwardToolCallIndex++;
-                    }
-
-                    streamFinishReason = "tool_calls";
-
-                    break;
-                }
-
-                List<ToolLoopProgressEntry> toolLoopProgressEntries = new(
-                    toolCalls.Count);
-
-                streamToolRoundCount++;
-
-                streamTurnAmbients.SetProviderRound(streamToolRoundCount);
-
-                int toolCallIndex = 0;
-
-                // Published to each tool call by streamTurnAmbients.Apply(), not here: a write here
-                // would not survive this round's first ToolCall frame.
-                streamTurnAmbients.SessionId = grimoireTurn.SessionId ?? request.SessionId;
-
-                try
-                {
-                    List<AIContent>? streamPendingAttachmentExtras = null;
-
-                    foreach (FunctionCallContent fcc in toolCalls)
-                    {
-                        FunctionCallContent invokeFcc = fcc;
-
-                        IHumanPromptReservation? askHumanReservation = null;
-
-                        Task<ToolExecutionPipeline.ProcessedToolCall>? processTask = null;
-
-                        // Set once the happy path has recorded this call (or its receipt already
-                        // did), so the finally records a returned tool only when that never happened.
-                        bool toolInteractionRecorded = false;
-
-                        try
-                        {
-                            if (IsAskHumanTool(fcc))
-                            {
-                                if (!humanInteractionAvailable)
-                                {
-                                    ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
-                                        fcc,
-                                        AskHumanUnavailableMessage);
-
-                                    toolLoopProgressEntries.Add(
-                                        new ToolLoopProgressEntry(
-                                            denied.ToolName,
-                                            covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty,
-                                            covenantScope?.Protection is null ? denied.ResultText : string.Empty));
-
-                                    if (!streaming)
-                                    {
-                                        (observedToolCalls ??= []).Add(new PromptToolCall(denied.CallId, denied.ToolName, denied.ArgsSnapshot));
-
-                                        auditContext?.ToolNames.Add(denied.ToolName);
-
-                                        auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty);
-
-                                        ToolExecutionPipeline.AppendToolExchangeToMessages(
-                                            chatMessages,
-                                            fcc,
-                                            denied.CallId,
-                                            denied.ResultText,
-                                            toolCallIndex == 0 ? rawRoundReasoning : null);
-
-                                        // The model has been told it was denied; recording that
-                                        // is bookkeeping and outlives the caller's token.
-                                        await PersistToolInteractionAsync(covenantScope, grimoireTurn,
-                                            denied.ToolName,
-                                            denied.ArgsSnapshot,
-                                            denied.ResultText,
+                                    // Filtered on the caller's token, as ModelCallExecutor's buffered path
+                                    // is: a provider timeout surfaces as a cancellation while the caller is
+                                    // still listening, and it belongs in the generic catch below, which
+                                    // classifies it as connectivity so the turn defers to the next
+                                    // candidate instead of being finalized on the way out.
+                                    //
+                                    // A client disconnect must not make a round that already
+                                    // streamed real provider bytes look like it spent nothing — that
+                                    // both loses the spend from budget accounting and returns the
+                                    // reservation via ReleaseAsync instead of ReconcileAsync.
+                                    await RecordPartialRoundUsageAsync(
+                                            roundUpdates,
+                                            streamAccountingLocal,
+                                            lease.Provider.Name,
                                             targetModel,
-                                            CancellationToken.None)
-                                            .ConfigureAwait(false);
-                                    }
-                                    else
-                                    {
-                                        await foreach (IntelligenceEvent denialEvent in EmitSyntheticAskHumanDenialAsync(
-                                                           fcc,
-                                                           AskHumanUnavailableMessage,
-                                                           toolCallIndex,
-                                                           chatMessages,
-                                                           grimoireTurn,
-                                                           targetModel,
-                                                           auditContext,
-                                                           toolCallIndex == 0 ? rawRoundReasoning : null,
-                                                           inferenceToken,
-                                                           covenantScope)
-                                                           .ConfigureAwait(false))
-                                        {
-                                            yield return denialEvent;
-                                        }
-                                    }
+                                            streamPurpose, roundUsageCommit)
+                                        .ConfigureAwait(false);
 
-                                    toolCallIndex++;
+                                    throw;
+                                }
+                                catch (Exception ex)
+                                {
+                                    // The same spend rule for a round the provider ended: a timeout or a
+                                    // dropped connection after usage arrived still cost what it reported.
+                                    await RecordPartialRoundUsageAsync(
+                                            roundUpdates,
+                                            streamAccountingLocal,
+                                            lease.Provider.Name,
+                                            targetModel,
+                                            streamPurpose, roundUsageCommit)
+                                        .ConfigureAwait(false);
+
+                                    streamingMoveNextFailure = ex;
+
+                                    logger.LogError(
+                                        "Streaming read failed; exception type {ExceptionType}.",
+                                        ex.GetType().FullName);
+
+                                    inferenceError = BuildInferenceFailureMessage(lease, ex);
+
+                                    // Only a genuine connectivity failure should trigger provider fallback.
+                                    classification.IsConnectivityFailure = roundProtection?.Revocation.IsCancellationRequested != true
+                                        && IsConnectivityFailure(ex, callerToken);
+
+                                    break;
+                                }
+
+                                if (!hasNext)
+                                {
+                                    break;
+                                }
+
+                                ModelCallUpdate modelUpdate = streamEnumerator.Current;
+
+                                if (modelUpdate is ModelCallContextUpdate contextUpdate)
+                                {
+                                    contextBreakdownsByCall[contextUpdate.ModelCallId] = contextUpdate.Breakdown;
+                                    if (streaming)
+                                    {
+                                        yield return new IntelligenceEvent(
+                                            IntelligenceEventType.Context,
+                                            "Context token accounting",
+                                            ContextBreakdown: contextUpdate.Breakdown);
+                                    }
 
                                     continue;
                                 }
 
-                                askHumanReservation = await humanPromptRegistry
-                                    .CreateReservationAsync(inferenceToken)
-                                    .ConfigureAwait(false);
-
-                                invokeFcc = PrepareAskHumanFunctionCall(fcc, askHumanReservation.PromptId);
-                            }
-
-                            string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(invokeFcc);
-
-                            string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(invokeFcc, argsSnapshot);
-
-                            string callId = toolExecutionPipeline.ResolveCallId(invokeFcc);
-
-                            yield return new IntelligenceEvent(
-                                IntelligenceEventType.ToolCall,
-                                invokeFcc.Name ?? string.Empty,
-                                toolCallData,
-                                null,
-                                new IntelligenceToolCallEvent(callId, invokeFcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
-
-                            Channel<IntelligenceEvent> liveWards = Channel.CreateUnbounded<IntelligenceEvent>();
-
-                            async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
-                            {
-                                // V-2: (re-)established here, not at the top of the attempt. This
-                                // local function is a plain, non-yielding async method invoked
-                                // (via the call below) with zero intervening yield returns since
-                                // this tool call's own ToolCall frame — so, unlike a set made
-                                // earlier in the enclosing async-iterator method, this one is
-                                // still active by the time control reaches ProcessSingleToolCallAsync
-                                // and, through it, the tool's own body: a plain method call and a
-                                // regular `await` both preserve AsyncLocal state; only a `yield
-                                // return` discards it. Re-set on every tool call (not once for the
-                                // whole attempt) because each preceding ToolCall/ToolResult/ward
-                                // frame's own yield return already discarded whatever the previous
-                                // call established.
-                                //
-                                // R-008: the whole per-turn set, not only the emitter — session id,
-                                // ledger and provider round, inject-once tracker, attachment promotion
-                                // state, accounting and its writer, and Covenant staging — applied
-                                // together because they bound each other.
-                                streamTurnAmbients.Apply();
-
-                                try
+                                if (modelUpdate is ModelCallFailureUpdate failureUpdate)
                                 {
-                                    return await toolExecutionPipeline
-                                        .ProcessSingleToolCallAsync(
-                                            invokeFcc,
-                                            request,
-                                            streamChatOptions,
-                                            streamActiveSpell,
-                                            grimoireTurn.SessionId?.ToString(),
-                                            streamTurnContext,
-                                            suppressInvocationFailures: suppressInvocationFailures,
-                                            inferenceToken,
-                                            liveWardEmit: streaming
-                                                ? async (wardEvent, ct) =>
-                                                {
-                                                    await liveWards.Writer.WriteAsync(wardEvent, ct).ConfigureAwait(false);
-                                                }
-                                                : null,
-                                            observer: streaming
-                                                ? async toolEvent =>
-                                                {
-                                                    // Request-before-wait: surface human-input prompts on the
-                                                    // live channel while ask_human is still blocked (ADR 0004).
-                                                    if (toolEvent is ToolHumanInputRequestedEvent human)
-                                                    {
-                                                        await liveWards.Writer
-                                                            .WriteAsync(
-                                                                new IntelligenceEvent(
-                                                                    IntelligenceEventType.Status,
-                                                                    human.Prompt,
-                                                                    human.CallId),
-                                                                inferenceToken)
-                                                            .ConfigureAwait(false);
-                                                    }
-                                                }
-                                                : null,
-                                            argumentsSnapshot: argsSnapshot,
-                                            toolRoundOrdinal: streamToolRoundCount - 1,
-                                            callOrdinal: toolCallIndex)
-                                        .ConfigureAwait(false);
+                                    if (TrySelectOrdinaryCacheFallback(failureUpdate.RetryDirective))
+                                    {
+                                        restartWithOrdinaryCache = true;
+
+                                        break;
+                                    }
+
+                                    inferenceTypedError = failureUpdate.Error;
+                                    inferenceError = failureUpdate.Error.Message;
+                                    streamAccountingStatus = InferenceRunStatus.Failed;
+                                    break;
                                 }
-                                finally
+
+                                if (ProviderAttemptCommitTracker.CommitsProviderAttempt(modelUpdate))
                                 {
-                                    liveWards.Writer.TryComplete();
+                                    // Semantic updates precede their raw response update, so commitment always
+                                    // happens before any client-visible Token (including buffered guardrails).
+                                    classification.ProviderCommitted = true;
                                 }
-                            }
 
-                            if (covenantScope?.DerivedSensitivity is { } inheritedSensitivity)
-                                memoryDelegation?.RecordDerived(inheritedSensitivity);
-
-                            streamTurnContext.ProtectedContent = covenantScope?.Protection is not null
-                                || covenantScope?.DerivedSensitivity?.Level is ContentSensitivity.CovenantDerived;
-
-                            processTask = ProcessWithLiveWardsAsync();
-
-                            // Pump wards and elicitation/HITL frames concurrently while the tool runs.
-                            // Elicitation emits ask_human-shaped ToolCall frames on the per-turn channel
-                            // and blocks until the operator answers — those frames must reach the client
-                            // before AwaitReservedAsync can complete.
-                            if (streaming)
-                            {
-                                await foreach (IntelligenceEvent liveEvent in PumpWardAndHumanEventsAsync(
-                                                   liveWards.Reader,
-                                                   liveHumanPromptChannel?.Reader,
-                                                   processTask,
-                                                   inferenceToken)
-                                                   .ConfigureAwait(false))
+                                if (modelUpdate is ModelCallReasoningUpdate reasoningUpdate
+                                    && (reasoningUpdate.VisibleText.Length > 0 || reasoningUpdate.HasProtectedData))
                                 {
-                                    yield return liveEvent;
+                                    ephemeralReasoningSegments.Append(reasoningUpdate);
+
+                                    if (streaming
+                                        && TryProjectClientReasoning(
+                                            reasoningUpdate.VisibleText,
+                                            clientReasoningOutput,
+                                            out ReasoningContentSegment? projectedReasoning))
+                                    {
+                                        if (bufferTokens)
+                                        {
+                                            bufferedOutputFrames.AppendReasoning(
+                                                reasoningUpdate.ModelCallId,
+                                                projectedReasoning);
+                                        }
+                                        else
+                                        {
+                                            yield return new IntelligenceEvent(
+                                                IntelligenceEventType.Reasoning,
+                                                projectedReasoning.Text,
+                                                Reasoning: projectedReasoning);
+                                        }
+                                    }
                                 }
+
+                                if (modelUpdate is ModelCallTextDelta textDelta)
+                                {
+                                    _ = streamAccumulator.Append(textDelta.Text);
+
+                                    if (bufferTokens)
+                                    {
+                                        bufferedOutputFrames.AppendToken(
+                                            textDelta.ModelCallId,
+                                            textDelta.Text);
+                                    }
+                                    else
+                                    {
+                                        yield return new IntelligenceEvent(
+                                            IntelligenceEventType.Token,
+                                            string.Empty,
+                                            textDelta.Text);
+                                    }
+
+                                    continue;
+                                }
+
+                                if (modelUpdate is not ModelCallResponseUpdate responseUpdate)
+                                {
+                                    continue;
+                                }
+
+                                ChatResponseUpdate update = responseUpdate.Update;
+
+                                roundUpdates.Add(update);
                             }
-
-                            ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
-
-                            if (processed.Sensitivity is { } toolSensitivity)
-                            {
-                                covenantScope?.RecordDerived(toolSensitivity);
-
-                                memoryDelegation?.RecordDerived(toolSensitivity);
-                            }
-
-                            toolLoopProgressEntries.Add(
-                                new ToolLoopProgressEntry(
-                                    processed.ToolName,
-                                    covenantScope?.Protection is null ? processed.ArgsSnapshot : string.Empty,
-                                    covenantScope?.Protection is null ? processed.ResultText : string.Empty));
-
-                            (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
-
-                            auditContext?.ToolNames.Add(processed.ToolName);
-
-                            auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null
-                                && !string.Equals(processed.ToolName, ArcanumBuiltInToolNames.RecallMemory, StringComparison.OrdinalIgnoreCase)
-                                    ? processed.ArgsSnapshot : string.Empty);
-
-                            ToolExecutionPipeline.AppendToolExchangeToMessages(
-                                chatMessages,
-                                invokeFcc,
-                                processed.CallId,
-                                processed.ResultText,
-                                toolCallIndex == 0 ? rawRoundReasoning : null);
-
-                            SubagentParentContextInjector.AppendBudgetFailureIfRequired(
-                                chatMessages,
-                                processed.ToolName,
-                                processed.ResultText);
-
-                            if (processed.AdditionalContextContents is { Count: > 0 } extras)
-                            {
-                                // Defer User extras until every tool result in this round is appended
-                                // so providers never see User interleaved mid-tool-transcript.
-                                streamPendingAttachmentExtras ??= [];
-
-                                streamPendingAttachmentExtras.AddRange(extras);
-                            }
-
-                            toolInteractionRecorded = true;
-
-                            if (!processed.ReceiptHandled)
-                            {
-                                // The tool has returned, so its effect has happened: recording it
-                                // runs on CancellationToken.None, or a client that disconnects now
-                                // leaves an effect with no durable record of the call behind it.
-                                await PersistToolInteractionAsync(covenantScope, grimoireTurn,
-                                    processed.ToolName,
-                                    processed.ArgsSnapshot,
-                                    processed.ResultText,
-                                    targetModel,
-                                    CancellationToken.None)
-                                    .ConfigureAwait(false);
-                            }
-
-                            toolInteractionRecorded = true;
-
-                            foreach (IntelligenceEvent wardEvent in processed.WardEvents)
-                            {
-                                yield return wardEvent;
-                            }
-
-                            if (processed.Failed)
-                            {
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.ToolError,
-                                    processed.ToolName,
-                                    "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
-                                    null,
-                                    new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex));
-                            }
-
-                            yield return new IntelligenceEvent(
-                                IntelligenceEventType.ToolResult,
-                                processed.ToolName,
-                                processed.ResultText,
-                                null,
-                                new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex),
-                                ToolDenied: processed.Denied);
-
-                            if (processed.AttachmentRefresh is { } refreshDetail)
-                            {
-                                yield return new IntelligenceEvent(
-                                    IntelligenceEventType.AttachmentRefreshed,
-                                    "Session attachment source refreshed",
-                                    AttachmentRefresh: refreshDetail);
-                            }
-
-                            toolCallIndex++;
                         }
                         finally
                         {
-                            if (askHumanReservation is not null)
+                            await streamEnumerator.DisposeAsync().ConfigureAwait(false);
+                        }
+                    }
+
+                    if (restartWithOrdinaryCache)
+                    {
+                        continue;
+                    }
+
+                    if (inferenceError is not null)
+                    {
+                        // An explicit SupportsTools=false declaration is handled before tool discovery
+                        // and before the first provider call. This compatibility restart is only for an
+                        // undeclared model whose provider rejects the advertised tools at runtime.
+                        bool providerRejectedTools = streamUsesTools
+                            && streamingMoveNextFailure is { Message: var moveMsg }
+                            && LooksLikeModelDoesNotSupportTools(moveMsg)
+                            && !classification.ProviderCommitted
+                            && (streaming ? streamAccumulator.Length == 0 : true);
+
+                        bool requiredClientToolCall =
+                            ClientToolCapabilityValidator.RequiresToolCall(request);
+
+                        bool allowNoToolsRestart = providerRejectedTools
+                            && !requiredClientToolCall
+                            && memoryDelegation is null;
+
+                        if (providerRejectedTools && memoryDelegation is not null)
+                        {
+                            Error unavailable = MemoryDelegationNativeCandidates.Unavailable();
+
+                            inferenceTypedError = unavailable;
+
+                            inferenceError = unavailable.Message;
+
+                            classification.IsConnectivityFailure = false;
+                        }
+                        else if (providerRejectedTools && requiredClientToolCall)
+                        {
+                            Error modelUnsupportedError = ClientToolCapabilityValidator.CreateModelUnsupportedError(
+                                lease.ResolvedModel,
+                                lease.Provider.Name);
+
+                            inferenceTypedError = modelUnsupportedError;
+
+                            inferenceError = modelUnsupportedError.Message;
+
+                            classification.IsConnectivityFailure = false;
+                        }
+                        else if (allowNoToolsRestart)
+                        {
+                            logger.LogInformation(
+                                "Model does not support tools; retrying without local tools (exception type {ExceptionType}).",
+                                streamingMoveNextFailure!.GetType().FullName);
+
+                            if (streaming)
                             {
-                                await askHumanReservation.DisposeAsync().ConfigureAwait(false);
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.Status,
+                                    "This model does not support tools; continuing without local tools.");
                             }
 
-                            if (processTask is { IsCompleted: false } pendingToolTask)
-                            {
-                                // Reached only on abandonment — the happy path already awaited
-                                // processTask above. A disconnected client must not orphan this
-                                // tool call, so wait for it here, bounded so a hung/uncancelled
-                                // tool cannot block the unwind forever.
-                                using CancellationTokenSource graceCts = new();
+                            streamUsesTools = false;
 
-                                try
+                            streamToolCompatibilityRetry = true;
+
+                            inferenceError = null;
+
+                            streamingMoveNextFailure = null;
+
+                            classification.IsConnectivityFailure = false;
+
+                            streamOuterRestart = true;
+                        }
+                        else if (!streaming && streamingMoveNextFailure is not null)
+                        {
+                            logger.LogError(
+                                "Hub inference failed; exception type {ExceptionType}.",
+                                streamingMoveNextFailure.GetType().FullName);
+
+                            if (!ShouldDeferTurnToNextCandidate(
+                                    seed,
+                                    canFallBack,
+                                    classification,
+                                    streamAccumulator.Length))
+                            {
+                                await grimoireTurnWriter
+                                    .ResolveInterruptedAndMarkFinalizedAsync(
+                                        grimoireTurn,
+                                        null,
+                                        CancellationToken.None)
+                                    .ConfigureAwait(false);
+                            }
+
+                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                                inferenceTypedError ?? new Error(
+                                    ErrorCodes.Hub.Error,
+                                    BuildInferenceFailureMessage(lease, streamingMoveNextFailure)));
+                        }
+
+                        break;
+                    }
+
+                    ChatResponse combinedRound = bufferedRoundResponse ?? roundUpdates.ToChatResponse();
+
+                    if (streaming)
+                    {
+                        ChatCompletionUsage? streamingUsage = MapUsageDetails(combinedRound.Usage);
+
+                        await RecordProviderCallUsageAsync(
+                                streamAccountingLocal,
+                                streamingUsage,
+                                lease.Provider.Name,
+                                targetModel,
+                                streamPurpose,
+                                CancellationToken.None, roundUsageCommit)
+                            .ConfigureAwait(false);
+
+                        SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
+
+                        streamAccumulatedUsage = AccumulateUsage(streamAccumulatedUsage, streamingUsage);
+                    }
+
+                    List<FunctionCallContent> toolCalls = ToolExecutionPipeline.CollectActionableFunctionCalls(combinedRound);
+                    IReadOnlyList<TextReasoningContent> rawRoundReasoning =
+                        CollectRawReasoningContent(combinedRound);
+
+                    bool roundHasText = streamAccumulator.Length > 0 || !string.IsNullOrEmpty(combinedRound.Text);
+
+                    if (ProviderAttemptCommitTracker.CommitsOnCompleteToolProposal(toolCalls.Count > 0))
+                    {
+                        // Commit before ToolCall yield / authorize.
+                        classification.ProviderCommitted = true;
+                    }
+                    else if (ProviderAttemptCommitTracker.CommitsOnEmptySuccessfulRound(roundHasText, hasToolCalls: false))
+                    {
+                        classification.ProviderCommitted = true;
+                    }
+
+                    if (toolCalls.Count == 0)
+                    {
+                        streamFinishReason = MapChatFinishReasonToOpenAi(combinedRound.FinishReason);
+
+                        break;
+                    }
+
+                    if (request.ForwardClientTools)
+                    {
+                        int forwardToolCallIndex = 0;
+
+                        foreach (FunctionCallContent fcc in toolCalls)
+                        {
+                            string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(fcc);
+
+                            string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(fcc, argsSnapshot);
+
+                            string callId = toolExecutionPipeline.ResolveCallId(fcc);
+
+                            (observedToolCalls ??= []).Add(new PromptToolCall(callId, fcc.Name ?? string.Empty, argsSnapshot));
+
+                            if (streaming)
+                            {
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.ToolCall,
+                                    fcc.Name ?? string.Empty,
+                                    toolCallData,
+                                    null,
+                                    new IntelligenceToolCallEvent(callId, fcc.Name ?? string.Empty, argsSnapshot, forwardToolCallIndex, PreserveProviderCallId: true));
+                            }
+
+                            forwardToolCallIndex++;
+                        }
+
+                        streamFinishReason = "tool_calls";
+
+                        break;
+                    }
+
+                    List<ToolLoopProgressEntry> toolLoopProgressEntries = new(
+                        toolCalls.Count);
+
+                    streamToolRoundCount++;
+
+                    streamTurnAmbients.SetProviderRound(streamToolRoundCount);
+
+                    int toolCallIndex = 0;
+
+                    // Published to each tool call by streamTurnAmbients.Apply(), not here: a write here
+                    // would not survive this round's first ToolCall frame.
+                    streamTurnAmbients.SessionId = grimoireTurn.SessionId ?? request.SessionId;
+
+                    try
+                    {
+                        List<AIContent>? streamPendingAttachmentExtras = null;
+
+                        foreach (FunctionCallContent fcc in toolCalls)
+                        {
+                            FunctionCallContent invokeFcc = fcc;
+
+                            IHumanPromptReservation? askHumanReservation = null;
+
+                            Task<ToolExecutionPipeline.ProcessedToolCall>? processTask = null;
+
+                            // Set once the happy path has recorded this call (or its receipt already
+                            // did), so the finally records a returned tool only when that never happened.
+                            bool toolInteractionRecorded = false;
+
+                            try
+                            {
+                                if (IsAskHumanTool(fcc))
                                 {
-                                    await Task.WhenAny(
-                                            pendingToolTask,
-                                            Task.Delay(ToolTaskAbandonmentGrace, graceCts.Token))
+                                    if (!humanInteractionAvailable)
+                                    {
+                                        ToolExecutionPipeline.ProcessedToolCall denied = CreateSyntheticAskHumanDenial(
+                                            fcc,
+                                            AskHumanUnavailableMessage);
+
+                                        toolLoopProgressEntries.Add(
+                                            new ToolLoopProgressEntry(
+                                                denied.ToolName,
+                                                covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty,
+                                                covenantScope?.Protection is null ? denied.ResultText : string.Empty));
+
+                                        if (!streaming)
+                                        {
+                                            (observedToolCalls ??= []).Add(new PromptToolCall(denied.CallId, denied.ToolName, denied.ArgsSnapshot));
+
+                                            auditContext?.ToolNames.Add(denied.ToolName);
+
+                                            auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null ? denied.ArgsSnapshot : string.Empty);
+
+                                            ToolExecutionPipeline.AppendToolExchangeToMessages(
+                                                chatMessages,
+                                                fcc,
+                                                denied.CallId,
+                                                denied.ResultText,
+                                                toolCallIndex == 0 ? rawRoundReasoning : null);
+
+                                            // The model has been told it was denied; recording that
+                                            // is bookkeeping and outlives the caller's token.
+                                            await PersistToolInteractionAsync(covenantScope, grimoireTurn,
+                                                denied.ToolName,
+                                                denied.ArgsSnapshot,
+                                                denied.ResultText,
+                                                targetModel,
+                                                CancellationToken.None)
+                                                .ConfigureAwait(false);
+                                        }
+                                        else
+                                        {
+                                            await foreach (IntelligenceEvent denialEvent in EmitSyntheticAskHumanDenialAsync(
+                                                               fcc,
+                                                               AskHumanUnavailableMessage,
+                                                               toolCallIndex,
+                                                               chatMessages,
+                                                               grimoireTurn,
+                                                               targetModel,
+                                                               auditContext,
+                                                               toolCallIndex == 0 ? rawRoundReasoning : null,
+                                                               inferenceToken,
+                                                               covenantScope)
+                                                               .ConfigureAwait(false))
+                                            {
+                                                yield return denialEvent;
+                                            }
+                                        }
+
+                                        toolCallIndex++;
+
+                                        continue;
+                                    }
+
+                                    askHumanReservation = await humanPromptRegistry
+                                        .CreateReservationAsync(inferenceToken)
                                         .ConfigureAwait(false);
-                                }
-                                finally
-                                {
-                                    // Stop the grace timer the instant the race is decided. An
-                                    // uncancelled Task.Delay keeps its timer alive for the full grace
-                                    // period even after WhenAny already returned because
-                                    // pendingToolTask won — this cancels it out from under that case.
-                                    await graceCts.CancelAsync().ConfigureAwait(false);
+
+                                    invokeFcc = PrepareAskHumanFunctionCall(fcc, askHumanReservation.PromptId);
                                 }
 
-                                if (!pendingToolTask.IsCompleted)
-                                {
-                                    // Still running past the grace: never await it directly here —
-                                    // that would replace whatever exception is already unwinding
-                                    // this finally. Attach a silent observer instead, so an eventual
-                                    // fault never surfaces as an unobserved Task exception.
-                                    _ = pendingToolTask.ContinueWith(
-                                        static observed => _ = observed.Exception,
-                                        CancellationToken.None,
-                                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                                        TaskScheduler.Default);
-                                }
-                                else if (pendingToolTask.IsFaulted)
-                                {
-                                    _ = pendingToolTask.Exception;
-                                }
-                            }
+                                string argsSnapshot = ToolExecutionPipeline.SerializeToolArgumentsForGrimoire(invokeFcc);
 
-                            if (!toolInteractionRecorded
-                                && processTask is { IsCompletedSuccessfully: true } finishedToolTask)
-                            {
-                                // The turn unwound before recording a call whose tool did return —
-                                // the caller cancelled while it ran and it finished inside the grace,
-                                // or it finished just as the pump gave up. Its effect has happened
-                                // either way, so the call is recorded as the happy path would have,
-                                // and nothing here may replace the exception unwinding this finally.
-                                ToolExecutionPipeline.ProcessedToolCall late = finishedToolTask.Result;
+                                string toolCallData = ToolExecutionPipeline.FormatToolCallEventData(invokeFcc, argsSnapshot);
 
-                                if (late.Sensitivity is { } lateSensitivity) covenantScope?.RecordDerived(lateSensitivity);
+                                string callId = toolExecutionPipeline.ResolveCallId(invokeFcc);
 
-                                if (!late.ReceiptHandled)
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.ToolCall,
+                                    invokeFcc.Name ?? string.Empty,
+                                    toolCallData,
+                                    null,
+                                    new IntelligenceToolCallEvent(callId, invokeFcc.Name ?? string.Empty, argsSnapshot, toolCallIndex));
+
+                                Channel<IntelligenceEvent> liveWards = Channel.CreateUnbounded<IntelligenceEvent>();
+
+                                async Task<ToolExecutionPipeline.ProcessedToolCall> ProcessWithLiveWardsAsync()
                                 {
+                                    // V-2: (re-)established here, not at the top of the attempt. This
+                                    // local function is a plain, non-yielding async method invoked
+                                    // (via the call below) with zero intervening yield returns since
+                                    // this tool call's own ToolCall frame — so, unlike a set made
+                                    // earlier in the enclosing async-iterator method, this one is
+                                    // still active by the time control reaches ProcessSingleToolCallAsync
+                                    // and, through it, the tool's own body: a plain method call and a
+                                    // regular `await` both preserve AsyncLocal state; only a `yield
+                                    // return` discards it. Re-set on every tool call (not once for the
+                                    // whole attempt) because each preceding ToolCall/ToolResult/ward
+                                    // frame's own yield return already discarded whatever the previous
+                                    // call established.
+                                    //
+                                    // R-008: the whole per-turn set, not only the emitter — session id,
+                                    // ledger and provider round, inject-once tracker, attachment promotion
+                                    // state, accounting and its writer, and Covenant staging — applied
+                                    // together because they bound each other.
+                                    streamTurnAmbients.Apply();
+
                                     try
                                     {
-                                        await PersistToolInteractionAsync(covenantScope, grimoireTurn,
-                                            late.ToolName,
-                                            late.ArgsSnapshot,
-                                            late.ResultText,
-                                            targetModel,
-                                            CancellationToken.None)
+                                        return await toolExecutionPipeline
+                                            .ProcessSingleToolCallAsync(
+                                                invokeFcc,
+                                                request,
+                                                streamChatOptions,
+                                                streamActiveSpell,
+                                                grimoireTurn.SessionId?.ToString(),
+                                                streamTurnContext,
+                                                suppressInvocationFailures: suppressInvocationFailures,
+                                                inferenceToken,
+                                                liveWardEmit: streaming
+                                                    ? async (wardEvent, ct) =>
+                                                    {
+                                                        await liveWards.Writer.WriteAsync(wardEvent, ct).ConfigureAwait(false);
+                                                    }
+                                        : null,
+                                                observer: streaming
+                                                    ? async toolEvent =>
+                                                    {
+                                                        // Request-before-wait: surface human-input prompts on the
+                                                        // live channel while ask_human is still blocked (ADR 0004).
+                                                        if (toolEvent is ToolHumanInputRequestedEvent human)
+                                                        {
+                                                            await liveWards.Writer
+                                                                .WriteAsync(
+                                                                    new IntelligenceEvent(
+                                                                        IntelligenceEventType.Status,
+                                                                        human.Prompt,
+                                                                        human.CallId),
+                                                                    inferenceToken)
+                                                                .ConfigureAwait(false);
+                                                        }
+                                                    }
+                                        : null,
+                                                argumentsSnapshot: argsSnapshot,
+                                                toolRoundOrdinal: streamToolRoundCount - 1,
+                                                callOrdinal: toolCallIndex)
                                             .ConfigureAwait(false);
                                     }
-                                    catch (Exception ex)
+                                    finally
                                     {
-                                        logger.LogWarning(
-                                            "A tool call that returned after its turn was abandoned could not be recorded; exception type {ExceptionType}.",
-                                            ex.GetType().FullName);
+                                        liveWards.Writer.TryComplete();
+                                    }
+                                }
+
+                                if (covenantScope?.DerivedSensitivity is { } inheritedSensitivity)
+                                    memoryDelegation?.RecordDerived(inheritedSensitivity);
+
+                                streamTurnContext.ProtectedContent = covenantScope?.Protection is not null
+                                    || covenantScope?.DerivedSensitivity?.Level is ContentSensitivity.CovenantDerived;
+
+                                processTask = ProcessWithLiveWardsAsync();
+
+                                // Pump wards and elicitation/HITL frames concurrently while the tool runs.
+                                // Elicitation emits ask_human-shaped ToolCall frames on the per-turn channel
+                                // and blocks until the operator answers — those frames must reach the client
+                                // before AwaitReservedAsync can complete.
+                                if (streaming)
+                                {
+                                    await foreach (IntelligenceEvent liveEvent in PumpWardAndHumanEventsAsync(
+                                                       liveWards.Reader,
+                                                       liveHumanPromptChannel?.Reader,
+                                                       processTask,
+                                                       inferenceToken)
+                                                       .ConfigureAwait(false))
+                                    {
+                                        yield return liveEvent;
+                                    }
+                                }
+
+                                ToolExecutionPipeline.ProcessedToolCall processed = await processTask.ConfigureAwait(false);
+
+                                if (processed.Sensitivity is { } toolSensitivity)
+                                {
+                                    covenantScope?.RecordDerived(toolSensitivity);
+
+                                    memoryDelegation?.RecordDerived(toolSensitivity);
+                                }
+
+                                toolLoopProgressEntries.Add(
+                                    new ToolLoopProgressEntry(
+                                        processed.ToolName,
+                                        covenantScope?.Protection is null ? processed.ArgsSnapshot : string.Empty,
+                                        covenantScope?.Protection is null ? processed.ResultText : string.Empty));
+
+                                (observedToolCalls ??= []).Add(new PromptToolCall(processed.CallId, processed.ToolName, processed.ArgsSnapshot));
+
+                                auditContext?.ToolNames.Add(processed.ToolName);
+
+                                auditContext?.ToolArgumentsJson.Add(covenantScope?.Protection is null
+                                    && !string.Equals(processed.ToolName, ArcanumBuiltInToolNames.RecallMemory, StringComparison.OrdinalIgnoreCase)
+                                        ? processed.ArgsSnapshot : string.Empty);
+
+                                ToolExecutionPipeline.AppendToolExchangeToMessages(
+                                    chatMessages,
+                                    invokeFcc,
+                                    processed.CallId,
+                                    processed.ResultText,
+                                    toolCallIndex == 0 ? rawRoundReasoning : null);
+
+                                SubagentParentContextInjector.AppendBudgetFailureIfRequired(
+                                    chatMessages,
+                                    processed.ToolName,
+                                    processed.ResultText);
+
+                                if (processed.AdditionalContextContents is { Count: > 0 } extras)
+                                {
+                                    // Defer User extras until every tool result in this round is appended
+                                    // so providers never see User interleaved mid-tool-transcript.
+                                    streamPendingAttachmentExtras ??= [];
+
+                                    streamPendingAttachmentExtras.AddRange(extras);
+                                }
+
+                                toolInteractionRecorded = true;
+
+                                if (!processed.ReceiptHandled)
+                                {
+                                    // The tool has returned, so its effect has happened: recording it
+                                    // runs on CancellationToken.None, or a client that disconnects now
+                                    // leaves an effect with no durable record of the call behind it.
+                                    await PersistToolInteractionAsync(covenantScope, grimoireTurn,
+                                        processed.ToolName,
+                                        processed.ArgsSnapshot,
+                                        processed.ResultText,
+                                        targetModel,
+                                        CancellationToken.None)
+                                        .ConfigureAwait(false);
+                                }
+
+                                toolInteractionRecorded = true;
+
+                                foreach (IntelligenceEvent wardEvent in processed.WardEvents)
+                                {
+                                    yield return wardEvent;
+                                }
+
+                                if (processed.Failed)
+                                {
+                                    yield return new IntelligenceEvent(
+                                        IntelligenceEventType.ToolError,
+                                        processed.ToolName,
+                                        "Tool invocation failed and was tolerated; a synthetic error result was returned to the model.",
+                                        null,
+                                        new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex));
+                                }
+
+                                yield return new IntelligenceEvent(
+                                    IntelligenceEventType.ToolResult,
+                                    processed.ToolName,
+                                    processed.ResultText,
+                                    null,
+                                    new IntelligenceToolCallEvent(processed.CallId, processed.ToolName, processed.ArgsSnapshot, toolCallIndex),
+                                    ToolDenied: processed.Denied);
+
+                                if (processed.AttachmentRefresh is { } refreshDetail)
+                                {
+                                    yield return new IntelligenceEvent(
+                                        IntelligenceEventType.AttachmentRefreshed,
+                                        "Session attachment source refreshed",
+                                        AttachmentRefresh: refreshDetail);
+                                }
+
+                                toolCallIndex++;
+                            }
+                            finally
+                            {
+                                if (askHumanReservation is not null)
+                                {
+                                    await askHumanReservation.DisposeAsync().ConfigureAwait(false);
+                                }
+
+                                if (processTask is { IsCompleted: false } pendingToolTask)
+                                {
+                                    // Reached only on abandonment — the happy path already awaited
+                                    // processTask above. A disconnected client must not orphan this
+                                    // tool call, so wait for it here, bounded so a hung/uncancelled
+                                    // tool cannot block the unwind forever.
+                                    using CancellationTokenSource graceCts = new();
+
+                                    try
+                                    {
+                                        await Task.WhenAny(
+                                                pendingToolTask,
+                                                Task.Delay(ToolTaskAbandonmentGrace, graceCts.Token))
+                                            .ConfigureAwait(false);
+                                    }
+                                    finally
+                                    {
+                                        // Stop the grace timer the instant the race is decided. An
+                                        // uncancelled Task.Delay keeps its timer alive for the full grace
+                                        // period even after WhenAny already returned because
+                                        // pendingToolTask won — this cancels it out from under that case.
+                                        await graceCts.CancelAsync().ConfigureAwait(false);
+                                    }
+
+                                    if (!pendingToolTask.IsCompleted)
+                                    {
+                                        // Still running past the grace: never await it directly here —
+                                        // that would replace whatever exception is already unwinding
+                                        // this finally. Attach a silent observer instead, so an eventual
+                                        // fault never surfaces as an unobserved Task exception.
+                                        _ = pendingToolTask.ContinueWith(
+                                            static observed => _ = observed.Exception,
+                                            CancellationToken.None,
+                                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                                            TaskScheduler.Default);
+                                    }
+                                    else if (pendingToolTask.IsFaulted)
+                                    {
+                                        _ = pendingToolTask.Exception;
+                                    }
+                                }
+
+                                if (!toolInteractionRecorded
+                                    && processTask is { IsCompletedSuccessfully: true } finishedToolTask)
+                                {
+                                    // The turn unwound before recording a call whose tool did return —
+                                    // the caller cancelled while it ran and it finished inside the grace,
+                                    // or it finished just as the pump gave up. Its effect has happened
+                                    // either way, so the call is recorded as the happy path would have,
+                                    // and nothing here may replace the exception unwinding this finally.
+                                    ToolExecutionPipeline.ProcessedToolCall late = finishedToolTask.Result;
+
+                                    if (late.Sensitivity is { } lateSensitivity) covenantScope?.RecordDerived(lateSensitivity);
+
+                                    if (!late.ReceiptHandled)
+                                    {
+                                        try
+                                        {
+                                            await PersistToolInteractionAsync(covenantScope, grimoireTurn,
+                                                late.ToolName,
+                                                late.ArgsSnapshot,
+                                                late.ResultText,
+                                                targetModel,
+                                                CancellationToken.None)
+                                                .ConfigureAwait(false);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            logger.LogWarning(
+                                                "A tool call that returned after its turn was abandoned could not be recorded; exception type {ExceptionType}.",
+                                                ex.GetType().FullName);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if (streamPendingAttachmentExtras is { Count: > 0 })
+                        if (streamPendingAttachmentExtras is { Count: > 0 })
+                        {
+                            // Prefer a User message so vision providers receive DataContent on the next round
+                            // (Tool-role messages are a poor carrier for multimodal payload).
+                            chatMessages.Add(new MeAiChatMessage(ChatRole.User, streamPendingAttachmentExtras));
+                        }
+                    }
+                    finally
                     {
-                        // Prefer a User message so vision providers receive DataContent on the next round
-                        // (Tool-role messages are a poor carrier for multimodal payload).
-                        chatMessages.Add(new MeAiChatMessage(ChatRole.User, streamPendingAttachmentExtras));
+                        // The session binding is a tool-loop ambient only.
+                        streamTurnAmbients.SessionId = null;
+                    }
+
+                    if (toolLoopProgressDetector.ObserveCompletedRound(
+                            toolLoopProgressEntries))
+                    {
+                        Error noProgressError = new(
+                            ErrorCodes.Hub.NoProgressDetected,
+                            "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.");
+
+                        logger.LogWarning(
+                            "Tool loop stopped for no progress; recurring round signature {ProgressSignature}.",
+                            toolLoopProgressDetector.RepeatedSignature);
+
+                        inferenceTypedError = noProgressError;
+
+                        inferenceError = noProgressError.Message;
+
+                        streamAccountingStatus = InferenceRunStatus.Failed;
+
+                        break;
                     }
                 }
-                finally
+
+                if (streamOuterRestart)
                 {
-                    // The session binding is a tool-loop ambient only.
-                    streamTurnAmbients.SessionId = null;
+                    continue;
                 }
 
-                if (toolLoopProgressDetector.ObserveCompletedRound(
-                        toolLoopProgressEntries))
-                {
-                    Error noProgressError = new(
-                        ErrorCodes.Hub.NoProgressDetected,
-                        "Tool execution stopped because the latest call/result round repeated a recent round and produced no new evidence.");
-
-                    logger.LogWarning(
-                        "Tool loop stopped for no progress; recurring round signature {ProgressSignature}.",
-                        toolLoopProgressDetector.RepeatedSignature);
-
-                    inferenceTypedError = noProgressError;
-
-                    inferenceError = noProgressError.Message;
-
-                    streamAccountingStatus = InferenceRunStatus.Failed;
-
-                    break;
-                }
+                break;
             }
-
-            if (streamOuterRestart)
-            {
-                continue;
-            }
-
-            break;
-        }
 
             if (inferenceError is not null)
             {
@@ -4318,350 +4318,350 @@ public sealed partial class WizardIntelligenceProvider(
                 yield break;
             }
 
-        string finalText = streamAccumulator.ToString();
+            string finalText = streamAccumulator.ToString();
 
-        IReadOnlyList<string> streamWarnings = [];
+            IReadOnlyList<string> streamWarnings = [];
 
-        if (request.ResponseFormat is "json_schema"
-            && request.ResponseFormatJsonSchema is { } streamJsonSchemaWrapper
-            && structuredOutput.Enabled)
-        {
-            JsonElement streamSchemaElement = streamJsonSchemaWrapper;
-
-            if (streamJsonSchemaWrapper.ValueKind == JsonValueKind.Object
-                && streamJsonSchemaWrapper.TryGetProperty("schema", out JsonElement streamNestedSchema))
+            if (request.ResponseFormat is "json_schema"
+                && request.ResponseFormatJsonSchema is { } streamJsonSchemaWrapper
+                && structuredOutput.Enabled)
             {
-                streamSchemaElement = streamNestedSchema;
-            }
+                JsonElement streamSchemaElement = streamJsonSchemaWrapper;
 
-            using JsonDocument streamSchema = JsonDocument.Parse(streamSchemaElement.GetRawText());
-            bool useRetryValidator = !streaming
-                || structuredOutput.StrictMode;
-
-            if (useRetryValidator)
-            {
-                if (!streaming && bufferedFinalResponse is null)
+                if (streamJsonSchemaWrapper.ValueKind == JsonValueKind.Object
+                    && streamJsonSchemaWrapper.TryGetProperty("schema", out JsonElement streamNestedSchema))
                 {
-                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                        new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
-
-                    yield break;
+                    streamSchemaElement = streamNestedSchema;
                 }
 
-                int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(
-                    structuredOutput.SchemaMaxDepth);
+                using JsonDocument streamSchema = JsonDocument.Parse(streamSchemaElement.GetRawText());
+                bool useRetryValidator = !streaming
+                    || structuredOutput.StrictMode;
 
-                int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
-
-                Func<string, int> estimateTokenCount = text =>
-                    ModelTokenEstimator
-                        .EstimateText(lease.Provider, lease.ResolvedModel, text)
-                        .TokenCount;
-
-                ChatResponse responseForValidation = bufferedFinalResponse
-                    ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, finalText));
-
-                Result<StructuredOutputResult> validationResult;
-                try
+                if (useRetryValidator)
                 {
-                    validationResult = await structuredOutputValidator
-                        .ValidateAndRetryAsync(
-                        responseForValidation,
-                        streamSchema,
-                        structuredOutput.StrictMode,
-                        schemaMaxDepth,
-                        contextWindowLimit,
-                        estimateTokenCount,
-                        async (errorMessage, ct) =>
-                        {
-                            chatMessages.Add(new ChatMessage(ChatRole.Assistant, responseForValidation.Text));
-
-                            chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
-
-                            ChatOptions retryOptions = lastInferenceChatOptions
-                                ?? CreateInferenceChatOptions(
-                                    streamUsesTools,
-                                    streamTurnContext.InferenceTools,
-                                    request,
-                                    lease);
-
-                            while (true)
-                            {
-                                await RefreshCacheLayoutAsync(retryOptions, ct).ConfigureAwait(false);
-
-                                Result retryContextGate = EnsureContextBudgetWithMaterializations(
-                                    chatMessages,
-                                    retryOptions,
-                                    lease,
-                                    request,
-                                    streamMaterializationLedger,
-                                    RemoveSemanticMaterialization,
-                                    out ContextTokenBreakdown retryContextBreakdown,
-                                    systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
-                            ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution));
-
-                                if (retryContextGate.IsFailure)
-                                {
-                                    throw new ModelCallAdmissionException(retryContextGate.Error);
-                                }
-
-                                Result retryReservation = await streamAccountingLocal
-                                    .EnsureReservationForContextAsync(
-                                        budgetReservationService,
-                                        settings.Value.ResolvePricing(),
-                                        serviceProvider.GetService<IExternalSpendLedger>(),
-                                        targetModel,
-                                        retryContextBreakdown,
-                                        logger,
-                                        ct)
-                                    .ConfigureAwait(false);
-                                if (retryReservation.IsFailure)
-                                {
-                                    throw new ModelCallAdmissionException(retryReservation.Error);
-                                }
-
-                                Result<CovenantDispatchAdmission?> retryAdmission = await AcknowledgeCovenantDispatchAsync(
-                                    covenantScope, streamCovenantDispatch, lease, targetModel, false,
-                                    streamSystemPromptDocument, chatMessages, retryOptions, retryContextBreakdown, ct)
-                                    .ConfigureAwait(false);
-
-                                if (retryAdmission.IsFailure)
-                                {
-                                    throw new ModelCallAdmissionException(retryAdmission.Error);
-                                }
-
-                                PromptCachePlan retryPromptCachePlan = BuildPromptCachePlan(
-                                    lease,
-                                    streamSystemPromptDocument,
-                                    retryOptions,
-                                    PromptCacheSemanticNamespace.Main,
-                                    streamCachePrepared);
-                                MemoryDelegationProtection? retryProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
-                                    lease.Provider.Name, targetModel, ModelCallPurpose.StructuredOutputRetry, out MemoryDelegationUsageCommit? retryUsageCommit);
-
-                                ModelCallOutcome retryCall = await ModelCallExecutor
-                                    .ExecuteBufferedAsync(
-                                        chatClient,
-                                        chatMessages,
-                                        retryOptions,
-                                        streamAccountingLocal.Budget,
-                                        ModelCallPurpose.StructuredOutputRetry,
-                                        ct,
-                                        BuildModelCallContext(
-                                            lease,
-                                            request,
-                                            retryContextBreakdown,
-                                            retryPromptCachePlan,
-                                            ResolveCallSensitivity(),
-                                            streamCachePrepared?.Bind(chatMessages, retryOptions),
-                                            streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                        retryProtection))
-                                    .ConfigureAwait(false);
-
-                                if (retryCall.IsFailure)
-                                {
-                                    if (TrySelectOrdinaryCacheFallback(retryCall.Failure.RetryDirective))
-                                    {
-                                        continue;
-                                    }
-
-                                    throw retryCall.Failure.Cause
-                                        ?? new ModelCallAdmissionException(retryCall.Error);
-                                }
-
-                                ModelCallResult retryResult = retryCall.Value;
-
-                                if (retryResult.ContextBreakdown is { } retryBreakdown)
-                                {
-                                    contextBreakdownsByCall[retryResult.ModelCallId] = retryBreakdown;
-                                }
-
-                                ChatResponse retryResponse = retryResult.Response;
-
-                                ChatCompletionUsage? retryUsage = MapUsageDetails(retryResponse.Usage);
-
-                                await RecordProviderCallUsageAsync(
-                                        streamAccountingLocal,
-                                        retryUsage,
-                                        lease.Provider.Name,
-                                        targetModel,
-                                        ModelCallPurpose.StructuredOutputRetry,
-                                        CancellationToken.None, retryUsageCommit)
-                                    .ConfigureAwait(false);
-
-                                SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
-
-                                if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
-                                {
-                                    classification.ProviderCommitted = true;
-                                }
-
-                                ephemeralReasoningSegments.Clear();
-
-                                foreach (ModelCallReasoningSegment reasoning in retryResult.Reasoning.Segments)
-                                {
-                                    ephemeralReasoningSegments.Append(reasoning);
-                                }
-
-                                responseForValidation = retryResponse;
-
-                                bufferedFinalResponse = retryResponse;
-
-                                if (streaming)
-                                {
-                                    bufferedOutputFrames.Clear();
-                                    AppendReplacementFramesInContentOrder(
-                                        bufferedOutputFrames,
-                                        retryResult,
-                                        clientReasoningOutput);
-                                    replacementOutputPreservesContentOrder = true;
-                                }
-
-                                streamAccumulatedUsage = AccumulateUsage(
-                                    streamAccumulatedUsage,
-                                    retryUsage);
-
-                                return retryResponse;
-                            }
-                        },
-                        inferenceToken)
-                        .ConfigureAwait(false);
-                }
-                catch (ModelCallAdmissionException ex)
-                {
-                    validationResult = Result<StructuredOutputResult>.Failure(ex.Error);
-                }
-
-                if (validationResult.IsFailure)
-                {
-                    if (!streaming)
+                    if (!streaming && bufferedFinalResponse is null)
                     {
-                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(validationResult.Error);
-                    }
-                    else
-                    {
-                        yield return await FailureFrameAsync(validationResult.Error);
-                    }
-
-                    yield break;
-                }
-
-                bufferedFinalResponse = validationResult.Value.Response;
-
-                finalText = bufferedFinalResponse.Text ?? finalText;
-
-                streamAccumulator.Clear();
-
-                _ = streamAccumulator.Append(finalText);
-
-                streamWarnings = validationResult.Value.Warnings;
-            }
-            else
-            {
-                Result<JsonSchemaDefinition> streamParseResult = JsonSchemaHelper.Parse(
-                    streamSchema,
-                    ArcanumSettingClamps.JsonSchemaMaxDepth(
-                        structuredOutput.SchemaMaxDepth));
-
-                if (streamParseResult.IsSuccess)
-                {
-                    ValidationResult streamValidation = JsonSchemaHelper.Validate(
-                        finalText,
-                        streamParseResult.Value,
-                        ArcanumSettingClamps.JsonSchemaMaxDepth(
-                            structuredOutput.SchemaMaxDepth));
-
-                    if (!streamValidation.IsValid)
-                    {
-                        if (structuredOutput.StrictMode)
-                        {
-                            yield return await FailureFrameAsync(new Error(
-                                ErrorCodes.StructuredOutput.ValidationFailed,
-                                "Streamed response failed JSON schema validation after generation: "
-                                    + string.Join("; ", streamValidation.Errors)));
-
-                            yield break;
-                        }
-
-                        streamWarnings = ["streamed response failed JSON schema validation: " + string.Join("; ", streamValidation.Errors)];
-                    }
-                }
-                else
-                {
-                    if (structuredOutput.StrictMode)
-                    {
-                        yield return await FailureFrameAsync(new Error(
-                            ErrorCodes.StructuredOutput.SchemaInvalid,
-                            "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message));
+                        classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                            new Error(ErrorCodes.Hub.Error, PublicInferenceFailureMessage));
 
                         yield break;
                     }
 
-                    streamWarnings = ["invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message];
+                    int schemaMaxDepth = ArcanumSettingClamps.JsonSchemaMaxDepth(
+                        structuredOutput.SchemaMaxDepth);
+
+                    int contextWindowLimit = ArcanumSettingClamps.ContextWindowLimit(lease.Provider.ContextWindowLimit);
+
+                    Func<string, int> estimateTokenCount = text =>
+                        ModelTokenEstimator
+                            .EstimateText(lease.Provider, lease.ResolvedModel, text)
+                            .TokenCount;
+
+                    ChatResponse responseForValidation = bufferedFinalResponse
+                        ?? new ChatResponse(new ChatMessage(ChatRole.Assistant, finalText));
+
+                    Result<StructuredOutputResult> validationResult;
+                    try
+                    {
+                        validationResult = await structuredOutputValidator
+                            .ValidateAndRetryAsync(
+                            responseForValidation,
+                            streamSchema,
+                            structuredOutput.StrictMode,
+                            schemaMaxDepth,
+                            contextWindowLimit,
+                            estimateTokenCount,
+                            async (errorMessage, ct) =>
+                            {
+                                chatMessages.Add(new ChatMessage(ChatRole.Assistant, responseForValidation.Text));
+
+                                chatMessages.Add(new ChatMessage(ChatRole.System, errorMessage));
+
+                                ChatOptions retryOptions = lastInferenceChatOptions
+                                    ?? CreateInferenceChatOptions(
+                                        streamUsesTools,
+                                        streamTurnContext.InferenceTools,
+                                        request,
+                                        lease);
+
+                                while (true)
+                                {
+                                    await RefreshCacheLayoutAsync(retryOptions, ct).ConfigureAwait(false);
+
+                                    Result retryContextGate = EnsureContextBudgetWithMaterializations(
+                                        chatMessages,
+                                        retryOptions,
+                                        lease,
+                                        request,
+                                        streamMaterializationLedger,
+                                        RemoveSemanticMaterialization,
+                                        out ContextTokenBreakdown retryContextBreakdown,
+                                        systemPromptAttribution: () => streamCachePrepared?.Build.Attribution
+                                ?? (covenantScope?.MemorySources is null ? null : streamSystemPromptDocument.BuildResult().Attribution));
+
+                                    if (retryContextGate.IsFailure)
+                                    {
+                                        throw new ModelCallAdmissionException(retryContextGate.Error);
+                                    }
+
+                                    Result retryReservation = await streamAccountingLocal
+                                        .EnsureReservationForContextAsync(
+                                            budgetReservationService,
+                                            settings.Value.ResolvePricing(),
+                                            serviceProvider.GetService<IExternalSpendLedger>(),
+                                            targetModel,
+                                            retryContextBreakdown,
+                                            logger,
+                                            ct)
+                                        .ConfigureAwait(false);
+                                    if (retryReservation.IsFailure)
+                                    {
+                                        throw new ModelCallAdmissionException(retryReservation.Error);
+                                    }
+
+                                    Result<CovenantDispatchAdmission?> retryAdmission = await AcknowledgeCovenantDispatchAsync(
+                                        covenantScope, streamCovenantDispatch, lease, targetModel, false,
+                                        streamSystemPromptDocument, chatMessages, retryOptions, retryContextBreakdown, ct)
+                                        .ConfigureAwait(false);
+
+                                    if (retryAdmission.IsFailure)
+                                    {
+                                        throw new ModelCallAdmissionException(retryAdmission.Error);
+                                    }
+
+                                    PromptCachePlan retryPromptCachePlan = BuildPromptCachePlan(
+                                        lease,
+                                        streamSystemPromptDocument,
+                                        retryOptions,
+                                        PromptCacheSemanticNamespace.Main,
+                                        streamCachePrepared);
+                                    MemoryDelegationProtection? retryProtection = BindProtectedUsage(covenantScope, streamAccountingLocal,
+                                        lease.Provider.Name, targetModel, ModelCallPurpose.StructuredOutputRetry, out MemoryDelegationUsageCommit? retryUsageCommit);
+
+                                    ModelCallOutcome retryCall = await ModelCallExecutor
+                                        .ExecuteBufferedAsync(
+                                            chatClient,
+                                            chatMessages,
+                                            retryOptions,
+                                            streamAccountingLocal.Budget,
+                                            ModelCallPurpose.StructuredOutputRetry,
+                                            ct,
+                                            BuildModelCallContext(
+                                                lease,
+                                                request,
+                                                retryContextBreakdown,
+                                                retryPromptCachePlan,
+                                                ResolveCallSensitivity(),
+                                                streamCachePrepared?.Bind(chatMessages, retryOptions),
+                                                streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
+                                            retryProtection))
+                                        .ConfigureAwait(false);
+
+                                    if (retryCall.IsFailure)
+                                    {
+                                        if (TrySelectOrdinaryCacheFallback(retryCall.Failure.RetryDirective))
+                                        {
+                                            continue;
+                                        }
+
+                                        throw retryCall.Failure.Cause
+                                            ?? new ModelCallAdmissionException(retryCall.Error);
+                                    }
+
+                                    ModelCallResult retryResult = retryCall.Value;
+
+                                    if (retryResult.ContextBreakdown is { } retryBreakdown)
+                                    {
+                                        contextBreakdownsByCall[retryResult.ModelCallId] = retryBreakdown;
+                                    }
+
+                                    ChatResponse retryResponse = retryResult.Response;
+
+                                    ChatCompletionUsage? retryUsage = MapUsageDetails(retryResponse.Usage);
+
+                                    await RecordProviderCallUsageAsync(
+                                            streamAccountingLocal,
+                                            retryUsage,
+                                            lease.Provider.Name,
+                                            targetModel,
+                                            ModelCallPurpose.StructuredOutputRetry,
+                                            CancellationToken.None, retryUsageCommit)
+                                        .ConfigureAwait(false);
+
+                                    SubagentExecutionAmbient.Tracker?.ThrowIfExhausted();
+
+                                    if (ProviderAttemptCommitTracker.CommitsProviderAttempt(retryResult.Reasoning))
+                                    {
+                                        classification.ProviderCommitted = true;
+                                    }
+
+                                    ephemeralReasoningSegments.Clear();
+
+                                    foreach (ModelCallReasoningSegment reasoning in retryResult.Reasoning.Segments)
+                                    {
+                                        ephemeralReasoningSegments.Append(reasoning);
+                                    }
+
+                                    responseForValidation = retryResponse;
+
+                                    bufferedFinalResponse = retryResponse;
+
+                                    if (streaming)
+                                    {
+                                        bufferedOutputFrames.Clear();
+                                        AppendReplacementFramesInContentOrder(
+                                            bufferedOutputFrames,
+                                            retryResult,
+                                            clientReasoningOutput);
+                                        replacementOutputPreservesContentOrder = true;
+                                    }
+
+                                    streamAccumulatedUsage = AccumulateUsage(
+                                        streamAccumulatedUsage,
+                                        retryUsage);
+
+                                    return retryResponse;
+                                }
+                            },
+                            inferenceToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (ModelCallAdmissionException ex)
+                    {
+                        validationResult = Result<StructuredOutputResult>.Failure(ex.Error);
+                    }
+
+                    if (validationResult.IsFailure)
+                    {
+                        if (!streaming)
+                        {
+                            classification.BufferedTerminal = Result<PromptTurnResult>.Failure(validationResult.Error);
+                        }
+                        else
+                        {
+                            yield return await FailureFrameAsync(validationResult.Error);
+                        }
+
+                        yield break;
+                    }
+
+                    bufferedFinalResponse = validationResult.Value.Response;
+
+                    finalText = bufferedFinalResponse.Text ?? finalText;
+
+                    streamAccumulator.Clear();
+
+                    _ = streamAccumulator.Append(finalText);
+
+                    streamWarnings = validationResult.Value.Warnings;
+                }
+                else
+                {
+                    Result<JsonSchemaDefinition> streamParseResult = JsonSchemaHelper.Parse(
+                        streamSchema,
+                        ArcanumSettingClamps.JsonSchemaMaxDepth(
+                            structuredOutput.SchemaMaxDepth));
+
+                    if (streamParseResult.IsSuccess)
+                    {
+                        ValidationResult streamValidation = JsonSchemaHelper.Validate(
+                            finalText,
+                            streamParseResult.Value,
+                            ArcanumSettingClamps.JsonSchemaMaxDepth(
+                                structuredOutput.SchemaMaxDepth));
+
+                        if (!streamValidation.IsValid)
+                        {
+                            if (structuredOutput.StrictMode)
+                            {
+                                yield return await FailureFrameAsync(new Error(
+                                    ErrorCodes.StructuredOutput.ValidationFailed,
+                                    "Streamed response failed JSON schema validation after generation: "
+                                        + string.Join("; ", streamValidation.Errors)));
+
+                                yield break;
+                            }
+
+                            streamWarnings = ["streamed response failed JSON schema validation: " + string.Join("; ", streamValidation.Errors)];
+                        }
+                    }
+                    else
+                    {
+                        if (structuredOutput.StrictMode)
+                        {
+                            yield return await FailureFrameAsync(new Error(
+                                ErrorCodes.StructuredOutput.SchemaInvalid,
+                                "Invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message));
+
+                            yield break;
+                        }
+
+                        streamWarnings = ["invalid JSON schema for streamed structured output: " + streamParseResult.Error.Message];
+                    }
                 }
             }
-        }
 
-        IReadOnlyList<ReasoningContentSegment> clientReasoningSegments =
-            ProjectClientReasoningSegments(
-                ephemeralReasoningSegments.Materialize(),
-                clientReasoningOutput);
+            IReadOnlyList<ReasoningContentSegment> clientReasoningSegments =
+                ProjectClientReasoningSegments(
+                    ephemeralReasoningSegments.Materialize(),
+                    clientReasoningOutput);
 
-        string safetyInspectionText = replacementOutputPreservesContentOrder
-            ? BuildSafetyInspectionText(bufferedOutputFrames.Materialize())
-            : BuildSafetyInspectionText(finalText, clientReasoningSegments);
+            string safetyInspectionText = replacementOutputPreservesContentOrder
+                ? BuildSafetyInspectionText(bufferedOutputFrames.Materialize())
+                : BuildSafetyInspectionText(finalText, clientReasoningSegments);
 
-        Result guardrailsStreamOutput = await FilterGuardrailsOutputAsync(
-            safetyInspectionText,
-            grimoireTurn.SessionId,
-            targetModel,
-            inferenceToken).ConfigureAwait(false);
+            Result guardrailsStreamOutput = await FilterGuardrailsOutputAsync(
+                safetyInspectionText,
+                grimoireTurn.SessionId,
+                targetModel,
+                inferenceToken).ConfigureAwait(false);
 
-        if (guardrailsStreamOutput.IsFailure)
-        {
-            if (!streaming)
+            if (guardrailsStreamOutput.IsFailure)
             {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(guardrailsStreamOutput.Error);
+                if (!streaming)
+                {
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(guardrailsStreamOutput.Error);
+                }
+
+                await grimoireTurnWriter
+                    .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                yield return await FailureFrameAsync(guardrailsStreamOutput.Error);
+
+                yield break;
             }
 
-            await grimoireTurnWriter
-                .ResolveInterruptedAndMarkFinalizedAsync(grimoireTurn, null, CancellationToken.None)
-                .ConfigureAwait(false);
-
-            yield return await FailureFrameAsync(guardrailsStreamOutput.Error);
-
-            yield break;
-        }
-
-        if (streaming && bufferTokens)
-        {
-            foreach (IntelligenceEvent bufferedOutputFrame in bufferedOutputFrames.Materialize())
+            if (streaming && bufferTokens)
             {
-                yield return bufferedOutputFrame;
+                foreach (IntelligenceEvent bufferedOutputFrame in bufferedOutputFrames.Materialize())
+                {
+                    yield return bufferedOutputFrame;
+                }
+
+                if (finalText.Length > 0
+                    && !bufferedOutputFrames.HasToken)
+                {
+                    yield return new IntelligenceEvent(
+                        IntelligenceEventType.Token,
+                        string.Empty,
+                        finalText);
+                }
             }
 
-            if (finalText.Length > 0
-                && !bufferedOutputFrames.HasToken)
+            // The one arm that publishes a staged Covenant batch. It is the only place the answer this
+            // turn actually produced and the profile change staged against it can be written together,
+            // which is what the batch's atomicity contract means in practice.
+            CovenantTurnCommitBinding? covenantCommit = covenantScope?.StagedCommit();
+
+            if (settings.Value.Features.LongRest)
             {
-                yield return new IntelligenceEvent(
-                    IntelligenceEventType.Token,
-                    string.Empty,
-                    finalText);
-            }
-        }
-
-        // The one arm that publishes a staged Covenant batch. It is the only place the answer this
-        // turn actually produced and the profile change staged against it can be written together,
-        // which is what the batch's atomicity contract means in practice.
-        CovenantTurnCommitBinding? covenantCommit = covenantScope?.StagedCommit();
-
-        if (settings.Value.Features.LongRest)
-        {
-            // Only the surviving branch may publish use: retrieval and ledger acceptance alone
-            // are not success, and context pressure may have removed an initially injected memory.
-            grimoireTurnWriter.SetSagaUses(grimoireTurn,
-            [
-                .. (streamSagaMemories ?? [])
+                // Only the surviving branch may publish use: retrieval and ledger acceptance alone
+                // are not success, and context pressure may have removed an initially injected memory.
+                grimoireTurnWriter.SetSagaUses(grimoireTurn,
+                [
+                    .. (streamSagaMemories ?? [])
                     .Where(memory => memory.UseCoordinate is { } coordinate
                         && streamMaterializationLedger.Entries.Any(entry => entry.Injected
                             && entry.SourceKind is ContextMaterializationSourceKind.SagaMemory
@@ -4669,133 +4669,133 @@ public sealed partial class WizardIntelligenceProvider(
                             && string.Equals(entry.Identity.VersionOrContentHash, coordinate.VersionId, StringComparison.Ordinal)))
                     .Select(memory => memory.UseCoordinate!),
             ]);
-        }
-
-        bool finalizeOk = streaming
-            ? await grimoireTurnWriter
-                .TryFinalizeStreamedAssistantEntryAsync(
-                    grimoireTurn,
-                    finalText,
-                    targetModel,
-                    inferenceToken,
-                    covenantScope?.DerivedSensitivity,
-                    covenantCommit)
-                .ConfigureAwait(false)
-            : await grimoireTurnWriter
-                .TryFinalizeBufferedAssistantEntryAsync(
-                    grimoireTurn,
-                    finalText,
-                    targetModel,
-                    inferenceToken,
-                    covenantScope?.DerivedSensitivity,
-                    covenantCommit)
-                .ConfigureAwait(false);
-
-        if (!finalizeOk)
-        {
-            if (!streaming)
-            {
-                classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
-                    new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
             }
 
-            yield return await FailureFrameAsync(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
+            bool finalizeOk = streaming
+                ? await grimoireTurnWriter
+                    .TryFinalizeStreamedAssistantEntryAsync(
+                        grimoireTurn,
+                        finalText,
+                        targetModel,
+                        inferenceToken,
+                        covenantScope?.DerivedSensitivity,
+                        covenantCommit)
+                    .ConfigureAwait(false)
+                : await grimoireTurnWriter
+                    .TryFinalizeBufferedAssistantEntryAsync(
+                        grimoireTurn,
+                        finalText,
+                        targetModel,
+                        inferenceToken,
+                        covenantScope?.DerivedSensitivity,
+                        covenantCommit)
+                    .ConfigureAwait(false);
 
-            yield break;
-        }
-
-        // The answer is durable from here, so the run completed whatever happens to the caller
-        // next. Finalize itself stays cancellable: it is one atomic write, and a cancellation that
-        // lands before it commits leaves the row in flight for the stream-exit cleanup to resolve.
-        streamAccountingStatus = InferenceRunStatus.Completed;
-
-        IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance = [];
-
-        try
-        {
-            // This handoff is the final part of the Session turn's ordering boundary. It must happen
-            // before any ancillary cancellable await, while the same-Session gate is still held, or a
-            // later turn could enqueue a wider frontier first and classify these entries under its
-            // provenance.
-            //
-            // Read from the turn's captured attachment state: this segment runs after the turn's
-            // yields, where the ambient no longer holds it.
-            attachmentProvenance = streamTurnAmbients.AttachmentMemory?.Snapshot() ?? [];
-
-            TryEnqueueSagaExtraction(
-                grimoireTurn.SessionId,
-                attachmentProvenance,
-                streamTurnAmbients.AttachmentMemory?.HasUnprovenancedAttachmentContent == true,
-                grimoireTurn.SagaExtractionAfterSequenceExclusive,
-                grimoireTurn.SagaExtractionThroughSequence);
-        }
-        finally
-        {
-            grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
-        }
-
-        // Post-finalize bookkeeping for an answer that already exists: not the caller's to cancel.
-        await TryIncrementSessionTokensAsync(
-                grimoireTurn.SessionId,
-                streamAccumulatedUsage,
-                targetModel,
-                streamAccountingLocal.RunId.HasValue
-                    ? streamAccountingLocal.AccumulatedCostUsd
-                    : null,
-                CancellationToken.None)
-            .ConfigureAwait(false);
-
-        await TryRecordAttachmentConsultationsAsync(
-            grimoireTurn.AssistantEntryId,
-            attachmentProvenance,
-            CancellationToken.None).ConfigureAwait(false);
-
-        string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
-
-        RecordInferenceMetrics(lease.Provider, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
-
-        if (auditContext is not null)
-        {
-            await TryLogInferenceAuditAsync(
-                auditContext,
-                grimoireTurn.SessionId,
-                lease.Provider.Name,
-                targetModel,
-                streamAccumulatedUsage,
-                streamFinishReason ?? "stop",
-                streamActiveSpell?.Name,
-                request.CampaignId,
-                inferenceStopwatch.Elapsed,
-                [.. contextBreakdownsByCall.Values],
-                CancellationToken.None).ConfigureAwait(false);
-        }
-
-        if (!streaming)
-        {
-            classification.BufferedTerminal = Result<PromptTurnResult>.Success(
-                new PromptTurnResult(
-                    finalText,
-                    streamAccumulatedUsage,
-                    observedToolCalls?.ToList(),
-                    streamFinishReason ?? "stop")
+            if (!finalizeOk)
+            {
+                if (!streaming)
                 {
-                    Warnings = streamWarnings,
-                    Reasoning = clientReasoningSegments,
-                    Sensitivity = covenantScope?.DerivedSensitivity,
-                });
+                    classification.BufferedTerminal = Result<PromptTurnResult>.Failure(
+                        new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
+                }
 
-            yield break;
-        }
+                yield return await FailureFrameAsync(new Error(ErrorCodes.Hub.Error, GrimoireTurnWriter.PublicFinalizeFailureMessage));
 
-        yield return new IntelligenceEvent(
-            IntelligenceEventType.Result,
-            "Complete",
-            usageData,
-            streamAccumulatedUsage,
-            FinishReason: streamFinishReason ?? "stop")
-        {
-            Warnings = streamWarnings
-        };
+                yield break;
+            }
+
+            // The answer is durable from here, so the run completed whatever happens to the caller
+            // next. Finalize itself stays cancellable: it is one atomic write, and a cancellation that
+            // lands before it commits leaves the row in flight for the stream-exit cleanup to resolve.
+            streamAccountingStatus = InferenceRunStatus.Completed;
+
+            IReadOnlyList<AttachmentMemoryProvenance> attachmentProvenance = [];
+
+            try
+            {
+                // This handoff is the final part of the Session turn's ordering boundary. It must happen
+                // before any ancillary cancellable await, while the same-Session gate is still held, or a
+                // later turn could enqueue a wider frontier first and classify these entries under its
+                // provenance.
+                //
+                // Read from the turn's captured attachment state: this segment runs after the turn's
+                // yields, where the ambient no longer holds it.
+                attachmentProvenance = streamTurnAmbients.AttachmentMemory?.Snapshot() ?? [];
+
+                TryEnqueueSagaExtraction(
+                    grimoireTurn.SessionId,
+                    attachmentProvenance,
+                    streamTurnAmbients.AttachmentMemory?.HasUnprovenancedAttachmentContent == true,
+                    grimoireTurn.SagaExtractionAfterSequenceExclusive,
+                    grimoireTurn.SagaExtractionThroughSequence);
+            }
+            finally
+            {
+                grimoireTurnWriter.CompleteSagaExtractionHandoff(grimoireTurn);
+            }
+
+            // Post-finalize bookkeeping for an answer that already exists: not the caller's to cancel.
+            await TryIncrementSessionTokensAsync(
+                    grimoireTurn.SessionId,
+                    streamAccumulatedUsage,
+                    targetModel,
+                    streamAccountingLocal.RunId.HasValue
+                        ? streamAccountingLocal.AccumulatedCostUsd
+                        : null,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+
+            await TryRecordAttachmentConsultationsAsync(
+                grimoireTurn.AssistantEntryId,
+                attachmentProvenance,
+                CancellationToken.None).ConfigureAwait(false);
+
+            string usageData = streamAccumulatedUsage?.TotalTokens.ToString(CultureInfo.InvariantCulture) ?? "0";
+
+            RecordInferenceMetrics(lease.Provider, targetModel, inferenceStopwatch.Elapsed, streamAccumulatedUsage);
+
+            if (auditContext is not null)
+            {
+                await TryLogInferenceAuditAsync(
+                    auditContext,
+                    grimoireTurn.SessionId,
+                    lease.Provider.Name,
+                    targetModel,
+                    streamAccumulatedUsage,
+                    streamFinishReason ?? "stop",
+                    streamActiveSpell?.Name,
+                    request.CampaignId,
+                    inferenceStopwatch.Elapsed,
+                    [.. contextBreakdownsByCall.Values],
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
+            if (!streaming)
+            {
+                classification.BufferedTerminal = Result<PromptTurnResult>.Success(
+                    new PromptTurnResult(
+                        finalText,
+                        streamAccumulatedUsage,
+                        observedToolCalls?.ToList(),
+                        streamFinishReason ?? "stop")
+                    {
+                        Warnings = streamWarnings,
+                        Reasoning = clientReasoningSegments,
+                        Sensitivity = covenantScope?.DerivedSensitivity,
+                    });
+
+                yield break;
+            }
+
+            yield return new IntelligenceEvent(
+                IntelligenceEventType.Result,
+                "Complete",
+                usageData,
+                streamAccumulatedUsage,
+                FinishReason: streamFinishReason ?? "stop")
+            {
+                Warnings = streamWarnings
+            };
         }
         finally
         {
