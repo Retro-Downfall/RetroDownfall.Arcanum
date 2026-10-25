@@ -11,6 +11,8 @@ using System.Globalization;
 
 using System.Runtime.CompilerServices;
 
+using System.Security.Cryptography;
+
 using System.Text;
 
 using System.Text.Json;
@@ -46,6 +48,19 @@ internal sealed partial class DataRetentionService
 {
     private readonly ConditionalWeakTable<DataRetentionPlan, FrozenPruneAuthority>
         _frozenPruneAuthorities = new();
+
+    private readonly ConditionalWeakTable<DataRetentionPlan, PruneSnapshot> _pruneSnapshots = new();
+
+    private const int MaximumPruneCheckpointBytes = 5 * 1024 * 1024;
+
+    private const int InlinePruneSnapshotBytes = 64 * 1024;
+
+    private const int PruneSnapshotChunkBytes = 256 * 1024;
+
+    private sealed record PruneSnapshot(IReadOnlyList<byte[]> Chunks, long Length, string Digest, Dictionary<string, int> Ordinals)
+    {
+        internal Guid? PersistedOperationId { get; set; }
+    }
 
     private readonly AsyncLocal<DateTimeOffset?> _prunePlanningTimestamp = new();
 
@@ -485,6 +500,9 @@ internal sealed partial class DataRetentionService
         _frozenPruneAuthorities.Add(
             plan,
             new FrozenPruneAuthority(cutoffs));
+
+        // Validate and measure the exact frozen authority before an operation can take the single flight.
+        _pruneSnapshots.Add(plan, CreatePruneSnapshot(plan, cutoffs));
 
         return plan;
     }
@@ -3679,20 +3697,39 @@ internal sealed partial class DataRetentionService
         RetentionMutationJournal? pendingJournal,
         CancellationToken cancellationToken)
     {
-        const int checkpointFormatVersion = 2;
+        PruneSnapshot snapshot = _pruneSnapshots.GetValue(plan, _ => CreatePruneSnapshot(plan, frozenCutoffs));
 
-        byte[] payload = SerializePruneCheckpoint(
-            plan.PlanId,
-            nextCandidateIndex,
-            plan.CandidateIds,
-            plan.GeneratedAt,
-            frozenCutoffs,
-            pendingJournal);
+        byte[] payload;
 
-        if (payload.Length > 5 * 1024 * 1024)
+        int checkpointFormatVersion;
+
+        if (snapshot.Length <= InlinePruneSnapshotBytes && snapshot.PersistedOperationId is null)
         {
-            throw new InvalidOperationException(
-                "The retention checkpoint exceeds its bounded payload size.");
+            payload = SerializePruneCheckpoint(plan.PlanId, nextCandidateIndex, plan.CandidateIds,
+                plan.GeneratedAt, frozenCutoffs, pendingJournal);
+
+            checkpointFormatVersion = 2;
+        }
+        else
+        {
+            await PersistPruneSnapshotAsync(operationId, ownerId, snapshot, cancellationToken).ConfigureAwait(false);
+
+            int originalIndex = nextCandidateIndex == plan.CandidateIds.Length
+                ? snapshot.Ordinals.Count
+                : snapshot.Ordinals[plan.CandidateIds[nextCandidateIndex]];
+
+            string journal = pendingJournal is null ? string.Empty
+                : "P:" + Convert.ToBase64String(SerializeMutationJournal(pendingJournal)) + "\n";
+
+            payload = Encoding.UTF8.GetBytes("ARCADATA3\n" + plan.PlanId + "\n"
+                + originalIndex.ToString(CultureInfo.InvariantCulture) + "\nS:" + snapshot.Digest + "\n" + journal);
+
+            checkpointFormatVersion = 3;
+        }
+
+        if (payload.Length > MaximumPruneCheckpointBytes)
+        {
+            throw new InvalidOperationException("The retention checkpoint exceeds its bounded payload size.");
         }
 
         bool saved = await operations.SaveCheckpointAsync(
@@ -3713,6 +3750,318 @@ internal sealed partial class DataRetentionService
         }
 
         return checkpointFormatVersion;
+    }
+
+    private static PruneSnapshot CreatePruneSnapshot(
+        DataRetentionPlan plan,
+        IReadOnlyDictionary<string, DateTimeOffset> cutoffs)
+    {
+        foreach (string candidate in plan.CandidateIds)
+        {
+            if (!IsValidCheckpointCandidate(candidate))
+            {
+                throw new InvalidDataException("The retention plan contains an unknown or malformed candidate.");
+            }
+        }
+
+        List<byte[]> chunks = [];
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        using MemoryStream chunk = new(PruneSnapshotChunkBytes);
+
+        long length = 0;
+
+        void Append(string text)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(text);
+
+            int offset = 0;
+
+            while (offset < bytes.Length)
+            {
+                int count = Math.Min(bytes.Length - offset, PruneSnapshotChunkBytes - (int)chunk.Length);
+
+                chunk.Write(bytes, offset, count);
+
+                offset += count;
+
+                if (chunk.Length == PruneSnapshotChunkBytes)
+                {
+                    byte[] completed = chunk.ToArray();
+
+                    chunks.Add(completed);
+
+                    hash.AppendData(completed);
+
+                    length += completed.Length;
+
+                    chunk.SetLength(0);
+                }
+            }
+        }
+
+        Append("ARCADATA2\n" + plan.PlanId + "\n0\nG:"
+            + Convert.ToBase64String(Encoding.UTF8.GetBytes(FormatTimestamp(plan.GeneratedAt))) + "\n");
+
+        foreach (string candidate in plan.CandidateIds)
+        {
+            if (!cutoffs.TryGetValue(candidate, out DateTimeOffset cutoff))
+            {
+                throw new InvalidDataException("The retention snapshot is missing a frozen cutoff.");
+            }
+
+            Append("C:" + Convert.ToBase64String(Encoding.UTF8.GetBytes(candidate)) + ":"
+                + Convert.ToBase64String(Encoding.UTF8.GetBytes(FormatTimestamp(cutoff))) + "\n");
+        }
+
+        if (chunk.Length > 0)
+        {
+            byte[] completed = chunk.ToArray();
+
+            chunks.Add(completed);
+
+            hash.AppendData(completed);
+
+            length += completed.Length;
+        }
+
+        return new PruneSnapshot(chunks, length, Convert.ToHexString(hash.GetHashAndReset()),
+            plan.CandidateIds.Select((candidate, index) => (candidate, index))
+                .ToDictionary(pair => pair.candidate, pair => pair.index, StringComparer.Ordinal));
+    }
+
+    private async Task PersistPruneSnapshotAsync(
+        Guid operationId,
+        string ownerId,
+        PruneSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.PersistedOperationId == operationId)
+        {
+            return;
+        }
+
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using DbTransaction transaction = await BeginMutationTransactionAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+
+        command.CommandText = """
+            SELECT COUNT(*) FROM LongRunningOperations
+            WHERE Id = @operation AND Kind = @kind AND LeaseOwner = @owner
+                AND State IN (@running, @cancelling) AND LeaseExpiresAt > @now
+            """;
+
+        Add(command, "@operation", operationId.ToString("N"));
+
+        Add(command, "@kind", LongRunningOperationKinds.DataRetentionPrune);
+
+        Add(command, "@owner", ownerId);
+
+        Add(command, "@running", (int)LongRunningOperationState.Running);
+
+        Add(command, "@cancelling", (int)LongRunningOperationState.Cancelling);
+
+        Add(command, "@now", FormatTimestamp(timeProvider.GetUtcNow()));
+
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 1)
+        {
+            throw new InvalidOperationException("The retention snapshot owner no longer holds the operation lease.");
+        }
+
+        for (int part = 0; part < snapshot.Chunks.Count; part++)
+        {
+            command.Parameters.Clear();
+
+            command.CommandText = """
+                INSERT INTO data_retention_prune_snapshots (OperationId, Digest, Part, Payload)
+                VALUES (@operation, @digest, @part, @payload)
+                ON CONFLICT (OperationId, Digest, Part) DO NOTHING
+                """;
+
+            Add(command, "@operation", operationId.ToString("N"));
+
+            Add(command, "@digest", snapshot.Digest);
+
+            Add(command, "@part", part);
+
+            Add(command, "@payload", snapshot.Chunks[part]);
+
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 0)
+            {
+                command.CommandText = """
+                    SELECT COUNT(*) FROM data_retention_prune_snapshots
+                    WHERE OperationId = @operation AND Digest = @digest AND Part = @part AND Payload = @payload
+                    """;
+
+                if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != 1)
+                {
+                    throw new InvalidDataException("The retained snapshot segment does not match the frozen plan.");
+                }
+            }
+        }
+
+        command.Parameters.Clear();
+
+        command.CommandText = "SELECT COUNT(*) FROM data_retention_prune_snapshots WHERE OperationId = @operation AND Digest = @digest";
+
+        Add(command, "@operation", operationId.ToString("N"));
+
+        Add(command, "@digest", snapshot.Digest);
+
+        if (Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture) != snapshot.Chunks.Count)
+        {
+            throw new InvalidDataException("The retained snapshot has unexpected segments.");
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        snapshot.PersistedOperationId = operationId;
+    }
+
+    private async Task<(string PlanId, int NextIndex, string[] Candidates, DateTimeOffset? GeneratedAt,
+        IReadOnlyDictionary<string, DateTimeOffset> FrozenCutoffs, RetentionMutationJournal? PendingJournal,
+        PruneSnapshot? Snapshot)> ReadPruneCheckpointAsync(LongRunningOperation operation, CancellationToken cancellationToken)
+    {
+        byte[] payload = operation.CheckpointPayload!;
+
+        if (payload.Length > MaximumPruneCheckpointBytes)
+        {
+            throw new InvalidDataException("The retention checkpoint exceeds its bounded payload size.");
+        }
+
+        if (!payload.AsSpan().StartsWith("ARCADATA3\n"u8))
+        {
+            var parsed = ParsePruneCheckpoint(payload);
+
+            return (parsed.PlanId, parsed.NextIndex, parsed.Candidates, parsed.GeneratedAt,
+                parsed.FrozenCutoffs, parsed.PendingJournal, null);
+        }
+
+        string[] lines = Encoding.UTF8.GetString(payload).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        if (lines.Length is not (4 or 5) || lines[1].Length != 64 || !lines[1].All(Uri.IsHexDigit)
+            || !int.TryParse(lines[2], NumberStyles.None, CultureInfo.InvariantCulture, out int nextIndex)
+            || lines[3].Length != 66 || !lines[3].StartsWith("S:", StringComparison.Ordinal)
+            || !lines[3][2..].All(Uri.IsHexDigit))
+        {
+            throw new InvalidDataException("The retention snapshot checkpoint header is invalid.");
+        }
+
+        string digest = lines[3][2..];
+
+        DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using DbCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT Part, length(Payload), Payload FROM data_retention_prune_snapshots
+            WHERE OperationId = @operation AND Digest = @digest ORDER BY Part
+            """;
+
+        Add(command, "@operation", operation.Id.ToString("N"));
+
+        Add(command, "@digest", digest);
+
+        List<string> snapshotLines = [];
+
+        StringBuilder line = new();
+
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        long snapshotLength = 0;
+
+        await using (DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            int part = 0;
+
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.GetInt32(0) != part++)
+                {
+                    throw new InvalidDataException("The retention snapshot has a missing segment.");
+                }
+
+                long chunkLength = reader.GetInt64(1);
+
+                if (chunkLength is < 1 or > PruneSnapshotChunkBytes)
+                {
+                    throw new InvalidDataException("The retention snapshot segment exceeds its bounded size.");
+                }
+
+                byte[] chunk = (byte[])reader.GetValue(2);
+
+                hash.AppendData(chunk);
+
+                snapshotLength += chunk.Length;
+
+                foreach (byte value in chunk)
+                {
+                    if (value == (byte)'\n')
+                    {
+                        snapshotLines.Add(line.ToString());
+
+                        line.Clear();
+                    }
+                    else
+                    {
+                        // Snapshot lines contain only ASCII headers and base64. A candidate is at
+                        // most 2,048 characters; 12 KiB covers its worst UTF-8/base64 expansion.
+                        if (value is < 32 or > 126 || line.Length >= 12 * 1024)
+                        {
+                            throw new InvalidDataException("The retention snapshot line exceeds its bounded encoding.");
+                        }
+
+                        line.Append((char)value);
+                    }
+                }
+            }
+        }
+
+        if (line.Length != 0 || !string.Equals(Convert.ToHexString(hash.GetHashAndReset()), digest, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The retention snapshot is missing or its digest does not match.");
+        }
+
+        var frozen = ParsePruneCheckpointLines([.. snapshotLines]);
+
+        if (!string.Equals(frozen.PlanId, lines[1], StringComparison.Ordinal)
+            || nextIndex < 0 || nextIndex > frozen.Candidates.Length || frozen.PendingJournal is not null || frozen.NextIndex != 0)
+        {
+            throw new InvalidDataException("The retention snapshot does not match its checkpoint.");
+        }
+
+        RetentionMutationJournal? pendingJournal = null;
+
+        if (lines.Length == 5)
+        {
+            if (!lines[4].StartsWith("P:", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("The retention snapshot pending journal is invalid.");
+            }
+
+            try
+            {
+                pendingJournal = ParseMutationJournal(Convert.FromBase64String(lines[4][2..]));
+            }
+            catch (Exception ex) when (ex is FormatException or ArgumentException)
+            {
+                throw new InvalidDataException("The retention snapshot pending journal is invalid.", ex);
+            }
+        }
+
+        PruneSnapshot snapshot = new([], snapshotLength, digest,
+            frozen.Candidates.Select((candidate, index) => (candidate, index))
+                .ToDictionary(pair => pair.candidate, pair => pair.index, StringComparer.Ordinal))
+        {
+            PersistedOperationId = operation.Id,
+        };
+
+        return (frozen.PlanId, nextIndex, frozen.Candidates, frozen.GeneratedAt, frozen.FrozenCutoffs, pendingJournal, snapshot);
     }
 
     private static byte[] SerializePruneCheckpoint(
@@ -3827,8 +4176,9 @@ internal sealed partial class DataRetentionService
                 string[] checkpointCandidates,
                 DateTimeOffset? checkpointGeneratedAt,
                 IReadOnlyDictionary<string, DateTimeOffset> checkpointCutoffs,
-                RetentionMutationJournal? checkpointPendingJournal) =
-                ParsePruneCheckpoint(operation.CheckpointPayload);
+                RetentionMutationJournal? checkpointPendingJournal,
+                PruneSnapshot? recoveredSnapshot) =
+                await ReadPruneCheckpointAsync(operation, cancellationToken).ConfigureAwait(false);
 
             pendingJournal = checkpointPendingJournal;
 
@@ -3912,6 +4262,11 @@ internal sealed partial class DataRetentionService
                 current.DerivedRecords,
                 candidates,
                 RequiresConfirmation: true);
+
+            if (recoveredSnapshot is not null)
+            {
+                _pruneSnapshots.Add(plan, recoveredSnapshot);
+            }
 
             nextIndex = 0;
 
@@ -4019,7 +4374,7 @@ internal sealed partial class DataRetentionService
         RetentionMutationJournal? PendingJournal) ParsePruneCheckpoint(
         byte[] payload)
     {
-        if (payload.Length > 5 * 1024 * 1024)
+        if (payload.Length > MaximumPruneCheckpointBytes)
         {
             throw new InvalidDataException("The retention checkpoint exceeds its bounded payload size.");
         }
@@ -4028,6 +4383,17 @@ internal sealed partial class DataRetentionService
             .GetString(payload)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
+        return ParsePruneCheckpointLines(lines);
+    }
+
+    private static (
+        string PlanId,
+        int NextIndex,
+        string[] Candidates,
+        DateTimeOffset? GeneratedAt,
+        IReadOnlyDictionary<string, DateTimeOffset> FrozenCutoffs,
+        RetentionMutationJournal? PendingJournal) ParsePruneCheckpointLines(string[] lines)
+    {
         bool legacy = lines.Length >= 3
             && string.Equals(lines[0], "ARCADATA1", StringComparison.Ordinal);
 
@@ -4099,11 +4465,8 @@ internal sealed partial class DataRetentionService
             }
         }
 
-        if (lines.Length - candidateStart > 10_000)
-        {
-            throw new InvalidDataException("The retention checkpoint exceeds the maximum sweep size.");
-        }
-
+        // Inline checkpoints are bounded by bytes. Historical writers emitted more than 10,000
+        // candidates inside that bound; the count was never a destructive-authority boundary.
         List<string> candidates = [];
 
         Dictionary<string, DateTimeOffset> frozenCutoffs =

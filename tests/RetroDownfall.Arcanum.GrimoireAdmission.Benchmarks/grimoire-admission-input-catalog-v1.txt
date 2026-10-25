@@ -1200,6 +1200,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/campaign_rollup_st
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/capability_cleanup_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/covenant_authority_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/covenant_schema_repair_intents.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/data_retention_prune_snapshots.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/disclosure_subject_aggregates.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/disclosure_subject_state.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Tables/entry_embeddings.sql
@@ -1448,6 +1449,8 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V2/060_lexico
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/010_saga_committed_uses.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/020_saga_committed_uses_validate_insert.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V20/030_saga_committed_uses_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V21/010_data_retention_prune_snapshots.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V21/020_data_retention_prune_snapshots_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/010_annal_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/011_annal_claims_subject_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/012_annal_claims_store_candidate_index.sql
@@ -1643,6 +1646,7 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/campaign_rollup_
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/campaign_rollup_state_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/covenant_schema_repair_intents_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/covenant_schema_repair_intents_guard_update.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/data_retention_prune_snapshots_guard_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/disclosure_subject_aggregates_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/disclosure_subject_state_guard_delete.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Triggers/entry_embeddings_EntryId_guard_identity_insert.sql

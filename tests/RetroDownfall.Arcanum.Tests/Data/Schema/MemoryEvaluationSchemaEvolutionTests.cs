@@ -5,6 +5,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data.Schema;
+
 public sealed class MemoryEvaluationSchemaEvolutionTests
 {
     [Fact]
@@ -12,7 +13,7 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
     {
         Assert.Equal(CoreSchemaVersionEighteenFixture.PublishedFingerprint, CoreSchemaVersionEighteenFixture.Fingerprint);
 
-        Assert.Equal(20, GrimoireSchemaVersionChains.CoreSchemaVersion);
+        Assert.Equal(21, GrimoireSchemaVersionChains.CoreSchemaVersion);
 
         Assert.Equal(CoreSchemaVersionEighteenFixture.PublishedFingerprint, GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core).SourceDefinitionFingerprintFor(18));
     }
@@ -26,13 +27,13 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
 
         Assert.Equal(18, (await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionEighteenFixture.ChainSet(), 64, CancellationToken.None)).Core.SchemaVersion);
 
-        Assert.Equal(20, (await GrimoireSchemaTestInstaller.InstallAsync(old, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(21, (await GrimoireSchemaTestInstaller.InstallAsync(old, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
 
         using var newFile = EvolutionScratchDatabase.Create();
 
         await using var fresh = await newFile.OpenAsync(CancellationToken.None);
 
-        Assert.Equal(20, (await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
+        Assert.Equal(21, (await GrimoireSchemaTestInstaller.InstallAsync(fresh, GrimoireSchemaVersionChains.Default, 64, CancellationToken.None)).Core.SchemaVersion);
 
         Assert.Equal(await Catalog(fresh), await Catalog(old));
     }
@@ -82,9 +83,12 @@ public sealed class MemoryEvaluationSchemaEvolutionTests
 
             var step = core.Steps.Single(value => value.ToVersion == 19);
 
-            var interrupted = step with { Statements = [.. step.Statements.Where(value => value.Ordinal < 150),
+            var interrupted = step with
+            {
+                Statements = [.. step.Statements.Where(value => value.Ordinal < 150),
                 new("Transitions.V19.150_cancel", 150, "cancel", "SELECT cancel_receipt_upgrade();"),
-                .. step.Statements.Where(value => value.Ordinal > 150)] };
+                .. step.Statements.Where(value => value.Ordinal > 150)]
+            };
 
             var chain = new GrimoireSchemaVersionChainSet([new(core.HeadManifest, core.HeadObjects,
                 [.. core.Steps.Where(value => value.ToVersion < 19), interrupted, .. core.Steps.Where(value => value.ToVersion > 19)]),

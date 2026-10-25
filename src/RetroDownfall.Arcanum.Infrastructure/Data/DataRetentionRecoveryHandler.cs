@@ -7,7 +7,7 @@ internal sealed class DataRetentionRecoveryHandler(
 {
     public string Kind => LongRunningOperationKinds.DataRetentionPrune;
 
-    public int SupportedCheckpointVersion => 2;
+    public int SupportedCheckpointVersion => 3;
 
     public async Task<LongRunningOperationRecoveryResult> RecoverAsync(
         LongRunningOperation operation,
