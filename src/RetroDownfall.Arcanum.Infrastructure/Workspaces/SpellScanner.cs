@@ -86,7 +86,91 @@ internal static class SpellScanner
         long MaxBytes,
         int? MaxDeclaredTools);
 
-    private readonly record struct MetadataScanCacheKey(string GlobalRoot, string WorkspaceRoot);
+    // Generation tokens are unique even after eviction, so an old in-flight scan cannot become
+    // current again when a root returns. Keep at most 64 roots, twice the metadata LRU capacity.
+    private static readonly Dictionary<string, long> MetadataRootGenerations = new(StringComparer.Ordinal);
+
+    private static readonly Queue<string> MetadataRootGenerationOrder = new();
+
+    private static readonly Lock MetadataGenerationGate = new();
+
+    private static long _nextMetadataGeneration;
+
+    private static long GetMetadataGeneration(string root)
+    {
+        string normalized = NormalizeMetadataRoot(root);
+
+        lock (MetadataGenerationGate)
+        {
+            if (MetadataRootGenerations.TryGetValue(normalized, out long generation))
+            {
+                return generation;
+            }
+
+            if (MetadataRootGenerations.Count == MetadataScanCacheCapacity * 2)
+            {
+                MetadataRootGenerations.Remove(MetadataRootGenerationOrder.Dequeue());
+            }
+
+            generation = ++_nextMetadataGeneration;
+
+            MetadataRootGenerations.Add(normalized, generation);
+
+            MetadataRootGenerationOrder.Enqueue(normalized);
+
+            return generation;
+        }
+    }
+
+    internal static void InvalidateMetadata(string workspaceRoot)
+    {
+        string root = NormalizeMetadataRoot(workspaceRoot);
+
+        lock (MetadataGenerationGate)
+        {
+            // Nested Campaigns and aliases can share files. Invalidate every retained root whose
+            // tree intersects the writer's tree, including the global catalog when it overlaps.
+            foreach (string retained in MetadataRootGenerations.Keys.ToArray())
+            {
+                if (retained.Length > 0 && (IsSameOrChildRoot(root, retained) || IsSameOrChildRoot(retained, root)))
+                {
+                    MetadataRootGenerations[retained] = ++_nextMetadataGeneration;
+                }
+            }
+        }
+    }
+
+    private static bool IsSameOrChildRoot(string candidate, string root) =>
+        candidate.Equals(root, StringComparison.Ordinal)
+        || candidate.StartsWith(Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+
+    private static string NormalizeMetadataRoot(string root)
+    {
+        if (root.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        string fullPath = Path.GetFullPath(root.Trim());
+
+        if (WorkspacePathPolicy.TryCanonicalize(fullPath, out string? canonical, out _))
+        {
+            fullPath = canonical;
+        }
+
+        fullPath = Path.TrimEndingDirectorySeparator(fullPath);
+
+        return OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? fullPath.ToUpperInvariant()
+            : fullPath;
+    }
+
+    private readonly record struct MetadataScanCacheKey(
+        string GlobalRoot,
+        string WorkspaceRoot,
+        long GlobalGeneration,
+        long WorkspaceGeneration,
+        long MaxFileSizeBytes);
 
     private sealed class MetadataScanCacheEntry(IReadOnlyList<SpellMetadata> metadata, DateTimeOffset cachedAt)
     {
@@ -363,7 +447,10 @@ internal static class SpellScanner
 
         int ttlSeconds = ArcanumSettingClamps.MetadataScanCacheTtlSeconds(metadataScanCacheTtlSeconds);
 
-        MetadataScanCacheKey cacheKey = new(globalRoot, localRoot);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        MetadataScanCacheKey cacheKey = new(
+            globalRoot, localRoot, GetMetadataGeneration(globalRoot), GetMetadataGeneration(localRoot), maxFileSizeBytes);
 
         if (ttlSeconds > 0
             && MetadataScanCache.TryGetValue(cacheKey, out MetadataScanCacheEntry? cachedEntry)
@@ -588,7 +675,7 @@ internal static class SpellScanner
         return summaries;
     }
 
-    private static RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary MapMetadataToSummary(SpellMetadata metadata)
+    internal static RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSummary MapMetadataToSummary(SpellMetadata metadata)
     {
         RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSource source = IsBuiltinSpellPath(metadata.FilePath)
             ? RetroDownfall.Arcanum.Core.Intelligence.Spells.SpellSource.Builtin
@@ -1109,7 +1196,7 @@ internal static class SpellScanner
         }
     }
 
-    private static async Task<SpellMetadata?> TryParseSpellMetadataAsync(
+    internal static async Task<SpellMetadata?> TryParseSpellMetadataAsync(
         string filePath,
         long maxFileSizeBytes,
         string? workspaceRootForRevalidation,

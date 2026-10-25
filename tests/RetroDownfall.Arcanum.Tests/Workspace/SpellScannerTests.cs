@@ -44,6 +44,41 @@ public sealed partial class SpellScannerTests : IAsyncLifetime
         await _workspace.DisposeAsync();
     }
 
+    [Fact]
+    public async Task Catalog_default_routing_ttl_reuses_metadata_after_a_human_paced_gap()
+    {
+        IReadOnlyList<SpellMetadata> first = await SpellScanner.ScanMetadataAsync(
+            _workspace.Root, CancellationToken.None, MaxFileSizeBytes,
+            Core.Configuration.ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds);
+
+        await Task.Delay(TimeSpan.FromSeconds(6));
+
+        int opens = 0;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (path.StartsWith(_workspace.Root, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref opens);
+            }
+        };
+
+        try
+        {
+            IReadOnlyList<SpellMetadata> second = await SpellScanner.ScanMetadataAsync(
+                _workspace.Root, CancellationToken.None, MaxFileSizeBytes,
+                Core.Configuration.ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds);
+
+            Assert.Equal(0, opens);
+
+            Assert.Same(first, second);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
     [Theory]
     [InlineData("{\"name\":\"fireball\"}")]
     [InlineData("{\"name\":\"fireball\",\"tags\":null}")]

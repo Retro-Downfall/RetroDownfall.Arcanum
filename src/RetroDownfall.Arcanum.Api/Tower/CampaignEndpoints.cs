@@ -692,6 +692,8 @@ internal static class CampaignEndpoints
                     writeToken = CancellationToken.None;
                 }
 
+                var spellImports = new List<SpellImportRequest>(spells.Count);
+
                 for (int i = 0; i < spells.Count; i++)
                 {
                     CampaignExportSpellDto spell = spells[i];
@@ -704,7 +706,15 @@ internal static class CampaignEndpoints
                         campaign.Path,
                         id);
 
-                    Result<SpellSummary> importResult = await spellRepo.ImportAsync(importReq, writeToken).ConfigureAwait(false);
+                    spellImports.Add(importReq);
+                }
+
+                IReadOnlyList<Result<SpellSummary>> spellResults = await spellRepo
+                    .ImportBatchAsync(campaign.Path, spellImports, writeToken).ConfigureAwait(false);
+
+                for (int i = 0; i < spellResults.Count; i++)
+                {
+                    Result<SpellSummary> importResult = spellResults[i];
 
                     if (importResult.IsSuccess)
                     {
@@ -714,7 +724,7 @@ internal static class CampaignEndpoints
                     }
                     else
                     {
-                        warnings.Add($"Spell '{spell.Name}': {importResult.Error.Message}");
+                        warnings.Add($"Spell '{spells[i].Name}': {importResult.Error.Message}");
                     }
                 }
 
@@ -912,7 +922,8 @@ internal static class CampaignEndpoints
                 new Error(ErrorCodes.Campaign.NotFound, "No campaign exists with that identifier."));
         }
 
-        SpellSummary[] summaries = await spellRepo.ListAsync(campaign.Path, ctx.RequestAborted).ConfigureAwait(false);
+        IReadOnlyList<(string Name, SpellExportDto? Export)> exports = await spellRepo
+            .ExportAllAsync(campaign.Path, ctx.RequestAborted).ConfigureAwait(false);
 
         var exportSpells = new List<CampaignExportSpellDto>();
 
@@ -920,20 +931,11 @@ internal static class CampaignEndpoints
         // spell keeps the scripts its own export left out, so a partial bundle never reads as complete.
         var omittedSpells = new List<string>();
 
-        foreach (SpellSummary summary in summaries)
+        foreach ((string name, SpellExportDto? exported) in exports)
         {
-            if (summary.Source == SpellSource.Builtin)
-            {
-                continue;
-            }
-
-            SpellExportDto? exported = await spellRepo
-                .ExportAsync(summary.Name, campaign.Path, ctx.RequestAborted)
-                .ConfigureAwait(false);
-
             if (exported is null)
             {
-                omittedSpells.Add(summary.Name);
+                omittedSpells.Add(name);
 
                 continue;
             }
@@ -943,7 +945,7 @@ internal static class CampaignEndpoints
                 : JsonSerializer.Serialize(exported.Metadata, ArcanumCoreJsonContext.Default.SkillMetadata);
 
             exportSpells.Add(new CampaignExportSpellDto(
-                summary.Name,
+                name,
                 spellJson,
                 exported.FullContent,
                 exported.Scripts.Select(s => new CampaignExportScriptDto(s.FileName, s.Base64Content)).ToList(),

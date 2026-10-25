@@ -17,6 +17,95 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 public sealed class CampaignEndpointTests
 {
     [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Catalog_campaign_bundle_does_not_rescan_existing_spells_per_item(bool export)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string sentinel = string.Empty;
+
+        int opens = 0;
+
+        await using ArcanumWebApplicationFactory factory = new()
+        {
+            ServiceOverrides = services => services.AddSingleton<Microsoft.AspNetCore.Hosting.IStartupFilter>(
+                new CatalogReadObserver(path =>
+                {
+                    if (path == sentinel)
+                    {
+                        Interlocked.Increment(ref opens);
+                    }
+                })),
+        };
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        CampaignDto campaign = await CreateCampaignWithOnePromptAsync(factory, client, "catalog-count");
+
+        sentinel = Path.Combine(campaign.Path, "sentinel", "SPELL.md");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(sentinel)!);
+
+        await File.WriteAllTextAsync(sentinel, "---\nname: sentinel\n---\nbody");
+
+        string[] spells = Enumerable.Range(0, 6).Select(i =>
+            "{\"name\":\"batch-" + i + "\",\"fullContent\":\"---\\nname: batch-" + i + "\\n---\\nbody\",\"scripts\":[]}").ToArray();
+
+        if (export)
+        {
+            for (int i = 0; i < spells.Length; i++)
+            {
+                string directory = Path.Combine(campaign.Path, "batch-" + i);
+
+                Directory.CreateDirectory(directory);
+
+                await File.WriteAllTextAsync(Path.Combine(directory, "SPELL.md"), $"---\nname: batch-{i}\n---\nbody");
+            }
+        }
+
+        try
+        {
+            string payload = "{\"strategy\":\"merge\",\"payload\":{\"campaign\":" + CampaignJson(campaign)
+                + ",\"spells\":[" + string.Join(',', spells.Concat([spells[0]])) + "]}}";
+
+            HttpResponseMessage response = await client.PostAsync(
+                $"/api/campaigns/{campaign.Id}/" + (export ? "export" : "import"),
+                new StringContent(export ? "{}" : payload, Encoding.UTF8, "application/json"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            // One discovery read; export also verifies, hydrates and reads the actual bundle bytes.
+            Assert.InRange(opens, 1, export ? 4 : 1);
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+
+            if (export)
+            {
+                CampaignExportDto bundle = JsonSerializer.Deserialize(
+                    responseBody, ArcanumJsonContext.Default.ApiResponseCampaignExportDto)!.Data!;
+
+                Assert.Equal(7, bundle.Spells.Count);
+
+                Assert.Equal("---\nname: sentinel\n---\nbody", Assert.Single(bundle.Spells, s => s.Name == "sentinel").FullContent);
+            }
+            else
+            {
+                CampaignImportResultDto imported = JsonSerializer.Deserialize(
+                    responseBody, ArcanumJsonContext.Default.ApiResponseCampaignImportResultDto)!.Data!;
+
+                Assert.Equal(6, imported.SpellsImported);
+
+                Assert.Contains("batch-0", Assert.Single(imported.Warnings));
+            }
+        }
+        finally
+        {
+            global::RetroDownfall.Arcanum.Infrastructure.Security.SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
+    [SkippableTheory]
     [InlineData("header")]
     [InlineData("sanctum")]
     [InlineData("import")]
@@ -1153,6 +1242,22 @@ public sealed class CampaignEndpointTests
 
     private static string CampaignJson(CampaignDto campaign) =>
         JsonSerializer.Serialize(campaign, ArcanumJsonContext.Default.CampaignDto);
+
+    private sealed class CatalogReadObserver(Action<string> observe) : Microsoft.AspNetCore.Hosting.IStartupFilter
+    {
+        public Action<Microsoft.AspNetCore.Builder.IApplicationBuilder> Configure(
+            Action<Microsoft.AspNetCore.Builder.IApplicationBuilder> next) => app =>
+        {
+            Microsoft.AspNetCore.Builder.UseExtensions.Use(app, async (context, following) =>
+            {
+                global::RetroDownfall.Arcanum.Infrastructure.Security.SecureFileReader.AfterRegularFileOpenedForTests = observe;
+
+                await following(context);
+            });
+
+            next(app);
+        };
+    }
 
     private static async Task<CampaignDto> CreateCampaignWithOnePromptAsync(
         ArcanumWebApplicationFactory factory,

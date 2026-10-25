@@ -69,6 +69,244 @@ public sealed partial class SpellRepositoryTests : IAsyncLifetime
         }
     }
 
+    [SkippableFact]
+    public async Task Catalog_authoring_keeps_unrelated_workspace_snapshot_hot()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string writerRoot = Path.Combine(_workspaceRoot, "writer");
+
+        string otherRoot = Path.Combine(_workspaceRoot, "other");
+
+        Directory.CreateDirectory(writerRoot);
+
+        Directory.CreateDirectory(otherRoot);
+
+        string otherFile = Path.Combine(otherRoot, "SPELL.md");
+
+        await File.WriteAllTextAsync(otherFile, "---\nname: unaffected\n---\nbody");
+
+        await SpellScanner.ScanMetadataAsync(otherRoot, CancellationToken.None, 1024 * 1024, 300);
+
+        Result created = await CreateRepository().CreateAsync(
+            writerRoot, new("created", null, [], null, null, null, null, [], [], Body: "body"), CancellationToken.None);
+
+        Assert.True(created.IsSuccess);
+
+        int opens = 0;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (path == otherFile)
+            {
+                Interlocked.Increment(ref opens);
+            }
+        };
+
+        try
+        {
+            IReadOnlyList<SpellMetadata> unchanged = await SpellScanner.ScanMetadataAsync(
+                otherRoot, CancellationToken.None, 1024 * 1024, 300);
+
+            Assert.Contains(unchanged, item => item.Name == "unaffected");
+
+            Assert.Equal(0, opens);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Catalog_authoring_invalidates_overlapping_workspace_snapshots(bool nestedWriter)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string nested = Path.Combine(_workspaceRoot, "nested");
+
+        string directory = Path.Combine(nested, "spells", "shared");
+
+        Directory.CreateDirectory(directory);
+
+        await File.WriteAllTextAsync(Path.Combine(directory, "SPELL.md"), "---\nname: shared\ndescription: before\n---\nbody");
+
+        string readRoot = nestedWriter ? _workspaceRoot : nested;
+
+        string writeRoot = nestedWriter ? nested : _workspaceRoot;
+
+        IReadOnlyList<SpellMetadata> before = await SpellScanner.ScanMetadataAsync(
+            readRoot, CancellationToken.None, 1024 * 1024, 300);
+
+        Assert.Contains(before, item => item.Name == "shared" && item.Description == "before");
+
+        Result updated = await CreateRepository().UpdateAsync(
+            "shared", writeRoot, new("after", null, null, null, null, null, null, null), CancellationToken.None);
+
+        Assert.True(updated.IsSuccess);
+
+        IReadOnlyList<SpellMetadata> after = await SpellScanner.ScanMetadataAsync(
+            readRoot, CancellationToken.None, 1024 * 1024, 300);
+
+        Assert.Contains(after, item => item.Name == "shared" && item.Description == "after");
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Catalog_prewrite_scan_cannot_repopulate_current_snapshot_after_authoring(bool evictGenerations)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string directory = Path.Combine(_workspaceRoot, "spells", "racing");
+
+        Directory.CreateDirectory(directory);
+
+        string file = Path.Combine(directory, "SPELL.md");
+
+        await File.WriteAllTextAsync(file, "---\nname: racing\ndescription: before\n---\nbody");
+
+        using ManualResetEventSlim release = new(false);
+
+        TaskCompletionSource opened = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (path == file)
+            {
+                opened.TrySetResult();
+
+                Assert.True(release.Wait(TimeSpan.FromSeconds(30)));
+            }
+        };
+
+        Task<IReadOnlyList<SpellMetadata>> oldScan = Task.Run(() => SpellScanner.ScanMetadataAsync(
+            _workspaceRoot, CancellationToken.None, 1024 * 1024, 300));
+
+        SecureFileReader.AfterRegularFileOpenedForTests = null;
+
+        try
+        {
+            await opened.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            Result updated = await CreateRepository().UpdateAsync(
+                "racing", _workspaceRoot, new("after", null, null, null, null, null, null, null), CancellationToken.None);
+
+            Assert.True(updated.IsSuccess);
+
+            if (evictGenerations)
+            {
+                // Exceed both bounded registries while the old scan still owns its original key.
+                for (int i = 0; i < 70; i++)
+                {
+                    await SpellScanner.ScanMetadataAsync(
+                        Path.Combine(_workspaceRoot, "absent-" + i), CancellationToken.None, 1024 * 1024, 300);
+                }
+            }
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        await oldScan;
+
+        IReadOnlyList<SpellMetadata> current = await SpellScanner.ScanMetadataAsync(
+            _workspaceRoot, CancellationToken.None, 1024 * 1024, 300);
+
+        Assert.Contains(current, item => item.Name == "racing" && item.Description == "after");
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Catalog_published_authoring_immediately_invalidates_routing_snapshot_even_after_partial_success(bool import)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        SpellRepository repository = CreateRepository();
+
+        IReadOnlyList<SpellMetadata> before = await SpellScanner.ScanMetadataAsync(
+            _workspaceRoot, CancellationToken.None, 1024 * 1024, 300);
+
+        Assert.DoesNotContain(before, s => s.Name == "published-catalog");
+
+        if (import)
+        {
+            repository.AfterSpellDirectoryPublishedForTests = () => throw new IOException("Read-back failed after publish.");
+
+            SpellExportDto payload = new(null, "---\nname: published-catalog\n---\nbody", []);
+
+            Result<SpellSummary> result = await repository.ImportAsync(new(payload, _workspaceRoot + Path.DirectorySeparatorChar, null), CancellationToken.None);
+
+            Assert.True(result.IsFailure);
+        }
+        else
+        {
+            Result result = await repository.CreateAsync(_workspaceRoot + Path.DirectorySeparatorChar, new("published-catalog", null, [], null, null, null, null, [], [], Body: "body"), CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+        }
+
+        IReadOnlyList<SpellMetadata> after = await SpellScanner.ScanMetadataAsync(
+            _workspaceRoot, CancellationToken.None, 1024 * 1024, 300);
+
+        Assert.Contains(after, s => s.Name == "published-catalog");
+    }
+
+    [SkippableFact]
+    public async Task Catalog_repeated_list_and_lookup_reuse_metadata_but_reload_changed_content()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string directory = Path.Combine(_workspaceRoot, "nested", "spell");
+
+        Directory.CreateDirectory(directory);
+
+        string file = Path.Combine(directory, "SPELL.md");
+
+        await File.WriteAllTextAsync(file, "---\nname: catalog-probe\n---\noriginal body");
+
+        SpellRepository repository = CreateRepository();
+
+        Assert.Contains(await repository.ListAsync(_workspaceRoot, CancellationToken.None), s => s.Name == "catalog-probe");
+
+        int opens = 0;
+
+        SecureFileReader.AfterRegularFileOpenedForTests = path =>
+        {
+            if (path == file)
+            {
+                Interlocked.Increment(ref opens);
+            }
+        };
+
+        try
+        {
+            await repository.ListAsync(_workspaceRoot, CancellationToken.None);
+
+            Assert.Equal(0, opens);
+
+            Assert.NotNull(await repository.GetAsync("catalog-probe", _workspaceRoot, CancellationToken.None));
+
+            Assert.Equal(2, opens);
+
+            await File.WriteAllTextAsync(file, "---\nname: catalog-probe\n---\nchanged executable body");
+
+            SpellDetail? detail = await repository.GetAsync("catalog-probe", _workspaceRoot, CancellationToken.None);
+
+            Assert.NotNull(detail);
+
+            Assert.Contains("changed executable body", detail.Body);
+        }
+        finally
+        {
+            SecureFileReader.AfterRegularFileOpenedForTests = null;
+        }
+    }
+
     [SkippableTheory]
     [InlineData("create", false)]
     [InlineData("clone", false)]

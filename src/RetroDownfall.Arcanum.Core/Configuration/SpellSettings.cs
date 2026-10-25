@@ -7,7 +7,6 @@ namespace RetroDownfall.Arcanum.Core.Configuration;
 /// </summary>
 public sealed record SpellSettings
 {
-
     /// <summary>
     /// Effective list of absolute directory roots that spell CRUD routes may use when
     /// <c>?workspace=</c> is supplied or when a default workspace is resolved.
@@ -27,10 +26,9 @@ public sealed record SpellSettings
     /// TTL in seconds for the in-process spell-metadata scan cache used by routing and Arcane Resonance.
     /// <c>0</c> disables caching.
     /// </summary>
-    public int MetadataScanCacheTtlSeconds { get; set; } = 5;
+    public int MetadataScanCacheTtlSeconds { get; set; } = 300;
 
     public int MaxDeclaredTools { get; set; } = 50;
 
     public int MaxResonantBytes { get; set; } = 131_072;
-
 }
