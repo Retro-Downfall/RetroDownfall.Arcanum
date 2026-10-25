@@ -84,13 +84,19 @@ internal sealed partial class SpellRepository : ISpellRepository
     private int GetMaxSpellDeclaredTools() =>
         ArcanumSettingClamps.MaxDeclaredTools(ArcanumRuntimeDefaults.Spells.MaxDeclaredTools);
 
+    private sealed class MetadataMutation(string workspaceRoot) : IDisposable
+    {
+        public void Dispose() => SpellScanner.InvalidateMetadata(workspaceRoot);
+    }
+
     public async Task<SpellSummary[]> ListAsync(string? workingDirectory, CancellationToken ct)
     {
         IReadOnlyList<SpellSummary> summaries = await SpellScanner
             .ScanSummariesAsync(
                 workingDirectory,
                 ct,
-                GetMaxSpellFileSizeBytes())
+                GetMaxSpellFileSizeBytes(),
+                ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds)
             .ConfigureAwait(false);
 
         return summaries.ToArray();
@@ -107,7 +113,8 @@ internal sealed partial class SpellRepository : ISpellRepository
             .ScanMetadataAsync(
                 workingDirectory,
                 ct,
-                GetMaxSpellFileSizeBytes())
+                GetMaxSpellFileSizeBytes(),
+                ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds)
             .ConfigureAwait(false);
 
         SpellMetadata? match = metadata.FirstOrDefault(
@@ -154,6 +161,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         // The snapshot every decision below rests on is read under the write lock, so a concurrent mutator
         // cannot change the workspace between the read and the write that depends on it.
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        using MetadataMutation mutation = new(workspaceRoot);
 
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
@@ -277,6 +286,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         // build on the other's result instead of both rewriting the same stale snapshot.
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
+        using MetadataMutation mutation = new(workspaceRoot);
+
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         ParsedSpell? workspaceSpell = FindWorkspaceSpell(allSpells, trimmedName, workingDirectory);
@@ -376,6 +387,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         string workspaceRoot = workingDirectory.Trim();
 
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        using MetadataMutation mutation = new(workspaceRoot);
 
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
@@ -502,14 +515,48 @@ internal sealed partial class SpellRepository : ISpellRepository
         return new SpellValidationResultDto(errors.Count == 0, errors.ToArray(), warnings.ToArray());
     }
 
+    public async Task<IReadOnlyList<(string Name, SpellExportDto? Export)>> ExportAllAsync(string workingDirectory, CancellationToken ct)
+    {
+        IReadOnlyList<SpellMetadata> metadata = await SpellScanner.ScanMetadataAsync(
+            workingDirectory, ct, GetMaxSpellFileSizeBytes()).ConfigureAwait(false);
+
+        var exports = new List<(string Name, SpellExportDto? Export)>();
+
+        foreach (SpellMetadata item in metadata)
+        {
+            if (IsUnderGlobalSpellsDirectory(item.FilePath))
+            {
+                continue;
+            }
+
+            ParsedSpell? parsed = await SpellScanner.LoadFullAsync(
+                item, workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+
+            SpellExportDto? exported = parsed is null
+                ? null
+                : await ExportDetailAsync(ToDetail(parsed, workingDirectory), workingDirectory, ct).ConfigureAwait(false);
+
+            exports.Add((item.Name, exported));
+        }
+
+        return exports;
+    }
+
     public async Task<SpellExportDto?> ExportAsync(string name, string? workingDirectory, CancellationToken ct)
     {
         SpellDetail? detail = await GetAsync(name, workingDirectory, ct).ConfigureAwait(false);
 
+        return await ExportDetailAsync(detail, workingDirectory, ct).ConfigureAwait(false);
+    }
+
+    private async Task<SpellExportDto?> ExportDetailAsync(SpellDetail? detail, string? workingDirectory, CancellationToken ct)
+    {
         if (detail is null || detail.FilePath is null)
         {
             return null;
         }
+
+        string name = detail.Name;
 
         string? dir = Path.GetDirectoryName(detail.FilePath);
 
@@ -752,7 +799,47 @@ internal sealed partial class SpellRepository : ISpellRepository
         }
     }
 
-    public async Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct)
+    public async Task<IReadOnlyList<Result<SpellSummary>>> ImportBatchAsync(
+        string workingDirectory, IReadOnlyList<SpellImportRequest> requests, CancellationToken ct)
+    {
+        if (requests.Count == 0)
+        {
+            return [];
+        }
+
+        string workspaceRoot = workingDirectory.Trim();
+
+        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        using MetadataMutation mutation = new(workspaceRoot);
+
+        IReadOnlyList<SpellMetadata> metadata = await SpellScanner.ScanMetadataAsync(
+            workspaceRoot, ct, GetMaxSpellFileSizeBytes()).ConfigureAwait(false);
+
+        var names = metadata.ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+
+        var results = new List<Result<SpellSummary>>(requests.Count);
+
+        foreach (SpellImportRequest request in requests)
+        {
+            Result<SpellSummary> result = await ImportCoreAsync(request with { Workspace = workspaceRoot }, ct, names).ConfigureAwait(false);
+
+            results.Add(result);
+
+            if (result.IsSuccess)
+            {
+                ct = CancellationToken.None;
+            }
+        }
+
+        return results;
+    }
+
+    public Task<Result<SpellSummary>> ImportAsync(SpellImportRequest request, CancellationToken ct) =>
+        ImportCoreAsync(request, ct, null);
+
+    private async Task<Result<SpellSummary>> ImportCoreAsync(
+        SpellImportRequest request, CancellationToken ct, Dictionary<string, SpellMetadata>? names)
     {
         string? workspace = request.Workspace;
 
@@ -806,7 +893,7 @@ internal sealed partial class SpellRepository : ISpellRepository
             Dependencies: metadata?.Dependencies.ToArray(),
             DefaultParameters: metadata?.DefaultParameters);
 
-        return await ImportCreateStagedAsync(workspace, create, bundle.Value, ct).ConfigureAwait(false);
+        return await ImportCreateStagedAsync(workspace, create, bundle.Value, ct, names).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -922,6 +1009,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
+        using MetadataMutation mutation = new(workspaceRoot);
+
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         ParsedSpell? source = FindByName(allSpells, name.Trim());
@@ -999,6 +1088,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
 
+        using MetadataMutation mutation = new(workspaceRoot);
+
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
         string trimmedName = name.Trim();
@@ -1067,6 +1158,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         string workspaceRoot = workingDirectory.Trim();
 
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        using MetadataMutation mutation = new(workspaceRoot);
 
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
@@ -1234,6 +1327,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         string workspaceRoot = workingDirectory.Trim();
 
         using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+
+        using MetadataMutation mutation = new(workspaceRoot);
 
         IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workingDirectory, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
 
@@ -1494,7 +1589,8 @@ internal sealed partial class SpellRepository : ISpellRepository
         string workspace,
         CreateSpellRequest create,
         IReadOnlyList<ImportedScript> scripts,
-        CancellationToken ct)
+        CancellationToken ct,
+        Dictionary<string, SpellMetadata>? names)
     {
         string trimmedName = create.Name.Trim();
 
@@ -1530,16 +1626,26 @@ internal sealed partial class SpellRepository : ISpellRepository
         // Name collisions are decided on a snapshot read under the write lock, as create does, and a built-in
         // spell's name is refused the same way: a workspace spell shadows a built-in one of the same name, so
         // importing one would let a bundle replace a built-in spell's behavior.
-        using IDisposable writeLockReleaser = await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false);
+        using IDisposable? writeLockReleaser = names is null
+            ? await _workspaceLocks.AcquireAsync(GetWorkspaceLockKey(workspaceRoot), ct).ConfigureAwait(false)
+            : null;
 
-        IReadOnlyList<ParsedSpell> allSpells = await SpellScanner.ScanAsync(workspace, ct, GetMaxSpellFileSizeBytes(), GetMaxSpellDeclaredTools()).ConfigureAwait(false);
+        using MetadataMutation mutation = new(workspaceRoot);
 
-        if (FindByName(allSpells, trimmedName) is ParsedSpell existing)
+        if (names is null)
+        {
+            IReadOnlyList<SpellMetadata> metadata = await SpellScanner.ScanMetadataAsync(
+                workspace, ct, GetMaxSpellFileSizeBytes()).ConfigureAwait(false);
+
+            names = metadata.ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (names.TryGetValue(trimmedName, out SpellMetadata? existing))
         {
             return Result<SpellSummary>.Failure(
                 new Error(
                     ErrorCodes.Spell.NameCollision,
-                    IsBuiltinSpell(existing)
+                    IsUnderGlobalSpellsDirectory(existing.FilePath)
                         ? "A built-in spell with that name already exists."
                         : "A spell with that name already exists in the target workspace."));
         }
@@ -1619,6 +1725,8 @@ internal sealed partial class SpellRepository : ISpellRepository
 
             staging.Publish(Path.GetFileName(spellDir));
 
+            names[trimmedName] = new SpellMetadata(trimmedName, create.Description ?? string.Empty, Path.Combine(spellDir, "SPELL.md"));
+
             AfterSpellDirectoryPublishedForTests?.Invoke();
 
             return Result<SpellSummary>.Success(
@@ -1650,9 +1758,13 @@ internal sealed partial class SpellRepository : ISpellRepository
 
         try
         {
-            SpellSummary[] list = await ListAsync(workspaceRoot, bounded.Token).ConfigureAwait(false);
+            SpellMetadata? metadata = await SpellScanner.TryParseSpellMetadataAsync(
+                Path.Combine(workspaceRoot, "spells", spellName, "SPELL.md"),
+                GetMaxSpellFileSizeBytes(), workspaceRoot, bounded.Token).ConfigureAwait(false);
 
-            SpellSummary? listed = list.FirstOrDefault(summary => string.Equals(summary.Name, spellName, StringComparison.OrdinalIgnoreCase));
+            SpellSummary? listed = metadata is not null && string.Equals(metadata.Name, spellName, StringComparison.OrdinalIgnoreCase)
+                ? SpellScanner.MapMetadataToSummary(metadata)
+                : null;
 
             if (listed is not null)
             {

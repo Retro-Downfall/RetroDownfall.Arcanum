@@ -58,7 +58,8 @@ public sealed class SpellSearchService
                 await SpellScanner.ScanSummariesAsync(
                     null,
                     ct,
-                    maxFileSizeBytes).ConfigureAwait(false),
+                    maxFileSizeBytes,
+                    ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds).ConfigureAwait(false),
                 SpellSource.Builtin,
                 query,
                 ct).ConfigureAwait(false);
@@ -73,7 +74,8 @@ public sealed class SpellSearchService
                 await SpellScanner.ScanSummariesAsync(
                     query.Workspace,
                     ct,
-                    maxFileSizeBytes).ConfigureAwait(false),
+                    maxFileSizeBytes,
+                    ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds).ConfigureAwait(false),
                 SpellSource.Workspace,
                 query,
                 ct).ConfigureAwait(false);
@@ -96,7 +98,8 @@ public sealed class SpellSearchService
                     await SpellScanner.ScanSummariesAsync(
                         campaign.Path,
                         ct,
-                        maxFileSizeBytes).ConfigureAwait(false),
+                        maxFileSizeBytes,
+                        ArcanumRuntimeDefaults.Spells.MetadataScanCacheTtlSeconds).ConfigureAwait(false),
                     SpellSource.Campaign,
                     query,
                     ct).ConfigureAwait(false);
