@@ -1,4 +1,6 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using Microsoft.Extensions.DependencyInjection;
 
@@ -28,6 +30,49 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 public sealed class CovenantMaintenanceHostedServiceTests
 {
     private static CancellationToken Token => CancellationToken.None;
+
+    [Fact]
+    public async Task A_search_outbox_rebuild_with_no_projection_writes_is_a_warning()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await fixture.SeedHeadAsync(CovenantScope.Global, null, "missing.version",
+            CovenantLane.Confirmed, CovenantOperation.Set, "Body.", Token);
+
+        await using (SqliteCommand command = fixture.Connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE covenant_search_outbox SET DesiredVersionId = '00000000-0000-4000-8000-000000000001';";
+
+            _ = await command.ExecuteNonQueryAsync(Token);
+        }
+
+        FakeCovenantAvailability availability = await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token);
+
+        ServiceCollection services = new();
+
+        await using ArcanumDbContext db = new(
+            new DbContextOptionsBuilder<ArcanumDbContext>().UseSqlite(fixture.Connection).Options, null!, null!);
+
+        services.AddSingleton(db);
+
+        services.AddScoped(_ => new CovenantSearchOutboxCoordinator(
+            CovenantOperationGateFixture.CreateGate(availability),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantSearchOutboxWorker(),
+            DetachedAvailabilityRepublisher.Create()));
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        CountingLogger<CovenantMaintenanceHostedService> logger = new();
+
+        CovenantMaintenanceHostedService service = new(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System), availability, TimeProvider.System, logger);
+
+        Assert.True(await service.RunOnceAsync(Token));
+
+        Assert.Equal(1, logger.Warnings);
+    }
 
     [Fact]
     public async Task A_pass_does_nothing_while_the_feature_is_off()
@@ -215,6 +260,8 @@ public sealed class CovenantMaintenanceHostedServiceTests
     {
         private int _errors;
 
+        internal int Warnings { get; private set; }
+
         internal int Errors => Volatile.Read(ref _errors);
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -228,6 +275,11 @@ public sealed class CovenantMaintenanceHostedServiceTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
+            if (logLevel == LogLevel.Warning)
+            {
+                Warnings++;
+            }
+
             if (logLevel == LogLevel.Error)
             {
                 _ = Interlocked.Increment(ref _errors);

@@ -23,6 +23,69 @@ public sealed class CovenantOwnerCleanupTests
     private static CancellationToken Token => CancellationToken.None;
 
     [Fact]
+    public async Task Cleanup_over_six_campaigns_projects_its_600_row_sequence_and_allows_later_mutations()
+    {
+        await using CovenantCanonicalFixture fixture = await CreateAsync(withAccelerator: true);
+
+        for (int campaign = 0; campaign < 6; campaign++)
+        {
+            Guid id = Guid.Parse($"00000000-0000-4000-8000-{campaign + 1:000000000000}");
+
+            await fixture.AddCampaignAsync(id, $"campaign{campaign}", Token);
+
+            for (int head = 0; head < 100; head++)
+            {
+                _ = await fixture.SeedHeadAsync(CovenantScope.Campaign, id, $"key{head}",
+                    CovenantLane.Confirmed, CovenantOperation.Set, "Body.", Token);
+            }
+        }
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.Equal(600, await ScalarAsync(fixture, "SELECT AppliedSearchSequence FROM covenant_state;"));
+
+        await ExecuteAsync(fixture, "DELETE FROM Campaigns;");
+
+        CovenantCleanupOutcome cleanup = await RunAsync(fixture);
+
+        Assert.Equal(6, cleanup.CampaignsCleaned);
+
+        Assert.Equal(600, cleanup.HeadsRemoved);
+
+        Assert.Equal(1, await ScalarAsync(fixture, "SELECT COUNT(DISTINCT SearchSequence) FROM covenant_search_outbox;"));
+
+        CovenantOutboxSyncOutcome synchronized = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.False(synchronized.RebuildRequired);
+
+        Assert.Equal(600, synchronized.RowsConsumed);
+
+        Assert.Equal(600, synchronized.ProjectionsRemoved);
+
+        Assert.Equal(601, synchronized.AppliedSearchSequence);
+
+        Assert.Equal(0, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_search_documents;"));
+
+        Result<IReadOnlyList<CovenantMutationReceipt>> mutation = await CovenantMutationFixture.ApplyAsync(
+            fixture,
+            await CovenantMutationFixture.LiveBatchAsync(fixture, Token,
+                CovenantMutationFixture.OperatorSet(CovenantOperationScope.Global, "later.key", "Later.", 0, 0)),
+            Token);
+
+        Assert.True(mutation.IsSuccess, mutation.IsFailure ? mutation.Error.Message : null);
+
+        CovenantOutboxSyncOutcome later = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.Equal(602, later.AppliedSearchSequence);
+
+        Assert.Equal(1, later.ProjectionsWritten);
+
+        Assert.Equal(0, await ScalarAsync(fixture, "SELECT COUNT(*) FROM covenant_search_outbox;"));
+    }
+
+    [Fact]
     public void No_production_sql_appends_a_second_owner_deletion_event()
     {
         string root = FindRepositoryRoot();
@@ -351,10 +414,11 @@ public sealed class CovenantOwnerCleanupTests
         Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, refused.Error.Code);
     }
 
-    private static async Task<CovenantCanonicalFixture> CreateAsync()
+    private static async Task<CovenantCanonicalFixture> CreateAsync(bool withAccelerator = false)
     {
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             Token,
+            withAccelerator: withAccelerator,
             coreObjects:
             [
                 .. CovenantCapacityFixture.CoreObjects,

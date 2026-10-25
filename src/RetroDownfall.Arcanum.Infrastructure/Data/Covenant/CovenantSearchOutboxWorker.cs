@@ -151,7 +151,19 @@ internal sealed class CovenantSearchOutboxWorker(ICovenantSqliteConnectionInitia
 
         if (target <= applied.Value)
         {
-            return new CovenantOutboxSyncOutcome(applied.Value, 0, 0, 0, RebuildRequired: pending.Length > maxRows);
+            // The row budget is soft only for the first atomic sequence. Read one sentinel beyond
+            // the pending ceiling so corrupt/over-ceiling data can never publish a partial sequence.
+            pending = await ReadPendingAsync(
+                    transaction, applied.Value, CovenantLimits.MaxPendingSearchOutboxRows + 1, cancellationToken)
+                .ConfigureAwait(false);
+
+            target = pending[0].SearchSequence;
+
+            if (pending.Length > CovenantLimits.MaxPendingSearchOutboxRows
+                && pending[CovenantLimits.MaxPendingSearchOutboxRows].SearchSequence == target)
+            {
+                return new CovenantOutboxSyncOutcome(applied.Value, 0, 0, 0, RebuildRequired: true);
+            }
         }
 
         ImmutableArray<OutboxRow> range = [.. pending.Where(row => row.SearchSequence <= target)];

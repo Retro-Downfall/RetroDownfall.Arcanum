@@ -41,6 +41,39 @@ internal sealed class CovenantOwnerCleanupCoordinator(
         int maxEvents,
         CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxEvents, 1);
+
+        Result<CovenantInstallationReadLease> probe = await gate.AcquireInstallationReadAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (probe.IsFailure)
+        {
+            return probe.Error;
+        }
+
+        await using (CovenantInstallationReadLease probeLease = probe.Value)
+        {
+            SqliteConnection probeConnection = await connections.GetOpenConnectionAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            Result<CovenantCleanupCursor?> idle = await new CovenantOwnerDeletionReader()
+                .ProbeIdleCursorAsync(probeLease, probeConnection, cancellationToken).ConfigureAwait(false);
+
+            if (idle.IsFailure)
+            {
+                return idle.Error;
+            }
+
+            if (idle.Value is { } cursor)
+            {
+                await availabilityRepublisher.RepublishAsync(probeConnection, CovenantHealthTransition.OwnerCleanup)
+                    .ConfigureAwait(false);
+
+                return new CovenantCleanupOutcome(0, 0, cursor.AppliedCampaignSequence,
+                    cursor.AppliedSessionSequence, 0, SearchSequenceAdvanced: false);
+            }
+        }
+
         await using MemoryDelegationMutation? memoryMutation = await memoryDelegation.BeginOptionalAsync(cancellationToken).ConfigureAwait(false);
 
         Result<CovenantCleanupLease> acquired = await gate
