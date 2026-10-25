@@ -1,4 +1,5 @@
 using RetroDownfall.Arcanum.Infrastructure.Workspaces;
+using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Workspaces;
@@ -26,19 +27,21 @@ public sealed class CodexReaderTests : IAsyncLifetime
     {
         string path = _workspace.WriteFile("docs/CODEX.md", "Standalone codex.");
 
-        string? content = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? content = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         Assert.Equal("Standalone codex.", content);
     }
 
     [Fact]
-    public async Task ReadCodexFileAsync_returns_null_when_file_exceeds_limit()
+    public async Task ReadCodexFileAsync_returns_too_large_when_file_exceeds_limit()
     {
         string path = _workspace.WriteFile("huge/CODEX.md", new string('x', 5000));
 
-        string? content = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 1024, CancellationToken.None);
+        (SecureFileReadStatus Status, string? Text) result = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 1024, CancellationToken.None);
 
-        Assert.Null(content);
+        Assert.Equal(SecureFileReadStatus.TooLarge, result.Status);
+
+        Assert.Null(result.Text);
     }
 
     [Fact]
@@ -55,7 +58,7 @@ public sealed class CodexReaderTests : IAsyncLifetime
     /// follows it. The read must fail closed on symlinks the way every other workspace read does.
     /// </summary>
     [SkippableFact]
-    public async Task ReadCodexFileAsync_returns_null_for_a_symlinked_codex()
+    public async Task ReadCodexFileAsync_rejects_a_symlinked_codex()
     {
         Skip.If(
             !OperatingSystem.IsMacOS() && !OperatingSystem.IsLinux(),
@@ -75,9 +78,11 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
             File.CreateSymbolicLink(linkPath, secretPath);
 
-            string? content = await CodexReader.ReadCodexFileAsync(linkPath, maxSizeBytes: 4096, CancellationToken.None);
+            (SecureFileReadStatus Status, string? Text) result = await CodexReader.ReadCodexFileAsync(linkPath, maxSizeBytes: 4096, CancellationToken.None);
 
-            Assert.Null(content);
+            Assert.Equal(SecureFileReadStatus.Rejected, result.Status);
+
+            Assert.Null(result.Text);
         }
         finally
         {
@@ -110,14 +115,14 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         // Offloaded so a regression blocks a pool thread rather than wedging the whole test run: the
         // blocking open(2) happens before the method ever yields, so a direct call never returns a Task.
-        Task<string?> read = Task.Run(
+        Task<(SecureFileReadStatus Status, string? Text)> read = Task.Run(
             () => CodexReader.ReadCodexFileAsync(fifoPath, maxSizeBytes: 4096, CancellationToken.None));
 
         Task completed = await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(10)));
 
         Assert.Same(read, completed);
 
-        Assert.Null(await read);
+        Assert.Equal(SecureFileReadStatus.Rejected, (await read).Status);
     }
 
     [Fact]
@@ -125,11 +130,11 @@ public sealed class CodexReaderTests : IAsyncLifetime
     {
         string path = _workspace.WriteFile("lowered/CODEX.md", new string('x', 2000));
 
-        string? generous = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? generous = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
-        string? lowered = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 1024, CancellationToken.None);
+        string? lowered = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 1024, CancellationToken.None)).Text;
 
-        string? generousAgain = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? generousAgain = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         Assert.Equal(new string('x', 2000), generous);
 
@@ -145,14 +150,14 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         DateTime pinned = File.GetLastWriteTimeUtc(path);
 
-        string? first = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? first = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         // A different length with the original mtime restored defeats an mtime-only validation.
         File.WriteAllText(path, "a considerably longer replacement body");
 
         File.SetLastWriteTimeUtc(path, pinned);
 
-        string? second = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? second = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         Assert.Equal("first body", first);
 
@@ -166,7 +171,7 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         DateTime pinned = File.GetLastWriteTimeUtc(path);
 
-        string? first = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? first = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         // Another file of the same length, its mtime set to the original's, renamed over the name: only the
         // file identity differs, so a length-and-mtime validation would serve the stale body.
@@ -178,7 +183,7 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         File.Move(replacement, path, overwrite: true);
 
-        string? second = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? second = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         Assert.Equal("first body", first);
 
@@ -202,7 +207,7 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         foreach (string path in paths)
         {
-            Assert.NotNull(await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None));
+            Assert.Equal(SecureFileReadStatus.Success, (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Status);
         }
 
         Assert.True(CodexReader.CachedEntryCountForTests <= CodexReader.CacheCapacity);
@@ -215,13 +220,13 @@ public sealed class CodexReaderTests : IAsyncLifetime
 
         DateTime initialLastWriteTimeUtc = File.GetLastWriteTimeUtc(path);
 
-        string? first = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? first = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         File.WriteAllText(path, "mutated text");
 
         File.SetLastWriteTimeUtc(path, initialLastWriteTimeUtc.AddSeconds(1));
 
-        string? second = await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None);
+        string? second = (await CodexReader.ReadCodexFileAsync(path, maxSizeBytes: 4096, CancellationToken.None)).Text;
 
         Assert.Equal("cached text", first);
 

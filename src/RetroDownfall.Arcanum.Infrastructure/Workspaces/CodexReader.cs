@@ -1,5 +1,6 @@
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Security;
+using Serilog;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Workspaces;
 
@@ -16,7 +17,7 @@ internal static class CodexReader
     {
         string globalPath = Path.Combine(ArcanumPaths.GrimoireDirectory, "CODEX.md");
 
-        string? globalContent = await TryReadCachedAsync(globalPath, maxSizeBytes, ct).ConfigureAwait(false);
+        string? globalContent = await ReadPromptCodexAsync(globalPath, maxSizeBytes, ct).ConfigureAwait(false);
 
         string? localContent = null;
 
@@ -30,7 +31,7 @@ internal static class CodexReader
 
                 if (WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(workspaceRoot, localCodexFull, out _))
                 {
-                    localContent = await TryReadCachedAsync(localCodexFull, maxSizeBytes, ct).ConfigureAwait(false);
+                    localContent = await ReadPromptCodexAsync(localCodexFull, maxSizeBytes, ct).ConfigureAwait(false);
                 }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
@@ -47,33 +48,42 @@ internal static class CodexReader
         return globalContent ?? localContent;
     }
 
-    internal static async Task<string?> ReadCodexFileAsync(string path, long maxSizeBytes, CancellationToken ct) =>
+    internal static async Task<(SecureFileReadStatus Status, string? Text)> ReadCodexFileAsync(string path, long maxSizeBytes, CancellationToken ct) =>
         await TryReadCachedAsync(path, maxSizeBytes, ct).ConfigureAwait(false);
 
-    private static async Task<string?> TryReadCachedAsync(string path, long maxSizeBytes, CancellationToken ct)
+    private static async Task<string?> ReadPromptCodexAsync(string path, long maxSizeBytes, CancellationToken ct)
     {
+        (SecureFileReadStatus Status, string? Text) result = await ReadCodexFileAsync(path, maxSizeBytes, ct).ConfigureAwait(false);
+
+        if (result.Status is not SecureFileReadStatus.Success and not SecureFileReadStatus.NotFound)
+        {
+            Log.Information("CODEX content omitted from prompt assembly because the secure read failed: {Status}", result.Status);
+        }
+
+        return result.Text;
+    }
+
+    private static async Task<(SecureFileReadStatus Status, string? Text)> TryReadCachedAsync(string path, long maxSizeBytes, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+
         CodexCacheKey key = new(path, maxSizeBytes);
 
         CodexFileStamp? stamp = TryCaptureStamp(path);
 
-        if (stamp is null)
+        if (stamp is { } existingStamp && Cache.TryGet(key, existingStamp) is { } cached)
         {
-            return null;
+            return (SecureFileReadStatus.Success, cached);
         }
 
-        if (Cache.TryGet(key, stamp.Value) is { } cached)
+        SecureUtf8FileReadResult result = await TryReadAsync(path, maxSizeBytes, ct).ConfigureAwait(false);
+
+        if (stamp is { } capturedStamp && result.Status is SecureFileReadStatus.Success && result.Text is { } content)
         {
-            return cached;
+            Cache.Store(key, capturedStamp, content);
         }
 
-        string? content = await TryReadAsync(path, maxSizeBytes, ct).ConfigureAwait(false);
-
-        if (content is not null)
-        {
-            Cache.Store(key, stamp.Value, content);
-        }
-
-        return content;
+        return (result.Status, result.Text);
     }
 
     private static CodexFileStamp? TryCaptureStamp(string path)
@@ -104,24 +114,15 @@ internal static class CodexReader
     /// no cancellation token could interrupt. <c>SecureFileReader</c> opens once with link following disabled,
     /// proves the object is an unaliased regular file, and bounds the read.
     /// </summary>
-    private static async Task<string?> TryReadAsync(string path, long maxSizeBytes, CancellationToken ct)
+    private static async Task<SecureUtf8FileReadResult> TryReadAsync(string path, long maxSizeBytes, CancellationToken ct)
     {
         if (maxSizeBytes <= 0)
         {
-            return null;
+            return new SecureUtf8FileReadResult(SecureFileReadStatus.TooLarge, null, 0, default);
         }
 
         int maxBytes = (int)Math.Min(maxSizeBytes, int.MaxValue - 1);
 
-        SecureUtf8FileReadResult readResult = await SecureFileReader
-            .ReadUtf8TextAsync(path, maxBytes, ct)
-            .ConfigureAwait(false);
-
-        if (readResult.Status is not SecureFileReadStatus.Success)
-        {
-            return null;
-        }
-
-        return readResult.Text;
+        return await SecureFileReader.ReadUtf8TextAsync(path, maxBytes, ct).ConfigureAwait(false);
     }
 }

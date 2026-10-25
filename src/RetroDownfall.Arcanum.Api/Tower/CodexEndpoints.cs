@@ -272,11 +272,23 @@ internal static class CodexEndpoints
 
         long maxBytes = ArcanumSettingClamps.EffectiveCodexMaxSizeBytes();
 
-        string? content = await CodexReader.ReadCodexFileAsync(fullPath, maxBytes, cancellationToken).ConfigureAwait(false);
+        (SecureFileReadStatus Status, string? Text) read = await CodexReader.ReadCodexFileAsync(fullPath, maxBytes, cancellationToken).ConfigureAwait(false);
 
-        bool exists = File.Exists(fullPath);
+        return read.Status switch
+        {
+            SecureFileReadStatus.Success => Result<CodexContentDto>.Success(new CodexContentDto(fullPath, read.Text ?? string.Empty, true)),
 
-        return Result<CodexContentDto>.Success(new CodexContentDto(fullPath, content ?? string.Empty, exists));
+            SecureFileReadStatus.NotFound => Result<CodexContentDto>.Success(new CodexContentDto(fullPath, string.Empty, false)),
+
+            SecureFileReadStatus.TooLarge => Result<CodexContentDto>.Failure(
+                new Error(ErrorCodes.Codex.ContentTooLarge, $"CODEX content exceeds the maximum of {maxBytes} bytes (UTF-8).")),
+
+            SecureFileReadStatus.InvalidUtf8 => Result<CodexContentDto>.Failure(
+                new Error(ErrorCodes.Codex.InvalidEncoding, "CODEX.md must contain valid UTF-8 text.")),
+
+            _ => Result<CodexContentDto>.Failure(
+                new Error(ErrorCodes.Codex.Unreadable, "CODEX.md could not be read as an unaliased regular file.")),
+        };
     }
 
     /// <summary>
