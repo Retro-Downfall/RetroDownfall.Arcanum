@@ -1176,6 +1176,11 @@ public sealed class ConfigurationValidator(
             logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
         }
 
+        foreach (ConfigurationValidationError warning in ValidateBudget(settings))
+        {
+            logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
+        }
+
         ValidateEmbeddings(settings, errors);
 
         ValidateScrying(settings, errors);
@@ -1714,6 +1719,19 @@ public sealed class ConfigurationValidator(
         return problems.Count == 0
             ? []
             : [new ConfigurationValidationError("features.longRest", LongRestRecipeResolver.Describe(problems))];
+    }
+
+    /// <summary>Warns when budget configuration requests enforcement without a positive effective daily limit.</summary>
+    public IReadOnlyList<ConfigurationValidationError> ValidateBudget(ArcanumSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        BudgetSettings budget = settings.ResolveBudget();
+
+        return budget.Enabled && ArcanumSettingClamps.BudgetDailyLimitUsd(budget.DailyLimitUsd) <= 0m
+            ? [new ConfigurationValidationError("cost.budget.dailyLimitUsd",
+                "Budget is not enforced: Arcanum:Cost:Budget:Enabled is on, but Arcanum:Cost:Budget:DailyLimitUsd is not positive. Set a positive daily limit or turn enforcement off.")]
+            : [];
     }
 
     private void ValidateEventBus(ArcanumSettings settings)

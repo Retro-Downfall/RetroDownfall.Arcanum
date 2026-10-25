@@ -6,7 +6,6 @@ namespace RetroDownfall.TheForge.Ux.Services;
 /// </summary>
 public static class DisabledSettingPaths
 {
-
     public const string EmbeddingsEnabled = "Arcanum:Features:Embeddings";
 
     public const string SessionSearchEnabled = "Arcanum:Features:SessionSearch";
@@ -20,6 +19,8 @@ public static class DisabledSettingPaths
     public const string AllowMemoryManagement = "Arcanum:Features:MemoryManagement";
 
     public const string BudgetEnabled = "Arcanum:Cost:Budget:Enabled";
+
+    public const string BudgetDailyLimitUsd = "Arcanum:Cost:Budget:DailyLimitUsd";
 
     public const string InferenceAuditLogEnabled = "Arcanum:Host:AuditLog:Enabled";
 
@@ -37,7 +38,7 @@ public static class DisabledSettingPaths
 
     public static readonly string[] SessionMemoryManagement = [AllowMemoryManagement];
 
-    public static readonly string[] Budget = [BudgetEnabled];
+    public static readonly string[] Budget = [BudgetEnabled, BudgetDailyLimitUsd];
 
     public static readonly string[] InferenceAudit = [InferenceAuditLogEnabled];
 
@@ -49,13 +50,10 @@ public static class DisabledSettingPaths
     public static string FormatEnableMessage(string featureLabel, IReadOnlyList<string> paths) =>
         paths.Count switch
         {
-
             0 => $"{featureLabel} is disabled.",
 
             1 => $"{featureLabel} is disabled — enable {paths[0]} server-side.",
 
             _ => $"{featureLabel} is disabled — enable {string.Join(" and ", paths)} server-side.",
-
         };
-
 }

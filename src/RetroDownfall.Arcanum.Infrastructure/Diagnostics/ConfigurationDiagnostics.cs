@@ -166,3 +166,37 @@ public sealed class LongRestRecipeCheck(
             ]));
     }
 }
+
+/// <summary>Reports enabled budget enforcement without a positive limit, without requiring a running host.</summary>
+public sealed class BudgetEnforcementCheck(
+    IOptions<ArcanumSettings> options,
+    ConfigurationValidator validator) : IDoctorCheck
+{
+    public const string CheckId = "configuration.budget_enforcement";
+
+    public string Id => CheckId;
+
+    public string Name => "Budget enforcement";
+
+    public DoctorSubsystem Subsystem => DoctorSubsystem.Configuration;
+
+    public bool RequiresNetwork => false;
+
+    public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!options.Value.ResolveBudget().Enabled)
+        {
+            return Task.FromResult(new DoctorFinding(DoctorOutcome.Skipped, "Budget enforcement is disabled."));
+        }
+
+        IReadOnlyList<ConfigurationValidationError> warnings = validator.ValidateBudget(options.Value);
+
+        return Task.FromResult(warnings.Count == 0
+            ? new DoctorFinding(DoctorOutcome.Healthy, "Budget enforcement has a positive daily limit.")
+            : new DoctorFinding(DoctorOutcome.Degraded, warnings[0].Detail,
+                [new DoctorRemedy("configuration.set_budget_limit", null, DoctorRemedyCommands.ConfigEdit,
+                    "Set Arcanum:Cost:Budget:DailyLimitUsd to a positive amount, or turn Arcanum:Cost:Budget:Enabled off.")]));
+    }
+}

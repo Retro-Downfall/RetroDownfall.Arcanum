@@ -40,6 +40,8 @@ public static class DoctorDiagnosticsRegistration
 
         services.AddTransient<IDoctorCheck, LongRestRecipeCheck>();
 
+        services.AddTransient<IDoctorCheck, BudgetEnforcementCheck>();
+
         // Credentials: presence and store availability only; no value is ever read into a finding.
         services.AddTransient<IDoctorCheck, CredentialStoreAvailabilityCheck>();
 

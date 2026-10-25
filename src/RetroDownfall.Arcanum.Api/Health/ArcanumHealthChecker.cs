@@ -196,6 +196,13 @@ public sealed class ArcanumHealthChecker(
             components.Add(longRest);
         }
 
+        IReadOnlyList<ConfigurationValidationError> budgetWarnings = new ConfigurationValidator().ValidateBudget(settings.CurrentValue);
+
+        components.Add(new HealthComponentDto("Budget",
+            budgetWarnings.Count > 0 ? HealthStatus.Degraded : HealthStatus.Healthy,
+            budgetWarnings.Count > 0 ? budgetWarnings[0].Detail
+                : settings.CurrentValue.ResolveBudget().Enabled ? "Budget enforcement has a positive daily limit." : "Budget enforcement is disabled."));
+
         LongRunningOperationReconciliationSnapshot operationSnapshot =
             operationReconciliationStatus?.Snapshot
             ?? new LongRunningOperationReconciliationSnapshot(

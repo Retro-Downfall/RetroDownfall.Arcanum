@@ -6,7 +6,7 @@ namespace RetroDownfall.Arcanum.Api.Models;
 /// <param name="TodaySpendUsd">
 /// <paramref name="LocalSpendUsd"/> plus <paramref name="ExternalSpendUsd"/> — everything with a price.
 /// </param>
-/// <param name="LocalSpendUsd">What this instance's own inference cost today.</param>
+/// <param name="LocalSpendUsd">Local committed cost for the UTC day plus outstanding reservations.</param>
 /// <param name="ExternalSpendUsd">
 /// What delegated (A2A) work cost today, as reported by the peers that ran it (issue #69).
 /// </param>
@@ -24,4 +24,8 @@ public sealed record BudgetSummaryDto(
     int SpentPercent,
     decimal LocalSpendUsd = 0m,
     decimal ExternalSpendUsd = 0m,
-    int UnpricedDelegatedSendings = 0);
+    int UnpricedDelegatedSendings = 0)
+{
+    /// <summary>Whether the enabled policy has a positive daily limit; cap metrics apply only in this state.</summary>
+    public bool Enforced => Enabled && DailyLimitUsd > 0m;
+}
