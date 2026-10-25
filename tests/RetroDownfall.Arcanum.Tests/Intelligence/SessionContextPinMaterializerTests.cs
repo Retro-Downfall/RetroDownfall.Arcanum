@@ -1426,8 +1426,13 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
         Assert.Equal(pin.Id.ToString("N"), Assert.Single(result.Items!).SourceId);
     }
 
-    [Fact]
-    public async Task Materialization_failure_diagnostic_names_no_exception_message()
+    [Theory]
+    [InlineData("io", "An I/O error prevented reading the pin source.")]
+    [InlineData("corrupt", "The pin source is corrupt or unreadable.")]
+    [InlineData("cryptographic", "The pin source is corrupt or unreadable.")]
+    [InlineData("lookup", "The pin source could not be materialized.")]
+    [InlineData("source-cancellation", "The pin source could not be materialized.")]
+    public async Task Materialization_failure_is_content_free_and_later_healthy_pins_continue(string sourceFailure, string diagnostic)
     {
         Guid sessionId = Guid.NewGuid();
 
@@ -1461,11 +1466,28 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow);
 
+        // Restricting the per-pin catch to I/O faults would abort this entire materialization.
+        Exception failure = sourceFailure switch
+        {
+            "io" => new IOException(canary),
+            "corrupt" => new InvalidDataException(canary),
+            "cryptographic" => new CryptographicException(canary),
+            "lookup" => new Microsoft.Data.Sqlite.SqliteException(canary, 1),
+            "source-cancellation" => new OperationCanceledException(canary),
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceFailure)),
+        };
+
+        if (sourceFailure == "lookup")
+        {
+            pin = pin with { TargetIdentifier = "notes" };
+        }
+
         SessionContextPinMaterializer materializer = new(
-            new StaticPinStore(pin),
+            new StaticPinStore(pin, DiagnosticPin(sessionId, "Healthy pin sentinel.")),
             new NoOpSessionAttachmentStore(
                 attachment,
-                readBytes: (_, _) => throw new IOException(canary)),
+                readBytes: (_, _) => throw failure,
+                lookupFailure: () => failure),
             CreateSessions(),
             new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
 
@@ -1474,11 +1496,69 @@ public sealed class SessionContextPinMaterializerTests(GrimoireFixture fixture) 
             _workspace,
             CancellationToken.None);
 
-        string text = Assert.IsType<TextContent>(Assert.Single(result.Contents)).Text;
+        Assert.Equal(2, result.Contents.Count);
+
+        string text = Assert.IsType<TextContent>(result.Contents[0]).Text;
 
         Assert.Contains("status: Error", text, StringComparison.Ordinal);
 
+        Assert.Contains("diagnostic: " + diagnostic, text, StringComparison.Ordinal);
+
+        Assert.EndsWith(EndMarker, text, StringComparison.Ordinal);
+
         Assert.DoesNotContain(canary, text, StringComparison.Ordinal);
+
+        string healthy = Assert.IsType<TextContent>(result.Contents[1]).Text;
+
+        Assert.Contains("status: Current", healthy, StringComparison.Ordinal);
+
+        Assert.Contains("Healthy pin sentinel.", healthy, StringComparison.Ordinal);
+
+        Assert.EndsWith(EndMarker, healthy, StringComparison.Ordinal);
+
+        Assert.Equal(0, result.OmittedCount);
+
+        Assert.Equal(2, result.Items!.Count);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_during_source_read_propagates()
+    {
+        // Catching caller cancellation as a pin fault would turn cancelled work into a successful turn.
+        using CancellationTokenSource stop = new();
+
+        Guid sessionId = Guid.NewGuid();
+
+        SessionAttachmentRecord attachment = new(
+            Guid.NewGuid(), sessionId, null, null, SessionAttachmentState.Bound,
+            "notes", "notes.txt", 1, "session/notes.txt", "hash", "text/plain", 8,
+            SessionAttachmentKind.Text, DateTimeOffset.UtcNow);
+
+        SessionContextPinRecord pin = new(
+            Guid.NewGuid(), sessionId, SessionContextPinKind.Attachment, attachment.Id.ToString("D"),
+            "notes", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        OperationCanceledException cancellation = new(stop.Token);
+
+        NoOpSessionAttachmentStore store = new(
+            attachment,
+            readBytes: (_, _) =>
+            {
+                stop.Cancel();
+
+                throw cancellation;
+            });
+
+        SessionContextPinMaterializer materializer = new(
+            new StaticPinStore(pin), store, CreateSessions(),
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()));
+
+        OperationCanceledException observed = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => materializer.MaterializeAsync(sessionId, _workspace, stop.Token));
+
+        Assert.Same(cancellation, observed);
+
+        Assert.Equal(stop.Token, observed.CancellationToken);
     }
 
     [Fact]
