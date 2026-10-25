@@ -14,3 +14,4 @@ CREATE TABLE IF NOT EXISTS campaign_rollup_sources (
     FOREIGN KEY (ContributionArtifactId, SessionId, CampaignId, ContributionRevision) REFERENCES campaign_contribution_artifacts(ArtifactId, SessionId, CampaignId, Revision) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_campaign_rollup_sources_contribution ON campaign_rollup_sources(ContributionArtifactId);
+CREATE INDEX IF NOT EXISTS idx_campaign_rollup_sources_session ON campaign_rollup_sources(SessionId, RollupArtifactId);

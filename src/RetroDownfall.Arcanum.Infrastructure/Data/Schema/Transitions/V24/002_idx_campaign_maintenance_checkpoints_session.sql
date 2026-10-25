@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_campaign_maintenance_checkpoints_session ON campaign_maintenance_checkpoints(SessionId);
