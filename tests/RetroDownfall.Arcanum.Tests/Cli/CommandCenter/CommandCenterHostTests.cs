@@ -13,6 +13,67 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 
 public sealed class CommandCenterHostTests
 {
+    [Fact]
+    public async Task Quit_during_a_human_prompt_preserves_the_answer_and_turn()
+    {
+        ServiceCollection services = new();
+
+        CliApplicationFactory.ConfigureCliServices(services, new ConfigurationManager());
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        CommandCenterHost host = Assert.IsType<CommandCenterHost>(provider.GetRequiredService<ICommandCenterHost>());
+
+        CommandCenterState state = new(new SessionLogBuffer())
+        {
+            Overlay = CommandCenterOverlayKind.HumanPrompt,
+            FocusRegion = CommandCenterFocusRegion.Overlay,
+        };
+
+        Assert.True(state.TryBeginTurn());
+
+        provider.GetRequiredService<CommandCenterHumanPromptCoordinator>().BeginPrompt(
+            new HumanPromptRequest("call-port", "port", "Which port should I use?"));
+
+        using CommandCenterWindow window = new();
+
+        window.ShowHumanPromptOverlay("Which port should I use?", "port", statusMessage: null);
+
+        window.OverlayAnswer.Text = "8080";
+
+        using Terminal.Gui.App.IApplication app = Terminal.Gui.App.Application.Create().Init("ansi");
+
+        using CancellationTokenSource linked = new();
+
+        Channel<CommandCenterUiUpdate> ui = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        System.Reflection.MethodInfo dispatch = typeof(CommandCenterHost).GetMethod(
+            "DispatchActionAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        async Task Send(CommandCenterAction action) => await (Task)dispatch.Invoke(
+            host,
+            [action, state, ui.Writer, app, window, linked, (Action)(() => throw new InvalidOperationException("Unexpected composer submission."))])!;
+
+        await Send(CommandCenterAction.Quit);
+
+        await Send(CommandCenterAction.CloseOverlayOrFocusComposer);
+
+        Assert.Equal(CommandCenterOverlayKind.HumanPrompt, state.Overlay);
+
+        Assert.Equal("8080", window.GetHumanPromptAnswer());
+
+        Assert.True(window.OverlayAnswer.Visible);
+
+        Assert.True(state.Generating);
+
+        Assert.False(state.RequestExit);
+
+        Assert.Equal(CommandCenterAction.Send, CommandCenterKeymap.MapOverlayEnter(state.Overlay));
+
+        Assert.Contains("submit", state.FooterHint, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData(ServeLaunchStatus.Failed, CliExitCode.NetworkError)]
     [InlineData(ServeLaunchStatus.AuthFailed, CliExitCode.ConfigurationError)]

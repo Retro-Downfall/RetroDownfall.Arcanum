@@ -172,7 +172,7 @@ On a fresh installation, the foreground command explains before the operating sy
 | `Tab` / `Shift+Tab` | Cycle Composer → Sessions → Transcript → Incantations → Model; `Shift+Tab` from the composer reaches the Model control directly. |
 | `Ctrl+R` / `F5` | Refresh. |
 | `Ctrl+C` | Cancel the turn, else clear the composer, else show the quit hint. |
-| `Ctrl+Q` | Quit (asks first while a turn is generating). |
+| `Ctrl+Q` | Quit (asks first while a turn is generating). While a Mage prompt is pending, answer it or use `Ctrl+C` to cancel the turn before quitting; the prompt keeps its typed answer. |
 | `Esc` | Close an overlay or return to the composer. |
 | `F1` | Help, scrolled with `↑`/`↓` and `PgUp`/`PgDn`. |
 
