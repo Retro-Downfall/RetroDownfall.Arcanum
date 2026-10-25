@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Lexicon;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -127,8 +128,10 @@ public sealed partial class WizardIntelligenceProviderTests
 
         PingRequest request = BaseRequest() with
         {
-            Prompt = "Recall these observations in their retrieval order.", SessionId = session,
-            SkipSpellRouting = true, DisableAllTools = true,
+            Prompt = "Recall these observations in their retrieval order.",
+            SessionId = session,
+            SkipSpellRouting = true,
+            DisableAllTools = true,
         };
 
         ArcanumInvocationContext invocation = LongRestTask7Invocation(campaign: false);
@@ -402,17 +405,22 @@ public sealed partial class WizardIntelligenceProviderTests
             paidAtAssistantSend.Add(Task7PaidRowsAsync(f.H.Connection).GetAwaiter().GetResult());
         };
 
+        FakeLexiconService lexicon = new();
+
+        Assert.True((await lexicon.UpsertAsync("Existing entity", "Project", ["Existing fact"], LexiconScope.Global)).IsSuccess);
+
         WizardIntelligenceProvider wizard = CreateWizard(chat, f.Options.CurrentValue,
             new FakeGrimoireRepository { Session = new Session { Id = h.Request.SessionId!.Value } }, db: f.H.Saga.Context,
             ordinaryConnections: FixtureOrdinaryConnectionFactory.For(f.H.Saga.Context), campaignRollups: h.Preparer,
-            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository);
+            claimedBeginStore: h.Begin, claims: h.Claims, turnCommitter: h.Repository, lexiconService: lexicon);
 
         ArcanumInvocationContext invocation = ArcanumInvocationContext.Create(f.Invocation.Surface, f.Scope,
             f.Invocation.Attendance, f.Invocation.ContextPolicy, ToolPolicy.AllTools, f.Invocation.ReadAuthorityEpoch).Value;
 
         Result<PromptTurnResult> result = await wizard.ExecutePromptAsync(h.Request with
         {
-            DisableAllTools = false, DisableMcpTools = true,
+            DisableAllTools = false,
+            DisableMcpTools = true,
         }, invocation, CancellationToken.None);
 
         Assert.Equal(1, h.Begin.Begins);

@@ -34,6 +34,35 @@ public sealed class LexiconMidUpgradeCompatibilityTests
 
     static LexiconMidUpgradeCompatibilityTests() => SqliteNativeRuntime.Instance.Initialize();
 
+    [Theory]
+    [InlineData(2)]
+    [InlineData(5)]
+    [InlineData(10)]
+    public async Task Eligibility_probe_preserves_pre_curation_schema_reads(int version)
+    {
+        using EvolutionScratchDatabase file = EvolutionScratchDatabase.Create();
+
+        await using SqliteConnection connection = await PrepareAsync(file, version);
+
+        await using ArcanumDbContext db = SagaMemoryMidUpgradeWriteTests.CreateContext(file);
+
+        ILexiconService service = CreateService(db);
+
+        Result<bool> empty = await service.HasEligibleEntriesAsync(LexiconScope.Global);
+
+        Assert.True(empty.IsSuccess, empty.IsFailure ? empty.Error.Message : null);
+
+        Assert.False(empty.Value);
+
+        await SeedAsync(connection);
+
+        Result<bool> populated = await service.HasEligibleEntriesAsync(LexiconScope.ForCampaign(Guid.NewGuid()));
+
+        Assert.True(populated.IsSuccess, populated.IsFailure ? populated.Error.Message : null);
+
+        Assert.True(populated.Value);
+    }
+
     public static IEnumerable<object[]> Reads() =>
         from version in Enumerable.Range(2, 9)
         from operation in new[] { "exact", "fts", "like", "effective", "scoped", "show", "show-effective", "list", "inspection-search", "inspection-count", "delete", "annals-provenance" }
@@ -432,10 +461,17 @@ public sealed class LexiconMidUpgradeCompatibilityTests
             {
                 Retention = new RetentionSettings
                 {
-                    UploadedFiles = new(), CompletedBatches = new(), WorkspaceIndexes = new(),
-                    SessionEntryEmbeddings = new(), AuditLogs = new(), GuardrailLogs = new(),
-                    IdempotencyClaims = new(), Accounting = new(), LongRunningOperations = new(),
-                    SanctumBreaches = new(), DaemonHistory = new(),
+                    UploadedFiles = new(),
+                    CompletedBatches = new(),
+                    WorkspaceIndexes = new(),
+                    SessionEntryEmbeddings = new(),
+                    AuditLogs = new(),
+                    GuardrailLogs = new(),
+                    IdempotencyClaims = new(),
+                    Accounting = new(),
+                    LongRunningOperations = new(),
+                    SanctumBreaches = new(),
+                    DaemonHistory = new(),
                     LexiconEntries = new() { Enabled = true, Days = 30 },
                 },
             };
