@@ -3673,4 +3673,23 @@ The following task commits were independently reviewed and merged locally throug
 | RV-261 | corrected `50a8944a` | CLI documentation uses the actual singular `operation` verb and typed budget JSON output. Existing documentation/CLI checks pass. |
 | RV-267 | fixed `1c4a5338`, caller ownership `f71214f5` | Upload publication is registered before writing through row commit or abandonment. Session-gated orphan deletion protects unpublished fork copies through the transaction, including a fork starting at the destructive boundary. Actual upload/fork race RED cases and independent mutations verify protection. |
 
-These entries bring reviewed completed findings to 21 of 272. Every other finding remains open; shared files, similar wording or partial mechanism overlap alone do not close one.
+This first checkpoint covers 21 findings. Later reviewed checkpoints follow; shared files, similar wording or partial mechanism overlap alone do not close a finding.
+
+### Retention and web integration checkpoint — 2026-10-25
+
+Retention commit `4ea9fdd9` was independently approved and integrated at `e489e278`. That merged candidate passed 1,497 affected retention/schema/repository/fork/contract tests with no skips and built with zero warnings/errors. Its initial multi-node build ended with MSBuild child-process failures; the successful single-node retry is the build evidence. Web commits `e24c20d5` and `8af97e3f`, with the separately verified whitespace-only prerequisite `9f151a87`, were independently approved and integrated at `f7eef34f`. Web task qualification passed 679 tests with no skips and a zero-warning build; the reviewer independently reran 52 focused tests successfully. The web merge does not turn the prior retention test run into evidence for the later combined tree.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-061 | fixed `4ea9fdd9` | Conflict membership is materialized instead of repeatedly correlated. Real executed-query plans and bounded SQLite instruction counts detect the original work amplification; controlled old-code mutation fails. |
+| RV-062 | fixed `4ea9fdd9` | Grouped accounting preserves the original ledger membership. Real work-budget tests cover own runs and unrelated outstanding reservations; independent review compared old/new SQL across 40 varied datasets with equal results. |
+| RV-063 | fixed `4ea9fdd9` | Embedding candidate membership uses a HashSet; an allocation regression detects the original repeated membership work. |
+| RV-064 | verified `4ea9fdd9`, mechanism `70a7fe48` | A persisted-write ledger covers 1,001 real file deletions and 2,003 checkpoint updates, including exactly 1,001 pending journals. Fixed payload totals are 599,528 cursor bytes plus 100,220 snapshot bytes; the full-inline mutation writes 201,051,756 bytes and fails the bound. This is a bounded byte measurement, not a throughput extrapolation. |
+| RV-065 | fixed `4ea9fdd9` | Core23 normalized identity and accounting indexes are verified on real query plans and fresh/evolved schemas. Six UploadedFiles cases preserve dashed/compact lower/upper/mixed-case identities. Historical Core22 SQL and fingerprints remain unchanged. |
+| RV-066 | fixed `4ea9fdd9` | Factory reset inventories, removes and reconciles the complete Campaign rollup/contribution/checkpoint closure under existing narrow authorization. Real fixtures verify artifact and derived-row counts while preserving Campaign registrations. |
+| RV-015 | fixed `e24c20d5` | Research summaries occupy at most one third of their retained and synthesis budgets, newest first, leaving room for fetched source content. Real workflow regression, framing/ceiling checks and deliberate mutation verify the contract. |
+| RV-016 | fixed `e24c20d5` | Search, browse and research preserve completed paid results when attachment persistence fails, with existing safe error shapes. Real endpoint regressions cover failure modes and caller cancellation; cancellation still propagates and does not produce a terminal result. |
+| RV-017 | fixed `e24c20d5` | Provider-local numeric markers are stripped from summary text. Global citations refer only to emitted source blocks; deduplicated, denied and omitted-source cases plus publication/retrieval/event dates are covered. |
+| RV-018 | fixed `8af97e3f` | A random per-turn HMAC key lets protected tool arguments/results participate in equality comparisons without retaining plaintext or emitting stable content fingerprints. Normal calls and synthetic denials retain true-repeat/oscillation detection, changing progress, per-turn separation and audit redaction. |
+
+Reviewed completed findings now total **31 of 272**; **241 remain open**. Final integrated qualification remains outstanding. A separate connection-acquisition inventory guard correctly identified two uncatalogued retention snapshot helper opens; that integration repair is tracked and is not waived by the passing task suites above.
