@@ -3634,3 +3634,15 @@ Status key: `probe` = the reviewer reports running a probe, deliberate break or 
 **Evidence (probe).** CovenantDisclosureWriter.cs:110-129 (FailClosed on non-maintenance open failure), :466-470 (catch Exception -> MaintenanceFailure), :573-594 (FailClosed), :616-619 (message). Probe P2 using the existing WriterHarness with a one-shot RefuseNextOpen: first call fails with the refusal's own code; second call (healthy open available, opened=0) fails with LifecycleConflict 'closed for maintenance'; after republishing a healthy availability the third call fails the same way; ReopenAsync then lets the fourth succeed. Existing test An_ordinary_open_failure_keeps_the_writer_closed_without_a_lease pins fail-closed for the first call only. CovenantDispatchGate.cs:600-606 returns acknowledged.Error with no log. 'rg ReopenAsync src' shows only CovenantErasureCoordinator and GrimoireDatabaseBootstrapper:553.
 
 **Suggested fix.** Log the first failure at Warning with its code and exception type when FailClosed fires; give the closed-after-failure state its own message ('closed after an earlier failure to open its connection; restart the host'); optionally allow one bounded re-attempt of OpenVerifiedAsync when the failure was environmental.
+
+
+## Remediation record
+
+Remediation is in progress on a local integration branch. The original findings above remain unchanged. Entries below record reviewed completed findings; unlisted findings remain open. Full integrated qualification and external delivery have not occurred.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-001 | fixed `70a7fe48b3000923dc5995baebd850fc08282ea8` | `DataRetentionServiceTests.LargeCheckpoints.cs` reproduces legacy recovery above 10,000 candidates and interrupted large-plan recovery through the real reconciler, with frozen selection, journal, corruption and single-flight assertions. Initial RED and deliberate writer mutation failed; restored focused verification passed 1,187 tests. Independent spec and code-quality review approved. |
+| RV-067 | fixed `70a7fe48b3000923dc5995baebd850fc08282ea8` | The same writer regression uses a 7,404,120-byte frozen set, fails the old 5 MiB checkpoint writer, and recovers the complete selection with a 144-byte cursor. Snapshot writes are transactional and bounded in chunks; there is no total-plan item cap. |
+
+The snapshot mechanism also addresses the shared implementation behind RV-064 and RV-069. Their remaining scenario evidence and operator-documentation audit will be recorded with their owning tasks; they are not closed by this entry. Payload-size measurements are not end-to-end throughput benchmarks.
