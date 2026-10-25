@@ -106,11 +106,15 @@ internal static class ProviderTestEndpoints
 
         string probeUrl = $"{baseUrl}/models";
 
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        deadline.CancelAfter(ProbeTimeout);
+
         using HttpClient client = new(
             OutboundUrlGuard.CreateProviderEgressHandler(dnsResolver),
             disposeHandler: true)
         {
-            Timeout = ProbeTimeout,
+            Timeout = Timeout.InfiniteTimeSpan,
         };
 
         if (!string.IsNullOrWhiteSpace(request.ApiKey))
@@ -127,7 +131,7 @@ internal static class ProviderTestEndpoints
             // default — before TryReadCappedStringAsync is ever consulted, which reduces the cap below
             // to a report of an allocation the probed endpoint already forced.
             using HttpResponseMessage response = await client
-                .GetAsync(probeUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .GetAsync(probeUrl, HttpCompletionOption.ResponseHeadersRead, deadline.Token)
                 .ConfigureAwait(false);
 
             stopwatch.Stop();
@@ -141,7 +145,7 @@ internal static class ProviderTestEndpoints
                     $"Endpoint returned HTTP {(int)response.StatusCode}.");
             }
 
-            string? payload = await TryReadCappedStringAsync(response.Content, MaxProbeResponseBytes, cancellationToken)
+            string? payload = await TryReadCappedStringAsync(response.Content, MaxProbeResponseBytes, deadline.Token)
                 .ConfigureAwait(false);
 
             if (payload is null)
@@ -157,7 +161,11 @@ internal static class ProviderTestEndpoints
 
             return new ProviderTestResult(true, stopwatch.ElapsedMilliseconds, models, null);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
             stopwatch.Stop();
 

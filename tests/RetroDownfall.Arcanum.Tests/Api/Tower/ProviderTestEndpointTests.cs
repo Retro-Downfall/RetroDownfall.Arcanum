@@ -1,9 +1,12 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Serialization;
+using RetroDownfall.Arcanum.Api.Tower;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Security;
@@ -27,6 +30,12 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     private readonly RecordingDnsResolver _dns = new();
 
     private HttpListener? _listener;
+
+    private readonly TaskCompletionSource _responseStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private readonly TaskCompletionSource _releaseStalledResponse = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private Task? _stalledResponseTask;
 
     private volatile bool _tearingDown;
 
@@ -53,9 +62,16 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
     {
         _tearingDown = true;
 
+        _releaseStalledResponse.TrySetResult();
+
         _listener?.Stop();
 
         _listener?.Close();
+
+        if (_stalledResponseTask is not null)
+        {
+            await _stalledResponseTask;
+        }
 
         await _factory.DisposeAsync();
     }
@@ -137,6 +153,74 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
         Assert.True(
             body.Data.Error?.Contains("exceeded the maximum allowed size", StringComparison.OrdinalIgnoreCase) == true,
             $"Expected the declared length to be refused from the headers, got: {body.Data.Error}.{ServingDetail}");
+    }
+
+    [SkippableFact]
+    public async Task Test_StalledWithinCapBody_UsesTheProbeDeadlineAfterHeaders()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string baseUrl = StartStalledListener(declaredLength: 64);
+
+        HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using CancellationTokenSource cleanup = new();
+
+        Task<HttpResponseMessage> probe = client.PostAsync(
+            "/api/providers/test",
+            new StringContent(
+                JsonSerializer.Serialize(new ProviderTestRequest(baseUrl, null, AiProviderKind.OpenAICompatible), ArcanumJsonContext.Default.ProviderTestRequest),
+                Encoding.UTF8,
+                "application/json"),
+            cleanup.Token);
+
+        try
+        {
+            await _responseStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            using HttpResponseMessage response = await probe.WaitAsync(TimeSpan.FromSeconds(8));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            ApiResponse<ProviderTestResult>? body = JsonSerializer.Deserialize(
+                await response.Content.ReadAsStringAsync(),
+                ArcanumJsonContext.Default.ApiResponseProviderTestResult);
+
+            Assert.NotNull(body);
+            Assert.False(body.Data!.IsReachable);
+            Assert.Equal("The provider probe timed out.", body.Data.Error);
+        }
+        finally
+        {
+            await cleanup.CancelAsync();
+
+            try
+            {
+                using HttpResponseMessage ignored = await probe;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Test_CallerCancellationDuringBodyRead_PropagatesInsteadOfReportingTimeout()
+    {
+        string baseUrl = StartStalledListener(declaredLength: 64);
+
+        using CancellationTokenSource cancellation = new();
+
+        MethodInfo method = typeof(ProviderTestEndpoints).GetMethod("ProbeProviderAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
+
+        Task<ProviderTestResult> probe = (Task<ProviderTestResult>)method.Invoke(
+            null,
+            [new ProviderTestRequest(baseUrl, null, AiProviderKind.OpenAICompatible), _dns, NullLogger.Instance, cancellation.Token])!;
+
+        await _responseStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => probe);
     }
 
     [SkippableFact]
@@ -298,7 +382,7 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
         _listener = listener;
 
-        _ = Task.Run(async () =>
+        _stalledResponseTask = Task.Run(async () =>
         {
             HttpListenerContext ctx;
 
@@ -328,9 +412,10 @@ public sealed class ProviderTestEndpointTests : IAsyncLifetime
 
                 await ctx.Response.OutputStream.FlushAsync().ConfigureAwait(false);
 
-                // Never completes the announced body; the probe's own 5 s timeout is the only exit for
-                // a client that insists on reading it all.
-                await Task.Delay(TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+                _responseStarted.TrySetResult();
+
+                // Keep the body incomplete until test teardown; endpoint cancellation must end its read.
+                await _releaseStalledResponse.Task.ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is HttpListenerException or IOException or ObjectDisposedException)
             {
