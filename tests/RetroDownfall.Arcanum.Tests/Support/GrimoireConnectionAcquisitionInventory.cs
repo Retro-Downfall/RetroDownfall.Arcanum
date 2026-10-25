@@ -4614,11 +4614,11 @@ internal static class GrimoireConnectionAcquisitionScanner
             new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.ActivateVersionAsync(4)", 0)),
 
         new(
-            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "ImportCreateStagedAsync(4)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 3, "SpellDirectory.Open(workspaceRoot,spellsRoot,create:true)"),
+            new("src/RetroDownfall.Arcanum.Infrastructure/Intelligence/Spells/SpellRepository.cs", "SpellRepository", "ImportCreateStagedAsync(5)", AcquisitionConstructKind.ProviderOpen, "SpellDirectory.Open", 3, "SpellDirectory.Open(workspaceRoot,spellsRoot,create:true)"),
             GrimoirePathAuthority.NotGrimoire,
             GrimoireAcquisitionKind.NonGrimoireCandidate,
             GrimoireRuntimeAdmissionRoute.ExactNonServingProof,
-            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.ImportCreateStagedAsync(4)", 0)),
+            new(ExactNonServingProofKind.NegativeNonDatabaseProof, "SpellRepository.ImportCreateStagedAsync(5)", 0)),
         ]);
 
     private static IReadOnlyList<GrimoireAcquisitionCatalogEntry> BindProofEvidence(
