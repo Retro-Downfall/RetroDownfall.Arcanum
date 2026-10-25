@@ -3,6 +3,7 @@ using System.Text;
 using RetroDownfall.Arcanum.Core.Operations;
 using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Infrastructure.Storage;
+using RetroDownfall.Arcanum.Tests.Operations;
 
 namespace RetroDownfall.Arcanum.Tests.Storage;
 
@@ -75,7 +76,7 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             observed,
             keyRing: null!,
             operationCoordinator: null!,
-            operationStore: null!,
+            operationStore: new FakeLongRunningOperationStore(TimeProvider.System),
             TimeProvider.System);
 
         BlobEncryptionStatus status = await service.GetStatusAsync();
@@ -114,7 +115,7 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             blobs,
             keyRing: null!,
             operationCoordinator: null!,
-            operationStore: null!,
+            operationStore: new FakeLongRunningOperationStore(TimeProvider.System),
             TimeProvider.System);
 
         LongRunningOperationRecoveryResult result = await service.RecoverAsync(
@@ -145,7 +146,7 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             observed,
             keyRing: null!,
             operationCoordinator: null!,
-            operationStore: null!,
+            operationStore: new FakeLongRunningOperationStore(TimeProvider.System),
             TimeProvider.System);
 
         LongRunningOperationRecoveryResult result = await service.RecoverAsync(
@@ -173,7 +174,7 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             observed,
             keyRing: null!,
             operationCoordinator: null!,
-            operationStore: null!,
+            operationStore: new FakeLongRunningOperationStore(TimeProvider.System),
             TimeProvider.System);
 
         BlobEncryptionOperationResult result = await service.VerifyAsync(
@@ -183,6 +184,89 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
         Assert.Equal(1, result.ProcessedFiles);
         Assert.Equal(1, result.FailedFiles);
         Assert.Equal(1, result.Issues[BlobEncryptionVerificationIssue.IoError]);
+    }
+
+    [Theory]
+    [InlineData(LongRunningOperationKinds.BlobEncryptionMigration, false)]
+    [InlineData(LongRunningOperationKinds.BlobEncryptionKeyRotation, false)]
+    [InlineData(LongRunningOperationKinds.BlobEncryptionMigration, true)]
+    [InlineData(LongRunningOperationKinds.BlobEncryptionKeyRotation, true)]
+    public async Task Recovery_observes_cancellation_before_renewing_blob_work(string kind, bool duringRecovery)
+    {
+        InMemoryKeyRing keys = new();
+
+        EncryptedBlobStore blobs = new(keys);
+
+        BlobEncryptionCandidate first = await WriteLegacyAsync("first");
+
+        BlobEncryptionCandidate second = await WriteLegacyAsync("second");
+
+        FakeLongRunningOperationStore operations = new(TimeProvider.System);
+
+        LongRunningOperation operation = operations.Seed(kind,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            duringRecovery ? LongRunningOperationState.Running : LongRunningOperationState.Cancelling);
+
+        RecordingMetadataStore metadata = new(first, second);
+
+        metadata.AfterUpdate = async () =>
+        {
+            LongRunningOperation current = (await operations.GetAsync(operation.Id))!;
+
+            Assert.True(await operations.RequestCancellationAsync(operation.Id, current.Revision, DateTimeOffset.UtcNow));
+        };
+
+        BlobEncryptionLifecycleService service = new(metadata,
+            new BlobEncryptionFileProcessor(metadata, blobs), blobs, keys,
+            operationCoordinator: null!, operations, TimeProvider.System);
+
+        LongRunningOperationRecoveryResult result = await service.RecoverAsync(operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, result.State);
+
+        Assert.Equal("operation.cancelled", result.ErrorCode);
+
+        Assert.Equal(duringRecovery, blobs.HasEnvelope(first.Path));
+
+        Assert.False(blobs.HasEnvelope(second.Path));
+
+        Assert.Empty(keys.Retired);
+    }
+
+    [Fact]
+    public async Task Recovery_observes_cancellation_after_last_blob_before_retiring_keys()
+    {
+        InMemoryKeyRing keys = new();
+
+        EncryptedBlobStore blobs = new(keys);
+
+        BlobEncryptionCandidate candidate = await WriteLegacyAsync("last");
+
+        FakeLongRunningOperationStore operations = new(TimeProvider.System);
+
+        LongRunningOperation operation = operations.Seed(LongRunningOperationKinds.BlobEncryptionKeyRotation,
+            LongRunningOperationRecoveryPolicy.RestartIdempotently);
+
+        RecordingMetadataStore metadata = new(candidate);
+
+        metadata.AfterUpdate = async () =>
+        {
+            LongRunningOperation current = (await operations.GetAsync(operation.Id))!;
+
+            Assert.True(await operations.RequestCancellationAsync(operation.Id, current.Revision, DateTimeOffset.UtcNow));
+        };
+
+        BlobEncryptionLifecycleService service = new(metadata,
+            new BlobEncryptionFileProcessor(metadata, blobs), blobs, keys,
+            operationCoordinator: null!, operations, TimeProvider.System);
+
+        LongRunningOperationRecoveryResult result = await service.RecoverAsync(operation, CancellationToken.None);
+
+        Assert.True(blobs.HasEnvelope(candidate.Path));
+
+        Assert.Empty(keys.Retired);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, result.State);
     }
 
     private static LongRunningOperation Operation(string kind) =>
@@ -273,7 +357,7 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             blobs,
             keyRing: null!,
             operationCoordinator: null!,
-            operationStore: null!,
+            operationStore: new FakeLongRunningOperationStore(TimeProvider.System),
             TimeProvider.System);
     }
 
@@ -299,6 +383,8 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
 
         public IReadOnlyList<string> Updated => _updated;
 
+        public Func<Task>? AfterUpdate { get; set; }
+
         public Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<BlobEncryptionCandidate>>(candidates);
@@ -310,7 +396,9 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
             CancellationToken cancellationToken = default)
         {
             _updated.Add(candidate.Path);
-            return Task.CompletedTask;
+            int index = Array.IndexOf(candidates, candidate);
+            candidates[index] = candidate with { EncryptionVersion = descriptor.Version, EncryptionKeyId = descriptor.KeyId };
+            return AfterUpdate?.Invoke() ?? Task.CompletedTask;
         }
     }
 
@@ -396,10 +484,24 @@ public sealed class BlobEncryptionLifecycleServiceTests : IDisposable
         }
     }
 
-    private sealed class InMemoryKeyRing : IFileEncryptionKeyProvider
+    private sealed class InMemoryKeyRing : IFileEncryptionKeyRing
     {
         private readonly FileEncryptionKeyMaterial _material =
             FileEncryptionKeyMaterial.Create(RandomNumberGenerator.GetBytes(32));
+
+        public List<string> Retired { get; } = [];
+
+        public Task<FileEncryptionKeyMaterial> RotateAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(_material);
+
+        public Task RetireAsync(string keyId, CancellationToken cancellationToken = default)
+        {
+            Retired.Add(keyId);
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<string>> GetActiveKeyIdsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<string>>([_material.KeyId, "unreferenced-old-key"]);
 
         public ValueTask<FileEncryptionKeyMaterial> GetForWriteAsync(
             CancellationToken cancellationToken = default) =>

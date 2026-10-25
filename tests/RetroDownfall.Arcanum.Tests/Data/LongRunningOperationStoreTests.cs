@@ -11,6 +11,7 @@ using RetroDownfall.Arcanum.Core.Storage.Entities;
 using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Operations;
+using RetroDownfall.Arcanum.Infrastructure.Storage;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
@@ -647,8 +648,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             .SingleOrDefault(candidate =>
                 candidate.GetParameters() is
                 [
-                    { ParameterType: var dbType },
-                    { ParameterType: var factoryType, HasDefaultValue: false },
+                { ParameterType: var dbType },
+                { ParameterType: var factoryType, HasDefaultValue: false },
                     _,
                 ]
                 && dbType == typeof(ArcanumDbContext)
@@ -1245,13 +1246,20 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
     /// is alive. Once it lapses the row must be recoverable, or a cancellation nobody observed wedges
     /// its kind permanently with no CLI exit.
     /// </summary>
-    [SkippableFact]
-    public async Task AnUnobservedCancellationIsRecoverableOnceItsLeaseLapses()
+    public static IEnumerable<object[]> CancellationRecoveryKinds =>
+        LongRunningOperationRecoveryRegistry.Descriptors.Values.Select(descriptor =>
+            new object[] { descriptor.Kind, descriptor.Policy });
+
+    [SkippableTheory]
+    [MemberData(nameof(CancellationRecoveryKinds))]
+    public async Task AnUnobservedCancellationIsRecoverableOnceItsLeaseLapses(
+        string kind, LongRunningOperationRecoveryPolicy policy)
     {
         RequireSqlCipher();
         LongRunningOperationStore store = Store(_db!);
         DateTimeOffset now = new(2026, 7, 30, 12, 0, 0, TimeSpan.Zero);
-        LongRunningOperation operation = await CreateAsync(store, now);
+        LongRunningOperation operation = await store.CreateAsync(
+            new LongRunningOperationCreateRequest(kind, policy, "Cancelled interrupted operation.", now));
         LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
             operation.Id,
             "dead-host",
@@ -1281,6 +1289,8 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
             now.AddMinutes(4));
 
         Assert.True(recovery.Acquired);
+
+        Assert.Equal(LongRunningOperationState.Cancelling, recovery.Operation.State);
     }
 
     /// <summary>
@@ -1359,6 +1369,90 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         Assert.Equal(runId, persisted.InferenceRunId);
         Assert.Equal(reservationId, persisted.BudgetReservationId);
         Assert.Equal(claimId, persisted.IdempotencyClaimId);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconcileAsync_CancelledBlobRecovery_DoesNotReportCompletion(bool duringRecovery)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation operation = await CreateAsync(store, now.AddMinutes(-5));
+
+        LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+            operation.Id, "dead-host", now.AddMinutes(-5), now.AddMinutes(-4));
+
+        async Task CancelAsync()
+        {
+            LongRunningOperation current = (await store.GetAsync(operation.Id))!;
+
+            Assert.True(await store.RequestCancellationAsync(operation.Id, current.Revision, now));
+        }
+
+        if (!duringRecovery)
+        {
+            await CancelAsync();
+        }
+
+        RecoveryMetadataStore metadata = new(duringRecovery ? CancelAsync : null);
+
+        BlobEncryptionLifecycleService lifecycle = new(metadata,
+            processor: null!, blobStore: null!, keyRing: null!,
+            operationCoordinator: null!, store, TimeProvider.System);
+
+        LongRunningOperationReconciler reconciler = new(store,
+            [new BlobEncryptionMigrationRecoveryHandler(lifecycle)], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+            now, "recovery-worker", maxOperations: 10, maxConcurrency: 1);
+
+        LongRunningOperation persisted = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(1, summary.Abandoned);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, persisted.State);
+
+        Assert.Equal("operation.cancelled", persisted.TerminalErrorCode);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReconcileAsync_CancellationDoesNotReplaceCompletionOrCorruptCheckpoint(bool corrupt)
+    {
+        RequireSqlCipher();
+
+        LongRunningOperationStore store = Store(_db!);
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation operation = await CreateAsync(store, now.AddMinutes(-5));
+
+        LongRunningOperationLeaseResult leased = await store.TryAcquireLeaseAsync(
+            operation.Id, "dead-host", now.AddMinutes(-5), now.AddMinutes(-4));
+
+        Assert.True(await store.RequestCancellationAsync(operation.Id, leased.Operation.Revision, now));
+
+        ILongRunningOperationRecoveryHandler handler = corrupt
+            ? new ThrowingRecoveryHandler(operation.Kind, 1)
+            : new CompletingRecoveryHandler(operation.Kind);
+
+        LongRunningOperationReconciler reconciler = new(store, [handler], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        _ = await reconciler.ReconcileAsync(now, "recovery-worker", maxOperations: 10, maxConcurrency: 1);
+
+        LongRunningOperation persisted = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(corrupt ? LongRunningOperationState.ReconciliationRequired : LongRunningOperationState.Completed, persisted.State);
+
+        Assert.Equal(corrupt ? LongRunningOperationErrorCodes.CorruptCheckpoint : null, persisted.TerminalErrorCode);
     }
 
     [SkippableFact]
@@ -2063,6 +2157,27 @@ public sealed class LongRunningOperationStoreTests : IAsyncLifetime
         }
 
         return ids;
+    }
+
+    private sealed class RecoveryMetadataStore(Func<Task>? onList) : IBlobEncryptionMetadataStore
+    {
+        private bool _listed;
+
+        public async Task<IReadOnlyList<BlobEncryptionCandidate>> ListAsync(CancellationToken cancellationToken = default)
+        {
+            if (!_listed && onList is not null)
+            {
+                _listed = true;
+
+                await onList();
+            }
+
+            return [];
+        }
+
+        public Task UpdateEncryptionMetadataAsync(BlobEncryptionCandidate candidate,
+            EncryptedBlobDescriptor descriptor, string plaintextSha256, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("No blob work was admitted.");
     }
 
     private sealed class CompletingRecoveryHandler(string kind, List<string>? order = null) : ILongRunningOperationRecoveryHandler

@@ -16,6 +16,8 @@ using Microsoft.Data.Sqlite;
 
 using Microsoft.EntityFrameworkCore;
 
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Core.Configuration;
 
 using RetroDownfall.Arcanum.Core.DataLifecycle;
@@ -50,21 +52,201 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableTheory]
+    [InlineData("initial", null)]
+    [InlineData("pending-journal", null)]
+    [InlineData("clear-journal", null)]
+    [InlineData("cursor", null)]
+    [InlineData("clear-journal", "checkpoint")]
+    [InlineData("clear-journal", "owner")]
+    [InlineData("clear-journal", "expired")]
+    public async Task ReconcilePruneAsync_CancellationImmediatelyBeforeCheckpoint_StopsOnlyWithoutAuthorityConflict(
+        string boundary, string? conflict)
+    {
+        RequireSqlCipher();
+
+        bool cursor = boundary == "cursor";
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        List<string> files = [];
+
+        if (cursor)
+        {
+            _ = await SeedEntryEmbeddingBatchAsync(PruneCheckpointIntervalInTest + 1);
+
+            settings.Retention.SessionEntryEmbeddings = EnabledRule();
+        }
+        else
+        {
+            for (int index = 0; index < 2; index++)
+            {
+                QuarantineRecoveryCandidate candidate = await SeedQuarantineRecoveryCandidateAsync("uploaded-file");
+
+                files.Add(candidate.OriginalPath);
+            }
+
+            settings.Retention.UploadedFiles = EnabledRule();
+        }
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionPrune, LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Interrupted prune checkpoint race.", now.AddMinutes(-5)));
+
+        _ = await store.TryAcquireLeaseAsync(operation.Id, "dead-owner", now.AddMinutes(-5), now.AddMinutes(-4));
+
+        int targetSave = boundary == "initial" ? 1 : boundary == "clear-journal" ? 3 : 2;
+
+        int saves = 0;
+
+        HeartbeatCountingOperationStore observed = new(store)
+        {
+            BeforeSaveCheckpoint = expectedVersion =>
+            {
+                if (++saves != targetSave)
+                {
+                    return;
+                }
+
+                // This hook is after every prior recovery poll and immediately before the real SQL save.
+                LongRunningOperation current = store.GetAsync(operation.Id).GetAwaiter().GetResult()!;
+
+                Assert.Equal(LongRunningOperationState.Running, current.State);
+
+                Assert.Equal(expectedVersion, current.CheckpointVersion);
+
+                Assert.True(store.RequestCancellationAsync(operation.Id, current.Revision, now).GetAwaiter().GetResult());
+
+                if (conflict is not null)
+                {
+                    using System.Data.Common.DbCommand command = _db!.Database.GetDbConnection().CreateCommand();
+
+                    command.CommandText = conflict switch
+                    {
+                        "checkpoint" => "UPDATE LongRunningOperations SET CheckpointVersion = CheckpointVersion + 1, Revision = Revision + 1",
+                        "owner" => "UPDATE LongRunningOperations SET LeaseOwner = 'other-owner', Revision = Revision + 1",
+                        _ => "UPDATE LongRunningOperations SET LeaseExpiresAt = '2000-01-01T00:00:00.0000000Z', Revision = Revision + 1",
+                    };
+
+                    Assert.Equal(1, command.ExecuteNonQuery());
+                }
+            },
+        };
+
+        DataRetentionService service = CreateService(settings, operationStore: observed);
+
+        LongRunningOperationReconciler reconciler = new(store,
+            [new DataRetentionRecoveryHandler(service)], TimeProvider.System,
+            NullLogger<LongRunningOperationReconciler>.Instance, new LongRunningOperationOwnership());
+
+        LongRunningOperationReconciliationSummary summary = await reconciler.ReconcileAsync(
+            now, "recovery-owner", maxOperations: 10, maxConcurrency: 1);
+
+        LongRunningOperation settled = (await store.GetAsync(operation.Id))!;
+
+        Assert.Equal(targetSave, saves);
+
+        Assert.Equal(conflict switch
+        {
+            null => LongRunningOperationState.Abandoned,
+            "owner" => LongRunningOperationState.Cancelling,
+            _ => LongRunningOperationState.ReconciliationRequired,
+        }, settled.State);
+
+        Assert.Equal(conflict is null ? 1 : 0, summary.Abandoned);
+
+        Assert.Equal(conflict is null ? "operation.cancelled"
+            : conflict == "owner" ? null : LongRunningOperationErrorCodes.RecoveryFailed, settled.TerminalErrorCode);
+
+        int remaining = boundary is "initial" or "pending-journal" ? 2 : 1;
+
+        Assert.Equal(remaining, await CountAllAsync(cursor ? "entry_embeddings" : "UploadedFiles"));
+
+        if (!cursor)
+        {
+            Assert.Equal(remaining, files.Count(File.Exists));
+
+            Assert.Empty(Directory.EnumerateDirectories(_filesRoot, ".arcanum-retention-*"));
+        }
+
+        if (boundary == "clear-journal")
+        {
+            // The refused journal-clear write retains the last durable journal; its file cleanup is done.
+            Assert.Contains("\nP:", Encoding.UTF8.GetString(settled.CheckpointPayload!), StringComparison.Ordinal);
+        }
+    }
+
+    [SkippableFact]
+    public async Task RecoverPruneAsync_CancellationDuringCandidate_CompletesCleanupAndPreservesNextCandidate()
+    {
+        RequireSqlCipher();
+
+        QuarantineRecoveryCandidate first = await SeedQuarantineRecoveryCandidateAsync("uploaded-file");
+
+        QuarantineRecoveryCandidate second = await SeedQuarantineRecoveryCandidateAsync("uploaded-file");
+
+        DataRetentionService service = CreateService(first.Settings);
+
+        LongRunningOperationStore operations = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation operation = await operations.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionPrune, LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Interrupted prune.", now));
+
+        LongRunningOperationLeaseResult lease = await operations.TryAcquireLeaseAsync(
+            operation.Id, "recovery-owner", now, now.AddMinutes(5));
+
+        // The durable cancel lands after deletion starts, before the handler can settle that candidate.
+        await ExecuteAsync($"""
+            CREATE TRIGGER cancel_recovering_prune AFTER DELETE ON "UploadedFiles"
+            BEGIN
+                UPDATE "LongRunningOperations" SET "State" = {(int)LongRunningOperationState.Cancelling}, "Revision" = "Revision" + 1
+                WHERE "Kind" = 'data-retention-prune';
+
+            END;
+
+            """);
+
+        LongRunningOperationRecoveryResult result = await service.RecoverPruneAsync(lease.Operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.Abandoned, result.State);
+
+        Assert.Equal("operation.cancelled", result.ErrorCode);
+
+        Assert.Equal(1, await CountAllAsync("UploadedFiles"));
+
+        Assert.Single(new[] { first.OriginalPath, second.OriginalPath }, File.Exists);
+
+        Assert.Empty(Directory.EnumerateDirectories(_filesRoot, ".arcanum-retention-*"));
+    }
 
     [SkippableTheory]
 
-    [InlineData("uploaded-file")]
+    [InlineData("uploaded-file", false)]
 
-    [InlineData("attachment")]
+    [InlineData("uploaded-file", true)]
 
-    [InlineData("session")]
+    [InlineData("attachment", false)]
 
-    [InlineData("audit-log")]
+    [InlineData("attachment", true)]
+
+    [InlineData("session", false)]
+
+    [InlineData("session", true)]
+
+    [InlineData("audit-log", false)]
+
+    [InlineData("audit-log", true)]
 
     public async Task RecoverPruneAsync_WithOperationScopedQuarantine_RecoversBeforeAdvancingCursor(
-        string kind)
+        string kind, bool cancel)
     {
-
         RequireSqlCipher();
 
         QuarantineRecoveryCandidate seeded =
@@ -109,24 +291,20 @@ public sealed partial class DataRetentionServiceTests
 
         string rootRole = kind switch
         {
-
             "uploaded-file" => "files",
 
             "audit-log" => "logs",
 
             _ => "attachments",
-
         };
 
         string managedRoot = rootRole switch
         {
-
             "files" => _filesRoot,
 
             "logs" => _logsRoot,
 
             _ => _attachmentsRoot,
-
         };
 
         byte[] pendingJournal = SerializeMutationCheckpoint(
@@ -177,30 +355,41 @@ public sealed partial class DataRetentionServiceTests
         LongRunningOperation interrupted = Assert.IsType<LongRunningOperation>(
             await operations.GetAsync(operation.Id));
 
+        if (cancel)
+        {
+            Assert.True(await operations.RequestCancellationAsync(operation.Id, interrupted.Revision, now));
+            interrupted = (await operations.GetAsync(operation.Id))!;
+        }
+
         LongRunningOperationRecoveryResult recovered = await service.RecoverPruneAsync(
             interrupted,
             CancellationToken.None);
 
-        Assert.Equal(LongRunningOperationState.Completed, recovered.State);
+        Assert.Equal(cancel ? LongRunningOperationState.Abandoned : LongRunningOperationState.Completed, recovered.State);
 
-        Assert.False(await seeded.Exists());
+        // Audit logs have no database row: their absent original is already committed deletion.
+        bool restored = cancel && kind != "audit-log";
 
-        Assert.False(File.Exists(seeded.OriginalPath));
+        Assert.Equal(restored, await seeded.Exists());
+
+        Assert.Equal(restored, File.Exists(seeded.OriginalPath));
 
         Assert.False(Directory.Exists(recoveryDirectory));
-
     }
 
     [SkippableTheory]
 
-    [InlineData(false)]
+    [InlineData(false, false)]
 
-    [InlineData(true)]
+    [InlineData(false, true)]
+
+    [InlineData(true, false)]
+
+    [InlineData(true, true)]
 
     public async Task MutationRecovery_WithOperationScopedQuarantine_UsesDatabaseAsCommitAuthority(
-        bool databaseCommitSucceeded)
+        bool databaseCommitSucceeded, bool cancel)
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -263,11 +452,15 @@ public sealed partial class DataRetentionServiceTests
 
         if (databaseCommitSucceeded)
         {
-
             await ExecuteAsync(
                 "DELETE FROM SessionAttachments WHERE lower(replace(Id, '-', '')) = @id",
                 ("@id", attachment.AttachmentId.ToString("N")));
+        }
 
+        if (cancel)
+        {
+            LongRunningOperation current = (await operations.GetAsync(operation.Id))!;
+            Assert.True(await operations.RequestCancellationAsync(operation.Id, current.Revision, now));
         }
 
         DataRetentionMutationRecoveryHandler handler = new(service);
@@ -292,7 +485,6 @@ public sealed partial class DataRetentionServiceTests
                 "SessionAttachments",
                 "Id",
                 Canonical(attachment.AttachmentId)));
-
     }
 
     [SkippableTheory]
@@ -304,7 +496,6 @@ public sealed partial class DataRetentionServiceTests
     public async Task MutationRecovery_WithZeroFileJournal_UsesExactTargetAuthority(
         bool databaseCommitSucceeded)
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, _) = await SeedSessionAsync(pinned: false);
@@ -352,7 +543,6 @@ public sealed partial class DataRetentionServiceTests
 
         if (databaseCommitSucceeded)
         {
-
             await ExecuteAsync(
                 "DELETE FROM Entries WHERE lower(replace(SessionId, '-', '')) = @id",
                 ("@id", sessionId.ToString("N")));
@@ -360,7 +550,6 @@ public sealed partial class DataRetentionServiceTests
             await ExecuteSessionRetentionAsync(
                 "DELETE FROM Sessions WHERE lower(replace(Id, '-', '')) = @id",
                 ("@id", sessionId.ToString("N")));
-
         }
 
         DataRetentionMutationRecoveryHandler handler = new(service);
@@ -374,7 +563,6 @@ public sealed partial class DataRetentionServiceTests
                 ? LongRunningOperationState.Completed
                 : LongRunningOperationState.Failed,
             recovered.State);
-
     }
 
     /// <summary>
@@ -394,7 +582,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForACommittedSagaReset_IsNotHeldOpenByAnotherStoresClaims()
     {
-
         RequireSqlCipher();
 
         string memory = await SeedGlobalSagaMemoryAsync();
@@ -454,7 +641,6 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
-
     }
 
     /// <summary>
@@ -470,7 +656,6 @@ public sealed partial class DataRetentionServiceTests
     [SkippableFact]
     public void MemoryResetResidue_NamesTheTableEachStoresClaimsAreBoundTo()
     {
-
         RequireSqlCipher();
 
         Assert.Contains(
@@ -480,7 +665,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Contains(
             "lexicon_entries",
             DataRetentionService.MemoryResetResidueTables(MemoryResetScope.Lexicon));
-
     }
 
     /// <summary>
@@ -502,7 +686,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForAnInterruptedSagaReset_SeesTheRetirementEvidenceLeftBehind()
     {
-
         RequireSqlCipher();
 
         _ = await WriteAndRetireSagaMemoryAsync(sessionId: null, "the operator prefers tabs");
@@ -558,7 +741,6 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Failed, recovered.State);
-
     }
 
     /// <summary>
@@ -575,7 +757,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForACommittedSagaReset_IgnoresErasureEvidence()
     {
-
         RequireSqlCipher();
 
         InMemoryOsCredentialStore credentials = new();
@@ -588,14 +769,10 @@ public sealed partial class DataRetentionServiceTests
         foreach (string table in DataRetentionService.MemoryResetResidueTables(MemoryResetScope.Saga)
             .Where(static table => table.StartsWith("saga_", StringComparison.Ordinal)))
         {
-
             if (await TableExistsInTestAsync(table))
             {
-
                 Assert.Equal(0, await CountAllAsync(table));
-
             }
-
         }
 
         MemoryErasureRetainedSnapshot before = await MemoryErasureRetainedEvidence.CaptureAsync(
@@ -627,7 +804,6 @@ public sealed partial class DataRetentionServiceTests
             connection,
             credentials,
             CancellationToken.None);
-
     }
 
     /// <summary>
@@ -646,16 +822,13 @@ public sealed partial class DataRetentionServiceTests
 
     public void Reset_and_restore_lists_never_name_erasure_evidence()
     {
-
         RequireSqlCipher();
 
         foreach (MemoryResetScope scope in Enum.GetValues<MemoryResetScope>())
         {
-
             Assert.DoesNotContain(
                 DataRetentionService.MemoryResetResidueTables(scope),
                 static table => table.StartsWith("memory_erasure_", StringComparison.Ordinal));
-
         }
 
         Assert.DoesNotContain(
@@ -697,19 +870,15 @@ public sealed partial class DataRetentionServiceTests
         ];
 
         Assert.Empty(owners);
-
     }
 
     /// <summary>The member a token sits in, through any local function or lambda, as <c>::Name</c>.</summary>
     private static string EnclosingMember(SyntaxToken token)
     {
-
         foreach (SyntaxNode node in token.Parent!.AncestorsAndSelf())
         {
-
             switch (node)
             {
-
                 case MethodDeclarationSyntax method:
                     return "::" + method.Identifier.ValueText;
 
@@ -724,13 +893,10 @@ public sealed partial class DataRetentionServiceTests
 
                 case BaseTypeDeclarationSyntax type:
                     return "::type " + type.Identifier.ValueText;
-
             }
-
         }
 
         return "::<file>";
-
     }
 
     /// <summary>
@@ -739,14 +905,11 @@ public sealed partial class DataRetentionServiceTests
     /// </summary>
     private async Task<SqliteConnection> SeedErasureEvidenceAsync(InMemoryOsCredentialStore credentials)
     {
-
         SqliteConnection connection = (SqliteConnection)_db!.Database.GetDbConnection();
 
         if (connection.State != ConnectionState.Open)
         {
-
             await _db.Database.OpenConnectionAsync();
-
         }
 
         using MemoryErasureKey key = MemoryErasureTestKeys.CreateKey(credentials);
@@ -759,7 +922,6 @@ public sealed partial class DataRetentionServiceTests
 
         await using (SqliteTransaction transaction = connection.BeginTransaction(deferred: false))
         {
-
             await MemoryErasureEvidence.InsertReceiptAsync(
                 connection,
                 transaction,
@@ -785,11 +947,9 @@ public sealed partial class DataRetentionServiceTests
                 CancellationToken.None);
 
             await transaction.CommitAsync();
-
         }
 
         return connection;
-
     }
 
     /// <summary>
@@ -812,7 +972,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForACommittedCampaignTargetedSagaReset_IgnoresEveryOtherCampaignsRows()
     {
-
         RequireSqlCipher();
 
         string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
@@ -847,7 +1006,6 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
-
     }
 
     /// <summary>
@@ -868,7 +1026,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForAnInterruptedCampaignTargetedSagaReset_SeesThatCampaignsMemories()
     {
-
         RequireSqlCipher();
 
         string ownedByA = await SeedScopedSagaMemoryAsync(ResetCampaignA);
@@ -893,7 +1050,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(LongRunningOperationState.Failed, recovered.State);
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, recovered.ErrorCode);
-
     }
 
     /// <summary>
@@ -916,7 +1072,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForACommittedCampaignTargetedLexiconReset_IgnoresEveryOtherScopesTerms()
     {
-
         RequireSqlCipher();
 
         await SeedScopedLexiconEntryAsync("config", ResetCampaignA.ToString());
@@ -947,7 +1102,6 @@ public sealed partial class DataRetentionServiceTests
             CancellationToken.None);
 
         Assert.Equal(LongRunningOperationState.Completed, recovered.State);
-
     }
 
     /// <summary>
@@ -967,7 +1121,6 @@ public sealed partial class DataRetentionServiceTests
 
     public async Task MutationRecovery_ForAnInterruptedCampaignTargetedLexiconReset_SeesThatCampaignsEntries()
     {
-
         RequireSqlCipher();
 
         await SeedScopedLexiconEntryAsync("config", ResetCampaignA.ToString());
@@ -994,7 +1147,6 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(LongRunningOperationState.Failed, recovered.State);
 
         Assert.Equal(ErrorCodes.Data.ReconciliationFailed, recovered.ErrorCode);
-
     }
 
     /// <summary>
@@ -1016,7 +1168,6 @@ public sealed partial class DataRetentionServiceTests
         string ownerId,
         string target)
     {
-
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         const string summary = "Interrupted memory reset.";
@@ -1048,14 +1199,12 @@ public sealed partial class DataRetentionServiceTests
                 now));
 
         return Assert.IsType<LongRunningOperation>(await operations.GetAsync(operation.Id));
-
     }
 
     [SkippableFact]
 
     public async Task MutationRecovery_WithEmptyPreparedQuarantine_RemovesDirectoryAndClassifiesPrecommit()
     {
-
         RequireSqlCipher();
 
         (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
@@ -1126,14 +1275,12 @@ public sealed partial class DataRetentionServiceTests
         Assert.False(Directory.Exists(emptyDirectory));
 
         Assert.True(File.Exists(attachment.AbsolutePath));
-
     }
 
     [SkippableFact]
 
     public async Task MutationRecovery_WhenInterruptedBeforeItsJournal_TerminalizesAndUnblocksRetention()
     {
-
         RequireSqlCipher();
 
         DataRetentionService service = CreateService();
@@ -1198,108 +1345,95 @@ public sealed partial class DataRetentionServiceTests
             now.AddMinutes(5));
 
         Assert.NotNull(nextOperation);
-
     }
 
     private async Task<QuarantineRecoveryCandidate> SeedQuarantineRecoveryCandidateAsync(
         string kind)
     {
-
         ArcanumSettings settings = CreatePruneSettings();
 
         switch (kind)
         {
-
             case "uploaded-file":
-            {
+                {
+                    Guid fileId = Guid.NewGuid();
 
-                Guid fileId = Guid.NewGuid();
+                    string path = Path.Combine(_filesRoot, fileId.ToString("N"));
 
-                string path = Path.Combine(_filesRoot, fileId.ToString("N"));
+                    await File.WriteAllBytesAsync(path, [1, 2, 3]);
 
-                await File.WriteAllBytesAsync(path, [1, 2, 3]);
+                    await SeedUploadedFileAsync(fileId, 3);
 
-                await SeedUploadedFileAsync(fileId, 3);
+                    settings.Retention.UploadedFiles = EnabledRule();
 
-                settings.Retention.UploadedFiles = EnabledRule();
-
-                return new QuarantineRecoveryCandidate(
-                    settings,
-                    "file:" + fileId.ToString("D"),
-                    path,
-                    async () => await CountNormalizedKeyAsync(
-                        "UploadedFiles",
-                        "Id",
-                        fileId.ToString()) > 0);
-
-            }
+                    return new QuarantineRecoveryCandidate(
+                        settings,
+                        "file:" + fileId.ToString("D"),
+                        path,
+                        async () => await CountNormalizedKeyAsync(
+                            "UploadedFiles",
+                            "Id",
+                            fileId.ToString()) > 0);
+                }
 
             case "attachment":
-            {
+                {
+                    (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
 
-                (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+                    SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
 
-                SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+                    settings.Retention.Attachments = EnabledRule();
 
-                settings.Retention.Attachments = EnabledRule();
-
-                return new QuarantineRecoveryCandidate(
-                    settings,
-                    "attachment:" + attachment.AttachmentId.ToString("D"),
-                    attachment.AbsolutePath,
-                    async () => await CountNormalizedKeyAsync(
-                        "SessionAttachments",
-                        "Id",
-                        Canonical(attachment.AttachmentId)) > 0);
-
-            }
+                    return new QuarantineRecoveryCandidate(
+                        settings,
+                        "attachment:" + attachment.AttachmentId.ToString("D"),
+                        attachment.AbsolutePath,
+                        async () => await CountNormalizedKeyAsync(
+                            "SessionAttachments",
+                            "Id",
+                            Canonical(attachment.AttachmentId)) > 0);
+                }
 
             case "session":
-            {
+                {
+                    (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
 
-                (Guid sessionId, Guid entryId) = await SeedSessionAsync(pinned: false);
+                    SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
 
-                SeededAttachment attachment = await SeedAttachmentAsync(sessionId, entryId);
+                    settings.Retention.ArchivedSessions = EnabledRule();
 
-                settings.Retention.ArchivedSessions = EnabledRule();
-
-                return new QuarantineRecoveryCandidate(
-                    settings,
-                    "session:" + sessionId.ToString("D"),
-                    attachment.AbsolutePath,
-                    async () => await CountNormalizedKeyAsync(
-                        "Sessions",
-                        "Id",
-                        sessionId.ToString()) > 0);
-
-            }
+                    return new QuarantineRecoveryCandidate(
+                        settings,
+                        "session:" + sessionId.ToString("D"),
+                        attachment.AbsolutePath,
+                        async () => await CountNormalizedKeyAsync(
+                            "Sessions",
+                            "Id",
+                            sessionId.ToString()) > 0);
+                }
 
             case "audit-log":
-            {
+                {
+                    string fileName = "audit-20000101.jsonl";
 
-                string fileName = "audit-20000101.jsonl";
+                    string path = Path.Combine(_logsRoot, fileName);
 
-                string path = Path.Combine(_logsRoot, fileName);
+                    await File.WriteAllTextAsync(path, "{}\n");
 
-                await File.WriteAllTextAsync(path, "{}\n");
+                    File.SetLastWriteTimeUtc(path, DateTime.UnixEpoch);
 
-                File.SetLastWriteTimeUtc(path, DateTime.UnixEpoch);
+                    settings.Retention.AuditLogs = EnabledRule();
 
-                settings.Retention.AuditLogs = EnabledRule();
-
-                return new QuarantineRecoveryCandidate(
-                    settings,
-                    "audit-log:" + fileName,
-                    path,
-                    () => Task.FromResult(File.Exists(path)));
-
-            }
+                    return new QuarantineRecoveryCandidate(
+                        settings,
+                        "audit-log:" + fileName,
+                        path,
+                        () => Task.FromResult(File.Exists(path)));
+                }
 
             default:
                 throw new InvalidOperationException("Unknown quarantine recovery scenario.");
-
         }
-
     }
 
     private sealed record QuarantineRecoveryCandidate(
@@ -1315,7 +1449,6 @@ public sealed partial class DataRetentionServiceTests
         FileHandleMetadata metadata,
         string rootRole = "attachments")
     {
-
         StringBuilder body = new();
 
         body.Append("ARCAMUT2\n")
@@ -1343,14 +1476,12 @@ public sealed partial class DataRetentionServiceTests
             .Append('\n');
 
         return Encoding.UTF8.GetBytes(body.ToString());
-
     }
 
     private static byte[] SerializeEmptyMutationCheckpoint(
         string subtype,
         string target)
     {
-
         StringBuilder body = new();
 
         body.Append("ARCAMUT2\n")
@@ -1366,7 +1497,5 @@ public sealed partial class DataRetentionServiceTests
             .Append('\n');
 
         return Encoding.UTF8.GetBytes(body.ToString());
-
     }
-
 }

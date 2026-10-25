@@ -171,6 +171,11 @@ public sealed class BlobEncryptionLifecycleService(
         LongRunningOperation operation,
         CancellationToken cancellationToken)
     {
+        if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+        {
+            return LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled);
+        }
+
         string? targetKeyId = null;
         if (operation.Kind == LongRunningOperationKinds.BlobEncryptionKeyRotation)
         {
@@ -184,6 +189,12 @@ public sealed class BlobEncryptionLifecycleService(
         foreach (BlobEncryptionCandidate candidate in candidates)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+            {
+                return CancelledRecoveryResult(failed);
+            }
+
             try
             {
                 if (targetKeyId is null)
@@ -208,6 +219,11 @@ public sealed class BlobEncryptionLifecycleService(
             }
         }
 
+        if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false))
+        {
+            return CancelledRecoveryResult(failed);
+        }
+
         // Both branches verify their own work before claiming success. Migration recovery used to
         // return Completed() unconditionally, so a pass that never touched a file was
         // indistinguishable from a clean one.
@@ -223,17 +239,32 @@ public sealed class BlobEncryptionLifecycleService(
                 LongRunningOperationErrorCodes.RecoveryFailed);
         }
 
-        if (targetKeyId is not null)
+        if (await IsRecoveryCancellationRequestedAsync(operation, cancellationToken).ConfigureAwait(false)
+            || targetKeyId is not null
+            && !await RetireUnreferencedKeysAsync(targetKeyId, cancellationToken, operation).ConfigureAwait(false))
         {
-            await RetireUnreferencedKeysAsync(targetKeyId, cancellationToken).ConfigureAwait(false);
+            return CancelledRecoveryResult(failed);
         }
 
         return LongRunningOperationRecoveryResult.Completed();
     }
 
-    private async Task RetireUnreferencedKeysAsync(
+    private async Task<bool> IsRecoveryCancellationRequestedAsync(
+        LongRunningOperation operation,
+        CancellationToken cancellationToken) =>
+        operation.State == LongRunningOperationState.Cancelling
+        || (await operationStore.GetAsync(operation.Id, cancellationToken).ConfigureAwait(false))?.State
+            == LongRunningOperationState.Cancelling;
+
+    private static LongRunningOperationRecoveryResult CancelledRecoveryResult(int failed) =>
+        failed == 0
+            ? LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled)
+            : LongRunningOperationRecoveryResult.RequiresAttention(LongRunningOperationErrorCodes.RecoveryFailed);
+
+    private async Task<bool> RetireUnreferencedKeysAsync(
         string activeKeyId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        LongRunningOperation? recoveringOperation = null)
     {
         IReadOnlyList<BlobEncryptionCandidate> current = await metadataStore
             .ListAsync(cancellationToken)
@@ -251,9 +282,17 @@ public sealed class BlobEncryptionLifecycleService(
             if (!string.Equals(keyId, activeKeyId, StringComparison.Ordinal)
                 && !referenced.Contains(keyId))
             {
+                if (recoveringOperation is not null
+                    && await IsRecoveryCancellationRequestedAsync(recoveringOperation, cancellationToken).ConfigureAwait(false))
+                {
+                    return false;
+                }
+
                 await keyRing.RetireAsync(keyId, cancellationToken).ConfigureAwait(false);
             }
         }
+
+        return true;
     }
 
     private async Task<BlobEncryptionOperationResult> RunDurableAsync(

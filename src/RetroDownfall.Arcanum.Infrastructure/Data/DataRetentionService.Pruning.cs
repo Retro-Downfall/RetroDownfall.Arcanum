@@ -3368,7 +3368,8 @@ internal sealed partial class DataRetentionService
         IReadOnlySet<string>? forcedPreservedCandidates,
         RetentionMutationJournal? retainedPendingJournal,
         IGrimoireWorkLease? workLease,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool observeDurableCancellation = false)
     {
         const int checkpointInterval = PruneCheckpointInterval;
 
@@ -3397,7 +3398,8 @@ internal sealed partial class DataRetentionService
                 nextCandidateIndex: startIndex,
                 expectedCheckpointVersion: 0,
                 pendingJournal: null,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                observeDurableCancellation).ConfigureAwait(false);
         }
 
         long rowsDeleted = 0;
@@ -3417,6 +3419,15 @@ internal sealed partial class DataRetentionService
         for (int index = startIndex; index < plan.CandidateIds.Length; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (observeDurableCancellation
+                && await IsPruneRecoveryCancellationRequestedAsync(operationId, cancellationToken).ConfigureAwait(false))
+            {
+                return new DataRetentionPruneExecutionOutcome(
+                    DeferredForMaintenance: false,
+                    Applied: null,
+                    new Error(LongRunningOperationRecoveryOutcomes.Cancelled, "Retention prune cancellation was observed."));
+            }
 
             // Renewal is wall-clock driven, not candidate-count driven. A sweep of candidates that are
             // each faster than the heartbeat interval never wakes the lease maintainer, and the
@@ -3492,7 +3503,8 @@ internal sealed partial class DataRetentionService
                             nextCandidateIndex: earliestSkippedIndex ?? index,
                             expectedCheckpointVersion: currentCheckpointVersion,
                             pendingJournal: null,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            observeDurableCancellation).ConfigureAwait(false);
                     }
                 }
                 else
@@ -3515,7 +3527,8 @@ internal sealed partial class DataRetentionService
                             nextCandidateIndex: earliestSkippedIndex ?? index,
                             expectedCheckpointVersion: currentCheckpointVersion,
                             pendingJournal,
-                            cancellationToken).ConfigureAwait(false);
+                            cancellationToken,
+                            observeDurableCancellation).ConfigureAwait(false);
                     }
 
                     if (workLease is not null)
@@ -3551,6 +3564,15 @@ internal sealed partial class DataRetentionService
                         "Post-delete reconciliation found retained owned data for the current candidate.");
                 }
 
+                if (observeDurableCancellation
+                    && await IsPruneRecoveryCancellationRequestedAsync(operationId, cancellationToken).ConfigureAwait(false))
+                {
+                    return new DataRetentionPruneExecutionOutcome(
+                        DeferredForMaintenance: false,
+                        Applied: null,
+                        new Error(LongRunningOperationRecoveryOutcomes.Cancelled, "Retention prune cancellation was observed."));
+                }
+
                 bool preserved = deleted.PinnedAfterPlanning || deleted.Rows == 0
                     && deleted.Files == 0
                     && deleted.Derived == 0
@@ -3568,7 +3590,8 @@ internal sealed partial class DataRetentionService
                         nextCandidateIndex: earliestSkippedIndex ?? (preserved ? index : index + 1),
                         expectedCheckpointVersion: currentCheckpointVersion,
                         pendingJournal: null,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        observeDurableCancellation).ConfigureAwait(false);
                 }
 
                 if (preserved)
@@ -3636,7 +3659,8 @@ internal sealed partial class DataRetentionService
                         nextIndex,
                         currentCheckpointVersion,
                         pendingJournal: null,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        observeDurableCancellation).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (effectGroup is not null)
@@ -3647,7 +3671,7 @@ internal sealed partial class DataRetentionService
 
                 throw;
             }
-            catch (Exception ex) when (effectGroup is not null)
+            catch (Exception ex) when (effectGroup is not null && ex is not DataRetentionPruneCheckpointCancelledException)
             {
                 Error failure = await SettleHostedCandidateFailureAsync(
                     operationId,
@@ -3708,7 +3732,8 @@ internal sealed partial class DataRetentionService
         int nextCandidateIndex,
         int expectedCheckpointVersion,
         RetentionMutationJournal? pendingJournal,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool observeDurableCancellation = false)
     {
         PruneSnapshot snapshot = _pruneSnapshots.GetValue(plan, _ => CreatePruneSnapshot(plan, frozenCutoffs));
 
@@ -3758,6 +3783,22 @@ internal sealed partial class DataRetentionService
 
         if (!saved)
         {
+            if (observeDurableCancellation)
+            {
+                LongRunningOperation? current = await operations.GetAsync(operationId, cancellationToken).ConfigureAwait(false);
+
+                // A refused save precedes a new candidate or follows verified compensation. Only
+                // cancellation under the same live owner and checkpoint may end that safe unit.
+                if (current is { State: LongRunningOperationState.Cancelling }
+                    && current.Kind == LongRunningOperationKinds.DataRetentionPrune
+                    && string.Equals(current.LeaseOwner, ownerId, StringComparison.Ordinal)
+                    && current.CheckpointVersion == expectedCheckpointVersion
+                    && current.LeaseExpiresAt > timeProvider.GetUtcNow())
+                {
+                    throw new DataRetentionPruneCheckpointCancelledException();
+                }
+            }
+
             throw new InvalidOperationException(
                 "The retention operation checkpoint could not be saved atomically.");
         }
@@ -4172,6 +4213,14 @@ internal sealed partial class DataRetentionService
 
         if (operation.CheckpointPayload is null)
         {
+            if (operation.State == LongRunningOperationState.Cancelling
+                || await IsPruneRecoveryCancellationRequestedAsync(operation.Id, cancellationToken).ConfigureAwait(false))
+            {
+                return new DataRetentionPruneRecoveryExecution(
+                    LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled),
+                    Execution: null);
+            }
+
             plan = await BuildUnifiedPrunePlanAsync(
                 new DataRetentionRequest(DataRetentionOperation.Prune),
                 cancellationToken).ConfigureAwait(false);
@@ -4239,6 +4288,15 @@ internal sealed partial class DataRetentionService
                 }
             }
 
+            // Finish the pending candidate's quarantine reconciliation before honoring cancellation.
+            if (operation.State == LongRunningOperationState.Cancelling
+                || await IsPruneRecoveryCancellationRequestedAsync(operation.Id, cancellationToken).ConfigureAwait(false))
+            {
+                return new DataRetentionPruneRecoveryExecution(
+                    LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled),
+                    Execution: null);
+            }
+
             DataRetentionPlan current = await BuildUnifiedPrunePlanAsync(
                 new DataRetentionRequest(DataRetentionOperation.Prune),
                 cancellationToken).ConfigureAwait(false);
@@ -4293,23 +4351,47 @@ internal sealed partial class DataRetentionService
                         StringComparer.Ordinal);
         }
 
-        DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
-            operation.Id,
-            operation.LeaseOwner,
-            plan,
-            nextIndex,
-            operation.CheckpointVersion,
-            saveCheckpoints: true,
-            frozenCutoffs,
-            forcedPreservedCandidates,
-            pendingJournalKnownUnstarted ? pendingJournal : null,
-            workLease,
-            cancellationToken).ConfigureAwait(false);
+        if (operation.State == LongRunningOperationState.Cancelling
+            || await IsPruneRecoveryCancellationRequestedAsync(operation.Id, cancellationToken).ConfigureAwait(false))
+        {
+            return new DataRetentionPruneRecoveryExecution(
+                LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled),
+                Execution: null);
+        }
 
-        return new DataRetentionPruneRecoveryExecution(
-            Terminal: null,
-            execution);
+        try
+        {
+            DataRetentionPruneExecutionOutcome execution = await ApplyUnifiedPruneCoreAsync(
+                operation.Id,
+                operation.LeaseOwner,
+                plan,
+                nextIndex,
+                operation.CheckpointVersion,
+                saveCheckpoints: true,
+                frozenCutoffs,
+                forcedPreservedCandidates,
+                pendingJournalKnownUnstarted ? pendingJournal : null,
+                workLease,
+                cancellationToken,
+                observeDurableCancellation: true).ConfigureAwait(false);
+
+            return new DataRetentionPruneRecoveryExecution(
+                Terminal: execution.Failure?.Code == LongRunningOperationRecoveryOutcomes.Cancelled
+                    ? LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled)
+                    : null,
+                execution);
+        }
+        catch (DataRetentionPruneCheckpointCancelledException)
+        {
+            return new DataRetentionPruneRecoveryExecution(
+                LongRunningOperationRecoveryResult.Abandoned(LongRunningOperationRecoveryOutcomes.Cancelled),
+                Execution: null);
+        }
     }
+
+    private async Task<bool> IsPruneRecoveryCancellationRequestedAsync(Guid operationId, CancellationToken cancellationToken) =>
+        (await operations.GetAsync(operationId, cancellationToken).ConfigureAwait(false))?.State
+            == LongRunningOperationState.Cancelling;
 
     private Task<LongRunningOperationRecoveryResult> RecoverPrunePendingJournalAsync(
         Guid operationId,
@@ -7025,6 +7107,9 @@ internal sealed partial class DataRetentionService
             0,
             reconciled);
     }
+
+    private sealed class DataRetentionPruneCheckpointCancelledException()
+        : Exception("Cancellation refused the retention checkpoint at a safe candidate boundary.");
 
     private sealed record DataRetentionPruneExecutionOutcome(
         bool DeferredForMaintenance,

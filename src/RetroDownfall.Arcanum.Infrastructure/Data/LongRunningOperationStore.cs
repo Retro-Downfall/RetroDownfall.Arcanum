@@ -919,7 +919,7 @@ internal sealed partial class LongRunningOperationStore(
                 cmd.CommandText =
                     """
                     UPDATE "LongRunningOperations"
-                    SET "State" = CASE WHEN "Kind" = @longRest AND "State" = @cancelling THEN @cancelling ELSE @running END,
+                    SET "State" = CASE WHEN "State" = @cancelling THEN @cancelling ELSE @running END,
                         "StartedAt" = COALESCE("StartedAt", @now),
                         "HeartbeatAt" = @now,
                         "LeaseOwner" = @owner,

@@ -96,6 +96,9 @@ public static class LongRunningOperationErrorCodes
 /// </summary>
 public static class LongRunningOperationRecoveryOutcomes
 {
+    /// <summary>Cancellation observed after required in-flight compensation completed.</summary>
+    public const string Cancelled = "operation.cancelled";
+
     /// <summary>A crashed subagent child: never restarted, never re-billed, reservation released.</summary>
     public const string SubagentChildAbandoned = "subagent.child_abandoned";
 
