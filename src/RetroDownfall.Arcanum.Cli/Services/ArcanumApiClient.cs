@@ -2450,7 +2450,7 @@ public sealed partial class ArcanumApiClient(
 
         return await SendRequestAsync(
             HttpMethod.Get,
-            $"api/lore/{encoded}",
+            $"api/lore/entries/by-key?key={encoded}",
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseLoreDto,
@@ -2529,7 +2529,7 @@ public sealed partial class ArcanumApiClient(
 
         return await SendRequestAsync(
             HttpMethod.Delete,
-            $"api/lore/{encoded}",
+            $"api/lore/entries/by-key?key={encoded}",
             null,
             null,
             ArcanumJsonContext.Default.ApiResponseBoolean,

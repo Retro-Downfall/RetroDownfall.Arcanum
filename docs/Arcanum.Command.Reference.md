@@ -581,7 +581,7 @@ Provider credentials are resolved in a fixed order at run time: the configured (
 
 Manage Grimoire explicit memory (lore) directly.
 
-Maintains the legacy operator-owned key/value MageSettings store. Lore is distinct from Lexicon entities, Saga memories, session entries, and attachments. `lore list` follows every advancing server offset with no client-owned total-page ceiling; a non-advancing or overflowing continuation fails explicitly instead of looping or silently returning a prefix.
+Maintains the legacy operator-owned key/value MageSettings store. Keys are trimmed and must contain 1–256 characters; keys such as `team/standards`, `.` and `..` remain valid. Get and delete address the key through `/api/lore/entries/by-key?key=`, preserving URI punctuation as key data. Lore is distinct from Lexicon entities, Saga memories, session entries, and attachments. `lore list` follows every advancing server offset with no client-owned total-page ceiling; a non-advancing or overflowing continuation fails explicitly instead of looping or silently returning a prefix.
 
 | Command | Explanation | Additional command options |
 |---|---|---|
