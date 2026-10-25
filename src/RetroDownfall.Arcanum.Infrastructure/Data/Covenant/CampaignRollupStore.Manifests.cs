@@ -205,6 +205,13 @@ internal sealed partial class CampaignRollupStore
             hash.Digest(entry.ContentDigest);
 
             hash.Digest(entry.SensitivityDigest);
+
+            if (entry.OriginalContentDigest is { } original)
+            {
+                hash.Digest(original);
+
+                hash.Number(entry.OmittedContentBytes!.Value);
+            }
         }
 
         return hash.Finish();
@@ -310,6 +317,10 @@ internal sealed partial class CampaignRollupStore
         {
             if (entry.Content is null || entry.Sequence <= after || entry.Role is not (1 or 2)
                 || DerivedArtifactContentDigest.ForText(entry.Content) != entry.ContentDigest
+                || (entry.OriginalContentDigest is null) != (entry.OmittedContentBytes is null)
+                || entry.OriginalContentDigest is { } original && (!original.IsValid
+                    || entry.OmittedContentBytes <= CampaignRollupLimits.InputPageUtf8Bytes - bytes
+                    || entry.Content != FormattableString.Invariant($"[omitted: {entry.OmittedContentBytes} bytes]"))
                 || CovenantDigests.Sensitivity(entry.Provenance.ToDigestInput(entry.Sensitivity)) != entry.SensitivityDigest)
             {
                 throw Refuse(Stale("A prepared contribution Entry carries substituted bytes or sensitivity evidence."));

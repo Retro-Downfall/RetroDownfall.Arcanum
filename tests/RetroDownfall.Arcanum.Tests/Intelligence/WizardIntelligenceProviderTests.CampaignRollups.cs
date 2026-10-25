@@ -22,6 +22,113 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed partial class WizardIntelligenceProviderTests
 {
     [Theory]
+    [InlineData("read")]
+    [InlineData("validation")]
+    [InlineData("configuration")]
+    public async Task Deferred_maintenance_never_permits_a_stale_artifact_or_configuration_fallback(string failure)
+    {
+        CampaignWizardHarness harness = CreateCampaignWizardHarness();
+
+        harness.Maintenance.SessionResult = await CampaignRollupMaintenanceTests.OperationalFailureAsync("invalid", false);
+
+        Error stale = new(ErrorCodes.Covenant.StaleSnapshot, "Current continuity is stale.");
+
+        if (failure == "read")
+        {
+            harness.Store.ReadError = stale;
+        }
+        else if (failure == "validation")
+        {
+            harness.Store.Validation = stale;
+        }
+        else
+        {
+            harness.Maintenance.OnSession = () => harness.Settings.Providers[0].ContextWindowLimit++;
+        }
+
+        Result<PromptTurnResult> result = await harness.Wizard.ExecutePromptAsync(harness.Request, CampaignInvocation(), CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Equal(0, harness.Chat.BufferedCallCount + harness.Chat.StreamingCallCount);
+
+        Assert.All(harness.Claims.Commits, commit => Assert.Equal(AssistantFinalizationOutcome.Discarded, commit.Outcome));
+    }
+
+    [Theory]
+    [InlineData(false, false, false, "invalid")]
+    [InlineData(false, true, true, "invalid")]
+    [InlineData(true, false, true, "invalid")]
+    [InlineData(true, true, false, "invalid")]
+    [InlineData(false, false, true, "provider")]
+    [InlineData(false, true, false, "provider")]
+    [InlineData(true, false, false, "provider")]
+    [InlineData(true, true, true, "provider")]
+    public async Task Operational_rollup_failure_still_dispatches_and_commits_the_main_turn_once(bool streaming, bool campaignStage, bool noArtifact, string failure)
+    {
+        CampaignWizardHarness harness = CreateCampaignWizardHarness();
+
+        Result<CampaignRollupMaintenanceResult> maintenance = await CampaignRollupMaintenanceTests.OperationalFailureAsync(failure, campaignStage);
+
+        harness.Maintenance.SessionResult = campaignStage ? null : maintenance;
+
+        harness.Maintenance.CampaignResult = campaignStage ? maintenance : null;
+
+        if (noArtifact)
+        {
+            harness.Store.Current = null;
+        }
+
+        harness.Chat.EnqueueText("continued");
+
+        harness.Chat.EnqueueStreamTokens("continued");
+
+        try
+        {
+            TurnIdempotencyAmbient.PublishIdentity(new string('c', 64), new string('d', 64));
+
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                if (streaming)
+                {
+                    List<IntelligenceEvent> events = [];
+
+                    await foreach (IntelligenceEvent frame in harness.Wizard.StreamPromptAsync(harness.Request, CampaignInvocation(), CancellationToken.None))
+                    {
+                        events.Add(frame);
+                    }
+
+                    Assert.DoesNotContain(events, frame => frame.Type is IntelligenceEventType.Error);
+
+                    Assert.Contains(events, frame => frame.Type is IntelligenceEventType.Result);
+                }
+                else
+                {
+                    Result<PromptTurnResult> result = await harness.Wizard.ExecutePromptAsync(harness.Request, CampaignInvocation(), CancellationToken.None);
+
+                    Assert.True(result.IsSuccess, result.Error.Message);
+                }
+            }
+        }
+        finally
+        {
+            TurnIdempotencyAmbient.Clear();
+        }
+
+        Assert.Equal(1, harness.Chat.BufferedCallCount + harness.Chat.StreamingCallCount);
+
+        Assert.Equal(1, harness.Maintenance.CampaignCalls);
+
+        Assert.Equal(SessionTurnClaimState.Committed, Assert.Single(harness.Claims.Outcomes).State);
+
+        IReadOnlyList<ChatMessage> sent = Assert.Single(streaming ? harness.Chat.AllStreamingCalls : harness.Chat.AllBufferedCalls);
+
+        Assert.Equal(!noArtifact, sent.Any(message => message.Text?.Contains("Project convention from Session A: use SQLite.", StringComparison.Ordinal) is true));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Short_Session_B_dispatches_Campaign_decisions_without_loading_Session_A_history(bool streaming)
@@ -208,7 +315,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Result<PromptTurnResult> result = await harness.Wizard.ExecutePromptAsync(harness.Request with
         {
-            ResponseFormat = "json_schema", ResponseFormatJsonSchema = schema,
+            ResponseFormat = "json_schema",
+            ResponseFormatJsonSchema = schema,
         }, CampaignInvocation(), CancellationToken.None);
 
         Assert.Equal(!invalidate, result.IsSuccess);
@@ -276,7 +384,8 @@ public sealed partial class WizardIntelligenceProviderTests
 
         Result<PromptTurnResult> result = await harness.Wizard.ExecutePromptAsync(harness.Request with
         {
-            ResponseFormat = "json_schema", ResponseFormatJsonSchema = schema,
+            ResponseFormat = "json_schema",
+            ResponseFormatJsonSchema = schema,
         }, CampaignInvocation(), CancellationToken.None);
 
         Assert.True(result.IsFailure);
@@ -516,6 +625,10 @@ public sealed partial class WizardIntelligenceProviderTests
     {
         public Action? OnSession { get; set; }
 
+        public Result<CampaignRollupMaintenanceResult>? SessionResult { get; set; }
+
+        public Result<CampaignRollupMaintenanceResult>? CampaignResult { get; set; }
+
         public int SessionCalls { get; private set; }
 
         public int CampaignCalls { get; private set; }
@@ -528,14 +641,14 @@ public sealed partial class WizardIntelligenceProviderTests
 
             OnSession?.Invoke();
 
-            return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(0, false, null)));
+            return Task.FromResult(SessionResult ?? Result<CampaignRollupMaintenanceResult>.Success(new(0, false, null)));
         }
 
         public Task<Result<CampaignRollupMaintenanceResult>> ProcessCampaignAsync(Guid campaignId, CampaignRollupMaintenanceCapability? capability, CancellationToken cancellationToken)
         {
             CampaignCalls++;
 
-            return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(0, false, null)));
+            return Task.FromResult(CampaignResult ?? Result<CampaignRollupMaintenanceResult>.Success(new(0, false, null)));
         }
     }
 

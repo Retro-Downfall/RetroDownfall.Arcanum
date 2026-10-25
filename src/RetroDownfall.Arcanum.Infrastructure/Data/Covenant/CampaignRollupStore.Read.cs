@@ -57,13 +57,10 @@ internal sealed partial class CampaignRollupStore
 
         foreach (EntryMetadata metadata in page.Take(MetadataPageSize))
         {
-            if (metadata.ContentBytes > available)
-            {
-                if (entries.Count == 0)
-                {
-                    throw Refuse(new Error("campaign_rollup.input_too_large", "A native Entry exceeds the bounded Campaign contribution page."));
-                }
+            bool omitted = metadata.ContentBytes > available;
 
+            if (omitted && entries.Count > 0)
+            {
                 hasMore = true;
 
                 break;
@@ -91,19 +88,27 @@ internal sealed partial class CampaignRollupStore
 
             await RevalidateAsync(authority, campaignId, sensitivity, ct).ConfigureAwait(false);
 
-            string content = await ReadTextAsync(connection, transaction, "Entries", "Id", metadata.EntryId, metadata.ContentBytes, ct).ConfigureAwait(false);
+            // Hash original bytes in bounded chunks, only after exact owner/label/authority checks.
+            CovenantDigest? originalDigest = omitted
+                ? await DerivedArtifactContentDigest.ForChunksAsync(ReadEntryChunksAsync(connection, transaction, metadata, ct), ct).ConfigureAwait(false)
+                : null;
+
+            string content = omitted
+                ? FormattableString.Invariant($"[omitted: {metadata.ContentBytes} bytes]")
+                : await ReadTextAsync(connection, transaction, "Entries", "Id", metadata.EntryId, metadata.ContentBytes, ct).ConfigureAwait(false);
 
             CovenantDigest contentDigest = DerivedArtifactContentDigest.ForText(content);
 
-            if (label is not null && label.ArtifactContentDigest != contentDigest)
+            if (label is not null && label.ArtifactContentDigest != (originalDigest ?? contentDigest))
             {
                 throw Refuse(new Error(ErrorCodes.Covenant.IntegrityFailure, "An Entry's protected bytes do not match its exact label."));
             }
 
             entries.Add(new CampaignContributionEntry(metadata.EntryId, metadata.Sequence, metadata.Role, content,
-                metadata.CreatedAtUtc, contentDigest, sensitivityDigest, sensitivity, provenance));
+                metadata.CreatedAtUtc, contentDigest, sensitivityDigest, sensitivity, provenance, originalDigest,
+                omitted ? metadata.ContentBytes : null));
 
-            available -= metadata.ContentBytes;
+            available -= Encoding.UTF8.GetByteCount(content);
 
             through = metadata.Sequence;
         }
@@ -535,6 +540,29 @@ internal sealed partial class CampaignRollupStore
             ("$session", Format(sessionId)));
 
         return Convert.ToInt64(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    private static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadEntryChunksAsync(SqliteConnection connection,
+        SqliteTransaction transaction, EntryMetadata metadata,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        const int chunkBytes = 8192;
+
+        for (long offset = 0; offset < metadata.ContentBytes; offset += chunkBytes)
+        {
+            await using SqliteCommand command = Command(connection, transaction,
+                "SELECT substr(CAST(Content AS BLOB), $offset, $count) FROM Entries WHERE Id = $id AND length(CAST(Content AS BLOB)) = $bytes;",
+                ("$offset", offset + 1), ("$count", chunkBytes), ("$id", Format(metadata.EntryId)), ("$bytes", metadata.ContentBytes));
+
+            object? value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+
+            if (value is not byte[] chunk || chunk.Length != Math.Min(chunkBytes, metadata.ContentBytes - offset))
+            {
+                throw Refuse(Stale("The omitted source changed before its exact digest read."));
+            }
+
+            yield return chunk;
+        }
     }
 
     private static async Task<string> ReadTextAsync(SqliteConnection connection, SqliteTransaction transaction,

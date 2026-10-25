@@ -138,10 +138,27 @@ internal sealed class Loremaster(
             {
                 ICampaignRollupStore rollups = scope.ServiceProvider.GetRequiredService<ICampaignRollupStore>();
 
-                IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
-                    new DateTimeOffset(idleCutoff, TimeSpan.Zero), 256, cancellationToken).ConfigureAwait(false);
+                Guid? afterSessionId = null;
 
-                ids.AddRange(contributionIds);
+                while (true)
+                {
+                    IReadOnlyList<Guid> contributionIds = await rollups.FindPendingContributionsAsync(
+                        new DateTimeOffset(idleCutoff, TimeSpan.Zero), 128, cancellationToken, afterSessionId).ConfigureAwait(false);
+
+                    if (contributionIds.Count == 0)
+                    {
+                        break;
+                    }
+
+                    foreach (Guid id in contributionIds)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        _ = queue.TryQueue(id);
+                    }
+
+                    afterSessionId = contributionIds[^1];
+                }
             }
 
             hostLogger.LogInformation(
@@ -266,22 +283,29 @@ internal sealed class Loremaster(
                     Result<CampaignRollupMaintenanceResult> contribution = await maintenance.ProcessSessionAsync(
                         sessionId, null, null, stoppingToken).ConfigureAwait(false);
 
-                    if (contribution.IsFailure || contribution.Value.Deferred)
+                    if (contribution.IsFailure)
                     {
-                        hostLogger.LogDebug("Campaign Logger: Contribution maintenance remains pending for Session {SessionId}.", sessionId);
+                        hostLogger.LogWarning("Campaign Logger: Contribution maintenance failed for Campaign {CampaignId}, Session {SessionId} ({Code}).",
+                            campaignId, sessionId, contribution.Error.Code);
 
-                        // Background work has no Covenant authority. In particular it must not fall
-                        // through into the ordinary Summary/Entry lane after protected deferral.
                         return LoremasterSessionDisposition.Concluded;
                     }
 
                     Result<CampaignRollupMaintenanceResult> folded = await maintenance.ProcessCampaignAsync(
                         campaignId, null, stoppingToken).ConfigureAwait(false);
 
-                    if (folded.IsFailure || folded.Value.Deferred)
+                    if (folded.IsFailure)
                     {
-                        hostLogger.LogDebug("Campaign Logger: Campaign continuity remains pending for Campaign {CampaignId}.", campaignId);
+                        hostLogger.LogWarning("Campaign Logger: Campaign continuity failed for Campaign {CampaignId} ({Code}).", campaignId, folded.Error.Code);
 
+                        return LoremasterSessionDisposition.Concluded;
+                    }
+
+                    if (contribution.Value.Deferred || folded.Value.Deferred)
+                    {
+                        hostLogger.LogDebug("Campaign Logger: Summary maintenance remains pending for Campaign {CampaignId}, Session {SessionId}.", campaignId, sessionId);
+
+                        // A deferred source must never fall through into ordinary Summary/Entry reads.
                         return LoremasterSessionDisposition.Concluded;
                     }
                 }

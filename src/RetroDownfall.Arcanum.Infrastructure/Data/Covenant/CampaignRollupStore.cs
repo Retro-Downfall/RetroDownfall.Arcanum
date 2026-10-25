@@ -216,15 +216,15 @@ internal sealed partial class CampaignRollupStore(
         }, cancellationToken);
 
     public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc,
-        int pageSize, CancellationToken cancellationToken) =>
-        FindPendingContributionsWithinAsync(null, idleCutoffUtc, pageSize, cancellationToken);
+        int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) =>
+        FindPendingContributionsWithinAsync(null, idleCutoffUtc, pageSize, cancellationToken, afterSessionId);
 
     public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId,
-        DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) =>
-        FindPendingContributionsWithinAsync(campaignId, idleCutoffUtc, pageSize, cancellationToken);
+        DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) =>
+        FindPendingContributionsWithinAsync(campaignId, idleCutoffUtc, pageSize, cancellationToken, afterSessionId);
 
     private async Task<IReadOnlyList<Guid>> FindPendingContributionsWithinAsync(Guid? campaignId,
-        DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken)
+        DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null)
     {
         SqliteConnection connection = await connections.GetOpenCoreConnectionAsync(cancellationToken).ConfigureAwait(false);
 
@@ -241,6 +241,7 @@ internal sealed partial class CampaignRollupStore(
             LEFT JOIN campaign_fork_frontiers f ON f.SessionId = s.Id
             WHERE s.UpdatedAt <= $cutoff
                 AND ($campaign IS NULL OR b.CampaignId = $campaign)
+                AND ($after IS NULL OR s.Id > $after)
                 AND (s.ForkedFromSessionId IS NULL OR f.SessionId IS NOT NULL)
                 AND (f.SessionId IS NOT NULL OR NOT ({UnprovenImportedHistorySql(hasTransferIntents, "s.Id")}))
                 AND NOT EXISTS (SELECT 1 FROM session_turn_claims claim WHERE claim.SessionId = s.Id AND claim.StateCode IN (1, 2))
@@ -255,6 +256,8 @@ internal sealed partial class CampaignRollupStore(
         _ = command.Parameters.AddWithValue("$campaign", campaignId is { } campaign ? Format(campaign) : DBNull.Value);
 
         _ = command.Parameters.AddWithValue("$cutoff", UtcInstantText.Format(idleCutoffUtc));
+
+        _ = command.Parameters.AddWithValue("$after", afterSessionId is { } after ? Format(after) : DBNull.Value);
 
         _ = command.Parameters.AddWithValue("$limit", Math.Clamp(pageSize, 1, MetadataPageSize));
 

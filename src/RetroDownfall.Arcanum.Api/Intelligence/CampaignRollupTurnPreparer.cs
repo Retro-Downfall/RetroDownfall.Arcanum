@@ -650,6 +650,8 @@ public sealed class CampaignRollupTurnPreparer(
                     return beforeRead.Error;
                 }
 
+                // Operational maintenance deferrals still reach this fresh, validating read.
+                // Never substitute an older artifact when the current source or authority is invalid.
                 Result<CampaignRollupArtifact?> current = await store.ReadCurrentAsync(campaign.CampaignId.Value, authority, cancellationToken).ConfigureAwait(false);
 
                 if (current.IsFailure)

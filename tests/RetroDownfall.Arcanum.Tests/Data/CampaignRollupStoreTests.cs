@@ -223,22 +223,156 @@ public sealed class CampaignRollupStoreTests
         Assert.Equal(2, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
     }
 
-    [Fact]
-    public async Task An_oversized_entry_fails_before_materialization_and_does_not_pay_a_cursor()
+    [Theory]
+    [InlineData(false, 32768)]
+    [InlineData(false, 32769)]
+    [InlineData(true, 24576)]
+    [InlineData(true, 24577)]
+    public async Task Oversized_native_entries_use_bounded_omission_and_only_successful_publication_pays_progress(bool previous, int bytes)
     {
         await using StoreFixture fixture = await StoreFixture.CreateAsync();
 
-        await fixture.ExecuteAsync("UPDATE Entries SET Content = hex(zeroblob(17000)) WHERE Sequence = 1;");
+        if (previous)
+        {
+            CampaignContributionInput initial = (await fixture.Store.PrepareContributionAsync(SessionA, 1, null, CancellationToken.None)).Value!;
 
-        Result<CampaignContributionInput?> result = await fixture.Store.PrepareContributionAsync(SessionA, null, null, CancellationToken.None);
+            Assert.True((await fixture.Store.PublishContributionAsync(initial, string.Join(" ", Enumerable.Repeat("a", 4096)) + ".", null, null, CancellationToken.None)).IsSuccess);
+        }
 
-        Assert.True(result.IsFailure);
+        long sequence = previous ? 2 : 1;
 
-        Assert.Equal("campaign_rollup.input_too_large", result.Error.Code);
+        await fixture.ExecuteAsync($"UPDATE Entries SET Content = '{new string('z', bytes)}' WHERE Sequence = {sequence};");
+
+        CampaignContributionInput input = await fixture.PrepareAsync();
+
+        string content = input.Entries[0].Content;
+
+        Assert.Equal(bytes > (previous ? 24576 : 32768) ? $"[omitted: {bytes} bytes]" : new string('z', bytes), content);
+
+        Assert.Equal(previous ? 1 : 0, await fixture.CountAsync("SELECT SummarizedThroughSequence FROM campaign_contribution_state;"));
+
+        Assert.True((await fixture.Store.PublishContributionAsync(input, "bounded output", null, null, CancellationToken.None)).IsSuccess);
+
+        Assert.Equal(input.SummarizedThroughSequence, await fixture.CountAsync("SELECT SummarizedThroughSequence FROM campaign_contribution_state;"));
+
+        Result<CampaignContributionInput?> next = await fixture.Store.PrepareContributionAsync(SessionA, null, null, CancellationToken.None);
+
+        if (next.Value is { } tail)
+        {
+            Assert.True(tail.Entries[0].Sequence > input.SummarizedThroughSequence);
+
+            Assert.True((await fixture.Store.PublishContributionAsync(tail, "later output", null, null, CancellationToken.None)).IsSuccess);
+        }
+
+        Assert.Null((await fixture.Store.PrepareContributionAsync(SessionA, null, null, CancellationToken.None)).Value);
+    }
+
+    [Theory]
+    [InlineData("body")]
+    [InlineData("marker")]
+    [InlineData("digest")]
+    [InlineData("delete")]
+    public async Task Omitted_source_substitution_cannot_pay_a_cursor(string substitution)
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        string source = string.Concat(Enumerable.Repeat("😀", 8193));
+
+        await fixture.ExecuteAsync($"UPDATE Entries SET Content = '{source}' WHERE Sequence = 1;");
+
+        CampaignContributionInput input = await fixture.PrepareAsync();
+
+        Assert.Equal("[omitted: 32772 bytes]", input.Entries[0].Content);
+
+        Assert.Equal(DerivedArtifactContentDigest.ForText(source), input.Entries[0].OriginalContentDigest);
+
+        if (substitution == "body")
+        {
+            await fixture.ExecuteAsync($"UPDATE Entries SET Content = '{string.Concat(Enumerable.Repeat("😁", 8193))}' WHERE Sequence = 1;");
+        }
+        else if (substitution == "delete")
+        {
+            await fixture.ExecuteAsync("DELETE FROM Entries WHERE Sequence = 1;");
+        }
+        else
+        {
+            CampaignContributionEntry entry = input.Entries[0];
+
+            entry = substitution == "marker"
+                ? entry with { Content = "substitute", ContentDigest = DerivedArtifactContentDigest.ForText("substitute") }
+                : entry with { OriginalContentDigest = DerivedArtifactContentDigest.ForText("substitute") };
+
+            input = input with { Entries = input.Entries.SetItem(0, entry) };
+        }
+
+        Assert.True((await fixture.Store.PublishContributionAsync(input, "unpaid", null, null, CancellationToken.None)).IsFailure);
 
         Assert.Equal(0, await fixture.CountAsync("SELECT SummarizedThroughSequence FROM campaign_contribution_state;"));
 
         Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_contribution_artifacts;"));
+    }
+
+    [Fact]
+    public async Task Oversized_protected_sources_preserve_original_label_authority_and_provenance()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        string source = new('z', 34000);
+
+        await fixture.ExecuteAsync($"UPDATE Entries SET Content = '{source}' WHERE Sequence = 1;");
+
+        Guid generation = await fixture.MarkEntryProtectedAsync(source);
+
+        Result<CampaignContributionInput?> denied = await fixture.Store.PrepareContributionAsync(SessionA, null, null, CancellationToken.None);
+
+        Assert.True(denied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, denied.Error.Code);
+
+        await using TestReadLease authority = new(Campaign);
+
+        CampaignContributionInput input = (await fixture.Store.PrepareContributionAsync(SessionA, null, authority, CancellationToken.None)).Value!;
+
+        Assert.Equal("[omitted: 34000 bytes]", input.Entries[0].Content);
+
+        Assert.Equal(DerivedArtifactContentDigest.ForText(source), input.Entries[0].OriginalContentDigest);
+
+        Assert.Equal(ContentSensitivity.CovenantDerived, input.Sensitivity);
+
+        Assert.Contains(generation, input.Provenance.ExactGenerationIds);
+
+        await fixture.ExecuteAsync($"UPDATE Entries SET Content = '{new string('y', 34000)}' WHERE Sequence = 1;");
+
+        Result<CampaignContributionInput?> staleLabel = await fixture.Store.PrepareContributionAsync(SessionA, null, authority, CancellationToken.None);
+
+        Assert.True(staleLabel.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, staleLabel.Error.Code);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT SummarizedThroughSequence FROM campaign_contribution_state;"));
+    }
+
+    [Fact]
+    public async Task Pending_keyset_can_reach_a_healthy_session_beyond_a_full_pending_page()
+    {
+        await using StoreFixture fixture = await StoreFixture.CreateAsync();
+
+        for (int index = 1; index <= 129; index++)
+        {
+            await fixture.AddSessionAsync(Guid.Parse($"{index:x8}-0000-4000-8000-000000000000"), "pending");
+        }
+
+        IReadOnlyList<Guid> first = await fixture.Store.FindPendingContributionsForCampaignAsync(Campaign, DateTimeOffset.MaxValue, 128, CancellationToken.None);
+
+        IReadOnlyList<Guid> second = await fixture.Store.FindPendingContributionsForCampaignAsync(Campaign, DateTimeOffset.MaxValue, 128, CancellationToken.None, first[^1]);
+
+        Assert.Equal(128, first.Count);
+
+        Assert.Equal(2, second.Count);
+
+        Assert.Empty(first.Intersect(second));
+
+        Assert.Contains(Guid.Parse("00000081-0000-4000-8000-000000000000"), second);
     }
 
     [Fact]
@@ -492,14 +626,14 @@ public sealed class CampaignRollupStoreTests
             INSERT INTO Entries(Id,SessionId,Role,Content,ModelUsed,CreatedAt,Sequence) VALUES('{Guid.NewGuid().ToString().ToUpperInvariant()}','{sessionId.ToString().ToUpperInvariant()}',1,'{content.Replace("'", "''", StringComparison.Ordinal)}','','2026-10-01T00:00:00.0000000Z',1);
             """);
 
-        internal async Task<Guid> MarkEntryProtectedAsync()
+        internal async Task<Guid> MarkEntryProtectedAsync(string content = "Choose SQLite")
         {
             Guid generation = Guid.NewGuid();
 
             Result<LabeledArtifactWriteReceipt> result = await new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(Connection))
                 .LabelAsync(new DerivedArtifactWrite(SensitiveArtifactKind.AssistantEntry,
                     Guid.Parse("20601337-085E-4095-9BC0-9D34B70B48E8"), SessionA, Campaign, null, 0,
-                    DerivedArtifactContentDigest.ForText("Choose SQLite"), ContentSensitivity.CovenantDerived,
+                    DerivedArtifactContentDigest.ForText(content), ContentSensitivity.CovenantDerived,
                     GenerationProvenance.CreateExact([generation])), CancellationToken.None);
 
             Assert.True(result.IsSuccess, result.Error.Message);

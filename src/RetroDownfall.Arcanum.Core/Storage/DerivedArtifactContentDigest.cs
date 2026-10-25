@@ -18,7 +18,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 /// </remarks>
 public static class DerivedArtifactContentDigest
 {
-
     private static readonly byte[] DomainLabel =
         Encoding.UTF8.GetBytes("Arcanum.DerivedArtifact.Content.v1\0");
 
@@ -29,9 +28,26 @@ public static class DerivedArtifactContentDigest
     /// <summary>Digests one derived artifact's exact bytes.</summary>
     public static CovenantDigest ForBytes(ReadOnlySpan<byte> content) => ForBytes(content, present: true);
 
+    /// <summary>Digests present bytes incrementally without materializing the entire source.</summary>
+    public static async Task<CovenantDigest> ForChunksAsync(IAsyncEnumerable<ReadOnlyMemory<byte>> chunks,
+        CancellationToken cancellationToken)
+    {
+        using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        hash.AppendData(DomainLabel);
+
+        hash.AppendData([1]);
+
+        await foreach (ReadOnlyMemory<byte> chunk in chunks.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            hash.AppendData(chunk.Span);
+        }
+
+        return new CovenantDigest(hash.GetHashAndReset());
+    }
+
     private static CovenantDigest ForBytes(ReadOnlySpan<byte> content, bool present)
     {
-
         using IncrementalHash hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
         hash.AppendData(DomainLabel);
@@ -44,7 +60,5 @@ public static class DerivedArtifactContentDigest
         hash.AppendData(content);
 
         return new CovenantDigest(hash.GetHashAndReset());
-
     }
-
 }

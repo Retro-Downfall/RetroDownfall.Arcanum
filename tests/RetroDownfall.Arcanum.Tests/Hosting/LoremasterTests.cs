@@ -89,9 +89,26 @@ public sealed class LoremasterTests
 
         await harness.Service.RunSweepAsync(100, CancellationToken.None);
 
-        Assert.Equal(1, harness.CampaignMaintenance.DiscoveryCalls);
+        Assert.Equal(2, harness.CampaignMaintenance.DiscoveryCalls);
 
         Assert.Equal(1, harness.Queue.PendingCountForTesting);
+    }
+
+    [Fact]
+    public async Task Pending_discovery_traverses_past_a_full_page_without_expanding_the_queue()
+    {
+        LoremasterHarness harness = new();
+
+        harness.Settings.Features.CampaignRollups = true;
+
+        harness.CampaignMaintenance.Pending = Enumerable.Range(1, 129)
+            .Select(index => Guid.Parse($"{index:x8}-0000-4000-8000-000000000000")).ToArray();
+
+        await harness.Service.RunSweepAsync(100, CancellationToken.None);
+
+        Assert.Equal(100, harness.Queue.PendingCountForTesting);
+
+        Assert.Equal(3, harness.CampaignMaintenance.DiscoveryCalls);
     }
 
     [Fact]
@@ -123,7 +140,7 @@ public sealed class LoremasterTests
 
         Assert.Equal(0, harness.Intelligence.Calls);
 
-        Assert.Equal(0, harness.CampaignMaintenance.CampaignCalls);
+        Assert.Equal(1, harness.CampaignMaintenance.CampaignCalls);
     }
 
     [Fact]
@@ -233,14 +250,14 @@ public sealed class LoremasterTests
             return Task.FromResult(Result<CampaignRollupMaintenanceResult>.Success(new(FoldDeferred ? 0 : 1, FoldDeferred, FoldDeferred ? "Protected" : null)));
         }
 
-        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken)
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsAsync(DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null)
         {
             DiscoveryCalls++;
 
-            return Task.FromResult(Pending);
+            return Task.FromResult<IReadOnlyList<Guid>>(Pending.Where(id => afterSessionId is null || string.CompareOrdinal(id.ToString(), afterSessionId.Value.ToString()) > 0).Take(Math.Min(pageSize, 128)).ToArray());
         }
 
-        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<Guid>> FindPendingContributionsForCampaignAsync(Guid campaignId, DateTimeOffset idleCutoffUtc, int pageSize, CancellationToken cancellationToken, Guid? afterSessionId = null) => throw new NotSupportedException();
 
         public Task<Result<CampaignRollupArtifact?>> ReadCurrentAsync(Guid campaignId, ICovenantSnapshotReadLease? authority, CancellationToken cancellationToken) => throw new NotSupportedException();
 
