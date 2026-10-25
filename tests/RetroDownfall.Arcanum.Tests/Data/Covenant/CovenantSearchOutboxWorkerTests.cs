@@ -12,6 +12,96 @@ public sealed class CovenantSearchOutboxWorkerTests
 {
     private static CancellationToken Token => CancellationToken.None;
 
+    [Theory]
+    [InlineData(600)]
+    [InlineData(65536)]
+    public async Task An_oversized_first_sequence_is_applied_whole(int rows)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        await SeedDeletionSequenceAsync(fixture, rows);
+
+        await ExecuteAsync(fixture, """
+            UPDATE covenant_state SET CanonicalSearchSequence = 2 WHERE StateKey = 1;
+            INSERT INTO covenant_search_outbox (SearchSequence, Ordinal, SearchRowId, EntryId, LaneCode, DesiredVersionId)
+            VALUES (2, 0, 70000, '00000000-0000-4000-8000-000000000002', 1, NULL);
+            """);
+
+        CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.False(outcome.RebuildRequired);
+
+        Assert.Equal(rows, outcome.RowsConsumed);
+
+        Assert.Equal(1, outcome.AppliedSearchSequence);
+
+        Assert.Equal(1, await Count(fixture, "covenant_search_outbox"));
+
+        CovenantOutboxSyncOutcome later = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.Equal(1, later.RowsConsumed);
+
+        Assert.Equal(2, later.AppliedSearchSequence);
+
+        Assert.Equal(0, await Count(fixture, "covenant_search_outbox"));
+    }
+
+    [Fact]
+    public async Task A_sequence_beyond_the_pending_ceiling_never_publishes_a_partial_tuple()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        await SeedDeletionSequenceAsync(fixture, 65537);
+
+        CovenantOutboxSyncOutcome outcome = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        Assert.True(outcome.RebuildRequired);
+
+        Assert.Equal(0, outcome.RowsConsumed);
+
+        Assert.Equal(0, await Scalar(fixture, "SELECT AppliedSearchSequence FROM covenant_state;"));
+
+        Assert.Equal(65537, await Count(fixture, "covenant_search_outbox"));
+    }
+
+    [Fact]
+    public async Task Rolling_back_an_oversized_sequence_preserves_the_applied_tuple_and_every_delta()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        _ = await CovenantSearchFixture.SynchronizeAsync(fixture, Token);
+
+        await SeedDeletionSequenceAsync(fixture, 600);
+
+        var gate = CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token));
+
+        await using CovenantAcceleratorLease lease = (await gate.AcquireAcceleratorAsync(Token)).Value;
+
+        Result<CovenantOutboxSyncOutcome> outcome = await CovenantCapacityFixture.InTransactionAsync(
+            fixture, transaction => new CovenantSearchOutboxWorker().SynchronizeAsync(lease, transaction, Token, 512).AsTask(),
+            Token, commit: false);
+
+        Assert.True(outcome.IsSuccess);
+
+        Assert.Equal(600, outcome.Value.RowsConsumed);
+
+        Assert.Equal(0, await Scalar(fixture, "SELECT AppliedSearchSequence FROM covenant_state;"));
+
+        Assert.Equal(600, await Count(fixture, "covenant_search_outbox"));
+    }
+
+    private static Task SeedDeletionSequenceAsync(CovenantCanonicalFixture fixture, int rows) =>
+        ExecuteAsync(fixture, $"""
+            UPDATE covenant_state SET CanonicalSearchSequence = 1 WHERE StateKey = 1;
+            WITH RECURSIVE ordinals(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM ordinals WHERE n < {rows})
+            INSERT INTO covenant_search_outbox (SearchSequence, Ordinal, SearchRowId, EntryId, LaneCode, DesiredVersionId)
+            SELECT 1, n - 1, n, '00000000-0000-4000-8000-000000000001', 1, NULL FROM ordinals;
+            """);
+
     [Fact]
     public async Task An_empty_outbox_adopts_the_current_dataset_without_projecting_anything()
     {

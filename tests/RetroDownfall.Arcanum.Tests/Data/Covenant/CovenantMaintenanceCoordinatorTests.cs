@@ -1,4 +1,6 @@
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
+using RetroDownfall.Arcanum.Tests.Intelligence;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -26,18 +28,153 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 public sealed class CovenantMaintenanceCoordinatorTests
 {
-
     private static CancellationToken Token => CancellationToken.None;
+
+    [SkippableFact]
+    public async Task Empty_cleanup_preserves_a_live_delegation_grant()
+    {
+        await using CovenantCanonicalFixture fixture = await CleanupFixtureAsync();
+
+        await using var delegation = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using MemoryDelegationRoot root = await delegation.PrepareAsync();
+
+        CovenantOwnerCleanupCoordinator coordinator = new(
+            CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantCleanupWorker(),
+            DetachedAvailabilityRepublisher.Create(),
+            delegation.Coordinator);
+
+        Result<CovenantCleanupOutcome> outcome = await coordinator.RunBatchAsync(64, Token);
+
+        Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : null);
+
+        Assert.False(root.Revocation.IsCancellationRequested);
+
+        Result<MemoryDelegationChild> consumed = await delegation.Coordinator.ConsumeAsync(
+            root, delegation.RootId, Guid.NewGuid(), delegation.Digest);
+
+        Assert.True(consumed.IsSuccess, consumed.IsFailure ? consumed.Error.Message : null);
+
+        await using MemoryDelegationChild child = consumed.Value;
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Pending_cleanup_or_full_sweep_debt_still_drains_delegated_effects_before_the_transaction(bool fullSweep)
+    {
+        await using CovenantCanonicalFixture fixture = await CleanupFixtureAsync();
+
+        await using var delegation = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using MemoryDelegationRoot root = await delegation.PrepareAsync();
+
+        await using MemoryDelegationChild child = (await delegation.Coordinator.ConsumeAsync(
+            root, delegation.RootId, Guid.NewGuid(), delegation.Digest)).Value;
+
+        await using MemoryDelegationEffect effect = (await delegation.Coordinator.AdmitEffectAsync(root)).Value;
+
+        if (fullSweep)
+        {
+            await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+            command.CommandText = "UPDATE capability_cleanup_state SET FullSweepRequired = 1 WHERE CapabilityFamilyCode = 1;";
+
+            _ = await command.ExecuteNonQueryAsync(Token);
+        }
+        else
+        {
+            Guid campaign = CovenantOperationGateFixture.CampaignOne;
+
+            await fixture.AddCampaignAsync(campaign, "deleted", Token);
+
+            await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+            command.CommandText = "DELETE FROM Campaigns;";
+
+            _ = await command.ExecuteNonQueryAsync(Token);
+        }
+
+        CovenantOwnerCleanupCoordinator coordinator = new(
+            CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantCleanupWorker(),
+            DetachedAvailabilityRepublisher.Create(),
+            delegation.Coordinator);
+
+        TaskCompletionSource revoked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using CancellationTokenRegistration registration = root.Revocation.Register(() => revoked.TrySetResult());
+
+        Task<Result<CovenantCleanupOutcome>> pass = coordinator.RunBatchAsync(64, Token).AsTask();
+
+        try
+        {
+            await revoked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.False(pass.IsCompleted);
+
+            // The scope connection has no transaction while delegated physical effects drain.
+            await using SqliteTransaction transaction = fixture.Connection.BeginTransaction();
+
+            await transaction.RollbackAsync(Token);
+
+            Assert.Equal(0, await CovenantCapacityFixture.ScalarAsync(fixture,
+                "SELECT AppliedCampaignSequence FROM capability_cleanup_state WHERE CapabilityFamilyCode = 1;", Token));
+        }
+        finally
+        {
+            await effect.DisposeAsync();
+        }
+
+        Result<CovenantCleanupOutcome> outcome = await pass.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(outcome.IsSuccess, outcome.IsFailure ? outcome.Error.Message : null);
+
+        Assert.Equal(fullSweep ? 0 : 1, outcome.Value.CampaignsCleaned);
+    }
+
+    [SkippableFact]
+    public async Task A_missing_cleanup_cursor_fails_closed_without_revoking_a_live_grant()
+    {
+        await using CovenantCanonicalFixture fixture = await CleanupFixtureAsync();
+
+        await using var delegation = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using MemoryDelegationRoot root = await delegation.PrepareAsync();
+
+        await using (SqliteCommand command = fixture.Connection.CreateCommand())
+        {
+            command.CommandText = "DELETE FROM capability_cleanup_state WHERE CapabilityFamilyCode = 1;";
+
+            _ = await command.ExecuteNonQueryAsync(Token);
+        }
+
+        CovenantOwnerCleanupCoordinator coordinator = new(
+            CovenantOperationGateFixture.CreateGate(await CovenantSearchFixture.LiveAvailabilityAsync(fixture, Token)),
+            new FixedCovenantConnectionSource(fixture.Connection),
+            new CovenantCleanupWorker(),
+            DetachedAvailabilityRepublisher.Create(),
+            delegation.Coordinator);
+
+        Result<CovenantCleanupOutcome> outcome = await coordinator.RunBatchAsync(64, Token);
+
+        Assert.True(outcome.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, outcome.Error.Code);
+
+        Assert.False(root.Revocation.IsCancellationRequested);
+    }
 
     [Fact]
     public async Task The_outbox_coordinator_takes_its_own_lease_and_leaves_the_projection_committed()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         for (int index = 0; index < 4; index++)
         {
-
             _ = await fixture.SeedHeadAsync(
                 CovenantScope.Global,
                 null,
@@ -46,7 +183,6 @@ public sealed class CovenantMaintenanceCoordinatorTests
                 CovenantOperation.Set,
                 $"Body {index}.",
                 Token);
-
         }
 
         CovenantSearchOutboxCoordinator coordinator = new(
@@ -73,13 +209,11 @@ public sealed class CovenantMaintenanceCoordinatorTests
         Assert.True(second.IsSuccess, second.IsFailure ? second.Error.Message : null);
 
         Assert.Equal(0, second.Value.ProjectionsWritten);
-
     }
 
     [Fact]
     public async Task The_cleanup_coordinator_takes_its_own_lease_and_reports_an_empty_journal_as_nothing_to_do()
     {
-
         await using CovenantCanonicalFixture fixture = await CleanupFixtureAsync();
 
         CovenantOwnerCleanupCoordinator coordinator = new(
@@ -99,13 +233,11 @@ public sealed class CovenantMaintenanceCoordinatorTests
         Assert.Equal(0, outcome.Value.CampaignsCleaned);
 
         Assert.Equal(0, outcome.Value.SessionsCleaned);
-
     }
 
     [Fact]
     public async Task The_compaction_coordinator_folds_nothing_when_no_session_has_outgrown_its_tail()
     {
-
         await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
 
         CovenantTurnReceiptCompactionCoordinator coordinator = new(
@@ -124,9 +256,7 @@ public sealed class CovenantMaintenanceCoordinatorTests
         Assert.Equal(0, outcome.Value.SessionsFolded);
 
         Assert.Equal(0, outcome.Value.ReceiptsFolded);
-
     }
-
 
     /// <summary>
     /// The owner-cleanup composition, from the suite that already had one.
@@ -138,7 +268,6 @@ public sealed class CovenantMaintenanceCoordinatorTests
     /// </remarks>
     private static async Task<CovenantCanonicalFixture> CleanupFixtureAsync()
     {
-
         CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(
             Token,
             coreObjects:
@@ -171,7 +300,5 @@ public sealed class CovenantMaintenanceCoordinatorTests
         _ = await command.ExecuteNonQueryAsync(Token);
 
         return fixture;
-
     }
-
 }

@@ -147,6 +147,11 @@ internal sealed class CovenantMaintenanceHostedService(
                         .SynchronizeAsync(CovenantSearchOutboxWorker.DefaultBatchRows, cancellationToken)
                         .ConfigureAwait(false);
 
+                    if (outcome.IsSuccess && outcome.Value.RebuildRequired && outcome.Value.ProjectionsWritten == 0)
+                    {
+                        logger.LogWarning("The Covenant search outbox requires a rebuild and wrote no projections this pass.");
+                    }
+
                     return outcome.IsFailure
                         ? Result<string>.Failure(outcome.Error)
                         : Result<string>.Success($"{outcome.Value.ProjectionsWritten} projection(s)");

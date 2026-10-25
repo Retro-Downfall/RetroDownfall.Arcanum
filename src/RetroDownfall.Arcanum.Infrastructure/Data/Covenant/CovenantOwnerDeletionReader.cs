@@ -46,6 +46,61 @@ internal sealed class CovenantOwnerDeletionReader
 {
     private const int CovenantFamilyCode = (int)GrimoireSchemaFamily.Covenant;
 
+    /// <summary>
+    /// Returns the cursor only when no cleanup is owed, under a live installation read lease.
+    /// </summary>
+    /// <remarks>
+    /// The probe grants no mutation authority. The caller releases its read lease before taking the
+    /// delegation barrier and cleanup lease, and the worker re-reads inside its immediate transaction.
+    /// An event committed after this read can safely wait for the next pass.
+    /// </remarks>
+    internal async ValueTask<Result<CovenantCleanupCursor?>> ProbeIdleCursorAsync(
+        CovenantInstallationReadLease lease,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        Result valid = await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+        if (valid.IsFailure)
+        {
+            return valid.Error;
+        }
+
+        using CancellationTokenSource lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, lease.Revocation);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            SELECT AppliedCampaignSequence, AppliedSessionSequence, FullSweepRequired,
+                   EXISTS (SELECT 1 FROM owner_deletion_events
+                           WHERE (OwnerKindCode = 1 AND Sequence > AppliedCampaignSequence)
+                              OR (OwnerKindCode = 2 AND Sequence > AppliedSessionSequence))
+            FROM capability_cleanup_state
+            WHERE CapabilityFamilyCode = $family;
+            """;
+
+        _ = command.Parameters.AddWithValue("$family", CovenantFamilyCode);
+
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(lifetime.Token).ConfigureAwait(false);
+
+        if (!await reader.ReadAsync(lifetime.Token).ConfigureAwait(false))
+        {
+            return new Error(ErrorCodes.Covenant.Unavailable,
+                "The Covenant family has no cleanup cursor, so it cannot consume owner deletions.");
+        }
+
+        CovenantCleanupCursor cursor = new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2) != 0);
+
+        bool pending = reader.GetInt64(3) != 0;
+
+        valid = await lease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+        return valid.IsFailure
+            ? valid.Error
+            : Result<CovenantCleanupCursor?>.Success(cursor.FullSweepRequired || pending ? null : cursor);
+    }
+
     public async ValueTask<Result<CovenantCleanupCursor>> ReadCursorAsync(
         CovenantMutationTransaction transaction,
         CancellationToken cancellationToken)
