@@ -1090,6 +1090,20 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DataRetentionService", "PersistPruneSnapshotAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Data/DataRetentionService.Pruning.cs", "DataRetentionService", "ReadPruneCheckpointAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Api/ProvingGrounds/MemoryEvaluation/MemoryEvaluationEndpoints.cs", "MemoryEvaluationEndpoints", "RunAsync(3)", AcquisitionConstructKind.ProviderOpen, "scopes.OpenAsync", 3, "scopes.OpenAsync(http,read.Body!.Scope,http.RequestAborted)"),
             GrimoirePathAuthority.NotGrimoire,
             GrimoireAcquisitionKind.NonGrimoireCandidate,
@@ -4779,13 +4793,13 @@ internal static class GrimoireConnectionAcquisitionScanner
         }
 
         return invocation.Expression is MemberAccessExpressionSyntax
+        {
+            Expression: IdentifierNameSyntax
             {
-                Expression: IdentifierNameSyntax
-                {
-                    Identifier.ValueText: "Task",
-                },
-                Name.Identifier.ValueText: "FromResult",
-            }
+                Identifier.ValueText: "Task",
+            },
+            Name.Identifier.ValueText: "FromResult",
+        }
             && invocation.ArgumentList.Arguments.Count == 1
             && IsExactTypedResultFailure(invocation.ArgumentList.Arguments[0].Expression);
     }
