@@ -80,6 +80,8 @@ public static class ErrorCodes
     /// <summary>Validation — client input rejected before domain work.</summary>
     public static class Validation
     {
+        public const string InvalidUrl = "Validation.InvalidUrl";
+
         public const string InvalidPrompt = "Validation.InvalidPrompt";
 
         public const string AttachedFiles = "Validation.AttachedFiles";
@@ -832,6 +834,8 @@ public static class ErrorCodes
     /// <summary>Provider rows in <c>Arcanum:Providers</c>.</summary>
     public static class Provider
     {
+        public const string DnsFailed = "Provider.DnsFailed";
+
         public const string NotFound = "Provider.NotFound";
     }
 

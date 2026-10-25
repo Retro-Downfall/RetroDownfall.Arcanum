@@ -36,6 +36,8 @@ Its main jobs are:
 
 Arcanum does not manage a local inference runtime. Ollama is supported through its OpenAI-compatible `/v1` endpoint. A **Familiar** — the Claude Code or Codex CLI you installed and signed in to yourself — is a transport, not a runtime: Arcanum runs it for one turn and reads its answer. It never installs it, never updates it, never signs in for you, and never looks at where that CLI keeps your credentials. Nothing happens until you add a provider of that kind to `arcanum.json`.
 
+The Forge's provider test explains whether an endpoint URL needs a scheme, its hostname cannot be resolved, its address is blocked, its provider is stopped, its TLS certificate is untrusted, its API key was refused, or its response is not an OpenAI model list. A valid empty list still counts as reachable. The displayed remedy and Warning log carry sanitized diagnostics; logs identify only the configured host and the reason class.
+
 ## 3. The shape of the solution
 
 The important dependency direction is:
