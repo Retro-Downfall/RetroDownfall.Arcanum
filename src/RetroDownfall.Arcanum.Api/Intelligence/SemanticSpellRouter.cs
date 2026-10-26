@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -28,16 +29,60 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </list>
 ///
 /// Graceful degradation: any embedding-related failure (cache unavailable, prompt embedding fails,
-/// unexpected exception) falls back to <see cref="SpellRoutingDecision.FullGrimoire"/> at Debug log
-/// level — the hub always has a working path via the existing LLM router, so a Phase 5 failure can
-/// never block spell routing entirely.
+/// unexpected exception) falls back to <see cref="SpellRoutingDecision.FullGrimoire"/> with one safe
+/// Warning per closed reason and monitored configuration epoch across request scopes. The hub
+/// retains the existing LLM routing path, so an embedding failure does not block routing.
 /// </summary>
 public sealed class SemanticSpellRouter(
     SpellWeaveCache spellWeaveCache,
     IWeaveService weaveService,
-    IOptionsSnapshot<ArcanumSettings> settings,
+    IOptionsMonitor<ArcanumSettings> settings,
     ILogger<SemanticSpellRouter> logger)
 {
+    private static readonly ConditionalWeakTable<ArcanumSettings, WarningEpoch> WarningEpochs = new();
+
+    private enum FallbackReason
+    {
+        CatalogUnavailable,
+        ProviderUnavailable,
+        PromptEmbeddingFailed,
+        DimensionMismatch,
+        CatalogVectorsMissing,
+        UnexpectedError,
+    }
+
+    private sealed class WarningEpoch
+    {
+        private int _reasons;
+
+        internal bool TryMark(FallbackReason reason)
+        {
+            int mask = 1 << (int)reason;
+
+            return (Interlocked.Or(ref _reasons, mask) & mask) == 0;
+        }
+    }
+
+    private void WarnFallback(ArcanumSettings epoch, FallbackReason reason, Exception? exception = null)
+    {
+        if (!WarningEpochs.GetValue(epoch, static _ => new WarningEpoch()).TryMark(reason)) return;
+
+        string closedReason = reason switch
+        {
+            FallbackReason.CatalogUnavailable => "catalog_unavailable",
+            FallbackReason.ProviderUnavailable => "provider_unavailable",
+            FallbackReason.PromptEmbeddingFailed => "prompt_embedding_failed",
+            FallbackReason.DimensionMismatch => "dimension_mismatch",
+            FallbackReason.CatalogVectorsMissing => "catalog_vectors_missing",
+            FallbackReason.UnexpectedError => "unexpected_error",
+            _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+        };
+
+        logger.LogWarning(
+            "Semantic spell routing fallback ({Reason}, exception type {ExceptionType}); full-catalog LLM routing may add billable provider work. Verify integrations.embeddings.provider, integrations.embeddings.model and integrations.embeddings.dimensions; run 'arcanum doctor'.",
+            closedReason,
+            exception?.GetType().FullName ?? "none");
+    }
 
     public async Task<SpellRoutingDecision> ResolveAsync(
         IReadOnlyList<SpellMetadata> spells,
@@ -45,46 +90,38 @@ public sealed class SemanticSpellRouter(
         CancellationToken cancellationToken,
         Action<string, int>? observeEmbedding = null)
     {
+        ArcanumSettings epoch = settings.CurrentValue;
 
-        EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
+        EmbeddingSettings embeddings = epoch.ResolveEmbeddings();
 
         if (!embeddings.Enabled || !embeddings.SemanticSpellRoutingEnabled)
         {
-
             return SpellRoutingDecision.FullGrimoire();
-
         }
 
         if (spells.Count == 0)
         {
-
             return SpellRoutingDecision.FullGrimoire();
-
         }
 
         try
         {
-
             ConcurrentDictionary<string, Embedding<float>>? spellEmbeddings = await spellWeaveCache
                 .GetOrCreateAsync(spells, cancellationToken, observeEmbedding)
                 .ConfigureAwait(false);
 
             if (spellEmbeddings is null)
             {
-
-                logger.LogDebug("SemanticSpellRouter: spell catalog embeddings unavailable; falling back to LLM-based routing.");
+                WarnFallback(epoch, FallbackReason.CatalogUnavailable);
 
                 return SpellRoutingDecision.FullGrimoire();
-
             }
 
             if (!weaveService.IsAvailable)
             {
-
-                logger.LogDebug("SemanticSpellRouter: embedding provider unavailable; falling back to LLM-based routing.");
+                WarnFallback(epoch, FallbackReason.ProviderUnavailable);
 
                 return SpellRoutingDecision.FullGrimoire();
-
             }
 
             observeEmbedding?.Invoke("spell-routing-embedding", 1);
@@ -95,13 +132,9 @@ public sealed class SemanticSpellRouter(
 
             if (promptEmbedResult.IsFailure)
             {
-
-                logger.LogDebug(
-                    "SemanticSpellRouter: failed to embed the user prompt ({Code}); falling back to LLM-based routing.",
-                    promptEmbedResult.Error.Code);
+                WarnFallback(epoch, FallbackReason.PromptEmbeddingFailed);
 
                 return SpellRoutingDecision.FullGrimoire();
-
             }
 
             ReadOnlySpan<float> queryVector = promptEmbedResult.Value.Vector.Span;
@@ -112,51 +145,37 @@ public sealed class SemanticSpellRouter(
 
             foreach (SpellMetadata spell in spells)
             {
-
                 if (spellEmbeddings.TryGetValue(spell.Name, out Embedding<float>? spellEmbedding))
                 {
-
                     // EmbeddingBlobCodec.CosineSimilarity returns 0 for a length mismatch, which is
                     // indistinguishable from a genuine "no signal" match if scored naively — skip
                     // mismatched entries here instead, so a stale cache (e.g. after an embedding
                     // model/provider change) cannot masquerade as a confident "no match" decision.
                     if (spellEmbedding.Vector.Length != queryVector.Length)
                     {
-
                         dimensionMismatchDetected = true;
 
                         continue;
-
                     }
 
                     float similarity = EmbeddingBlobCodec.CosineSimilarity(queryVector, spellEmbedding.Vector.Span);
 
                     scored.Add((spell, similarity));
-
                 }
-
             }
 
             if (scored.Count == 0)
             {
-
                 if (dimensionMismatchDetected)
                 {
-
-                    logger.LogWarning(
-                        "SemanticSpellRouter: query embedding dimension ({QueryDimension}) does not match any cached spell embedding — likely a stale cache after an embedding model/provider change; falling back to LLM-based routing.",
-                        queryVector.Length);
-
+                    WarnFallback(epoch, FallbackReason.DimensionMismatch);
                 }
                 else
                 {
-
-                    logger.LogDebug("SemanticSpellRouter: no spell embeddings matched the current catalog; falling back to LLM-based routing.");
-
+                    WarnFallback(epoch, FallbackReason.CatalogVectorsMissing);
                 }
 
                 return SpellRoutingDecision.FullGrimoire();
-
             }
 
             scored.Sort(static (a, b) => b.Similarity.CompareTo(a.Similarity));
@@ -165,11 +184,9 @@ public sealed class SemanticSpellRouter(
 
             if (!embeddings.SpellRoutingHybridMode)
             {
-
                 (SpellMetadata Spell, float Similarity) top = scored[0];
 
                 return SpellRoutingDecision.DirectResonance(top.Similarity >= similarityThreshold ? top.Spell : null);
-
             }
 
             int topK = ArcanumSettingClamps.EmbeddingsSpellRoutingHybridTopK(embeddings.SpellRoutingHybridTopK);
@@ -178,7 +195,6 @@ public sealed class SemanticSpellRouter(
 
             for (int i = 0; i < scored.Count && i < topK; i++)
             {
-
                 // scored is sorted descending by similarity, so once one candidate falls below the
                 // threshold, every subsequent one does too — a hard stop, not just a skip. Without
                 // this, the LLM router could be handed irrelevant candidates (or all-zero-similarity
@@ -186,42 +202,30 @@ public sealed class SemanticSpellRouter(
                 // of them actually resemble the prompt.
                 if (scored[i].Similarity < similarityThreshold)
                 {
-
                     break;
-
                 }
 
                 candidates.Add(scored[i].Spell);
-
             }
 
             if (candidates.Count == 0)
             {
-
                 logger.LogDebug("SemanticSpellRouter: no candidate cleared the similarity threshold in hybrid mode; falling back to full-catalog LLM routing.");
 
                 return SpellRoutingDecision.FullGrimoire();
-
             }
 
             return SpellRoutingDecision.FilteredDivination(candidates);
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
         }
         catch (Exception ex)
         {
-
-            logger.LogDebug(ex, "SemanticSpellRouter failed unexpectedly; falling back to LLM-based routing.");
+            WarnFallback(epoch, FallbackReason.UnexpectedError, ex);
 
             return SpellRoutingDecision.FullGrimoire();
-
         }
-
     }
-
 }

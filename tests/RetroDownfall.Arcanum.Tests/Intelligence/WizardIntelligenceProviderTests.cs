@@ -7383,6 +7383,54 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         Assert.Equal(1, weave.EmbedCallCount);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ScenarioSpellDiagnostics_FallbackRetainsActualLlmAndBillableInvocationCounts(bool enabled, bool available)
+    {
+        await CreateSpellWithDescriptionAsync("alpha", "Alpha", "Alpha spell for testing", body: "alpha body");
+
+        FakeRagWeaveService weave = new() { Available = available };
+
+        ArcanumSettings settings = DefaultSettings() with
+        {
+            Features = DefaultSettings().Features with { Embeddings = enabled, SemanticSpellRouting = enabled },
+        };
+
+        ScriptingChatClient chat = new() { UsageTotalTokens = 12 };
+
+        if (!available) chat.EnqueueText("""{"spellName":"Alpha","entities":[]}""");
+
+        chat.EnqueueText("alpha answer");
+
+        RecordingTurnRunWriter writer = new();
+
+        WizardIntelligenceProvider wizard = CreateWizard(chat, settings, weaveService: weave, turnRunWriter: writer);
+
+        var result = await wizard.ExecutePromptAsync(BaseRequest() with
+        {
+            Prompt = "what theme do I like?",
+            WorkingDirectory = _workspace.Root,
+            SkipSpellRouting = false,
+            DisableMcpTools = true,
+        }, InvocationContexts.AttendedSession(), CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal(available ? 1 : 2, chat.BufferedCallCount);
+
+        Assert.Contains("alpha body", ExtractSystemPromptText(chat.LastBufferedMessages));
+
+        Assert.Equal(available ? 0 : 1, writer.Operations.Count(operation => operation.OperationType == BillableOperationType.Routing));
+
+        Assert.Single(writer.Operations, operation => operation.OperationType == BillableOperationType.Chat);
+
+        Assert.Equal(available ? 1 : 0, weave.EmbedCallCount);
+
+        Assert.Equal(available ? 1 : 0, weave.EmbedBatchCallCount);
+    }
+
     [Fact]
     public async Task ScenarioSpell01_PureEmbeddingRouting_SelectsSpellWithoutLlmRouterCall()
     {
@@ -9912,7 +9960,7 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         semanticSpellRouter ??= new SemanticSpellRouter(
             new SpellWeaveCache(weaveService, new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
             weaveService,
-            new TestOptionsSnapshot<ArcanumSettings>(settings),
+            new TestOptionsMonitor<ArcanumSettings>(settings),
             NullLogger<SemanticSpellRouter>.Instance);
 
         lexiconService ??= new FakeLexiconService();

@@ -118,8 +118,8 @@ public sealed class SpellWeaveCache(
             if (embedResult.IsFailure)
             {
                 logger.LogDebug(
-                    "SpellWeaveCache failed to embed the spell catalog ({Code}); falling back to LLM-based spell routing.",
-                    embedResult.Error.Code);
+                    "SpellWeaveCache failed to embed the spell catalog ({Reason}); falling back to LLM-based spell routing.",
+                    "catalog_embedding_failed");
 
                 return null;
             }
@@ -143,7 +143,10 @@ public sealed class SpellWeaveCache(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "SpellWeaveCache failed to refresh the spell catalog; falling back to LLM-based spell routing.");
+            logger.LogDebug(
+                "SpellWeaveCache failed to refresh the spell catalog ({Reason}, exception type {ExceptionType}); falling back to LLM-based spell routing.",
+                "catalog_refresh_failed",
+                ex.GetType().FullName);
 
             return null;
         }

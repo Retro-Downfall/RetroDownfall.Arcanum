@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Weave;
@@ -13,6 +14,40 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 /// <summary>RAG Phase 5 — <see cref="SpellWeaveCache"/> caching, invalidation, and graceful degradation.</summary>
 public sealed class SpellWeaveCacheTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Diagnostics_CacheFailuresKeepOnlyClosedReasonAndSafeExceptionType(bool thrown)
+    {
+        FakeWeaveService weave = new() { FailBatch = !thrown, BatchException = thrown ? new IOException("private-exception-canary") : null };
+
+        TestCapturingLogger<SpellWeaveCache> logger = new();
+
+        using SpellWeaveCache cache = new(weave, new TestOptionsMonitor<ArcanumSettings>(new()), logger);
+
+        Assert.Null(await cache.GetOrCreateAsync([new("private-spell-canary", "private-description-canary", "/private/spell-canary/SPELL.md")], CancellationToken.None));
+
+        TestLogEntry entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Debug, entry.Level);
+
+        Assert.Null(entry.Exception);
+
+        Assert.DoesNotContain("private-", entry.Message);
+
+        Assert.DoesNotContain("/private/", entry.Message);
+
+        Assert.Equal(thrown ? "catalog_refresh_failed" : "catalog_embedding_failed", entry.Properties!.Single(p => p.Key == "Reason").Value);
+
+        if (thrown) Assert.Equal(typeof(IOException).FullName, entry.Properties!.Single(p => p.Key == "ExceptionType").Value);
+
+        Assert.DoesNotContain(entry.Properties!, p => p.Value is Exception);
+
+        Assert.DoesNotContain("private-", string.Join(" ", entry.Properties!.Select(p => p.Value)));
+
+        Assert.Equal(1, weave.EmbedBatchCallCount);
+    }
+
     [Fact]
     public async Task GetOrCreateAsync_FirstCall_EmbedsTheCatalogOnce()
     {
@@ -186,7 +221,7 @@ public sealed class SpellWeaveCacheTests
         // is reported by code, and no exception was ever logged.
         Assert.Contains(
             logger.Entries,
-            static entry => entry.Message.Contains(ErrorCodes.Embeddings.ProviderUnavailable, StringComparison.Ordinal));
+            static entry => entry.Properties!.Any(property => property.Key == "Reason" && Equals(property.Value, "catalog_embedding_failed")));
 
         Assert.DoesNotContain(logger.Entries, static entry => entry.Exception is not null);
     }
@@ -249,6 +284,7 @@ public sealed class SpellWeaveCacheTests
         public bool Available { get; set; } = true;
 
         public bool FailBatch { get; set; }
+        public Exception? BatchException { get; init; }
 
         public TimeSpan Delay { get; set; }
 
@@ -259,6 +295,7 @@ public sealed class SpellWeaveCacheTests
         public async Task<Result<Embedding<float>[]>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken)
         {
             EmbedBatchCallCount++;
+            if (BatchException is not null) throw BatchException;
 
             if (Delay > TimeSpan.Zero)
             {
@@ -268,7 +305,7 @@ public sealed class SpellWeaveCacheTests
             if (FailBatch)
             {
                 return Result<Embedding<float>[]>.Failure(
-                    new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated batch embedding failure."));
+                    new Error("private-error-code-canary", "private-error-message-canary"));
             }
 
             Embedding<float>[] result = new Embedding<float>[texts.Count];
