@@ -263,6 +263,22 @@ internal static partial class OpenAiV1Endpoints
             }
         }
 
+        // Validate both aliases before mapping, which otherwise loses a shadowed max_tokens value.
+        if (body.MaxTokens is <= 0)
+        {
+            return InvalidInferenceOption("max_tokens must be a positive integer.", "max_tokens");
+        }
+
+        if (body.MaxCompletionTokens is <= 0)
+        {
+            return InvalidInferenceOption("max_completion_tokens must be a positive integer.", "max_completion_tokens");
+        }
+
+        if (body.ResponseFormat is { } responseFormat && string.IsNullOrWhiteSpace(responseFormat.Type))
+        {
+            return InvalidInferenceOption("response_format.type must be text, json_object, or json_schema.", "response_format");
+        }
+
         PingRequest mapped = OpenAiChatCompletionMapper.ToPingRequest(body, forwardClientTools);
 
         if (forceDisableAllTools)
@@ -289,11 +305,26 @@ internal static partial class OpenAiV1Endpoints
 
         if (pingBounds.IsFailure)
         {
+            (string? nativeField, string? wireField) = pingBounds.Error.Code switch
+            {
+                ErrorCodes.Validation.InvalidTemperature => ("temperature", "temperature"),
+                ErrorCodes.Validation.InvalidTopP => ("topP", "top_p"),
+                ErrorCodes.Validation.InvalidPresencePenalty => ("presencePenalty", "presence_penalty"),
+                ErrorCodes.Validation.InvalidFrequencyPenalty => ("frequencyPenalty", "frequency_penalty"),
+                ErrorCodes.Validation.InvalidMaxOutputTokens => ("maxOutputTokens", body.MaxCompletionTokens.HasValue ? "max_completion_tokens" : "max_tokens"),
+                ErrorCodes.Validation.InvalidResponseFormat or ErrorCodes.Validation.InvalidResponseSchema => ("responseFormat", "response_format"),
+                _ => (null, null),
+            };
+
+            string message = nativeField is null ? pingBounds.Error.Message : pingBounds.Error.Message
+                .Replace("responseFormatJsonSchema", "response_format.json_schema", StringComparison.Ordinal)
+                .Replace(nativeField, wireField!, StringComparison.Ordinal);
+
             return new ChatCompletionValidationFailure(
-                pingBounds.Error.Message,
+                message,
                 "invalid_request_error",
                 "invalid_value",
-                null,
+                wireField,
                 StatusCodes.Status400BadRequest);
         }
 
@@ -366,6 +397,9 @@ internal static partial class OpenAiV1Endpoints
 
         return null;
     }
+
+    private static ChatCompletionValidationFailure InvalidInferenceOption(string message, string parameter) =>
+        new(message, "invalid_request_error", "invalid_value", parameter, StatusCodes.Status400BadRequest);
 
     private static ChatCompletionValidationFailure MapReasoningValidationFailure(Error error)
     {

@@ -206,6 +206,13 @@ internal enum PingRequestFailureReason
     ImageMime,
     ImageSize,
     VisionUnsupported,
+    Temperature,
+    TopP,
+    PresencePenalty,
+    FrequencyPenalty,
+    OutputTokens,
+    ResponseFormat,
+    ResponseSchema,
 }
 
 internal sealed record PingRequestFailureDetails(PingRequestFailureReason Reason, int? Index = null, long? Measured = null, long? Limit = null)
@@ -234,6 +241,13 @@ internal sealed record PingRequestFailureDetails(PingRequestFailureReason Reason
         PingRequestFailureReason.ImageMime => ErrorCodes.Scrying.UnsupportedMimeType,
         PingRequestFailureReason.ImageSize => ErrorCodes.Scrying.ImageTooLarge,
         PingRequestFailureReason.VisionUnsupported => ErrorCodes.Scrying.VisionNotSupported,
+        PingRequestFailureReason.Temperature => ErrorCodes.Validation.InvalidTemperature,
+        PingRequestFailureReason.TopP => ErrorCodes.Validation.InvalidTopP,
+        PingRequestFailureReason.PresencePenalty => ErrorCodes.Validation.InvalidPresencePenalty,
+        PingRequestFailureReason.FrequencyPenalty => ErrorCodes.Validation.InvalidFrequencyPenalty,
+        PingRequestFailureReason.OutputTokens => ErrorCodes.Validation.InvalidMaxOutputTokens,
+        PingRequestFailureReason.ResponseFormat => ErrorCodes.Validation.InvalidResponseFormat,
+        PingRequestFailureReason.ResponseSchema => ErrorCodes.Validation.InvalidResponseSchema,
         _ => null,
     };
 
@@ -258,6 +272,13 @@ internal sealed record PingRequestFailureDetails(PingRequestFailureReason Reason
         ErrorCodes.Scrying.UnsupportedMimeType => new(PingRequestFailureReason.ImageMime),
         ErrorCodes.Scrying.ImageTooLarge => new(PingRequestFailureReason.ImageSize),
         ErrorCodes.Scrying.VisionNotSupported => new(PingRequestFailureReason.VisionUnsupported),
+        ErrorCodes.Validation.InvalidTemperature => new(PingRequestFailureReason.Temperature),
+        ErrorCodes.Validation.InvalidTopP => new(PingRequestFailureReason.TopP),
+        ErrorCodes.Validation.InvalidPresencePenalty => new(PingRequestFailureReason.PresencePenalty),
+        ErrorCodes.Validation.InvalidFrequencyPenalty => new(PingRequestFailureReason.FrequencyPenalty),
+        ErrorCodes.Validation.InvalidMaxOutputTokens => new(PingRequestFailureReason.OutputTokens),
+        ErrorCodes.Validation.InvalidResponseFormat => new(PingRequestFailureReason.ResponseFormat),
+        ErrorCodes.Validation.InvalidResponseSchema => new(PingRequestFailureReason.ResponseSchema),
         _ => null,
     };
 }

@@ -3042,7 +3042,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             bool bufferTokens = streaming
                 && ((guardrailsStreamingMode == GuardrailsStreamingMode.Buffered && guardrailsOutputActive)
-                    || (request.ResponseFormat is "json_schema"
+                    || (string.Equals(request.ResponseFormat?.Trim(), "json_schema", StringComparison.OrdinalIgnoreCase)
                         && structuredOutput.Enabled
                         && structuredOutput.StrictMode));
 
@@ -4299,7 +4299,7 @@ public sealed partial class WizardIntelligenceProvider(
 
             IReadOnlyList<string> streamWarnings = [];
 
-            if (request.ResponseFormat is "json_schema"
+            if (string.Equals(request.ResponseFormat?.Trim(), "json_schema", StringComparison.OrdinalIgnoreCase)
                 && request.ResponseFormatJsonSchema is { } streamJsonSchemaWrapper
                 && structuredOutput.Enabled)
             {
@@ -8128,12 +8128,12 @@ public sealed partial class WizardIntelligenceProvider(
     {
         if (request.Temperature is { } temp)
         {
-            options.Temperature = Math.Clamp(temp, 0f, 2f);
+            options.Temperature = temp;
         }
 
         if (request.TopP is { } topP)
         {
-            options.TopP = Math.Clamp(topP, 0f, 1f);
+            options.TopP = topP;
         }
 
         if (request.MaxOutputTokens is { } maxOutput && maxOutput > 0)
@@ -8143,12 +8143,12 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (request.PresencePenalty is { } presence)
         {
-            options.PresencePenalty = Math.Clamp(presence, -2f, 2f);
+            options.PresencePenalty = presence;
         }
 
         if (request.FrequencyPenalty is { } frequency)
         {
-            options.FrequencyPenalty = Math.Clamp(frequency, -2f, 2f);
+            options.FrequencyPenalty = frequency;
         }
 
         if (request.Seed is { } seed)
@@ -8163,7 +8163,7 @@ public sealed partial class WizardIntelligenceProvider(
 
         if (request.ResponseFormat is { } responseFormatType && !string.IsNullOrWhiteSpace(responseFormatType))
         {
-            string normalizedFormat = responseFormatType.ToLowerInvariant();
+            string normalizedFormat = responseFormatType.Trim().ToLowerInvariant();
 
             if (normalizedFormat == "json_schema"
                 && request.ResponseFormatJsonSchema is { } jsonSchemaWrapper)
