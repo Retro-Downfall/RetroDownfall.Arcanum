@@ -37,12 +37,18 @@ public sealed class CovenantTurnScope : IAsyncDisposable
 
     private ulong _attemptOrdinal;
 
+    private int _disposed;
+
+    private readonly ILogger? _cleanupLogger;
+
     internal CovenantTurnScope(
         CovenantTurnContext context,
         Guid logicalTurnId,
         Guid? sessionId,
-        bool historyTainted)
+        bool historyTainted,
+        ILogger? cleanupLogger = null)
     {
+        _cleanupLogger = cleanupLogger;
         _context = context;
 
         LogicalTurnId = logicalTurnId;
@@ -193,6 +199,11 @@ public sealed class CovenantTurnScope : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         try
         {
             MemorySources = null;
@@ -201,14 +212,52 @@ public sealed class CovenantTurnScope : IAsyncDisposable
         }
         finally
         {
-            if (CampaignPreparation is { IsCompletedSuccessfully: true } prepared
-                && prepared.Result.IsSuccess
-                && prepared.Result.Value is { } campaign)
+            if (CampaignPreparation is { } preparation)
             {
-                await campaign.DisposeAsync().ConfigureAwait(false);
+                if (preparation.IsCompleted)
+                {
+                    await ReleaseCampaignPreparationAsync(preparation).ConfigureAwait(false);
+                }
+                else
+                {
+                    // A disposed stream cannot wait indefinitely for maintenance. This observer owns
+                    // the eventual result and releases the snapshot even after the request has left.
+                    _ = ReleaseCampaignPreparationAsync(preparation);
+                }
             }
         }
     }
+
+    private async Task ReleaseCampaignPreparationAsync(Task<Result<CampaignRollupTurnSnapshot?>> preparation)
+    {
+        try
+        {
+            Result<CampaignRollupTurnSnapshot?> prepared = await preparation.ConfigureAwait(false);
+
+            if (prepared.IsFailure)
+            {
+                LogPreparationFailure(prepared.Error.Code);
+            }
+            else if (prepared.Value is { } snapshot)
+            {
+                await snapshot.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (preparation.IsCanceled)
+        {
+            // Cancellation produced no snapshot to own.
+        }
+        catch (Exception)
+        {
+            // Snapshot cleanup releases its authority in finally even if claim settlement throws.
+            LogPreparationFailure(ErrorCodes.Hub.Error);
+        }
+    }
+
+    private void LogPreparationFailure(string code) =>
+        _cleanupLogger?.LogWarning(
+            "Session {SessionId} turn {LogicalTurnId} abandoned Campaign preparation could not complete cleanup ({ErrorCode}).",
+            SessionId, LogicalTurnId, TurnLifecycleDiagnostics.SafeCode(code));
 }
 
 /// <summary>
@@ -309,7 +358,7 @@ public sealed class CovenantDispatchGate(
     {
         ArgumentNullException.ThrowIfNull(invocation);
 
-        bool tainted = await ReadHistoryTaintAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        bool tainted = await ReadHistoryTaintAsync(sessionId, logicalTurnId, cancellationToken).ConfigureAwait(false);
 
         if (logicalTurnId == Guid.Empty)
         {
@@ -318,7 +367,7 @@ public sealed class CovenantDispatchGate(
                     CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible),
                     Guid.Empty,
                     sessionId,
-                    tainted),
+                    tainted, logger),
                 invocation.Campaign?.CampaignId);
         }
 
@@ -329,14 +378,14 @@ public sealed class CovenantDispatchGate(
         if (begun.IsFailure)
         {
             logger.LogWarning(
-                "Covenant turn acquisition failed with {ErrorCode}; the turn is refused.",
-                begun.Error.Code);
+                "Covenant turn {LogicalTurnId} for Session {SessionId} acquisition refused ({ErrorCode}).",
+                logicalTurnId, sessionId, TurnLifecycleDiagnostics.SafeCode(begun.Error.Code));
 
             return begun.Error;
         }
 
         return Record(
-            new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted),
+            new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted, logger),
             invocation.Campaign?.CampaignId);
     }
 
@@ -619,7 +668,7 @@ public sealed class CovenantDispatchGate(
             admission.Candidates);
     }
 
-    private async ValueTask<bool> ReadHistoryTaintAsync(Guid? sessionId, CancellationToken cancellationToken)
+    private async ValueTask<bool> ReadHistoryTaintAsync(Guid? sessionId, Guid logicalTurnId, CancellationToken cancellationToken)
     {
         if (sessionId is not { } id || id == Guid.Empty)
         {
@@ -636,8 +685,8 @@ public sealed class CovenantDispatchGate(
             // facts, and treating the first as the second is exactly how an unlabelled tainted
             // dispatch would leave without a receipt.
             logger.LogWarning(
-                "Session sensitivity could not be read ({ErrorCode}); the turn is treated as tainted.",
-                projection.Error.Code);
+                "Session {SessionId} sensitivity for turn {LogicalTurnId} could not be read ({ErrorCode}); the turn is treated as tainted.",
+                sessionId, logicalTurnId, TurnLifecycleDiagnostics.SafeCode(projection.Error.Code));
 
             return true;
         }

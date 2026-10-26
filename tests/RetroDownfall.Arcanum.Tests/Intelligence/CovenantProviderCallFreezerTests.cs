@@ -18,11 +18,54 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </summary>
 public sealed class CovenantProviderCallFreezerTests
 {
+    [Theory]
+    [InlineData("unsigned", "18446744073709551615")]
+    [InlineData("decimal", "1.234567890123456789")]
+    [InlineData("single", "1.2345678")]
+    public void Tool_argument_numbers_freeze_the_exact_serialized_value_without_narrowing(string kind, string expected)
+    {
+        object value = kind switch
+        {
+            "unsigned" => (object)ulong.MaxValue,
+            "decimal" => (object)1.234567890123456789m,
+            _ => (object)1.2345678f,
+        };
+        FunctionCallContent call = new("call-1", "numeric", new Dictionary<string, object?> { ["value"] = value });
+        var result = CovenantProviderCallFreezer.TryFreeze(Descriptor([new ChatMessage(ChatRole.Assistant, [call])]),
+            Sensitivity(), new ProviderCallMaterializationSnapshot(false, []));
+        Assert.True(result.IsSuccess, result.Error.Message);
+        Assert.Equal(ArcanumCanonicalJsonV1.Canonicalize("{\"value\":" + expected + "}"), Assert.Single(result.Value.Messages[0].ContentParts).Bytes.ToArray());
+    }
+
+    [Theory]
+    [InlineData("call-id")]
+    [InlineData("call-name")]
+    [InlineData("result-id")]
+    [InlineData("message-id")]
+    [InlineData("utf16")]
+    public void Malformed_message_envelopes_return_a_content_free_typed_refusal(string malformed)
+    {
+        const string secret = "private-envelope-canary";
+        ChatMessage message = malformed switch
+        {
+            "call-id" => new(ChatRole.Assistant, [new FunctionCallContent("", secret)]),
+            "call-name" => new(ChatRole.Assistant, [new FunctionCallContent(secret, "")]),
+            "result-id" => new(ChatRole.Tool, [new FunctionResultContent("", secret)]),
+            "message-id" => new(ChatRole.User, secret) { MessageId = "" },
+            _ => new(ChatRole.User, "\uD800" + secret),
+        };
+
+        Result<ProviderCallEnvelope> frozen = CovenantProviderCallFreezer.TryFreeze(
+            Descriptor([message]), Sensitivity(), new ProviderCallMaterializationSnapshot(false, []));
+
+        Assert.True(frozen.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.InvalidContent, frozen.Error.Code);
+        Assert.DoesNotContain(secret, frozen.Error.Message, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void An_ordinary_transcript_freezes_into_a_stable_digest()
     {
-
         CovenantProviderCallDescriptor descriptor = Descriptor(
         [
             new ChatMessage(ChatRole.System, "you are a wizard"),
@@ -43,13 +86,11 @@ public sealed class CovenantProviderCallFreezerTests
         Assert.True(first.IsSuccess, first.IsFailure ? first.Error.Message : string.Empty);
 
         Assert.Equal(first.Value.Digest, second.Value.Digest);
-
     }
 
     [Fact]
     public void Changing_one_message_byte_changes_the_frozen_digest()
     {
-
         Result<ProviderCallEnvelope> original = CovenantProviderCallFreezer.TryFreeze(
             Descriptor([new ChatMessage(ChatRole.User, "hello")]),
             Sensitivity(),
@@ -61,13 +102,11 @@ public sealed class CovenantProviderCallFreezerTests
             new ProviderCallMaterializationSnapshot(false, []));
 
         Assert.NotEqual(original.Value.Digest, altered.Value.Digest);
-
     }
 
     [Fact]
     public void Changing_the_system_prompt_changes_the_frozen_digest()
     {
-
         Result<ProviderCallEnvelope> original = CovenantProviderCallFreezer.TryFreeze(
             Descriptor([new ChatMessage(ChatRole.User, "hello")]) with { SystemPrompt = "one" },
             Sensitivity(),
@@ -79,13 +118,11 @@ public sealed class CovenantProviderCallFreezerTests
             new ProviderCallMaterializationSnapshot(false, []));
 
         Assert.NotEqual(original.Value.Digest, altered.Value.Digest);
-
     }
 
     [Fact]
     public void A_tool_call_and_its_result_freeze_without_losing_their_call_identity()
     {
-
         FunctionCallContent call = new("call-1", "search_workspace", new Dictionary<string, object?>
         {
             ["query"] = "wizard",
@@ -114,13 +151,11 @@ public sealed class CovenantProviderCallFreezerTests
         Assert.Equal(CovenantProviderContentPart.ToolResult, toolResult.Kind);
 
         Assert.Equal("call-1", toolResult.ToolCallId);
-
     }
 
     [Fact]
     public void Tool_arguments_freeze_the_same_whichever_order_they_were_supplied_in()
     {
-
         Result<ProviderCallEnvelope> ordered = CovenantProviderCallFreezer.TryFreeze(
             Descriptor([new ChatMessage(ChatRole.Assistant,
             [
@@ -138,13 +173,11 @@ public sealed class CovenantProviderCallFreezerTests
             new ProviderCallMaterializationSnapshot(false, []));
 
         Assert.Equal(ordered.Value.Digest, reversed.Value.Digest);
-
     }
 
     [Fact]
     public void A_content_kind_this_build_cannot_freeze_refuses_the_whole_call()
     {
-
         Result<ProviderCallEnvelope> frozen = CovenantProviderCallFreezer.TryFreeze(
             Descriptor([new ChatMessage(ChatRole.User, [new UnknownContent()])]),
             Sensitivity(),
@@ -153,7 +186,6 @@ public sealed class CovenantProviderCallFreezerTests
         Assert.True(frozen.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.InvalidContent, frozen.Error.Code);
-
     }
 
     [Fact]
@@ -310,7 +342,6 @@ public sealed class CovenantProviderCallFreezerTests
     [Fact]
     public void A_clean_sensitivity_still_freezes_but_carries_no_generation()
     {
-
         Result<ProviderCallEnvelope> frozen = CovenantProviderCallFreezer.TryFreeze(
             Descriptor([new ChatMessage(ChatRole.User, "hello")]),
             Sensitivity(ContentSensitivity.None),
@@ -319,7 +350,6 @@ public sealed class CovenantProviderCallFreezerTests
         Assert.True(frozen.IsSuccess);
 
         Assert.Equal(ContentSensitivity.None, frozen.Value.Sensitivity.Level);
-
     }
 
     private static CovenantProviderCallDescriptor Descriptor(IReadOnlyList<ChatMessage> messages) =>
@@ -338,7 +368,6 @@ public sealed class CovenantProviderCallFreezerTests
     private static ProviderCallSensitivity Sensitivity(
         ContentSensitivity level = ContentSensitivity.CovenantDerived)
     {
-
         GenerationProvenance provenance = level is ContentSensitivity.CovenantDerived
             ? GenerationProvenance.CreateExact([Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")])
             : GenerationProvenance.CreateExact([]);
@@ -351,9 +380,7 @@ public sealed class CovenantProviderCallFreezerTests
                 provenance.Mode,
                 provenance.ExactGenerationIds,
                 provenance.BloomBits)));
-
     }
 
     private sealed class UnknownContent : AIContent;
-
 }

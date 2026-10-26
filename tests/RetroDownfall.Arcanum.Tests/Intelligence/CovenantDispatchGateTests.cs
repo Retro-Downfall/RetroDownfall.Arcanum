@@ -30,6 +30,74 @@ public sealed class CovenantDispatchGateTests
 {
     private static readonly Guid InstallationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
+    [Theory]
+    [InlineData("fault")]
+    [InlineData("cancel")]
+    [InlineData("refusal")]
+    public async Task Disposed_turns_observe_late_preparation_endings_with_safe_diagnostics(string ending)
+    {
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        var gate = CreateGate(new AbsentContextProvider(CovenantTurnAbsence.Empty), new RecordingJournal(),
+            new RecordingSensitivityLedger(), logger: logger);
+        Guid session = Guid.NewGuid();
+        Guid turn = Guid.NewGuid();
+        CovenantTurnScope scope = (await gate.BeginTurnAsync(ArcanumInvocationContext.None, turn, session, default)).Value;
+        TaskCompletionSource<Result<CampaignRollupTurnSnapshot?>> preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        scope.CampaignPreparation = preparation.Task;
+        await scope.DisposeAsync();
+        switch (ending)
+        {
+            case "fault": preparation.SetException(new IOException("private-preparation-canary")); break;
+            case "cancel": preparation.SetCanceled(); break;
+            default: preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Failure(new(ErrorCodes.Covenant.Unavailable, "private-preparation-canary"))); break;
+        }
+
+        if (ending != "cancel")
+        {
+            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(2));
+            while (!logger.Entries.Any(entry => entry.Level == LogLevel.Warning)) await Task.Delay(10, deadline.Token);
+            var warning = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
+            Assert.Contains(session.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(turn.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ending == "fault" ? ErrorCodes.Hub.Error : ErrorCodes.Covenant.Unavailable, warning.Message);
+            Assert.DoesNotContain("private", warning.Message);
+            Assert.Null(warning.Exception);
+        }
+
+        await scope.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Refused_gate_diagnostics_carry_turn_session_and_closed_code_without_content(bool history)
+    {
+        Guid session = Guid.NewGuid();
+        Guid turn = Guid.NewGuid();
+        const string secret = "private diagnostic payload";
+        Error error = new(ErrorCodes.Covenant.Unavailable, secret);
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        CovenantDispatchGate gate = CreateGate(new FailureContextProvider(error), new RecordingJournal(),
+            new RecordingSensitivityLedger { Failure = history ? error : null }, logger: logger);
+        var result = await gate.BeginTurnAsync(ArcanumInvocationContext.None, turn, session, default);
+        Assert.True(result.IsFailure);
+        foreach (TestLogEntry warning in logger.Entries.Where(entry => entry.Level == LogLevel.Warning))
+        {
+            Assert.Contains(session.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(turn.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(error.Code, warning.Message);
+            Assert.DoesNotContain(secret, warning.Message);
+            Assert.Null(warning.Exception);
+        }
+        Assert.Equal(history ? 2 : 1, logger.Entries.Count);
+    }
+
+    private sealed class FailureContextProvider(Error error) : ICovenantContextProvider
+    {
+        public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(ArcanumInvocationContext invocation, Guid logicalTurnId, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantTurnContext>.Failure(error));
+    }
+
     [Fact]
     public void Protected_tool_input_survives_later_empty_dispatch()
     {

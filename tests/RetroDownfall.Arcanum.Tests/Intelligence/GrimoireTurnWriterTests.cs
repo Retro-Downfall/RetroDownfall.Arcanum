@@ -33,6 +33,165 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class GrimoireTurnWriterTests
 {
     [Theory]
+    [InlineData("tool-storage")]
+    [InlineData("tool-notification")]
+    [InlineData("interrupt-storage")]
+    [InlineData("stream-cleanup")]
+    [InlineData("final-cleanup")]
+    public async Task Interrupted_and_tool_lifecycle_warnings_never_copy_exception_or_tool_payloads(string phase)
+    {
+        CapturingLogger logger = new();
+        TrackingGrimoireRepository grimoire = new()
+        {
+            AppendException = phase == "tool-storage" ? new IOException("private-content") : null,
+            RecentEntriesException = phase == "tool-notification" ? new IOException("private-content") : null,
+            DiscardException = phase == "stream-cleanup" ? new OperationCanceledException("private-content")
+                : phase is "interrupt-storage" or "final-cleanup" ? new IOException("private-content") : null,
+            FinalizeException = phase == "final-cleanup" ? new IOException("private-content") : null,
+        };
+        using GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+        GrimoireTurnWriter.TurnHandle handle = new() { SessionId = Guid.NewGuid(), AssistantEntryId = Guid.NewGuid() };
+        if (phase.StartsWith("tool-", StringComparison.Ordinal))
+            await writer.TryAppendToolInteractionAsync(handle.SessionId, "private-tool", "private-arguments", "private-result", "private-model", default);
+        else if (phase == "stream-cleanup")
+            await writer.TryResolveInterruptedOnStreamExitAsync(handle, null);
+        else if (phase == "interrupt-storage")
+            Assert.False(await writer.ResolveInterruptedAsync(handle, null, default));
+        else
+            Assert.False(await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "private answer", "private model", default));
+        Assert.NotEmpty(logger.Entries);
+        foreach (var warning in logger.Entries)
+        {
+            Assert.Contains(handle.SessionId.Value.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            if (!phase.StartsWith("tool-", StringComparison.Ordinal))
+                Assert.Contains(handle.AssistantEntryId.Value.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ErrorCodes.Hub.Error, warning.Message);
+            Assert.DoesNotContain("private", warning.Message);
+            Assert.Null(warning.Exception);
+        }
+    }
+
+    [Theory]
+    [InlineData("begin-notification")]
+    [InlineData("final-notification")]
+    [InlineData("final-storage")]
+    public async Task Lifecycle_fault_diagnostics_keep_only_session_entry_and_closed_code(string phase)
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            RecentEntriesException = phase == "begin-notification" ? new IOException("private-content") : null,
+            EntryByIdException = phase == "final-notification" ? new IOException("private-content") : null,
+            FinalizeException = phase == "final-storage" ? new IOException("private-content") : null,
+        };
+        CapturingLogger logger = new();
+        using GrimoireTurnWriter writer = CreateWriter(grimoire, logger);
+        var handle = (await writer.BeginBufferedAssistantReplyAsync(new("private", SessionId: Guid.NewGuid()),
+            InvocationContexts.AttendedSession(), "private", "private-model", default)).Value;
+        if (phase != "begin-notification")
+        {
+            bool saved = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "private-answer", "private-model", default);
+            Assert.Equal(phase != "final-storage", saved);
+        }
+
+        var warning = Assert.Single(logger.Entries);
+        Assert.Contains(handle.SessionId!.Value.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(handle.AssistantEntryId!.Value.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(ErrorCodes.Hub.Error, warning.Message);
+        Assert.DoesNotContain("private", warning.Message);
+        Assert.Null(warning.Exception);
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Covenant.StaleSnapshot)]
+    [InlineData(ErrorCodes.Covenant.CapacityExceeded)]
+    [InlineData(ErrorCodes.Covenant.ForbiddenAuthority)]
+    [InlineData(ErrorCodes.Covenant.RevisionConflict)]
+    [InlineData("private-code-payload")]
+    public async Task Finalize_refusal_diagnostics_are_closed_and_correlate_the_exact_reply(string code)
+    {
+        SessionTurnClaimLease claim = WriterClaim();
+        ClaimWriterPorts ports = new() { CommitRefusal = new(code, "private-error") };
+        CapturingLogger logger = new();
+        using GrimoireTurnWriter writer = new(new TrackingGrimoireRepository(), new FakeSessionTurnBeginStore(), CreateHub(), logger,
+            turnCommitter: ports, claimedBeginStore: ports, claims: ports);
+        var handle = (await writer.BeginBufferedAssistantReplyAsync(new("private", SessionId: claim.Claim.SessionId),
+            InvocationContexts.AttendedSession(), "private", "private-model", default, claim)).Value;
+        Assert.False(await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "private answer", "private-model", default));
+        var failure = Assert.Single(logger.Entries);
+        Assert.Contains(claim.Claim.SessionId.ToString(), failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(claim.FutureAssistantEntryId.ToString(), failure.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(code == "private-code-payload" ? ErrorCodes.Hub.Error : code, failure.Message);
+        Assert.DoesNotContain("private", failure.Message);
+        Assert.Null(failure.Exception);
+        Assert.Empty(ports.Outcomes);
+        Assert.False(handle.IsFinalized);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_committed_protected_tool_pair_survives_notification_failure(bool cancellation)
+    {
+        TrackingGrimoireRepository grimoire = new()
+        {
+            EntryByIdException = cancellation
+            ? new OperationCanceledException("private cancellation") : new IOException("private event content")
+        };
+        ClaimWriterPorts ports = new();
+        CapturingLogger logger = new();
+        using GrimoireTurnWriter writer = new(grimoire, new FakeSessionTurnBeginStore(), CreateHub(), logger,
+            turnCommitter: ports, claimedBeginStore: ports, claims: ports);
+        SessionTurnClaimLease claim = WriterClaim();
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
+            new("private", SessionId: claim.Claim.SessionId), InvocationContexts.AttendedSession(), "private", "private-model", default, claim)).Value;
+        ProviderCallSensitivity sensitivity = ProviderCallSensitivities.Create(ContentSensitivity.CovenantDerived,
+            GenerationProvenance.CreateExact([Guid.NewGuid()]));
+        Task append = writer.TryAppendToolInteractionAsync(claim.Claim.SessionId, "private-tool", "private-arguments",
+            "private-result", "private-model", default, sensitivity, handle);
+        if (cancellation) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => append);
+        else await append;
+        Assert.Equal(1, ports.ToolPairs);
+        Assert.Equal(0, grimoire.AppendCallCount);
+        Assert.Equal(1, grimoire.EntryByIdPublishCount);
+        if (!cancellation)
+        {
+            var warning = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
+            Assert.Contains(claim.Claim.SessionId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ports.ToolCallId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ErrorCodes.Hub.Error, warning.Message);
+            Assert.Null(warning.Exception);
+            Assert.DoesNotContain("private", warning.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, ErrorCodes.Covenant.StaleSnapshot)]
+    [InlineData(true, ErrorCodes.Covenant.StaleSnapshot)]
+    [InlineData(false, ErrorCodes.Session.CampaignBindingRequired)]
+    [InlineData(true, ErrorCodes.Grimoire.MaintenanceUnavailable)]
+    public async Task Begin_refusals_log_the_safe_session_claim_and_error_code(bool claimed, string code)
+    {
+        Guid session = Guid.NewGuid();
+        SessionTurnClaimLease claim = WriterClaim();
+        session = claimed ? claim.Claim.SessionId : session;
+        Error refusal = new(code, "private-error");
+        FakeSessionTurnBeginStore begin = new() { BeginResult = Result<AssistantReplyBeginReceipt>.Failure(refusal) };
+        ClaimWriterPorts ports = new() { BeginRefusal = refusal };
+        CapturingLogger logger = new();
+        using GrimoireTurnWriter writer = new(new TrackingGrimoireRepository(), begin, CreateHub(), logger,
+            turnCommitter: ports, claimedBeginStore: ports, claims: ports);
+        var result = await writer.BeginBufferedAssistantReplyAsync(new("private", SessionId: session),
+            InvocationContexts.AttendedSession(), "private", "private-model", default, claimed ? claim : null);
+        Assert.True(result.IsFailure);
+        var warning = Assert.Single(logger.Entries);
+        Assert.Contains(session.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+        if (claimed) Assert.Contains(claim.FutureAssistantEntryId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(refusal.Code, warning.Message);
+        Assert.Null(warning.Exception);
+        Assert.DoesNotContain("private", warning.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task A_claimed_begin_uses_its_atomic_port_and_reserved_identity_without_legacy_begin(bool streamed)
@@ -150,7 +309,7 @@ public sealed class GrimoireTurnWriterTests
         GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
             new("hello", SessionId: claim.Claim.SessionId), InvocationContexts.AttendedSession(), "hello", "model", CancellationToken.None, claim)).Value;
 
-        Assert.False(await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "answer", "model", CancellationToken.None));
+        Assert.True(await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "answer", "model", CancellationToken.None));
 
         Assert.Single(ports.Commits);
 
@@ -176,6 +335,15 @@ public sealed class GrimoireTurnWriterTests
         public int Begins { get; private set; }
 
         public bool RefuseCompletion { get; set; }
+        public Error? BeginRefusal { get; init; }
+        public Error? CommitRefusal { get; init; }
+        public int ToolPairs { get; private set; }
+        public Guid ToolCallId { get; } = Guid.NewGuid();
+        public Task<Result<ProtectedToolInteractionReceipt>> AppendProtectedToolInteractionAsync(ProtectedToolInteraction request, CancellationToken cancellationToken)
+        {
+            ToolPairs++;
+            return Task.FromResult(Result<ProtectedToolInteractionReceipt>.Success(new(ToolCallId, Guid.NewGuid(), 4)));
+        }
 
         public List<SessionTurnClaimOutcome> Outcomes { get; } = [];
 
@@ -184,6 +352,8 @@ public sealed class GrimoireTurnWriterTests
         public Task<Result<TurnCommitReceipt>> CommitTurnAsync(TurnCommitRequest request, CancellationToken cancellationToken)
         {
             Commits.Add(request);
+
+            if (CommitRefusal is { } refusal) return Task.FromResult(Result<TurnCommitReceipt>.Failure(refusal));
 
             return Task.FromResult(Result<TurnCommitReceipt>.Success(new(request.AssistantEntryId, request.Outcome, false, [], 1)));
         }
@@ -194,6 +364,7 @@ public sealed class GrimoireTurnWriterTests
             SessionTurnClaimLease lease, CanonicalCampaignContext campaign, string prompt, string model, CancellationToken cancellationToken)
         {
             Begins++;
+            if (BeginRefusal is { } refusal) return ValueTask.FromResult(Result<AssistantReplyBeginReceipt>.Failure(refusal));
 
             return ValueTask.FromResult(Result<AssistantReplyBeginReceipt>.Success(new(lease.Claim.SessionId, Guid.NewGuid(), lease.FutureAssistantEntryId,
                 new(lease.Claim.SessionId, campaign.Binding, lease.Claim.PreRequestHistoryRevision, 0))));
@@ -459,7 +630,7 @@ public sealed class GrimoireTurnWriterTests
 
         Assert.Contains(
             logger.Entries,
-            e => e.Exception is InvalidOperationException && e.Message.Contains("could not finalize", StringComparison.OrdinalIgnoreCase));
+            e => e.Exception is null && e.Message.Contains("could not finalize", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -532,12 +703,12 @@ public sealed class GrimoireTurnWriterTests
 
         Assert.Contains(
             logger.Entries,
-            e => e.Exception is InvalidOperationException
+            e => e.Exception is null
                 && e.Message.Contains("could not finalize", StringComparison.OrdinalIgnoreCase));
 
         Assert.Contains(
             logger.Entries,
-            e => e.Exception is InvalidOperationException
+            e => e.Exception is null
                 && e.Message.Contains("after finalize failure", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -816,8 +987,8 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(1, grimoire.FinalizeCallCount);
         Assert.Contains(
             logger.Entries,
-            entry => entry.Exception is InvalidOperationException
-                && entry.Message.Contains("resolve interrupted", StringComparison.OrdinalIgnoreCase));
+            entry => entry.Exception is null
+                && entry.Message.Contains("could not resolve", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -875,7 +1046,7 @@ public sealed class GrimoireTurnWriterTests
 
         Assert.Contains(
             logger.Entries,
-            entry => entry.Exception is OperationCanceledException
+            entry => entry.Exception is null
                 && entry.Message.Contains("during cleanup", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -944,7 +1115,7 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(1, grimoire.AppendCallCount);
         Assert.Contains(
             logger.Entries,
-            entry => entry.Exception is InvalidOperationException
+            entry => entry.Exception is null
                 && entry.Message.Contains("could not append", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -990,7 +1161,7 @@ public sealed class GrimoireTurnWriterTests
         Assert.NotNull(handle.AssistantEntryId);
         Assert.Contains(
             logger.Entries,
-            entry => entry.Exception is InvalidOperationException
+            entry => entry.Exception is null
                 && entry.Message.Contains("could not publish begin", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -1212,6 +1383,8 @@ public sealed class GrimoireTurnWriterTests
 
         public List<GrimoireEntryDto>? RecentEntries { get; init; }
 
+        public Exception? EntryByIdException { get; init; }
+
         public bool EntryByIdThrows { get; init; }
 
         public bool ReturnEntryOnLookup { get; init; }
@@ -1335,6 +1508,8 @@ public sealed class GrimoireTurnWriterTests
         public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default)
         {
             EntryByIdPublishCount++;
+
+            if (EntryByIdException is not null) throw EntryByIdException;
 
             if (EntryByIdThrows)
             {
