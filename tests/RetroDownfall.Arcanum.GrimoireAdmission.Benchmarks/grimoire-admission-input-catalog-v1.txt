@@ -604,8 +604,10 @@ R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestryStore.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/ITapestrySummarizer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorAlgorithmManifest.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorFuzzyGraphBuilder.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorGaussianMixture.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNeighborGraphBuilder.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorNumericContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorSmallMatrix.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/Raptor/RaptorUmapOptimizer.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/SphericalKMeans.cs
 R	src/RetroDownfall.Arcanum.Core/Weave/Tapestry/TapestryContracts.cs
