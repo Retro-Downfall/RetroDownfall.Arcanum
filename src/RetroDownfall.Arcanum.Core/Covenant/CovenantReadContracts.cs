@@ -12,18 +12,18 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// <see cref="NotEvaluated"/> is a real answer, not a missing one. An all-scope inspection with no
 /// evaluation Campaign genuinely cannot say whether a Global entry is shadowed, because the answer is
 /// different in every Campaign. Reporting <c>false</c> there would be a confident wrong answer, which
-/// is worse than an honest absence (§10.16).
+/// is worse than an honest absence (§10.16). Bounded list/search metadata also reports Global
+/// shadowing as NotEvaluated even with an evaluation Campaign, because it lacks the complete
+/// eligible Campaign head set. Campaign heads themselves cannot be shadowed.
 /// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEffectiveShadowState>))]
 public enum CovenantEffectiveShadowState : byte
 {
-
     NotEvaluated = 1,
 
     NotShadowed = 2,
 
     ShadowedByCampaignConfirmed = 3,
-
 }
 
 /// <summary>
@@ -32,12 +32,13 @@ public enum CovenantEffectiveShadowState : byte
 /// <remarks>
 /// Deliberately separate from lifecycle. A <c>Set</c> head is locally alive and may still be
 /// review-only, shadowed, or pressured out, and a management surface that conflated the two would
-/// tell an operator their preference is active when nothing has ever rendered it.
+/// tell an operator their preference is active when nothing has ever rendered it. List/search
+/// proves only retirement and foreign Campaign ineligibility when an evaluation Campaign is named;
+/// all other rows report NotEvaluated rather than guessing at linker and admission outcomes.
 /// </remarks>
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEffectiveMaterialization>))]
 public enum CovenantEffectiveMaterialization : byte
 {
-
     NotEvaluated = 1,
 
     Eligible = 2,
@@ -47,7 +48,6 @@ public enum CovenantEffectiveMaterialization : byte
     Shadowed = 4,
 
     Ineligible = 5,
-
 }
 
 /// <summary>
@@ -56,13 +56,11 @@ public enum CovenantEffectiveMaterialization : byte
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantPageTruncation>))]
 public enum CovenantPageTruncation : byte
 {
-
     None = 1,
 
     PageSizeReached = 2,
 
     FallbackCandidateCapReached = 3,
-
 }
 
 /// <summary>
@@ -76,7 +74,6 @@ public enum CovenantPageTruncation : byte
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantSearchHealthState>))]
 public enum CovenantSearchHealthState : byte
 {
-
     Healthy = 1,
 
     Synchronizing = 2,
@@ -84,7 +81,6 @@ public enum CovenantSearchHealthState : byte
     Degraded = 3,
 
     Unavailable = 4,
-
 }
 
 /// <summary>
@@ -220,10 +216,8 @@ public sealed record CovenantSourcesDto(
 /// </remarks>
 public sealed record CovenantCurationStateDto(bool IsPinned, bool IsMasked, long Revision)
 {
-
     /// <summary>The state of a lane nobody has curated.</summary>
     public static CovenantCurationStateDto None { get; } = new(false, false, 0);
-
 }
 
 /// <summary>
@@ -342,7 +336,6 @@ public sealed record CovenantScopeCountDto(
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantCensusReadState>))]
 public enum CovenantCensusReadState : byte
 {
-
     /// <summary>The census was taken. The counts beside it are a measurement.</summary>
     Read = 1,
 
@@ -351,7 +344,6 @@ public enum CovenantCensusReadState : byte
 
     /// <summary>The capability was held and the read itself failed, so nothing was counted.</summary>
     Failed = 3,
-
 }
 
 /// <summary>
@@ -393,7 +385,6 @@ public sealed record CovenantListRequest(
     int Limit,
     string? Cursor)
 {
-
     /// <summary>The clamped page size, in the closed 1-200 range, defaulting at or below zero.</summary>
     [JsonIgnore]
     public int EffectiveLimit =>
@@ -406,7 +397,6 @@ public sealed record CovenantListRequest(
             CovenantWireValidation.ValidateLifecycle(Lifecycle),
             CovenantWireValidation.ValidateEvaluationCampaign(EffectiveForCampaignId),
             CovenantWireValidation.ValidateCursor(Cursor));
-
 }
 
 /// <summary>
@@ -426,7 +416,6 @@ public sealed record CovenantQueryRequest(
     int Limit,
     string? Cursor)
 {
-
     [JsonIgnore]
     public int EffectiveLimit =>
         Limit <= 0 ? CovenantLimits.DefaultPageSize : CovenantManagementReadLimits.ClampPageSize(Limit);
@@ -439,7 +428,6 @@ public sealed record CovenantQueryRequest(
             CovenantWireValidation.ValidateEvaluationCampaign(EffectiveForCampaignId),
             CovenantWireValidation.ValidateSearchText(Query),
             CovenantWireValidation.ValidateCursor(Cursor));
-
 }
 
 /// <summary>
@@ -454,12 +442,10 @@ public sealed record CovenantDetailRequest(
     Guid? CampaignId,
     string Key)
 {
-
     public Result Validate() =>
         CovenantWireValidation.First(
             CovenantWireValidation.ValidateOperationScope(Scope, CampaignId),
             CovenantWireValidation.ValidateKey(Key));
-
 }
 
 /// <summary>
@@ -471,7 +457,6 @@ public sealed record CovenantVersionsRequest(
     int Limit,
     string? Cursor)
 {
-
     [JsonIgnore]
     public int EffectiveLimit =>
         Limit <= 0 ? CovenantLimits.DefaultPageSize : CovenantManagementReadLimits.ClampPageSize(Limit);
@@ -481,7 +466,6 @@ public sealed record CovenantVersionsRequest(
             CovenantWireValidation.RequireIdentity(EntryId, "Covenant entry identity"),
             CovenantWireValidation.ValidateLane(Lane),
             CovenantWireValidation.ValidateCursor(Cursor));
-
 }
 
 /// <summary>
@@ -489,10 +473,8 @@ public sealed record CovenantVersionsRequest(
 /// </summary>
 public sealed record CovenantSourcesRequest(Guid VersionId)
 {
-
     public Result Validate() =>
         CovenantWireValidation.RequireIdentity(VersionId, "Covenant version identity");
-
 }
 
 /// <summary>
@@ -500,8 +482,6 @@ public sealed record CovenantSourcesRequest(Guid VersionId)
 /// </summary>
 public sealed record CovenantExplainRequest(Guid? CampaignId, bool ShowContent)
 {
-
     public Result Validate() =>
         CovenantWireValidation.ValidateEvaluationCampaign(CampaignId);
-
 }

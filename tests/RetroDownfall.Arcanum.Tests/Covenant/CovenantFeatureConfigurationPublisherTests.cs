@@ -1,4 +1,7 @@
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using RetroDownfall.Arcanum.Tests.Support;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -25,11 +28,48 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantFeatureConfigurationPublisherTests
 {
+    [Fact]
+    public void Feature_flips_are_operator_visible_and_unchanged_callbacks_are_quiet()
+    {
+        CovenantAvailability availability = new();
+
+        TestOptionsMonitor monitor = new(Settings(covenant: false));
+
+        TestCapturingLogger<CovenantFeatureConfigurationPublisher> logger = new();
+
+        ServiceCollection services = new();
+
+        services.AddSingleton<ILogger<CovenantFeatureConfigurationPublisher>>(logger);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        using CovenantFeatureConfigurationPublisher publisher = ActivatorUtilities.CreateInstance<CovenantFeatureConfigurationPublisher>(provider, availability, monitor);
+
+        publisher.Start();
+
+        monitor.Change(Settings(covenant: true));
+
+        monitor.Change(Settings(covenant: true));
+
+        monitor.Change(Settings(covenant: false));
+
+        Assert.Equal(2, logger.Entries.Count);
+
+        Assert.All(logger.Entries, entry =>
+        {
+            Assert.Equal(LogLevel.Information, entry.Level);
+
+            Assert.Null(entry.Exception);
+        });
+
+        Assert.Contains("True", logger.Entries.First().Message, StringComparison.Ordinal);
+
+        Assert.Contains("False", logger.Entries.Last().Message, StringComparison.Ordinal);
+    }
 
     [Fact]
     public void Startup_publishes_the_configured_value_and_advances_the_generation()
     {
-
         CovenantAvailability availability = new();
 
         long before = availability.Current.Generation;
@@ -45,13 +85,11 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         Assert.True(availability.Current.Generation > before);
 
         Assert.Equal(CovenantHealthTransition.FeatureConfiguration, availability.Current.LastHealthTransition);
-
     }
 
     [Fact]
     public void Startup_after_schema_publication_preserves_the_installed_schema_snapshot()
     {
-
         CovenantAvailability availability = new();
 
         _ = availability.PublishSchema(
@@ -84,13 +122,11 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         Assert.Equal("accelerator-installed", snapshot.AcceleratorInstalledFingerprint);
 
         Assert.Equal(CovenantHealthTransition.FeatureConfiguration, snapshot.LastHealthTransition);
-
     }
 
     [Fact]
     public void Configuration_change_publishes_feature_state_and_advances_availability_generation()
     {
-
         CovenantAvailability availability = new();
 
         TestOptionsMonitor monitor = new(Settings(covenant: false));
@@ -112,13 +148,11 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         monitor.Change(Settings(covenant: false));
 
         Assert.False(availability.Current.FeatureEnabled);
-
     }
 
     [Fact]
     public void Disable_between_provider_attempts_is_visible_without_database_or_secret_store_io()
     {
-
         CovenantAvailability availability = new();
 
         TestOptionsMonitor monitor = new(Settings(covenant: true));
@@ -135,13 +169,11 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         monitor.Change(Settings(covenant: false));
 
         Assert.False(availability.Current.FeatureEnabled);
-
     }
 
     [Fact]
     public void A_stale_callback_cannot_overwrite_a_later_value()
     {
-
         CovenantAvailability availability = new();
 
         TestOptionsMonitor monitor = new(Settings(covenant: false));
@@ -156,13 +188,11 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         monitor.ChangeWithStaleDelivery(latest: Settings(covenant: true), delivered: Settings(covenant: false));
 
         Assert.True(availability.Current.FeatureEnabled);
-
     }
 
     [Fact]
     public void Disposal_stops_publishing()
     {
-
         CovenantAvailability availability = new();
 
         TestOptionsMonitor monitor = new(Settings(covenant: false));
@@ -180,7 +210,6 @@ public sealed class CovenantFeatureConfigurationPublisherTests
         Assert.False(availability.Current.FeatureEnabled);
 
         Assert.Equal(afterDispose, availability.Current.Generation);
-
     }
 
     private static ArcanumSettings Settings(bool covenant) =>
@@ -199,7 +228,6 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
     private sealed class TestOptionsMonitor(ArcanumSettings initial) : IOptionsMonitor<ArcanumSettings>
     {
-
         private readonly List<Action<ArcanumSettings, string?>> _listeners = [];
 
         public ArcanumSettings CurrentValue { get; private set; } = initial;
@@ -208,48 +236,34 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         public IDisposable OnChange(Action<ArcanumSettings, string?> listener)
         {
-
             _listeners.Add(listener);
 
             return new Subscription(() => _listeners.Remove(listener));
-
         }
 
         public void Change(ArcanumSettings updated)
         {
-
             CurrentValue = updated;
 
             foreach (Action<ArcanumSettings, string?> listener in _listeners.ToArray())
             {
-
                 listener(updated, null);
-
             }
-
         }
 
         public void ChangeWithStaleDelivery(ArcanumSettings latest, ArcanumSettings delivered)
         {
-
             CurrentValue = latest;
 
             foreach (Action<ArcanumSettings, string?> listener in _listeners.ToArray())
             {
-
                 listener(delivered, null);
-
             }
-
         }
 
         private sealed class Subscription(Action dispose) : IDisposable
         {
-
             public void Dispose() => dispose();
-
         }
-
     }
-
 }

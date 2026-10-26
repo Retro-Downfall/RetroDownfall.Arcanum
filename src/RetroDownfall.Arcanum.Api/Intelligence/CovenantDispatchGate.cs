@@ -33,7 +33,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </remarks>
 public sealed class CovenantTurnScope : IAsyncDisposable
 {
-
     private readonly CovenantTurnContext _context;
 
     private ulong _attemptOrdinal;
@@ -44,7 +43,6 @@ public sealed class CovenantTurnScope : IAsyncDisposable
         Guid? sessionId,
         bool historyTainted)
     {
-
         _context = context;
 
         LogicalTurnId = logicalTurnId;
@@ -52,7 +50,6 @@ public sealed class CovenantTurnScope : IAsyncDisposable
         SessionId = sessionId;
 
         HistoryTainted = historyTainted;
-
     }
 
     /// <summary>The inert scope for a turn that is not eligible to read Covenant content at all.</summary>
@@ -212,7 +209,6 @@ public sealed class CovenantTurnScope : IAsyncDisposable
             }
         }
     }
-
 }
 
 /// <summary>
@@ -259,12 +255,10 @@ public sealed record CovenantDispatchPlan(
     CovenantAdmissionPlan? Admission,
     ulong AvailableTokenBudget)
 {
-
     /// <summary>The dispatch that injects nothing, for a turn with no plan.</summary>
     public static CovenantDispatchPlan Empty { get; } = new(CovenantPromptContent.None, null, 0);
 
     public bool HasAdmittedContent => !Content.IsEmpty;
-
 }
 
 /// <summary>
@@ -275,9 +269,7 @@ public sealed record CovenantDispatchAdmission(
     CovenantDisclosureReceipt? Disclosure,
     ProviderCallSensitivity Sensitivity)
 {
-
     public bool IsCovenantDerived => Sensitivity.Level is ContentSensitivity.CovenantDerived;
-
 }
 
 /// <summary>
@@ -300,7 +292,6 @@ public sealed class CovenantDispatchGate(
     TimeProvider timeProvider,
     ILogger<CovenantDispatchGate> logger)
 {
-
     /// <summary>
     /// Acquires this turn's single Covenant plan, or a typed reason why it has none.
     /// </summary>
@@ -316,14 +307,12 @@ public sealed class CovenantDispatchGate(
         Guid? sessionId,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(invocation);
 
         bool tainted = await ReadHistoryTaintAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         if (logicalTurnId == Guid.Empty)
         {
-
             return Record(
                 new CovenantTurnScope(
                     CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible),
@@ -331,7 +320,6 @@ public sealed class CovenantDispatchGate(
                     sessionId,
                     tainted),
                 invocation.Campaign?.CampaignId);
-
         }
 
         Result<CovenantTurnContext> begun = await contextProvider
@@ -340,19 +328,16 @@ public sealed class CovenantDispatchGate(
 
         if (begun.IsFailure)
         {
-
             logger.LogWarning(
                 "Covenant turn acquisition failed with {ErrorCode}; the turn is refused.",
                 begun.Error.Code);
 
             return begun.Error;
-
         }
 
         return Record(
             new CovenantTurnScope(begun.Value, logicalTurnId, sessionId, tainted),
             invocation.Campaign?.CampaignId);
-
     }
 
     /// <summary>The empty provenance every absence record carries, allocated once rather than per turn.</summary>
@@ -366,16 +351,16 @@ public sealed class CovenantDispatchGate(
     /// was previously readable only by holding the scope, which nothing outside the dispatch path
     /// does. One record per turn makes it answerable from a log without a debugger attached.
     ///
-    /// <para>Debug rather than Information because it fires on every live turn, including the
-    /// overwhelmingly common one where a plan was present and nothing was wrong; a per-turn
-    /// Information line would drown the warnings above it. The payload is a
+    /// <para>Absence reasons are Information so the host's normal log pipeline exposes them.
+    /// A present plan or an ineligible invocation stays Debug. The payload is a
     /// <see cref="CovenantProtectedLogScope"/> so the type, not this call site, is what guarantees
     /// no Covenant key, fragment, or content digest can ever be added to it.</para>
     /// </remarks>
     private CovenantTurnScope Record(CovenantTurnScope scope, Guid? campaignId)
     {
-
-        logger.LogDebug(
+        logger.Log(
+            scope.Absence is CovenantTurnAbsence.None or CovenantTurnAbsence.NotEligible
+                ? Microsoft.Extensions.Logging.LogLevel.Debug : Microsoft.Extensions.Logging.LogLevel.Information,
             "Covenant turn {LogicalTurnId} resolved to {CovenantAbsence} ({CovenantScope}), history tainted {HistoryTainted}.",
             scope.LogicalTurnId,
             scope.Absence,
@@ -392,7 +377,6 @@ public sealed class CovenantDispatchGate(
             scope.HistoryTainted);
 
         return scope;
-
     }
 
     /// <summary>
@@ -409,7 +393,6 @@ public sealed class CovenantDispatchGate(
         Func<CovenantPromptContent, ulong> measureSections,
         Func<string, ulong> measureFragment)
     {
-
         ArgumentNullException.ThrowIfNull(scope);
 
         ArgumentNullException.ThrowIfNull(measureSections);
@@ -418,9 +401,7 @@ public sealed class CovenantDispatchGate(
 
         if (scope.Plan is not { } plan)
         {
-
             return CovenantDispatchPlan.Empty;
-
         }
 
         CovenantAdmissionPlan admission = CovenantAdmissionPlanner.Plan(
@@ -430,7 +411,6 @@ public sealed class CovenantDispatchGate(
             measureFragment);
 
         return new CovenantDispatchPlan(admission.AdmittedContent, admission, availableTokenBudget);
-
     }
 
     /// <summary>
@@ -444,7 +424,6 @@ public sealed class CovenantDispatchGate(
     /// </remarks>
     public static ProviderCallSensitivity ResolveSensitivity(CovenantTurnScope scope, CovenantDispatchPlan plan)
     {
-
         ArgumentNullException.ThrowIfNull(scope);
 
         ArgumentNullException.ThrowIfNull(plan);
@@ -455,7 +434,6 @@ public sealed class CovenantDispatchGate(
 
         if (!derived)
         {
-
             GenerationProvenance clean = GenerationProvenance.CreateExact([]);
 
             return new ProviderCallSensitivity(
@@ -466,7 +444,6 @@ public sealed class CovenantDispatchGate(
                     clean.Mode,
                     clean.ExactGenerationIds,
                     clean.BloomBits)));
-
         }
 
         // The dataset generation is the honest provenance for an injected plan: the exact rows are
@@ -498,7 +475,6 @@ public sealed class CovenantDispatchGate(
                 provenance.Mode,
                 provenance.ExactGenerationIds,
                 provenance.BloomBits)));
-
     }
 
     /// <summary>
@@ -521,7 +497,6 @@ public sealed class CovenantDispatchGate(
         ProviderCallEnvelope providerCall,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(scope);
 
         ArgumentNullException.ThrowIfNull(plan);
@@ -532,7 +507,6 @@ public sealed class CovenantDispatchGate(
 
         if (sensitivity.Level is not ContentSensitivity.CovenantDerived && scope.Protection is null)
         {
-
             // Nothing Covenant-derived is leaving, so there is nothing to disclose and the reply this
             // call produces stays unlabelled. A turn that may stage still earns its admission here:
             // the staging capability is minted from that receipt and from nothing else, so a gate
@@ -544,25 +518,20 @@ public sealed class CovenantDispatchGate(
 
             if (stagingAdmission is not null)
             {
-
                 scope.RecordAdmitted(stagingAdmission);
-
             }
 
             return Result<CovenantDispatchAdmission>.Success(
                 new CovenantDispatchAdmission(stagingAdmission, null, sensitivity));
-
         }
 
         Guid installationId = ResolveInstallationIdentity();
 
         if (installationId == Guid.Empty)
         {
-
             return Result<CovenantDispatchAdmission>.Failure(new Error(
                 ErrorCodes.Covenant.OperatorAuthorityUnavailable,
                 "This installation has no established Covenant authority to disclose under."));
-
         }
 
         ulong attemptOrdinal = scope.NextAttemptOrdinal();
@@ -602,9 +571,7 @@ public sealed class CovenantDispatchGate(
 
         if (acknowledged.IsFailure)
         {
-
             return Result<CovenantDispatchAdmission>.Failure(acknowledged.Error);
-
         }
 
         scope.RecordDerived(sensitivity);
@@ -614,14 +581,11 @@ public sealed class CovenantDispatchGate(
         // never allowed to leave.
         if (receipt is not null)
         {
-
             scope.RecordAdmitted(receipt);
-
         }
 
         return Result<CovenantDispatchAdmission>.Success(
             new CovenantDispatchAdmission(receipt, acknowledged.Value, sensitivity));
-
     }
 
     /// <summary>
@@ -638,12 +602,9 @@ public sealed class CovenantDispatchGate(
         ProviderCallEnvelope providerCall,
         ulong attemptOrdinal)
     {
-
         if (scope.Plan is not { } turnPlan || plan.Admission is not { } admission)
         {
-
             return null;
-
         }
 
         return new CovenantAdmissionReceipt(
@@ -656,17 +617,13 @@ public sealed class CovenantDispatchGate(
             plan.AvailableTokenBudget,
             admission.EstimatedAdmittedTokens,
             admission.Candidates);
-
     }
 
     private async ValueTask<bool> ReadHistoryTaintAsync(Guid? sessionId, CancellationToken cancellationToken)
     {
-
         if (sessionId is not { } id || id == Guid.Empty)
         {
-
             return false;
-
         }
 
         Result<SessionSensitivityProjection> projection = await sensitivityLedger
@@ -675,7 +632,6 @@ public sealed class CovenantDispatchGate(
 
         if (projection.IsFailure)
         {
-
             // Fail toward taint. "We could not read the label" and "there is no label" are different
             // facts, and treating the first as the second is exactly how an unlabelled tainted
             // dispatch would leave without a receipt.
@@ -684,11 +640,9 @@ public sealed class CovenantDispatchGate(
                 projection.Error.Code);
 
             return true;
-
         }
 
         return projection.Value.IsTainted;
-
     }
 
     private Guid ResolveInstallationIdentity() =>
@@ -712,5 +666,4 @@ public sealed class CovenantDispatchGate(
             0x00,
             .. System.Text.Encoding.UTF8.GetBytes(providerIdentity),
         ]));
-
 }

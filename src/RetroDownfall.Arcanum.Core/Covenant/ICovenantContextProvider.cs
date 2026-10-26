@@ -9,7 +9,7 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// <remarks>
 /// A closed reason rather than a null plan and a log line. "The prompt has no Covenant bytes" and
 /// "the operator's profile was silently unavailable" look identical to a caller and mean completely
-/// different things to an operator reading <c>context inspect</c>.
+/// different things to an operator reading the content-free turn absence record in the host logs.
 /// </remarks>
 public enum CovenantTurnAbsence : byte
 {
@@ -48,7 +48,6 @@ public enum CovenantTurnAbsence : byte
 /// </remarks>
 public sealed class CovenantTurnContext : IAsyncDisposable
 {
-
     private readonly CovenantTurnLease? _lease;
 
     private CovenantTurnContext(
@@ -59,7 +58,6 @@ public sealed class CovenantTurnContext : IAsyncDisposable
         ICovenantTurnHeadProbe? headProbe,
         Guid logicalTurnId)
     {
-
         Absence = absence;
 
         Plan = plan;
@@ -71,7 +69,6 @@ public sealed class CovenantTurnContext : IAsyncDisposable
         HeadProbe = headProbe;
 
         LogicalTurnId = logicalTurnId;
-
     }
 
     /// <summary>The value every turn that carries no Covenant plan uses.</summary>
@@ -87,7 +84,6 @@ public sealed class CovenantTurnContext : IAsyncDisposable
         Guid logicalTurnId,
         ICovenantTurnHeadProbe? headProbe = null)
     {
-
         ArgumentNullException.ThrowIfNull(plan);
 
         ArgumentNullException.ThrowIfNull(lease);
@@ -99,7 +95,6 @@ public sealed class CovenantTurnContext : IAsyncDisposable
             collector,
             headProbe,
             CovenantValidation.RequireNonEmpty(logicalTurnId, nameof(logicalTurnId)));
-
     }
 
     public CovenantTurnAbsence Absence { get; }
@@ -133,16 +128,13 @@ public sealed class CovenantTurnContext : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-
         Collector?.Discard();
 
         if (_lease is not null)
         {
             await _lease.DisposeAsync().ConfigureAwait(false);
         }
-
     }
-
 }
 
 /// <summary>
@@ -155,10 +147,8 @@ public sealed class CovenantTurnContext : IAsyncDisposable
 /// </remarks>
 public interface ICovenantContextProvider
 {
-
     ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(
         ArcanumInvocationContext invocation,
         Guid logicalTurnId,
         CancellationToken cancellationToken);
-
 }

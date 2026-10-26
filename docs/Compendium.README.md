@@ -97,7 +97,7 @@ Arcanum does not flatten arbitrary environment variables into the configuration 
 | `host.https.certificatePath` | `string?`, `null` | path | PFX/P12 bundle, or PEM certificate when `privateKeyPath` is supplied. |
 | `host.https.privateKeyPath` | `string?`, `null` | path | Optional PEM private key. |
 | `host.https.certificatePasswordEnvironmentVariable` | `string?`, `null` | portable, case-insensitively unique environment name | Exact PFX-password reference; omission uses `ARCANUM_HTTPS_CERTIFICATE_PASSWORD`; PEM ignores it. |
-| `host.minLogLevelInBuffer` | enum `"information"` | `trace`, `debug`, `information`, `warning`, `error`, `critical` | Minimum severity retained in the in-memory diagnostics buffer. |
+| `host.minLogLevelInBuffer` | enum `"information"` | `information`, `warning`, `error`, `critical` | Minimum severity retained in the in-memory diagnostics buffer. The host emits Information and above; this filter can raise that floor, never lower it. Legacy `trace`/`debug` values remain readable but cannot enable those events. Category security floors still apply. |
 | `defaultModel` | `string?`, `null` | configured exact model name | Default when a request omits a model. |
 | `fastModel` | `string?`, `null` | configured exact model name | Optional model for eligible internal work. Long Rest uses it as its chat model and fails closed if it cannot (see `features.longRest`). |
 | `providers.name` | `string`, `""` | nonblank; unique case-insensitively | Human-readable provider identity. |

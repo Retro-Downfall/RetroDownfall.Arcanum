@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 
 using System.Text.Json;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 using RetroDownfall.Arcanum.Api.Serialization;
 
@@ -18,6 +19,75 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 public sealed class CovenantManagementServiceTests
 {
     private const int HitCount = 5;
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    public async Task Metadata_pages_never_invent_effective_eligibility(bool search, bool evaluate)
+    {
+        CancellationToken token = CancellationToken.None;
+
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(token);
+
+        Guid campaign = CovenantOperationGateFixture.CampaignOne;
+
+        Guid foreign = CovenantOperationGateFixture.CampaignTwo;
+
+        await fixture.AddCampaignAsync(campaign, "one", token);
+
+        await fixture.AddCampaignAsync(foreign, "two", token);
+
+        _ = await fixture.SeedHeadAsync(CovenantScope.Global, null, "preference.tone",
+            CovenantLane.Confirmed, CovenantOperation.Set, "Global body.", token);
+
+        _ = await fixture.SeedHeadAsync(CovenantScope.Campaign, campaign, "preference.tone",
+            CovenantLane.Confirmed, CovenantOperation.Set, "Campaign body.", token);
+
+        _ = await fixture.SeedHeadAsync(CovenantScope.Campaign, foreign, "preference.foreign",
+            CovenantLane.Confirmed, CovenantOperation.Set, "Foreign body.", token);
+
+        _ = await fixture.SeedHeadAsync(CovenantScope.Campaign, campaign, "preference.retired",
+            CovenantLane.Confirmed, CovenantOperation.Retire, null, token);
+
+        FakeCovenantAvailability availability = await CovenantSearchFixture.LiveAvailabilityAsync(fixture, token);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(availability);
+
+        CovenantManagementService service = new(fixture.Store, new CovenantLinker(), gate,
+            availability, new UnreachableCodec(), new UnreachableCampaignReader(),
+            new CovenantSearchIndex(new FixedCovenantConnectionSource(fixture.Connection)), new CovenantSearchQueryCompiler());
+
+        await using CovenantInstallationReadLease lease = await ReadLeaseAsync(gate);
+
+        Guid? evaluation = evaluate ? campaign : null;
+
+        Result<CovenantPageDto> result = search
+            ? await service.QueryAsync(new CovenantQueryRequest(CovenantCursorScopeSelection.AllScopes, null,
+                "preference", null, CovenantLifecycle.Any, evaluation, 20, null), lease, token)
+            : await service.ListAsync(new CovenantListRequest(CovenantCursorScopeSelection.AllScopes, null,
+                null, CovenantLifecycle.Any, evaluation, 20, null), lease, token);
+
+        Assert.True(result.IsSuccess, result.Error.Message);
+
+        Assert.Equal(4, result.Value.Items.Length);
+
+        Assert.Null(result.Value.NextCursor);
+
+        foreach (CovenantHeadDto head in result.Value.Items)
+        {
+            Assert.Equal(evaluate && head.Scope == CovenantScope.Campaign
+                ? CovenantEffectiveShadowState.NotShadowed : CovenantEffectiveShadowState.NotEvaluated, head.Shadow);
+
+            Assert.Equal(evaluate && (head.Lifecycle == CovenantLifecycle.Retired || head.CampaignId == foreign)
+                ? CovenantEffectiveMaterialization.Ineligible : CovenantEffectiveMaterialization.NotEvaluated, head.Materialization);
+        }
+
+        string json = JsonSerializer.Serialize(result.Value, ArcanumJsonContext.Default.CovenantPageDto);
+
+        Assert.DoesNotContain("\"Eligible\"", json, StringComparison.Ordinal);
+    }
 
     [Fact]
     public async Task Query_reads_heads_in_one_store_call()

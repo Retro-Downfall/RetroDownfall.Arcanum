@@ -56,6 +56,8 @@ internal sealed class CovenantMaintenanceHostedService(
     TimeProvider timeProvider,
     ILogger<CovenantMaintenanceHostedService> logger) : BackgroundService
 {
+    private readonly Dictionary<string, string> _refusedSweeps = new(StringComparer.Ordinal);
+
     /// <summary>How long a pass waits before the next one, when the tier is healthy.</summary>
     internal static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);
 
@@ -218,14 +220,18 @@ internal sealed class CovenantMaintenanceHostedService(
 
             if (outcome.IsFailure)
             {
-                logger.LogDebug(
-                    "Covenant {Sweep} sweep did not run this pass: {ErrorCode} {ErrorMessage}",
-                    sweep,
-                    outcome.Error.Code,
-                    outcome.Error.Message);
+                if (!_refusedSweeps.TryGetValue(sweep, out string? previousCode)
+                    || !string.Equals(previousCode, outcome.Error.Code, StringComparison.Ordinal))
+                {
+                    logger.LogWarning("Covenant {Sweep} sweep refused: {ErrorCode}.", sweep, outcome.Error.Code);
+
+                    _refusedSweeps[sweep] = outcome.Error.Code;
+                }
 
                 return;
             }
+
+            _refusedSweeps.Remove(sweep);
 
             logger.LogDebug("Covenant {Sweep} sweep applied {Applied}.", sweep, outcome.Value);
         }

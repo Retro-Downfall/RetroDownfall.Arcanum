@@ -100,7 +100,7 @@
                  FontWeight="SemiBold" />
 
       <controls:LabeledPicker Label="Buffered log level"
-                              Description="Minimum log level retained in the in-memory diagnostics buffer."
+                              Description="Minimum severity retained in memory. The host emits Information and above; this filter cannot enable Debug or Trace."
                               PickerTitle="Select log level"
                               Key="host.minLogLevelInBuffer"
                               ValidationErrors="{Binding ValidationErrorsByPointer}"
