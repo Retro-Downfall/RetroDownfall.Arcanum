@@ -475,7 +475,17 @@ public sealed class WebResearchWorkflowService(
 
             sanctumRefused = false;
 
-            string sourceDescription = $"Source {index + 1} of {selectedCitations.Length} ({SafeSourceHost(citation.Url)})";
+            if (!TryGetSourceHost(citation.Url, out string sourceHost))
+            {
+                yield return Progress(
+                    "source_unreadable",
+                    $"Source {index + 1} of {selectedCitations.Length} has an invalid URL ({ErrorCodes.WebResearch.InvalidUrl}); it is excluded from the evidence.",
+                    ErrorCodes.WebResearch.InvalidUrl);
+
+                continue;
+            }
+
+            string sourceDescription = $"Source {index + 1} of {selectedCitations.Length} ({sourceHost})";
 
             // Everything past the synthesis prompt's character budget is fetched, held, and then
             // discarded unread, so the phase stops here rather than paying for pages the model will
@@ -1412,11 +1422,38 @@ public sealed class WebResearchWorkflowService(
             ? $"an explicit target of {value} unique sources"
             : "source exhaustion or deterministic no-progress";
 
-    private static string SafeSourceHost(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
-        && parsed.Host.Length is > 0 and <= 253
-            ? parsed.IdnHost
-            : "unknown host";
+    private static bool TryGetSourceHost(string url, out string host)
+    {
+        host = string.Empty;
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? parsed)
+            || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps))
+        {
+            return false;
+        }
+
+        try
+        {
+            // Uri accepts some Unicode hosts whose IDN conversion throws. IPv6 Host omits the
+            // scope identifier; IdnHost includes it and must never be used for diagnostics.
+            string canonicalHost = parsed.HostNameType == UriHostNameType.IPv6
+                ? parsed.Host.Trim('[', ']')
+                : parsed.IdnHost;
+
+            if (canonicalHost.Length is not (> 0 and <= 253))
+            {
+                return false;
+            }
+
+            host = canonicalHost;
+
+            return true;
+        }
+        catch (UriFormatException)
+        {
+            return false;
+        }
+    }
 
     private static string SafeReadOutcomeCode(string code) => code switch
     {
