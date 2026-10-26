@@ -77,7 +77,7 @@ public sealed partial class GuardrailsPipeline(
     /// <see cref="ErrorCodes.Guardrails.Blocked"/>. Returns <see cref="GuardrailsResult.Allowed"/>
     /// when the pipeline is disabled or no violation matched.
     /// </summary>
-    /// <param name="messages">The inbound messages to scan.</param>
+    /// <param name="messages">The transcript; only the latest user group is scanned.</param>
     /// <param name="cancellationToken">
     /// Not observed. The scan is synchronous and bounded, and the violation audit record is a decision
     /// already taken, so it is written on <see cref="CancellationToken.None"/> rather than dropped when
@@ -91,7 +91,8 @@ public sealed partial class GuardrailsPipeline(
     {
         GuardrailsSettings settings = optionsMonitor.CurrentValue.ResolveGuardrails();
 
-        if (!settings.Enabled || messages is null or { Count: 0 })
+        if (!settings.Enabled || messages is null or { Count: 0 }
+            || !messages.Any(static message => IsRole(message, "user")))
         {
             return Result<GuardrailsResult>.Success(GuardrailsResult.Allowed);
         }
@@ -156,23 +157,52 @@ public sealed partial class GuardrailsPipeline(
 
     private static string ConcatenateMessageText(IReadOnlyList<CoreChatMessage> messages)
     {
-        if (messages.Count == 1)
+        // Anchor on the latest actual user, even if an assistant prefill or tool result follows it.
+        int lastUser = messages.Count - 1;
+
+        while (lastUser >= 0 && !IsRole(messages[lastUser], "user"))
         {
-            return messages[0].Content ?? string.Empty;
+            lastUser--;
+        }
+
+        int firstUser = lastUser;
+
+        while (firstUser > 0 && !IsRole(messages[firstUser - 1], "assistant"))
+        {
+            firstUser--;
         }
 
         StringBuilder builder = new();
 
-        foreach (CoreChatMessage message in messages)
+        for (int index = Math.Max(firstUser, 0); index <= lastUser; index++)
         {
-            if (!string.IsNullOrEmpty(message.Content))
+            CoreChatMessage message = messages[index];
+
+            if (!IsRole(message, "user"))
             {
-                builder.Append(message.Content).Append('\n');
+                continue;
+            }
+
+            builder.Append(message.Content).Append('\n');
+
+            if (message.ContentParts is not null)
+            {
+                foreach (CoreContentPart part in message.ContentParts)
+                {
+                    if (string.Equals(part.Kind, "text", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(part.Text, message.Content, StringComparison.Ordinal))
+                    {
+                        builder.Append(part.Text).Append('\n');
+                    }
+                }
             }
         }
 
         return builder.ToString();
     }
+
+    private static bool IsRole(CoreChatMessage message, string role) =>
+        string.Equals(message.Role, role, StringComparison.OrdinalIgnoreCase);
 
     private List<GuardrailsViolation> ScanInput(string text, GuardrailsSettings settings)
     {
@@ -180,7 +210,7 @@ public sealed partial class GuardrailsPipeline(
 
         if (settings.DetectPii)
         {
-            AddPiiViolations(violations, text);
+            AddPiiViolations(violations, text, settings);
         }
 
         if (settings.BlockToxicity && settings.ToxicityBlocklist is { Length: > 0 } blocklist)
@@ -207,11 +237,25 @@ public sealed partial class GuardrailsPipeline(
         return violations;
     }
 
-    private void AddPiiViolations(List<GuardrailsViolation> violations, string text)
+    private void AddPiiViolations(List<GuardrailsViolation> violations, string text, GuardrailsSettings settings)
     {
         foreach (PiiPattern pii in PiiPatterns)
         {
-            switch (MatchPattern(pii.Pattern, text, pii.Type, out string? matched))
+            bool enabled = pii.Type switch
+            {
+                TypePiiEmail => settings.DetectEmail,
+                TypePiiPhone => settings.DetectPhone,
+                TypePiiSsn => settings.DetectSsn,
+                TypePiiCreditCard => settings.DetectCreditCard,
+                _ => true,
+            };
+
+            if (!enabled)
+            {
+                continue;
+            }
+
+            switch (MatchPattern(pii.Pattern, text, pii.Type, out string? matched, requireLuhn: pii.Type == TypePiiCreditCard))
             {
                 case PatternMatch.Matched:
                     violations.Add(new GuardrailsViolation(
@@ -367,23 +411,24 @@ public sealed partial class GuardrailsPipeline(
     }
 
     /// <summary>
-    /// Runs one pattern once. A match budget that elapses is reported as
+    /// Evaluates pattern candidates, validating card checksums when requested. A match budget that elapses is reported as
     /// <see cref="PatternMatch.Undetermined"/> rather than thrown, so every caller picks its own
     /// fail-safe direction. The input text is never logged.
     /// </summary>
-    private PatternMatch MatchPattern(Regex regex, string text, string label, out string? matched)
+    private PatternMatch MatchPattern(Regex regex, string text, string label, out string? matched, bool requireLuhn = false)
     {
         matched = null;
 
         try
         {
-            Match m = regex.Match(text);
-
-            if (m.Success)
+            for (Match match = regex.Match(text); match.Success; match = match.NextMatch())
             {
-                matched = m.Value;
+                if (!requireLuhn || IsLuhnCard(match.Value))
+                {
+                    matched = match.Value;
 
-                return PatternMatch.Matched;
+                    return PatternMatch.Matched;
+                }
             }
         }
         catch (RegexMatchTimeoutException ex)
@@ -394,6 +439,54 @@ public sealed partial class GuardrailsPipeline(
         }
 
         return PatternMatch.NoMatch;
+    }
+
+    private static bool IsLuhnCard(string candidate)
+    {
+        int sum = 0;
+
+        int digits = 0;
+
+        int previous = -1;
+
+        bool distinct = false;
+
+        for (int index = candidate.Length - 1; index >= 0; index--)
+        {
+            char value = candidate[index];
+
+            if (value is ' ' or '-')
+            {
+                continue;
+            }
+
+            if (value is < '0' or > '9')
+            {
+                return false;
+            }
+
+            int digit = value - '0';
+
+            distinct |= previous >= 0 && previous != digit;
+
+            previous = digit;
+
+            if (digits % 2 == 1)
+            {
+                digit *= 2;
+
+                if (digit > 9)
+                {
+                    digit -= 9;
+                }
+            }
+
+            sum += digit;
+
+            digits++;
+        }
+
+        return digits is >= 13 and <= 19 && distinct && sum % 10 == 0;
     }
 
     private static Regex GetTopicRegex(string pattern)
@@ -480,14 +573,37 @@ public sealed partial class GuardrailsPipeline(
         return violation.Type.StartsWith("pii-", StringComparison.Ordinal)
             ? new Error(
                 ErrorCodes.Guardrails.PiiDetected,
-                isOutput
-                    ? "Response blocked: personally identifiable information detected in the model output."
-                    : "Input rejected: personally identifiable information detected. Redact PII and retry.")
+                PiiMessage(violation.Type))
             : new Error(
                 ErrorCodes.Guardrails.Blocked,
                 isOutput
                     ? "Response blocked: model output matched a guardrail policy (toxicity or topic)."
                     : "Input rejected: content matched a guardrail policy (toxicity or topic).");
+    }
+
+    private static string PiiMessage(string type) => type switch
+    {
+        TypePiiEmail => "Input rejected (pii-email): email address detected. Redact email addresses in the current user turn and retry.",
+        TypePiiPhone => "Input rejected (pii-phone): phone number detected. Redact phone numbers in the current user turn and retry.",
+        TypePiiSsn => "Input rejected (pii-ssn): Social Security number detected. Redact Social Security numbers in the current user turn and retry.",
+        TypePiiCreditCard => "Input rejected (pii-credit-card): credit card number detected. Redact credit card numbers in the current user turn and retry.",
+        _ => "Input rejected: personal information detected. Redact personal information in the current user turn and retry.",
+    };
+
+    // /v1 may carry only these code-owned messages, never arbitrary upstream Error.Message text.
+    internal static string PublicPiiMessage(string? message)
+    {
+        foreach (string type in new[] { TypePiiEmail, TypePiiPhone, TypePiiSsn, TypePiiCreditCard })
+        {
+            string allowed = PiiMessage(type);
+
+            if (string.Equals(message, allowed, StringComparison.Ordinal))
+            {
+                return allowed;
+            }
+        }
+
+        return PiiMessage(string.Empty);
     }
 
     /// <summary>
@@ -535,12 +651,12 @@ public sealed partial class GuardrailsPipeline(
     [GeneratedRegex(@"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, MatchTimeoutMilliseconds)]
     private static partial Regex EmailPattern();
 
-    [GeneratedRegex(@"\b\d{3}-\d{2}-\d{4}\b", RegexOptions.None, MatchTimeoutMilliseconds)]
+    [GeneratedRegex(@"(?<!\d)[0-9]{3}-[0-9]{2}-[0-9]{4}(?!\d)", RegexOptions.None, MatchTimeoutMilliseconds)]
     private static partial Regex SsnPattern();
 
-    [GeneratedRegex(@"\b(?:\d[ \-]?){13,19}\b", RegexOptions.None, MatchTimeoutMilliseconds)]
+    [GeneratedRegex(@"(?<!\d)(?<!\d[ -])[0-9](?:[ -]?[0-9]){12,18}(?![ -]?\d)", RegexOptions.None, MatchTimeoutMilliseconds)]
     private static partial Regex CreditCardPattern();
 
-    [GeneratedRegex(@"(?<!\d)(?:\+?\d{1,2}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]?\d{3}[\s.\-]?\d{4}(?!\d)", RegexOptions.None, MatchTimeoutMilliseconds)]
+    [GeneratedRegex(@"(?<!\d)(?<!\d[ .-])(?:\+[1-9](?:[ .-]?[0-9]){7,14}|(?:\+?[0-9]{1,3}[ .-]?)?(?:\([0-9]{3}\)[ .-]?[0-9]{3}[ .-]?[0-9]{4}|[0-9]{3}[ .-][0-9]{3}[ .-][0-9]{4}))(?![ .-]?\d)", RegexOptions.None, MatchTimeoutMilliseconds)]
     private static partial Regex PhonePattern();
 }

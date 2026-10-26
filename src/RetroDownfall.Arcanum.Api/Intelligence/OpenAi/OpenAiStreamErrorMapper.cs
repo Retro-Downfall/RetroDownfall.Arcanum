@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Api.Intelligence.Guardrails;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
@@ -59,7 +60,14 @@ internal static class OpenAiStreamErrorMapper
                     Param: "tool_choice",
                     Code: "invalid_value"),
 
-            ErrorCodes.Guardrails.Blocked or ErrorCodes.Guardrails.PiiDetected =>
+            ErrorCodes.Guardrails.PiiDetected =>
+                new OpenAiErrorDetail(
+                    GuardrailsPipeline.PublicPiiMessage(error?.Message),
+                    "api_error",
+                    Param: null,
+                    Code: "content_filter"),
+
+            ErrorCodes.Guardrails.Blocked =>
                 new OpenAiErrorDetail(
                     "The response was blocked by a configured guardrail policy.",
                     "api_error",

@@ -243,6 +243,22 @@ public sealed class SettingDescriptorParityTests
         Assert.Equal(clampName, descriptor.ClampName);
     }
 
+    [Theory]
+    [InlineData("security.guardrails.detectEmail")]
+    [InlineData("security.guardrails.detectPhone")]
+    [InlineData("security.guardrails.detectSsn")]
+    [InlineData("security.guardrails.detectCreditCard")]
+    public void Guardrail_detector_descriptors_expose_independent_boolean_policy(string key)
+    {
+        SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, value => value.Key == key);
+
+        Assert.Equal(SettingKind.Bool, descriptor.Kind);
+
+        Assert.Equal(ConfigSection.Security, descriptor.Section);
+
+        Assert.Equal("Content filters", descriptor.Group);
+    }
+
     private static object GetMinValue(Type type)
     {
         if (type == typeof(int))
