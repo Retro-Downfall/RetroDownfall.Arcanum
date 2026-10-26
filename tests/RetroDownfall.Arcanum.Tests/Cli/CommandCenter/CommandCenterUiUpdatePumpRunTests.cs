@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
@@ -12,6 +13,234 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 public sealed class CommandCenterUiUpdatePumpRunTests
 {
     private static readonly TimeSpan AsyncTestTimeout = TimeSpan.FromSeconds(30);
+
+    [Fact]
+    public async Task Separately_arriving_refreshes_fold_while_the_ui_callback_is_still_queued()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        ObservedReader reader = new(channel.Reader);
+
+        ConcurrentQueue<Action> callbacks = new();
+
+        List<CommandCenterUiUpdateKind> applied = [];
+
+        Task pump = CommandCenterUiUpdatePump.RunAsync(reader, callbacks.Enqueue, applied.Add,
+            new TestCapturingLogger<CommandCenterUiUpdatePumpRunTests>(), CancellationToken.None);
+
+        for (int count = 1; count <= 30; count++)
+        {
+            await channel.Writer.WriteAsync(new(CommandCenterUiUpdateKind.RefreshLog));
+
+            await reader.WaitUntilIdleAfterAsync(count);
+        }
+
+        channel.Writer.Complete();
+
+        await pump.WaitAsync(AsyncTestTimeout);
+
+        Assert.Single(callbacks)();
+
+        Assert.Equal([CommandCenterUiUpdateKind.RefreshLog], applied);
+    }
+
+    [Fact]
+    public async Task Pending_refreshes_widen_without_crossing_ordered_focus_actions()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        ObservedReader reader = new(channel.Reader);
+
+        ConcurrentQueue<Action> callbacks = new();
+
+        List<CommandCenterUiUpdateKind> applied = [];
+
+        Task pump = CommandCenterUiUpdatePump.RunAsync(reader, callbacks.Enqueue, applied.Add,
+            new TestCapturingLogger<CommandCenterUiUpdatePumpRunTests>(), CancellationToken.None);
+
+        CommandCenterUiUpdateKind[] input = [CommandCenterUiUpdateKind.RefreshLog,
+            CommandCenterUiUpdateKind.RefreshFooter, CommandCenterUiUpdateKind.FocusSessions,
+            CommandCenterUiUpdateKind.RefreshSidebar, CommandCenterUiUpdateKind.RefreshLog,
+            CommandCenterUiUpdateKind.FocusInput, CommandCenterUiUpdateKind.RefreshFooter];
+
+        for (int index = 0; index < input.Length; index++)
+        {
+            await channel.Writer.WriteAsync(new(input[index]));
+
+            await reader.WaitUntilIdleAfterAsync(index + 1);
+        }
+
+        channel.Writer.Complete();
+
+        await pump.WaitAsync(AsyncTestTimeout);
+
+        foreach (Action callback in callbacks)
+        {
+            callback();
+        }
+
+        Assert.Equal([CommandCenterUiUpdateKind.RefreshAll, CommandCenterUiUpdateKind.FocusSessions,
+            CommandCenterUiUpdateKind.RefreshAll, CommandCenterUiUpdateKind.FocusInput,
+            CommandCenterUiUpdateKind.RefreshFooter], applied);
+    }
+
+    [Fact]
+    public async Task Claiming_an_older_refresh_does_not_release_a_later_pending_refresh()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        ObservedReader reader = new(channel.Reader);
+
+        ConcurrentQueue<Action> callbacks = new();
+
+        List<CommandCenterUiUpdateKind> applied = [];
+
+        Task pump = CommandCenterUiUpdatePump.RunAsync(reader, callbacks.Enqueue, applied.Add,
+            new TestCapturingLogger<CommandCenterUiUpdatePumpRunTests>(), CancellationToken.None);
+
+        CommandCenterUiUpdateKind[] input = [CommandCenterUiUpdateKind.RefreshLog,
+            CommandCenterUiUpdateKind.FocusSessions, CommandCenterUiUpdateKind.RefreshFooter];
+
+        for (int index = 0; index < input.Length; index++)
+        {
+            await channel.Writer.WriteAsync(new(input[index]));
+
+            await reader.WaitUntilIdleAfterAsync(index + 1);
+        }
+
+        Assert.True(callbacks.TryDequeue(out Action? first));
+
+        first!();
+
+        await channel.Writer.WriteAsync(new(CommandCenterUiUpdateKind.RefreshSidebar));
+
+        await reader.WaitUntilIdleAfterAsync(4);
+
+        channel.Writer.Complete();
+
+        await pump.WaitAsync(AsyncTestTimeout);
+
+        Assert.Equal(2, callbacks.Count);
+
+        foreach (Action callback in callbacks)
+        {
+            callback();
+        }
+
+        Assert.Equal([CommandCenterUiUpdateKind.RefreshLog, CommandCenterUiUpdateKind.FocusSessions,
+            CommandCenterUiUpdateKind.RefreshAll], applied);
+    }
+
+    [Fact]
+    public async Task Refreshes_arriving_during_an_apply_form_one_following_refresh()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        ObservedReader reader = new(channel.Reader);
+
+        ConcurrentQueue<Action> callbacks = new();
+
+        ConcurrentQueue<CommandCenterUiUpdateKind> applied = new();
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task pump = CommandCenterUiUpdatePump.RunAsync(reader, callbacks.Enqueue, kind =>
+        {
+            applied.Enqueue(kind);
+
+            if (applied.Count == 1)
+            {
+                entered.SetResult();
+
+                release.Task.WaitAsync(AsyncTestTimeout).GetAwaiter().GetResult();
+            }
+        }, new TestCapturingLogger<CommandCenterUiUpdatePumpRunTests>(), CancellationToken.None);
+
+        await channel.Writer.WriteAsync(new(CommandCenterUiUpdateKind.RefreshLog));
+
+        await reader.WaitUntilIdleAfterAsync(1);
+
+        Assert.True(callbacks.TryDequeue(out Action? first));
+
+        Task firstApply = Task.Run(first!);
+
+        try
+        {
+            await entered.Task.WaitAsync(AsyncTestTimeout);
+
+            for (int count = 2; count <= 31; count++)
+            {
+                await channel.Writer.WriteAsync(new(count % 2 == 0
+                    ? CommandCenterUiUpdateKind.RefreshFooter : CommandCenterUiUpdateKind.RefreshSidebar));
+
+                await reader.WaitUntilIdleAfterAsync(count);
+            }
+
+            channel.Writer.Complete();
+
+            await pump.WaitAsync(AsyncTestTimeout);
+
+            Assert.Single(callbacks);
+        }
+        finally
+        {
+            release.TrySetResult();
+
+            await firstApply.WaitAsync(AsyncTestTimeout);
+
+            channel.Writer.TryComplete();
+        }
+
+        Assert.Single(callbacks)();
+
+        Assert.Equal([CommandCenterUiUpdateKind.RefreshLog, CommandCenterUiUpdateKind.RefreshAll], applied);
+    }
+
+    [Fact]
+    public async Task Failed_handoff_releases_the_pending_refresh_for_later_updates()
+    {
+        Channel<CommandCenterUiUpdate> channel = Channel.CreateUnbounded<CommandCenterUiUpdate>();
+
+        ObservedReader reader = new(channel.Reader);
+
+        ConcurrentQueue<Action> callbacks = new();
+
+        List<CommandCenterUiUpdateKind> applied = [];
+
+        TestCapturingLogger<CommandCenterUiUpdatePumpRunTests> logger = new();
+
+        int handoffs = 0;
+
+        Task pump = CommandCenterUiUpdatePump.RunAsync(reader, callback =>
+        {
+            if (++handoffs == 1)
+            {
+                throw new InvalidOperationException("queue refused the callback");
+            }
+
+            callbacks.Enqueue(callback);
+        }, applied.Add, logger, CancellationToken.None);
+
+        await channel.Writer.WriteAsync(new(CommandCenterUiUpdateKind.RefreshLog));
+
+        await reader.WaitUntilIdleAfterAsync(1);
+
+        await channel.Writer.WriteAsync(new(CommandCenterUiUpdateKind.RefreshFooter));
+
+        await reader.WaitUntilIdleAfterAsync(2);
+
+        channel.Writer.Complete();
+
+        await pump.WaitAsync(AsyncTestTimeout);
+
+        Assert.Single(callbacks)();
+
+        Assert.Equal([CommandCenterUiUpdateKind.RefreshFooter], applied);
+
+        Assert.Equal(LogLevel.Error, Assert.Single(logger.Entries).Level);
+    }
 
     [Fact]
     public async Task A_burst_of_queued_updates_is_applied_once()
@@ -163,4 +392,42 @@ public sealed class CommandCenterUiUpdatePumpRunTests
     }
 
     private static void RunInline(Action work) => work();
+
+    private sealed class ObservedReader(ChannelReader<CommandCenterUiUpdate> inner) : ChannelReader<CommandCenterUiUpdate>
+    {
+        private readonly Channel<int> _idleReadCounts = Channel.CreateUnbounded<int>();
+
+        private int _readCount;
+
+        public override bool TryRead(out CommandCenterUiUpdate item)
+        {
+            if (!inner.TryRead(out item!))
+            {
+                return false;
+            }
+
+            _readCount++;
+
+            return true;
+        }
+
+        public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken = default)
+        {
+            _idleReadCounts.Writer.TryWrite(_readCount);
+
+            return inner.WaitToReadAsync(cancellationToken);
+        }
+
+        public async Task WaitUntilIdleAfterAsync(int count)
+        {
+            int observed;
+
+            do
+            {
+                observed = await _idleReadCounts.Reader.ReadAsync().AsTask().WaitAsync(AsyncTestTimeout);
+            } while (observed < count);
+
+            Assert.Equal(count, observed);
+        }
+    }
 }
