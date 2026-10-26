@@ -6948,7 +6948,9 @@ internal sealed partial class DataRetentionService(
         return Encoding.UTF8.GetBytes(body.ToString());
     }
 
-    private static RetentionMutationJournal ParseMutationJournal(byte[] payload)
+    private static RetentionMutationJournal ParseMutationJournal(
+        byte[] payload,
+        RetentionMutationRecoveryDiagnostic? diagnostic = null)
     {
         string[] lines = Encoding.UTF8
             .GetString(payload)
@@ -6972,7 +6974,7 @@ internal sealed partial class DataRetentionService(
             || !lines[^1].StartsWith("H:", StringComparison.Ordinal)
             || lines[^1].Length != 66)
         {
-            throw new InvalidDataException("The retention mutation journal header is invalid.");
+            throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalHeaderInvalid, diagnostic);
         }
 
         byte[] expectedDigest;
@@ -6981,11 +6983,9 @@ internal sealed partial class DataRetentionService(
         {
             expectedDigest = Convert.FromHexString(lines[^1][2..]);
         }
-        catch (FormatException ex)
+        catch (FormatException)
         {
-            throw new InvalidDataException(
-                "The retention mutation journal digest is invalid.",
-                ex);
+            throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalDigestInvalid, diagnostic);
         }
 
         byte[] actualDigest = SHA256.HashData(
@@ -6994,7 +6994,7 @@ internal sealed partial class DataRetentionService(
 
         if (!CryptographicOperations.FixedTimeEquals(expectedDigest, actualDigest))
         {
-            throw new InvalidDataException("The retention mutation journal digest does not match.");
+            throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalDigestMismatch, diagnostic);
         }
 
         string target;
@@ -7003,11 +7003,9 @@ internal sealed partial class DataRetentionService(
         {
             target = Encoding.UTF8.GetString(Convert.FromBase64String(lines[2]));
         }
-        catch (FormatException ex)
+        catch (FormatException)
         {
-            throw new InvalidDataException(
-                "The retention mutation journal target is invalid.",
-                ex);
+            throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalTargetInvalid, diagnostic);
         }
 
         List<RetentionMutationJournalEntry> entries = [];
@@ -7020,15 +7018,18 @@ internal sealed partial class DataRetentionService(
 
                 if (parts.Length != 7
                     || !string.Equals(parts[0], "E", StringComparison.Ordinal)
-                    || parts[1] is not ("attachments" or "files" or "logs")
                     || !ulong.TryParse(parts[3], out ulong volumeId)
                     || !ulong.TryParse(parts[4], out ulong fileId)
                     || !ulong.TryParse(parts[5], out ulong hardLinkCount)
                     || !int.TryParse(parts[6], out int kindValue)
                     || kindValue != (int)FileSystemObjectKind.RegularFile)
                 {
-                    throw new InvalidDataException(
-                        "The retention mutation journal entry is invalid.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalEntryInvalid, diagnostic);
+                }
+
+                if (parts[1] is not ("attachments" or "files" or "logs"))
+                {
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalRootInvalid, diagnostic);
                 }
 
                 string relativePath = Encoding.UTF8.GetString(
@@ -7037,8 +7038,7 @@ internal sealed partial class DataRetentionService(
                 if (string.IsNullOrWhiteSpace(relativePath)
                     || Path.IsPathFullyQualified(relativePath))
                 {
-                    throw new InvalidDataException(
-                        "The retention mutation journal path is invalid.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalPathInvalid, diagnostic);
                 }
 
                 entries.Add(
@@ -7053,16 +7053,13 @@ internal sealed partial class DataRetentionService(
         }
         catch (Exception ex) when (ex is FormatException or ArgumentException)
         {
-            throw new InvalidDataException(
-                "The retention mutation journal entry list is invalid.",
-                ex);
+            throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalEntryInvalid, diagnostic);
         }
 
         if (entries.DistinctBy(static entry =>
                 (entry.RootRole, entry.RelativePath)).Count() != entries.Count)
         {
-            throw new InvalidDataException(
-                "The retention mutation journal contains duplicate paths.");
+            throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalDuplicatePath, diagnostic);
         }
 
         return new RetentionMutationJournal(lines[1], target, [.. entries]);
@@ -7242,8 +7239,7 @@ internal sealed partial class DataRetentionService(
                 LongRunningOperationKinds.DataRetentionMutation,
                 StringComparison.Ordinal))
         {
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Data.ReconciliationFailed);
+            return MutationRecoveryRefused(operation, RetentionMutationRecoveryCause.WrongKind);
         }
 
         // The single-flight insert creates this row at checkpoint version 0, and
@@ -7256,8 +7252,9 @@ internal sealed partial class DataRetentionService(
             && operation.CheckpointPayload is null
             && operation.CheckpointReference is null)
         {
-            return LongRunningOperationRecoveryResult.Abandoned(
-                LongRunningOperationRecoveryOutcomes.RetentionMutationNeverStarted);
+            return MutationRecoveryOutcome(operation, RetentionMutationRecoveryCause.NeverStarted, "Unknown",
+                LongRunningOperationRecoveryResult.Abandoned(
+                    LongRunningOperationRecoveryOutcomes.RetentionMutationNeverStarted));
         }
 
         if (operation.CheckpointPayload is null
@@ -7266,8 +7263,9 @@ internal sealed partial class DataRetentionService(
                 "retention-mutation:" + operation.Id.ToString("N"),
                 StringComparison.Ordinal))
         {
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Data.ReconciliationFailed);
+            return MutationRecoveryRefused(operation, operation.CheckpointPayload is null
+                ? RetentionMutationRecoveryCause.MissingCheckpoint
+                : RetentionMutationRecoveryCause.CheckpointReferenceMismatch);
         }
 
         // A version-4 row is an offline-transition launch, decoded by its own source-generated codec
@@ -7283,95 +7281,193 @@ internal sealed partial class DataRetentionService(
 
         if (operation.CheckpointVersion != 2)
         {
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Data.ReconciliationFailed);
+            return MutationRecoveryRefused(operation, RetentionMutationRecoveryCause.UnsupportedVersion);
         }
 
-        RetentionMutationJournal journal;
+        RetentionMutationRecoveryDiagnostic diagnostic = new();
+
+        string subtype = "Unknown";
 
         try
         {
-            journal = ParseMutationJournal(operation.CheckpointPayload);
-        }
-        catch (InvalidDataException)
-        {
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Data.ReconciliationFailed);
-        }
+            cancellationToken.ThrowIfCancellationRequested();
 
-        bool targetExists = await MutationTargetExistsAsync(
-            journal,
-            cancellationToken).ConfigureAwait(false);
+            RetentionMutationJournal journal = ParseMutationJournal(operation.CheckpointPayload, diagnostic);
 
-        Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine>
-            quarantines;
+            // Only a fully parsed, digest-verified journal may supply this closed subtype.
+            subtype = journal.Subtype;
 
-        try
-        {
-            quarantines = DiscoverMutationQuarantines(
-                operation.Id,
+            bool targetExists = await MutationTargetExistsAsync(
                 journal,
-                targetExists);
+                cancellationToken,
+                diagnostic).ConfigureAwait(false);
+
+            Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine> quarantines =
+                DiscoverMutationQuarantines(operation.Id, journal, targetExists, diagnostic);
+
+            foreach (RetentionMutationJournalEntry entry in journal.Entries)
+            {
+                string root = RootForRole(entry.RootRole);
+
+                string originalPath = Path.GetFullPath(Path.Combine(root, entry.RelativePath));
+
+                if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(root, originalPath, out _))
+                {
+                    return MutationRecoveryRefused(operation,
+                        RetentionMutationRecoveryCause.ManagedRootContainmentFailed, subtype);
+                }
+
+                if (quarantines.TryGetValue(entry, out IdentityOwnedFileSystemQuarantine quarantine))
+                {
+                    bool recovered = targetExists
+                        ? IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(quarantine)
+                        : IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(quarantine);
+
+                    if (!recovered)
+                    {
+                        return MutationRecoveryRefused(operation, targetExists
+                            ? RetentionMutationRecoveryCause.QuarantineRestoreRefused
+                            : RetentionMutationRecoveryCause.QuarantineFinalizeRefused, subtype);
+                    }
+                }
+
+                bool originalExists = IdentityOwnedFileSystemCleanup.TryCapturePath(
+                    originalPath,
+                    FileSystemObjectKind.RegularFile,
+                    out IdentityOwnedFileSystemArtifact original);
+
+                if (targetExists)
+                {
+                    if (!originalExists || original.Metadata != entry.Metadata)
+                    {
+                        return MutationRecoveryRefused(operation,
+                            RetentionMutationRecoveryCause.OriginalFileMissingOrChanged, subtype);
+                    }
+                }
+                else if (originalExists && original.Metadata == entry.Metadata)
+                {
+                    return MutationRecoveryRefused(operation,
+                        RetentionMutationRecoveryCause.CommittedOriginalStillPresent, subtype);
+                }
+            }
+
+            return targetExists
+                ? MutationRecoveryOutcome(operation, RetentionMutationRecoveryCause.PrecommitFilesRecovered, subtype,
+                    LongRunningOperationRecoveryResult.Failed(ErrorCodes.Data.ReconciliationFailed))
+                : MutationRecoveryOutcome(operation, RetentionMutationRecoveryCause.CommittedCleanupReconciled, subtype,
+                    LongRunningOperationRecoveryResult.Completed());
         }
         catch (InvalidDataException)
         {
-            return LongRunningOperationRecoveryResult.RequiresAttention(
-                ErrorCodes.Data.ReconciliationFailed);
+            return MutationRecoveryRefused(operation, diagnostic.Cause, subtype);
         }
-
-        foreach (RetentionMutationJournalEntry entry in journal.Entries)
+        catch (OperationCanceledException)
         {
-            string root = RootForRole(entry.RootRole);
+            throw;
+        }
+        catch (Exception)
+        {
+            // Storage and filesystem text is untrusted; neither it nor the exception object is logged.
+            return MutationRecoveryRefused(operation, RetentionMutationRecoveryCause.UnexpectedStorageFailure, subtype);
+        }
+    }
 
-            string originalPath = Path.GetFullPath(
-                Path.Combine(root, entry.RelativePath));
+    private LongRunningOperationRecoveryResult MutationRecoveryRefused(
+        LongRunningOperation operation,
+        RetentionMutationRecoveryCause cause,
+        string subtype = "Unknown") =>
+        MutationRecoveryOutcome(operation, cause, subtype,
+            LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Data.ReconciliationFailed));
 
-            if (!WorkspacePathPolicy.IsPathUnderWorkspaceWithSymlinkCheck(
-                    root,
-                    originalPath,
-                    out _))
-            {
-                return LongRunningOperationRecoveryResult.RequiresAttention(
-                    ErrorCodes.Data.ReconciliationFailed);
-            }
+    private LongRunningOperationRecoveryResult MutationRecoveryOutcome(
+        LongRunningOperation operation,
+        RetentionMutationRecoveryCause cause,
+        string subtype,
+        LongRunningOperationRecoveryResult result)
+    {
+        logger.Log(result.State is LongRunningOperationState.Completed or LongRunningOperationState.Abandoned
+                ? LogLevel.Information : LogLevel.Warning,
+            "Retention mutation recovery {OperationId} at checkpoint version {CheckpointVersion} "
+            + "with journal subtype {JournalSubtype}: {Outcome}, reason {Reason}.",
+            operation.Id, operation.CheckpointVersion, subtype, result.State, cause);
 
-            if (quarantines.TryGetValue(entry, out IdentityOwnedFileSystemQuarantine quarantine))
-            {
-                bool recovered = targetExists
-                    ? IdentityOwnedFileSystemCleanup.TryRestoreQuarantined(quarantine)
-                    : IdentityOwnedFileSystemCleanup.TryDeleteQuarantined(quarantine);
+        return result;
+    }
 
-                if (!recovered)
-                {
-                    return LongRunningOperationRecoveryResult.RequiresAttention(
-                        ErrorCodes.Data.ReconciliationFailed);
-                }
-            }
-
-            bool originalExists = IdentityOwnedFileSystemCleanup.TryCapturePath(
-                originalPath,
-                FileSystemObjectKind.RegularFile,
-                out IdentityOwnedFileSystemArtifact original);
-
-            if (targetExists)
-            {
-                if (!originalExists || original.Metadata != entry.Metadata)
-                {
-                    return LongRunningOperationRecoveryResult.RequiresAttention(
-                        ErrorCodes.Data.ReconciliationFailed);
-                }
-            }
-            else if (originalExists && original.Metadata == entry.Metadata)
-            {
-                return LongRunningOperationRecoveryResult.RequiresAttention(
-                    ErrorCodes.Data.ReconciliationFailed);
-            }
+    private static InvalidDataException InvalidMutationJournal(
+        RetentionMutationRecoveryCause cause,
+        RetentionMutationRecoveryDiagnostic? diagnostic)
+    {
+        if (diagnostic is not null)
+        {
+            diagnostic.Cause = cause;
         }
 
-        return targetExists
-            ? LongRunningOperationRecoveryResult.Failed(
-                ErrorCodes.Data.ReconciliationFailed)
-            : LongRunningOperationRecoveryResult.Completed();
+        return new InvalidDataException("Retention mutation recovery refused: " + cause + ".");
+    }
+
+    private sealed class RetentionMutationRecoveryDiagnostic
+    {
+        public RetentionMutationRecoveryCause Cause { get; set; } = RetentionMutationRecoveryCause.UnexpectedStorageFailure;
+    }
+
+    private enum RetentionMutationRecoveryCause
+    {
+        WrongKind,
+
+        MissingCheckpoint,
+
+        CheckpointReferenceMismatch,
+
+        UnsupportedVersion,
+
+        JournalHeaderInvalid,
+
+        JournalDigestInvalid,
+
+        JournalDigestMismatch,
+
+        JournalTargetInvalid,
+
+        JournalEntryInvalid,
+
+        JournalRootInvalid,
+
+        JournalPathInvalid,
+
+        JournalDuplicatePath,
+
+        ManagedRootContainmentFailed,
+
+        QuarantineSetUnbounded,
+
+        QuarantineNameInvalid,
+
+        QuarantinePermissionsRefused,
+
+        QuarantineDirectoryChanged,
+
+        EmptyQuarantineUnreconciled,
+
+        QuarantineShapeInvalid,
+
+        QuarantineNotInJournal,
+
+        QuarantineRestoreRefused,
+
+        QuarantineFinalizeRefused,
+
+        OriginalFileMissingOrChanged,
+
+        CommittedOriginalStillPresent,
+
+        UnexpectedStorageFailure,
+
+        NeverStarted,
+
+        PrecommitFilesRecovered,
+
+        CommittedCleanupReconciled,
     }
 
     internal async Task<LongRunningOperationRecoveryResult> RecoverMutationAuthenticatedAsync(
@@ -7536,7 +7632,8 @@ internal sealed partial class DataRetentionService(
         DiscoverMutationQuarantines(
             Guid operationId,
             RetentionMutationJournal journal,
-            bool targetExists)
+            bool targetExists,
+            RetentionMutationRecoveryDiagnostic? diagnostic = null)
     {
         Dictionary<RetentionMutationJournalEntry, IdentityOwnedFileSystemQuarantine> found = [];
 
@@ -7557,8 +7654,7 @@ internal sealed partial class DataRetentionService(
                         originalPath,
                         out _))
                 {
-                    throw new InvalidDataException(
-                        "A retention mutation journal path escaped its managed root.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.ManagedRootContainmentFailed, diagnostic);
                 }
 
                 return new
@@ -7566,8 +7662,7 @@ internal sealed partial class DataRetentionService(
                     Root = root,
 
                     Parent = Path.GetDirectoryName(originalPath)
-                        ?? throw new InvalidDataException(
-                            "A retention mutation journal path has no parent."),
+                        ?? throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalPathInvalid, diagnostic),
                 };
             })
             .DistinctBy(static scope => (scope.Root, scope.Parent))
@@ -7591,8 +7686,7 @@ internal sealed partial class DataRetentionService(
 
             if (directories.Length > maximumDirectories)
             {
-                throw new InvalidDataException(
-                    "The retention mutation has an unbounded quarantine set.");
+                throw InvalidMutationJournal(RetentionMutationRecoveryCause.QuarantineSetUnbounded, diagnostic);
             }
 
             foreach (string directory in directories)
@@ -7603,15 +7697,13 @@ internal sealed partial class DataRetentionService(
 
                 if (suffix.Length != 32 || !suffix.All(Uri.IsHexDigit))
                 {
-                    throw new InvalidDataException(
-                        "A retention mutation quarantine name is malformed.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.QuarantineNameInvalid, diagnostic);
                 }
 
                 if (!SecureFilePermissions.TryEnsureOwnerOnlyDirectoryExistsStrict(
                         directory))
                 {
-                    throw new InvalidDataException(
-                        "A retention mutation quarantine is not strictly owner-only.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.QuarantinePermissionsRefused, diagnostic);
                 }
 
                 if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
@@ -7619,8 +7711,7 @@ internal sealed partial class DataRetentionService(
                         FileSystemObjectKind.Directory,
                         out IdentityOwnedFileSystemArtifact directoryArtifact))
                 {
-                    throw new InvalidDataException(
-                        "A retention mutation quarantine directory changed identity.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.QuarantineDirectoryChanged, diagnostic);
                 }
 
                 string[] entries = Directory.GetFileSystemEntries(directory);
@@ -7649,8 +7740,7 @@ internal sealed partial class DataRetentionService(
                     if (!originalStillOwned
                         || !IdentityOwnedFileSystemCleanup.TryDelete(directoryArtifact))
                     {
-                        throw new InvalidDataException(
-                            "An empty retention mutation quarantine could not be reconciled safely.");
+                        throw InvalidMutationJournal(RetentionMutationRecoveryCause.EmptyQuarantineUnreconciled, diagnostic);
                     }
 
                     continue;
@@ -7662,8 +7752,7 @@ internal sealed partial class DataRetentionService(
                         FileSystemObjectKind.RegularFile,
                         out IdentityOwnedFileSystemArtifact quarantinedArtifact))
                 {
-                    throw new InvalidDataException(
-                        "A retention mutation quarantine has an unexpected shape.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.QuarantineShapeInvalid, diagnostic);
                 }
 
                 string originalPath = Path.Combine(
@@ -7685,8 +7774,7 @@ internal sealed partial class DataRetentionService(
 
                 if (manifestEntry is null || found.ContainsKey(manifestEntry))
                 {
-                    throw new InvalidDataException(
-                        "A retention mutation quarantine is not named by its durable journal.");
+                    throw InvalidMutationJournal(RetentionMutationRecoveryCause.QuarantineNotInJournal, diagnostic);
                 }
 
                 found.Add(
@@ -7880,7 +7968,8 @@ internal sealed partial class DataRetentionService(
 
     private async Task<bool> MutationTargetExistsAsync(
         RetentionMutationJournal journal,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetentionMutationRecoveryDiagnostic? diagnostic = null)
     {
         if (journal.Subtype == "delete-session"
             && Guid.TryParse(journal.Target, out Guid sessionId))
@@ -7947,7 +8036,7 @@ internal sealed partial class DataRetentionService(
             return snapshot.TotalOwnedRows > 0;
         }
 
-        throw new InvalidDataException("The retention mutation journal target is invalid.");
+        throw InvalidMutationJournal(RetentionMutationRecoveryCause.JournalTargetInvalid, diagnostic);
     }
 
     private string RootForRole(string rootRole) => rootRole switch
