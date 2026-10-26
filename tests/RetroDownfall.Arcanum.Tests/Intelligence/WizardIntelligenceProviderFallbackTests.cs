@@ -1700,7 +1700,7 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new SemanticSpellRouter(
                 new SpellWeaveCache(new NoopWeaveService(), new TestOptionsMonitor<ArcanumSettings>(settings), NullLogger<SpellWeaveCache>.Instance),
                 new NoopWeaveService(),
-                new TestOptionsSnapshot<ArcanumSettings>(settings),
+                new TestOptionsMonitor<ArcanumSettings>(settings),
                 NullLogger<SemanticSpellRouter>.Instance),
             new FakeLexiconService(),
             CreateUnusedDbContext(),
