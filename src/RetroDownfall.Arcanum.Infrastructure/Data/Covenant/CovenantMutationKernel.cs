@@ -499,40 +499,21 @@ internal sealed class CovenantMutationKernel(CovenantQuotaGuard quotas, IMemoryE
 
     private static Result<bool> ValidateLifecycle(CovenantMutationIntent intent, HeadRow? head, bool retired)
     {
+        Error? refusal = CovenantMutationLifecycle.Refusal(intent,
+            head is null ? null : retired ? CovenantLifecycle.Retired : CovenantLifecycle.Set);
+
+        if (refusal is { } error)
+        {
+            return error;
+        }
+
         if (intent.Operation == CovenantOperation.Retire)
         {
-            if (head is null)
-            {
-                return new Error(
-                    ErrorCodes.Covenant.LifecycleConflict,
-                    "There is no Covenant head in this scope and lane to retire.");
-            }
-
-            // Retiring a tombstone is a deliberate no-op rather than an error: the caller's intent is
-            // already satisfied.
+            // Retiring a tombstone is a deliberate no-op: the caller's intent is already satisfied.
             return Result<bool>.Success(!retired);
         }
 
-        if (retired)
-        {
-            if (intent.Target.Lane == CovenantLane.Proposed)
-            {
-                return new Error(
-                    ErrorCodes.Covenant.LifecycleConflict,
-                    "An agent cannot reactivate a retired Proposed Covenant lane.");
-            }
-
-            if (!intent.Reactivate)
-            {
-                return new Error(
-                    ErrorCodes.Covenant.LifecycleConflict,
-                    "This Covenant head is retired and reactivation was not requested.");
-            }
-
-            return Result<bool>.Success(true);
-        }
-
-        if (head is null)
+        if (retired || head is null)
         {
             return Result<bool>.Success(true);
         }

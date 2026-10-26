@@ -212,32 +212,38 @@ internal sealed partial class CovenantMutationService(
             return authorityEpoch.Error;
         }
 
-        Result<CovenantMutationEffectSnapshot> effect = await store
-            .ReadMutationEffectSnapshotAsync(
+        Result<CovenantMutationPreflightSnapshot> snapshot = await store
+            .ReadMutationPreflightSnapshotAsync(
                 new CovenantMutationEffectQuery(scope, normalizedKey, lane, operation),
                 readLease,
                 cancellationToken)
             .ConfigureAwait(false);
 
-        if (effect.IsFailure)
+        if (snapshot.IsFailure)
         {
-            return effect.Error;
+            return snapshot.Error;
         }
 
-        Result<CovenantDetail> detail = await store
-            .ReadDetailAsync(new CovenantDetailQuery(scope, normalizedKey), readLease, cancellationToken)
-            .ConfigureAwait(false);
+        CovenantMutationEffectSnapshot effect = snapshot.Value.Effect;
 
-        if (detail.IsFailure)
+        CovenantDetail detail = snapshot.Value.Detail;
+
+        if (targetVersionId is { } targetId)
         {
-            return detail.Error;
+            Result<CovenantDigest> target = ResolveTarget(
+                detail, targetId, expectedRevision, targetRenderedHash!.Value);
+
+            if (target.IsFailure)
+            {
+                return target.Error;
+            }
         }
 
         // Reported from the head rather than echoed from the request: an operator comparing what they
         // asked for against what is there is the whole point of showing a current revision at all.
         long currentRevision = (lane is CovenantLane.Confirmed
-            ? detail.Value.ConfirmedHead?.LaneRevision
-            : detail.Value.ProposedHead?.LaneRevision) ?? 0;
+            ? detail.ConfirmedHead?.LaneRevision
+            : detail.ProposedHead?.LaneRevision) ?? 0;
 
         bool? releasesErasureFingerprint = false;
 
@@ -276,22 +282,46 @@ internal sealed partial class CovenantMutationService(
         CovenantOperatorPreflightBody body = new(
             requestDigest,
             authorityEpoch.Value,
-            effect.Value.DatasetGeneration,
+            effect.DatasetGeneration,
             checked((ulong)expectedRevision),
-            checked((ulong)effect.Value.KeyEpoch),
-            checked((ulong)effect.Value.KeyReclamationEpoch),
+            checked((ulong)effect.KeyEpoch),
+            checked((ulong)effect.KeyReclamationEpoch),
 
             // A Global mutation reaches every Campaign, including ones created between prepare and
             // apply, so its token binds the registry epoch. A Campaign mutation reaches exactly one
             // and binding the registry would make it stale for reasons that cannot affect it.
-            scope.CampaignId is null ? checked((ulong)effect.Value.CampaignRegistryEpoch) : null,
+            scope.CampaignId is null ? checked((ulong)effect.CampaignRegistryEpoch) : null,
             compiled?.FragmentHash,
-            effect.Value.DependentHeadVectorDigest,
-            EffectDigest(effect.Value),
+            effect.DependentHeadVectorDigest,
+            EffectDigest(effect),
             issuedAt.ToUnixTimeMilliseconds(),
             expiresAt.ToUnixTimeMilliseconds(),
             targetVersionId,
             targetRenderedHash);
+
+        Result<CovenantMutationIntent> intent = BuildOperatorIntent(
+            scope, normalizedKey, lane, mutationId, expectedRevision, reactivate, compiled, body);
+
+        if (intent.IsFailure)
+        {
+            return intent.Error;
+        }
+
+        Result capacity = ValidatePreflightCapacity(intent.Value, snapshot.Value);
+
+        if (capacity.IsFailure)
+        {
+            return capacity.Error;
+        }
+
+        CovenantHeadItem? currentHead = lane == CovenantLane.Confirmed
+            ? detail.ConfirmedHead
+            : detail.ProposedHead;
+
+        if (CovenantMutationLifecycle.Refusal(intent.Value, currentHead?.Lifecycle) is { } lifecycleError)
+        {
+            return lifecycleError;
+        }
 
         // The body repeats these timestamps and the commit path requires the two to agree byte for
         // byte, so the instant is stated rather than read a second time inside the codec.
@@ -319,11 +349,53 @@ internal sealed partial class CovenantMutationService(
             compiled?.FragmentUtf8ByteCount,
             currentRevision,
             expectedRevision,
-            effect.Value.KeyEpoch,
-            EffectDto(effect.Value, scope, compiled, releasesErasureFingerprint),
+            effect.KeyEpoch,
+            EffectDto(effect, scope, compiled, releasesErasureFingerprint),
             issuedAt,
             expiresAt,
             token.Value);
+    }
+
+    private static Result<CovenantMutationIntent> BuildOperatorIntent(
+        CovenantOperationScope scope,
+        string normalizedKey,
+        CovenantLane lane,
+        Guid mutationId,
+        long expectedRevision,
+        bool reactivate,
+        CovenantCompiledContent? compiled,
+        CovenantOperatorPreflightBody body) =>
+        compiled is null
+            ? CovenantOperatorMutationFactory.Retire(
+                mutationId, scope, normalizedKey, normalizedKey, lane, expectedRevision,
+                Binding(body), body.Digest())
+            : CovenantOperatorMutationFactory.Set(
+                mutationId, scope, compiled, expectedRevision, reactivate,
+                Binding(body), body.Digest());
+
+    private static Result ValidatePreflightCapacity(
+        CovenantMutationIntent intent,
+        CovenantMutationPreflightSnapshot snapshot)
+    {
+        CovenantQuotaDemand demand = CovenantQuotaDemand.ForBatch([intent]);
+
+        if (CovenantScopeCapacity.Refusal(snapshot.Quota, demand) is { } scopeError)
+        {
+            return scopeError;
+        }
+
+        foreach (CovenantSectionDemand section in demand.Sections)
+        {
+            if (CovenantSectionCapacity.Refusal(
+                CovenantSectionCapacity.Placement(intent.Target.Scope.Kind, section.Lane),
+                snapshot.Section, section) is { } sectionError)
+            {
+                return new Error(sectionError.Code,
+                    sectionError.Message + " Retire or shorten another entry in this Section, or shorten this replacement, then prepare again.");
+            }
+        }
+
+        return Result.Success();
     }
 
     /// <summary>
@@ -459,24 +531,8 @@ internal sealed partial class CovenantMutationService(
                 "Operator authority changed after this mutation was prepared.");
         }
 
-        Result<CovenantMutationIntent> intent = compiled is null
-            ? CovenantOperatorMutationFactory.Retire(
-                mutationId,
-                scope,
-                normalizedKey,
-                normalizedKey,
-                lane,
-                expectedRevision,
-                Binding(body.Value),
-                body.Value.Digest())
-            : CovenantOperatorMutationFactory.Set(
-                mutationId,
-                scope,
-                compiled,
-                expectedRevision,
-                reactivate,
-                Binding(body.Value),
-                body.Value.Digest());
+        Result<CovenantMutationIntent> intent = BuildOperatorIntent(
+            scope, normalizedKey, lane, mutationId, expectedRevision, reactivate, compiled, body.Value);
 
         if (intent.IsFailure)
         {

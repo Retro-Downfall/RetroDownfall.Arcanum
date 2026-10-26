@@ -15,7 +15,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public static class CovenantManagementReadLimits
 {
-
     /// <summary>
     /// Clamps a caller-supplied page size into the closed 1-200 range.
     /// </summary>
@@ -25,7 +24,6 @@ public static class CovenantManagementReadLimits
             : requested > CovenantLimits.MaxPageSize
                 ? CovenantLimits.MaxPageSize
                 : requested;
-
 }
 
 /// <summary>
@@ -89,9 +87,7 @@ public sealed record CovenantListQuery(
     int PageSize,
     CovenantListKeyset? After)
 {
-
     public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);
-
 }
 
 /// <summary>
@@ -125,9 +121,7 @@ public sealed record CovenantVersionQuery(
     int PageSize,
     CovenantVersionKeyset? After)
 {
-
     public int EffectivePageSize => CovenantManagementReadLimits.ClampPageSize(PageSize);
-
 }
 
 /// <summary>
@@ -190,9 +184,7 @@ public sealed record CovenantSourcePage(
     CovenantDigest StoredProvenanceDigest,
     CovenantDigest RecomputedProvenanceDigest)
 {
-
     public bool DigestMatches => StoredProvenanceDigest == RecomputedProvenanceDigest;
-
 }
 
 /// <summary>
@@ -201,7 +193,6 @@ public sealed record CovenantSourcePage(
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<CovenantEffectDecision>))]
 public enum CovenantEffectDecision : byte
 {
-
     NoEffect = 1,
 
     HeadCreated = 2,
@@ -215,7 +206,6 @@ public enum CovenantEffectDecision : byte
     ProposedBecomesEligible = 6,
 
     ProposedRemainsReviewOnly = 7,
-
 }
 
 /// <summary>
@@ -257,9 +247,7 @@ public sealed record CovenantScopeCensus(
     long MaxCampaignConfirmedRenderedBytes,
     long MaxCampaignProposedRenderedBytes)
 {
-
     public static CovenantScopeCensus Empty { get; } = new([], 0, 0, 0);
-
 }
 
 /// <summary>
@@ -270,6 +258,15 @@ public sealed record CovenantMutationEffectQuery(
     string NormalizedKey,
     CovenantLane Lane,
     CovenantOperation Operation);
+
+/// <summary>
+/// All canonical inputs to one operator preflight, measured inside the same bounded read transaction.
+/// </summary>
+public sealed record CovenantMutationPreflightSnapshot(
+    CovenantMutationEffectSnapshot Effect,
+    CovenantDetail Detail,
+    CovenantQuotaSnapshot Quota,
+    CovenantSectionOccupancy Section);
 
 /// <summary>
 /// Everything a Ward has to show before an operator can approve one retirement.
@@ -293,10 +290,8 @@ public sealed record CovenantRetirementTarget(
     bool IsPinned,
     CovenantAgentErasureState AgentErasure = CovenantAgentErasureState.Clear)
 {
-
     /// <summary>Whether the operator erased this exact scoped key, so an agent may not retire it.</summary>
     public bool IsAgentWithheld => AgentErasure == CovenantAgentErasureState.Withheld;
-
 }
 
 /// <summary>
@@ -337,7 +332,6 @@ public sealed record CovenantCurationEffectSnapshot(
     long KeyReclamationEpoch,
     Guid DatasetGeneration)
 {
-
     /// <summary>Whether Global content stops reaching this Campaign, with nothing in its place.</summary>
     /// <remarks>
     /// A Campaign that holds its own Confirmed head for the key is already shadowing the Global one,
@@ -355,7 +349,6 @@ public sealed record CovenantCurationEffectSnapshot(
         && Current.IsMasked
         && GlobalConfirmedHeadExists
         && !ScopedConfirmedHeadExists;
-
 }
 
 /// <summary>
@@ -383,10 +376,8 @@ public sealed record CovenantMutationEffectSnapshot(
     Guid DatasetGeneration,
     long CanonicalSearchSequence)
 {
-
     /// <summary>
     /// The bound on how many affected Campaigns a snapshot will illustrate.
     /// </summary>
     public const int MaxExamples = 50;
-
 }

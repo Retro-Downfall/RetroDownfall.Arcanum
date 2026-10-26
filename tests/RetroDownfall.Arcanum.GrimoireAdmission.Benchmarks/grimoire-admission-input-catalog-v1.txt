@@ -169,6 +169,7 @@ R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantManagementReadContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantModels.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantMutationCollector.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantMutationContracts.cs
+R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantMutationLifecycle.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantMutationWireContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantOperationLeaseContracts.cs
 R	src/RetroDownfall.Arcanum.Core/Covenant/CovenantOperationalDefault.cs

@@ -38,15 +38,7 @@ internal sealed partial class CovenantMutationService
 
         CovenantOperationScope scope = Scope(request.Scope, request.CampaignId);
 
-        Result<CovenantDigest> target = await ResolveTargetAsync(
-                scope,
-                compiled.Value.NormalizedKey,
-                request.TargetVersionId,
-                request.ExpectedRevision,
-                request.TargetRenderedHash,
-                readLease,
-                cancellationToken)
-            .ConfigureAwait(false);
+        Result<CovenantDigest> target = ParseDigest(request.TargetRenderedHash);
 
         if (target.IsFailure)
         {
@@ -62,7 +54,7 @@ internal sealed partial class CovenantMutationService
                 request.ExpectedRevision,
 
                 // A correction replaces live content. Reinstating a retired key is a different sentence
-                // and has its own flag, and the target resolution above has already refused a tombstone.
+                // and has its own flag, and target resolution in the shared snapshot refuses a tombstone.
                 reactivate: false,
                 compiled.Value,
                 readLease,
@@ -127,25 +119,13 @@ internal sealed partial class CovenantMutationService
     /// reporting the specific one for a target that does not exist would be describing a version this
     /// installation has never held.
     /// </remarks>
-    private async ValueTask<Result<CovenantDigest>> ResolveTargetAsync(
-        CovenantOperationScope scope,
-        string normalizedKey,
+    private static Result<CovenantDigest> ResolveTarget(
+        CovenantDetail detail,
         Guid targetVersionId,
         long expectedRevision,
-        string targetRenderedHash,
-        ICovenantSnapshotReadLease readLease,
-        CancellationToken cancellationToken)
+        CovenantDigest targetRenderedHash)
     {
-        Result<CovenantDetail> detail = await store
-            .ReadDetailAsync(new CovenantDetailQuery(scope, normalizedKey), readLease, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (detail.IsFailure)
-        {
-            return detail.Error;
-        }
-
-        if (detail.Value.ConfirmedHead is not { } head)
+        if (detail.ConfirmedHead is not { } head)
         {
             return Result<CovenantDigest>.Failure(new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
@@ -169,16 +149,9 @@ internal sealed partial class CovenantMutationService
                 "This Covenant entry moved after the version being corrected was read."));
         }
 
-        Result<CovenantDigest> requested = ParseDigest(targetRenderedHash);
-
-        if (requested.IsFailure)
-        {
-            return requested;
-        }
-
         // The hash is what a revision number cannot be: proof the operator saw this content rather than
         // a number that happened to be right.
-        if (head.RenderedHash is not { } live || live != requested.Value)
+        if (head.RenderedHash is not { } live || live != targetRenderedHash)
         {
             return Result<CovenantDigest>.Failure(new Error(
                 ErrorCodes.Covenant.StaleSnapshot,
