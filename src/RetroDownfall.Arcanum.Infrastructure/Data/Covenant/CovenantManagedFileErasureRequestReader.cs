@@ -48,6 +48,15 @@ internal sealed class CovenantManagedFileErasureRequestReader
         ErrorCodes.Covenant.ManualArtifactErasureRequired,
         "A managed artifact does not have one exact adopted ownership record and requires manual erasure.");
 
+    private static Error OwnershipMismatch(ArtifactSensitivityLabel label) =>
+        new CovenantInventoryFailureDetails(CovenantInventoryFailureReason.ManagedOwnershipMismatch,
+            label.LabelId, label.ArtifactId, label.ArtifactKind).ToError();
+
+    private static ulong ReadNonNegativeRevision(SqliteDataReader reader, int ordinal) =>
+        reader.GetValue(ordinal) is long revision && revision >= 0
+            ? (ulong)revision
+            : throw new ArgumentException("An adopted ownership revision must be a nonnegative SQLite INTEGER.");
+
     internal async Task<Result<CovenantManagedFileErasureIdentity?>> TryReadWithinAsync(
         SqliteConnection callerOwnedConnection,
         SqliteTransaction? transaction,
@@ -73,7 +82,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
             if (producers.IsFailure)
             {
-                return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
+                return Result<CovenantManagedFileErasureIdentity?>.Failure(OwnershipMismatch(label));
             }
 
             if (producers.Value.Count == 0)
@@ -83,7 +92,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
             if (producers.Value.Count != 1)
             {
-                return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
+                return Result<CovenantManagedFileErasureIdentity?>.Failure(OwnershipMismatch(label));
             }
 
             ProducerIdentity producer = producers.Value[0];
@@ -96,7 +105,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
             if (active.Count > 1)
             {
-                return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
+                return Result<CovenantManagedFileErasureIdentity?>.Failure(OwnershipMismatch(label));
             }
 
             Guid? existingWorkItemId = null;
@@ -109,7 +118,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
                     || work.SensitivityLabelId != label.LabelId
                     || work.ExpectedSourceRevision != producer.Revision)
                 {
-                    return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
+                    return Result<CovenantManagedFileErasureIdentity?>.Failure(OwnershipMismatch(label));
                 }
 
                 existingWorkItemId = work.WorkItemId;
@@ -131,7 +140,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
         catch (Exception exception) when (
             exception is FormatException or OverflowException or ArgumentException)
         {
-            return Result<CovenantManagedFileErasureIdentity?>.Failure(ManualErasureRequired);
+            return Result<CovenantManagedFileErasureIdentity?>.Failure(OwnershipMismatch(label));
         }
     }
 
@@ -179,7 +188,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
             rows.Add(
                 new ProducerIdentity(
                     Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
-                    checked((ulong)reader.GetInt64(1))));
+                    ReadNonNegativeRevision(reader, 1)));
         }
 
         return Result<IReadOnlyList<ProducerIdentity>>.Success(rows);
@@ -196,7 +205,7 @@ internal sealed class CovenantManagedFileErasureRequestReader
         command.Transaction = transaction;
 
         command.CommandText = """
-            SELECT WorkItemId, ArtifactId, SourceSensitivityLabelId, ExpectedSourceRevision
+            SELECT WorkItemId, ArtifactId, SourceSensitivityLabelId, ExpectedSourceRevision, CheckpointRevision
             FROM local_erasure_work_items
             WHERE SourceWriteOperationId = $source
               AND StateCode IN (1, 2)
@@ -213,12 +222,14 @@ internal sealed class CovenantManagedFileErasureRequestReader
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            _ = ReadNonNegativeRevision(reader, 4);
+
             rows.Add(
                 new WorkIdentity(
                     Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
                     Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
                     Guid.Parse(reader.GetString(2), CultureInfo.InvariantCulture),
-                    checked((ulong)reader.GetInt64(3))));
+                    ReadNonNegativeRevision(reader, 3)));
         }
 
         return rows;

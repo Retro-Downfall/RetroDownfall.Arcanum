@@ -286,6 +286,120 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(0, fixture.Drain.ActiveCount);
     }
 
+    // GetInt64 would silently reinterpret REAL, TEXT and BLOB ownership as an integer.
+    // Each malformed field must refuse independently, even when its narrowed value matches.
+    [Theory]
+    [InlineData("7.5", "7", "0", false, 7L, false)]
+    [InlineData("7", "7.5", "0", false, 7L, false)]
+    [InlineData("7.5", "7.5", "0", false, 7L, false)]
+    [InlineData("9.223372036854776e18", "9223372036854775807", "0", false, 0L, false)]
+    [InlineData("9223372036854775807", "9.223372036854776e18", "0", false, 0L, false)]
+    [InlineData("9.223372036854776e18", "9.223372036854776e18", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS TEXT)", "0", "0", false, 0L, false)]
+    [InlineData("0", "CAST($canary AS TEXT)", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS TEXT)", "CAST($canary AS TEXT)", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS BLOB)", "0", "0", false, 0L, false)]
+    [InlineData("0", "CAST($canary AS BLOB)", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS BLOB)", "CAST($canary AS BLOB)", "0", false, 0L, false)]
+    [InlineData("-1", "7", "0", false, 0L, true)]
+    [InlineData("7", "-1", "0", false, 0L, true)]
+    [InlineData("-1", "-1", "0", false, 0L, true)]
+    [InlineData("7", "7", "0.5", false, 0L, false)]
+    [InlineData("7", "7", "-1", false, 0L, true)]
+    [InlineData("0", "0", "0", true, 0L, false)]
+    [InlineData("7", "7", "0", true, 7L, false)]
+    [InlineData("9223372036854775807", "9223372036854775807", "9223372036854775807", true, long.MaxValue, false)]
+    public async Task Adopted_revisions_require_canonical_integer_storage_before_preflight_and_replay(
+        string producer, string expectedSource, string checkpoint, bool allowed, long expectedRevision, bool bypassRangeChecks)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SeedInterleavedLabelsAsync(2, includeExistingWorkItem: true);
+
+        const string canary = "PRIVATE-ADOPTED-REVISION\r\nforged-diagnostic";
+
+        await fixture.ExecuteDiagnosticSqlAsync(
+            (bypassRangeChecks ? "PRAGMA ignore_check_constraints = ON; " : string.Empty)
+            + "UPDATE managed_file_write_intents SET Revision = " + producer + "; "
+            + "UPDATE local_erasure_work_items SET ExpectedSourceRevision = " + expectedSource
+            + ", CheckpointRevision = " + checkpoint + ";", canary);
+
+        (string Producer, string Work) before = await fixture.ReadOwnershipRevisionStorageAsync();
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, preflight.IsSuccess);
+
+        Result remaining = await source.PreflightRemainingManagedAsync(period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, remaining.IsSuccess);
+
+        Result<CovenantManagedFileErasureBatch> replay = await source.ReadNextManagedFileBatchAsync(
+            ErasureOperationId, null, period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, replay.IsSuccess);
+
+        if (allowed)
+        {
+            Assert.Equal(1, preflight.Value.ManagedFileArtifactCount);
+
+            CovenantManagedFileErasureRequest request = Assert.Single(replay.Value.Requests);
+
+            Assert.Equal((ulong)expectedRevision, request.ExpectedSourceWriteRevision);
+
+            Assert.Equal(ExistingWorkItemId, request.WorkItemId);
+        }
+        else
+        {
+            foreach (Error error in new[] { preflight.Error, remaining.Error, replay.Error })
+            {
+                Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, error.Code);
+
+                Assert.Equal(CovenantInventoryFailureReason.ManagedOwnershipMismatch, error.CovenantInventoryFailure?.Reason);
+
+                Assert.Equal(LabelId(1), error.CovenantInventoryFailure?.LabelId);
+
+                Assert.Equal(ArtifactId(1), error.CovenantInventoryFailure?.ArtifactId);
+
+                Assert.Equal(SensitiveArtifactKind.ManagedWorkspaceFile, error.CovenantInventoryFailure?.ArtifactKind);
+
+                Assert.Contains($"LabelId={LabelId(1):N}", error.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("PRIVATE", error.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("forged-diagnostic", error.Message, StringComparison.Ordinal);
+
+                string json = System.Text.Json.JsonSerializer.Serialize(error,
+                    RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.Error);
+
+                Assert.DoesNotContain("PRIVATE", json, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("covenantInventoryFailure", json, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        Assert.Equal(before, await fixture.ReadOwnershipRevisionStorageAsync());
+
+        Assert.Equal(dataset, await fixture.ReadDatasetGenerationAsync());
+
+        Assert.Equal(3, opens.Opened);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, opens.LastConnection!.State);
+
+        Assert.Empty(fixture.OrdinaryConnections.Opened);
+    }
+
     [Theory]
     [InlineData("kind", "UnknownArtifactKind", true)]
     [InlineData("sensitivity", "MalformedLabel", true)]
@@ -1232,6 +1346,25 @@ public sealed class CovenantErasureInventorySourceTests
             }
 
             await transaction.CommitAsync(CancellationToken.None);
+        }
+
+        internal async Task<(string Producer, string Work)> ReadOwnershipRevisionStorageAsync()
+        {
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT
+                    (SELECT typeof(Revision) || ':' || quote(Revision) FROM managed_file_write_intents LIMIT 1),
+                    (SELECT typeof(ExpectedSourceRevision) || ':' || quote(ExpectedSourceRevision)
+                        || ':' || typeof(CheckpointRevision) || ':' || quote(CheckpointRevision)
+                     FROM local_erasure_work_items LIMIT 1);
+                """;
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+            Assert.True(await reader.ReadAsync());
+
+            return (reader.GetString(0), reader.GetString(1));
         }
 
         internal void HoldExclusiveLock()
