@@ -195,6 +195,8 @@ public sealed class ChatClientFactory(
 
         options.AddPolicy(new TapestryProviderPolicy(_tapestryValidator, provider.Name, resolvedModel, embedding: false), PipelinePosition.BeforeTransport);
 
+        options.AddPolicy(new TapestryRetrievalDispatchPolicy(provider.Name, resolvedModel), PipelinePosition.BeforeTransport);
+
         PromptCacheDispatchPolicy? dispatchPolicy = configurationStamp is null ? null : new();
 
         if (dispatchPolicy is not null)

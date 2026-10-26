@@ -86,6 +86,8 @@ public sealed partial class WizardIntelligenceProvider(
     IHumanPromptRegistry humanPromptRegistry,
     IServiceProvider serviceProvider,
     ICanonicalCampaignContextResolver campaignResolver,
+    ITapestryRetriever tapestryRetriever,
+    TapestryInvocationValidator tapestryInvocationValidator,
     IProviderHealthTracker? healthTracker = null,
     GuardrailsPipeline? guardrailsPipeline = null,
     IModelCallExecutor? modelCallExecutor = null,
@@ -98,7 +100,6 @@ public sealed partial class WizardIntelligenceProvider(
     ISubagentRunner? subagentRunner = null,
     ISessionAttachmentRetrievalService? sessionAttachmentRetrieval = null,
     IAttachmentMemoryProvenanceStore? attachmentMemoryProvenanceStore = null,
-    ITapestryStore? tapestryStore = null,
     CovenantDispatchGate? covenantDispatch = null,
     CovenantToolCapabilityRegistry? covenantToolCapabilities = null,
     CampaignRollupTurnPreparer? campaignRollups = null) : IArcanumIntelligenceProvider, IContextPreviewService, ITurnPipelineRunner
@@ -128,7 +129,8 @@ public sealed partial class WizardIntelligenceProvider(
             modelTokenEstimator,
             modelCallExecutor,
             tokenizerResolver,
-            logger);
+            logger,
+            tapestryInvocationValidator);
 
     private IModelTokenEstimator ModelTokenEstimator => _tokenAccounting.Estimator;
 
@@ -1633,6 +1635,9 @@ public sealed partial class WizardIntelligenceProvider(
     {
         bool streaming = mode == TurnResponseMode.Streaming;
 
+        // A Session claimed later in this attempt cannot add a source scope to the accepted request.
+        PingRequest tapestryScopeRequest = request;
+
         GrimoireTurnWriter.TurnHandle grimoireTurn = new();
 
         StringBuilder streamAccumulator = new(1024);
@@ -2035,39 +2040,8 @@ public sealed partial class WizardIntelligenceProvider(
 
             if (!attachmentsEnabled && request.AttachedFiles is { Count: > 0 } directAttachedFiles)
             {
-                for (int index = 0; index < directAttachedFiles.Count; index++)
-                {
-                    AttachedFileDto file = directAttachedFiles[index];
-
-                    byte[] bytes = Encoding.UTF8.GetBytes(file.Content ?? string.Empty);
-
-                    string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-                    ContextMaterializationEntry accepted = streamMaterializationLedger.Accept(
-                        new ContextMaterializationCandidate(
-                            grimoireTurn.SessionId ?? request.SessionId,
-                            ContextMaterializationSourceKind.CurrentTurnAttachment,
-                            $"current:{index.ToString(CultureInfo.InvariantCulture)}",
-                            hash,
-                            VersionOrdinal: null,
-                            ContextMaterializationRange.Whole,
-                            ContextMaterializationOrigin.Explicit,
-                            file.RelativePath,
-                            hash,
-                            EstimateMaterializedTokens(bytes.Length),
-                            bytes.Length,
-                    ContextMaterializationTrust.UntrustedData),
-                    materialized: true);
-
-                    if (accepted.Accepted)
-                    {
-                        _ = streamMaterializationLedger.TryMarkInjected(
-                            accepted.Identity,
-                            providerRound: 0);
-
-                        acceptedAttachedFileIndices.Add(index);
-                    }
-                }
+                acceptedAttachedFileIndices.UnionWith(AcceptCurrentTextAttachments(
+                    streamMaterializationLedger, directAttachedFiles, grimoireTurn.SessionId ?? request.SessionId));
             }
 
             if (!attachmentsEnabled && request.ScryingFoci is { Count: > 0 } directScryingFoci)
@@ -2353,6 +2327,9 @@ public sealed partial class WizardIntelligenceProvider(
 
             IReadOnlyList<ParsedSpell>? streamResonants = streamResolvedSpell?.Resonants;
 
+            TapestryInvocationSelection? streamTapestrySelection = await tapestryInvocationValidator
+                .AuthorizeAsync(tapestryScopeRequest, invocationContext, inferenceToken).ConfigureAwait(false);
+
             Embedding<float>? streamQueryEmbedding;
 
             // Provider-independent and billed through TryRecordAuxiliaryUsageAsync, so the run resolves
@@ -2363,7 +2340,7 @@ public sealed partial class WizardIntelligenceProvider(
             }
             else
             {
-                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, inferenceToken).ConfigureAwait(false);
+                streamQueryEmbedding = await ResolveRagQueryEmbeddingAsync(request, streamTapestrySelection is not null, inferenceToken).ConfigureAwait(false);
 
                 if (seed is not null)
                 {
@@ -2404,10 +2381,12 @@ public sealed partial class WizardIntelligenceProvider(
 
             // Admitted last of the semantic sources so an exact raw leaf already in the ledger wins the
             // duplicate-content check against a Tapestry node covering the same text (DESIGN §21.11).
+            TapestryRetrievedNode[]? streamRetrievedTapestry = await RetrieveAuthorizedTapestryAsync(
+                streamTapestrySelection, streamQueryEmbedding, lease.Provider, lease.ResolvedModel, inferenceToken).ConfigureAwait(false);
+
             TapestryContextNode[]? streamTapestryContext = AcceptTapestryMaterializations(
                 streamMaterializationLedger,
-                await RetrieveTapestryContextAsync(request, streamQueryEmbedding, inferenceToken)
-                    .ConfigureAwait(false),
+                streamRetrievedTapestry,
                 lease.Provider,
                 lease.ResolvedModel,
                 grimoireTurn.SessionId ?? request.SessionId);
@@ -3372,12 +3351,16 @@ public sealed partial class WizardIntelligenceProvider(
                                         ResolveCallSensitivity(),
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
                                         streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                        roundProtection))
+                                        roundProtection,
+                                        CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)))
                                 .ConfigureAwait(false);
                         }
 
                         if (modelCall.IsFailure)
                         {
+                            if (modelCall.Failure.HasUncertainProviderEffect)
+                                await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+
                             if (TrySelectOrdinaryCacheFallback(modelCall.Failure.RetryDirective))
                             {
                                 continue;
@@ -3473,7 +3456,8 @@ public sealed partial class WizardIntelligenceProvider(
                                         ResolveCallSensitivity(),
                                         streamCachePrepared?.Bind(chatMessages, streamChatOptions),
                                         streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                            roundProtection))
+                                            roundProtection,
+                                        CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)))
                             .GetAsyncEnumerator(inferenceToken);
 
                         try
@@ -3558,6 +3542,9 @@ public sealed partial class WizardIntelligenceProvider(
 
                                 if (modelUpdate is ModelCallFailureUpdate failureUpdate)
                                 {
+                                    if (failureUpdate.HasUncertainProviderEffect)
+                                        await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+
                                     if (TrySelectOrdinaryCacheFallback(failureUpdate.RetryDirective))
                                     {
                                         restartWithOrdinaryCache = true;
@@ -4432,11 +4419,15 @@ public sealed partial class WizardIntelligenceProvider(
                                                 ResolveCallSensitivity(),
                                                 streamCachePrepared?.Bind(chatMessages, retryOptions),
                                                 streamCachePrepared?.Build.Attribution ?? streamSystemPromptDocument.BuildResult().Attribution,
-                                            retryProtection))
+                                            retryProtection,
+                                                CreateTapestryObservation(streamTapestrySelection, streamQueryEmbedding, streamRetrievedTapestry, streamTapestryContext)))
                                         .ConfigureAwait(false);
 
                                     if (retryCall.IsFailure)
                                     {
+                                        if (retryCall.Failure.HasUncertainProviderEffect)
+                                            await streamAccountingLocal.RecordUncertainProviderEffectAsync(budgetReservationService, CancellationToken.None).ConfigureAwait(false);
+
                                         if (TrySelectOrdinaryCacheFallback(retryCall.Failure.RetryDirective))
                                         {
                                             continue;
@@ -5716,7 +5707,7 @@ public sealed partial class WizardIntelligenceProvider(
     /// neither feature needs an embedding this turn (both disabled), or when embedding fails for any
     /// reason — callers treat <c>null</c> as "skip RAG retrieval for this turn", never as an error.
     /// </summary>
-    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, CancellationToken cancellationToken)
+    private async Task<Embedding<float>?> ResolveRagQueryEmbeddingAsync(PingRequest request, bool tapestryEligible, CancellationToken cancellationToken)
     {
         if (SubagentExecutionAmbient.IsIsolated)
         {
@@ -5735,7 +5726,7 @@ public sealed partial class WizardIntelligenceProvider(
             && embeddings.AttachmentRetrievalEnabled
             && request.SessionId is not null;
 
-        bool needsTapestryEmbedding = embeddings.Enabled
+        bool needsTapestryEmbedding = tapestryEligible && embeddings.Enabled
             && embeddings.TapestryEnabled
             && (!string.IsNullOrWhiteSpace(request.WorkingDirectory) || request.SessionId is not null);
 
@@ -6137,299 +6128,54 @@ public sealed partial class WizardIntelligenceProvider(
     ///
     /// Graceful degradation: returns <c>null</c> (never throws for expected failure modes) when the
     /// feature is disabled, no generation is published, the query embedding is unavailable, or
-    /// Divination fails — the turn proceeds with an unchanged system prompt (§21.4).
+    /// typed retrieval refuses — the turn proceeds with an unchanged system prompt (§21.4).
     /// </summary>
     internal async Task<TapestryRetrievedNode[]?> RetrieveTapestryContextAsync(
-        PingRequest request,
-        Embedding<float>? queryEmbedding,
-        CancellationToken cancellationToken)
+        PingRequest request, ArcanumInvocationContext invocation, Embedding<float>? queryEmbedding,
+        ProviderSettings provider, string model, CancellationToken cancellationToken) =>
+        await RetrieveAuthorizedTapestryAsync(
+            await tapestryInvocationValidator.AuthorizeAsync(request, invocation, cancellationToken).ConfigureAwait(false),
+            queryEmbedding, provider, model, cancellationToken).ConfigureAwait(false);
+
+    private async Task<TapestryRetrievedNode[]?> RetrieveAuthorizedTapestryAsync(
+        TapestryInvocationSelection? selection, Embedding<float>? queryEmbedding,
+        ProviderSettings provider, string model, CancellationToken cancellationToken)
     {
+        if (selection is null || queryEmbedding is not { } embedding
+            || embedding.AdditionalProperties is null
+            || !embedding.AdditionalProperties.TryGetValue(EmbeddingProvenance.MetadataKey, out object? value)
+            || value is not EmbeddingProvenance provenance) return null;
+
         EmbeddingSettings embeddings = settings.Value.ResolveEmbeddings();
 
-        if (!embeddings.Enabled
-            || !embeddings.TapestryEnabled
-            || tapestryStore is null
-            || queryEmbedding is not { } embedding)
-        {
-            return null;
-        }
+        TapestryEmbeddingSettings tapestry = embeddings.Tapestry;
+
+        int target = ArcanumSettingClamps.EmbeddingsTapestryTargetChildrenPerSummary(tapestry.TargetChildrenPerSummary);
+
+        TapestryRetrievalIdentity identity = new(provenance.Identity, embedding.Vector.Length,
+            new(ArcanumSettingClamps.EmbeddingsTapestryMaxTreeDepth(tapestry.MaxTreeDepth), target,
+                Math.Max(target, ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(tapestry.MaxChildrenPerSummary)),
+                ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer(tapestry.MaxClustersPerLayer),
+                ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens)));
 
         try
         {
-            TapestryEmbeddingSettings tapestry = embeddings.Tapestry ?? new TapestryEmbeddingSettings();
+            var result = await tapestryRetriever.RetrieveAsync(new(selection.Scopes, embedding.Vector.ToArray(), identity,
+                tapestry.RetrievalMode, ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedNodes(tapestry.MaxRetrievedNodes),
+                ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedBytes(tapestry.MaxRetrievedBytes),
+                ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens(tapestry.MaxRetrievedTokens),
+                ArcanumSettingClamps.EmbeddingsSimilarityThreshold(embeddings.SimilarityThreshold), provider, model),
+                cancellationToken).ConfigureAwait(false);
 
-            if (embedding.AdditionalProperties is null
-                || !embedding.AdditionalProperties.TryGetValue(EmbeddingProvenance.MetadataKey, out object? value)
-                || value is not EmbeddingProvenance provenance)
-            {
-                return null;
-            }
-
-            int target = ArcanumSettingClamps.EmbeddingsTapestryTargetChildrenPerSummary(tapestry.TargetChildrenPerSummary);
-
-            TapestryRetrievalIdentity identity = new(provenance.Identity, embedding.Vector.Length,
-                new(ArcanumSettingClamps.EmbeddingsTapestryMaxTreeDepth(tapestry.MaxTreeDepth), target,
-                    Math.Max(target, ArcanumSettingClamps.EmbeddingsTapestryMaxChildrenPerSummary(tapestry.MaxChildrenPerSummary)),
-                    ArcanumSettingClamps.EmbeddingsTapestryMaxClustersPerLayer(tapestry.MaxClustersPerLayer),
-                    ArcanumSettingClamps.EmbeddingsTapestryMaxSummaryTokens(tapestry.MaxSummaryTokens)));
-
-            List<TapestryScope> scopes = BuildTapestryScopes(request, tapestry, workspaceIndexingService);
-
-            if (scopes.Count == 0)
-            {
-                return null;
-            }
-
-            int maxNodes = ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedNodes(tapestry.MaxRetrievedNodes);
-
-            float similarityThreshold = ArcanumSettingClamps.EmbeddingsSimilarityThreshold(
-                embeddings.SimilarityThreshold);
-
-            List<TapestryRetrievedNode> candidates = [];
-
-            foreach (TapestryScope scope in scopes)
-            {
-                Result<TapestryGenerationAccess> lookup = await tapestryStore
-                    .GetRetrievableGenerationAsync(scope, identity, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (lookup.IsFailure)
-                {
-                    continue;
-                }
-
-                TapestryGeneration generation = lookup.Value.Generation;
-
-                IReadOnlyList<(string NodeId, float Similarity)> hits =
-                    tapestry.RetrievalMode == TapestryRetrievalMode.TreeTraversal
-                        ? await TraverseTapestryAsync(
-                            generation,
-                            embedding,
-                            maxNodes,
-                            similarityThreshold,
-                            cancellationToken).ConfigureAwait(false)
-                        : await SearchCollapsedTapestryAsync(
-                            generation,
-                            embedding,
-                            maxNodes,
-                            similarityThreshold,
-                            cancellationToken).ConfigureAwait(false);
-
-                if (hits.Count == 0)
-                {
-                    continue;
-                }
-
-                candidates.AddRange(
-                    await tapestryStore.HydrateRetrievedNodesAsync(
-                        lookup.Value,
-                        hits,
-                        tapestry.RetrievalMode,
-                        cancellationToken).ConfigureAwait(false));
-            }
-
-            TapestryRetrievedNode[] selected = SelectTapestryNodes(candidates, tapestry, maxNodes);
-
-            return selected.Length == 0 ? null : selected;
+            return result.IsSuccess && result.Value.Count > 0 ? [.. result.Value] : null;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            logger.LogDebug(
-                "Tapestry retrieval failed; continuing without it (exception type {ExceptionType}).",
-                ex.GetType().FullName);
+            logger.LogDebug("Tapestry retrieval failed; continuing without it (exception type {ExceptionType}).", ex.GetType().FullName);
 
             return null;
         }
-    }
-
-    /// <summary>
-    /// Collapsed-tree retrieval: leaf and summary nodes are one flat pool, scoped to the current
-    /// generation so a superseded tree can never leak in.
-    /// </summary>
-    private async Task<IReadOnlyList<(string NodeId, float Similarity)>> SearchCollapsedTapestryAsync(
-        TapestryGeneration generation,
-        Embedding<float> embedding,
-        int maxNodes,
-        float similarityThreshold,
-        CancellationToken cancellationToken)
-    {
-        Result<DivinationResult[]> search = await divinationService
-            .SearchScopedAsync(
-                TapestryStorageKeys.VectorTable,
-                TapestryStorageKeys.KeyColumn,
-                TapestryStorageKeys.EmbeddingColumn,
-                TapestryStorageKeys.NodeTable,
-                TapestryStorageKeys.KeyColumn,
-                TapestryStorageKeys.GenerationColumn,
-                generation.GenerationId,
-                embedding,
-                maxNodes,
-                similarityThreshold,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        return search.IsFailure
-            ? []
-            : [.. search.Value.Select(static hit => (hit.Id, hit.Similarity))];
-    }
-
-    /// <summary>
-    /// Tree-traversal retrieval: start at the generation's roots, then expand only the selected
-    /// nodes' children, level by level. Each step is one scoped search on <c>ParentScopeKey</c>, and
-    /// the walk stops when a level yields no children or the node budget is met.
-    /// </summary>
-    private async Task<IReadOnlyList<(string NodeId, float Similarity)>> TraverseTapestryAsync(
-        TapestryGeneration generation,
-        Embedding<float> embedding,
-        int maxNodes,
-        float similarityThreshold,
-        CancellationToken cancellationToken)
-    {
-        List<(string NodeId, float Similarity)> selected = [];
-
-        List<string> frontier = [TapestryStorageKeys.RootParentMarker];
-
-        int terminalLayer = await tapestryStore!
-            .GetTerminalLayerAsync(generation.GenerationId, cancellationToken)
-            .ConfigureAwait(false);
-
-        for (int depth = 0; depth <= terminalLayer && frontier.Count > 0; depth++)
-        {
-            List<(string NodeId, float Similarity)> level = [];
-
-            foreach (string parent in frontier)
-            {
-                Result<DivinationResult[]> search = await divinationService
-                    .SearchScopedAsync(
-                        TapestryStorageKeys.VectorTable,
-                        TapestryStorageKeys.KeyColumn,
-                        TapestryStorageKeys.EmbeddingColumn,
-                        TapestryStorageKeys.NodeTable,
-                        TapestryStorageKeys.KeyColumn,
-                        TapestryStorageKeys.ParentScopeColumn,
-                        TapestryStorageKeys.ParentScopeKey(generation.GenerationId, parent),
-                        embedding,
-                        maxNodes,
-                        similarityThreshold,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (search.IsSuccess)
-                {
-                    level.AddRange(search.Value.Select(static hit => (hit.Id, hit.Similarity)));
-                }
-            }
-
-            if (level.Count == 0)
-            {
-                break;
-            }
-
-            // Stable ordering: strongest similarity first, ties broken by node id, so a traversal is
-            // reproducible for the same generation and query embedding.
-            level.Sort(static (left, right) =>
-                right.Similarity.CompareTo(left.Similarity) is var byScore && byScore != 0
-                    ? byScore
-                    : string.CompareOrdinal(left.NodeId, right.NodeId));
-
-            List<(string NodeId, float Similarity)> keep = [.. level.Take(maxNodes)];
-
-            selected.AddRange(keep);
-
-            frontier = [.. keep.Select(static hit => hit.NodeId)];
-        }
-
-        return selected;
-    }
-
-    /// <summary>
-    /// Lineage-aware redundancy control. A summary and one of its descendants carry different text
-    /// and different hashes, so the shared ledger's exact content/range dedupe cannot see that they
-    /// cover the same material — this does. Candidates are ranked by similarity, then by cheaper
-    /// token cost, then by stable node id, and a candidate is suppressed when an already-selected
-    /// node is its ancestor or its descendant. The Tapestry's own node/byte/token bounds are applied
-    /// on the way through.
-    /// </summary>
-    internal static TapestryRetrievedNode[] SelectTapestryNodes(
-        List<TapestryRetrievedNode> candidates,
-        TapestryEmbeddingSettings tapestry,
-        int maxNodes)
-    {
-        if (candidates.Count == 0)
-        {
-            return [];
-        }
-
-        int maxBytes = ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedBytes(tapestry.MaxRetrievedBytes);
-
-        int maxTokens = ArcanumSettingClamps.EmbeddingsTapestryMaxRetrievedTokens(tapestry.MaxRetrievedTokens);
-
-        candidates.Sort((left, right) =>
-        {
-            int byScore = right.Similarity.CompareTo(left.Similarity);
-
-            if (byScore != 0)
-            {
-                return byScore;
-            }
-
-            int byCost = Encoding.UTF8.GetByteCount(left.Content)
-                .CompareTo(Encoding.UTF8.GetByteCount(right.Content));
-
-            return byCost != 0 ? byCost : string.CompareOrdinal(left.NodeId, right.NodeId);
-        });
-
-        List<TapestryRetrievedNode> accepted = [];
-
-        HashSet<string> acceptedIds = new(StringComparer.Ordinal);
-
-        long bytes = 0;
-
-        long estimatedTokens = 0;
-
-        foreach (TapestryRetrievedNode candidate in candidates)
-        {
-            if (accepted.Count >= maxNodes)
-            {
-                break;
-            }
-
-            if (!acceptedIds.Add(candidate.NodeId))
-            {
-                continue;
-            }
-
-            bool overlapsLineage = accepted.Any(
-                existing =>
-                    candidate.AncestorNodeIds.Contains(existing.NodeId, StringComparer.Ordinal)
-                    || existing.AncestorNodeIds.Contains(candidate.NodeId, StringComparer.Ordinal));
-
-            if (overlapsLineage)
-            {
-                continue;
-            }
-
-            int candidateBytes = Encoding.UTF8.GetByteCount(candidate.Content);
-
-            int candidateTokens = Math.Max(1, candidate.Content.Length / 4);
-
-            if (bytes + candidateBytes > maxBytes || estimatedTokens + candidateTokens > maxTokens)
-            {
-                continue;
-            }
-
-            bytes += candidateBytes;
-
-            estimatedTokens += candidateTokens;
-
-            accepted.Add(candidate);
-        }
-
-        return [.. accepted];
     }
 
     /// <summary>
@@ -6499,25 +6245,6 @@ public sealed partial class WizardIntelligenceProvider(
     /// </summary>
     private static string DescribeTapestryScope(TapestryRetrievedNode node) =>
         TapestryScope.DescribeForModel(node.ScopeKind, node.ScopeId);
-
-    /// <summary>
-    /// Projects retrieved Tapestry nodes for the context preview, which publishes no turn ledger to admit them
-    /// through (its retrieval embeddings still write their own embedding run and ledger rows, DESIGN §22.2).
-    /// Uses the same projection the ledger path produces so
-    /// <c>mana</c> / <c>context inspect</c> shows the operator exactly what a real turn would inject.
-    /// </summary>
-    private static TapestryContextNode[]? ProjectTapestryPreview(TapestryRetrievedNode[]? nodes) =>
-        nodes is not { Length: > 0 }
-            ? null
-            : [.. nodes.Select(static node => new TapestryContextNode(
-                DescribeTapestryScope(node),
-                node.SourceLabel,
-                node.Layer,
-                node.NodeKind == TapestryNodeKind.Summary,
-                node.DescendantLeafCount,
-                node.ContentHash,
-                node.Similarity,
-                node.Content))];
 
     private SemanticContextChunk[]? AcceptWorkspaceRagMaterializations(
         ContextMaterializationLedger ledger,
@@ -8015,7 +7742,8 @@ public sealed partial class WizardIntelligenceProvider(
         ContentSensitivity sensitivity = ContentSensitivity.None,
         IPromptCacheDispatchBinding? promptCacheBinding = null,
         SystemPromptAttributionMap? systemPromptAttribution = null,
-        IProtectedProviderCallBinding? protectedBinding = null) =>
+        IProtectedProviderCallBinding? protectedBinding = null,
+        ITapestryRetrievalObservation? tapestryObservation = null) =>
         new(
             lease.Provider,
             lease.ResolvedModel,
@@ -8030,7 +7758,10 @@ public sealed partial class WizardIntelligenceProvider(
             Sensitivity: sensitivity,
             PromptCacheBinding: promptCacheBinding,
             SystemPromptAttribution: systemPromptAttribution,
-            ProtectedBinding: protectedBinding);
+            ProtectedBinding: protectedBinding)
+        {
+            TapestryObservation = tapestryObservation,
+        };
 
     private PromptCachePlan BuildPromptCachePlan(
         ChatClientLease lease,
@@ -8893,7 +8624,8 @@ public sealed partial class WizardIntelligenceProvider(
             IModelTokenEstimator? estimator,
             IModelCallExecutor? executor,
             InferenceTokenizerResolver tokenizerResolver,
-            ILogger logger)
+            ILogger logger,
+            TapestryInvocationValidator tapestryInvocationValidator)
         {
             IModelTokenEstimator resolvedEstimator =
                 estimator ?? new ModelTokenEstimator(tokenizerResolver);
@@ -8902,7 +8634,10 @@ public sealed partial class WizardIntelligenceProvider(
                 executor ?? new ModelCallExecutor(
                     resolvedEstimator,
                     settings: null,
-                    logger: logger));
+                    logger: logger,
+                    promptCacheDispatchValidator: null,
+                    tapestryValidator: null,
+                    tapestryInvocationValidator: tapestryInvocationValidator));
         }
     }
 

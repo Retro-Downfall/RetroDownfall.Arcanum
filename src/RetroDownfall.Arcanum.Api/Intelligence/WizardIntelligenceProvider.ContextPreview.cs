@@ -319,12 +319,23 @@ public sealed partial class WizardIntelligenceProvider
 
         TapestryContextNode[]? tapestryContext = null;
 
+        TapestryInvocationSelection? previewTapestrySelection = null;
+
+        TapestryRetrievedNode[]? previewRetrievedTapestry = null;
+
         IReadOnlyList<LexiconEntryDto>? lexiconEntries = null;
+
+        // A preview owns local admission state and never consumes a live turn's ledger or Session gate.
+        using var previewAttachmentState = AttachmentMemoryGateAmbient.BeginTurn();
+
+        ContextMaterializationLedger previewLedger = CreatePreviewMaterializationLedger(turn, pins, previewAttachmentState);
 
         if (!previewRequest.NoRetrieval)
 
         {
-            queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, cancellationToken).ConfigureAwait(false);
+            previewTapestrySelection = await tapestryInvocationValidator.AuthorizeAsync(turn, invocationContext, cancellationToken).ConfigureAwait(false);
+
+            queryEmbedding = await ResolveRagQueryEmbeddingAsync(turn, previewTapestrySelection is not null, cancellationToken).ConfigureAwait(false);
 
             semanticContext = await RetrieveSemanticContextAsync(turn, queryEmbedding, cancellationToken).ConfigureAwait(false);
 
@@ -339,12 +350,17 @@ public sealed partial class WizardIntelligenceProvider
 
                 cancellationToken).ConfigureAwait(false);
 
-            // The preview renders the same hierarchical context the real turn would, minus the ledger:
-            // this path never mutates a turn ledger, so nodes are projected directly.
-            tapestryContext = ProjectTapestryPreview(
-                await RetrieveTapestryContextAsync(turn, queryEmbedding, cancellationToken)
+            attachmentContext = AcceptAttachmentRagMaterializations(previewLedger, attachmentContext, lease.Provider, lease.ResolvedModel);
 
-                    .ConfigureAwait(false));
+            semanticContext = AcceptWorkspaceRagMaterializations(previewLedger, semanticContext, lease.Provider, lease.ResolvedModel, turn.SessionId);
+
+            sagaMemories = AcceptSagaMaterializations(previewLedger, sagaMemories, lease.Provider, lease.ResolvedModel, turn.SessionId);
+
+            previewRetrievedTapestry = await RetrieveAuthorizedTapestryAsync(previewTapestrySelection, queryEmbedding,
+                lease.Provider, lease.ResolvedModel, cancellationToken).ConfigureAwait(false);
+
+            tapestryContext = AcceptTapestryMaterializations(previewLedger, previewRetrievedTapestry,
+                lease.Provider, lease.ResolvedModel, turn.SessionId);
 
             lexiconEntries = await RetrieveLexiconEntriesAsync(
                 turn,
@@ -749,6 +765,14 @@ public sealed partial class WizardIntelligenceProvider
             {
                 return valid.Error;
             }
+        }
+
+        if (CreateTapestryObservation(previewTapestrySelection, queryEmbedding, previewRetrievedTapestry, tapestryContext)
+            is TapestryRetrievalObservation observation)
+        {
+            Result valid = await tapestryInvocationValidator.ValidateAsync(observation, cancellationToken).ConfigureAwait(false);
+
+            if (valid.IsFailure) return valid.Error;
         }
 
         return Result<ContextPreviewResult>.Success(result);

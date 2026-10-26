@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Tests.Support;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class TurnAccountingHandleTests
+public sealed partial class TurnAccountingHandleTests
 {
     [Theory]
     [InlineData(false, false)]
@@ -1570,6 +1570,21 @@ public sealed class TurnAccountingHandleTests
         private int _reconcileCalls;
 
         public BudgetReservationRequest? LastRequest { get; private set; }
+
+        internal int UncertainCalls { get; private set; }
+
+        internal Guid? UncertainRun { get; private set; }
+
+        internal Exception? UncertainException { get; init; }
+
+        public Task MarkPossiblyDispatchedAsync(Guid reservationId, Guid runId, CancellationToken cancellationToken = default)
+        {
+            UncertainCalls++;
+
+            UncertainRun = runId;
+
+            return UncertainException is null ? Task.CompletedTask : Task.FromException(UncertainException);
+        }
 
         public decimal? ReconciledUsd { get; private set; }
 

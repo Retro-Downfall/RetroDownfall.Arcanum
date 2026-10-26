@@ -206,8 +206,6 @@ public sealed class NullableInterfaceConstructorDefaultTests
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:subagentRunner"] = "every use of the ISubagentRunner is null-safe; absence disables an observation, not a refusal",
 
-        ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:tapestryStore"] = "every use of the ITapestryStore is null-safe; absence disables an observation, not a refusal",
-
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:turnRunWriter"] = "owner is container-activated and ITurnRunWriter is registered; the container supplies it in a composed host",
 
         ["src/RetroDownfall.Arcanum.Api/Intelligence/WizardIntelligenceProvider.cs:WizardIntelligenceProvider:webResearchProviderCatalog"] = "every use of the IWebResearchProviderCatalog is null-safe; absence disables an observation, not a refusal",

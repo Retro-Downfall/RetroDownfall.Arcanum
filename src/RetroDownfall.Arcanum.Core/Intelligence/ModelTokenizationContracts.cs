@@ -324,7 +324,14 @@ public sealed record ModelCallContext(
     ContentSensitivity Sensitivity = ContentSensitivity.None,
     IPromptCacheDispatchBinding? PromptCacheBinding = null,
     SystemPromptAttributionMap? SystemPromptAttribution = null,
-    IProtectedProviderCallBinding? ProtectedBinding = null);
+    IProtectedProviderCallBinding? ProtectedBinding = null)
+{
+    [JsonIgnore]
+    public ITapestryRetrievalObservation? TapestryObservation { get; init; }
+}
+
+/// <summary>Opaque nonwire host data describing injected retrieval; never a grant or capsule.</summary>
+public interface ITapestryRetrievalObservation;
 
 /// <summary>Opaque host-owned protection interpreted only by the physical provider boundary.</summary>
 public interface IProtectedProviderCallBinding;

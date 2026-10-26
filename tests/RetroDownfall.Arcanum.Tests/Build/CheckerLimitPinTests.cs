@@ -1083,6 +1083,21 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
     ];
 
     [Fact]
+    public void Tapestry_retrieval_dispatch_observer_has_exact_closed_construction_sites()
+    {
+        // Like PromptCacheDispatchPolicy, its source recheck is a scoped delegate, not a direct
+        // classified site in the override scan. Pin the closed registration separately and keep
+        // the actual per-attempt/native retry and scope-masking proof in TapestryRetrievalDispatchTests.
+        IReadOnlyList<Compilation> production = Production();
+
+        Assert.Equal([P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease"],
+            CheckerLimitScans.ConstructionSites(production, P + "Api.Intelligence.TapestryRetrievalDispatchPolicy"));
+
+        Assert.Equal([P + "Api.Intelligence.TapestryRetrievalDispatchPolicy.Enter"],
+            CheckerLimitScans.ConstructionSites(production, P + "Api.Intelligence.TapestryRetrievalDispatchPolicy.Scope"));
+    }
+
+    [Fact]
     public void The_override_probe_flags_an_override_that_reaches_a_site_and_leaves_a_quiet_one_alone()
     {
         string[] reaching = [.. HostedGrimoireProducerInventory.ProbeFrameworkEntryPointsThatReach(Synthetic.Value, HostedGrimoireProducerInventory.FrameworkEntryPoints.Overrides)];

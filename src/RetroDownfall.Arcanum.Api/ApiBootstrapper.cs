@@ -603,6 +603,8 @@ public static class ApiBootstrapper
 
         services.AddSingleton<PromptCacheDispatchValidator>();
 
+        services.AddSingleton<TapestryInvocationValidator>();
+
         services.AddSingleton<IModelCallExecutor, ModelCallExecutor>();
 
         services.AddSingleton<IToolResultMaterializer, ToolResultMaterializer>();
