@@ -4085,3 +4085,18 @@ The newly required terminal boundary is explicit: finish all remediation and rea
 The exact runtime commit is `33732fec285420921ad1679d04ba0a729271e23a`, tested tree `76db36a544a7035dba386c4f9a9ae47bbf508a6b`. **1262 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave30r1-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
 
 Actual RAPTOR remains **7 of 12 stages integrated**, with the production builder executing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
+
+
+### 2026-10-26 checkpoint — 119 original findings integrated
+
+**119 of 272 findings (43.8%) are independently reviewed and integrated:** 3 Critical, 75 Important and 41 Minor. **153 remain:** 1 Important and 152 Minor. 0 further original findings have approved candidates awaiting integration: none.
+
+This wave integrates reviewed web candidate b4db48204c78cbbf429493074df80170269493f7 for RV-108/109/114/119/120. RV-108 uses the existing RV-012 starvation repair with the exact15-pass/42-source scenario and killed starvation mutant; RV-109 adds baseline-correct cap coverage plus a killed cap-removal mutant. Neither adds a summary-saturation or50-source discovery stop.
+
+Follow-up queries reserve the entire supported integer pass representation; numeric exhaustion synthesizes already paid work instead of wrapping. Indexed, value-free validation preserves domain restrictions and fixes the adjacent omitted numeric defaults through source-generated constructors. Research frames and safe logs share a request trace, retain only reported usage, distinguish unknown cost and describe partial-result disposition. CLI normal/plain diagnostics show exact known spend or unknown status and the trace, while preserving JSON and old-server behavior.
+
+All changed C# bytes match the approved candidate exactly. Fresh combined qualification passes1056distinctcases, including all complete candidate classes and the current full Wizard class, with0skips and a normal0warning build. Original eleven causal mutation/restoration receipts and independent review are preserved. This is local integration evidence; full final CI remains required. The explicit user pause before any install or liveOllama/embedding test remains in effect.
+
+The exact runtime commit is `24dd4a704139d695c93408fd7d37ac65f6b89499`, tested tree `f05aa7c5bcef1822577ecd8786b1d4372dc56339`. **1056 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave31-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
+
+Actual RAPTOR remains **7 of 12 stages integrated**, with the production builder executing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
