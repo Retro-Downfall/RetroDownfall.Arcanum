@@ -109,7 +109,8 @@ internal sealed class TapestrySummarizer(
 
         // Output and reasoning are both reserved: a summary that only fits because we ignored the
         // response would fail at the provider boundary instead of being repartitioned here.
-        long required = prompt.TokenCount + prompt.SafetyMarginTokens + ReservedOutputTokens(settings);
+        // EstimateText already includes its safety margin in TokenCount.
+        long required = (long)prompt.TokenCount + ReservedOutputTokens(settings);
 
         return required <= ArcanumSettingClamps.ContextWindowLimit(provider.ContextWindowLimit);
     }

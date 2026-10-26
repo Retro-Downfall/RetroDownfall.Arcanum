@@ -1402,6 +1402,12 @@ public sealed partial class TapestryWeaverTests : IAsyncLifetime
     /// <summary>Runs a step just before the generation is begun, then delegates everything to the real store.</summary>
     private sealed class BeginHookTapestryStore(ITapestryStore inner, Func<Task> beforeBegin) : ITapestryStore
     {
+        public Task<Result<TapestryRetrievalGraph>> ReadRetrievalGraphAsync(TapestryGenerationAccess access, CancellationToken cancellationToken) => inner.ReadRetrievalGraphAsync(access, cancellationToken);
+
+        public Task<Result<TapestryRankedPage>> RankRetrievalNodesAsync(TapestryGenerationAccess access, float[] queryVector, TapestryRetrievalGraph graph, IReadOnlyList<string>? nodeIds, int limit, CancellationToken cancellationToken) => inner.RankRetrievalNodesAsync(access, queryVector, graph, nodeIds, limit, cancellationToken);
+
+        public Task<Result<IReadOnlyDictionary<string, TapestrySelectionMetadata>>> ReadSelectionMetadataAsync(TapestryGenerationAccess access, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => inner.ReadSelectionMetadataAsync(access, nodeIds, cancellationToken);
+
         public Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken) => inner.GetRetrievableGenerationAsync(scope, identity, cancellationToken);
 
         public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken) => inner.HydrateRetrievedNodesAsync(access, hits, mode, cancellationToken);

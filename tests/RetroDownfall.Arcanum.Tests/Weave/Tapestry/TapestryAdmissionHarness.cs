@@ -165,6 +165,12 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal sealed class Store(TapestryAdmissionHarness harness) : ITapestryStore
     {
+        public Task<Result<TapestryRetrievalGraph>> ReadRetrievalGraphAsync(TapestryGenerationAccess access, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<Result<TapestryRankedPage>> RankRetrievalNodesAsync(TapestryGenerationAccess access, float[] queryVector, TapestryRetrievalGraph graph, IReadOnlyList<string>? nodeIds, int limit, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<Result<IReadOnlyDictionary<string, TapestrySelectionMetadata>>> ReadSelectionMetadataAsync(TapestryGenerationAccess access, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => throw new NotImplementedException();
+
         public Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken) => throw new NotImplementedException();
 
         public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken) => throw new NotImplementedException();

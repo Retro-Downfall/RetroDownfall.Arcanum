@@ -75,8 +75,8 @@ public sealed record TapestryEmbeddingSettings
     /// <summary>
     /// Operator policy — how retrieval reads the tree. <see cref="TapestryRetrievalMode.CollapsedTree"/>
     /// (default) searches leaf and summary nodes as one pool;
-    /// <see cref="TapestryRetrievalMode.TreeTraversal"/> descends level by level from the terminal
-    /// layer. Projected from <c>Arcanum:Integrations:Embeddings:Tapestry:RetrievalMode</c>.
+    /// <see cref="TapestryRetrievalMode.TreeTraversal"/> descends from true graph roots through the distinct selected-child union
+    /// (typed service activation is staged in DESIGN §21.11). Projected from <c>Arcanum:Integrations:Embeddings:Tapestry:RetrievalMode</c>.
     /// </summary>
     public TapestryRetrievalMode RetrievalMode { get; set; } = TapestryRetrievalMode.CollapsedTree;
 

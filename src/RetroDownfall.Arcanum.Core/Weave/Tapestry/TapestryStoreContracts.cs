@@ -21,3 +21,15 @@ public sealed record TapestryRetrievalIdentity(string EmbeddingIdentity, int Emb
 
 /// <summary>A lookup observation, revalidated transactionally before hydrating content.</summary>
 public sealed record TapestryGenerationAccess(TapestryGeneration Generation, TapestryRetrievalIdentity Identity);
+
+/// <summary>Scalar topology only; source/event time never means summary creation or ingestion time.</summary>
+public sealed record TapestryRetrievalGraph(IReadOnlyDictionary<string, TapestryRetrievalVertex> Vertices);
+
+public sealed record TapestryRetrievalVertex(int Layer, DateTimeOffset? SourceEventAt, IReadOnlyList<string> Children, long MaterializedBytes);
+
+public sealed record TapestryRankedNode(string NodeId, float Similarity, DateTimeOffset? SourceEventAt);
+
+/// <summary>Every eligible vector was considered; Truncated explicitly reports the retained rank bound.</summary>
+public sealed record TapestryRankedPage(IReadOnlyList<TapestryRankedNode> Nodes, int ScoredCount, bool Truncated);
+
+public sealed record TapestrySelectionMetadata(IReadOnlyList<string> Ancestors, IReadOnlyList<string> CoveredSourceIds);
