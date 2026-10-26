@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 using System.Text;
 
 using RetroDownfall.Arcanum.Core.Storage;
@@ -25,7 +23,8 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
     Func<ReadOnlyMemory<byte>, ISessionAttachmentDocumentTextSink, CancellationToken, ValueTask> extract,
     TimeSpan timeout,
     int maximumCharacters = 262_144,
-    TimeSpan? slotWait = null) : SessionAttachmentDocumentHost(timeout, parseSpendsReadBudget: true, slotWait)
+    TimeSpan? slotWait = null,
+    TimeProvider? timeProvider = null) : SessionAttachmentDocumentHost(timeout, parseSpendsReadBudget: true, slotWait, timeProvider)
 {
     /// <summary>The document's parse outlived what its budget had left once its snapshot was read.</summary>
     internal const string DeadlineReason = "Document extraction exceeded its deadline.";
@@ -71,7 +70,7 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
 
         long started = snapshot.SlotTakenAt;
 
-        TimeSpan remaining = _timeout - Stopwatch.GetElapsedTime(started);
+        TimeSpan remaining = _timeout - ElapsedSince(started);
 
         if (remaining <= TimeSpan.Zero)
         {
@@ -129,11 +128,11 @@ internal sealed class SessionAttachmentDocumentExtractionHost(
         try
         {
             SessionAttachmentExtractionResult result = await invocation
-                .WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
+                .WaitAsync(remaining, Clock, cancellationToken).ConfigureAwait(false);
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            return Stopwatch.GetElapsedTime(started) >= _timeout
+            return ElapsedSince(started) >= _timeout
                 ? Failed(DeadlineReason)
                 : result;
         }

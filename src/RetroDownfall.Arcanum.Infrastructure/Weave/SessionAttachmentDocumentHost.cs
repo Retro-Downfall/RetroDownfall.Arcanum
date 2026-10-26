@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 
 /// <summary>
@@ -33,6 +31,8 @@ internal abstract class SessionAttachmentDocumentHost
     /// <summary>The longest a caller waits for its family's slot before its attempt is deferred.</summary>
     internal static readonly TimeSpan DefaultSlotWait = TimeSpan.FromSeconds(30);
 
+    private readonly long _timestampFrequency;
+
     private readonly TimeSpan _readBudget;
 
     private readonly bool _parseSpendsReadBudget;
@@ -57,14 +57,34 @@ internal abstract class SessionAttachmentDocumentHost
     /// refused at the read, since its parse would have nothing to spend; otherwise only a read its deadline cancels is.
     /// </param>
     /// <param name="slotWait">The longest an interactive caller waits for the slot; <see cref="DefaultSlotWait"/> by default.</param>
-    private protected SessionAttachmentDocumentHost(TimeSpan readBudget, bool parseSpendsReadBudget, TimeSpan? slotWait)
+    /// <param name="timeProvider">The monotonic document clock and deadline timers; system time by default.</param>
+    private protected SessionAttachmentDocumentHost(
+        TimeSpan readBudget,
+        bool parseSpendsReadBudget,
+        TimeSpan? slotWait,
+        TimeProvider? timeProvider = null)
     {
+        Clock = timeProvider ?? TimeProvider.System;
+
+        // TimeProvider timestamps use one stable frequency for the lifetime of the provider. Capture it before
+        // admitted reads and parses; elapsed checks then expose only their timestamp query to source analysis.
+        _timestampFrequency = Clock.TimestampFrequency;
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_timestampFrequency);
+
         _readBudget = readBudget;
 
         _parseSpendsReadBudget = parseSpendsReadBudget;
 
         _slotWait = slotWait ?? DefaultSlotWait;
     }
+
+    /// <summary>The monotonic clock and deadline timers for one document budget; system time in production.</summary>
+    private protected TimeProvider Clock { get; }
+
+    /// <summary>Converts this provider's timestamp with the stable frequency captured at construction.</summary>
+    private protected TimeSpan ElapsedSince(long started) =>
+        TimeSpan.FromSeconds((Clock.GetTimestamp() - started) / (double)_timestampFrequency);
 
     /// <summary>
     /// The interactive composition (attach, refresh, reference, pin): <see cref="ReadSnapshotAsync"/>, then the host's own
@@ -130,7 +150,7 @@ internal abstract class SessionAttachmentDocumentHost
         }
 
         // The document's own budget starts only now that it holds the slot, and its expiry is charged to this document alone.
-        long slotTakenAt = Stopwatch.GetTimestamp();
+        long slotTakenAt = Clock.GetTimestamp();
 
         // Every way out of this step that does not hand the slot to a snapshot gives it back here.
         bool slotHandedOver = false;
@@ -143,10 +163,9 @@ internal abstract class SessionAttachmentDocumentHost
 
             // Storage borrows the caller's admission and must finish, including stream disposal, before this returns. The
             // deadline asks it to stop; it is never permission to abandon a read that still owns installation resources.
-            using (CancellationTokenSource readDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            using (CancellationTokenSource timer = new(_readBudget, Clock))
+            using (CancellationTokenSource readDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timer.Token))
             {
-                readDeadline.CancelAfter(_readBudget);
-
                 try
                 {
                     bytes = await readBytes(readDeadline.Token).ConfigureAwait(false);
@@ -166,7 +185,7 @@ internal abstract class SessionAttachmentDocumentHost
             cancellationToken.ThrowIfCancellationRequested();
 
             // A parse that spends what the read left of one budget has nothing to spend once the read has spent it all.
-            if (_parseSpendsReadBudget && (overran || Stopwatch.GetElapsedTime(slotTakenAt) >= _readBudget))
+            if (_parseSpendsReadBudget && (overran || ElapsedSince(slotTakenAt) >= _readBudget))
             {
                 return SessionAttachmentDocumentSnapshot.Refused(Failed(ReadDeadlineReason));
             }
@@ -288,7 +307,7 @@ internal sealed class SessionAttachmentDocumentSnapshot : IDisposable
     /// <summary>The result that ended the read step, or <see langword="null"/> when the snapshot holds the slot and its bytes.</summary>
     internal SessionAttachmentExtractionResult? Refusal { get; }
 
-    /// <summary>The <see cref="Stopwatch"/> timestamp at which the slot was taken, where the document's own budget began.</summary>
+    /// <summary>The host clock's monotonic timestamp at which the slot was taken, where the document's own budget began.</summary>
     internal long SlotTakenAt { get; }
 
     /// <summary>A snapshot that holds nothing and carries the result that ended the read step.</summary>

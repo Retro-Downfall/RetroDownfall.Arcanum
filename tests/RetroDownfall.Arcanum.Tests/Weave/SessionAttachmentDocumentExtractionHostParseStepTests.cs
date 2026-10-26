@@ -6,6 +6,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Infrastructure.Weave.Comprehension;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
@@ -153,69 +155,183 @@ public sealed class SessionAttachmentDocumentExtractionHostParseStepTests
     [InlineData(true)]
     public async Task ParseInProcessAsync_ReadAndParseThatEachFitTheBudgetButNotTogether_FailAtTheBudgetNotAtTwiceIt(bool composed)
     {
-        // Each step alone takes sixty percent of the budget, so either would fit a budget of its own. Only one budget that
-        // the read has already spent a share of leaves the parse too little: it must fail, and fail when that budget ends.
-        TimeSpan budget = TimeSpan.FromSeconds(1);
+        // The read spends sixty percent of one budget. The parser cannot receive a fresh budget.
+        ManualTimerTimeProvider clock = new();
 
-        TimeSpan step = TimeSpan.FromMilliseconds(600);
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         TaskCompletionSource ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         SessionAttachmentDocumentExtractionHost host = new(
-            (bytes, output, cancellationToken) =>
+            async (_, _, _) =>
             {
-                // An uncooperative parser: it ignores cancellation, so only the budget ends the caller's wait.
-                Thread.Sleep(step);
+                entered.TrySetResult();
+
+                await release.Task;
 
                 ended.TrySetResult();
+            },
+            TimeSpan.FromSeconds(1), timeProvider: clock);
 
-                output.TryAppend("slow");
+        Task<ReadOnlyMemory<byte>> ReadSlowlyAsync(CancellationToken _)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(600));
+
+            return Task.FromResult<ReadOnlyMemory<byte>>(Document);
+        }
+
+        SessionAttachmentDocumentSnapshot? snapshot = null;
+
+        try
+        {
+            Task<SessionAttachmentExtractionResult> parsing;
+
+            if (composed)
+            {
+                parsing = host.ExtractAsync(ReadSlowlyAsync, Document.Length, 1024, CancellationToken.None);
+            }
+            else
+            {
+                snapshot = await host.ReadSnapshotAsync(
+                    ReadSlowlyAsync, Document.Length, 1024, CancellationToken.None, waitForSlot: false);
+
+                Assert.Null(snapshot.Refusal);
+
+                parsing = host.ParseInProcessAsync(snapshot, CancellationToken.None);
+            }
+
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            clock.Advance(TimeSpan.FromMilliseconds(399));
+
+            Assert.False(parsing.IsCompleted);
+
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+
+            SessionAttachmentExtractionResult result = await parsing.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+            Assert.Equal(SessionAttachmentDocumentExtractionHost.DeadlineReason, result.FailureReason);
+
+            Assert.Empty(result.Text);
+        }
+        finally
+        {
+            snapshot?.Dispose();
+
+            release.TrySetResult();
+        }
+
+        await ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ParseInProcessAsync_BudgetExpiresBeforeScheduling_RefusesWithoutEnteringOrQuarantiningTheParser()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        int invocations = 0;
+
+        SessionAttachmentDocumentExtractionHost host = new(
+            (_, output, _) =>
+            {
+                Interlocked.Increment(ref invocations);
+
+                output.TryAppend("healthy");
 
                 return ValueTask.CompletedTask;
             },
-            budget);
+            TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
-        // A read that ignores its deadline, which never arrives: it ends well inside the budget on its own.
-        async Task<ReadOnlyMemory<byte>> ReadSlowlyAsync(CancellationToken cancellationToken)
+        using (SessionAttachmentDocumentSnapshot snapshot = await ReadAsync(host))
         {
-            await Task.Delay(step);
+            // Force the ordering the old quarantine fixture could accidentally encounter under a scheduler delay.
+            clock.Advance(TimeSpan.FromMilliseconds(100));
 
-            return Document;
+            SessionAttachmentExtractionResult result = await host.ParseInProcessAsync(snapshot, CancellationToken.None);
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Failed, result.Status);
+
+            Assert.Equal(SessionAttachmentDocumentExtractionHost.DeadlineReason, result.FailureReason);
+
+            Assert.Equal(0, Volatile.Read(ref invocations));
         }
 
-        Stopwatch clock = Stopwatch.StartNew();
+        using SessionAttachmentDocumentSnapshot recovered = await ReadAsync(host);
 
-        SessionAttachmentExtractionResult result;
+        Assert.Null(recovered.Refusal);
 
-        if (composed)
+        Assert.Equal("healthy", (await host.ParseInProcessAsync(recovered, CancellationToken.None)).Text);
+
+        Assert.Equal(1, Volatile.Read(ref invocations));
+    }
+
+    [Fact]
+    public async Task ExtractAsync_ReadDeadlineCancelsStorageButAwaitsItsReleaseBeforeReturningTheSlot()
+    {
+        ManualTimerTimeProvider clock = new();
+
+        TaskCompletionSource<ReadOnlyMemory<byte>> release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        CancellationToken readCancellation = default;
+
+        SessionAttachmentDocumentExtractionHost host = new(
+            new ComprehensionTextContainerExtractor().ExtractAsync,
+            TimeSpan.FromMilliseconds(100), timeProvider: clock);
+
+        Task<SessionAttachmentExtractionResult> reading = host.ExtractAsync(
+            token =>
+            {
+                readCancellation = token;
+
+                return release.Task;
+            },
+            Document.Length, 1024, CancellationToken.None);
+
+        try
         {
-            result = await host.ExtractAsync(ReadSlowlyAsync, Document.Length, 1024, CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(30));
+            clock.Advance(TimeSpan.FromMilliseconds(100));
+
+            Assert.True(readCancellation.IsCancellationRequested);
+
+            Assert.False(reading.IsCompleted);
+
+            using SessionAttachmentDocumentSnapshot busy = await ReadAsync(host);
+
+            Assert.Equal(SessionAttachmentExtractionStatus.Deferred, busy.Refusal?.Status);
         }
-        else
+        finally
         {
-            using SessionAttachmentDocumentSnapshot snapshot = await host
-                .ReadSnapshotAsync(ReadSlowlyAsync, Document.Length, 1024, CancellationToken.None, waitForSlot: false)
-                .WaitAsync(TimeSpan.FromSeconds(30));
-
-            Assert.True(snapshot.Refusal is null, $"The read did not fit the budget on its own: {snapshot.Refusal?.FailureReason}");
-
-            result = await host.ParseInProcessAsync(snapshot, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            release.TrySetResult(Document);
         }
 
-        clock.Stop();
+        SessionAttachmentExtractionResult result = await reading.WaitAsync(TimeSpan.FromSeconds(5));
 
-        Assert.True(
-            result.Status == SessionAttachmentExtractionStatus.Failed,
-            $"The read and the parse took {clock.Elapsed} of one {budget} budget and concluded {result.Status}.");
+        Assert.Equal(SessionAttachmentDocumentHost.ReadDeadlineReason, result.FailureReason);
 
-        Assert.Equal(SessionAttachmentDocumentExtractionHost.DeadlineReason, result.FailureReason);
+        Assert.Equal(0, clock.ActiveTimers);
 
-        Assert.Empty(result.Text);
+        using SessionAttachmentDocumentSnapshot recovered = await ReadAsync(host);
 
-        Assert.True(clock.Elapsed < budget * 2, $"The caller waited {clock.Elapsed} on one {budget} budget.");
+        Assert.Null(recovered.Refusal);
+    }
 
-        await ended.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_ClockWithoutAPositiveTimestampFrequency_IsRefused(long frequency)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new SessionAttachmentDocumentExtractionHost(
+            new ComprehensionTextContainerExtractor().ExtractAsync,
+            TimeSpan.FromSeconds(1), timeProvider: new InvalidFrequencyTimeProvider(frequency)));
+    }
+
+    private sealed class InvalidFrequencyTimeProvider(long frequency) : TimeProvider
+    {
+        public override long TimestampFrequency => frequency;
     }
 
     // ---------------------------------------------------------------- helpers

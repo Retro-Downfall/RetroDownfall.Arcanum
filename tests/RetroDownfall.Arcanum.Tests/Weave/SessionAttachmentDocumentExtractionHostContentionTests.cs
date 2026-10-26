@@ -8,6 +8,8 @@ using RetroDownfall.Arcanum.Infrastructure.Weave;
 
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
+using RetroDownfall.Arcanum.Tests.Support;
+
 namespace RetroDownfall.Arcanum.Tests.Weave;
 
 /// <summary>
@@ -21,6 +23,8 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
     [Fact]
     public async Task ExtractAsync_HealthyDocumentQueuedBehindALongSlotHolder_GetsItsOwnFullBudget()
     {
+        ManualTimerTimeProvider clock = new();
+
         // The slot holder is a borrowed snapshot read that ignores its deadline. The host must wait for
         // it, so it holds the family slot for as long as the test chooses, without any parser running.
         TaskCompletionSource<ReadOnlyMemory<byte>> heldRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -29,7 +33,7 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
 
         SessionAttachmentDocumentExtractionHost host = new(
             new ComprehensionTextContainerExtractor().ExtractAsync,
-            TimeSpan.FromMilliseconds(200));
+            TimeSpan.FromMilliseconds(200), timeProvider: clock);
 
         Task<SessionAttachmentExtractionResult> holder = host.ExtractAsync(
             _ =>
@@ -51,7 +55,7 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
             healthy = ExtractAsync(host, Healthy);
 
             // Three times the document budget spent queueing for the slot is not the document's cost.
-            await Task.Delay(TimeSpan.FromMilliseconds(600));
+            clock.Advance(TimeSpan.FromMilliseconds(600));
 
             if (healthy.IsCompleted)
             {
@@ -155,6 +159,8 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
     [Fact]
     public async Task ExtractAsync_QuarantinedFamily_IsDeferredAtOnceAndRecoversWhenTheParserEnds()
     {
+        ManualTimerTimeProvider clock = new();
+
         using ManualResetEventSlim release = new(false);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -182,13 +188,19 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
 
                 return ValueTask.CompletedTask;
             },
-            TimeSpan.FromMilliseconds(100));
+            TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         try
         {
-            SessionAttachmentExtractionResult overran = await ExtractAsync(host, Healthy).WaitAsync(TimeSpan.FromSeconds(5));
+            Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, Healthy);
 
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(overrunning.IsCompleted);
+
+            clock.Advance(TimeSpan.FromMilliseconds(100));
+
+            SessionAttachmentExtractionResult overran = await overrunning.WaitAsync(TimeSpan.FromSeconds(5));
 
             // The document's own parse overran its budget after it held the slot: terminal, not deferred.
             Assert.Equal(SessionAttachmentExtractionStatus.Failed, overran.Status);
@@ -226,9 +238,13 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
     [Fact]
     public async Task ExtractAsync_CallerQueuedBeforeItsFamilyIsQuarantined_IsDeferredPromptly()
     {
+        ManualTimerTimeProvider clock = new();
+
         byte[] poison = "ARCCOMP1\npoison"u8.ToArray();
 
         using ManualResetEventSlim release = new(false);
+
+        TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         int healthyParses = 0;
 
@@ -237,6 +253,8 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
             {
                 if (bytes.Span.SequenceEqual(poison))
                 {
+                    entered.TrySetResult();
+
                     // An uncooperative parser: it ignores cancellation, so its overrun quarantines the family.
                     release.Wait(TimeSpan.FromSeconds(30));
 
@@ -248,16 +266,20 @@ public sealed class SessionAttachmentDocumentExtractionHostContentionTests
                 return new ComprehensionTextContainerExtractor().ExtractAsync(bytes, output, cancellationToken);
             },
             TimeSpan.FromMilliseconds(200),
-            slotWait: TimeSpan.FromSeconds(20));
+            slotWait: TimeSpan.FromSeconds(20), timeProvider: clock);
 
         try
         {
             Task<SessionAttachmentExtractionResult> overrunning = ExtractAsync(host, poison);
 
-            await Task.Delay(50);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             // Queued for the slot while the parser still runs within its budget.
             Task<SessionAttachmentExtractionResult> queued = ExtractAsync(host, Healthy);
+
+            Assert.False(queued.IsCompleted);
+
+            clock.Advance(TimeSpan.FromMilliseconds(200));
 
             SessionAttachmentExtractionResult overran = await overrunning.WaitAsync(TimeSpan.FromSeconds(5));
 

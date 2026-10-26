@@ -399,6 +399,8 @@ public sealed class SessionAttachmentComprehensionTests
     [Fact]
     public async Task ExtractDocument_BlockingExtractor_TimesOutAndQuarantinesUntilItEnds()
     {
+        ManualTimerTimeProvider clock = new();
+
         using ManualResetEventSlim release = new(false);
 
         TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -422,13 +424,17 @@ public sealed class SessionAttachmentComprehensionTests
             return ValueTask.CompletedTask;
         });
 
-        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100));
+        SessionAttachmentDocumentExtractionHost host = new(extractor.ExtractAsync, TimeSpan.FromMilliseconds(100), timeProvider: clock);
 
         try
         {
             Task<SessionAttachmentExtractionResult> first = ExtractAsync("ARCCOMP1\nhello", host: host);
 
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(first.IsCompleted);
+
+            clock.Advance(TimeSpan.FromMilliseconds(100));
 
             SessionAttachmentExtractionResult timedOut = await first.WaitAsync(TimeSpan.FromSeconds(5));
 
