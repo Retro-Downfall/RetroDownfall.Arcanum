@@ -2379,7 +2379,8 @@ public sealed class ShellCommandDispatcherAttachmentsTests
             new ShellCommandParser(),
             new TestOptionsMonitor(new ArcanumSettings()),
             workspace,
-            NullLogger<ShellCommandDispatcher>.Instance);
+            NullLogger<ShellCommandDispatcher>.Instance,
+            new CommandCenterConfigurationStub("arcanum.json"));
     }
 
     private static HttpResponseMessage OkAttachments(SessionAttachmentDto[] payload)

@@ -23,7 +23,8 @@ internal sealed class ShellCommandDispatcher(
     ShellCommandParser parser,
     IOptionsMonitor<ArcanumSettings> settingsMonitor,
     SessionWorkspaceService sessionWorkspace,
-    ILogger<ShellCommandDispatcher> logger)
+    ILogger<ShellCommandDispatcher> logger,
+    IConfigurationCommandService configurationService)
 {
     private const int TerminalListPageSize = 50;
 
@@ -237,7 +238,13 @@ internal sealed class ShellCommandDispatcher(
                 return ShellDispatchResult.Continue;
 
             case ShellCommandKind.BranchChild:
-                SessionListItem? child = state.Sessions.FirstOrDefault(s => s.ForkedFromSessionId == state.SessionId);
+                if (state.SessionId is not { } currentSession)
+                {
+                    state.Log.Append(SessionLogEntryKind.Status, "Open a session before selecting a child branch.");
+                    return ShellDispatchResult.Continue;
+                }
+
+                SessionListItem? child = state.Sessions.FirstOrDefault(s => s.ForkedFromSessionId == currentSession);
                 if (child is null)
                 {
                     state.Log.Append(SessionLogEntryKind.Status, "No child branch is visible in the recent session list.");
@@ -841,28 +848,22 @@ internal sealed class ShellCommandDispatcher(
         string? version = null;
         if (kind is SessionContextPinKind.File)
         {
-            string candidate = Path.GetFullPath(target, state.WorkingDirectory);
-            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(state.WorkingDirectory));
-            if (!candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-                || !File.Exists(candidate))
-            {
-                state.Log.Append(SessionLogEntryKind.Error, "File pins must name an existing file inside the workspace.");
-                return ShellDispatchResult.Continue;
-            }
-            target = Path.GetRelativePath(root, candidate);
-
-            // This runs from the Terminal.Gui key handler with nothing awaited yet, and File.Exists says
-            // true for a FIFO, whose open waits for a writer. Only a regular file is hashed, it is opened
-            // without ever waiting on the path, and it is streamed rather than loaded whole.
-            if (!AttachableFile.TryConfirmRegularFile(candidate, out string? notRegularReason))
-            {
-                state.Log.Append(SessionLogEntryKind.Error, $"Cannot pin {target}: it is {notRegularReason}.");
-                return ShellDispatchResult.Continue;
-            }
-
             try
             {
-                await using FileStream stream = AttachableFile.OpenForRead(candidate, PinHashBufferBytes);
+                string candidate = Path.GetFullPath(target, state.WorkingDirectory);
+
+                // File.Exists accepts FIFOs. Inspect the kind, then open without blocking and
+                // admit the actual kernel handle before hashing any content.
+                if (!AttachableFile.TryConfirmRegularFile(candidate, out string? notRegularReason))
+                {
+                    state.Log.Append(SessionLogEntryKind.Error, $"Cannot pin {target}: it is {notRegularReason}.");
+                    return ShellDispatchResult.Continue;
+                }
+
+                await using FileStream stream = AttachableFile.OpenWorkspaceFileForRead(
+                    candidate, state.WorkingDirectory, PinHashBufferBytes, out string relativePath);
+
+                target = relativePath;
 
                 version = Convert.ToHexString(
                     await System.Security.Cryptography.SHA256
@@ -870,7 +871,7 @@ internal sealed class ShellCommandDispatcher(
                         .ConfigureAwait(false))
                     .ToLowerInvariant();
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
                 state.Log.Append(SessionLogEntryKind.Error, $"Cannot pin {target}: {ex.Message}");
                 return ShellDispatchResult.Continue;
@@ -1187,6 +1188,7 @@ internal sealed class ShellCommandDispatcher(
             Environment.NewLine,
             [
                 "Configuration:",
+                $"  Local config file {configurationService.ConfigurationPath}",
                 $"  Default model     {settings.DefaultModel ?? "-"}",
                 $"  Session model     {state.Model ?? settings.DefaultModel ?? "-"}",
                 $"  Providers         {settings.Providers.Length} configured",

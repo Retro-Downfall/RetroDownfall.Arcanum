@@ -205,7 +205,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/context` | Show the effective turn context and token allocation. |
 | `/cost` | Show token and spend totals for the current session. |
 | `/memory` | Show the owning Session's compressed summary; the default-off legacy heading is Campaign Summary. |
-| `/config` | Show the effective configuration summary and its file path. |
+| `/config` | Show the effective configuration summary and the active local profile's configuration file path, labeled local even when the host is remote. Displaying the path does not read or write the configuration file. |
 | `/model [<name>]` | With no name, list the models and mark this session's. With a name, select it for this session after checking it against `GET /api/providers`: a listed model, a model on a Familiar's `hiddenModels` list, or (when a `ClaudeCodeCli` or `CodexCli` provider is configured) any other name, which goes to the first Familiar as the host would route it. Any other name is refused with the available list, and the model stays as it was. The confirmation names the selected model and leaves provider routing to the host; a hidden model is identified as hidden from lists. `/model list` is refused; `/model` lists. The header drop-down sets the same session model, see above. |
 | `/provider list` | List configured providers. |
 | `/mcp [reload]` | Show MCP server status, or reload MCP configuration. |
@@ -220,7 +220,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/fork confirm` | Confirm the pending fork with its original source, cutoff, and alternative intent; a changed selected attachment set requires confirmation again. |
 | `/fork alternative` | Fork before the user prompt preceding the selected answer, then submit that prompt once to regenerate. |
 | `/fork at [<entry-id>]` | Fork through the supplied or selected transcript entry. |
-| `/branch parent`, `/branch child` | Open the visible parent or newest child branch. |
+| `/branch parent`, `/branch child` | Open the visible parent or newest child branch of the current Session. A New Session has no branch to navigate. |
 | `/attach <path>` | Stage a local text file or image for the next turn. Neither `/attach` nor `@path` stages a Comprehension document (`.docx`, `.xlsx`, `.pptx`, `.odt`, `.ods`, `.odp`, `.vsdx`, their macro-enabled variants, `.pdf`, or `.arccomp`) as text: the file stays unstaged, and the status line says to store it with `arcanum attachment add <path>` and reference it with `arcanum run --attachment <id>` or `/attachments add <name>`. |
 | `@path` | Inline-stage a text or image attachment in a message. |
 | `/attachments` | List bound session attachments. |
@@ -228,7 +228,7 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/attachments reveal <name> [vN]` | Reveal an attachment file in the OS file manager. |
 | `/attachments refresh <name>` | Securely load the current tracked-file version. |
 | `/pins` | List persistent session context pins. |
-| `/pin <kind> <target>` | Pin a file, directory snapshot, symbol range, session entry, attachment, URL, or diagnostic. A `file` pin must name a regular file inside the workspace (a FIFO, socket or device is refused without being opened); its content version is the SHA-256 of the file, streamed rather than loaded whole. |
+| `/pin <kind> <target>` | Pin a file, directory snapshot, symbol range, session entry, attachment, URL, or diagnostic. A `file` pin must name a regular file physically inside the workspace (a FIFO, socket or device is refused without being opened). The opened handle establishes containment and the workspace-relative target, so actual case or alias equivalents work and outward symbolic links are refused. Its content version is the streamed SHA-256 of that same admitted handle. |
 | `/unpin <id>` | Remove one context pin. |
 | `/spell list [cursor]` | List a 50-line terminal page of spells with exact next-cursor continuation. |
 | `/ward list [offset]` | List a 50-line terminal page from the retained active-Ward compatibility API, with exact next-offset continuation. |
@@ -240,7 +240,7 @@ Fork confirmation counts only attachments selected by the cutoff (at least ten a
 
 Ward stream frames are informational Incantation notes. Command Center opens no Ward modal, consumes no allow/deny keys, keeps no session allowlist, and posts no automatic resolution. The explicit `/ward` commands above remain available only for the retained active-record compatibility API.
 
-Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/context`, because `/context` is the Claude-aligned context-window view. An unrecognized slash command names the canonical replacement when the spelling was removed, and otherwise suggests the nearest registered name; it is never executed automatically. `/context` takes no sub-command: the removed `/context list|pin|unpin` forms are denied with a message naming `/pins`, `/pin <kind> <target>`, and `/unpin <pin-id>`.
+Persistent pins use `/pins`, `/pin`, and `/unpin` rather than overloading `/context`, because `/context` is the Claude-aligned context-window view. `/attach` and `/pin` preserve consecutive spaces and tabs inside their path/target argument; whitespace around the argument is trimmed. A registered command with incomplete or invalid arguments shows its usage. An unrecognized slash command names the canonical replacement when the spelling was removed, and otherwise suggests the nearest registered name; it is never executed automatically. `/context` takes no sub-command: the removed `/context list|pin|unpin` forms are denied with a message naming `/pins`, `/pin <kind> <target>`, and `/unpin <pin-id>`.
 
 List offsets must be nonnegative integers. Campaign pages are fetched from the API at the requested offset; Spell and Ward pages slice the complete fetched state for terminal rendering. When another page exists, Command Center states that server/durable state was not changed and prints the exact next command instead of silently truncating the list.
 

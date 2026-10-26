@@ -280,7 +280,8 @@ public sealed class CommandCenterModelSelectionDispatchTests
             new ShellCommandParser(),
             new TestOptionsMonitor(settings ?? new ArcanumSettings()),
             workspace,
-            NullLogger<ShellCommandDispatcher>.Instance);
+            NullLogger<ShellCommandDispatcher>.Instance,
+            new CommandCenterConfigurationStub("arcanum.json"));
     }
 
     /// <summary>Serves the provider and model listings, and records which ones were asked for.</summary>

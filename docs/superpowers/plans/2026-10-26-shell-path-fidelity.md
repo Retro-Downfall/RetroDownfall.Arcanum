@@ -1,0 +1,11 @@
+# Shell intent and workspace file fidelity: RV179–183
+
+Base controllerfbedd2d8; sealed RV168 branch remains preserved. Verify each current review claim before repair. Batch owns parser/registry/dispatcher plus the existing AttachableFile adapter, tests and owning DESIGN/CLI docs. No API/provider/retention/schema changes.
+
+- RV179: `/branch child` needs a current Session; a New Session must never match unrelated root rows with a null parent. Refuse before HTTP and retain current state.
+- RV180: identify file pins by the actual opened regular-file handle and the existing WorkspacePathPolicy kernel-relative path calculation, accessed through the existing CLI file adapter. Accept real case/alias-equivalent contained files; reject outward symlinks, sibling roots, missing/special files and unavailable identity. Hash the same admitted handle. Do not replace physical containment with a blanket case-insensitive string prefix, add Infrastructure references to the dispatcher, or weaken its no-blocking-open rule.
+- RV181: report the active local profile configuration file through the existing configuration service's path property. Explicitly label the path local so it cannot falsely name a remote host's file; retain safe summary values and secret stripping. No configuration read/write is needed for the path.
+- RV182: parse `/attach` and `/pin` path tails from the original input, trimming only syntax/end whitespace while retaining internal consecutive spaces/tabs. Prove actual distinct files are not confused, as well as parser shape.
+- RV183: a known command head with missing/invalid arguments receives its registered usage, while unknown/removed names keep their current specific suggestions.
+
+TDD captures unchanged-production terminal behavioral RED, including actual dispatcher HTTP/file effects with controlled local fixtures. Compiler/fixture failures receive no credit. Repair narrowly, qualify complete owner classes/CLI boundary/docs, causal mutations for independent behavior and exact restoration, normal zero-warning build/style and independent frozen review. Fix confirmed adjacent path-escape/invalid-path defects under the same scope with their own RED; no original-count inflation. No live Ollama/embedding/install/operator profile mutation.
