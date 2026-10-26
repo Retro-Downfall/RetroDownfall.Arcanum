@@ -377,7 +377,7 @@ public sealed partial class TapestrySummarizerTests
             throw new NotSupportedException();
 
         public TokenEstimate EstimateText(ProviderSettings provider, string canonicalModel, string? text) =>
-            new(tokens, TokenEstimateClassification.Estimated, "fixed", 1d, safetyMargin);
+            new(tokens + safetyMargin, TokenEstimateClassification.Estimated, "fixed", 1d, safetyMargin);
 
         public ContextTokenBreakdown EstimateContext(ModelTokenizationRequest request) =>
             throw new NotSupportedException();

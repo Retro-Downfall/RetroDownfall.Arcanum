@@ -1271,6 +1271,22 @@ public static class SystemPromptBuilder
     /// abstractions of potentially untrusted source material, so the framing states that explicitly
     /// rather than letting a confident-sounding summary read as an instruction.
     /// </summary>
+    internal static string RenderTapestryContext(IReadOnlyList<TapestryRetrievedNode> nodes)
+    {
+        if (nodes.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder result = new();
+
+        AppendTapestryContext(result, [.. nodes.Select(static node => new TapestryContextNode(
+            TapestryScope.DescribeForModel(node.ScopeKind, node.ScopeId), node.SourceLabel, node.Layer,
+            node.NodeKind == TapestryNodeKind.Summary, node.DescendantLeafCount, node.ContentHash, node.Similarity, node.Content))]);
+
+        return result.ToString();
+    }
+
     private static void AppendTapestryContext(StringBuilder sb, TapestryContextNode[] nodes)
     {
         sb.Append("### Hierarchical Context (The Tapestry)").Append('\n');

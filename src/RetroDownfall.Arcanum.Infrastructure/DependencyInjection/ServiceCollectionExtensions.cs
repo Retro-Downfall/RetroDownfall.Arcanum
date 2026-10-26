@@ -1248,6 +1248,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ICovenantSensitiveArtifactPurger>(),
                 sp.GetRequiredService<IMemoryDelegationMutationBarrier>()));
         services.AddScoped<ITapestryStore, TapestryStore>();
+        services.AddScoped<ITapestryRetriever, TapestryRetriever>();
         services.AddScoped<SessionAttachmentIndexRepository>();
         services.AddScoped<ISessionAttachmentIndexWriter>(
             static sp => sp.GetRequiredService<SessionAttachmentIndexRepository>());

@@ -1598,6 +1598,27 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Ranking.cs", "TapestryStore", "ReadRetrievalGraphAsync(2)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Ranking.cs", "TapestryStore", "RankRetrievalNodesAsync(6)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Ranking.cs", "TapestryStore", "ReadSelectionMetadataAsync(3)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingRawOrdinary,
+            GrimoireRuntimeAdmissionRoute.OrdinaryConnectionFactory,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.Retrieval.cs", "TapestryStore", "HydrateRetrievedNodesAsync(4)", AcquisitionConstructKind.ProviderOpen, "OpenConnectionAsync", 1, "OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,
