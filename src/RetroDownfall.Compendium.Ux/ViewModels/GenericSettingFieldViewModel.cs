@@ -8,10 +8,8 @@ namespace RetroDownfall.Compendium.Ux.ViewModels;
 
 public sealed partial class GenericSettingFieldViewModel : ObservableObject
 {
-
     public GenericSettingFieldViewModel(SettingDescriptor descriptor, object? value)
     {
-
         Descriptor = descriptor;
 
         Group = descriptor.Group
@@ -25,13 +23,14 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         if (descriptor.EnumType is not null)
         {
-
-            EnumValues = Enum.GetValues(descriptor.EnumType).Cast<object>().ToArray();
-
+            EnumValues = Enum.GetValues(descriptor.EnumType).Cast<object>()
+                .Where(value => descriptor.Key != "host.minLogLevelInBuffer"
+                    || value is RetroDownfall.Arcanum.Core.Logging.LogLevel level
+                        && level >= RetroDownfall.Arcanum.Core.Logging.LogLevel.Information)
+                .ToArray();
         }
 
         Validate();
-
     }
 
     public SettingDescriptor Descriptor { get; }
@@ -80,16 +79,13 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
     public bool BoolValue
     {
-
         get => Value is true;
 
         set => Value = value;
-
     }
 
     public double NumericValue
     {
-
         get => Value switch
         {
             null => 0,
@@ -102,12 +98,10 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
         };
 
         set => Value = descriptorKindConvert(value);
-
     }
 
     public string StringValue
     {
-
         get => Value switch
         {
             null => string.Empty,
@@ -121,27 +115,21 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         set
         {
-
             if (Descriptor.Kind == SettingKind.StringArray)
             {
-
                 Value = string.IsNullOrWhiteSpace(value)
                     ? Array.Empty<string>()
                     : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
                 return;
-
             }
 
             Value = value;
-
         }
-
     }
 
     private object? descriptorKindConvert(double value)
     {
-
         return Descriptor.Kind switch
         {
             SettingKind.Int => (int)Math.Round(value),
@@ -151,7 +139,6 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
             SettingKind.Float => (decimal)value,
             _ => value,
         };
-
     }
 
     partial void OnValueChanged(object? oldValue, object? newValue)
@@ -196,10 +183,8 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
         if (Descriptor.Key == "retention.protectedSessionIds")
         {
-
             IEnumerable<string> sessionIds = Value switch
             {
-
                 Guid[] ids => ids.Select(static id => id.ToString()),
 
                 IEnumerable<string> ids => ids,
@@ -210,17 +195,13 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
                     | StringSplitOptions.TrimEntries),
 
                 _ => [],
-
             };
 
             if (sessionIds.Any(static id => !Guid.TryParse(id, out _)))
             {
-
                 errors.Add(
                     "Protected session IDs must be GUID values separated by commas");
-
             }
-
         }
 
         // Validate free-text JSON maps against the exact type Save coerces them to
@@ -273,97 +254,72 @@ public sealed partial class GenericSettingFieldViewModel : ObservableObject
 
     private bool TryValidateDictionaryJson(string json, out string? error)
     {
-
         string text = string.IsNullOrWhiteSpace(json) ? "{}" : json;
 
         Type? targetType = GenericSettingsUpdater.ResolveValueType(Descriptor.Key);
 
         try
         {
-
             if (targetType is null)
             {
-
                 using JsonDocument document = JsonDocument.Parse(text);
 
                 if (document.RootElement.ValueKind != JsonValueKind.Object)
                 {
-
                     error = "Must be a JSON object";
 
                     return false;
-
                 }
-
             }
             else
             {
-
                 _ = JsonSerializer.Deserialize(text, targetType, ConfigurationJsonContext.Default);
-
             }
 
             error = null;
 
             return true;
-
         }
         catch (Exception ex) when (ex is JsonException or NotSupportedException)
         {
-
             error = $"Invalid JSON: {ex.Message}";
 
             return false;
-
         }
-
     }
 
     private static string DeriveGroup(string key)
     {
-
         string[] parts = key.Split('.', StringSplitOptions.RemoveEmptyEntries);
 
         if (parts.Length >= 3)
         {
-
             return ToTitle(parts[1]);
-
         }
 
         return "General";
-
     }
 
     private static string ToTitle(string value)
     {
-
         if (string.IsNullOrEmpty(value))
         {
-
             return value;
-
         }
 
         return char.ToUpperInvariant(value[0]) + value[1..];
-
     }
 
     private static string SerializeDictionary(object? value)
     {
-
         if (value is null)
         {
-
             return "{}";
-
         }
 
         return JsonSerializer.Serialize(
             value,
             value.GetType(),
             ConfigurationJsonContext.Default);
-
     }
-
 }

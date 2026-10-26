@@ -75,6 +75,68 @@ public sealed class CovenantMaintenanceHostedServiceTests
     }
 
     [Fact]
+    public async Task Refused_sweeps_warn_once_per_code_without_content()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantSearchFixture.CreateAsync(Token);
+
+        FakeCovenantAvailability refusing = new();
+
+        refusing.Mutate(static current => current with { Canonical = CovenantCapabilityState.Unavailable });
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(refusing, authority);
+
+        ServiceCollection services = new();
+
+        await using ArcanumDbContext db = new(
+            new DbContextOptionsBuilder<ArcanumDbContext>().UseSqlite(fixture.Connection).Options, null!, null!);
+
+        services.AddSingleton(db);
+
+        services.AddScoped(_ => new CovenantOwnerCleanupCoordinator(
+            gate, new UnreachableConnectionSource(),
+            new CovenantCleanupWorker(), DetachedAvailabilityRepublisher.Create()));
+
+        services.AddScoped(_ => new CovenantSearchOutboxCoordinator(
+            gate, new UnreachableConnectionSource(),
+            new CovenantSearchOutboxWorker(), DetachedAvailabilityRepublisher.Create()));
+
+        services.AddScoped(_ => new CovenantTurnReceiptCompactionCoordinator(
+            gate, new UnreachableConnectionSource(),
+            new CovenantTurnReceiptCompactor()));
+
+        await using ServiceProvider provider = services.BuildServiceProvider();
+
+        TestCapturingLogger<CovenantMaintenanceHostedService> logger = new();
+
+        CovenantMaintenanceHostedService service = new(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new GrimoireConnectionAdmissionGate(TimeProvider.System), new FakeCovenantAvailability(), TimeProvider.System, logger);
+
+        Assert.True(await service.RunOnceAsync(Token));
+
+        Assert.Equal(3, logger.Entries.Count(entry => entry.Level == LogLevel.Warning));
+
+        Assert.All(logger.Entries, entry => Assert.Null(entry.Exception));
+
+        Assert.Equal(
+            new[] { "owner cleanup", "search outbox", "turn receipt compaction" }
+                .Select(sweep => $"Covenant {sweep} sweep refused: Covenant.Unavailable."),
+            logger.Entries.Select(entry => entry.Message));
+
+        Assert.True(await service.RunOnceAsync(Token));
+
+        Assert.Equal(3, logger.Entries.Count(entry => entry.Level == LogLevel.Warning));
+
+        authority.Clear();
+
+        Assert.True(await service.RunOnceAsync(Token));
+
+        Assert.Equal(6, logger.Entries.Count(entry => entry.Level == LogLevel.Warning));
+    }
+
+    [Fact]
     public async Task A_pass_does_nothing_while_the_feature_is_off()
     {
         FakeCovenantAvailability availability = new();

@@ -702,8 +702,10 @@ internal sealed class CovenantManagementService(
     /// </summary>
     /// <remarks>
     /// <see cref="CovenantEffectiveShadowState.NotEvaluated"/> is not a hedge. Whether a Global entry
-    /// is shadowed depends on which Campaign is asking, so a page that guessed would be reporting a
-    /// fact about a Campaign the operator did not name.
+    /// is shadowed depends on the evaluated Campaign's eligible Confirmed heads, which are not all
+    /// present in a filtered metadata page. These rows also lack curation masks, fragment integrity,
+    /// policy support and a turn budget. Only retirement, foreign scope and the fact that Campaign
+    /// heads cannot themselves be shadowed are decidable here; the live linker owns eligibility.
     /// </remarks>
     private static CovenantHeadDto Head(CovenantHeadItem item, Guid? effectiveForCampaignId) =>
         new(
@@ -723,14 +725,14 @@ internal sealed class CovenantManagementService(
             Hex(item.ProvenanceDigest),
             item.CreatedAtUtc,
             item.UpdatedAtUtc,
-            effectiveForCampaignId is null
-                ? CovenantEffectiveShadowState.NotEvaluated
-                : CovenantEffectiveShadowState.NotShadowed,
-            effectiveForCampaignId is null
-                ? CovenantEffectiveMaterialization.NotEvaluated
-                : item.Lane is CovenantLane.Proposed
-                    ? CovenantEffectiveMaterialization.ReviewOnly
-                    : CovenantEffectiveMaterialization.Eligible);
+            effectiveForCampaignId is not null && item.Scope is CovenantScope.Campaign
+                ? CovenantEffectiveShadowState.NotShadowed
+                : CovenantEffectiveShadowState.NotEvaluated,
+            effectiveForCampaignId is not null
+                && (item.Lifecycle is CovenantLifecycle.Retired
+                    || (item.Scope is CovenantScope.Campaign && item.CampaignId != effectiveForCampaignId))
+                ? CovenantEffectiveMaterialization.Ineligible
+                : CovenantEffectiveMaterialization.NotEvaluated);
 
     private static CovenantVersionDto Version(CovenantVersionItem item) =>
         new(

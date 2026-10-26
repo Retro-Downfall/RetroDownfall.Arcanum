@@ -15,7 +15,6 @@ namespace RetroDownfall.Compendium.Ux.ViewModels;
 
 public sealed partial class ConfigurationViewModel : ObservableObject
 {
-
     private readonly IArcanumConfigurationStore _store;
 
     private readonly IDialogService _dialogService;
@@ -74,7 +73,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public IReadOnlyList<ArcanumTheme> CliThemes { get; } = Enum.GetValues<ArcanumTheme>();
 
-    public IReadOnlyList<RetroDownfall.Arcanum.Core.Logging.LogLevel> LogLevels { get; } = Enum.GetValues<RetroDownfall.Arcanum.Core.Logging.LogLevel>();
+    public IReadOnlyList<RetroDownfall.Arcanum.Core.Logging.LogLevel> LogLevels { get; } =
+        [.. Enum.GetValues<RetroDownfall.Arcanum.Core.Logging.LogLevel>().Where(level => level >= RetroDownfall.Arcanum.Core.Logging.LogLevel.Information)];
 
     public ObservableCollection<SectionDescriptor> Sections { get; } = new(SectionDescriptors.All);
 
@@ -96,7 +96,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IConfigurationPresetService? presetService = null,
         IFamiliarProbeClient? probeClient = null)
     {
-
         _store = store;
 
         _dialogService = dialogService;
@@ -133,21 +132,17 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         // Observe the startup load so parse/IO failures surface as alerts instead of unobserved tasks.
         _ = ObserveLoadAsync();
-
     }
 
     private async Task ObserveLoadAsync()
     {
-
         await LoadAsync().ConfigureAwait(false);
 
         await Presets.RefreshAsync().ConfigureAwait(false);
-
     }
 
     public void MarkDirty()
     {
-
         _editRevision++;
 
         IsDirty = true;
@@ -161,9 +156,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         // raised it, so there is nothing to match a single entry against.
         if (_serverValidationErrors.Count > 0)
         {
-
             _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
-
         }
 
         LastErrorMessage = null;
@@ -173,7 +166,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         SaveCommand.NotifyCanExecuteChanged();
 
         CancelCommand.NotifyCanExecuteChanged();
-
     }
 
     /// <summary>
@@ -183,45 +175,35 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     /// </summary>
     private void RefreshFieldValidation()
     {
-
         Dictionary<string, string> merged = new(StringComparer.Ordinal);
 
         bool anyFieldError = false;
 
         foreach (GenericSettingFieldViewModel field in AllGenericFields())
         {
-
             if (!field.HasError)
             {
-
                 continue;
-
             }
 
             anyFieldError = true;
 
             merged[field.Descriptor.Key] = field.ErrorMessage ?? "This value is not valid.";
-
         }
 
         foreach (KeyValuePair<string, string> serverError in _serverValidationErrors)
         {
-
             merged[serverError.Key] = serverError.Value;
-
         }
 
         HasFieldErrors = anyFieldError;
 
         if (SameErrors(ValidationErrorsByPointer, merged))
         {
-
             return;
-
         }
 
         ValidationErrorsByPointer = merged;
-
     }
 
     /// <summary>
@@ -233,29 +215,21 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         IReadOnlyDictionary<string, string> published,
         Dictionary<string, string> candidate)
     {
-
         if (published.Count != candidate.Count)
         {
-
             return false;
-
         }
 
         foreach (KeyValuePair<string, string> entry in candidate)
         {
-
             if (!published.TryGetValue(entry.Key, out string? existing)
                 || !string.Equals(existing, entry.Value, StringComparison.Ordinal))
             {
-
                 return false;
-
             }
-
         }
 
         return true;
-
     }
 
     private IEnumerable<GenericSettingFieldViewModel> AllGenericFields() =>
@@ -271,22 +245,18 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     partial void OnIsDirtyChanged(bool value)
     {
-
         SaveCommand.NotifyCanExecuteChanged();
 
         CancelCommand.NotifyCanExecuteChanged();
-
     }
 
     partial void OnIsSavingChanged(bool value)
     {
-
         SaveCommand.NotifyCanExecuteChanged();
 
         RefreshCommand.NotifyCanExecuteChanged();
 
         CancelCommand.NotifyCanExecuteChanged();
-
     }
 
     partial void OnHasExternalChangeChanged(bool value) => SaveCommand.NotifyCanExecuteChanged();
@@ -297,12 +267,9 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
     public GenericSectionViewModel GetOrCreateGenericSection(ConfigSection section)
     {
-
         if (_genericSections.TryGetValue(section, out GenericSectionViewModel? existing))
         {
-
             return existing;
-
         }
 
         GenericSectionViewModel created = new(this, section);
@@ -314,49 +281,36 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         RefreshFieldValidation();
 
         return created;
-
     }
 
     private void OnSelectSection(SectionDescriptor? descriptor)
     {
-
         if (descriptor is not null)
         {
-
             SelectedSection = descriptor.Section;
-
         }
-
     }
 
     private void OnExternalChange(object? sender, EventArgs e)
     {
-
         _uiDispatcher.Post(() =>
         {
-
             HasExternalChange = true;
 
             StatusMessage = "arcanum.json changed on disk.";
-
         });
-
     }
 
     private async Task LoadAsync()
     {
-
         try
         {
-
             ArcanumSettings settings = await _store.ReadAsync(CancellationToken.None).ConfigureAwait(false);
 
             await _uiDispatcher.InvokeAsync(() => ApplyLoadedSettings(settings)).ConfigureAwait(false);
-
         }
         catch (Exception ex)
         {
-
             _logger.LogError(ex, "Failed to load configuration from {Path}", _store.ConfigurationFilePath);
 
             string path = _store.ConfigurationFilePath;
@@ -365,7 +319,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
             await _uiDispatcher.InvokeAsync(() =>
             {
-
                 // Fail closed: the editor is showing fabricated defaults, so a Save here would replace
                 // the operator's real file with them. Saving stays blocked until a read succeeds.
                 LoadFailed = true;
@@ -373,18 +326,14 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                 LastErrorMessage = ex.Message;
 
                 StatusMessage = $"Failed to load {path}";
-
             }).ConfigureAwait(false);
 
             await _dialogService.ShowAlertAsync("Corrupt arcanum.json", message).ConfigureAwait(false);
-
         }
-
     }
 
     private void ApplyLoadedSettings(ArcanumSettings settings)
     {
-
         RestoreSections(settings);
 
         LoadFailed = false;
@@ -396,7 +345,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         LastSavedAt = _store.GetLastWriteTimeUtc();
 
         StatusMessage = $"Loaded from {_store.ConfigurationFilePath}";
-
     }
 
     /// <summary>
@@ -406,7 +354,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     /// </summary>
     private void RestoreSections(ArcanumSettings settings)
     {
-
         _snapshot = settings;
 
         Host.LoadFrom(settings.Host);
@@ -422,9 +369,7 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         foreach (GenericSectionViewModel generic in _genericSections.Values.ToArray())
         {
-
             ReloadGenericSection(generic);
-
         }
 
         IsDirty = false;
@@ -432,12 +377,10 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
 
         RefreshFieldValidation();
-
     }
 
     private void ReloadGenericSection(GenericSectionViewModel section)
     {
-
         IEnumerable<SettingDescriptor> descriptors = SettingDescriptors.All
             .Where(descriptor => descriptor.Section == section.Section);
 
@@ -445,39 +388,30 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         foreach (SettingDescriptor descriptor in descriptors)
         {
-
             object? value = GenericSettingsUpdater.ReadValue(_snapshot, descriptor.Key);
 
             fields.Add(new GenericSettingFieldViewModel(descriptor, value));
-
         }
 
         section.LoadFrom(fields);
-
     }
 
     private async Task SaveAsync()
     {
-
         if (IsSaving)
         {
-
             return;
-
         }
 
         if (LoadFailed)
         {
-
             string path = _store.ConfigurationFilePath;
 
             await _uiDispatcher.InvokeAsync(() =>
             {
-
                 LastErrorMessage = $"Cannot save: {path} was never read successfully.";
 
                 StatusMessage = $"Cannot save {path}";
-
             }).ConfigureAwait(false);
 
             await _dialogService
@@ -488,21 +422,17 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                 .ConfigureAwait(false);
 
             return;
-
         }
 
         List<string> invalidFields = InvalidFieldSummaries();
 
         if (invalidFields.Count > 0)
         {
-
             await _uiDispatcher.InvokeAsync(() =>
             {
-
                 LastErrorMessage = $"{invalidFields.Count} setting(s) must be corrected before saving.";
 
                 StatusMessage = "Fix the highlighted settings before saving.";
-
             }).ConfigureAwait(false);
 
             await _dialogService
@@ -513,14 +443,12 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                 .ConfigureAwait(false);
 
             return;
-
         }
 
         IsSaving = true;
 
         try
         {
-
             ArcanumSettings settings = BuildSettings();
 
             long savedRevision = _editRevision;
@@ -529,10 +457,8 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
             await _uiDispatcher.InvokeAsync(() =>
             {
-
                 if (result.IsSuccess)
                 {
-
                     _snapshot = settings;
 
                     IsDirty = _editRevision != savedRevision;
@@ -551,11 +477,9 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                     _serverValidationErrors = new Dictionary<string, string>(StringComparer.Ordinal);
 
                     RefreshFieldValidation();
-
                 }
                 else
                 {
-
                     LastErrorMessage = result.ErrorMessage ?? "Save failed.";
 
                     StatusMessage = result.ErrorMessage ?? "Save failed.";
@@ -564,22 +488,17 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
                     foreach (ConfigurationValidationError error in result.ValidationErrors)
                     {
-
                         byPointer[error.Pointer] = error.Detail;
-
                     }
 
                     _serverValidationErrors = byPointer;
 
                     RefreshFieldValidation();
-
                 }
-
             }).ConfigureAwait(false);
 
             if (!result.IsSuccess)
             {
-
                 // Every unsuccessful save is surfaced, not only the validation ones: locked files,
                 // write-lock timeouts and stale-fingerprint refusals carry no validation errors and
                 // would otherwise be invisible behind the SaveBar's "Unsaved changes" text.
@@ -592,31 +511,24 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                 await _dialogService
                     .ShowAlertAsync(hasValidationErrors ? "Validation Error" : "Save failed", detail)
                     .ConfigureAwait(false);
-
             }
             else if (result.WarningMessage is { Length: > 0 } warning)
             {
-
                 // The SaveBar prefers the timestamp once a save succeeds, so the status line alone
                 // would bury this. Compendium has no log sink an operator can read either, which
                 // leaves the dialog as the only place an unmet security objective can land.
                 await _dialogService
                     .ShowAlertAsync("Saved with a warning", warning)
                     .ConfigureAwait(false);
-
             }
-
         }
         catch (Exception ex)
         {
-
             await _uiDispatcher.InvokeAsync(() =>
             {
-
                 LastErrorMessage = ex.Message;
 
                 StatusMessage = "Could not save arcanum.json";
-
             }).ConfigureAwait(false);
 
             await _dialogService
@@ -624,59 +536,44 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                     "Save failed",
                     $"Compendium could not build or save the configuration:{Environment.NewLine}{Environment.NewLine}{ex.Message}")
                 .ConfigureAwait(false);
-
         }
         finally
         {
-
             await _uiDispatcher.InvokeAsync(() => IsSaving = false).ConfigureAwait(false);
-
         }
-
     }
 
     private async Task RefreshAsync()
     {
-
         if (IsSaving)
         {
-
             return;
-
         }
 
         if (IsDirty)
         {
-
             bool discard = await _dialogService
                 .ShowConfirmAsync("Reload", "Discard local edits and reload from disk?")
                 .ConfigureAwait(false);
 
             if (!discard)
             {
-
                 return;
-
             }
-
         }
 
         await LoadAsync().ConfigureAwait(false);
 
         await Presets.RefreshAsync().ConfigureAwait(false);
-
     }
 
     internal Task ReloadAfterPresetMutationAsync() => LoadAsync();
 
     private Task CancelAsync()
     {
-
         if (IsSaving || !IsDirty)
         {
-
             return Task.CompletedTask;
-
         }
 
         RestoreSections(_snapshot);
@@ -686,7 +583,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         StatusMessage = "Discarded local edits.";
 
         return Task.CompletedTask;
-
     }
 
     /// <summary>
@@ -695,12 +591,9 @@ public sealed partial class ConfigurationViewModel : ObservableObject
     /// </summary>
     public async Task<bool> ConfirmDiscardOnExitAsync()
     {
-
         if (!IsDirty)
         {
-
             return true;
-
         }
 
         return await _dialogService
@@ -710,15 +603,12 @@ public sealed partial class ConfigurationViewModel : ObservableObject
                 "Discard",
                 "Keep editing")
             .ConfigureAwait(false);
-
     }
 
     public ArcanumSettings BuildSettings()
     {
-
         ArcanumSettings polished = _snapshot with
         {
-
             Host = Host.Build(),
 
             Providers = Providers.BuildProviders(),
@@ -730,7 +620,6 @@ public sealed partial class ConfigurationViewModel : ObservableObject
             Daemon = Daemon.Build(),
 
             Cli = Cli.Build(),
-
         };
 
         List<GenericSettingFieldViewModel> genericFields = _genericSections.Values
@@ -738,17 +627,13 @@ public sealed partial class ConfigurationViewModel : ObservableObject
             .ToList();
 
         return GenericSettingsUpdater.ApplyFields(polished, genericFields, _logger);
-
     }
 
     private void WireDirtyTracking()
     {
-
         foreach (ObservableObject section in AllSectionViewModels())
         {
-
             section.PropertyChanged += (_, _) => MarkDirty();
-
         }
 
         Providers.Providers.CollectionChanged += OnProvidersCollectionChanged;
@@ -757,278 +642,192 @@ public sealed partial class ConfigurationViewModel : ObservableObject
 
         foreach (ProvidersSectionViewModel.ProviderViewModel provider in Providers.Providers)
         {
-
             SubscribeProviderDirty(provider);
-
         }
 
         foreach (DaemonSectionViewModel.UnseenServantJobViewModel job in Daemon.Jobs)
         {
-
             SubscribeNestedDirty(job);
-
         }
-
     }
 
     private void OnProvidersCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-
         MarkDirty();
 
         if (e.OldItems is not null)
         {
-
             foreach (object item in e.OldItems)
             {
-
                 if (item is ProvidersSectionViewModel.ProviderViewModel provider)
                 {
-
                     UnsubscribeProviderDirty(provider);
-
                 }
-
             }
-
         }
 
         if (e.NewItems is not null)
         {
-
             foreach (object item in e.NewItems)
             {
-
                 if (item is ProvidersSectionViewModel.ProviderViewModel provider)
                 {
-
                     SubscribeProviderDirty(provider);
-
                 }
-
             }
-
         }
 
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
-
             // A Reset carries no OldItems, so the subscription set is the only remaining handle on the
             // discarded generation. Detaching through it is what removes each provider's
             // Models.CollectionChanged hook — without it the editor keeps every previously loaded
             // provider alive and a stale one can still mark the configuration dirty.
             foreach (ProvidersSectionViewModel.ProviderViewModel discarded in _modelsSubscribedProviders.ToArray())
             {
-
                 UnsubscribeProviderDirty(discarded);
-
             }
 
             foreach (INotifyPropertyChanged nested in _nestedDirtySubscriptions.ToArray())
             {
-
                 if (nested is ProvidersSectionViewModel.ProviderViewModel
                     or ProvidersSectionViewModel.ModelEntryViewModel)
                 {
-
                     UnsubscribeNestedDirty(nested);
-
                 }
-
             }
 
             foreach (ProvidersSectionViewModel.ProviderViewModel provider in Providers.Providers)
             {
-
                 SubscribeProviderDirty(provider);
-
             }
-
         }
-
     }
 
     private void OnJobsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-
         MarkDirty();
 
         if (e.OldItems is not null)
         {
-
             foreach (object item in e.OldItems)
             {
-
                 if (item is INotifyPropertyChanged nested)
                 {
-
                     UnsubscribeNestedDirty(nested);
-
                 }
-
             }
-
         }
 
         if (e.NewItems is not null)
         {
-
             foreach (object item in e.NewItems)
             {
-
                 if (item is INotifyPropertyChanged nested)
                 {
-
                     SubscribeNestedDirty(nested);
-
                 }
-
             }
-
         }
 
         if (e.Action == NotifyCollectionChangedAction.Reset)
         {
-
             foreach (INotifyPropertyChanged nested in _nestedDirtySubscriptions.ToArray())
             {
-
                 if (nested is DaemonSectionViewModel.UnseenServantJobViewModel)
                 {
-
                     UnsubscribeNestedDirty(nested);
-
                 }
-
             }
 
             foreach (DaemonSectionViewModel.UnseenServantJobViewModel job in Daemon.Jobs)
             {
-
                 SubscribeNestedDirty(job);
-
             }
-
         }
-
     }
 
     private void SubscribeProviderDirty(ProvidersSectionViewModel.ProviderViewModel provider)
     {
-
         SubscribeNestedDirty(provider);
 
         if (_modelsSubscribedProviders.Add(provider))
         {
-
             provider.Models.CollectionChanged += OnProviderModelsCollectionChanged;
-
         }
 
         foreach (ProvidersSectionViewModel.ModelEntryViewModel model in provider.Models)
         {
-
             SubscribeNestedDirty(model);
-
         }
-
     }
 
     private void UnsubscribeProviderDirty(ProvidersSectionViewModel.ProviderViewModel provider)
     {
-
         if (_modelsSubscribedProviders.Remove(provider))
         {
-
             provider.Models.CollectionChanged -= OnProviderModelsCollectionChanged;
-
         }
 
         foreach (ProvidersSectionViewModel.ModelEntryViewModel model in provider.Models)
         {
-
             UnsubscribeNestedDirty(model);
-
         }
 
         UnsubscribeNestedDirty(provider);
-
     }
 
     private void OnProviderModelsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-
         MarkDirty();
 
         if (e.OldItems is not null)
         {
-
             foreach (object item in e.OldItems)
             {
-
                 if (item is INotifyPropertyChanged nested)
                 {
-
                     UnsubscribeNestedDirty(nested);
-
                 }
-
             }
-
         }
 
         if (e.NewItems is not null)
         {
-
             foreach (object item in e.NewItems)
             {
-
                 if (item is INotifyPropertyChanged nested)
                 {
-
                     SubscribeNestedDirty(nested);
-
                 }
-
             }
-
         }
-
     }
 
     private void SubscribeNestedDirty(INotifyPropertyChanged nested)
     {
-
         if (!_nestedDirtySubscriptions.Add(nested))
         {
-
             return;
-
         }
 
         nested.PropertyChanged += OnNestedPropertyChanged;
-
     }
 
     private void UnsubscribeNestedDirty(INotifyPropertyChanged nested)
     {
-
         if (!_nestedDirtySubscriptions.Remove(nested))
         {
-
             return;
-
         }
 
         nested.PropertyChanged -= OnNestedPropertyChanged;
-
     }
 
     private void OnNestedPropertyChanged(object? sender, PropertyChangedEventArgs e) => MarkDirty();
 
     private IEnumerable<ObservableObject> AllSectionViewModels()
     {
-
         yield return Host;
 
         yield return Providers;
@@ -1036,7 +835,5 @@ public sealed partial class ConfigurationViewModel : ObservableObject
         yield return Daemon;
 
         yield return Cli;
-
     }
-
 }

@@ -532,13 +532,17 @@ public sealed class CovenantDispatchGateTests
             [],
             null);
 
-    [Fact]
-    public async Task A_turn_that_resolved_to_no_campaign_says_so_once_in_a_content_free_record()
+    [Theory]
+    [InlineData(CovenantTurnAbsence.FeatureDisabled)]
+    [InlineData(CovenantTurnAbsence.CapabilityUnavailable)]
+    [InlineData(CovenantTurnAbsence.NoCampaign)]
+    [InlineData(CovenantTurnAbsence.Empty)]
+    public async Task An_absent_turn_has_one_operator_visible_content_free_record(CovenantTurnAbsence absence)
     {
         TestCapturingLogger<CovenantDispatchGate> logger = new();
 
         CovenantDispatchGate gate = CreateGate(
-            new AbsentContextProvider(CovenantTurnAbsence.NoCampaign),
+            new AbsentContextProvider(absence),
             new RecordingJournal(),
             new RecordingSensitivityLedger(),
             logger: logger);
@@ -553,13 +557,15 @@ public sealed class CovenantDispatchGateTests
 
         await using CovenantTurnScope scope = acquisition.Value;
 
-        Assert.Equal(CovenantTurnAbsence.NoCampaign, scope.Absence);
+        Assert.Equal(absence, scope.Absence);
 
         // The reason a preference was not injected is decided once per turn. Without a record of it
         // the operator's question has a typed answer that only a debugger can read.
         TestLogEntry entry = Assert.Single(logger.Entries);
 
-        Assert.Contains(nameof(CovenantTurnAbsence.NoCampaign), entry.Message, StringComparison.Ordinal);
+        Assert.Equal(LogLevel.Information, entry.Level);
+
+        Assert.Contains(absence.ToString(), entry.Message, StringComparison.Ordinal);
 
         Assert.Contains("sensitivity=none", entry.Message, StringComparison.Ordinal);
     }

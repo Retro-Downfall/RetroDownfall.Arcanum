@@ -28,7 +28,7 @@ public static class SettingDescriptors
         new("host.https.certificatePath", ConfigSection.Host, "Security certificate file", "Path to your security certificate file. Leave blank to use auto-generated certificate.", SettingKind.Path, Placeholder: "~/.config/arcanum/certs/localhost.pfx", Group: "Secure connection"),
         new("host.https.privateKeyPath", ConfigSection.Host, "Private key file", "Path to your private key file (optional).", SettingKind.Path, Placeholder: "~/.config/arcanum/certs/localhost.key", Group: "Secure connection"),
         new("host.https.certificatePasswordEnvironmentVariable", ConfigSection.Host, "Certificate password variable", "Name of the environment variable containing your certificate password. Leave blank for default.", SettingKind.String, Placeholder: "ARCANUM_HTTPS_CERTIFICATE_PASSWORD", Group: "Secure connection"),
-        new("host.minLogLevelInBuffer", ConfigSection.Host, "Debug information level", "How much technical detail to keep in memory for troubleshooting.", SettingKind.Enum, EnumType: typeof(RetroDownfall.Arcanum.Core.Logging.LogLevel), Group: "Debugging"),
+        new("host.minLogLevelInBuffer", ConfigSection.Host, "Buffered log level", "Minimum severity retained in memory. The host emits Information and above; this filter cannot enable Debug or Trace.", SettingKind.Enum, EnumType: typeof(RetroDownfall.Arcanum.Core.Logging.LogLevel), Group: "Debugging"),
 
         // Providers and top-level model selections
         new("defaultModel", ConfigSection.Providers, "Default AI model", "The AI model to use when no specific model is chosen.", SettingKind.String, Placeholder: "gpt-4o"),

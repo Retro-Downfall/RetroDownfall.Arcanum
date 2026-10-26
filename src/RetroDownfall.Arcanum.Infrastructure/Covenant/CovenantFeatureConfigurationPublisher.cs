@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -29,10 +30,11 @@ namespace RetroDownfall.Arcanum.Infrastructure.Covenant;
 /// </remarks>
 internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, IDisposable
 {
-
     private readonly CovenantAvailability _availability;
 
     private readonly IOptionsMonitor<ArcanumSettings> _options;
+
+    private readonly ILogger<CovenantFeatureConfigurationPublisher>? _logger;
 
     private readonly Lock _gate = new();
 
@@ -42,9 +44,9 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
 
     public CovenantFeatureConfigurationPublisher(
         CovenantAvailability availability,
-        IOptionsMonitor<ArcanumSettings> options)
+        IOptionsMonitor<ArcanumSettings> options,
+        ILogger<CovenantFeatureConfigurationPublisher>? logger = null)
     {
-
         ArgumentNullException.ThrowIfNull(availability);
 
         ArgumentNullException.ThrowIfNull(options);
@@ -53,6 +55,7 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
 
         _options = options;
 
+        _logger = logger;
     }
 
     /// <summary>
@@ -66,56 +69,42 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
     /// </remarks>
     public void Start()
     {
-
         lock (_gate)
         {
-
             if (_disposed || _subscription is not null)
             {
-
                 return;
-
             }
 
             _subscription = _options.OnChange((_, _) => Republish());
-
         }
 
         Republish();
-
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-
         Start();
 
         return Task.CompletedTask;
-
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-
         Dispose();
 
         return Task.CompletedTask;
-
     }
 
     public void Dispose()
     {
-
         IDisposable? subscription;
 
         lock (_gate)
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
             _disposed = true;
@@ -123,30 +112,30 @@ internal sealed class CovenantFeatureConfigurationPublisher : IHostedService, ID
             subscription = _subscription;
 
             _subscription = null;
-
         }
 
         subscription?.Dispose();
-
     }
 
     private void Republish()
     {
-
         lock (_gate)
         {
-
             if (_disposed)
             {
-
                 return;
-
             }
 
-            _ = _availability.PublishFeatureEnabled(_options.CurrentValue.Features.Covenant);
+            bool enabled = _options.CurrentValue.Features.Covenant;
 
+            bool changed = _availability.Current.FeatureEnabled != enabled;
+
+            _ = _availability.PublishFeatureEnabled(enabled);
+
+            if (changed)
+            {
+                _logger?.LogInformation("Covenant feature enabled: {FeatureEnabled}.", enabled);
+            }
         }
-
     }
-
 }

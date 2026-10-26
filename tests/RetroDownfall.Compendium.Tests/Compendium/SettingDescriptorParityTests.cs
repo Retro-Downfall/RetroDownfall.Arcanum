@@ -1,4 +1,6 @@
 using System.Reflection;
+using RetroDownfall.Compendium.Ux.ViewModels;
+using RetroDownfall.Arcanum.Core.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Compendium.Ux.Models;
 using Xunit;
@@ -7,12 +9,26 @@ namespace RetroDownfall.Compendium.Ux.Tests.Compendium;
 
 public sealed class SettingDescriptorParityTests
 {
+    [Fact]
+    public void Buffered_logging_editor_explains_the_host_floor_and_offers_only_effective_levels()
+    {
+        SettingDescriptor descriptor = SettingDescriptors.All.Single(value => value.Key == "host.minLogLevelInBuffer");
+
+        GenericSettingFieldViewModel field = new(descriptor, LogLevel.Information);
+
+        Assert.DoesNotContain(LogLevel.Debug, field.EnumValues);
+
+        Assert.DoesNotContain(LogLevel.Trace, field.EnumValues);
+
+        Assert.Contains("Information", descriptor.Description, StringComparison.Ordinal);
+
+        Assert.Equal("Buffered log level", descriptor.Label);
+    }
 
     [Fact]
 
     public void Every_numeric_descriptor_clamp_matches_ArcanumSettingClamps_bounds()
     {
-
         TypeInfo clamps = typeof(ArcanumSettingClamps).GetTypeInfo();
 
         List<(SettingDescriptor Descriptor, string Reason)> failures = [];
@@ -20,13 +36,10 @@ public sealed class SettingDescriptorParityTests
         foreach (SettingDescriptor descriptor in SettingDescriptors.All)
 
         {
-
             if (string.IsNullOrEmpty(descriptor.ClampName))
 
             {
-
                 continue;
-
             }
 
             MethodInfo? method = clamps.GetMethod(
@@ -36,11 +49,9 @@ public sealed class SettingDescriptorParityTests
             if (method is null)
 
             {
-
                 failures.Add((descriptor, $"No ArcanumSettingClamps.{descriptor.ClampName} method found."));
 
                 continue;
-
             }
 
             ParameterInfo[] parameters = method.GetParameters();
@@ -48,11 +59,9 @@ public sealed class SettingDescriptorParityTests
             if (parameters.Length != 1)
 
             {
-
                 failures.Add((descriptor, $"{descriptor.ClampName} has an unsupported parameter contract."));
 
                 continue;
-
             }
 
             Type paramType = parameters[0].ParameterType;
@@ -76,38 +85,29 @@ public sealed class SettingDescriptorParityTests
             if (actualMin != descriptor.Min)
 
             {
-
                 failures.Add((descriptor, $"Min mismatch for {descriptor.Key}: descriptor={descriptor.Min}, clamp={actualMin}."));
-
             }
 
             if (actualMax != descriptor.Max)
 
             {
-
                 failures.Add((descriptor, $"Max mismatch for {descriptor.Key}: descriptor={descriptor.Max}, clamp={actualMax}."));
-
             }
-
         }
 
         if (failures.Count > 0)
 
         {
-
             string report = string.Join("\n", failures.Select(f => $"  {f.Descriptor.Key}: {f.Reason}"));
 
             Assert.Fail($"{failures.Count} descriptor/clamp mismatch(es):\n{report}");
-
         }
-
     }
 
     [Fact]
 
     public void Every_numeric_descriptor_has_a_clamp_name()
     {
-
         SettingKind[] numericKinds = [SettingKind.Int, SettingKind.Long, SettingKind.Float];
 
         List<string> missing = SettingDescriptors.All
@@ -119,7 +119,6 @@ public sealed class SettingDescriptorParityTests
             .ToList();
 
         Assert.True(missing.Count == 0, $"Numeric descriptors missing ClampName: {string.Join(", ", missing)}");
-
     }
 
     [Theory]
@@ -127,18 +126,15 @@ public sealed class SettingDescriptorParityTests
     [InlineData("providers.outputTokenLimitWireDialect", typeof(OutputTokenLimitWireDialect))]
     public void Reasoning_enum_descriptors_match_contract_types(string key, Type enumType)
     {
-
         SettingDescriptor descriptor = Assert.Single(SettingDescriptors.All, d => d.Key == key);
 
         Assert.Equal(SettingKind.Enum, descriptor.Kind);
         Assert.Equal(enumType, descriptor.EnumType);
-
     }
 
     [Fact]
     public void Reasoning_budget_descriptor_matches_global_request_bounds()
     {
-
         SettingDescriptor descriptor = Assert.Single(
             SettingDescriptors.All,
             static d => d.Key == "providers.models.reasoning.maxBudgetTokens");
@@ -147,7 +143,6 @@ public sealed class SettingDescriptorParityTests
         Assert.Equal(1, descriptor.Min);
         Assert.Equal(2_097_152, descriptor.Max);
         Assert.Equal(nameof(ArcanumSettingClamps.ReasoningBudgetTokens), descriptor.ClampName);
-
     }
 
     [Fact]
@@ -167,7 +162,6 @@ public sealed class SettingDescriptorParityTests
 
     public void Retention_rules_have_editable_enabled_and_days_fields_in_named_groups()
     {
-
         string[] ruleKeys =
         [
             "activeSessions",
@@ -192,7 +186,6 @@ public sealed class SettingDescriptorParityTests
 
         foreach (string ruleKey in ruleKeys)
         {
-
             SettingDescriptor enabled = Assert.Single(
                 SettingDescriptors.All,
                 candidate => candidate.Key == $"retention.{ruleKey}.enabled");
@@ -218,9 +211,7 @@ public sealed class SettingDescriptorParityTests
             Assert.Equal(nameof(ArcanumSettingClamps.RetentionRuleDays), days.ClampName);
 
             Assert.Equal(enabled.Group, days.Group);
-
         }
-
     }
 
     [Theory]
@@ -254,96 +245,71 @@ public sealed class SettingDescriptorParityTests
 
     private static object GetMinValue(Type type)
     {
-
         if (type == typeof(int))
 
         {
-
             return int.MinValue;
-
         }
 
         if (type == typeof(long))
 
         {
-
             return long.MinValue;
-
         }
 
         if (type == typeof(float))
 
         {
-
             return float.NegativeInfinity;
-
         }
 
         if (type == typeof(double))
 
         {
-
             return double.NegativeInfinity;
-
         }
 
         if (type == typeof(decimal))
 
         {
-
             return decimal.MinValue;
-
         }
 
         throw new NotSupportedException($"Unsupported clamp parameter type {type}");
-
     }
 
     private static object GetMaxValue(Type type)
     {
-
         if (type == typeof(int))
 
         {
-
             return int.MaxValue;
-
         }
 
         if (type == typeof(long))
 
         {
-
             return long.MaxValue;
-
         }
 
         if (type == typeof(float))
 
         {
-
             return float.PositiveInfinity;
-
         }
 
         if (type == typeof(double))
 
         {
-
             return double.PositiveInfinity;
-
         }
 
         if (type == typeof(decimal))
 
         {
-
             return decimal.MaxValue;
-
         }
 
         throw new NotSupportedException($"Unsupported clamp parameter type {type}");
-
     }
-
 }
