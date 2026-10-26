@@ -18,6 +18,7 @@ public sealed class CommandCenterWindowOverlayTests
     [InlineData("A", 80, 120, 82)]
     [InlineData("e\u0301", 40, 120, 60)]
     [InlineData("😀", 40, 140, 82)]
+    [InlineData("👩‍💻", 40, 140, 82)]
     [InlineData("界", 80, 200, 120)]
     [InlineData("界", 80, 80, 76)]
     public void Generic_overlay_frame_measures_display_cells_and_retains_width_caps(

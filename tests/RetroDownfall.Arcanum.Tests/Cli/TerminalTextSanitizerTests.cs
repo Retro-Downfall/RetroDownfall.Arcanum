@@ -122,4 +122,63 @@ public sealed class TerminalTextSanitizerTests
 
         Assert.Equal("你" + new string(' ', tabStop - 2) + "b", sanitized);
     }
+
+    [Theory]
+    [InlineData("👩‍💻\tX", "👩‍💻", 2)]
+    [InlineData("👨‍👩‍👧‍👦\tX", "👨‍👩‍👧‍👦", 2)]
+    [InlineData("👍🏽\tX", "👍🏽", 2)]
+    [InlineData("👩\u0007‍💻\tX", "👩‍💻", 2)]
+    [InlineData("👩\u001b[31m‍💻\u001b[0m\tX", "👩‍💻", 2)]
+    [InlineData("a\u0007\uFE0E\tX", "a\uFE0E", 1)]
+    [InlineData("❤️\tX", "❤️", 1)]
+    [InlineData("1️⃣\tX", "1️⃣", 1)]
+    [InlineData("🜁\tX", "🜁", 1)]
+    [InlineData("한\tX", "한", 2)]
+    [InlineData("\u200D\tX", "\u200D", 0)]
+    [InlineData("\uFE0F\tX", "\uFE0F", 0)]
+    public void Tabs_count_complete_final_visible_graphemes_after_controls_are_filtered(string input, string visible, int columns)
+    {
+        Assert.Equal(columns, Terminal.Gui.Text.StringExtensions.GetColumns(visible));
+
+        string expected = visible + new string(' ', TerminalCellMetrics.TabStop - columns) + "X";
+
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeBlock(input));
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeLine(input));
+    }
+
+    [Fact]
+    public void Removed_carriage_returns_can_join_a_block_grapheme_but_line_breaks_still_flatten_to_spaces()
+    {
+        Assert.Equal("👩‍💻      X", TerminalTextSanitizer.SanitizeBlock("👩\r‍💻\tX"));
+        Assert.Equal("👩 ‍💻   X", TerminalTextSanitizer.SanitizeLine("👩\r‍💻\tX"));
+        Assert.Equal("👩‍💻      X\n👩‍💻      Y", TerminalTextSanitizer.SanitizeBlock("👩‍💻\tX\r\n👩‍💻\tY"));
+    }
+
+    [Fact]
+    public void A_large_tabbed_payload_filters_and_expands_each_visible_cluster_without_prefix_remeasurement()
+    {
+        const int repetitions = 10_000;
+
+        string input = string.Concat(Enumerable.Repeat("👩\u0007‍💻\t", repetitions));
+
+        string expected = string.Concat(Enumerable.Repeat("👩‍💻      ", repetitions));
+
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeBlock(input));
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeLine(input));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Filtering_keeps_the_existing_replacement_policy_for_malformed_utf16(bool highSurrogate)
+    {
+        string input = new(['a', highSurrogate ? '\uD800' : '\uDC00', highSurrogate ? '\u0007' : '\t', 'b']);
+
+        Assert.True(char.IsSurrogate(input[1]));
+
+        string expected = highSurrogate ? "a�b" : "a�      b";
+
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeBlock(input));
+        Assert.Equal(expected, TerminalTextSanitizer.SanitizeLine(input));
+    }
 }

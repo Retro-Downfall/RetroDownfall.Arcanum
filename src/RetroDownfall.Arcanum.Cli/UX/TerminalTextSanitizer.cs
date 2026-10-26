@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using RetroDownfall.Arcanum.Cli.CommandCenter;
 
@@ -43,48 +44,7 @@ internal static class TerminalTextSanitizer
             return text;
         }
 
-        string withoutSequences = StripEscapeSequences(text);
-        StringBuilder sanitized = new(withoutSequences.Length);
-
-        // Running column rather than re-measuring the buffer at every tab, so a tab-indented payload
-        // stays linear. A newline restarts the column.
-        int column = 0;
-        foreach (Rune rune in withoutSequences.EnumerateRunes())
-        {
-            int value = rune.Value;
-            if (value == '\n')
-            {
-                _ = sanitized.Append('\n');
-                column = 0;
-                continue;
-            }
-
-            if (value == '\t')
-            {
-                int pad = TerminalCellMetrics.TabStop - (column % TerminalCellMetrics.TabStop);
-                _ = sanitized.Append(' ', pad);
-                column += pad;
-                continue;
-            }
-
-            if (IsDroppedControl(value))
-            {
-                continue;
-            }
-
-            if (rune.IsAscii)
-            {
-                _ = sanitized.Append((char)value);
-                column++;
-                continue;
-            }
-
-            string glyph = rune.ToString();
-            _ = sanitized.Append(glyph);
-            column += TerminalCellMetrics.MeasureGraphemeWidth(glyph, column);
-        }
-
-        return sanitized.ToString();
+        return ExpandVisibleTabs(FilterControls(StripEscapeSequences(text), preserveNewlines: true));
     }
 
     /// <summary>
@@ -104,45 +64,72 @@ internal static class TerminalTextSanitizer
             return text;
         }
 
-        string withoutSequences = StripEscapeSequences(text);
-        StringBuilder sanitized = new(withoutSequences.Length);
-        int column = 0;
-        foreach (Rune rune in withoutSequences.EnumerateRunes())
+        return ExpandVisibleTabs(FilterControls(StripEscapeSequences(text), preserveNewlines: false));
+    }
+
+    private static string FilterControls(string text, bool preserveNewlines)
+    {
+        StringBuilder filtered = new(text.Length);
+        Span<char> encoded = stackalloc char[2];
+
+        foreach (Rune rune in text.EnumerateRunes())
         {
             int value = rune.Value;
-            if (value == '\t')
-            {
-                int pad = TerminalCellMetrics.TabStop - (column % TerminalCellMetrics.TabStop);
-                _ = sanitized.Append(' ', pad);
-                column += pad;
-                continue;
-            }
 
-            if (value is '\r' or '\n')
+            if (value == '\t' || (preserveNewlines && value == '\n'))
             {
-                _ = sanitized.Append(' ');
-                column++;
-                continue;
+                _ = filtered.Append((char)value);
             }
-
-            if (IsDroppedControl(value))
+            else if (!preserveNewlines && (value is '\r' or '\n'))
             {
-                continue;
+                _ = filtered.Append(' ');
             }
-
-            if (rune.IsAscii)
+            else if (!IsDroppedControl(value))
             {
-                _ = sanitized.Append((char)value);
-                column++;
-                continue;
+                _ = filtered.Append(encoded[..rune.EncodeToUtf16(encoded)]);
             }
-
-            string glyph = rune.ToString();
-            _ = sanitized.Append(glyph);
-            column += TerminalCellMetrics.MeasureGraphemeWidth(glyph, column);
         }
 
-        return sanitized.ToString();
+        return filtered.ToString();
+    }
+
+    private static string ExpandVisibleTabs(string text)
+    {
+        if (!text.Contains('\t'))
+        {
+            return text;
+        }
+
+        StringBuilder expanded = new(text.Length);
+        int column = 0;
+        int index = 0;
+
+        // Controls have already been filtered: their removal can join formerly separate grapheme
+        // pieces. Walk the final visible clusters once, never remeasure a growing output prefix.
+        while (index < text.Length)
+        {
+            ReadOnlySpan<char> remaining = text.AsSpan(index);
+            int length = Math.Max(1, StringInfo.GetNextTextElementLength(remaining));
+            ReadOnlySpan<char> grapheme = remaining[..length];
+
+            if (grapheme.Length == 1 && grapheme[0] == '\t')
+            {
+                int pad = TerminalCellMetrics.TabStop - (column % TerminalCellMetrics.TabStop);
+                _ = expanded.Append(' ', pad);
+                column += pad;
+            }
+            else
+            {
+                _ = expanded.Append(grapheme);
+                column = grapheme.Length == 1 && grapheme[0] == '\n'
+                    ? 0
+                    : column + TerminalCellMetrics.MeasureGraphemeWidth(grapheme, column);
+            }
+
+            index += length;
+        }
+
+        return expanded.ToString();
     }
 
     /// <summary>

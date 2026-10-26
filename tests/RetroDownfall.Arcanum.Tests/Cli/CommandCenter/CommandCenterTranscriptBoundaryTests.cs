@@ -61,7 +61,8 @@ public sealed class CommandCenterTranscriptBoundaryTests
     [Theory]
     [InlineData("hello \u0301world", 5, "hello| \u0301worl|d")]
     [InlineData("你好 \u0301世界", 4, "你好| \u0301世|界")]
-    [InlineData("hello \ufe0fworld", 5, "hello| \ufe0fwor|ld")]
+    // The pinned renderer measures space+VS16 as one cell; its decoration still remains content.
+    [InlineData("hello \ufe0fworld", 5, "hello| \ufe0fworl|d")]
     [InlineData("hello  \u0301world", 5, "hello| \u0301worl|d")]
     [InlineData("hello \t \u0301world", 5, "hello| \u0301worl|d")]
     [InlineData("hi \u0301there", 5, "hi \u0301th|ere")]
