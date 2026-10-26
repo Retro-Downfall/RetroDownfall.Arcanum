@@ -29,6 +29,7 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// edits can deliver out of order; a publisher that just wrote what its callback saw could leave the
 /// installation enabled after the operator's last action was to disable it.</para>
 /// </remarks>
+[Collection("ProcessEnvironment")]
 public sealed class CovenantFeatureConfigurationPublisherTests
 {
     [Fact]
@@ -62,6 +63,8 @@ public sealed class CovenantFeatureConfigurationPublisherTests
     [Fact]
     public void Production_services_supply_the_required_logger()
     {
+        using ArcanumTestHomeScope home = new("arcanum-covenant-feature-publisher");
+
         ServiceCollection services = new();
 
         services.AddArcanumApiServices(new ConfigurationBuilder().Build());
