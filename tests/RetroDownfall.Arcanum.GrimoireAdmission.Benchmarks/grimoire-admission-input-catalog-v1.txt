@@ -1540,6 +1540,9 @@ R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/090_sessi
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/100_session_attachment_chunks_tapestry_revision_replace_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/110_session_attachment_chunks_tapestry_revision_update.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/120_session_attachment_chunks_tapestry_revision_delete.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/130_idx_workspace_file_chunks_tapestry_scope_id.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/140_idx_Entries_tapestry_scope_id.sql
+R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V27/150_idx_session_attachment_chunks_tapestry_scope_id.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/010_annal_claims.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/011_annal_claims_subject_index.sql
 R	src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/Transitions/V3/012_annal_claims_store_candidate_index.sql

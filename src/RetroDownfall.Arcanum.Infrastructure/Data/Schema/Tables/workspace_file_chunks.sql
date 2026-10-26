@@ -37,3 +37,6 @@ CREATE TABLE IF NOT EXISTS workspace_file_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_workspace_file_chunks_path
 ON workspace_file_chunks(WorkspacePath, RelativePath);
+
+-- Snapshot pages seek within one scope in source-id order.
+CREATE INDEX IF NOT EXISTS idx_workspace_file_chunks_tapestry_scope_id ON workspace_file_chunks(WorkspacePath, ChunkId COLLATE BINARY);

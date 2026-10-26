@@ -11,7 +11,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Weave.Tapestry;
 
 [Collection("Grimoire")]
-public sealed partial class TapestryGraphStoreTests(GrimoireFixture fixture) : IAsyncLifetime
+public sealed partial class TapestryGraphStoreTests(GrimoireFixture fixture, Xunit.Abstractions.ITestOutputHelper output) : IAsyncLifetime
 {
     private static readonly TapestryScope Scope = new(TapestryScopeKind.Workspace, "/graph");
 

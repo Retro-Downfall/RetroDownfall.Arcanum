@@ -59,10 +59,12 @@ internal sealed partial class TapestryStore
 
             command.Transaction = transaction;
 
+            string continuation = after is null ? string.Empty : $"AND s.{corpus.IdColumn} > @after COLLATE BINARY";
+
             command.CommandText = $"""
                 SELECT s.{corpus.IdColumn},s.Content FROM {corpus.Table} s
                 WHERE {corpus.ScopePredicate} AND {NonblankSource}
-                    AND (@after IS NULL OR s.{corpus.IdColumn} > @after COLLATE BINARY)
+                    {continuation}
                 ORDER BY s.{corpus.IdColumn} COLLATE BINARY LIMIT @limit
                 """;
 

@@ -9,13 +9,13 @@ public sealed partial class TapestryRevisionSchemaTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Core27_EveryTriggerTransitionIsAtomicOnFailureOrCancellation(bool cancel)
+    public async Task Core27_EverySourceTransitionIsAtomicOnFailureOrCancellation(bool cancel)
     {
         GrimoireSchemaVersionChain core = GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
 
         GrimoireSchemaVersionStep step = Assert.Single(core.Steps, item => item.ToVersion == 27);
 
-        Assert.Equal(12, step.Statements.Count);
+        Assert.Equal(15, step.Statements.Count);
 
         foreach (GrimoireSchemaTransitionStatement stop in step.Statements)
         {

@@ -153,7 +153,7 @@ public sealed class GrimoireAdmissionBenchmarkManifestTests
 
         Assert.EndsWith("GrimoireConnectionAdmissionEpoch.cs", optional.Path, StringComparison.Ordinal);
 
-        Assert.Equal(863, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
+        Assert.Equal(866, catalog.Count(static entry => entry.Path.EndsWith(".sql", StringComparison.Ordinal)));
 
         const string schemaPath = "src/RetroDownfall.Arcanum.Infrastructure/Data/Schema/";
 
