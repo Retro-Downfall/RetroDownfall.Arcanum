@@ -8,8 +8,8 @@ namespace RetroDownfall.Arcanum.Core.Intelligence;
 /// <summary>
 /// Scrying — vision/multimodality request-shape validation, shared by the native
 /// <c>/api/intelligence/ping(-stream)</c> path (<c>WizardIntelligenceProvider</c>) and the
-/// OpenAI-compatible <c>/v1/chat/completions</c> path (validated against the mapped
-/// <see cref="PingRequest"/> so both surfaces share one code path). Model capability
+/// OpenAI-compatible <c>/v1/chat/completions</c> path (URL syntax is checked before mapping
+/// and remaining policy against the mapped <see cref="PingRequest"/>). Model capability
 /// (<see cref="Configuration.ModelEntry.SupportsVision"/>) is checked separately by the caller via
 /// <see cref="ProviderResolver.SupportsVision(ArcanumSettings, string?)"/> once a model is resolved
 /// — this class only validates the image payloads themselves (URL shape/count/MIME/size) and the master
@@ -142,36 +142,27 @@ public static class ScryingValidator
 
                     string? url = part.ImageUrl;
 
-                    if (string.IsNullOrWhiteSpace(url))
+                    Result urlShape = ValidateImageUrlShape(
+                        url, messageIndex, partIndex, out ReadOnlySpan<char> mime, out ReadOnlySpan<char> base64Payload);
+
+                    if (urlShape.IsFailure)
                     {
-                        return InvalidImageUrl(messageIndex, partIndex);
+                        return urlShape;
                     }
 
-                    if (!url.StartsWith(DataUriPrefix, StringComparison.OrdinalIgnoreCase))
+                    if (!url!.StartsWith(DataUriPrefix, StringComparison.OrdinalIgnoreCase))
                     {
-                        if (Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
-                            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
-                            && !string.IsNullOrEmpty(uri.Host))
-                        {
-                            continue;
-                        }
-
-                        return InvalidImageUrl(messageIndex, partIndex);
+                        continue;
                     }
 
-                    if (!TryParseDataUri(url, out string mime, out string base64Payload))
-                    {
-                        return InvalidImageUrl(messageIndex, partIndex);
-                    }
-
-                    Result mimeResult = ValidateMimeType(mime, allowedMimeTypes);
+                    Result mimeResult = ValidateMimeType(mime.ToString(), allowedMimeTypes);
 
                     if (mimeResult.IsFailure)
                     {
                         return mimeResult;
                     }
 
-                    Result sizeResult = ValidateBase64Size(base64Payload, maxBytes);
+                    Result sizeResult = ValidateBase64Size(base64Payload.ToString(), maxBytes);
 
                     if (sizeResult.IsFailure)
                     {
@@ -182,6 +173,44 @@ public static class ScryingValidator
         }
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Validates URL syntax with the caller's original message/content indices. Wire adapters use
+    /// this before lossy mapping; <see cref="ValidateRequestImages"/> additionally checks feature,
+    /// image count, MIME and decoded payload limits. This syntax pass does not copy image payloads.
+    /// </summary>
+    public static Result ValidateImageUrlShape(string? url, int messageIndex, int partIndex) =>
+        ValidateImageUrlShape(url, messageIndex, partIndex, out _, out _);
+
+    private static Result ValidateImageUrlShape(
+        string? url,
+        int messageIndex,
+        int partIndex,
+        out ReadOnlySpan<char> mimeType,
+        out ReadOnlySpan<char> base64Payload)
+    {
+        mimeType = ReadOnlySpan<char>.Empty;
+
+        base64Payload = ReadOnlySpan<char>.Empty;
+
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return InvalidImageUrl(messageIndex, partIndex);
+        }
+
+        if (url.StartsWith(DataUriPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return TryParseDataUri(url, out mimeType, out base64Payload)
+                ? Result.Success()
+                : InvalidImageUrl(messageIndex, partIndex);
+        }
+
+        return Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrEmpty(uri.Host)
+                ? Result.Success()
+                : InvalidImageUrl(messageIndex, partIndex);
     }
 
     private static Result InvalidImageUrl(int messageIndex, int partIndex) =>
@@ -272,11 +301,11 @@ public static class ScryingValidator
     /// empty mime still parses, so <c>data:;base64,…</c> reaches the allow-list and is rejected
     /// there rather than slipping past validation.
     /// </summary>
-    private static bool TryParseDataUri(string dataUri, out string mimeType, out string base64Payload)
+    private static bool TryParseDataUri(string dataUri, out ReadOnlySpan<char> mimeType, out ReadOnlySpan<char> base64Payload)
     {
-        mimeType = string.Empty;
+        mimeType = ReadOnlySpan<char>.Empty;
 
-        base64Payload = string.Empty;
+        base64Payload = ReadOnlySpan<char>.Empty;
 
         ReadOnlySpan<char> body = dataUri.AsSpan(DataUriPrefix.Length);
 
@@ -289,7 +318,7 @@ public static class ScryingValidator
 
         ReadOnlySpan<char> descriptor = body[..comma];
 
-        base64Payload = body[(comma + 1)..].ToString();
+        base64Payload = body[(comma + 1)..];
 
         int semicolon = descriptor.IndexOf(';');
 
@@ -302,7 +331,7 @@ public static class ScryingValidator
             return false;
         }
 
-        mimeType = mimeSpan.ToString();
+        mimeType = mimeSpan;
 
         return true;
     }

@@ -22,7 +22,7 @@ using RetroDownfall.Arcanum.Tests.Fixtures;
 namespace RetroDownfall.Arcanum.Tests.Api;
 
 [Collection("ApiHost")]
-public sealed class OpenAiV1EndpointTests
+public sealed partial class OpenAiV1EndpointTests
 {
     private readonly ArcanumWebApplicationFactory _factory;
 
