@@ -7,6 +7,7 @@ using RetroDownfall.Arcanum.Core.Storage;
 
 namespace RetroDownfall.Arcanum.Tests.Packaging;
 
+[Collection("ProcessEnvironment")]
 public sealed class LocalPdfQualificationHarnessTests
 {
     [Theory]

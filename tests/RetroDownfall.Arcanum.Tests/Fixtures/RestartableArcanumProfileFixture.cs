@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using RetroDownfall.Arcanum.Core.Security;
 using RetroDownfall.Arcanum.Infrastructure.Security;
 using RetroDownfall.Arcanum.Secrets.Security;
 using RetroDownfall.Arcanum.Tests.Support;
@@ -18,6 +19,8 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
     private readonly Action<string>? _deleteTempHome;
 
     private readonly Action<string>? _report;
+
+    private readonly TestApiKeySecretStore _secretStore = new(GrimoireFixture.TestApiKey);
 
     private readonly InMemoryOsCredentialStore _credentialStore;
 
@@ -71,6 +74,8 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
 
     internal GrimoireFixture? Grimoire { get; }
 
+    internal ISecretStore SecretStore => _secretStore;
+
     internal IOsCredentialStore CredentialStore { get; }
 
     internal IGrimoireDbPassphraseSource PassphraseSource { get; }
@@ -114,6 +119,8 @@ internal sealed class RestartableArcanumProfileFixture : IAsyncDisposable
                 {
                     try
                     {
+                        _secretStore.ClearFileEncryptionSecret();
+
                         _credentialStore.Clear();
                     }
                     finally

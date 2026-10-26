@@ -39,4 +39,5 @@ public sealed class TestApiKeySecretStore(string apiKey) : ISecretStore
         return Task.CompletedTask;
     }
 
+    internal void ClearFileEncryptionSecret() => _fileEncryptionSecret = null;
 }
