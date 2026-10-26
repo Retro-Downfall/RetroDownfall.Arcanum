@@ -1,5 +1,7 @@
 using System.Text;
 
+using Microsoft.Data.Sqlite;
+
 using RetroDownfall.Arcanum.Core.Covenant;
 
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -168,26 +170,7 @@ public sealed class CovenantMutationServiceTests
     {
         await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
 
-        await using (Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand())
-        {
-            command.CommandText = """
-                WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $count)
-                INSERT INTO covenant_mutation_receipts (
-                    MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
-                    ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
-                    ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc, EntryId)
-                SELECT lower(hex(randomblob(16))), zeroblob(32), zeroblob(32), zeroblob(32), 1,
-                       1, NULL, zeroblob(32), 1, 2, NULL,
-                       NULL, zeroblob(32), NULL, $committed, NULL
-                FROM n;
-                """;
-
-            command.Parameters.AddWithValue("$count", CovenantLimits.MaxMutationReceiptsPerScope);
-
-            command.Parameters.AddWithValue("$committed", UtcInstantText.Format(CovenantMutationFixture.CommitTime));
-
-            await command.ExecuteNonQueryAsync(Token);
-        }
+        await SeedReceiptCountAsync(fixture, CovenantLimits.MaxMutationReceiptsPerScope);
 
         CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
 
@@ -250,6 +233,356 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, result.Error.Code);
 
         Assert.Equal(5, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preflight_capacity_reads_share_a_snapshot_while_a_writer_retires_another_head(bool correction)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture,
+            ("preference.one", new string('a', 1100)),
+            ("preference.two", new string('b', 1100)),
+            ("preference.three", new string('c', 1100)),
+            ("preference.target", "small"));
+
+        await SeedReceiptCountAsync(fixture, CovenantLimits.MaxMutationReceiptsPerScope - 5);
+
+        await using SqliteCommand journal = fixture.Connection.CreateCommand();
+
+        journal.CommandText = "PRAGMA journal_mode = WAL;";
+
+        Assert.Equal("wal", await journal.ExecuteScalarAsync(Token));
+
+        await using SqliteConnection writerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantMutationService writer = Service(fixture, connection: writerConnection);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Guid retirementId = Guid.NewGuid();
+
+        Result<CovenantMutationPreflightDto> retirement = await writer.PrepareRetireAsync(new(
+            CovenantScope.Global, null, "preference.one", CovenantLane.Confirmed, 1, retirementId), read, Token);
+
+        Assert.True(retirement.IsSuccess, retirement.IsFailure ? retirement.Error.Message : null);
+
+        int writerCommits = 0;
+
+        CovenantStore store = new(new FixedCovenantConnectionSource(fixture.Connection), fixture.ErasureKeys)
+        {
+            AfterQuotaReadForTesting = async cancellationToken =>
+            {
+                await using CovenantWriteLease write = (await gate.AcquireWriteAsync(
+                    CovenantOperationScope.Global, cancellationToken)).Value;
+
+                Result<CovenantMutationResultDto> retired = await writer.RetireAsync(new(
+                    CovenantScope.Global, null, "preference.one", CovenantLane.Confirmed, 1,
+                    retirementId, retirement.Value.PreflightToken), write, cancellationToken);
+
+                Assert.True(retired.IsSuccess, retired.IsFailure ? retired.Error.Message : null);
+
+                writerCommits++;
+            }
+        };
+
+        CovenantMutationService service = Service(fixture, store);
+
+        Result<CovenantDetail> detail = await fixture.Store.ReadDetailAsync(
+            new(CovenantOperationScope.Global, "preference.target"), read, Token);
+
+        CovenantHeadItem head = Assert.IsType<CovenantHeadItem>(detail.Value.ConfirmedHead);
+
+        Result<CovenantMutationPreflightDto> result = correction
+            ? await service.PrepareCorrectAsync(new(
+                CovenantScope.Global, null, "preference.target", new string('d', 1100),
+                head.VersionId, CovenantLane.Confirmed, 1,
+                Convert.ToHexString(head.RenderedHash!.Value.Bytes), Guid.NewGuid()), read, Token)
+            : await service.PrepareSetAsync(new(
+                CovenantScope.Global, null, "preference.target", new string('d', 1100),
+                1, Guid.NewGuid(), false), read, Token);
+
+        Assert.Equal(1, writerCommits);
+
+        Assert.True(result.IsFailure, "No snapshot had both scope and Section capacity for this replacement.");
+
+        Assert.Equal(ErrorCodes.Covenant.CapacityExceeded, result.Error.Code);
+
+        Assert.Contains("Section", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(5, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+
+        Assert.Equal(CovenantLimits.MaxMutationReceiptsPerScope,
+            await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_mutation_receipts;"));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Preflight_effect_and_target_share_a_snapshot_while_a_writer_changes_the_target(
+        bool correction,
+        bool retire)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture, ("preference.target", "Original preference."));
+
+        await using SqliteCommand journal = fixture.Connection.CreateCommand();
+
+        journal.CommandText = "PRAGMA journal_mode = WAL;";
+
+        Assert.Equal("wal", await journal.ExecuteScalarAsync(Token));
+
+        await using SqliteConnection writerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantMutationService writer = Service(fixture, connection: writerConnection);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantDetail> detail = await fixture.Store.ReadDetailAsync(
+            new(CovenantOperationScope.Global, "preference.target"), read, Token);
+
+        CovenantHeadItem head = Assert.IsType<CovenantHeadItem>(detail.Value.ConfirmedHead);
+
+        Guid writerId = Guid.NewGuid();
+
+        Result<CovenantMutationPreflightDto> writerPrepared = retire
+            ? await writer.PrepareRetireAsync(new(
+                CovenantScope.Global, null, "preference.target", CovenantLane.Confirmed, 1, writerId), read, Token)
+            : await writer.PrepareSetAsync(new(
+                CovenantScope.Global, null, "preference.target", "Concurrent preference.", 1, writerId, false), read, Token);
+
+        Assert.True(writerPrepared.IsSuccess, writerPrepared.IsFailure ? writerPrepared.Error.Message : null);
+
+        int writerCommits = 0;
+
+        CovenantStore store = new(new FixedCovenantConnectionSource(fixture.Connection), fixture.ErasureKeys)
+        {
+            AfterMutationEffectReadForTesting = async cancellationToken =>
+            {
+                await using CovenantWriteLease write = (await gate.AcquireWriteAsync(
+                    CovenantOperationScope.Global, cancellationToken)).Value;
+
+                Result<CovenantMutationResultDto> changed = retire
+                    ? await writer.RetireAsync(new(
+                        CovenantScope.Global, null, "preference.target", CovenantLane.Confirmed, 1,
+                        writerId, writerPrepared.Value.PreflightToken), write, cancellationToken)
+                    : await writer.SetAsync(new(
+                        CovenantScope.Global, null, "preference.target", "Concurrent preference.", 1,
+                        writerId, false, writerPrepared.Value.PreflightToken), write, cancellationToken);
+
+                Assert.True(changed.IsSuccess, changed.IsFailure ? changed.Error.Message : null);
+
+                writerCommits++;
+            }
+        };
+
+        CovenantMutationService service = Service(fixture, store);
+
+        Guid mutationId = Guid.NewGuid();
+
+        string targetHash = Convert.ToHexString(head.RenderedHash!.Value.Bytes);
+
+        Result<CovenantMutationPreflightDto> result = correction
+            ? await service.PrepareCorrectAsync(new(
+                CovenantScope.Global, null, "preference.target", "Replacement preference.", head.VersionId,
+                CovenantLane.Confirmed, 1, targetHash, mutationId), read, Token)
+            : await service.PrepareSetAsync(new(
+                CovenantScope.Global, null, "preference.target", "Replacement preference.", 1,
+                mutationId, false), read, Token);
+
+        Assert.Equal(1, writerCommits);
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : null);
+
+        Assert.Equal(1, result.Value.CurrentLaneRevision);
+
+        Assert.Equal(1, result.Value.KeyEpoch);
+
+        await using CovenantWriteLease commitLease = (await gate.AcquireWriteAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationResultDto> committed = correction
+            ? await service.CorrectAsync(new(
+                CovenantScope.Global, null, "preference.target", "Replacement preference.", head.VersionId,
+                CovenantLane.Confirmed, 1, targetHash, mutationId, result.Value.PreflightToken), commitLease, Token)
+            : await service.SetAsync(new(
+                CovenantScope.Global, null, "preference.target", "Replacement preference.", 1,
+                mutationId, false, result.Value.PreflightToken), commitLease, Token);
+
+        Assert.True(committed.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, committed.Error.Code);
+
+        Assert.Equal(2, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preflight_revalidates_authority_after_reading_the_snapshot(bool releaseLease)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        FakeCovenantAuthorityProvider authority = new();
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate(authority: authority);
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        CovenantStore store = new(new FixedCovenantConnectionSource(fixture.Connection), fixture.ErasureKeys)
+        {
+            AfterQuotaReadForTesting = async _ =>
+            {
+                if (releaseLease)
+                {
+                    await read.DisposeAsync();
+                }
+                else
+                {
+                    authority.Advance();
+                }
+            }
+        };
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture, store).PrepareSetAsync(new(
+            CovenantScope.Global, null, "preference.target", "New preference.", 0, Guid.NewGuid(), false), read, Token);
+
+        Result revalidated = await read.RevalidateAsync(Token);
+
+        Assert.True(revalidated.IsFailure);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(revalidated.Error.Code, result.Error.Code);
+
+        Assert.Equal(0, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+
+        // Failure disposed the deferred transaction as well as withholding its snapshot.
+        await using SqliteTransaction reusable = fixture.Connection.BeginTransaction();
+    }
+
+    [Theory]
+    [InlineData(CovenantScope.Global)]
+    [InlineData(CovenantScope.Campaign)]
+    public async Task Preflight_refuses_insufficient_scope_authority(CovenantScope requestedScope)
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantReadLease read = (await gate.AcquireReadAsync(CovenantOperationScope.Global, Token)).Value;
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture).PrepareSetAsync(new(
+            requestedScope, requestedScope == CovenantScope.Campaign ? CovenantOperationGateFixture.CampaignOne : null,
+            "preference.target", "New preference.", 0, Guid.NewGuid(), false), read, Token);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ForbiddenAuthority, result.Error.Code);
+
+        Assert.Equal(0, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    [Fact]
+    public async Task Correction_refuses_a_target_changed_before_its_preflight_snapshot_opens()
+    {
+        await using CovenantCanonicalFixture fixture = await CovenantCanonicalFixture.CreateAsync(Token);
+
+        await SeedPreflightHeadsAsync(fixture, ("preference.target", "Original preference."));
+
+        await using SqliteConnection writerConnection = await fixture.OpenAdditionalConnectionAsync(Token);
+
+        CovenantMutationService writer = Service(fixture, connection: writerConnection);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantInstallationReadLease read = (await gate.AcquireInstallationReadAsync(Token)).Value;
+
+        Result<CovenantDetail> detail = await fixture.Store.ReadDetailAsync(
+            new(CovenantOperationScope.Global, "preference.target"), read, Token);
+
+        CovenantHeadItem head = Assert.IsType<CovenantHeadItem>(detail.Value.ConfirmedHead);
+
+        Guid writerId = Guid.NewGuid();
+
+        Result<CovenantMutationPreflightDto> writerPrepared = await writer.PrepareSetAsync(new(
+            CovenantScope.Global, null, "preference.target", "Concurrent preference.", 1, writerId, false), read, Token);
+
+        Assert.True(writerPrepared.IsSuccess, writerPrepared.IsFailure ? writerPrepared.Error.Message : null);
+
+        int writerCommits = 0;
+
+        BeforePreflightStore store = new(fixture.Store, async cancellationToken =>
+        {
+            await using CovenantWriteLease write = (await gate.AcquireWriteAsync(
+                CovenantOperationScope.Global, cancellationToken)).Value;
+
+            Result<CovenantMutationResultDto> changed = await writer.SetAsync(new(
+                CovenantScope.Global, null, "preference.target", "Concurrent preference.", 1,
+                writerId, false, writerPrepared.Value.PreflightToken), write, cancellationToken);
+
+            Assert.True(changed.IsSuccess, changed.IsFailure ? changed.Error.Message : null);
+
+            writerCommits++;
+        });
+
+        Result<CovenantMutationPreflightDto> result = await Service(fixture, store).PrepareCorrectAsync(new(
+            CovenantScope.Global, null, "preference.target", "Replacement preference.", head.VersionId,
+            CovenantLane.Confirmed, 1, Convert.ToHexString(head.RenderedHash!.Value.Bytes), Guid.NewGuid()), read, Token);
+
+        Assert.Equal(1, writerCommits);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Equal(2, await CountAsync(fixture, "SELECT COUNT(*) FROM covenant_versions;"));
+    }
+
+    private sealed class BeforePreflightStore(ICovenantStore inner, Func<CancellationToken, Task> beforeRead)
+        : DelegatingCovenantStore(inner)
+    {
+        public override async ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+            CovenantMutationEffectQuery query,
+            ICovenantSnapshotReadLease readLease,
+            CancellationToken cancellationToken)
+        {
+            await beforeRead(cancellationToken);
+
+            return await base.ReadMutationPreflightSnapshotAsync(query, readLease, cancellationToken);
+        }
+    }
+
+    private static async Task SeedReceiptCountAsync(CovenantCanonicalFixture fixture, int count)
+    {
+        await using (Microsoft.Data.Sqlite.SqliteCommand command = fixture.Connection.CreateCommand())
+        {
+            command.CommandText = """
+                WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $count)
+                INSERT INTO covenant_mutation_receipts (
+                    MutationId, RequestIdempotencyDigest, AuthorizationDigest, FinalMutationDigest, MutationKindCode,
+                    ScopeCode, CampaignId, TargetIdentityDigest, LaneCode, OutcomeCode, ResultingVersionId,
+                    ResultingLaneRevision, ResponseReceiptDigest, SourceTurnId, CommittedAtUtc, EntryId)
+                SELECT lower(hex(randomblob(16))), zeroblob(32), zeroblob(32), zeroblob(32), 1,
+                       1, NULL, zeroblob(32), 1, 2, NULL,
+                       NULL, zeroblob(32), NULL, $committed, NULL
+                FROM n;
+                """;
+
+            command.Parameters.AddWithValue("$count", count);
+
+            command.Parameters.AddWithValue("$committed", UtcInstantText.Format(CovenantMutationFixture.CommitTime));
+
+            await command.ExecuteNonQueryAsync(Token);
+        }
     }
 
     private static async Task SeedPreflightHeadsAsync(
@@ -1056,12 +1389,15 @@ public sealed class CovenantMutationServiceTests
         Assert.Equal(Convert.FromHexString(hex), parsed.Value.Bytes.ToArray());
     }
 
-    private static CovenantMutationService Service(CovenantCanonicalFixture fixture) =>
+    private static CovenantMutationService Service(
+        CovenantCanonicalFixture fixture,
+        ICovenantStore? store = null,
+        SqliteConnection? connection = null) =>
         new(
-            fixture.Store,
+            store ?? new CovenantStore(new FixedCovenantConnectionSource(connection ?? fixture.Connection), fixture.ErasureKeys),
             new CovenantCompiler(),
             new StubEnvelopeCodec(),
-            new FixedCovenantConnectionSource(fixture.Connection),
+            new FixedCovenantConnectionSource(connection ?? fixture.Connection),
             new CovenantMutationKernel(new CovenantQuotaGuard(), MemoryErasureTestKeys.Isolated()),
             new CovenantCurationKernel(),
             new StubAuthority(),

@@ -68,6 +68,12 @@ internal class DelegatingCovenantStore(ICovenantStore inner) : ICovenantStore
         CancellationToken cancellationToken) =>
         inner.ReadScopeCensusAsync(readLease, cancellationToken);
 
+    public virtual ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+        CovenantMutationEffectQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken) =>
+        inner.ReadMutationPreflightSnapshotAsync(query, readLease, cancellationToken);
+
     public virtual ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(
         CovenantMutationEffectQuery query,
         ICovenantSnapshotReadLease readLease,

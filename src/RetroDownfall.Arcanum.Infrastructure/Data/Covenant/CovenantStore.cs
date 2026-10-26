@@ -40,6 +40,12 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
     /// </summary>
     internal Action? BeforeReadScopeCensusRollbackForTesting { get; set; }
 
+    /// <summary>Test seam: permits a concurrent writer after the quota read has pinned its snapshot.</summary>
+    internal Func<CancellationToken, Task>? AfterQuotaReadForTesting { get; init; }
+
+    /// <summary>Test seam: permits a concurrent writer after reading mutation effect facts.</summary>
+    internal Func<CancellationToken, Task>? AfterMutationEffectReadForTesting { get; init; }
+
     public async ValueTask<Result<CovenantTurnSnapshot>> ReadTurnSnapshotAsync(
         CanonicalCampaignContext campaign,
         ICovenantSnapshotReadLease readLease,
@@ -392,6 +398,20 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
             (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                 .ConfigureAwait(false);
 
+        CovenantDetail snapshot = await ReadDetailInTransactionAsync(
+            connection, transaction, query, cancellationToken).ConfigureAwait(false);
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return snapshot;
+    }
+
+    private static async ValueTask<CovenantDetail> ReadDetailInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantDetailQuery query,
+        CancellationToken cancellationToken)
+    {
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -468,8 +488,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
                 }
             }
         }
-
-        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return new CovenantDetail(
             query.Scope,
@@ -731,6 +749,21 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
             (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                 .ConfigureAwait(false);
 
+        CovenantQuotaSnapshot snapshot = await ReadQuotaSnapshotInTransactionAsync(
+            connection, transaction, scope, excludedKeys, cancellationToken).ConfigureAwait(false);
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return snapshot;
+    }
+
+    private static async ValueTask<CovenantQuotaSnapshot> ReadQuotaSnapshotInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantOperationScope scope,
+        ImmutableArray<string> excludedKeys,
+        CancellationToken cancellationToken)
+    {
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -752,8 +785,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
         CovenantQuotaSnapshot snapshot = await CovenantQuotaSnapshotReader
             .ReadAsync(command, cancellationToken)
             .ConfigureAwait(false);
-
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return snapshot;
     }
@@ -779,6 +810,20 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
             (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                 .ConfigureAwait(false);
 
+        CovenantSectionOccupancy snapshot = await ReadSectionOccupancyInTransactionAsync(
+            connection, transaction, query, cancellationToken).ConfigureAwait(false);
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return snapshot;
+    }
+
+    private static async ValueTask<CovenantSectionOccupancy> ReadSectionOccupancyInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantSectionOccupancyQuery query,
+        CancellationToken cancellationToken)
+    {
         await using SqliteCommand command = connection.CreateCommand();
 
         command.Transaction = transaction;
@@ -811,8 +856,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
                     (int)reader.GetInt64(2));
             }
         }
-
-        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         return occupancy;
     }
@@ -971,6 +1014,66 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
         }
     }
 
+    public async ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+        CovenantMutationEffectQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        bool global = query.Scope.Kind == CovenantScope.Global;
+
+        Result validated = await ValidateLeaseAsync(
+            readLease, global ? null : query.Scope, requireInstallation: global, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+            return validated.Error;
+        }
+
+        SqliteConnection connection = await connections.GetOpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        // Explicitly deferred: the first SELECT pins a WAL snapshot without reserving the writer lock.
+        // Every subsequent preflight read uses this admitted connection and this same transaction.
+        await using SqliteTransaction transaction = connection.BeginTransaction(IsolationLevel.Serializable, deferred: true);
+
+        CovenantMutationEffectSnapshot effect = await ReadMutationEffectSnapshotInTransactionAsync(
+            connection, transaction, query, cancellationToken).ConfigureAwait(false);
+
+        if (AfterMutationEffectReadForTesting is { } afterEffect)
+        {
+            await afterEffect(cancellationToken).ConfigureAwait(false);
+        }
+
+        CovenantDetail detail = await ReadDetailInTransactionAsync(
+            connection, transaction, new(query.Scope, query.NormalizedKey), cancellationToken).ConfigureAwait(false);
+
+        CovenantQuotaSnapshot quota = await ReadQuotaSnapshotInTransactionAsync(
+            connection, transaction, query.Scope, [query.NormalizedKey], cancellationToken).ConfigureAwait(false);
+
+        if (AfterQuotaReadForTesting is { } afterQuota)
+        {
+            await afterQuota(cancellationToken).ConfigureAwait(false);
+        }
+
+        CovenantSectionOccupancy section = await ReadSectionOccupancyInTransactionAsync(
+            connection, transaction, new(query.Scope, query.Lane, [query.NormalizedKey]), cancellationToken)
+            .ConfigureAwait(false);
+
+        // A stable database view does not replace live admission authority.
+        validated = await readLease.RevalidateAsync(cancellationToken).ConfigureAwait(false);
+
+        if (validated.IsFailure)
+        {
+            return validated.Error;
+        }
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return new CovenantMutationPreflightSnapshot(effect, detail, quota, section);
+    }
+
     public async ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(
         CovenantMutationEffectQuery query,
         ICovenantSnapshotReadLease readLease,
@@ -999,6 +1102,22 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                 .ConfigureAwait(false);
+
+        CovenantMutationEffectSnapshot snapshot = await ReadMutationEffectSnapshotInTransactionAsync(
+            connection, transaction, query, cancellationToken).ConfigureAwait(false);
+
+        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+
+        return snapshot;
+    }
+
+    private static async ValueTask<CovenantMutationEffectSnapshot> ReadMutationEffectSnapshotInTransactionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        CovenantMutationEffectQuery query,
+        CancellationToken cancellationToken)
+    {
+        bool global = query.Scope.Kind == CovenantScope.Global;
 
         EffectFacts facts = await ReadEffectFactsAsync(connection, transaction, query.NormalizedKey, cancellationToken)
             .ConfigureAwait(false);
@@ -1063,8 +1182,6 @@ internal sealed class CovenantStore(ICovenantConnectionSource connections, IMemo
                 }
             }
         }
-
-        await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
 
         CovenantDigest vectorDigest = CovenantDigests.DependentHeadVector(
             new DependentHeadVectorDigestInput(

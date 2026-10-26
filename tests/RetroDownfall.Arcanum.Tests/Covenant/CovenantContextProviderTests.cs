@@ -21,7 +21,6 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// </remarks>
 public sealed class CovenantContextProviderTests
 {
-
     private static readonly Guid TurnId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
 
     [Fact]
@@ -79,7 +78,6 @@ public sealed class CovenantContextProviderTests
     [Fact]
     public async Task A_turn_epoch_from_an_older_runtime_generation_is_refused_before_store_access()
     {
-
         RecordingLeaseRegistration registration = new(runtimeAuthorityGeneration: 2);
 
         RecordingStore store = new();
@@ -102,13 +100,11 @@ public sealed class CovenantContextProviderTests
         Assert.Equal(0, store.Reads);
 
         Assert.Equal(1, registration.Releases);
-
     }
 
     [Fact]
     public async Task A_matching_turn_epoch_retains_the_real_lease_until_the_turn_context_is_disposed()
     {
-
         FakeCovenantAvailability availability = new();
 
         FakeCovenantAuthorityProvider authority = new();
@@ -157,19 +153,15 @@ public sealed class CovenantContextProviderTests
 
         try
         {
-
             Assert.False(closing.IsCompleted);
 
             Assert.True((await context.RevalidateAsync(CancellationToken.None)).IsFailure);
 
             Assert.Equal(1, gate.LiveRegistrationCount);
-
         }
         finally
         {
-
             await context.DisposeAsync();
-
         }
 
         Result<CovenantExclusiveLease> closed = await closing;
@@ -183,13 +175,11 @@ public sealed class CovenantContextProviderTests
         Assert.True((await lease.CompleteAsync(
             CovenantExclusiveLeaseDisposition.RollbackAndReopen,
             CancellationToken.None)).IsSuccess);
-
     }
 
     [Fact]
     public async Task An_eligible_unattended_turn_retains_retirement_preparation_material()
     {
-
         FakeCovenantAvailability availability = new();
 
         FakeCovenantAuthorityProvider authority = new();
@@ -235,7 +225,6 @@ public sealed class CovenantContextProviderTests
         Assert.NotNull(context.Collector);
 
         Assert.NotNull(context.HeadProbe);
-
     }
 
     private static Task<CovenantTurnContext> Begin(
@@ -291,14 +280,11 @@ public sealed class CovenantContextProviderTests
 
     private sealed class StubAvailability(CovenantAvailabilitySnapshot snapshot) : ICovenantAvailability
     {
-
         public CovenantAvailabilitySnapshot Current => snapshot;
-
     }
 
     private sealed class UnreachableGate(ICovenantLeaseRegistration? turn = null) : ICovenantOperationGate
     {
-
         public ValueTask<Result<CovenantInstallationReadLease>> AcquireInstallationReadAsync(CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
@@ -345,12 +331,10 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantExclusiveLease>> ResumeExclusiveAsync(CovenantExclusiveRecoveryOwner owner, CancellationToken cancellationToken) =>
             throw new UnreachableException();
-
     }
 
     private sealed class RecordingLeaseRegistration(long runtimeAuthorityGeneration) : ICovenantLeaseRegistration
     {
-
         public int Releases { get; private set; }
 
         public CovenantOperationLeaseSnapshot Snapshot { get; } = new(
@@ -377,18 +361,14 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask ReleaseAsync()
         {
-
             Releases++;
 
             return ValueTask.CompletedTask;
-
         }
-
     }
 
     private sealed class RecordingStore : ICovenantStore
     {
-
         public ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
             ICovenantSnapshotReadLease readLease,
             CancellationToken cancellationToken) =>
@@ -401,11 +381,9 @@ public sealed class CovenantContextProviderTests
             ICovenantSnapshotReadLease readLease,
             CancellationToken cancellationToken)
         {
-
             Reads++;
 
             throw new UnreachableException();
-
         }
 
         public ValueTask<Result<CovenantLaneHeadProbe>> ProbeLaneHeadAsync(CanonicalCampaignContext campaign, CovenantLane lane, string normalizedKey, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
@@ -422,17 +400,19 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(CovenantCurationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+            CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
         public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ImmutableArray<string> excludedKeys, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
-
     }
 
     private sealed class SuccessfulStore : ICovenantStore
     {
-
         public ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
             ICovenantSnapshotReadLease readLease,
             CancellationToken cancellationToken) =>
@@ -464,17 +444,19 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(CovenantCurationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+            CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
         public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantSectionOccupancy>> ReadSectionOccupancyAsync(CovenantSectionOccupancyQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
         public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ImmutableArray<string> excludedKeys, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
-
     }
 
     private sealed class UnreachableStore : ICovenantStore
     {
-
         public ValueTask<Result<CovenantScopeCensus>> ReadScopeCensusAsync(
             ICovenantSnapshotReadLease readLease,
             CancellationToken cancellationToken) =>
@@ -502,6 +484,10 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantCurationEffectSnapshot>> ReadCurationEffectSnapshotAsync(CovenantCurationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) => throw new UnreachableException();
 
+        public ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+            CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
+            throw new UnreachableException();
+
         public ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(CovenantMutationEffectQuery query, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
 
@@ -510,10 +496,8 @@ public sealed class CovenantContextProviderTests
 
         public ValueTask<Result<CovenantQuotaSnapshot>> ReadQuotaSnapshotAsync(CovenantOperationScope scope, ImmutableArray<string> excludedKeys, ICovenantSnapshotReadLease readLease, CancellationToken cancellationToken) =>
             throw new UnreachableException();
-
     }
 
     private sealed class UnreachableException()
         : InvalidOperationException("The provider reached a dependency it must answer before.");
-
 }

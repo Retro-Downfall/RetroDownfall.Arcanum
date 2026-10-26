@@ -19,7 +19,6 @@ namespace RetroDownfall.Arcanum.Core.Covenant;
 /// </remarks>
 public interface ICovenantStore
 {
-
     /// <summary>
     /// The single bounded turn load: Global Confirmed plus the canonical Campaign's Confirmed and
     /// Proposed <c>Set</c> heads, in one command inside one read snapshot.
@@ -97,6 +96,15 @@ public interface ICovenantStore
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Reads the effect, target head and capacity for one operator mutation in a single SQLite snapshot.
+    /// </summary>
+    /// <remarks>The one touched key is excluded from scope and Section occupancy for replacement.</remarks>
+    ValueTask<Result<CovenantMutationPreflightSnapshot>> ReadMutationPreflightSnapshotAsync(
+        CovenantMutationEffectQuery query,
+        ICovenantSnapshotReadLease readLease,
+        CancellationToken cancellationToken);
+
     ValueTask<Result<CovenantMutationEffectSnapshot>> ReadMutationEffectSnapshotAsync(
         CovenantMutationEffectQuery query,
         ICovenantSnapshotReadLease readLease,
@@ -131,5 +139,4 @@ public interface ICovenantStore
         string normalizedKey,
         ICovenantSnapshotReadLease readLease,
         CancellationToken cancellationToken);
-
 }
