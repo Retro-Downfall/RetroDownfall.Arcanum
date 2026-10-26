@@ -3842,3 +3842,19 @@ The reviewed, locally integrated count is **67 of272 (24.6%)**:3 Critical,53 Imp
 The prior65-finding candidate46535159 built with zero warnings and completed combined Arcanum verification with4641 passes,1 failure and14 skips. The failure was missing encryption-key state during the temporary test-host startup for LexiconInspectionQueryBudgetTests; an isolated rerun passed5 checks, so investigation remains open. That combined run is not green and Forge was not reached. Its logs and manifest remain preserved. Full final qualification and delivery are outstanding.
 
 The user additionally requires full native FTS5 and real RAPTOR. These feature expansions are tracked separately from the original register; FTS5 will also resolve RV072 after implementation and independent review. No closure credit is taken for pending feature work.
+
+### Erasure diagnostics and test-host isolation checkpoint — 2026-10-25
+
+Independently approved RV059/RV060/RV070 and their additional privacy repairs are integrated through `1d8be9e3fb2208c85363c8d52afa5342af73cfb3` in local runtime candidate `727ea0e61c11da85075668ff5e8b317af5d4e57e`.
+
+| Finding | Outcome | Evidence |
+| --- | --- | --- |
+| RV-059 | fixed | Erasure failure diagnostics preserve operation identity, fixed phase/reason and exception type without private exception content; fixed writer restart and park causes are observable. |
+| RV-060 | fixed | Direct reset failures distinguish confirmed local/canonical effects and recovery state. Only verified rollback/reopen allows a no-erasure claim; uncertain outcomes remain explicit. |
+| RV-070 | fixed | Real ordinary-work drain timeout in reset and factory reset preserves rows, records terminal failure, reopens admission and explains retry after work is idle. |
+
+The original candidate passed690 affected tests; its independent review ran216 tests. Four additional direct-reset exception-log hazards were then repaired before integration, with5 actual fault REDs,5 mutation failures, byte-exact restoration,393 affected passes/no skips, a zero-warning solution build and scoped independent approval. These counts overlap and are not a unique-test total.
+
+Separately, a delayed test-host startup defect was deterministically reproduced: constructing another factory changed process-global test paths before the earlier factory composed its host. The fixture now reapplies its own captured isolated profile before composition. Candidate `b9bf0dcd279ab5623dcf4998098e1579ed9c76a6` passed73 affected tests and45 independent-review tests with no skips; production encryption gates remain unchanged. This additional defect earns no original-register credit. A new combined run is still required; the earlier failed combined run is not retroactively green.
+
+The independently reviewed, locally integrated count is **70 of272 (25.7%)**:3 Critical,56 Important,11 Minor. **202 remain open**:20 Important,182 Minor. Full native FTS5 remains in implementation/review. Real RAPTOR has an approved12stage plan with numerical fixture implementation started; no production RAPTOR completion is claimed. Final qualification and external delivery remain outstanding.
