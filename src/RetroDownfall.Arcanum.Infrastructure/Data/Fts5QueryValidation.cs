@@ -47,6 +47,12 @@ internal static class Fts5QueryValidation
             return Result.Failure(new Error(ErrorCodes.Validation.InvalidQuery,
                 "FTS5 query nesting exceeds the native parser limit. Reduce parentheses nesting and retry."));
         }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 1
+            && exception.Message.StartsWith("SQLite Error 1: 'unknown special query: ", StringComparison.Ordinal))
+        {
+            return Result.Failure(new Error(ErrorCodes.Validation.InvalidQuery,
+                "Invalid FTS5 wildcard query. Put * after a prefix, or quote literal text containing *."));
+        }
         catch (SqliteException exception) when (IsQuerySyntaxError(exception))
         {
             // Native diagnostics may contain query fragments. Neither expose nor log them.

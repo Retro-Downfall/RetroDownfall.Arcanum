@@ -38,6 +38,59 @@ public sealed class SessionEndpointTests
     }
 
     [SkippableTheory]
+    [InlineData("*", false, false)]
+    [InlineData("*", false, true)]
+    [InlineData("*foo", false, false)]
+    [InlineData("*foo", false, true)]
+    [InlineData("*private-query-sentinel", false, false)]
+    [InlineData("*private-query-sentinel", false, true)]
+    [InlineData("foo*", true, false)]
+    [InlineData("foo*", true, true)]
+    [InlineData("\"*\"", true, false)]
+    [InlineData("\"*\"", true, true)]
+    [InlineData("\"*foo\"", true, false)]
+    [InlineData("\"*foo\"", true, true)]
+    public async Task Native_leading_star_has_the_same_HTTP_contract_on_both_session_routes(string expression, bool valid, bool campaignRoute)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid campaignId = Guid.NewGuid();
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        db.Campaigns.Add(new Campaign { Id = campaignId, Name = "Native wildcard " + campaignId, NameLower = "native wildcard " + campaignId, Path = "/fts-wildcard/" + campaignId });
+
+        await db.SaveChangesAsync();
+
+        string route = campaignRoute ? $"/api/campaigns/{campaignId}/sessions?" : "/api/sessions?";
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync(route + "search=" + Uri.EscapeDataString(expression));
+
+        Assert.Equal(valid ? HttpStatusCode.OK : HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<SessionQueryResult>? body = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(valid, body.IsSuccess);
+
+        if (!valid)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidQuery, body.Error?.Code);
+
+            Assert.Contains("prefix", body.Error!.Value.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("quote", body.Error.Value.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.DoesNotContain("private-query-sentinel", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
     [InlineData(25, false)]
     [InlineData(25, true)]
     [InlineData(100, false)]

@@ -14,6 +14,50 @@ namespace RetroDownfall.Arcanum.Tests.Mcp;
 public sealed partial class ArcanumInternalToolServerTests
 {
     [SkippableTheory]
+    [InlineData("*", false)]
+    [InlineData("*foo", false)]
+    [InlineData("*private-query-sentinel", false)]
+    [InlineData("foo*", true)]
+    [InlineData("\"*\"", true)]
+    [InlineData("\"*foo\"", true)]
+    public async Task Native_leading_star_is_an_actionable_MCP_tool_error(string expression, bool valid)
+    {
+        using GrimoireFixture grimoire = new();
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        await using ArcanumDbContext db = grimoire.CreateContext(grimoire.CopyDatabase());
+
+        GrimoireRepository repository = new(db, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
+            new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()), covenantKernel: null, availabilityRepublisher: null,
+            FixtureOrdinaryConnectionFactory.For(db), FixtureLabeledArtifactGuard.For(db), memoryDelegation: null);
+
+        await using TestMcpSession session = await CreateSessionAsync(
+            intelligenceSettings: ArcanumRuntimeDefaults.Intelligence with { EnableArchiveSearch = true },
+            grimoireRepository: repository);
+
+        McpToolsCallResultWire result = await session.CallToolAsync("search_archives",
+            JsonSerializer.SerializeToElement(new SearchArchivesParams(expression), McpJsonSerializerContext.Default.SearchArchivesParams));
+
+        Assert.Equal(!valid, result.IsError);
+
+        string text = Assert.Single(result.Content).Text!;
+
+        if (!valid)
+        {
+            Assert.Contains("FTS5", text, StringComparison.Ordinal);
+
+            Assert.Contains("prefix", text, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("quote", text, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("unknown special query", text, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain("private-query-sentinel", text, StringComparison.Ordinal);
+    }
+
+    [SkippableTheory]
     [InlineData(25)]
     [InlineData(100)]
     public async Task Native_parser_nesting_limit_is_an_actionable_MCP_tool_error(int depth)

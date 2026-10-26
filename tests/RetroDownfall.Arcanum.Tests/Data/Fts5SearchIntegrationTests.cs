@@ -239,6 +239,62 @@ public sealed class Fts5SearchIntegrationTests(GrimoireFixture fixture) : IAsync
     }
 
     [SkippableTheory]
+    [InlineData("*", false, false)]
+    [InlineData("*", false, true)]
+    [InlineData("*foo", false, false)]
+    [InlineData("*foo", false, true)]
+    [InlineData("*private-query-sentinel", false, false)]
+    [InlineData("*private-query-sentinel", false, true)]
+    [InlineData("foo*", true, false)]
+    [InlineData("foo*", true, true)]
+    [InlineData("\"*\"", true, false)]
+    [InlineData("\"*\"", true, true)]
+    [InlineData("\"*foo\"", true, false)]
+    [InlineData("\"*foo\"", true, true)]
+    public async Task Native_leading_star_is_actionable_without_disclosing_the_expression(string expression, bool valid, bool archive)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.True(expression.Length < new ArcanumSettings().ResolveIntelligence().ArchiveSearchMaxQueryLength);
+
+        TestCapturingLogger<GrimoireRepository> logger = new();
+
+        Result result;
+
+        if (archive)
+        {
+            GrimoireRepository repository = new(_db, new NoOpSessionAttachmentStore(), logger,
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()), covenantKernel: null, availabilityRepublisher: null,
+                FixtureOrdinaryConnectionFactory.For(_db), FixtureLabeledArtifactGuard.For(_db), memoryDelegation: null);
+
+            result = await repository.SearchArchivesAsync(expression, 50);
+        }
+        else
+        {
+            SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
+
+            result = await repository.QueryAsync(new SessionQueryRequest(Search: expression), CancellationToken.None);
+        }
+
+        Assert.Equal(valid, result.IsSuccess);
+
+        if (!valid)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidQuery, result.Error.Code);
+
+            Assert.Contains("prefix", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("quote", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("unknown special query", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-query-sentinel", result.Error.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Empty(logger.Entries);
+    }
+
+    [SkippableTheory]
     [InlineData(25, false)]
     [InlineData(25, true)]
     [InlineData(100, false)]
