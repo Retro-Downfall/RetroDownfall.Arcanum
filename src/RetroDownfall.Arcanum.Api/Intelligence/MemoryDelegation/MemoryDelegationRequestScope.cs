@@ -32,7 +32,7 @@ internal sealed class MemoryDelegationRequestScope(HttpContext http, CovenantAut
 
     internal MemoryDelegationCoordinator Coordinator { get; } = coordinator;
 
-    internal static async Task<Result<MemoryDelegationRequestScope>> OpenAsync(HttpContext http, MemoryDelegationRequest body, CancellationToken ct)
+    internal static async Task<MemoryDelegationOpenOutcome> OpenAsync(HttpContext http, MemoryDelegationRequest body, CancellationToken ct)
     {
         CovenantRequestFeatures.MarkProtectedResponse(http);
 
@@ -54,9 +54,15 @@ internal sealed class MemoryDelegationRequestScope(HttpContext http, CovenantAut
 
         var settings = services.GetRequiredService<IOptionsSnapshot<ArcanumSettings>>().Value;
 
-        Result preflight = PingRequestPreflightValidator.Validate(parent, settings);
+        Result preflight = PingRequestPreflightValidator.Validate(parent, settings, out PingRequestFailureDetails? diagnostic);
 
-        if (preflight.IsFailure) return preflight.Error;
+        if (preflight.IsFailure)
+        {
+            var caller = diagnostic is null ? null : MemoryDelegationCallerDiagnostic.ForPreflight(
+                new MemoryDelegationCallerOrigin(original, issuer), diagnostic);
+
+            return new MemoryDelegationOpenOutcome(Result<MemoryDelegationRequestScope>.Failure(preflight.Error), caller);
+        }
 
         Result available = ValidateNativeDelegation(parent, settings, services.GetService<IProviderHealthTracker>());
 
@@ -192,4 +198,18 @@ internal sealed class MemoryDelegationRequestScope(HttpContext http, CovenantAut
             }
         }
     }
+}
+
+/// <summary>Local opening result: only the real preflight branch may carry caller diagnostic provenance.</summary>
+internal sealed record MemoryDelegationOpenOutcome(Result<MemoryDelegationRequestScope> Outcome, MemoryDelegationCallerDiagnostic? Diagnostic)
+{
+    internal bool IsFailure => Outcome.IsFailure;
+
+    internal Error Error => Outcome.Error;
+
+    internal MemoryDelegationRequestScope Value => Outcome.Value;
+
+    public static implicit operator MemoryDelegationOpenOutcome(Error error) => new(Result<MemoryDelegationRequestScope>.Failure(error), null);
+
+    public static implicit operator MemoryDelegationOpenOutcome(MemoryDelegationRequestScope scope) => new(Result<MemoryDelegationRequestScope>.Success(scope), null);
 }

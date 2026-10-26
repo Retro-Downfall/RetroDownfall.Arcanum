@@ -39,6 +39,557 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 public sealed class MemoryDelegationEndpointTests
 {
     [Theory]
+    [InlineData("argument")]
+    [InlineData("json")]
+    [InlineData("transport-limit")]
+    [InlineData("utf8-read")]
+    public async Task Read_failures_do_not_fabricate_deserializer_provenance_or_measured_bytes(string mode)
+    {
+        RequestAuthorityProvider provider = new();
+
+        OperatorAuthorityContextIssuer issuer = new(provider);
+
+        await using var services = new ServiceCollection().AddSingleton<IOperatorAuthorityContextIssuer>(issuer).BuildServiceProvider();
+
+        DefaultHttpContext http = new();
+
+        http.RequestServices = services;
+
+        var authority = issuer.Issue(CovenantAuthorityRequirement.ProtectedRead).Value;
+
+        CovenantRequestFeatures.RecordAuthority(http, new CovenantAuthorityFeature(authority, authority.Requirement, authority.AuthorityEpoch));
+
+        http.Request.ContentType = "application/json";
+
+        Exception failure = mode switch
+        {
+            "argument" => new ArgumentException("private-read-canary"),
+            "json" => new JsonException("private-read-canary"),
+            "utf8-read" => new DecoderFallbackException("private-read-canary"),
+            _ => new BadHttpRequestException("private-transport-limit-canary", StatusCodes.Status413PayloadTooLarge),
+        };
+
+        await using var body = new FailedBodyRead(failure);
+
+        http.Request.Body = body;
+
+        var read = await MemoryDelegationRequestJson.ReadAsync(http);
+
+        Assert.NotNull(read.Error);
+
+        http.Response.Body = new MemoryStream();
+
+        await read.Error.ExecuteAsync(http);
+
+        string json = Encoding.UTF8.GetString(((MemoryStream)http.Response.Body).ToArray());
+
+        Assert.Equal(StatusCodes.Status400BadRequest, http.Response.StatusCode);
+
+        Assert.DoesNotContain("private-", json);
+
+        if (mode == "transport-limit")
+        {
+            Assert.Contains("transport", json, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("Reduce", json, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("at least", json, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain((MemoryDelegationRequestJson.RequestBytes + 1L).ToString(), json);
+        }
+        else
+        {
+            Assert.Contains("The memory delegation request could not be completed.", json);
+
+            Assert.DoesNotContain("declared parent", json, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    private sealed class FailedBodyRead(Exception failure) : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(failure);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Semantic_parent_or_grant_refusal_keeps_the_constant_without_caller_provenance(bool missingParent)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        var request = missingParent ? new MemoryDelegationRequest(null!, Grant())
+            : new MemoryDelegationRequest(new("private-prompt-canary"), null!);
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", JsonContent.Create(request, ArcanumJsonContext.Default.MemoryDelegationRequest));
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains(ErrorCodes.MemoryDelegation.InvalidGrant, json);
+
+        Assert.Contains("The memory delegation request could not be completed.", json);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+    }
+
+    [Theory]
+    [InlineData("null-file", ErrorCodes.Validation.AttachedFiles, "parent.attachedFiles[0]")]
+    [InlineData("path-length", ErrorCodes.Validation.AttachedFiles, "parent.attachedFiles[1].relativePath")]
+    [InlineData("prompt", "Validation.PromptTooLong", "parent.prompt")]
+    [InlineData("system-prompt", "Validation.AdditionalSystemPromptTooLong", "parent.additionalSystemPrompt")]
+    [InlineData("reasoning", ErrorCodes.Validation.ReasoningEffortAndBudgetMutuallyExclusive, "parent.reasoning")]
+    [InlineData("client-tools", ErrorCodes.ClientTools.InvalidSchema, "forwardClientTools=false")]
+    [InlineData("vision", ErrorCodes.Scrying.VisionNotSupported, "vision-capable")]
+    public async Task Real_preflight_mints_only_closed_field_guidance_before_hydration(string mode, string code, string expected)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        if (mode == "vision")
+        {
+            var configure = factory.SettingsOverride;
+
+            factory.SettingsOverride = current => configure!(current) with
+            {
+                Features = current.Features with { Covenant = true, Scrying = true },
+                DefaultModel = "private-model-canary",
+                Providers = [new() { Name = "test", Type = AiProviderKind.OpenAICompatible,
+                    Models = [new("private-model-canary", SupportsTools: true, SupportsVision: false)] }],
+            };
+        }
+
+        int reads = 0;
+
+        var original = factory.ServiceOverrides;
+
+        factory.ServiceOverrides = services =>
+        {
+            original!(services);
+
+            services.RemoveAll<IMemoryDelegationSourceReader>();
+
+            services.AddSingleton<IMemoryDelegationSourceReader>(new RefusingSources(() => reads++));
+        };
+
+        int pathLimit = ArcanumSettingClamps.MaxAttachedFileRelativePathChars(ArcanumRuntimeDefaults.CliMaxAttachedFileRelativePathChars);
+
+        using JsonDocument clientChoice = JsonDocument.Parse("\"private-tool-canary\"");
+
+        var parent = new PingRequest("private-prompt-canary", Model: "private-model-canary");
+
+        parent = mode switch
+        {
+            "null-file" => parent with { AttachedFiles = [null!] },
+            "path-length" => parent with { AttachedFiles = [new("first.txt", "ok"), new("private-path-canary" + new string('x', pathLimit), "private-content-canary")] },
+            "prompt" => parent with { Prompt = "private-prompt-canary" + new string('x', ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)) },
+            "system-prompt" => parent with { AdditionalSystemPrompt = "private-system-canary" + new string('x', ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars)) },
+            "reasoning" => parent with { Reasoning = new(ReasoningEffortLevel.Medium, 128) },
+            "client-tools" => parent with { ClientToolChoice = clientChoice.RootElement.Clone() },
+            _ => parent with { ScryingFoci = [new(Convert.ToBase64String([1, 2, 3]), "image/png")] },
+        };
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", JsonContent.Create(
+            new MemoryDelegationRequest(parent, Grant()), ArcanumJsonContext.Default.MemoryDelegationRequest));
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains(code, json);
+
+        Assert.Contains(expected, json, StringComparison.OrdinalIgnoreCase);
+
+        if (mode is "prompt" or "system-prompt")
+            Assert.Contains("limit " + ArcanumSettingClamps.MaxPingPromptChars(ArcanumRuntimeDefaults.Intelligence.MaxPingPromptChars), json);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal(0, reads);
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+    }
+
+    [Theory]
+    [InlineData(ErrorCodes.Validation.AttachedFiles)]
+    [InlineData("Validation.PromptTooLong")]
+    [InlineData(ErrorCodes.MemoryDelegation.InvalidGrant)]
+    public async Task A_source_error_cannot_claim_local_preflight_or_body_diagnostic_provenance(string code)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        UntrustedFailureSources source = new(code);
+
+        var original = factory.ServiceOverrides;
+
+        factory.ServiceOverrides = services =>
+        {
+            original!(services);
+
+            services.RemoveAll<IMemoryDelegationSourceReader>();
+
+            services.AddSingleton<IMemoryDelegationSourceReader>(source);
+        };
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", JsonContent.Create(
+            new MemoryDelegationRequest(new("parent"), Grant()), ArcanumJsonContext.Default.MemoryDelegationRequest));
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains(code, json);
+
+        Assert.Equal(code == "Validation.PromptTooLong" ? HttpStatusCode.InternalServerError : HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains("The memory delegation request could not be completed.", json);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal(1, source.Reads);
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+    }
+
+    private sealed class UntrustedFailureSources(string code) : IMemoryDelegationSourceReader
+    {
+        internal int Reads;
+
+        public Task<Result<MemoryEvaluationSourceSnapshot>> ReadAsync(MemoryDelegationGrant grant, ArcanumInvocationContext parent, CovenantTurnLease lease, CancellationToken ct)
+        {
+            Reads++;
+
+            return Task.FromResult(Result<MemoryEvaluationSourceSnapshot>.Failure(new(code,
+                "private-path-canary private-model-canary private-prompt-canary private-grant-canary")));
+        }
+
+        public Task<Result> ValidateAsync(MemoryEvaluationSourceSnapshot snapshot, CovenantTurnLease lease, CancellationToken ct) => Task.FromResult(Result.Success());
+    }
+
+    [Theory]
+    [InlineData("body")]
+    [InlineData("preflight")]
+    [InlineData("mismatched-code")]
+    [InlineData("negative-facts")]
+    public async Task Unknown_or_inconsistent_local_diagnostic_data_keeps_the_protected_constant(string mode)
+    {
+        RequestAuthorityProvider provider = new();
+
+        OperatorAuthorityContextIssuer issuer = new(provider);
+
+        DefaultHttpContext http = new();
+
+        var authority = issuer.Issue(CovenantAuthorityRequirement.ProtectedRead).Value;
+
+        var feature = new CovenantAuthorityFeature(authority, authority.Requirement, authority.AuthorityEpoch);
+
+        CovenantRequestFeatures.RecordAuthority(http, feature);
+
+        MemoryDelegationCallerOrigin origin = new(feature, issuer);
+
+        MemoryDelegationCallerDiagnostic diagnostic = mode switch
+        {
+            "body" => MemoryDelegationCallerDiagnostic.ForBody(origin, (MemoryDelegationBodyFailure)255),
+            "preflight" => MemoryDelegationCallerDiagnostic.ForPreflight(origin, new((PingRequestFailureReason)255)),
+            "negative-facts" => MemoryDelegationCallerDiagnostic.ForPreflight(origin, new(PingRequestFailureReason.AttachmentTooLarge, -1, -2, -3)),
+            _ => MemoryDelegationCallerDiagnostic.ForBody(origin, MemoryDelegationBodyFailure.Shape),
+        };
+
+        string code = mode == "body" ? ErrorCodes.MemoryDelegation.InvalidGrant : ErrorCodes.Validation.AttachedFiles;
+
+        http.Response.Body = new MemoryStream();
+
+        await new MemoryDelegationJsonResult(null, Result<PromptResponseDto>.Failure(new(code, "private-canary")), diagnostic).ExecuteAsync(http);
+
+        string json = Encoding.UTF8.GetString(((MemoryStream)http.Response.Body).ToArray());
+
+        Assert.Contains("The memory delegation request could not be completed.", json);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal(400, http.Response.StatusCode);
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Later_scope_authority_refusal_overrides_an_earlier_typed_caller_error(bool swapped)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using var root = await h.PrepareAsync();
+
+        var (http, scope) = ResponseScope(h, root);
+
+        var feature = CovenantRequestFeatures.Authority(http)!;
+
+        var origin = MemoryDelegationCallerOrigin.Capture(http)!;
+
+        var diagnostic = MemoryDelegationCallerDiagnostic.ForPreflight(origin, new(PingRequestFailureReason.AttachmentPathMissing, 0));
+
+        object key = http.Items.Single(pair => ReferenceEquals(pair.Value, feature)).Key;
+
+        if (swapped) http.Items[key] = new CovenantAuthorityFeature(feature.Context, feature.Requirement, feature.AuthorityEpoch);
+        else http.Items.Remove(key);
+
+        http.Response.Body = new MemoryStream();
+
+        await new MemoryDelegationJsonResult(scope, Result<PromptResponseDto>.Failure(new(ErrorCodes.Validation.AttachedFiles, "private-canary")), diagnostic).ExecuteAsync(http);
+
+        string json = Encoding.UTF8.GetString(((MemoryStream)http.Response.Body).ToArray());
+
+        Assert.Equal(StatusCodes.Status409Conflict, http.Response.StatusCode);
+
+        Assert.Contains(ErrorCodes.MemoryDelegation.StaleSource, json);
+
+        Assert.Contains("The memory delegation request could not be completed.", json);
+
+        Assert.DoesNotContain("relativePath", json);
+
+        Assert.DoesNotContain("private-", json);
+    }
+
+    [Fact]
+    public void Caller_diagnostic_provenance_has_no_source_generated_wire_metadata()
+    {
+        foreach (Type type in new[] { typeof(MemoryDelegationCallerDiagnostic), typeof(MemoryDelegationCallerOrigin), typeof(MemoryDelegationOpenOutcome), typeof(PingRequestFailureDetails) })
+            Assert.Null(ArcanumJsonContext.Default.GetTypeInfo(type));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Declared_and_streamed_body_overflow_deliver_bounded_size_guidance(bool streamed)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        byte[] bytes = new byte[MemoryDelegationRequestJson.RequestBytes + 1];
+
+        bytes.AsSpan().Fill((byte)' ');
+
+        Encoding.UTF8.GetBytes("private-body-canary").CopyTo(bytes, 0);
+
+        using HttpContent content = streamed ? new UnknownLengthContent(bytes) : new ByteArrayContent(bytes);
+
+        content.Headers.ContentType = new("application/json");
+
+        Assert.Equal(!streamed, content.Headers.ContentLength is not null);
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", content);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains(ErrorCodes.MemoryDelegation.InvalidGrant, json);
+
+        Assert.Contains(MemoryDelegationRequestJson.RequestBytes.ToString(System.Globalization.CultureInfo.InvariantCulture), json);
+
+        Assert.Contains(bytes.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), json);
+
+        Assert.Contains("Reduce", json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+    }
+
+    private sealed class UnknownLengthContent(byte[] bytes) : ByteArrayContent(bytes)
+    {
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+
+            return false;
+        }
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("swapped")]
+    [InlineData("rotated")]
+    public async Task Early_body_refusal_revalidates_the_captured_original_authority_before_delivery(string change)
+    {
+        RequestAuthorityProvider provider = new();
+
+        OperatorAuthorityContextIssuer issuer = new(provider);
+
+        await using var services = new ServiceCollection().AddSingleton<IOperatorAuthorityContextIssuer>(issuer).BuildServiceProvider();
+
+        DefaultHttpContext http = new();
+
+        http.RequestServices = services;
+
+        var authority = issuer.Issue(CovenantAuthorityRequirement.ProtectedRead).Value;
+
+        var feature = new CovenantAuthorityFeature(authority, authority.Requirement, authority.AuthorityEpoch);
+
+        CovenantRequestFeatures.RecordAuthority(http, feature);
+
+        http.Request.ContentType = "application/json";
+
+        http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes("{private-canary"));
+
+        var read = await MemoryDelegationRequestJson.ReadAsync(http);
+
+        Assert.NotNull(read.Error);
+
+        object key = http.Items.Single(pair => ReferenceEquals(pair.Value, feature)).Key;
+
+        if (change == "rotated") provider.RotateMasterKey();
+        else if (change == "swapped") http.Items[key] = new CovenantAuthorityFeature(authority, authority.Requirement, authority.AuthorityEpoch);
+        else http.Items.Remove(key);
+
+        http.Response.Body = new MemoryStream();
+
+        await read.Error.ExecuteAsync(http);
+
+        string json = Encoding.UTF8.GetString(((MemoryStream)http.Response.Body).ToArray());
+
+        Assert.Equal(StatusCodes.Status409Conflict, http.Response.StatusCode);
+
+        Assert.Contains(ErrorCodes.MemoryDelegation.StaleSource, json);
+
+        Assert.Contains("The memory delegation request could not be completed.", json);
+
+        Assert.DoesNotContain("declared parent", json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal("no-store, private", http.Response.Headers.CacheControl.ToString());
+    }
+
+    [SkippableTheory]
+    [InlineData(ErrorCodes.Validation.AttachedFiles)]
+    [InlineData(ErrorCodes.Scrying.VisionNotSupported)]
+    [InlineData(ErrorCodes.MemoryDelegation.InvalidGrant)]
+    [InlineData(ErrorCodes.Covenant.Unavailable)]
+    [InlineData(ErrorCodes.MemoryDelegation.StaleSource)]
+    public async Task An_error_code_alone_never_authorizes_provider_or_source_message_detail(string code)
+    {
+        await using var h = await MemoryDelegationLifecycleTests.Harness.CreateAsync();
+
+        await using var root = await h.PrepareAsync();
+
+        var (http, scope) = ResponseScope(h, root);
+
+        http.Response.Body = new MemoryStream();
+
+        var payload = Result<PromptResponseDto>.Failure(new Error(code,
+            "private-path-canary private-model-canary private-prompt-canary private-grant-canary"));
+
+        await new MemoryDelegationJsonResult(scope, payload).ExecuteAsync(http);
+
+        string json = Encoding.UTF8.GetString(((MemoryStream)http.Response.Body).ToArray());
+
+        Assert.Contains(code, json);
+
+        Assert.Contains("The memory delegation request could not be completed.", json);
+
+        Assert.DoesNotContain("private-", json);
+
+        Assert.Equal("no-store, private", http.Response.Headers.CacheControl.ToString());
+    }
+
+    [Theory]
+    [InlineData("shape", "declared parent and grant")]
+    [InlineData("unknown", "declared parent and grant")]
+    [InlineData("content-type", "application/json")]
+    [InlineData("charset", "UTF-8")]
+    [InlineData("utf8", "strict UTF-8")]
+    public async Task Transport_refusals_deliver_closed_actionable_guidance_without_echoing_the_body(string mode, string expected)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        string text = mode == "unknown" ? "{\"private-member-canary\":\"private-grant-canary\"}" : "{private-prompt-canary";
+
+        byte[] body = mode == "utf8" ? [0x7b, 0x22, 0xff, 0x22, 0x7d] : Encoding.UTF8.GetBytes(text);
+
+        using var content = new ByteArrayContent(body);
+
+        content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(mode == "content-type" ? "text/plain" : mode == "charset" ? "application/json; charset=utf-16" : "application/json");
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", content);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains(ErrorCodes.MemoryDelegation.InvalidGrant, json);
+
+        Assert.Contains(expected, json, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("private-", json, StringComparison.Ordinal);
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+
+        Assert.Equal("no-cache", response.Headers.Pragma.ToString());
+
+        Assert.Null(response.Headers.ETag);
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Attached_file_refusals_report_safe_field_index_and_bounds_without_private_path_or_model(bool oversize, bool multibyte)
+    {
+        await using var factory = MemoryErasureRouteDriver.CreateFactory(new InMemoryOsCredentialStore());
+
+        using var client = factory.CreateAuthenticatedClient();
+
+        int size = checked((int)ArcanumSettingClamps.MaxAttachFileSizeBytes(ArcanumRuntimeDefaults.CliMaxAttachFileSizeBytes) + 1);
+
+        string content = oversize ? multibyte ? new string('é', (size + 1) / 2) : new string('x', size) : "private-body-canary";
+
+        int measured = Encoding.UTF8.GetByteCount(content);
+
+        var parent = new PingRequest("private-prompt-canary", Model: "private-model-canary", AttachedFiles:
+            [new(oversize ? "private-path-canary.txt" : "", content)]);
+
+        using var response = await client.PostAsync("/api/intelligence/memory-delegation", JsonContent.Create(
+            new MemoryDelegationRequest(parent, Grant()), ArcanumJsonContext.Default.MemoryDelegationRequest));
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Contains(ErrorCodes.Validation.AttachedFiles, json);
+
+        Assert.Contains("parent.attachedFiles[0]", json);
+
+        Assert.Contains(oversize ? "Split" : "relativePath", json, StringComparison.OrdinalIgnoreCase);
+
+        if (oversize)
+        {
+            Assert.Contains(measured.ToString(System.Globalization.CultureInfo.InvariantCulture), json);
+
+            Assert.Contains((size - 1).ToString(System.Globalization.CultureInfo.InvariantCulture), json);
+        }
+        Assert.DoesNotContain("private-", json, StringComparison.Ordinal);
+
+        Assert.Equal("no-store, private", response.Headers.CacheControl?.ToString());
+
+        Assert.Equal(0, factory.FakeIntelligence.ExecutePromptCallCount);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Missing_or_tainted_epoch_refuses_before_binding(bool tainted)
@@ -439,10 +990,13 @@ public sealed class MemoryDelegationEndpointTests
                 var configured = settings!(current);
 
                 return mode == "forwarded" ? configured with { Features = configured.Features with { ClientTools = true } }
-                    : configured with { Providers = configured.Providers.Select(provider => provider with
+                    : configured with
                     {
-                        Models = provider.Models.Select(model => model with { SupportsTools = false }).ToArray()
-                    }).ToArray() };
+                        Providers = configured.Providers.Select(provider => provider with
+                        {
+                            Models = provider.Models.Select(model => model with { SupportsTools = false }).ToArray()
+                        }).ToArray()
+                    };
             };
         }
 

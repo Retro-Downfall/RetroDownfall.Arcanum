@@ -584,7 +584,7 @@ public sealed class CampaignRollupTurnPreparer(
 
                             if (resumed.Value.Phase is not LongRestSweepPhase.Completed || resumed.Value.DeferredReason is not null)
                             {
-                                return new Error(ErrorCodes.LongRest.Unavailable, "Long Rest protected maintenance remains deferred.");
+                                return ProtectedMaintenanceDeferred(operation.Value.Id, resumed.Value.DeferredReason);
                             }
                         }
 
@@ -843,5 +843,26 @@ public sealed class CampaignRollupTurnPreparer(
                 await authority.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    private static Error ProtectedMaintenanceDeferred(Guid operationId, string? reason)
+    {
+        LongRestFaultClass fault = LongRestFaultClass.NeedsOperator;
+
+        bool known = reason is not null && LongRestFaultPolicy.KnownCodes.TryGetValue(reason, out fault);
+
+        string publicReason = reason is null ? "Incomplete" : known ? reason : "Unknown";
+
+        string action = known && reason == LongRestParkCodes.AuthorizedRequestRequired
+            ? "Make a fresh eligible Session request with Default context; operation retry alone cannot authorize protected work."
+            : known && fault == LongRestFaultClass.ResumeLater
+            ? "This is a transient condition. After it clears, make a fresh eligible Session request to revalidate protected work."
+            : known && fault == LongRestFaultClass.RestartGeneration
+            ? "Make a fresh eligible Session request to revalidate current sources and authority before starting a new generation."
+            : "Review the stored operation outcome before deciding on another attempt; protected work requires a fresh eligible Session request.";
+
+        return new Error(ErrorCodes.LongRest.Unavailable,
+            $"Long Rest protected maintenance is deferred (reason {publicReason}, operation {operationId:D}). "
+            + $"Inspect it with 'arcanum operation show {operationId:D}'. {action}");
     }
 }

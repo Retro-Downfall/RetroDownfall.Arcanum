@@ -48,6 +48,73 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class LongRestTurnPreparationProtectedTests
 {
     [Theory]
+    [InlineData(ErrorCodes.LongRest.ProviderUnreachable, LongRestSweepPhase.Deferred, "LongRest.ProviderUnreachable", "transient")]
+    [InlineData(LongRestParkCodes.AuthorizedRequestRequired, LongRestSweepPhase.Deferred, "long_rest.authorized_request_required", "operation retry alone")]
+    [InlineData(ErrorCodes.LongRest.StaleInput, LongRestSweepPhase.Deferred, "LongRest.StaleInput", "new generation")]
+    [InlineData(ErrorCodes.LongRest.TransportUnknown, LongRestSweepPhase.Deferred, "LongRest.TransportUnknown", "stored operation outcome")]
+    [InlineData("private-source-canary", LongRestSweepPhase.Deferred, "Unknown", "stored operation outcome")]
+    [InlineData("LongRest.ProviderUnreachable private-source-canary", LongRestSweepPhase.Deferred, "Unknown", "stored operation outcome")]
+    [InlineData(null, LongRestSweepPhase.Publish, "Incomplete", "stored operation outcome")]
+    [InlineData(null, LongRestSweepPhase.Completed, null, null)]
+    public async Task Protected_deferral_reports_the_actual_operation_closed_reason_and_authority_safe_action(
+        string? reason, LongRestSweepPhase phase, string? expectedReason, string? expectedAction)
+    {
+        await using var f = await LongRestMaintenanceTests.MaintenanceFixture.CreateAsync(ownWorker: false);
+
+        LongRestSweepHarness.Require(await f.Coordinator.ResumeAsync(f.Operation, null, CancellationToken.None));
+
+        Decorated coordinator = new(f.Coordinator)
+        {
+            ResumeProgress = () => new(f.Operation, Guid.NewGuid(), LongRestSweepScopeKind.Campaign,
+                f.CampaignId, phase, 1, "private-source-canary", reason),
+        };
+
+        var (preparer, _, _, session) = await BuildAsync(f, coordinator);
+
+        var result = await preparer.PrepareLiveAsync(
+            new("private-prompt-canary", Model: "model", SessionId: session, CampaignId: f.CampaignId,
+                SkipSpellRouting: true, DisableAllTools: true), f.Invocation, false, CancellationToken.None);
+
+        Assert.Equal(1, coordinator.Resumes);
+
+        Assert.Equal(0, f.Handler.SendCount);
+
+        Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM Entries;"));
+
+        if (expectedReason is null)
+        {
+            Assert.True(result.IsSuccess, result.Error.Message);
+
+            Assert.NotNull(result.Value);
+
+            await result.Value.DisposeAsync();
+        }
+        else
+        {
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.LongRest.Unavailable, result.Error.Code);
+
+            Assert.Contains(f.Operation.ToString("D"), result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains(expectedReason, result.Error.Message, StringComparison.Ordinal);
+
+            Assert.Contains("arcanum operation show " + f.Operation.ToString("D"), result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains(expectedAction!, result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.Contains("fresh eligible Session request", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("private-", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("automatically", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain("cooldown", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        Assert.Equal(0L, await PendingClaimsAsync(f.H.Connection, session));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Exact_protected_debt_finishes_under_the_new_pending_request_before_real_assistant_begin(bool campaign)
@@ -575,6 +642,8 @@ public sealed class LongRestTurnPreparationProtectedTests
 
         internal Func<Error?>? Resume { get; init; }
 
+        internal Func<LongRestSweepProgress>? ResumeProgress { get; init; }
+
         internal int CleanRequests;
 
         internal int PartitionRequests;
@@ -605,6 +674,8 @@ public sealed class LongRestTurnPreparationProtectedTests
         public Task<Result<LongRestSweepProgress>> ResumeAsync(Guid operationId, LongRestMaintenanceCapability? capability, CancellationToken ct)
         {
             Resumes++;
+
+            if (ResumeProgress is not null) return Task.FromResult(Result<LongRestSweepProgress>.Success(ResumeProgress()));
 
             return Resume?.Invoke() is { } error ? Task.FromResult(Result<LongRestSweepProgress>.Failure(error)) : inner.ResumeAsync(operationId, capability, ct);
         }
