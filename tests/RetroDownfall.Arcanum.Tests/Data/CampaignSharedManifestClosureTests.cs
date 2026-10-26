@@ -84,6 +84,78 @@ public sealed class CampaignSharedManifestClosureTests
     }
 
     [Fact]
+    public async Task Distinct_shared_source_owners_union_exact_physical_keys_without_changing_authority()
+    {
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+
+        await fixture.PublishCampaignAsync("first summary");
+
+        await CampaignRollupStoreTests.PublishNextSessionAsync(fixture);
+
+        await using SqliteCommand command = fixture.Connection.CreateCommand();
+
+        command.CommandText = "SELECT SessionId FROM campaign_contribution_artifacts ORDER BY SessionId;";
+
+        List<Guid> owners = [];
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                owners.Add(Guid.Parse(reader.GetString(0)));
+            }
+        }
+
+        Assert.Equal(2, owners.Count);
+
+        HashSet<string> union = new(StringComparer.Ordinal) { "existing:row" };
+
+        long separateCount = 0;
+
+        foreach (Guid owner in owners)
+        {
+            CampaignSummaryClosureSnapshot withoutKeys = await CampaignSummaryLifecycle.ReadSessionClosureAsync(
+                fixture.Connection, null, owner, CancellationToken.None);
+
+            Assert.Equal(withoutKeys, await CampaignSummaryLifecycle.ReadSessionClosureAsync(
+                fixture.Connection, null, owner, CancellationToken.None, rowKeys: union));
+
+            int count = union.Count;
+
+            Assert.Equal(withoutKeys, await CampaignSummaryLifecycle.ReadSessionClosureAsync(
+                fixture.Connection, null, owner, CancellationToken.None, rowKeys: union));
+
+            Assert.Equal(count, union.Count);
+
+            separateCount += withoutKeys.Rows;
+        }
+
+        command.CommandText = """
+            SELECT 'campaign_contribution_artifacts:' || ArtifactId FROM campaign_contribution_artifacts
+            UNION ALL SELECT 'campaign_contribution_state:' || SessionId FROM campaign_contribution_state
+            UNION ALL SELECT 'campaign_rollup_artifacts:' || ArtifactId FROM campaign_rollup_artifacts
+            UNION ALL SELECT 'campaign_rollup_manifests:' || ManifestId FROM campaign_rollup_manifests
+            UNION ALL SELECT 'campaign_rollup_manifest_sources:' || ManifestId || ':' || SessionId FROM campaign_rollup_manifest_sources;
+            """;
+
+        HashSet<string> expected = new(StringComparer.Ordinal) { "existing:row" };
+
+        await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                Assert.True(expected.Add(reader.GetString(0)));
+            }
+        }
+
+        Assert.Equal(11, expected.Count);
+
+        Assert.Equal(expected.Order(StringComparer.Ordinal), union.Order(StringComparer.Ordinal));
+
+        Assert.True(union.Count < separateCount + 1);
+    }
+
+    [Fact]
     public async Task Failed_summary_insert_rolls_back_the_new_segment_and_can_retry_the_same_paid_output()
     {
         await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();

@@ -1,13 +1,18 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Configuration;
+using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
 using RetroDownfall.Arcanum.Core.Storage.Entities;
+using RetroDownfall.Arcanum.Core.Storage;
 using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
+using RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Tests.Data.Covenant;
 
 namespace RetroDownfall.Arcanum.Tests.Data;
 
@@ -137,6 +142,210 @@ public sealed partial class DataRetentionServiceTests
         Assert.Equal(2, await CampaignScalarCountAsync("SELECT COUNT(*) FROM Sessions;"));
     }
 
+    [SkippableTheory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Shared_summary_prune_plans_complete_selected_root_reclamation_and_matches_physical_deletes(
+        bool retainSuccessor, bool selectNativeOwner)
+    {
+        RequireSqlCipher();
+
+        Guid campaign = Guid.NewGuid();
+
+        _db!.Campaigns.Add(new Campaign
+        {
+            Id = campaign,
+            Name = campaign.ToString("N"),
+            NameLower = campaign.ToString("N"),
+            Path = "/campaigns/" + campaign.ToString("N"),
+            Settings = "{}",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+
+        await _db.SaveChangesAsync();
+
+        await _db.Database.OpenConnectionAsync();
+
+        SqliteConnection connection = (SqliteConnection)_db.Database.GetDbConnection();
+
+        CampaignRollupStore store = new(new FixedCovenantConnectionSource(connection), CovenantSqliteConnectionInitializer.Instance);
+
+        List<Guid> roots = [];
+
+        List<Guid> contributions = [];
+
+        Guid selectedEntry = Guid.Empty;
+
+        CampaignRollupArtifact? successor = null;
+
+        for (int index = 0; index < (retainSuccessor ? 4 : 3); index++)
+        {
+            Guid session = Guid.NewGuid();
+
+            Guid entry = Guid.NewGuid();
+
+            if (index == 2)
+            {
+                selectedEntry = entry;
+            }
+
+            using IDisposable binding = CovenantSqliteConnectionInitializer.Instance.Authorize(
+                connection, CovenantSqliteAuthorizationKind.SessionBindingWrite);
+
+            await ExecuteAsync("""
+                INSERT INTO Sessions(Id,CampaignId,CreatedAt,UpdatedAt) VALUES(@session,@campaign,@now,@now);
+                INSERT INTO session_campaign_bindings(SessionId,BindingKindCode,CampaignId,BoundAtUtc) VALUES(@session,2,@campaign,@now);
+                INSERT INTO Entries(Id,SessionId,Role,Content,ModelUsed,CreatedAt,Sequence) VALUES(@entry,@session,1,'project decision','',@now,1);
+                """, ("@session", Canonical(session)), ("@campaign", Canonical(campaign)),
+                ("@entry", Canonical(entry)), ("@now", DateTimeOffset.UtcNow.ToString("O")));
+
+            var prepared = await store.PrepareContributionAsync(session, null, null, CancellationToken.None);
+
+            Assert.True(prepared.IsSuccess, prepared.Error.Message);
+
+            var contribution = await store.PublishContributionAsync(prepared.Value!, "project decision", null, null, CancellationToken.None);
+
+            Assert.True(contribution.IsSuccess, contribution.Error.Message);
+
+            contributions.Add(contribution.Value.ArtifactId);
+
+            var fold = await store.PrepareRollupAsync(campaign, null, CancellationToken.None);
+
+            Assert.True(fold.IsSuccess, fold.Error.Message);
+
+            var published = await store.PublishRollupAsync(fold.Value!, "project summary", null, null, CancellationToken.None);
+
+            Assert.True(published.IsSuccess, published.Error.Message);
+
+            roots.Add(published.Value.ArtifactId);
+
+            successor = published.Value;
+        }
+
+        // Age only the selected roots; contribution bodies remain outside the summary age rule.
+        await ExecuteAsync("DROP TRIGGER campaign_rollup_artifacts_guard_update;");
+
+        foreach (Guid root in roots.Take(selectNativeOwner ? 2 : 3))
+        {
+            await ExecuteAsync("UPDATE campaign_rollup_artifacts SET CreatedAtUtc = @at WHERE ArtifactId = @id;",
+                ("@at", OldTimestamp), ("@id", Canonical(root)));
+        }
+
+        await ExecuteAsync(Assert.Single(GrimoireSchemaCatalog.CoreObjects, item => item.Name == "campaign_rollup_artifacts_guard_update").Sql);
+
+        if (selectNativeOwner)
+        {
+            await ExecuteAsync("UPDATE Entries SET CreatedAt = @at WHERE Id = @id;", ("@at", OldTimestamp), ("@id", Canonical(selectedEntry)));
+        }
+
+        HashSet<string> before = await ReadSharedRetentionPhysicalKeysAsync();
+
+        HashSet<string> expectedDeleted = [.. roots.Take(3).Select(id => "campaign_rollup_artifacts:" + Canonical(id))];
+
+        if (!retainSuccessor)
+        {
+            expectedDeleted.UnionWith(before.Where(key => key.StartsWith("campaign_rollup_manifests:", StringComparison.Ordinal)
+                || key.StartsWith("campaign_rollup_manifest_sources:", StringComparison.Ordinal)));
+        }
+
+        if (selectNativeOwner)
+        {
+            expectedDeleted.Add("campaign_contribution_artifacts:" + Canonical(contributions[2]));
+        }
+
+        Assert.Equal(retainSuccessor ? 3 : selectNativeOwner ? 10 : 9, expectedDeleted.Count);
+
+        ArcanumSettings settings = CreatePruneSettings();
+
+        settings.Retention.CampaignSummaries = EnabledRule();
+
+        if (selectNativeOwner)
+        {
+            settings.Retention.Entries = EnabledRule();
+        }
+
+        DataRetentionService service = CreateService(settings);
+
+        DataRetentionRequest request = new(DataRetentionOperation.Prune);
+
+        DataRetentionPlan plan = await service.PlanAsync(request);
+
+        Assert.Equal(selectNativeOwner ? 2 : 3, plan.CandidateIds.Count(id => id.StartsWith("campaign-rollup:", StringComparison.Ordinal)));
+
+        Assert.DoesNotContain(plan.CandidateIds, id => id.StartsWith("campaign-contribution:", StringComparison.Ordinal));
+
+        Assert.Equal(expectedDeleted.Count, plan.Items.Where(item => item.DataClass == RetentionDataClass.CampaignSummaries)
+            .Sum(item => item.Rows + item.DerivedRecords));
+
+        HashSet<string> plannedKeys = new(StringComparer.Ordinal);
+
+        if (selectNativeOwner)
+        {
+            Guid owner = await ReadContributionOwnerAsync(contributions[2]);
+
+            _ = await CampaignSummaryLifecycle.ReadSessionClosureAsync(connection, null, owner,
+                CancellationToken.None, includeOwnerRows: false, rowKeys: plannedKeys);
+        }
+
+        foreach (Guid root in roots.Take(selectNativeOwner ? 2 : 3))
+        {
+            plannedKeys.UnionWith(await CampaignSummaryLifecycle.ReadArtifactClosureRowKeysAsync(
+                connection, null, SensitiveArtifactKind.CampaignRollup, root, CancellationToken.None));
+        }
+
+        await CampaignSummaryLifecycle.AddSharedReclamationRowKeysAsync(connection, null, plannedKeys, CancellationToken.None);
+
+        Assert.Equal(expectedDeleted.Order(StringComparer.Ordinal), plannedKeys.Order(StringComparer.Ordinal));
+
+        Result<DataRetentionApplyResult> applied = await service.ApplyAsync(new(request, plan.PlanId));
+
+        Assert.True(applied.IsSuccess, applied.Error.Message);
+
+        Assert.Equal(plan.Rows, applied.Value.RowsDeleted);
+
+        Assert.Equal(plan.DerivedRecords, applied.Value.DerivedRecordsDeleted);
+
+        HashSet<string> after = await ReadSharedRetentionPhysicalKeysAsync();
+
+        Assert.Equal(expectedDeleted.Order(StringComparer.Ordinal), before.Except(after).Order(StringComparer.Ordinal));
+
+        Assert.Empty(after.Except(before));
+
+        Assert.Equal(contributions.Count - (selectNativeOwner ? 1 : 0), after.Count(key => key.StartsWith("campaign_contribution_artifacts:", StringComparison.Ordinal)));
+
+        if (retainSuccessor)
+        {
+            Assert.True((await store.ValidateAsync(successor!, null, CancellationToken.None)).IsSuccess);
+
+            Assert.Equal(4, after.Count(key => key.StartsWith("campaign_rollup_manifest_sources:", StringComparison.Ordinal)));
+        }
+    }
+
+    private async Task<HashSet<string>> ReadSharedRetentionPhysicalKeysAsync()
+    {
+        await using var command = _db!.Database.GetDbConnection().CreateCommand();
+
+        command.CommandText = """
+            SELECT 'campaign_rollup_artifacts:' || ArtifactId FROM campaign_rollup_artifacts
+            UNION ALL SELECT 'campaign_contribution_artifacts:' || ArtifactId FROM campaign_contribution_artifacts
+            UNION ALL SELECT 'campaign_rollup_manifests:' || ManifestId FROM campaign_rollup_manifests
+            UNION ALL SELECT 'campaign_rollup_manifest_sources:' || ManifestId || ':' || SessionId FROM campaign_rollup_manifest_sources;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync();
+
+        HashSet<string> keys = new(StringComparer.Ordinal);
+
+        while (await reader.ReadAsync())
+        {
+            Assert.True(keys.Add(reader.GetString(0)));
+        }
+
+        return keys;
+    }
+
     private async Task<(Guid ArtifactId, Guid CampaignId)> SeedRetentionSummaryAsync(bool contribution, string created, Guid? existingCampaign = null)
     {
         Guid campaign = existingCampaign ?? Guid.NewGuid();
@@ -149,8 +358,13 @@ public sealed partial class DataRetentionServiceTests
         {
             _db!.Campaigns.Add(new Campaign
             {
-                Id = campaign, Name = campaign.ToString("N"), NameLower = campaign.ToString("N"), Path = "/campaigns/" + campaign.ToString("N"),
-                Settings = "{}", CreatedAt = DateTimeOffset.UtcNow, UpdatedAt = DateTimeOffset.UtcNow,
+                Id = campaign,
+                Name = campaign.ToString("N"),
+                NameLower = campaign.ToString("N"),
+                Path = "/campaigns/" + campaign.ToString("N"),
+                Settings = "{}",
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
             });
         }
 

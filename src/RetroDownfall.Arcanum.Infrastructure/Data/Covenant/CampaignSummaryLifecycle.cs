@@ -1,9 +1,11 @@
 using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -335,36 +337,6 @@ internal static class CampaignSummaryLifecycle
             }
         }
 
-        if (kind == SensitiveArtifactKind.CampaignContribution
-            && await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
-        {
-            string selected = "SELECT RollupArtifactId FROM campaign_rollup_source_membership WHERE ContributionArtifactId = $ownerId";
-
-            string segments = CampaignRollupSourceStorage.UnreferencedSegments(selected);
-
-            foreach ((string table, string key) in new[]
-            {
-                ("campaign_rollup_manifest_sources", "ManifestId || ':' || SessionId"),
-                ("campaign_rollup_manifests", "ManifestId"),
-            })
-            {
-                await using SqliteCommand shared = connection.CreateCommand();
-
-                shared.Transaction = transaction;
-
-                shared.CommandText = $"SELECT {key} FROM {table} WHERE ManifestId IN ({segments});";
-
-                Add(shared, "$ownerId", Format(artifactId));
-
-                await using SqliteDataReader source = await shared.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-                while (await source.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    rows.Add(table + ":" + source.GetString(0));
-                }
-            }
-        }
-
         CovenantArtifactPurgePlan plan = CovenantArtifactPurgePlans.Resolve(kind);
 
         foreach (CovenantArtifactPurgeTarget target in plan.Projections.Append(plan.Artifact!))
@@ -411,7 +383,58 @@ internal static class CampaignSummaryLifecycle
             rows.Add("artifact_sensitivity:" + labelled.GetString(0));
         }
 
+        if (kind == SensitiveArtifactKind.CampaignContribution)
+        {
+            await AddSharedReclamationRowKeysAsync(connection, transaction, rows, cancellationToken).ConfigureAwait(false);
+        }
+
         return [.. rows.Order(StringComparer.Ordinal)];
+    }
+
+    // A shared segment can become unreferenced only after several independently selected roots
+    // disappear. Resolve the complete selected root set, including roots selected by owner closure.
+    internal static async Task AddSharedReclamationRowKeysAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        HashSet<string> rows,
+        CancellationToken cancellationToken)
+    {
+        const string prefix = "campaign_rollup_artifacts:";
+
+        string[] selected = [.. rows.Where(row => row.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(row => row[prefix.Length..])];
+
+        if (selected.Length == 0
+            || !await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        string segments = CampaignRollupSourceStorage.UnreferencedSegments("SELECT value FROM json_each($selectedArtifacts)");
+
+        string selectedJson = JsonSerializer.Serialize(selected, GrimoireJsonContext.Default.StringArray);
+
+        foreach ((string table, string key) in new[]
+        {
+            ("campaign_rollup_manifest_sources", "ManifestId || ':' || SessionId"),
+            ("campaign_rollup_manifests", "ManifestId"),
+        })
+        {
+            await using DbCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = $"SELECT {key} FROM {table} WHERE ManifestId IN ({segments});";
+
+            Add(command, "$selectedArtifacts", selectedJson);
+
+            await using DbDataReader source = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await source.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rows.Add(table + ":" + source.GetString(0));
+            }
+        }
     }
 
     internal static async Task<long> CountArtifactClosureAsync(

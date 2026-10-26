@@ -67,6 +67,16 @@ internal sealed partial class DataRetentionService
                 items.Add(new(RetentionDataClass.CampaignSummaries, 1, 0, 0, Math.Max(0, closure - 1)));
             }
         }
+
+        int priorCount = coveredRows.Count;
+
+        await CampaignSummaryLifecycle.AddSharedReclamationRowKeysAsync(
+            connection, null, coveredRows, cancellationToken).ConfigureAwait(false);
+
+        if (coveredRows.Count > priorCount)
+        {
+            items.Add(new(RetentionDataClass.CampaignSummaries, 0, 0, 0, coveredRows.Count - priorCount));
+        }
     }
 
     private async Task<HashSet<string>> AddNativeOwnerClosureItemsAsync(
@@ -98,6 +108,9 @@ internal sealed partial class DataRetentionService
                 }
             }
         }
+
+        await CampaignSummaryLifecycle.AddSharedReclamationRowKeysAsync(
+            connection, null, campaignRows, cancellationToken).ConfigureAwait(false);
 
         if (campaignRows.Count > 0)
         {

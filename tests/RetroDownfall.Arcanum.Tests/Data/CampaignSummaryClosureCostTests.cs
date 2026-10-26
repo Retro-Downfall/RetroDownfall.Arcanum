@@ -133,10 +133,12 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
         Assert.Equal(includeOwnerRows, changed != actual);
     }
 
-    [Fact]
-    public async Task Missing_schema_and_installed_empty_schema_keep_distinct_authority()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Missing_schema_and_installed_empty_schema_keep_distinct_authority(bool legacy)
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: true);
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: legacy);
 
         CampaignSummaryClosureSnapshot empty = await CampaignSummaryLifecycle.ReadSessionClosureAsync(fixture.Connection, null, Guid.NewGuid(), CancellationToken.None);
 
@@ -214,10 +216,12 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
         Assert.Equal(7, keys.Where(key => key != "existing:row").Select(key => key[..key.IndexOf(':')]).Distinct().Count());
     }
 
-    [Fact]
-    public async Task Cancelled_closure_propagates_without_publishing_a_snapshot()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Cancelled_closure_propagates_without_publishing_a_snapshot(bool legacy)
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: true);
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: legacy);
 
         await fixture.PublishCampaignAsync("published");
 
