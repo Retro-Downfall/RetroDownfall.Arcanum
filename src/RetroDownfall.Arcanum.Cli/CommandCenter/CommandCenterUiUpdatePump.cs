@@ -4,10 +4,9 @@ using Microsoft.Extensions.Logging;
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
-/// Collapses a burst of queued UI updates before any of them reaches the Terminal.Gui thread.
-/// Streaming emits a refresh per flush interval and per newline, so a code-heavy answer can queue
-/// dozens of refreshes while the UI thread is still applying the first one; applying each in turn
-/// repeats the same full-pane work. Consecutive refresh kinds therefore fold into a single apply
+/// Collapses consecutive refreshes until their queued callback starts on the Terminal.Gui thread.
+/// Streaming emits refreshes while the UI thread is busy; applying every refresh separately repeats
+/// the same full-pane work. Consecutive refresh kinds therefore fold into a single apply
 /// (mixed kinds widen to <see cref="CommandCenterUiUpdateKind.RefreshAll"/>, which is a superset),
 /// while focus kinds are one-shot side effects and always survive, in order.
 /// </summary>
@@ -16,7 +15,8 @@ internal static class CommandCenterUiUpdatePump
     /// <summary>
     /// Carries queued updates to <paramref name="apply"/>, through <paramref name="marshal"/>, until the
     /// channel completes or <paramref name="cancellationToken"/> is cancelled. Whatever arrived while the
-    /// previous update was being handed over is drained and folded first, so a burst costs one apply per kind.
+    /// previous update was queued is folded into that pending refresh; updates during an apply form
+    /// one following refresh. Focus actions preserve their own ordered hand-offs.
     /// </summary>
     /// <remarks>
     /// An apply that throws is logged and the loop carries on: one failed refresh must neither freeze the
@@ -38,6 +38,10 @@ internal static class CommandCenterUiUpdatePump
         ArgumentNullException.ThrowIfNull(apply);
         ArgumentNullException.ThrowIfNull(logger);
 
+        object refreshGate = new();
+
+        PendingRefresh? pendingRefresh = null;
+
         try
         {
             List<CommandCenterUiUpdateKind> queued = [];
@@ -54,12 +58,62 @@ internal static class CommandCenterUiUpdatePump
 
                 foreach (CommandCenterUiUpdateKind kind in Coalesce(queued))
                 {
+                    PendingRefresh? slot = null;
+
+                    lock (refreshGate)
+                    {
+                        if (IsRefreshKind(kind))
+                        {
+                            if (pendingRefresh is not null)
+                            {
+                                pendingRefresh.Kind = Widen(pendingRefresh.Kind, kind);
+
+                                continue;
+                            }
+
+                            slot = new PendingRefresh(kind);
+
+                            pendingRefresh = slot;
+                        }
+                        else
+                        {
+                            // Refreshes on opposite sides of a focus action must never reorder it.
+                            pendingRefresh = null;
+                        }
+                    }
+
                     try
                     {
-                        marshal(() => ApplyLogged(apply, kind, logger));
+                        marshal(() =>
+                        {
+                            CommandCenterUiUpdateKind claimed = kind;
+
+                            if (slot is not null)
+                            {
+                                lock (refreshGate)
+                                {
+                                    claimed = slot.Kind;
+
+                                    if (ReferenceEquals(pendingRefresh, slot))
+                                    {
+                                        pendingRefresh = null;
+                                    }
+                                }
+                            }
+
+                            ApplyLogged(apply, claimed, logger);
+                        });
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
+                        lock (refreshGate)
+                        {
+                            if (ReferenceEquals(pendingRefresh, slot))
+                            {
+                                pendingRefresh = null;
+                            }
+                        }
+
                         logger.LogError(ex, "Handing a Command Center UI update ({UpdateKind}) to the UI loop failed.", kind);
                     }
                 }
@@ -131,4 +185,9 @@ internal static class CommandCenterUiUpdatePump
         CommandCenterUiUpdateKind first,
         CommandCenterUiUpdateKind second) =>
         first == second ? first : CommandCenterUiUpdateKind.RefreshAll;
+
+    private sealed class PendingRefresh(CommandCenterUiUpdateKind kind)
+    {
+        public CommandCenterUiUpdateKind Kind { get; set; } = kind;
+    }
 }
