@@ -19,10 +19,9 @@ namespace RetroDownfall.Arcanum.Infrastructure.Weave;
 /// <para>A different identity starts over: an edited corpus, a changed setting, or another summary model
 /// is a different build, and the failure of the old one says nothing about it. A published or up-to-date
 /// scope forgets its record, a completed sweep forgets the records of scopes that no longer exist, and a
-/// reset that drops the trees forgets them all. Only a build that paid for something counts — an
-/// unavailable embedding provider or an unconfigured summary model fails before any call is made, and a
-/// failure that arrives while the sweep is being cancelled is the host stopping, so none of those is
-/// recorded here.</para>
+/// reset that drops the trees forgets them all. Incomplete planner work and attempted build failures
+/// count even if the current plan made no summary call. Availability/configuration refusals before
+/// staging and a failure arriving during host cancellation do not create a backoff record.</para>
 ///
 /// <para>State is in memory and registered as a singleton, because the weaver is created per sweep. It
 /// is lost on restart, which at worst costs one repeated build.</para>

@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+using RetroDownfall.Arcanum.Infrastructure.Weave;
 using System.Diagnostics;
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation;
 using RetroDownfall.Arcanum.Core.Intelligence.MemoryDelegation;
@@ -31,6 +33,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     private readonly PromptCacheDispatchValidator? _promptCacheDispatchValidator;
 
+    private readonly ITapestryProviderValidator? _tapestryValidator;
+
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator)
         : this(tokenEstimator, settings: null, logger: (ILogger?)null)
     {
@@ -43,24 +47,32 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
     {
     }
 
-    public ModelCallExecutor(
-        IModelTokenEstimator tokenEstimator,
-        IOptionsMonitor<ArcanumSettings>? settings,
-        ILogger<ModelCallExecutor> logger,
-        PromptCacheDispatchValidator? promptCacheDispatchValidator = null)
-        : this(tokenEstimator, settings, (ILogger?)logger, promptCacheDispatchValidator)
+    public ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger<ModelCallExecutor> logger, PromptCacheDispatchValidator? promptCacheDispatchValidator = null)
+        : this(tokenEstimator, settings, (ILogger?)logger, promptCacheDispatchValidator, null)
     {
     }
 
-    internal ModelCallExecutor(
-        IModelTokenEstimator tokenEstimator,
-        IOptionsMonitor<ArcanumSettings>? settings,
-        ILogger? logger,
-        PromptCacheDispatchValidator? promptCacheDispatchValidator = null)
+    public ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger<ModelCallExecutor> logger, PromptCacheDispatchValidator? promptCacheDispatchValidator,
+        ITapestryProviderValidator? tapestryValidator)
+        : this(tokenEstimator, settings, (ILogger?)logger, promptCacheDispatchValidator, tapestryValidator)
+    {
+    }
+
+    internal ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger? logger, PromptCacheDispatchValidator? promptCacheDispatchValidator = null)
+        : this(tokenEstimator, settings, logger, promptCacheDispatchValidator, null)
+    {
+    }
+
+    internal ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger? logger, PromptCacheDispatchValidator? promptCacheDispatchValidator, ITapestryProviderValidator? tapestryValidator)
     {
         _tokenEstimator = tokenEstimator ?? throw new ArgumentNullException(nameof(tokenEstimator));
         _settings = settings;
         _promptCacheDispatchValidator = promptCacheDispatchValidator;
+        _tapestryValidator = tapestryValidator;
         _logger = logger;
     }
 
@@ -145,6 +157,11 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
             CancellationToken providerToken = protectedCancellation?.Token ?? cancellationToken;
 
             providerToken.ThrowIfCancellationRequested();
+
+            Result tapestryValidation = await ValidateTapestryAsync(context, providerToken).ConfigureAwait(false);
+
+            if (tapestryValidation.IsFailure)
+                return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, tapestryValidation.Error, Cause: null));
 
             ChatResponse response;
 
@@ -304,6 +321,15 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         CancellationToken providerToken = protectedCancellation?.Token ?? cancellationToken;
 
         providerToken.ThrowIfCancellationRequested();
+
+        Result tapestryValidation = await ValidateTapestryAsync(context, providerToken).ConfigureAwait(false);
+
+        if (tapestryValidation.IsFailure)
+        {
+            yield return new ModelCallFailureUpdate(purpose, modelCallId, tapestryValidation.Error);
+
+            yield break;
+        }
 
         try
         {
@@ -953,4 +979,16 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
     private readonly record struct ProviderCallPayload(
         IList<ChatMessage> Messages,
         ChatOptions Options);
+
+    private Task<Result> ValidateTapestryAsync(ModelCallContext? context, CancellationToken cancellationToken)
+    {
+        if (TapestryBuildContext.Current is null) return Task.FromResult(Result.Success());
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return context is not null && _tapestryValidator is not null
+            ? _tapestryValidator.ValidateAsync(context.Provider.Name, context.Model, false, cancellationToken)
+            : Task.FromResult(Result.Failure(new Error(ErrorCodes.Hub.InvalidAdmission,
+                "The Tapestry summary has no current source and model proof.")));
+    }
 }

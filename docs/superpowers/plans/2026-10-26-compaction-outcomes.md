@@ -8,7 +8,7 @@ Preserve actual token measurements when a loaded context has too few messages to
 
 The CLI and Forge share fixed guidance from Core. CLI normal/plain output explains no-op reasons; JSON retains the typed outcome and measured counts. Older hosts may omit the field, preserving their counts-only display. Keep zero success exit code for partial compaction. Preserve pinned entries, complete tool groups, cancellation behavior, purge dispositions and actual removed-entry accounting.
 
-The review's disabled-compression premise is unreachable: both original45d12bca and current ResolveIntelligence explicitly set EnableContextCompression=true. Remove the dead service check; do not invent a setting or fake a reflection-only supported path. Existing Features.MemoryManagement route admission remains unchanged.
+The review's disabled-compression premise is unreachable: both original45d12bca and the pre-remediation ResolveIntelligence explicitly set EnableContextCompression=true. Remove the dead service check and its unused runtime projection member/constant; do not invent a setting or fake a reflection-only supported path. Existing Features.MemoryManagement route admission remains unchanged.
 
 ## Task 1 — Behavioral RED
 
@@ -25,3 +25,7 @@ Restoring the original service must fail the new behavior while existing control
 ## Task 4 — Qualification and review
 
 Normal solution build with analyzers, complete affected service/API/CLI/Forge/serialization classes and strict boundary/doc guards; require real nonempty TRX with all results passed, zero skips, zero build warnings. Both house modes, Roslyn whitespace, diff checks, exact source hashes and committed tree. Independent review before local integration. No main merge, push, install or global delivery claim.
+
+## Integration-discovered projection cleanup
+
+Combined RAPTOR8 qualification exposed the existing strict ConfigurationSurfaceContractTests.Every_IntelligenceSettings_property_is_read_in_production regression: removing the unreachable service check left its internal always-true flag unread. The flag has no public configuration root or serialized contract and only its declaration/constant assignment remained. Remove both rather than add a fake read or guard exemption. Correct CompressionPreflightMinMessages XML guidance to reflect measured short contexts. Preserve the failed integration TRX as causal RED; rerun complete Configuration and compaction/API/CLI/Forge consumers before independent review.

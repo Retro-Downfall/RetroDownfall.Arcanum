@@ -1682,6 +1682,13 @@ internal static class GrimoireConnectionAcquisitionScanner
             null),
 
         new(
+            new("src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryProviderValidator.cs", "TapestryProviderValidator", "ValidateAsync(4)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
+            GrimoirePathAuthority.LiveGrimoire,
+            GrimoireAcquisitionKind.ServingEfOrdinary,
+            GrimoireRuntimeAdmissionRoute.SharedEfInterceptor,
+            null),
+
+        new(
             new("src/RetroDownfall.Arcanum.Infrastructure/Weave/TapestryStore.cs", "TapestryStore", "OpenConnectionAsync(1)", AcquisitionConstructKind.ProviderOpen, "db.Database.OpenConnectionAsync", 1, "db.Database.OpenConnectionAsync(cancellationToken)"),
             GrimoirePathAuthority.LiveGrimoire,
             GrimoireAcquisitionKind.ServingRawOrdinary,

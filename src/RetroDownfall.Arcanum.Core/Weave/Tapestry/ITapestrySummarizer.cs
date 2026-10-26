@@ -9,6 +9,9 @@ public sealed record TapestrySummaryRequest(
     int Layer,
     IReadOnlyList<string> ChildTexts);
 
+/// <summary>Immutable configuration and ordered prompt identity; no provider authority or live handles.</summary>
+public sealed record TapestrySummaryPreparation(string Provider, string Model, string RecipeFingerprint, string InputFingerprint);
+
 /// <summary>
 /// The Tapestry's abstractive summary step, behind an interface so the weaving pipeline can be tested
 /// without a live model and so provider-context admission stays in one place.
@@ -19,6 +22,8 @@ public sealed record TapestrySummaryRequest(
 /// </summary>
 public interface ITapestrySummarizer
 {
+    /// <summary>Exact resolved identity and ordered request bytes; unknown implementations cannot authorize reuse.</summary>
+    TapestrySummaryPreparation? Prepare(TapestrySummaryRequest request) => null;
 
     /// <summary>
     /// The model that will actually be asked, after the
@@ -42,5 +47,4 @@ public interface ITapestrySummarizer
     Task<Result<string>> SummarizeAsync(
         TapestrySummaryRequest request,
         CancellationToken cancellationToken);
-
 }

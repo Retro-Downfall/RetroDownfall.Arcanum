@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
@@ -14,7 +15,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 public interface IChatClientFactory
 {
-
     Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken);
 
     /// <summary>
@@ -24,7 +24,6 @@ public interface IChatClientFactory
     /// per-kind lease construction as <see cref="ResolveClientAsync(string?, CancellationToken)"/>.
     /// </summary>
     Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -35,11 +34,21 @@ public interface IChatClientFactory
 public sealed class ChatClientFactory(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    IProviderApiKeyResolver? apiKeyResolver = null,
-    IFamiliarProcessRunner? familiarProcessRunner = null,
-    ILoggerFactory? loggerFactory = null,
-    PromptCacheConfigurationEpoch? promptCacheConfigurationEpoch = null) : IChatClientFactory
+    IProviderApiKeyResolver? apiKeyResolver,
+    IFamiliarProcessRunner? familiarProcessRunner,
+    ILoggerFactory? loggerFactory,
+    PromptCacheConfigurationEpoch? promptCacheConfigurationEpoch,
+    ITapestryProviderValidator? tapestryValidator) : IChatClientFactory
 {
+    /// <summary>Existing ordinary-only construction; an active Tapestry observation still fails closed.</summary>
+    public ChatClientFactory(IHttpClientFactory httpClientFactory, IOptionsMonitor<ArcanumSettings> optionsMonitor,
+        IProviderApiKeyResolver? apiKeyResolver = null, IFamiliarProcessRunner? familiarProcessRunner = null,
+        ILoggerFactory? loggerFactory = null, PromptCacheConfigurationEpoch? promptCacheConfigurationEpoch = null)
+        : this(httpClientFactory, optionsMonitor, apiKeyResolver, familiarProcessRunner, loggerFactory, promptCacheConfigurationEpoch, null)
+    {
+    }
+
+    private readonly ITapestryProviderValidator? _tapestryValidator = tapestryValidator;
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
 
@@ -53,7 +62,6 @@ public sealed class ChatClientFactory(
 
     public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken)
     {
-
         // Hot-reload: read settings only here — never cache ArcanumSettings on the singleton factory.
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
@@ -71,11 +79,9 @@ public sealed class ChatClientFactory(
         {
             throw new InvalidOperationException(
                 "No AI model could be resolved. Configure Arcanum:Providers (with non-empty Models) and Arcanum:DefaultModel, or pass a model override that matches a configured model.");
-
         }
 
         return ResolveClientCoreAsync(provider, resolvedModel, arc.Features.DynamicContextInjectionV2, snapshot, cancellationToken);
-
     }
 
     public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken)
@@ -106,16 +112,13 @@ public sealed class ChatClientFactory(
 
         if (FamiliarProviders.IsFamiliar(provider))
         {
-
             return CreateFamiliarLease(provider, resolvedModel);
-
         }
 
         if (provider.Type != AiProviderKind.OpenAICompatible)
         {
             throw new InvalidOperationException(
                 $"Unsupported provider type '{provider.Type}' for provider '{provider.Name}'.");
-
         }
 
         if (enabled)
@@ -132,7 +135,6 @@ public sealed class ChatClientFactory(
             .ConfigureAwait(false);
 
         return CreateOpenAiCompatibleLease(provider, resolvedModel, resolvedApiKey);
-
     }
 
     /// <summary>
@@ -142,14 +144,12 @@ public sealed class ChatClientFactory(
     /// </summary>
     private ChatClientLease CreateFamiliarLease(ProviderSettings provider, string resolvedModel)
     {
-
         // Read once, here: the deny list is derived from the current provider table, and a Familiar
         // must never inherit a key configured for some other provider.
         IReadOnlyList<string> denied = FamiliarEnvironmentDenyList.Build(optionsMonitor.CurrentValue);
 
         IChatClient client = provider.Type switch
         {
-
             AiProviderKind.ClaudeCodeCli =>
                 new ClaudeCodeCliChatClient(_familiarProcessRunner, provider, resolvedModel, denied),
 
@@ -166,11 +166,9 @@ public sealed class ChatClientFactory(
 
             _ => throw new InvalidOperationException(
                 $"Unsupported Familiar type '{provider.Type}' for provider '{provider.Name}'."),
-
         };
 
         return new ChatClientLease(client, provider, resolvedModel, ownedHttpClient: null);
-
     }
 
     private ChatClientLease CreateOpenAiCompatibleLease(
@@ -180,7 +178,6 @@ public sealed class ChatClientFactory(
         PromptCacheConfigurationStamp? configurationStamp = null,
         ProviderCredentialStamp? credentialStamp = null)
     {
-
         string key = resolvedApiKey ?? KeylessOpenAiPlaceholder;
 
         var credential = new ApiKeyCredential(key);
@@ -189,14 +186,14 @@ public sealed class ChatClientFactory(
 
         var options = new OpenAIClientOptions
         {
-
             Endpoint = new Uri(provider.Endpoint),
 
             Transport = new HttpClientPipelineTransport(http),
-
         };
 
         options.AddPolicy(new OutputTokenLimitWirePolicy(provider.OutputTokenLimitWireDialect), PipelinePosition.PerCall);
+
+        options.AddPolicy(new TapestryProviderPolicy(_tapestryValidator, provider.Name, resolvedModel, embedding: false), PipelinePosition.BeforeTransport);
 
         PromptCacheDispatchPolicy? dispatchPolicy = configurationStamp is null ? null : new();
 
@@ -214,9 +211,7 @@ public sealed class ChatClientFactory(
             : null;
 
         return new ChatClientLease(meAi, provider, resolvedModel, ownedHttpClient: null, identity);
-
     }
-
 }
 
 /// <summary>
@@ -224,7 +219,6 @@ public sealed class ChatClientFactory(
 /// </summary>
 public sealed class ChatClientLease : IDisposable
 {
-
     // Non-null only for per-lease HttpClient instances; named factory clients are never stored here.
     private readonly HttpClient? _ownedHttpClient;
 
@@ -237,7 +231,6 @@ public sealed class ChatClientLease : IDisposable
         HttpClient? ownedHttpClient,
         PromptCacheClientIdentity? promptCacheIdentity = null)
     {
-
         PromptCacheIdentity = promptCacheIdentity;
 
         ChatClient = chatClient;
@@ -247,7 +240,6 @@ public sealed class ChatClientLease : IDisposable
         ResolvedModel = resolvedModel;
 
         _ownedHttpClient = ownedHttpClient;
-
     }
 
     public PromptCacheClientIdentity? PromptCacheIdentity { get; }
@@ -260,7 +252,6 @@ public sealed class ChatClientLease : IDisposable
 
     public void Dispose()
     {
-
         if (_disposed)
         {
             return;
@@ -271,7 +262,5 @@ public sealed class ChatClientLease : IDisposable
         (ChatClient as IDisposable)?.Dispose();
 
         _ownedHttpClient?.Dispose();
-
     }
-
 }

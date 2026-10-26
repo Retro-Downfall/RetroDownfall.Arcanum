@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Weave;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;

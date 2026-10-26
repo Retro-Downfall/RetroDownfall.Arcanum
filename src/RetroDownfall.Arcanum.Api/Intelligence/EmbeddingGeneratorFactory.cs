@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
+using RetroDownfall.Arcanum.Core.Weave;
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Collections.Concurrent;
@@ -23,9 +25,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 // via its own OpenAI-compatible /v1 endpoint.
 public interface IEmbeddingGeneratorFactory
 {
-
     Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken);
-
 }
 
 /// <summary>
@@ -37,8 +37,17 @@ public interface IEmbeddingGeneratorFactory
 public sealed class EmbeddingGeneratorFactory(
     IHttpClientFactory httpClientFactory,
     IOptionsMonitor<ArcanumSettings> optionsMonitor,
-    IProviderApiKeyResolver? apiKeyResolver = null) : IEmbeddingGeneratorFactory
+    IProviderApiKeyResolver? apiKeyResolver,
+    ITapestryProviderValidator? tapestryValidator) : IEmbeddingGeneratorFactory
 {
+    /// <summary>Existing ordinary-only construction; an active Tapestry observation still fails closed.</summary>
+    public EmbeddingGeneratorFactory(IHttpClientFactory httpClientFactory, IOptionsMonitor<ArcanumSettings> optionsMonitor,
+        IProviderApiKeyResolver? apiKeyResolver = null)
+        : this(httpClientFactory, optionsMonitor, apiKeyResolver, null)
+    {
+    }
+
+    private readonly ITapestryProviderValidator? _tapestryValidator = tapestryValidator;
 
     private const string OpenAiCompatibleHttpClientName = "OpenAiCompatibleProvider";
 
@@ -55,7 +64,6 @@ public sealed class EmbeddingGeneratorFactory(
 
     public async Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken)
     {
-
         ArcanumSettings arc = optionsMonitor.CurrentValue;
 
         EmbeddingSettings embeddings = arc.ResolveEmbeddings();
@@ -64,14 +72,12 @@ public sealed class EmbeddingGeneratorFactory(
         {
             throw new InvalidOperationException(
                 "Embeddings are disabled (Arcanum:Features:Embeddings is false).");
-
         }
 
         if (string.IsNullOrWhiteSpace(embeddings.Provider) || string.IsNullOrWhiteSpace(embeddings.Model))
         {
             throw new InvalidOperationException(
                 "Arcanum:Integrations:Embeddings:Provider and Model must both be configured.");
-
         }
 
         if (!ProviderResolver.TryResolveProviderByName(arc, embeddings.Provider, out ProviderSettings? provider)
@@ -79,14 +85,12 @@ public sealed class EmbeddingGeneratorFactory(
         {
             throw new InvalidOperationException(
                 $"Arcanum:Integrations:Embeddings:Provider '{embeddings.Provider}' does not match any configured provider.");
-
         }
 
         if (provider.Type != AiProviderKind.OpenAICompatible)
         {
             throw new InvalidOperationException(
                 $"Unsupported provider type '{provider.Type}' for embeddings provider '{provider.Name}'. Only {nameof(AiProviderKind.OpenAICompatible)} is supported.");
-
         }
 
         string? providerApiKey = await _apiKeyResolver
@@ -94,7 +98,6 @@ public sealed class EmbeddingGeneratorFactory(
             .ConfigureAwait(false);
 
         return CreateOpenAiCompatibleLease(provider, embeddings.Model, providerApiKey);
-
     }
 
     private EmbeddingGeneratorLease CreateOpenAiCompatibleLease(
@@ -102,7 +105,6 @@ public sealed class EmbeddingGeneratorFactory(
         string model,
         string? providerApiKey)
     {
-
         string resolvedApiKey = providerApiKey ?? KeylessOpenAiPlaceholder;
 
         // Includes the endpoint and a credential fingerprint (not the raw secret — see
@@ -118,7 +120,6 @@ public sealed class EmbeddingGeneratorFactory(
             _ => BuildOpenAiCompatibleGenerator(provider, model, resolvedApiKey));
 
         return new EmbeddingGeneratorLease(generator, ownsGenerator: false, new(provider.Name, model));
-
     }
 
     private IEmbeddingGenerator<string, Embedding<float>> BuildOpenAiCompatibleGenerator(
@@ -126,24 +127,22 @@ public sealed class EmbeddingGeneratorFactory(
         string model,
         string resolvedApiKey)
     {
-
         ApiKeyCredential credential = new(resolvedApiKey);
 
         HttpClient http = httpClientFactory.CreateClient(OpenAiCompatibleHttpClientName);
 
         var options = new OpenAIClientOptions
         {
-
             Endpoint = new Uri(provider.Endpoint),
 
             Transport = new HttpClientPipelineTransport(http),
-
         };
+
+        options.AddPolicy(new TapestryProviderPolicy(_tapestryValidator, provider.Name, model, embedding: true), PipelinePosition.BeforeTransport);
 
         var embeddingClient = new EmbeddingClient(model, credential, options);
 
         return embeddingClient.AsIEmbeddingGenerator();
-
     }
 
     private static string CacheKey(ProviderSettings provider, string model, string resolvedApiKey) =>
@@ -157,7 +156,6 @@ public sealed class EmbeddingGeneratorFactory(
     /// </summary>
     private static string ComputeCredentialFingerprint(string resolvedApiKey) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(resolvedApiKey)));
-
 }
 
 /// <summary>
@@ -167,7 +165,6 @@ public sealed class EmbeddingGeneratorFactory(
 /// </summary>
 public sealed class EmbeddingGeneratorLease : IDisposable
 {
-
     private readonly bool _ownsGenerator;
 
     private bool _disposed;
@@ -177,13 +174,11 @@ public sealed class EmbeddingGeneratorLease : IDisposable
         bool ownsGenerator,
         EmbeddingProvenance? provenance = null)
     {
-
         Generator = generator;
 
         Provenance = provenance;
 
         _ownsGenerator = ownsGenerator;
-
     }
 
     internal EmbeddingProvenance? Provenance { get; }
@@ -192,11 +187,9 @@ public sealed class EmbeddingGeneratorLease : IDisposable
 
     public void Dispose()
     {
-
         if (_disposed)
         {
             return;
-
         }
 
         _disposed = true;
@@ -204,9 +197,6 @@ public sealed class EmbeddingGeneratorLease : IDisposable
         if (_ownsGenerator)
         {
             Generator.Dispose();
-
         }
-
     }
-
 }

@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Weave;
+using RetroDownfall.Arcanum.Core.Weave.Tapestry;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -17,13 +19,13 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 /// their tests must reach the fault through the real service rather than through a fake
 /// <c>IWeaveService</c> that breaks the contract the service exists to uphold.
 /// </remarks>
-internal sealed class ShortAnsweringEmbeddingGeneratorFactory(int omittedVectors = 1) : IEmbeddingGeneratorFactory
+internal sealed class ShortAnsweringEmbeddingGeneratorFactory(int omittedVectors = 1, Action<int>? observedInputs = null) : IEmbeddingGeneratorFactory
 {
     /// <summary>
     /// A real <see cref="WeaveService"/> over a provider that omits vectors, with embeddings enabled so
     /// the consumer reaches the provider rather than the feature-disabled fast path.
     /// </summary>
-    internal static WeaveService CreateWeaveService(int omittedVectors = 1)
+    internal static WeaveService CreateWeaveService(int omittedVectors = 1, ITapestryProviderValidator? tapestryValidator = null, Action<int>? observedInputs = null)
     {
         ArcanumSettings settings = new()
         {
@@ -41,22 +43,24 @@ internal sealed class ShortAnsweringEmbeddingGeneratorFactory(int omittedVectors
         ServiceProvider services = new ServiceCollection().BuildServiceProvider();
 
         return new WeaveService(
-            new ShortAnsweringEmbeddingGeneratorFactory(omittedVectors),
+            new ShortAnsweringEmbeddingGeneratorFactory(omittedVectors, observedInputs),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             services.GetRequiredService<IServiceScopeFactory>(),
-            NullLogger<WeaveService>.Instance);
+            NullLogger<WeaveService>.Instance, tapestryValidator);
     }
 
     public Task<EmbeddingGeneratorLease> ResolveGeneratorAsync(CancellationToken cancellationToken) =>
-        Task.FromResult(new EmbeddingGeneratorLease(new ShortAnsweringGenerator(omittedVectors), ownsGenerator: false));
+        Task.FromResult(new EmbeddingGeneratorLease(new ShortAnsweringGenerator(omittedVectors, observedInputs), ownsGenerator: false, new EmbeddingProvenance("local", "test-embed")));
 
-    private sealed class ShortAnsweringGenerator(int omittedVectors) : IEmbeddingGenerator<string, Embedding<float>>
+    private sealed class ShortAnsweringGenerator(int omittedVectors, Action<int>? observedInputs) : IEmbeddingGenerator<string, Embedding<float>>
     {
         public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(
             IEnumerable<string> values,
             EmbeddingGenerationOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            observedInputs?.Invoke(values.Count());
+
             int answered = Math.Max(0, values.Count() - omittedVectors);
 
             GeneratedEmbeddings<Embedding<float>> result = new(answered);

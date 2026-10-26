@@ -1,3 +1,4 @@
+using RetroDownfall.Arcanum.Core.Weave;
 using System.Net;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -694,7 +695,8 @@ public sealed partial class WeaveServiceTests
         FakeEmbeddingGeneratorFactory? factory = null,
         ITurnRunWriter? writer = null,
         IBudgetReservationService? reservations = null,
-        Func<IServiceScopeFactory, IServiceScopeFactory>? decorateScopes = null)
+        Func<IServiceScopeFactory, IServiceScopeFactory>? decorateScopes = null,
+        RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryProviderValidator? tapestryValidator = null)
     {
         ServiceCollection collection = new();
 
@@ -716,7 +718,7 @@ public sealed partial class WeaveServiceTests
             factory ?? new FakeEmbeddingGeneratorFactory(),
             new TestOptionsMonitor<ArcanumSettings>(settings),
             decorateScopes is null ? scopes : decorateScopes(scopes),
-            NullLogger<WeaveService>.Instance);
+            NullLogger<WeaveService>.Instance, tapestryValidator);
     }
 
     /// <summary>Counts the scopes a call opens and the ones it actually gives back.</summary>
@@ -898,6 +900,8 @@ public sealed partial class WeaveServiceTests
 
         public Action? BeforeGenerate { get; set; }
 
+        public List<string> ReceivedTexts { get; } = [];
+
         public EmbeddingProvenance? ProviderProvenance { get; set; }
 
         public int? ThrowOnCallNumber { get; set; }
@@ -917,6 +921,8 @@ public sealed partial class WeaveServiceTests
             GenerateCancellationToken = cancellationToken;
 
             List<string> list = [.. values];
+
+            ReceivedTexts.AddRange(list);
 
             CallSizes.Add(list.Count);
 
