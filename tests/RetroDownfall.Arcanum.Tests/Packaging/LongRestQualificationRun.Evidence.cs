@@ -295,7 +295,7 @@ internal sealed partial class LongRestQualificationRun
     }
 
     /// <summary>The fast model serves every Long Rest chat call, the embedding model every embedding, each through its own provider entry's credential.</summary>
-    private void AssertServedBy(IReadOnlyList<LongRestRecordedRequest> traffic, bool requireBothKinds)
+    internal void AssertServedBy(IReadOnlyList<LongRestRecordedRequest> traffic, bool requireBothKinds)
     {
         LongRestRecordedRequest[] chat = [.. traffic.Where(static request => request.IsLongRestChat)];
 
@@ -334,15 +334,31 @@ internal sealed partial class LongRestQualificationRun
                 $"Embedding request #{request.Sequence} carried the {request.Credential} credential, not the embedding entry's.");
         }
 
-        Check(
-            !traffic.Any(request => string.Equals(request.Model, _options.DefaultModel, StringComparison.Ordinal)),
-            $"The default model '{_options.DefaultModel}' served a Long Rest call; the fast model must serve them all.");
+        foreach (LongRestRecordedRequest request in traffic.Where(static request => request.Kind is LongRestProviderRequestKind.Chat or LongRestProviderRequestKind.Other))
+        {
+            Check(false, $"Request #{request.Sequence} had an unexpected request purpose ({request.Kind}) during the Long Rest sweep.");
+        }
+
+        bool sharedChatTag = string.Equals(_options.ChatModel, _options.DefaultModel, StringComparison.Ordinal);
+
+        int defaultTagRequests = traffic.Count(request => string.Equals(request.Model, _options.DefaultModel, StringComparison.Ordinal));
+
+        if (!sharedChatTag)
+        {
+            Check(
+                defaultTagRequests == 0,
+                $"The default model '{_options.DefaultModel}' served a Long Rest call; the fast model must serve them all.");
+        }
+
+        string roleEvidence = sharedChatTag
+            ? "fast and default roles share the same tag; request purpose and entry credential identify sweep traffic"
+            : string.Create(CultureInfo.InvariantCulture, $"distinct default-tag requests: {defaultTagRequests} (must be zero)");
 
         Observe(string.Create(
             CultureInfo.InvariantCulture,
             $"Served by: {chat.Length} Long Rest chat calls ({chat.Count(static request => request.Kind == LongRestProviderRequestKind.Summary)} summary, "
-            + $"{chat.Count(static request => request.Kind == LongRestProviderRequestKind.Adjudication)} adjudication) all on '{_options.ChatModel}' with the chat entry's credential; "
-            + $"{embeddings.Length} embeddings on '{_options.EmbeddingModel}' with the embedding entry's credential; the default model '{_options.DefaultModel}' served none of them"));
+            + $"{chat.Count(static request => request.Kind == LongRestProviderRequestKind.Adjudication)} adjudication) expected on '{_options.ChatModel}' with the chat entry's credential; "
+            + $"{embeddings.Length} embeddings expected on '{_options.EmbeddingModel}' with the embedding entry's credential; {roleEvidence}"));
     }
 
     /// <summary>

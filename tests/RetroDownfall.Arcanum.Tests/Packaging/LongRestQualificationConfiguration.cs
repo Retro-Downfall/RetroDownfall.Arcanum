@@ -77,12 +77,15 @@ internal static class LongRestQualificationConfiguration
                         Type = AiProviderKind.OpenAICompatible,
                         Endpoint = providerEndpoint.AbsoluteUri,
                         CredentialEnvironmentVariable = ChatCredentialVariable,
-                        Models =
-                        [
-                            // The fast model declares reasoning, so Long Rest asks it to answer an adjudication with reasoning off (DESIGN §21.16.4).
-                            new ModelEntry(options.ChatModel, SupportsVision: true, SupportsTools: true, Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard }),
-                            new ModelEntry(options.DefaultModel, SupportsVision: true, SupportsTools: true),
-                        ],
+                        // The fast model declares reasoning, so Long Rest asks it to answer an adjudication with reasoning off (DESIGN §21.16.4).
+                        // Both roles use text only; equal ordinal tags share that one model declaration.
+                        Models = string.Equals(options.ChatModel, options.DefaultModel, StringComparison.Ordinal)
+                            ? [new ModelEntry(options.ChatModel, SupportsVision: false, SupportsTools: true, Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard })]
+                            :
+                            [
+                                new ModelEntry(options.ChatModel, SupportsVision: false, SupportsTools: true, Reasoning: new ModelReasoningSettings { WireDialect = ReasoningWireDialect.Standard }),
+                                new ModelEntry(options.DefaultModel, SupportsVision: false, SupportsTools: true),
+                            ],
                         ContextWindowLimit = ChatContextWindow,
                     },
                     new ProviderSettings
