@@ -174,6 +174,11 @@ internal sealed class GrimoireMaintenanceAdmissionHarness : IAsyncDisposable
 
         Factory.SettingsOverride = settings => settings with
         {
+            // The synthetic client has no model context restriction. Declare enough test capacity
+            // for the real context/tool prefix so budget admission reaches the controlled provider.
+            Providers = [.. settings.Providers.Select(provider => provider.Name == "test"
+                ? provider with { ContextWindowLimit = 32_768 } : provider)],
+
             Host = settings.Host with { AuditLog = settings.Host.AuditLog with { Enabled = true } },
 
             Features = settings.Features with { AttachmentRetrieval = true },

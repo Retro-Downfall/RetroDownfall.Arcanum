@@ -32,7 +32,6 @@ namespace RetroDownfall.Arcanum.Core.DataLifecycle;
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<RetentionDataClass>))]
 public enum RetentionDataClass
 {
-
     ActiveSessions = 0,
 
     ArchivedSessions = 1,
@@ -112,13 +111,11 @@ public enum RetentionDataClass
 
     /// <summary>Bounded Campaign continuity summaries and their contribution metadata.</summary>
     CampaignSummaries = 31,
-
 }
 
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<DataRetentionOperation>))]
 public enum DataRetentionOperation
 {
-
     Prune,
 
     DeleteSession,
@@ -130,7 +127,6 @@ public enum DataRetentionOperation
     ResetWorkspace,
 
     FactoryReset,
-
 }
 
 /// <summary>
@@ -144,7 +140,6 @@ public enum DataRetentionOperation
 [JsonConverter(typeof(StringOnlyJsonStringEnumConverter<MemoryResetScope>))]
 public enum MemoryResetScope
 {
-
     Entry = 0,
 
     Attachments = 1,
@@ -163,7 +158,6 @@ public enum MemoryResetScope
 
     /// <summary>Campaign continuity summaries, optionally narrowed to one owning Campaign.</summary>
     CampaignSummary = 6,
-
 }
 
 public sealed record DataRetentionRequest(
@@ -346,11 +340,9 @@ public sealed record DataRetentionPlanAdmission(
 /// </summary>
 public enum DataRetentionPlanAdmissionCapability
 {
-
     Request = 0,
 
     Installation = 1,
-
 }
 
 public sealed record DataRetentionApplyResult(
@@ -367,7 +359,6 @@ public sealed record DataRetentionApplyResult(
 
 public interface IDataRetentionService
 {
-
     Task<DataRetentionStatus> GetStatusAsync(
         CancellationToken cancellationToken = default);
 
@@ -383,18 +374,15 @@ public interface IDataRetentionService
     Task<Result<DataRetentionApplyResult>> ApplyAsync(
         DataRetentionApplyRequest request,
         CancellationToken cancellationToken = default);
-
 }
 
 public static class DataRetentionSettingsCatalog
 {
-
     public static RetentionRuleSettings? ResolveRule(
         RetentionSettings settings,
         RetentionDataClass dataClass) =>
         dataClass switch
         {
-
             RetentionDataClass.ActiveSessions => settings.ActiveSessions,
 
             RetentionDataClass.ArchivedSessions => settings.ArchivedSessions,
@@ -454,7 +442,152 @@ public static class DataRetentionSettingsCatalog
             RetentionDataClass.MemoryErasureEvidence => null,
 
             _ => null,
-
         };
+}
 
+/// <summary>The closed managed root whose factory inventory was refused.</summary>
+public enum ManagedDataRootRole
+{
+    Attachments,
+
+    Files,
+
+    Logs,
+}
+
+/// <summary>A safe reason factory inventory could not establish its existing filesystem guards.</summary>
+public enum ManagedTreeRefusalReason
+{
+    RootNotOrdinary,
+
+    RootInspectionFailed,
+
+    EntryIdentityUnavailable,
+
+    EntryReparsePoint,
+
+    UnsupportedEntry,
+
+    FileIdentityChanged,
+
+    FileInspectionFailed,
+
+    DirectoryIdentityUnavailable,
+
+    DirectoryEnumerationFailed,
+
+    EntryInspectionFailed,
+}
+
+/// <summary>A managed-tree inventory refusal, distinct from storage or mutation uncertainty.</summary>
+/// <remarks>
+/// The exception message and public properties are closed diagnostic metadata only. The bounded,
+/// escaped relative entry is retained privately for the requesting operator's error. Absolute roots,
+/// external paths, symlink targets and original exceptions are never retained by this exception.
+/// It says inventory was refused; only the caller's effect boundary can say whether nothing changed.
+/// </remarks>
+public sealed class ManagedTreeInventoryRefusalException : IOException
+{
+    private readonly string _entryDisplay;
+
+    private ManagedTreeInventoryRefusalException(ManagedDataRootRole role, ManagedTreeRefusalReason reason, string entryDisplay)
+        : base(ErrorCodes.Data.ManagedTreeRefused + ": root " + RoleName(role) + "; cause " + reason + ".")
+    {
+        RootRole = role;
+
+        Reason = reason;
+
+        _entryDisplay = entryDisplay;
+    }
+
+    public ManagedDataRootRole RootRole { get; }
+
+    public ManagedTreeRefusalReason Reason { get; }
+
+    public string RootRoleName => RoleName(RootRole);
+
+    /// <summary>Creates content-free exception metadata and a proven lexical relative entry display.</summary>
+    public static ManagedTreeInventoryRefusalException Create(
+        ManagedDataRootRole role,
+        ManagedTreeRefusalReason reason,
+        string managedRoot,
+        string entry)
+    {
+        ArgumentOutOfRangeException.ThrowIfNotEqual(Enum.IsDefined(role), true, nameof(role));
+
+        ArgumentOutOfRangeException.ThrowIfNotEqual(Enum.IsDefined(reason), true, nameof(reason));
+
+        string display = "<unavailable>";
+
+        try
+        {
+            string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(managedRoot));
+
+            string path = Path.GetFullPath(entry);
+
+            StringComparison comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+            // This is lexical proof only. Never resolve the failed entry or follow a symlink to
+            // decide what may be displayed; an external entry gets no path display at all.
+            if (string.Equals(root, path, comparison)
+                || path.StartsWith(Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar, comparison))
+            {
+                display = RenderRelativeEntry(Path.GetRelativePath(root, path));
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            // The failed external text and its exception are not diagnostic authority.
+        }
+
+        return new ManagedTreeInventoryRefusalException(role, reason, display);
+    }
+
+    public Error ToError() => new(ErrorCodes.Data.ManagedTreeRefused,
+        "Factory-reset inventory refused managed root '" + RootRoleName + "', entry '" + _entryDisplay
+        + "' (" + Reason + "). Inspect and restore the managed directory layout before planning again; preserve uncertain files and recovery evidence.");
+
+    private static string RoleName(ManagedDataRootRole role) => role switch
+    {
+        ManagedDataRootRole.Attachments => "attachments",
+
+        ManagedDataRootRole.Files => "files",
+
+        ManagedDataRootRole.Logs => "logs",
+
+        _ => "unknown",
+    };
+
+    private static string RenderRelativeEntry(string relative)
+    {
+        const int maximumCharacters = 240;
+
+        System.Text.StringBuilder display = new();
+
+        foreach (char character in relative)
+        {
+            System.Globalization.UnicodeCategory category = char.GetUnicodeCategory(character);
+
+            string next = character == Path.DirectorySeparatorChar ? "/"
+                : character == '\\' ? "\\\\"
+                : character == '\'' || char.IsControl(character) || char.IsSurrogate(character)
+                    || category is System.Globalization.UnicodeCategory.Format
+                        or System.Globalization.UnicodeCategory.LineSeparator
+                        or System.Globalization.UnicodeCategory.ParagraphSeparator
+                    ? "\\u" + ((int)character).ToString("X4", System.Globalization.CultureInfo.InvariantCulture)
+                    : character.ToString();
+
+            if (display.Length + next.Length > maximumCharacters - 3)
+            {
+                display.Append("...");
+
+                break;
+            }
+
+            display.Append(next);
+        }
+
+        return display.ToString();
+    }
 }

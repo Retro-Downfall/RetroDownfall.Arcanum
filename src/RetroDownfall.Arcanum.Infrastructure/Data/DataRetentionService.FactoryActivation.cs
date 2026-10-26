@@ -533,6 +533,14 @@ internal sealed partial class DataRetentionService
 
             throw;
         }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            LogFactoryInventoryRefusal(refusal, operation?.Id);
+
+            return operation is null || string.IsNullOrWhiteSpace(ownerId)
+                ? Result<DataRetentionApplyResult>.Failure(CovenantMaintenanceFailure())
+                : await FailUnexpectedCovenantResetAsync(operation, ownerId).ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
             logger.LogError(
@@ -686,15 +694,29 @@ internal sealed partial class DataRetentionService
         }
         catch (RetentionQuarantineRecoveryRequiredException ex)
         {
-            logger.LogWarning(
-                ex,
-                "Factory-reset ordinary cleanup requires durable reconciliation for operation {OperationId}.",
-                operationId);
+            if (ex.InnerException is ManagedTreeInventoryRefusalException refusal)
+            {
+                LogFactoryInventoryRefusal(refusal, operationId);
+            }
+            else
+            {
+                logger.LogWarning(
+                    ex,
+                    "Factory-reset ordinary cleanup requires durable reconciliation for operation {OperationId}.",
+                    operationId);
+            }
 
             return Result<DataRetentionApplyResult>.Failure(
                 new Error(
                     ErrorCodes.Data.ReconciliationFailed,
                     "Factory-reset ordinary cleanup requires durable reconciliation."));
+        }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            LogFactoryInventoryRefusal(refusal, operationId);
+
+            return Result<DataRetentionApplyResult>.Failure(new Error(ErrorCodes.Data.ReconciliationFailed,
+                "Factory-reset ordinary cleanup requires durable recovery. " + refusal.ToError().Message));
         }
         catch (Exception ex)
         {

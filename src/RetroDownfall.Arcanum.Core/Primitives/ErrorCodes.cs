@@ -717,6 +717,9 @@ public static class ErrorCodes
 
         public const string InventoryUnavailable = "Data.InventoryUnavailable";
 
+        /// <summary>A managed filesystem inventory was refused; this code alone grants no mutation outcome.</summary>
+        public const string ManagedTreeRefused = "Data.ManagedTreeRefused";
+
         public const string CredentialInventoryUnavailable = "Data.CredentialInventoryUnavailable";
 
         public const string ResetInProgress = "Data.ResetInProgress";

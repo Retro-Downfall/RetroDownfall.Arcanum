@@ -676,8 +676,13 @@ internal sealed class ControlledChatClientFactory : IChatClientFactory
     internal Task WaitUntilDisposedAsync() => _disposed.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
     public Task<ChatClientLease> ResolveClientAsync(string? targetModel, CancellationToken cancellationToken) =>
-        ResolveClientAsync(new ProviderSettings { Name = "test", Type = AiProviderKind.OpenAICompatible,
-            Endpoint = "https://example.test/v1", Models = ["mistral:latest"] }, targetModel ?? "mistral:latest", cancellationToken);
+        ResolveClientAsync(new ProviderSettings
+        {
+            Name = "test",
+            Type = AiProviderKind.OpenAICompatible,
+            Endpoint = "https://example.test/v1",
+            Models = ["mistral:latest"]
+        }, targetModel ?? "mistral:latest", cancellationToken);
 
     public Task<ChatClientLease> ResolveClientAsync(ProviderSettings provider, string resolvedModel, CancellationToken cancellationToken) =>
         Task.FromResult(new ChatClientLease(new ControlledChatClient(this), provider, resolvedModel, null));
@@ -778,6 +783,10 @@ internal sealed class ControlledEncryptedBlobStore(EncryptedBlobStore inner) : I
     public Task<EncryptedBlobWriter> CreateWriterAsync(string destinationPath, EncryptedBlobPurpose purpose,
         ReadOnlyMemory<byte> authenticatedMetadata = default, CancellationToken cancellationToken = default) =>
         inner.CreateWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken);
+
+    public Task<EncryptedBlobWriter> CreateNewWriterAsync(string destinationPath, EncryptedBlobPurpose purpose,
+        ReadOnlyMemory<byte> authenticatedMetadata = default, CancellationToken cancellationToken = default) =>
+        inner.CreateNewWriterAsync(destinationPath, purpose, authenticatedMetadata, cancellationToken);
 
     public Task<EncryptedBlobPlaintextInspection> InspectAuthenticatedAsync(
         string path,
