@@ -200,3 +200,37 @@ public sealed class BudgetEnforcementCheck(
                     "Set Arcanum:Cost:Budget:DailyLimitUsd to a positive amount, or turn Arcanum:Cost:Budget:Enabled off.")]));
     }
 }
+
+/// <summary>Reports the selected Campaign maintenance provider locally, without resolving credentials or making calls.</summary>
+public sealed class CampaignRollupModelCheck(
+    IOptions<ArcanumSettings> options,
+    ConfigurationValidator validator) : IDoctorCheck
+{
+    public const string CheckId = "configuration.campaign_rollup_model";
+
+    public string Id => CheckId;
+
+    public string Name => "Campaign rollup model";
+
+    public DoctorSubsystem Subsystem => DoctorSubsystem.Configuration;
+
+    public bool RequiresNetwork => false;
+
+    public Task<DoctorFinding> InspectAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (options.Value.Features?.CampaignRollups is not true)
+        {
+            return Task.FromResult(new DoctorFinding(DoctorOutcome.Skipped, "Campaign rollups are disabled."));
+        }
+
+        IReadOnlyList<ConfigurationValidationError> warnings = validator.ValidateCampaignRollups(options.Value);
+
+        return Task.FromResult(warnings.Count == 0
+            ? new DoctorFinding(DoctorOutcome.Healthy, "Campaign rollups have a configured OpenAI-compatible maintenance model.")
+            : new DoctorFinding(DoctorOutcome.Degraded, warnings[0].Detail,
+                [new DoctorRemedy("configuration.resolve_campaign_rollup_model", null, DoctorRemedyCommands.ConfigEdit,
+                    "Set FastModel or DefaultModel to a model on an OpenAI-compatible provider, or turn Features:CampaignRollups off.")]));
+    }
+}

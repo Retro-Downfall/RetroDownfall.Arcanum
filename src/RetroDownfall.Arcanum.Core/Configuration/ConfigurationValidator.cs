@@ -1181,6 +1181,11 @@ public sealed class ConfigurationValidator(
             logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
         }
 
+        foreach (ConfigurationValidationError warning in ValidateCampaignRollups(settings))
+        {
+            logger?.LogWarning("{Pointer}: {Detail}", warning.Pointer, warning.Detail);
+        }
+
         ValidateEmbeddings(settings, errors);
 
         ValidateScrying(settings, errors);
@@ -1719,6 +1724,25 @@ public sealed class ConfigurationValidator(
         return problems.Count == 0
             ? []
             : [new ConfigurationValidationError("features.longRest", LongRestRecipeResolver.Describe(problems))];
+    }
+
+    /// <summary>Warns without refusing startup when enabled Campaign maintenance has no supported selected model.</summary>
+    public IReadOnlyList<ConfigurationValidationError> ValidateCampaignRollups(ArcanumSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (settings.Features?.CampaignRollups is not true)
+        {
+            return [];
+        }
+
+        string? target = !string.IsNullOrWhiteSpace(settings.FastModel) ? settings.FastModel.Trim() : settings.DefaultModel;
+
+        return ProviderResolver.TryResolveProviderForModel(settings, target, out ProviderSettings? provider, out _)
+            && provider?.Type is AiProviderKind.OpenAICompatible
+            ? []
+            : [new ConfigurationValidationError("features.campaignRollups",
+                "Campaign rollups need an OpenAI-compatible FastModel (or DefaultModel when FastModel is unset). Set Arcanum:FastModel or Arcanum:DefaultModel to a configured OpenAI-compatible provider model, or turn Arcanum:Features:CampaignRollups off. Ordinary turns can continue while summaries remain pending.")];
     }
 
     /// <summary>Warns when budget configuration requests enforcement without a positive effective daily limit.</summary>

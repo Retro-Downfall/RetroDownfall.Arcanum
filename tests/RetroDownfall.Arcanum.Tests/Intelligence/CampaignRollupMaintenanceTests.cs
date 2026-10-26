@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -775,6 +776,171 @@ public sealed class CampaignRollupMaintenanceTests
         Assert.Empty(harness.Store.Outputs);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unsupported_maintenance_explains_the_provider_restriction_and_warns_without_dispatch(bool campaign)
+    {
+        Harness harness = new();
+
+        harness.Clients.Unsupported = true;
+
+        Result<CampaignRollupMaintenanceResult> result = campaign
+            ? await harness.Service.ProcessCampaignAsync(Campaign, null, CancellationToken.None)
+            : await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.True(result.Value.Deferred);
+
+        Assert.Contains("OpenAI-compatible", result.Value.DeferredReason, StringComparison.Ordinal);
+
+        Assert.Contains("FastModel", result.Value.DeferredReason, StringComparison.Ordinal);
+
+        TestLogEntry warning = Assert.Single(harness.Logger.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Contains(Campaign.ToString(), warning.Message, StringComparison.Ordinal);
+
+        if (!campaign)
+        {
+            Assert.Contains(Session.ToString(), warning.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("OpenAI-compatible", warning.Message, StringComparison.Ordinal);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Equal(0, harness.Provider.Calls);
+
+        Assert.Empty(harness.Store.Outputs);
+    }
+
+    [Fact]
+    public async Task Campaign_pass_preserves_a_contribution_deferral_when_no_fold_is_ready()
+    {
+        Harness harness = new();
+
+        harness.Store.PendingSessions = [Session];
+
+        harness.Clients.Unsupported = true;
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessCampaignAsync(Campaign, null, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.True(result.Value.Deferred);
+
+        Assert.Contains("OpenAI-compatible", result.Value.DeferredReason, StringComparison.Ordinal);
+
+        Assert.Equal(0, harness.Provider.Calls);
+
+        Assert.Empty(harness.Store.Outputs);
+    }
+
+    [Fact]
+    public async Task Warnings_are_shared_across_scopes_and_follow_elapsed_time_not_wall_clock()
+    {
+        WarningClock clock = new();
+
+        CampaignRollupDeferralWarnings warnings = new(clock);
+
+        Harness first = new(warnings);
+
+        Harness second = new(warnings);
+
+        first.Clients.Unsupported = second.Clients.Unsupported = true;
+
+        _ = await first.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        clock.Utc = clock.Utc.AddDays(30);
+
+        _ = await second.Service.ProcessCampaignAsync(Campaign, null, CancellationToken.None);
+
+        Assert.Single(first.Logger.Entries, entry => entry.Level == LogLevel.Warning);
+
+        Assert.Empty(second.Logger.Entries);
+
+        clock.Elapsed = TimeSpan.FromMinutes(5) - TimeSpan.FromTicks(1);
+
+        _ = await second.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.Empty(second.Logger.Entries);
+
+        clock.Elapsed = TimeSpan.FromMinutes(5);
+
+        clock.Utc = clock.Utc.AddDays(-60);
+
+        _ = await second.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.Single(second.Logger.Entries, entry => entry.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public void Concurrent_warnings_admit_one_per_campaign_and_keep_other_campaigns_visible()
+    {
+        CampaignRollupDeferralWarnings warnings = new(new WarningClock());
+
+        int admitted = 0;
+
+        Parallel.For(0, 64, _ =>
+        {
+            if (warnings.TryAcquire(Campaign))
+            {
+                Interlocked.Increment(ref admitted);
+            }
+        });
+
+        Assert.Equal(1, admitted);
+
+        Assert.True(warnings.TryAcquire(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void Warning_working_set_evicts_oldest_without_suppressing_new_campaigns()
+    {
+        CampaignRollupDeferralWarnings warnings = new(new WarningClock());
+
+        for (int index = 0; index < 1025; index++)
+        {
+            Assert.True(warnings.TryAcquire(new Guid(index, 0, 0, new byte[8])));
+        }
+
+        Assert.False(warnings.TryAcquire(new Guid(1024, 0, 0, new byte[8])));
+
+        Assert.True(warnings.TryAcquire(Guid.Empty));
+    }
+
+    [Fact]
+    public async Task Unsupported_result_rechecks_configuration_before_reporting_a_provider_deferral()
+    {
+        Harness harness = new();
+
+        harness.Clients.Unsupported = true;
+
+        harness.Clients.BeforeReturn = () => harness.Settings.FastModel = "changed";
+
+        Result<CampaignRollupMaintenanceResult> result = await harness.Service.ProcessSessionAsync(Session, null, null, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.StaleSnapshot, result.Error.Code);
+
+        Assert.Empty(harness.Logger.Entries);
+    }
+
+    private sealed class WarningClock : TimeProvider
+    {
+        public TimeSpan Elapsed { get; set; }
+
+        public DateTimeOffset Utc { get; set; } = new(2026, 10, 25, 0, 0, 0, TimeSpan.Zero);
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => Elapsed.Ticks;
+
+        public override DateTimeOffset GetUtcNow() => Utc;
+    }
+
     private static CampaignContributionEntry Entry(MessageRole role, string content) =>
         new(Guid.NewGuid(), 1, (int)role, content, DateTimeOffset.UtcNow, Digest(1), Digest(2), ContentSensitivity.None, GenerationProvenance.CreateExact([]));
 
@@ -812,13 +978,15 @@ public sealed class CampaignRollupMaintenanceTests
 
         public ClientDouble Clients { get; }
 
+        public TestCapturingLogger<CampaignRollupMaintenance> Logger { get; } = new();
+
         public CampaignRollupMaintenance Service { get; }
 
         public EstimatorProbe Estimator { get; }
 
         public ExecutorProbe Executor { get; }
 
-        public Harness()
+        public Harness(CampaignRollupDeferralWarnings? warnings = null)
         {
             Clients = new(Provider, Settings);
 
@@ -832,7 +1000,7 @@ public sealed class CampaignRollupMaintenanceTests
 
             Service = new(Store, Checkpoints, Clients, Executor, Estimator,
                 options, new BudgetMonitor(null!, null!, options, NullLogger<BudgetMonitor>.Instance), Journal,
-                NullLogger<CampaignRollupMaintenance>.Instance, Runs, new UnconfiguredReservations(), Audit);
+                Logger, Runs, new UnconfiguredReservations(), Audit, warnings ?? new CampaignRollupDeferralWarnings(TimeProvider.System));
         }
 
         public async Task<CovenantTurnLease> AuthorityAsync() =>
