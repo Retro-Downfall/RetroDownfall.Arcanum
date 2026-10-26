@@ -20733,6 +20733,8 @@ internal static partial class HostedGrimoireProducerInventory
 
                         if (node is InvocationExpressionSyntax explicitCleanup
                             && (IsTrustedFrameworkCleanupSlot(method)
+                                || IsExactStreamAsyncCleanup(method)
+                                    && explicitCleanup.Expression is not MemberAccessExpressionSyntax { Expression: BaseExpressionSyntax }
                                 || IsExactSdkSessionCleanup(method))
                             && AdmissionReceiver(member, explicitCleanup) is { } cleanupReceiver)
                         {
@@ -38532,6 +38534,16 @@ internal static partial class HostedGrimoireProducerInventory
                     && method.ReturnsVoid
                 || IsExactFrameworkMethod(method, "System.IAsyncDisposable", "DisposeAsync", "System.Private.CoreLib")
                     && IsExactFrameworkType(method.ReturnType, "System.Threading.Tasks.ValueTask", typeof(ValueTask).Assembly.GetName()));
+
+        private static bool IsExactStreamAsyncCleanup(IMethodSymbol method) =>
+            !method.IsStatic
+            && method.Name == "DisposeAsync"
+            && method.Arity == 0
+            && method.Parameters.Length == 0
+            && IsExactFrameworkType(method.ContainingType, "System.IO.Stream",
+                typeof(Stream).Assembly.GetName())
+            && IsExactFrameworkType(method.ReturnType, "System.Threading.Tasks.ValueTask",
+                typeof(ValueTask).Assembly.GetName());
 
         private static bool IsExactSdkSessionCleanup(IMethodSymbol method) =>
             !method.IsStatic

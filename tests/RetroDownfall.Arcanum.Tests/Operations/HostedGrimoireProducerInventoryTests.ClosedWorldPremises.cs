@@ -1013,6 +1013,184 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         }
     }
 
+    [Theory]
+    [InlineData("read", "held")]
+    [InlineData("read", "missing")]
+    [InlineData("mixed-access", "missing")]
+    [InlineData("mixed-access", "held")]
+    [InlineData("write", "held")]
+    [InlineData("write", "missing")]
+    [InlineData("write", "disposed")]
+    [InlineData("authored", "held")]
+    [InlineData("authored", "missing")]
+    [InlineData("authored", "disposed")]
+    public void ExplicitStreamCleanupFollowsWrapperInnerOwnership(string origin, string lifetime)
+    {
+        string inner = origin switch
+        {
+            "read" => "System.IO.File.OpenRead(\"attachment\")",
+            "write" => "new System.IO.FileStream(\"attachment\", System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite)",
+            "mixed-access" => "token.CanBeCanceled ? System.IO.File.OpenRead(\"attachment\") : new System.IO.FileStream(\"attachment\", System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite)",
+            _ => "new EffectStream()",
+        };
+
+        string admission = lifetime == "missing"
+            ? AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal)
+            : R2Admission;
+
+        string body = admission + "await using System.IO.Stream wrapped = new ReadWrapper(" + inner + "); "
+            + (lifetime == "disposed" ? "held.Dispose();" : "");
+
+        const string helpers = """
+            internal sealed class ReadWrapper : System.IO.MemoryStream
+            {
+                private readonly System.IO.Stream _inner;
+                public ReadWrapper(System.IO.Stream inner) { _inner = inner; }
+                public override async System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    await _inner.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+            internal sealed class EffectStream : System.IO.MemoryStream
+            {
+                public override System.Threading.Tasks.ValueTask DisposeAsync()
+                {
+                    System.IO.File.Delete("inner-cleanup");
+                    return default;
+                }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body, helpers));
+
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Code is
+            "HOSTED_DISPOSAL_TARGET_UNRESOLVED" or "HOSTED_SITE_WORK_FRONTIER_MISSING");
+
+        Assert.DoesNotContain(result.Items, static site => site.Callee == "System.IO.Stream.DisposeAsync");
+
+        string cleanup = origin == "authored" ? "System.IO.File.Delete" : "System.IO.FileStream.DisposeAsync";
+
+        Assert.Contains(result.Items, site => site.Callee == cleanup
+            && site.Kind == (origin == "read" ? HostedProducerSiteKind.FileSystemRead : HostedProducerSiteKind.FileSystemEffect));
+
+        Assert.Equal(origin != "read" && lifetime != "held", result.Diagnostics.Any(diagnostic =>
+            diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING" && diagnostic.Detail == cleanup));
+    }
+
+    [Theory]
+    [InlineData("Unknown()")]
+    [InlineData("token.CanBeCanceled ? System.IO.File.OpenRead(\"read\") : Unknown()")]
+    [InlineData("token.CanBeCanceled ? new FirstStream() : new SecondStream()")]
+    public void ExplicitStreamCleanupRefusesUnknownOrMixedReceiver(string origin)
+    {
+        const string helpers = """
+            internal sealed class FirstStream : System.IO.MemoryStream
+            {
+                public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete("first"); return default; }
+            }
+            internal sealed class SecondStream : System.IO.MemoryStream
+            {
+                public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete("second"); return default; }
+            }
+            """;
+
+        string source = R2Source(R2Admission + "System.IO.Stream value = " + origin
+            + "; await value.DisposeAsync();", helpers)
+            .Replace("public Task StopAsync", "private static System.IO.Stream Unknown() => Input.Value; public Task StopAsync", StringComparison.Ordinal)
+            + " internal static class Input { internal static System.IO.Stream Value { get; set; } = null!; }";
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(source);
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_DISPOSAL_TARGET_UNRESOLVED");
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("disposed")]
+    [InlineData("detached")]
+    public void ExplicitStreamCleanupCannotBorrowAnExpiredWorkLifetime(string lifetime)
+    {
+        string admission = lifetime == "missing" ? "" : R2Admission;
+
+        string body = admission + "System.IO.Stream stream = new WorkStream(); "
+            + (lifetime == "disposed" ? "lease.Dispose(); " : "")
+            + (lifetime == "detached" ? "stream.DisposeAsync();" : "await stream.DisposeAsync();");
+
+        const string helper = """
+            internal sealed class WorkStream : System.IO.MemoryStream
+            {
+                public override System.Threading.Tasks.ValueTask DisposeAsync() { System.IO.File.Delete("final-use"); return default; }
+            }
+            """;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body, helper));
+
+        Assert.Contains(result.Items, static site => site.Callee == "System.IO.File.Delete");
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_SITE_WORK_FRONTIER_MISSING"
+            && diagnostic.Detail == "System.IO.File.Delete");
+
+        if (lifetime == "detached")
+        {
+            Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "HOSTED_CALLBACK_OWNERSHIP_UNPROVEN");
+        }
+    }
+
+    [Theory]
+    [InlineData("await stream.DisposeAsync();", "public override System.Threading.Tasks.ValueTask DisposeAsync() => base.DisposeAsync();", "System.IO.Stream.DisposeAsync")]
+    [InlineData("stream.Dispose();", "", "System.IO.Stream.Dispose")]
+    public void StreamBaseAndSynchronousCleanupRemainConservative(string call, string asynchronousOverride, string cleanup)
+    {
+        string helper = """
+            internal sealed class EffectStream : System.IO.Stream
+            {
+                public override bool CanRead => true;
+                public override bool CanWrite => false;
+                public override bool CanSeek => false;
+                public override long Length => 0;
+                public override long Position { get => 0; set => throw new System.NotSupportedException(); }
+                public override int Read(byte[] bytes, int offset, int count) => 0;
+                public override void Flush() { }
+                public override long Seek(long offset, System.IO.SeekOrigin origin) => throw new System.NotSupportedException();
+                public override void SetLength(long value) => throw new System.NotSupportedException();
+                public override void Write(byte[] bytes, int offset, int count) => throw new System.NotSupportedException();
+                protected override void Dispose(bool disposing) { System.IO.File.Delete("protected-cleanup"); }
+            }
+            """;
+
+        helper = helper.Replace("protected override void Dispose", asynchronousOverride + " protected override void Dispose", StringComparison.Ordinal);
+
+        string body = AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal)
+            + "System.IO.Stream stream = new EffectStream(); " + call;
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body, helper));
+
+        // These framework bodies can run protected virtual cleanup. Until that dispatch is
+        // modeled, they remain a filesystem effect; they must never become mechanical cleanup.
+        Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Code == "HOSTED_SITE_EFFECT_FRONTIER_MISSING"
+            && diagnostic.Detail == cleanup);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReadOnlyFileCleanupRequiresWorkButNoEffectForBothCleanupModes(bool asynchronous)
+    {
+        string body = AcquireWork.Replace("return Task.CompletedTask;", "return;", StringComparison.Ordinal)
+            + (asynchronous ? "IAsyncDisposable" : "IDisposable")
+            + " stream = System.IO.File.OpenRead(\"legacy\"); "
+            + (asynchronous ? "await stream.DisposeAsync();" : "stream.Dispose();");
+
+        HostedProducerDiscovery<HostedProducerSite> result = R2Discover(R2Source(body));
+
+        Assert.Empty(result.Diagnostics);
+
+        Assert.Contains(result.Items, site => site.Callee == "System.IO.FileStream." + (asynchronous ? "DisposeAsync" : "Dispose")
+            && site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.WorkFrontierCapsuleId is not null
+            && site.EffectFrontierCapsuleId is null);
+    }
+
     [Fact]
     [Trait("Category", "HostedProducerProductionAnalysis")]
     public void ProductionAttachmentExtractionRetainsItsExactAdmittedLifetime()
@@ -1024,6 +1202,12 @@ public sealed partial class HostedGrimoireProducerInventoryTests
 
         Assert.NotEmpty(scoped.Items);
 
+        output.WriteLine("BOUNDED_ATTACHMENT_CAPSULES_BEGIN");
+
+        output.WriteLine(HostedGrimoireProducerInventory.RenderCapsuleManifest(scoped.Items));
+
+        output.WriteLine("BOUNDED_ATTACHMENT_CAPSULES_END");
+
         Assert.All(scoped.Items, static site => Assert.Equal("SessionAttachmentIndexingService", site.RootType));
 
         Assert.Contains(scoped.Items, static site =>
@@ -1033,6 +1217,22 @@ public sealed partial class HostedGrimoireProducerInventoryTests
             site.SourcePath.EndsWith("/Data/SessionAttachmentStore.cs", StringComparison.Ordinal)
             && site.Member == "ReadBytesAsync"
             && site.Callee == "System.IO.Stream.ReadAsync");
+
+        Assert.Contains(scoped.Items, static site =>
+            site.SourcePath.EndsWith("/Storage/EncryptedBlobStore.cs", StringComparison.Ordinal)
+            && site.Member == "DisposeAsync"
+            && site.Callee == "System.IO.FileStream.DisposeAsync"
+            && site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.WorkFrontierCapsuleId is not null
+            && site.EffectFrontierCapsuleId is null);
+
+        Assert.Contains(scoped.Items, static site =>
+            site.SourcePath.EndsWith("/Data/SessionAttachmentStore.cs", StringComparison.Ordinal)
+            && site.Member == "DisposeAsync"
+            && site.Callee == "System.IO.FileStream.DisposeAsync"
+            && site.Kind == HostedProducerSiteKind.FileSystemRead
+            && site.WorkFrontierCapsuleId is not null
+            && site.EffectFrontierCapsuleId is null);
 
         // The isolated PDF host reaches its worker process only through the reviewed seam, as a provider call; the runner
         // behind it is not traversed.
