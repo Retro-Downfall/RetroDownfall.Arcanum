@@ -238,9 +238,9 @@ public sealed partial class WizardIntelligenceProvider(
         CancellationToken cancellationToken) =>
         SubagentExecutionAmbient.Protection is { } protection
             ? ValueTask.FromResult(Result<CovenantTurnScope>.Success(CovenantTurnScope.ForMemoryDelegation(
-                SubagentExecutionAmbient.MemoryDelegation?.ChildId ?? Guid.NewGuid(), protection, SubagentExecutionAmbient.Sources)))
+                SubagentExecutionAmbient.MemoryDelegation?.ChildId ?? Guid.NewGuid(), protection, SubagentExecutionAmbient.Sources, logger)))
             : covenantDispatch is null
-            ? ValueTask.FromResult(Result<CovenantTurnScope>.Success(CovenantTurnScope.NotEligible()))
+            ? ValueTask.FromResult(Result<CovenantTurnScope>.Success(CovenantTurnScope.NotEligible(logger)))
             : covenantDispatch.BeginTurnAsync(
                 invocationContext,
                 Guid.NewGuid(),

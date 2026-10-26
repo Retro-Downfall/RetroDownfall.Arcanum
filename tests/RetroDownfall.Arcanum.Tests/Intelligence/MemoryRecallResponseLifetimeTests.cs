@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
 using Microsoft.AspNetCore.Http;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Api.Intelligence.MemoryRecall;
@@ -163,7 +165,7 @@ public sealed class MemoryRecallResponseLifetimeTests
             CovenantTask6Fixture.GlobalConfirmed("recall.key", CovenantTask6Fixture.G1, CovenantTask6Fixture.G2, 1, 1))).Value;
 
         return new CovenantTurnScope(CovenantTurnContext.ForPlan(plan, new CovenantTurnLease(registration), null, Guid.NewGuid()),
-            Guid.NewGuid(), null, false);
+            Guid.NewGuid(), null, false, NullLogger.Instance);
     }
 
     private sealed class CallbackResult(Func<HttpContext, Task> execute) : IResult

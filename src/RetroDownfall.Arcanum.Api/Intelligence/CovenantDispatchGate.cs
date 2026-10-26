@@ -39,16 +39,19 @@ public sealed class CovenantTurnScope : IAsyncDisposable
 
     private int _disposed;
 
-    private readonly ILogger? _cleanupLogger;
+    private readonly ILogger _cleanupLogger;
 
     internal CovenantTurnScope(
         CovenantTurnContext context,
         Guid logicalTurnId,
         Guid? sessionId,
         bool historyTainted,
-        ILogger? cleanupLogger = null)
+        ILogger cleanupLogger)
     {
+        ArgumentNullException.ThrowIfNull(cleanupLogger);
+
         _cleanupLogger = cleanupLogger;
+
         _context = context;
 
         LogicalTurnId = logicalTurnId;
@@ -63,8 +66,8 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     /// Carries <see cref="CovenantTurnAbsence.NotEligible"/> rather than a null context so that every
     /// caller downstream reads the same shape whether the gate ran or was never composed.
     /// </remarks>
-    public static CovenantTurnScope NotEligible() =>
-        new(CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible), Guid.Empty, null, historyTainted: false);
+    public static CovenantTurnScope NotEligible(ILogger cleanupLogger) =>
+        new(CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible), Guid.Empty, null, historyTainted: false, cleanupLogger);
 
     public Guid LogicalTurnId { get; }
 
@@ -113,9 +116,9 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     internal void BindProtection(Func<MemoryDelegationProtection?> protection) => _protection = protection;
 
     internal static CovenantTurnScope ForMemoryDelegation(Guid logicalTurnId, MemoryDelegationProtection protection,
-        MemoryEvaluationSourceSnapshot? sources)
+        MemoryEvaluationSourceSnapshot? sources, ILogger cleanupLogger)
     {
-        var scope = new CovenantTurnScope(CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible), logicalTurnId, null, false);
+        var scope = new CovenantTurnScope(CovenantTurnContext.Absent(CovenantTurnAbsence.NotEligible), logicalTurnId, null, false, cleanupLogger);
 
         scope.BindProtection(() => protection);
 
@@ -255,7 +258,7 @@ public sealed class CovenantTurnScope : IAsyncDisposable
     }
 
     private void LogPreparationFailure(string code) =>
-        _cleanupLogger?.LogWarning(
+        _cleanupLogger.LogWarning(
             "Session {SessionId} turn {LogicalTurnId} abandoned Campaign preparation could not complete cleanup ({ErrorCode}).",
             SessionId, LogicalTurnId, TurnLifecycleDiagnostics.SafeCode(code));
 }

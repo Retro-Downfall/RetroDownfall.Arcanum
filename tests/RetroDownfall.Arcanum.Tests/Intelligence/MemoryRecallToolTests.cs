@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -155,7 +157,7 @@ public sealed class MemoryRecallToolTests
         var plan = new CovenantLinker().Link(CovenantTask6Fixture.Snapshot(CovenantTask6Fixture.CampaignId, global, campaign)).Value;
 
         await using var turn = new CovenantTurnScope(CovenantTurnContext.ForPlan(plan,
-            new CovenantTurnLease(new LeaseRegistration()), null, Guid.NewGuid()), Guid.NewGuid(), null, false);
+            new CovenantTurnLease(new LeaseRegistration()), null, Guid.NewGuid()), Guid.NewGuid(), null, false, NullLogger.Instance);
 
         var authority = new Authority(invocation.ReadAuthorityEpoch!);
 

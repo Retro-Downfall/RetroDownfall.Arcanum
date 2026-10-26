@@ -29,7 +29,8 @@ public sealed class CampaignRollupTurnSnapshotTests
         CampaignRollupTurnSnapshot snapshot = new(null, Campaign, Request(), new ProbeStore(),
             new TestOptionsMonitor<ArcanumSettings>(Enabled()), new Resolver(), authority, claim, claims);
         TaskCompletionSource<Result<CampaignRollupTurnSnapshot?>> preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        CovenantTurnScope scope = CovenantTurnScope.NotEligible();
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        CovenantTurnScope scope = CovenantTurnScope.NotEligible(logger);
         scope.CampaignPreparation = preparation.Task;
         if (!late) preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Success(snapshot));
 
@@ -41,6 +42,20 @@ public sealed class CampaignRollupTurnSnapshotTests
         Assert.Equal(1, claims.Completions);
         Assert.Equal(1, registration.Releases);
         Assert.True(authority.LifetimeEnded.IsCancellationRequested);
+
+        if (failClaim)
+        {
+            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(2));
+            while (logger.Entries.Count == 0) await Task.Delay(10, deadline.Token);
+            var warning = Assert.Single(logger.Entries);
+            Assert.Contains(ErrorCodes.Hub.Error, warning.Message);
+            Assert.DoesNotContain("private", warning.Message);
+            Assert.Null(warning.Exception);
+        }
+        else
+        {
+            Assert.Empty(logger.Entries);
+        }
     }
 
     private sealed class ReleaseRegistration : ICovenantLeaseRegistration

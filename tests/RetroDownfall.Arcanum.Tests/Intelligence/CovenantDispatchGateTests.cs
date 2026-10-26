@@ -31,6 +31,40 @@ public sealed class CovenantDispatchGateTests
     private static readonly Guid InstallationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Factory_scopes_keep_the_explicit_logger_for_late_preparation_failures(bool delegated, bool refused)
+    {
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        Guid logicalTurn = Guid.NewGuid();
+        var protection = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationProtection(
+            ProviderCallSensitivities.Create(ContentSensitivity.None, GenerationProvenance.CreateExact([])),
+            CancellationToken.None, _ => throw new InvalidOperationException("Cleanup must not admit a provider effect."));
+        CovenantTurnScope scope = delegated
+            ? CovenantTurnScope.ForMemoryDelegation(logicalTurn, protection, null, logger)
+            : CovenantTurnScope.NotEligible(logger);
+        TaskCompletionSource<Result<CampaignRollupTurnSnapshot?>> preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        scope.CampaignPreparation = preparation.Task;
+        await scope.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        if (refused)
+            preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Failure(new(ErrorCodes.Covenant.Unavailable, "private-canary")));
+        else
+            preparation.SetException(new IOException("private-canary"));
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(2));
+        while (logger.Entries.Count == 0) await Task.Delay(10, deadline.Token);
+        TestLogEntry warning = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Contains(scope.LogicalTurnId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(refused ? ErrorCodes.Covenant.Unavailable : ErrorCodes.Hub.Error, warning.Message);
+        Assert.DoesNotContain("private", warning.Message);
+        Assert.Null(warning.Exception);
+        await scope.DisposeAsync();
+        Assert.Single(logger.Entries);
+    }
+
+    [Theory]
     [InlineData("fault")]
     [InlineData("cancel")]
     [InlineData("refusal")]
@@ -101,7 +135,7 @@ public sealed class CovenantDispatchGateTests
     [Fact]
     public void Protected_tool_input_survives_later_empty_dispatch()
     {
-        var scope = CovenantTurnScope.NotEligible();
+        var scope = CovenantTurnScope.NotEligible(NullLogger.Instance);
         Guid generation = Guid.NewGuid();
         var provenance = GenerationProvenance.CreateExact([generation]);
         var sensitivity = new ProviderCallSensitivity(ContentSensitivity.CovenantDerived, provenance,
@@ -120,7 +154,7 @@ public sealed class CovenantDispatchGateTests
     {
         CampaignRollupArtifact protectedArtifact = CampaignRollupTurnSnapshotTests.Artifact("A protected earlier decision.", ContentSensitivity.CovenantDerived);
 
-        CovenantTurnScope scope = CovenantTurnScope.NotEligible();
+        CovenantTurnScope scope = CovenantTurnScope.NotEligible(NullLogger.Instance);
 
         scope.BindCampaignArtifact(protectedArtifact);
 
