@@ -22,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </summary>
 public sealed class CovenantErasureInventorySourceTests
 {
-
     private const int LabelCount = 769;
 
     private static readonly Guid ErasureOperationId =
@@ -34,7 +33,6 @@ public sealed class CovenantErasureInventorySourceTests
     [Fact]
     public async Task Complete_preflight_and_replays_exhaust_769_interleaved_labels_in_four_bounded_pages()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SeedInterleavedLabelsAsync(LabelCount, includeExistingWorkItem: true);
@@ -72,7 +70,6 @@ public sealed class CovenantErasureInventorySourceTests
 
         do
         {
-
             Result<CovenantDatabaseErasureBatch> batch = await source.ReadNextDatabaseBatchAsync(
                 dataset,
                 databaseCursor,
@@ -90,22 +87,17 @@ public sealed class CovenantErasureInventorySourceTests
 
             if (batch.Value.Page is { } page)
             {
-
                 Assert.Equal(dataset, page.ExpectedDatasetGeneration);
 
                 databaseLabels.AddRange(page.Items.Select(static item => item.SensitivityLabelId));
-
             }
 
             databaseCursor = batch.Value.NextCursor;
 
             if (batch.Value.IsComplete)
             {
-
                 break;
-
             }
-
         }
 
         while (true);
@@ -128,7 +120,6 @@ public sealed class CovenantErasureInventorySourceTests
 
         do
         {
-
             Result<CovenantManagedFileErasureBatch> batch = await source.ReadNextManagedFileBatchAsync(
                 ErasureOperationId,
                 managedCursor,
@@ -149,11 +140,8 @@ public sealed class CovenantErasureInventorySourceTests
 
             if (batch.Value.IsComplete)
             {
-
                 break;
-
             }
-
         }
 
         while (true);
@@ -205,18 +193,31 @@ public sealed class CovenantErasureInventorySourceTests
             CancellationToken.None);
 
         Assert.True(applied.IsSuccess, applied.IsFailure ? applied.Error.Message : null);
-
     }
 
-    [Fact]
-    public async Task Complete_preflight_refuses_a_managed_label_without_one_exact_adopted_owner_before_any_batch()
+    [Theory]
+    [InlineData(false, "preflight")]
+    [InlineData(true, "preflight")]
+    [InlineData(false, "remaining")]
+    [InlineData(true, "remaining")]
+    [InlineData(false, "replay")]
+    [InlineData(true, "replay")]
+    public async Task Complete_preflight_refuses_a_managed_label_without_one_exact_adopted_owner_before_any_batch(
+        bool malformed, string route)
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SeedInterleavedLabelsAsync(3, includeExistingWorkItem: false);
 
-        await fixture.DeleteManagedProducerAsync(LabelId(1));
+        if (malformed)
+        {
+            await fixture.ExecuteDiagnosticSqlAsync(
+                "UPDATE managed_file_write_intents SET FinalOwnershipEvidence = $canary;", "PRIVATE-OWNERSHIP-CANARY");
+        }
+        else
+        {
+            await fixture.DeleteManagedProducerAsync(LabelId(1));
+        }
 
         CovenantErasureInventorySource source = fixture.CreateSource();
 
@@ -227,15 +228,26 @@ public sealed class CovenantErasureInventorySourceTests
 
         await using CovenantClosedPeriodTestAuthority closedPeriod = period;
 
-        Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
-            CovenantExclusiveOperation.CovenantReset,
-            dataset,
-            period.Authority,
-            CancellationToken.None);
+        Error error = route switch
+        {
+            "remaining" => (await source.PreflightRemainingManagedAsync(period.Authority, CancellationToken.None)).Error,
+            "replay" => (await source.ReadNextManagedFileBatchAsync(ErasureOperationId, null, period.Authority, CancellationToken.None)).Error,
+            _ => (await source.PreflightBeforeCanonicalAsync(CovenantExclusiveOperation.CovenantReset,
+                dataset, period.Authority, CancellationToken.None)).Error,
+        };
 
-        Assert.True(preflight.IsFailure);
+        Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, error.Code);
 
-        Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, preflight.Error.Code);
+        Assert.Equal(malformed ? CovenantInventoryFailureReason.ManagedOwnershipMismatch : CovenantInventoryFailureReason.ManagedOwnershipMissing,
+            error.CovenantInventoryFailure?.Reason);
+
+        Assert.Contains($"LabelId={LabelId(1):N}", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains($"ArtifactId={ArtifactId(1):N}", error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("ManagedWorkspaceFile", error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PRIVATE", error.Message, StringComparison.Ordinal);
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
 
@@ -244,13 +256,11 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(0, opens.LiveLeaseCount);
 
         Assert.Equal(ConnectionState.Closed, opens.LastConnection!.State);
-
     }
 
     [Fact]
     public async Task Complete_preflight_refuses_a_wrong_lease_dataset_and_releases_its_private_handle()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
@@ -271,8 +281,481 @@ public sealed class CovenantErasureInventorySourceTests
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, preflight.Error.Code);
 
-        Assert.Equal(0, fixture.Drain.ActiveCount);
+        Assert.Equal(CovenantInventoryFailureReason.SnapshotMismatch, preflight.Error.CovenantInventoryFailure?.Reason);
 
+        Assert.Equal(0, fixture.Drain.ActiveCount);
+    }
+
+    // GetInt64 would silently reinterpret REAL, TEXT and BLOB ownership as an integer.
+    // Each malformed field must refuse independently, even when its narrowed value matches.
+    [Theory]
+    [InlineData("7.5", "7", "0", false, 7L, false)]
+    [InlineData("7", "7.5", "0", false, 7L, false)]
+    [InlineData("7.5", "7.5", "0", false, 7L, false)]
+    [InlineData("9.223372036854776e18", "9223372036854775807", "0", false, 0L, false)]
+    [InlineData("9223372036854775807", "9.223372036854776e18", "0", false, 0L, false)]
+    [InlineData("9.223372036854776e18", "9.223372036854776e18", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS TEXT)", "0", "0", false, 0L, false)]
+    [InlineData("0", "CAST($canary AS TEXT)", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS TEXT)", "CAST($canary AS TEXT)", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS BLOB)", "0", "0", false, 0L, false)]
+    [InlineData("0", "CAST($canary AS BLOB)", "0", false, 0L, false)]
+    [InlineData("CAST($canary AS BLOB)", "CAST($canary AS BLOB)", "0", false, 0L, false)]
+    [InlineData("-1", "7", "0", false, 0L, true)]
+    [InlineData("7", "-1", "0", false, 0L, true)]
+    [InlineData("-1", "-1", "0", false, 0L, true)]
+    [InlineData("7", "7", "0.5", false, 0L, false)]
+    [InlineData("7", "7", "-1", false, 0L, true)]
+    [InlineData("0", "0", "0", true, 0L, false)]
+    [InlineData("7", "7", "0", true, 7L, false)]
+    [InlineData("9223372036854775807", "9223372036854775807", "9223372036854775807", true, long.MaxValue, false)]
+    public async Task Adopted_revisions_require_canonical_integer_storage_before_preflight_and_replay(
+        string producer, string expectedSource, string checkpoint, bool allowed, long expectedRevision, bool bypassRangeChecks)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SeedInterleavedLabelsAsync(2, includeExistingWorkItem: true);
+
+        const string canary = "PRIVATE-ADOPTED-REVISION\r\nforged-diagnostic";
+
+        await fixture.ExecuteDiagnosticSqlAsync(
+            (bypassRangeChecks ? "PRAGMA ignore_check_constraints = ON; " : string.Empty)
+            + "UPDATE managed_file_write_intents SET Revision = " + producer + "; "
+            + "UPDATE local_erasure_work_items SET ExpectedSourceRevision = " + expectedSource
+            + ", CheckpointRevision = " + checkpoint + ";", canary);
+
+        (string Producer, string Work) before = await fixture.ReadOwnershipRevisionStorageAsync();
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        CovenantErasureInventorySource source = fixture.CreateSource();
+
+        Result<CovenantErasureInventorySummary> preflight = await source.PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, preflight.IsSuccess);
+
+        Result remaining = await source.PreflightRemainingManagedAsync(period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, remaining.IsSuccess);
+
+        Result<CovenantManagedFileErasureBatch> replay = await source.ReadNextManagedFileBatchAsync(
+            ErasureOperationId, null, period.Authority, CancellationToken.None);
+
+        Assert.Equal(allowed, replay.IsSuccess);
+
+        if (allowed)
+        {
+            Assert.Equal(1, preflight.Value.ManagedFileArtifactCount);
+
+            CovenantManagedFileErasureRequest request = Assert.Single(replay.Value.Requests);
+
+            Assert.Equal((ulong)expectedRevision, request.ExpectedSourceWriteRevision);
+
+            Assert.Equal(ExistingWorkItemId, request.WorkItemId);
+        }
+        else
+        {
+            foreach (Error error in new[] { preflight.Error, remaining.Error, replay.Error })
+            {
+                Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, error.Code);
+
+                Assert.Equal(CovenantInventoryFailureReason.ManagedOwnershipMismatch, error.CovenantInventoryFailure?.Reason);
+
+                Assert.Equal(LabelId(1), error.CovenantInventoryFailure?.LabelId);
+
+                Assert.Equal(ArtifactId(1), error.CovenantInventoryFailure?.ArtifactId);
+
+                Assert.Equal(SensitiveArtifactKind.ManagedWorkspaceFile, error.CovenantInventoryFailure?.ArtifactKind);
+
+                Assert.Contains($"LabelId={LabelId(1):N}", error.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("PRIVATE", error.Message, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("forged-diagnostic", error.Message, StringComparison.Ordinal);
+
+                string json = System.Text.Json.JsonSerializer.Serialize(error,
+                    RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.Error);
+
+                Assert.DoesNotContain("PRIVATE", json, StringComparison.Ordinal);
+
+                Assert.DoesNotContain("covenantInventoryFailure", json, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        Assert.Equal(before, await fixture.ReadOwnershipRevisionStorageAsync());
+
+        Assert.Equal(dataset, await fixture.ReadDatasetGenerationAsync());
+
+        Assert.Equal(3, opens.Opened);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, opens.LastConnection!.State);
+
+        Assert.Empty(fixture.OrdinaryConnections.Opened);
+    }
+
+    [Theory]
+    [InlineData("kind", "UnknownArtifactKind", true)]
+    [InlineData("sensitivity", "MalformedLabel", true)]
+    [InlineData("sensitivity-overflow", "MalformedLabel", true)]
+    [InlineData("sensitivity-type", "MalformedLabel", true)]
+    [InlineData("revision-type", "MalformedLabel", true)]
+    [InlineData("digest-type", "MalformedLabel", true)]
+    [InlineData("label-id", "MalformedLabel", false)]
+    [InlineData("artifact-id", "MalformedLabel", true)]
+    [InlineData("provenance", "MalformedLabel", true)]
+    public async Task Inventory_refusal_identifies_only_independently_validated_label_facts(
+        string defect, string reason, bool hasLabelId)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
+
+        const string canary = "PRIVATE-LABEL-CONTENT\r\nforged-diagnostic";
+
+        string assignment = defect switch
+        {
+            "kind" => "ArtifactKindCode = 255",
+            "sensitivity" => "SensitivityCode = -1",
+            "sensitivity-overflow" => "SensitivityCode = 257",
+            "sensitivity-type" => "SensitivityCode = 1.5",
+            "revision-type" => "ArtifactRevision = 1.5",
+            "digest-type" => "ArtifactContentDigest = $canary",
+            "artifact-id" => "ArtifactId = $canary",
+            "provenance" => "ProvenanceModeCode = 255, ExactGenerationIds = NULL, GenerationBloom = X'" + new string('1', CovenantLimits.GenerationBloomBytes * 2) + "'",
+            _ => "LabelId = $canary",
+        };
+
+        await fixture.ExecuteDiagnosticSqlAsync(
+            "DROP TRIGGER IF EXISTS artifact_sensitivity_guard_update; PRAGMA ignore_check_constraints = ON; "
+            + "UPDATE artifact_sensitivity SET " + assignment + ";", canary);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) =
+            await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        Result<CovenantErasureInventorySummary> result = await fixture.CreateSource().PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+
+        Assert.Contains("Reason=" + reason, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(hasLabelId, result.Error.Message.Contains($"LabelId={LabelId(0):N}", StringComparison.Ordinal));
+
+        Assert.Equal(defect != "artifact-id", result.Error.Message.Contains($"ArtifactId={ArtifactId(0):N}", StringComparison.Ordinal));
+
+        Assert.DoesNotContain("PRIVATE-LABEL", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("forged-diagnostic", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Inventory_cleanup_failure_is_safe_and_cannot_replace_caller_cancellation(bool cancel, bool duringCleanup)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) =
+            await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        using CancellationTokenSource cancellation = new();
+
+        opens.DisposeFailure = new IOException("PRIVATE-DISPOSE-CONTENT\r\nforged-diagnostic");
+
+        if (cancel)
+        {
+            if (duringCleanup)
+            {
+                opens.BeforeDisposeFailure = cancellation.Cancel;
+            }
+            else
+            {
+                opens.AfterSnapshotOpen = cancellation.Cancel;
+            }
+        }
+
+        Task<Result<CovenantErasureInventorySummary>> read = fixture.CreateSource().PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, cancellation.Token);
+
+        if (cancel)
+        {
+            OperationCanceledException cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read);
+
+            Assert.Equal(cancellation.Token, cancelled.CancellationToken);
+
+            Assert.DoesNotContain("PRIVATE", cancelled.ToString(), StringComparison.Ordinal);
+        }
+        else
+        {
+            Result<CovenantErasureInventorySummary> result = await read;
+
+            Assert.True(result.IsFailure);
+
+            Assert.Contains("Reason=CleanupFailed", result.Error.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("PRIVATE-DISPOSE", result.Error.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, opens.LastConnection!.State);
+    }
+
+    [Theory]
+    [InlineData("invalid-dataset", CovenantInventoryFailureReason.InvalidDataset)]
+    [InlineData("missing-table", CovenantInventoryFailureReason.StorageFault)]
+    [InlineData("managed-query", CovenantInventoryFailureReason.StorageFault)]
+    [InlineData("disclosure-query", CovenantInventoryFailureReason.StorageFault)]
+    public async Task Snapshot_refusal_distinguishes_canonical_data_from_query_fault(
+        string defect, CovenantInventoryFailureReason expected)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        await fixture.SeedInterleavedLabelsAsync(2, includeExistingWorkItem: false);
+
+        string sql = defect switch
+        {
+            "missing-table" => "ALTER TABLE artifact_sensitivity RENAME TO private_canary_label_table;",
+            "managed-query" => "ALTER TABLE managed_file_write_intents RENAME TO private_canary_producer_table;",
+            "disclosure-query" => "ALTER TABLE external_disclosure_state RENAME COLUMN JoinedCount TO private_canary_count;",
+            _ => "DROP TRIGGER IF EXISTS covenant_state_guard_update; PRAGMA ignore_check_constraints = ON; UPDATE covenant_state SET DatasetGeneration = zeroblob(16);",
+        };
+
+        await fixture.ExecuteDiagnosticSqlAsync(sql, "PRIVATE-QUERY-CANARY");
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        Result<CovenantErasureInventorySummary> result = await fixture.CreateSource().PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+
+        Assert.Equal(expected, result.Error.CovenantInventoryFailure?.Reason);
+
+        Assert.DoesNotContain("private_canary", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+    }
+
+    [Fact]
+    public async Task Real_SQLCipher_exclusive_lock_refuses_inventory_as_retryable_busy()
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        await fixture.ExecuteDiagnosticSqlAsync("PRAGMA journal_mode=DELETE;", string.Empty);
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        opens.AfterSnapshotOpen = () =>
+        {
+            opens.LastConnection!.DefaultTimeout = 1;
+
+            fixture.HoldExclusiveLock();
+        };
+
+        Result<CovenantErasureInventorySummary> result;
+
+        try
+        {
+            result = await fixture.CreateSource().PreflightBeforeCanonicalAsync(
+                CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+        }
+        finally
+        {
+            await fixture.ExecuteDiagnosticSqlAsync("ROLLBACK; PRAGMA journal_mode=WAL;", string.Empty);
+        }
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+        Assert.Equal(CovenantInventoryFailureReason.StorageBusy, result.Error.CovenantInventoryFailure?.Reason);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+    }
+
+    [Theory]
+    [InlineData(5, CovenantInventoryFailureReason.StorageBusy, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(6, CovenantInventoryFailureReason.StorageBusy, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(261, CovenantInventoryFailureReason.StorageBusy, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(7, CovenantInventoryFailureReason.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(8, CovenantInventoryFailureReason.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(9, CovenantInventoryFailureReason.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(10, CovenantInventoryFailureReason.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(13, CovenantInventoryFailureReason.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(14, CovenantInventoryFailureReason.StorageUnavailable, ErrorCodes.Covenant.Unavailable)]
+    [InlineData(1, CovenantInventoryFailureReason.StorageFault, ErrorCodes.Covenant.IntegrityFailure)]
+    public async Task Snapshot_open_refusal_uses_closed_SQLite_classification(
+        int code, CovenantInventoryFailureReason expected, string errorCode)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        opens.OpenFailure = new Error(ErrorCodes.Covenant.Unavailable, "PRIVATE-OPEN-CANARY")
+        {
+            ConnectionFailure = new(GrimoireConnectionFailureStage.Open, GrimoireConnectionFailureKind.Sqlite, code, code),
+        };
+
+        Result<CovenantErasureInventorySummary> result = await fixture.CreateSource().PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(errorCode, result.Error.Code);
+
+        Assert.Equal(expected, result.Error.CovenantInventoryFailure?.Reason);
+
+        Assert.DoesNotContain("PRIVATE-OPEN", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+    }
+
+    [Fact]
+    public async Task Unrequested_cancellation_during_open_is_a_safe_fault_and_never_retryable_busy()
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        Guid dataset = await fixture.ReadDatasetGenerationAsync();
+
+        (CovenantClosedPeriodTestAuthority period, InventoryFixture.CountingMaintenanceFactory opens) = await fixture.ClosedPeriodAsync();
+
+        await using CovenantClosedPeriodTestAuthority closedPeriod = period;
+
+        opens.OpenException = new OperationCanceledException("PRIVATE-UNREQUESTED-CANCELLATION-CANARY");
+
+        Result<CovenantErasureInventorySummary> result = await fixture.CreateSource().PreflightBeforeCanonicalAsync(
+            CovenantExclusiveOperation.CovenantReset, dataset, period.Authority, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, result.Error.Code);
+
+        Assert.Equal(CovenantInventoryFailureReason.StorageFault, result.Error.CovenantInventoryFailure?.Reason);
+
+        Assert.DoesNotContain("PRIVATE", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(0, opens.LiveLeaseCount);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Ordinary_snapshot_cleanup_failure_is_visible_and_preserves_cancellation(bool cancel, bool duringCleanup)
+    {
+        await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
+
+        using CancellationTokenSource cancellation = new();
+
+        DiagnosticOrdinaryFactory connections = new(fixture.OrdinaryConnections, cancellation, cancel, duringCleanup);
+
+        CovenantErasureInventorySource source = fixture.CreateOrdinarySource(connections);
+
+        if (cancel)
+        {
+            OperationCanceledException cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => source.ReadOfflineTransitionSourceStateAsync(cancellation.Token));
+
+            Assert.Equal(cancellation.Token, cancelled.CancellationToken);
+
+            Assert.DoesNotContain("PRIVATE", cancelled.ToString(), StringComparison.Ordinal);
+        }
+        else
+        {
+            Result<CovenantOfflineTransitionSourceState> result = await source.ReadOfflineTransitionSourceStateAsync(cancellation.Token);
+
+            Assert.True(result.IsFailure);
+
+            Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.Error.Code);
+
+            Assert.Equal(CovenantInventoryFailureReason.CleanupFailed, result.Error.CovenantInventoryFailure?.Reason);
+
+            Assert.DoesNotContain("PRIVATE", result.Error.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(0, fixture.OrdinaryConnections.LiveLeaseCount);
+
+        Assert.Equal(ConnectionState.Closed, fixture.OrdinaryConnections.LastConnection!.State);
+    }
+
+    private sealed class DiagnosticOrdinaryFactory(
+        IGrimoireOrdinaryConnectionFactory inner,
+        CancellationTokenSource cancellation,
+        bool cancel,
+        bool duringCleanup) : IGrimoireOrdinaryConnectionFactory
+    {
+        public Task<Result<IGrimoireOrdinaryConnectionLease>> AcquireScopedAsync(
+            SqliteConnection connection, CovenantSqliteConnectionMode mode, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public async Task<Result<IGrimoireOrdinaryConnectionLease>> OpenFreshAsync(
+            GrimoireOrdinaryFreshConnectionKind kind, CancellationToken cancellationToken)
+        {
+            Result<IGrimoireOrdinaryConnectionLease> opened = await inner.OpenFreshAsync(kind, cancellationToken);
+
+            Assert.True(opened.IsSuccess);
+
+            if (cancel && !duringCleanup)
+            {
+                cancellation.Cancel();
+            }
+
+            return Result<IGrimoireOrdinaryConnectionLease>.Success(new Lease(opened.Value, cancellation, cancel && duringCleanup));
+        }
+
+        private sealed class Lease(IGrimoireOrdinaryConnectionLease inner,
+            CancellationTokenSource cancellation, bool cancelDuringCleanup) : IGrimoireOrdinaryConnectionLease
+        {
+            public SqliteConnection Connection => inner.Connection;
+
+            public void Dispose() => inner.Dispose();
+
+            public async ValueTask DisposeAsync()
+            {
+                await inner.DisposeAsync();
+
+                if (cancelDuringCleanup)
+                {
+                    cancellation.Cancel();
+                }
+
+                throw new IOException("PRIVATE-ORDINARY-DISPOSE-CANARY");
+            }
+        }
     }
 
     // Removing the post-drain guard would erase an orphaned Running run; widening it to
@@ -318,7 +801,6 @@ public sealed class CovenantErasureInventorySourceTests
     [Fact]
     public async Task Factory_preflight_borrows_the_inventory_snapshot_and_opens_no_guard_handle()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: true);
 
         await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
@@ -350,13 +832,11 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(0, fixture.Drain.MaximumActiveCount);
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
-
     }
 
     [Fact]
     public async Task Factory_guard_dataset_and_labels_observe_one_snapshot_during_a_catalog_interleaving()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: true);
 
         await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
@@ -376,13 +856,11 @@ public sealed class CovenantErasureInventorySourceTests
 
         await using (SqliteCommand establish = connection.CreateCommand())
         {
-
             establish.Transaction = transaction;
 
             establish.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
 
             Assert.IsType<byte[]>(await establish.ExecuteScalarAsync(CancellationToken.None));
-
         }
 
         await fixture.DamageCatalogAndAddDatabaseLabelAsync(index: 40);
@@ -418,7 +896,6 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.True(healthyOnNewSnapshot.IsFailure);
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
-
     }
 
     [Theory]
@@ -427,22 +904,17 @@ public sealed class CovenantErasureInventorySourceTests
     public async Task Complete_preflight_refuses_duplicate_producers_and_mismatched_active_work(
         bool duplicateProducer)
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SeedInterleavedLabelsAsync(3, includeExistingWorkItem: !duplicateProducer);
 
         if (duplicateProducer)
         {
-
             await fixture.AddDuplicateManagedProducerAsync(index: 1);
-
         }
         else
         {
-
             await fixture.MismatchExistingWorkRevisionAsync();
-
         }
 
         Guid dataset = await fixture.ReadDatasetGenerationAsync();
@@ -463,13 +935,11 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, preflight.Error.Code);
 
         Assert.Equal(0, fixture.Drain.ActiveCount);
-
     }
 
     [Fact]
     public async Task Caller_cancellation_after_enrollment_closes_disposes_and_unregisters_the_handle()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
@@ -506,13 +976,11 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(
             ConnectionState.Closed,
             fixture.OrdinaryConnections.LastConnection!.State);
-
     }
 
     [Fact]
     public async Task Owning_snapshot_holds_one_fresh_read_only_ordinary_lease_through_final_read()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SeedInterleavedLabelsAsync(1, includeExistingWorkItem: false);
@@ -534,7 +1002,6 @@ public sealed class CovenantErasureInventorySourceTests
 
         try
         {
-
             Task first = await Task.WhenAny(entered, reading);
 
             Assert.Same(entered, first);
@@ -548,15 +1015,12 @@ public sealed class CovenantErasureInventorySourceTests
                 connections.Kinds);
 
             Assert.Equal(ConnectionState.Open, connections.LastConnection!.State);
-
         }
         finally
         {
-
             pause.Release();
 
             _ = await reading.WaitAsync(TimeSpan.FromSeconds(10));
-
         }
 
         Result<CovenantOfflineTransitionSourceState> result = await reading;
@@ -566,7 +1030,6 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(0, connections.LiveLeaseCount);
 
         Assert.Equal(ConnectionState.Closed, connections.LastConnection!.State);
-
     }
 
     private static Guid LabelId(int index) =>
@@ -593,7 +1056,6 @@ public sealed class CovenantErasureInventorySourceTests
     [Fact]
     public async Task Offline_transition_source_read_returns_the_generation_and_all_three_epochs()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SetCanonicalEpochsAsync(accelerator: 7L, keyReclamation: 11L, envelopeKey: 13L);
@@ -614,7 +1076,6 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.Equal(11UL, read.Value.KeyReclamationEpoch);
 
         Assert.Equal(13UL, read.Value.EnvelopeKeyEpoch);
-
     }
 
     /// <summary>
@@ -641,7 +1102,6 @@ public sealed class CovenantErasureInventorySourceTests
         long keyReclamation,
         long envelopeKey)
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.SetCanonicalEpochsAsync(accelerator, keyReclamation, envelopeKey);
@@ -654,7 +1114,6 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.True(read.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
-
     }
 
     [Fact]
@@ -700,7 +1159,6 @@ public sealed class CovenantErasureInventorySourceTests
     [Fact]
     public async Task Offline_transition_source_read_refuses_an_absent_canonical_singleton()
     {
-
         await using InventoryFixture fixture = await InventoryFixture.CreateAsync(healthyCatalog: false);
 
         await fixture.DeleteCanonicalSingletonAsync();
@@ -713,12 +1171,10 @@ public sealed class CovenantErasureInventorySourceTests
         Assert.True(read.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
-
     }
 
     internal sealed class InventoryFixture : IAsyncDisposable
     {
-
         private static readonly Guid ProvenanceGeneration =
             new("CCCCCCCC-3333-4333-8333-333333333333");
 
@@ -732,7 +1188,6 @@ public sealed class CovenantErasureInventorySourceTests
             TrackingConnectionDrain drain,
             RecordingFreshOrdinaryConnectionFactory ordinaryConnections)
         {
-
             _database = database;
 
             Factory = factory;
@@ -740,7 +1195,6 @@ public sealed class CovenantErasureInventorySourceTests
             Drain = drain;
 
             OrdinaryConnections = ordinaryConnections;
-
         }
 
         internal CountingConnectionFactory Factory { get; }
@@ -751,13 +1205,11 @@ public sealed class CovenantErasureInventorySourceTests
 
         internal static async Task<InventoryFixture> CreateAsync(bool healthyCatalog)
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase
                 .CreateAsync(CancellationToken.None);
 
             try
             {
-
                 await database.InstallCoreObjectsAsync(
                     [
                         "InferenceRuns",
@@ -771,17 +1223,13 @@ public sealed class CovenantErasureInventorySourceTests
 
                 if (healthyCatalog)
                 {
-
                     await database.InstallHealthyCovenantCatalogAsync(
                         withAccelerator: false,
                         CancellationToken.None);
-
                 }
                 else
                 {
-
                     await database.InstallCanonicalAsync(CancellationToken.None);
-
                 }
 
                 CountingConnectionFactory factory = new(database.MaintenanceConnections());
@@ -792,17 +1240,13 @@ public sealed class CovenantErasureInventorySourceTests
                     new(database.Connection.ConnectionString);
 
                 return new InventoryFixture(database, factory, drain, ordinaryConnections);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal CovenantHealthyCatalogErasureGuard CreateGuard() =>
@@ -821,7 +1265,6 @@ public sealed class CovenantErasureInventorySourceTests
         internal async Task<RecordingFreshOrdinaryConnectionFactory>
             CreateOrdinaryConnectionsAsync()
         {
-
             await using SqliteConnection template = await Factory.OpenReadOnlyAsync(
                 CancellationToken.None);
 
@@ -830,11 +1273,10 @@ public sealed class CovenantErasureInventorySourceTests
             await template.CloseAsync();
 
             return new RecordingFreshOrdinaryConnectionFactory(connectionString);
-
         }
 
         internal CovenantErasureInventorySource CreateOrdinarySource(
-            RecordingFreshOrdinaryConnectionFactory connections) =>
+            IGrimoireOrdinaryConnectionFactory connections) =>
             new(
                 connections,
                 CreateOrdinaryGuard(connections),
@@ -842,7 +1284,7 @@ public sealed class CovenantErasureInventorySourceTests
                 new CovenantDisclosureExposureReader());
 
         private CovenantHealthyCatalogErasureGuard CreateOrdinaryGuard(
-            RecordingFreshOrdinaryConnectionFactory connections) =>
+            IGrimoireOrdinaryConnectionFactory connections) =>
             new(
                 connections,
                 new GrimoireSchemaManifestInspector(
@@ -866,12 +1308,10 @@ public sealed class CovenantErasureInventorySourceTests
             int count,
             bool includeExistingWorkItem)
         {
-
             await using SqliteTransaction transaction = _database.Connection.BeginTransaction(deferred: false);
 
             for (int index = 0; index < count; index++)
             {
-
                 bool managed = (index & 1) == 1;
 
                 ArtifactSensitivityLabel label = new(
@@ -896,27 +1336,59 @@ public sealed class CovenantErasureInventorySourceTests
 
                 if (managed)
                 {
-
                     await InsertManagedProducerAsync(transaction, index, label);
-
                 }
-
             }
 
             if (includeExistingWorkItem)
             {
-
                 await InsertExistingWorkItemAsync(transaction, index: 1);
-
             }
 
             await transaction.CommitAsync(CancellationToken.None);
+        }
 
+        internal async Task<(string Producer, string Work)> ReadOwnershipRevisionStorageAsync()
+        {
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = """
+                SELECT
+                    (SELECT typeof(Revision) || ':' || quote(Revision) FROM managed_file_write_intents LIMIT 1),
+                    (SELECT typeof(ExpectedSourceRevision) || ':' || quote(ExpectedSourceRevision)
+                        || ':' || typeof(CheckpointRevision) || ':' || quote(CheckpointRevision)
+                     FROM local_erasure_work_items LIMIT 1);
+                """;
+
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+
+            Assert.True(await reader.ReadAsync());
+
+            return (reader.GetString(0), reader.GetString(1));
+        }
+
+        internal void HoldExclusiveLock()
+        {
+            using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = "BEGIN EXCLUSIVE;";
+
+            command.ExecuteNonQuery();
+        }
+
+        internal async Task ExecuteDiagnosticSqlAsync(string sql, string canary)
+        {
+            await using SqliteCommand command = _database.Connection.CreateCommand();
+
+            command.CommandText = sql;
+
+            _ = command.Parameters.AddWithValue("$canary", canary);
+
+            _ = await command.ExecuteNonQueryAsync();
         }
 
         internal async Task DeleteManagedProducerAsync(Guid labelId)
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText =
@@ -925,17 +1397,14 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$label", Format(labelId));
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         internal async Task DamageCatalogAndAddDatabaseLabelAsync(int index)
         {
-
             await using SqliteTransaction transaction = _database.Connection.BeginTransaction(deferred: false);
 
             await using (SqliteCommand damage = _database.Connection.CreateCommand())
             {
-
                 damage.Transaction = transaction;
 
                 damage.CommandText = """
@@ -946,18 +1415,15 @@ public sealed class CovenantErasureInventorySourceTests
                     """;
 
                 Assert.Equal(1, await damage.ExecuteNonQueryAsync(CancellationToken.None));
-
             }
 
             await InsertLabelAsync(transaction, DatabaseLabel(index));
 
             await transaction.CommitAsync(CancellationToken.None);
-
         }
 
         internal async Task AddDuplicateManagedProducerAsync(int index)
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = """
@@ -981,12 +1447,10 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$source", Format(WriteOperationId(index)));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task MismatchExistingWorkRevisionAsync()
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = """
@@ -998,12 +1462,10 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$work", Format(ExistingWorkItemId));
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task CorruptManagedProducerEvidenceAsync(bool durableLocation)
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = durableLocation
@@ -1013,12 +1475,10 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$malformed", new byte[] { 0x7F });
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal async Task<Guid> ReadDatasetGenerationAsync()
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = "SELECT DatasetGeneration FROM covenant_state WHERE StateKey = 1;";
@@ -1026,7 +1486,6 @@ public sealed class CovenantErasureInventorySourceTests
             object? value = await command.ExecuteScalarAsync(CancellationToken.None);
 
             return new Guid(Assert.IsType<byte[]>(value));
-
         }
 
         internal async Task SetCanonicalEpochsAsync(
@@ -1034,7 +1493,6 @@ public sealed class CovenantErasureInventorySourceTests
             long keyReclamation,
             long envelopeKey)
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = """
@@ -1055,7 +1513,6 @@ public sealed class CovenantErasureInventorySourceTests
             command.Parameters.AddWithValue("$now", Now);
 
             Assert.Equal(1, await command.ExecuteNonQueryAsync(CancellationToken.None));
-
         }
 
         internal Task<Result<CovenantOfflineTransitionSourceState>> ReadTerminalObservedStateAsync() =>
@@ -1094,19 +1551,16 @@ public sealed class CovenantErasureInventorySourceTests
 
         internal async Task DeleteCanonicalSingletonAsync()
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = "DELETE FROM covenant_state WHERE StateKey = 1;";
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         internal async Task<CovenantCanonicalDatasetTransition> PreselectAsync(
             CancellationToken cancellationToken)
         {
-
             await using SqliteCommand command = _database.Connection.CreateCommand();
 
             command.CommandText = """
@@ -1132,7 +1586,6 @@ public sealed class CovenantErasureInventorySourceTests
                     source.AcceleratorEpoch + 1,
                     source.KeyReclamationEpoch + 1,
                     source.EnvelopeKeyEpoch + 1));
-
         }
 
         internal Task ClosePrimaryConnectionAsync() => _database.Connection.CloseAsync();
@@ -1158,7 +1611,6 @@ public sealed class CovenantErasureInventorySourceTests
         internal async Task<(CovenantClosedPeriodTestAuthority Period, CountingMaintenanceFactory Opens)>
             ClosedPeriodAsync()
         {
-
             CountingMaintenanceFactory? counter = null;
 
             CovenantClosedPeriodTestAuthority period = await CovenantClosedPeriodTestAuthority.CloseAsync(
@@ -1169,7 +1621,6 @@ public sealed class CovenantErasureInventorySourceTests
                 inner => counter = new CountingMaintenanceFactory(inner));
 
             return (period, counter!);
-
         }
 
         public ValueTask DisposeAsync() => _database.DisposeAsync();
@@ -1178,7 +1629,6 @@ public sealed class CovenantErasureInventorySourceTests
         internal sealed class CountingMaintenanceFactory(IGrimoireMaintenanceConnectionFactory inner)
             : IGrimoireMaintenanceConnectionFactory
         {
-
             /// <summary>How many maintenance snapshots the inventory has opened.</summary>
             internal int Opened { get; private set; }
 
@@ -1188,13 +1638,32 @@ public sealed class CovenantErasureInventorySourceTests
             /// <summary>The connection the most recent snapshot ran on.</summary>
             internal SqliteConnection? LastConnection { get; private set; }
 
+            internal Exception? DisposeFailure { get; set; }
+
+            internal Error? OpenFailure { get; set; }
+
+            internal Exception? OpenException { get; set; }
+
+            internal Action? AfterSnapshotOpen { get; set; }
+
+            internal Action? BeforeDisposeFailure { get; set; }
+
             public async Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalInventorySnapshotAsync(
                 IGrimoireMaintenanceConnectionCapability capability,
                 IGrimoireMaintenanceIoLane lane,
                 CancellationToken cancellationToken)
             {
-
                 Opened++;
+
+                if (OpenException is { } exception)
+                {
+                    throw exception;
+                }
+
+                if (OpenFailure is { } failure)
+                {
+                    return Result<IGrimoireMaintenanceConnectionLease>.Failure(failure);
+                }
 
                 Result<IGrimoireMaintenanceConnectionLease> opened = await inner
                     .OpenJournalInventorySnapshotAsync(capability, lane, cancellationToken)
@@ -1202,18 +1671,17 @@ public sealed class CovenantErasureInventorySourceTests
 
                 if (opened.IsFailure)
                 {
-
                     return opened;
-
                 }
 
                 LiveLeaseCount++;
 
                 LastConnection = opened.Value.Connection;
 
+                AfterSnapshotOpen?.Invoke();
+
                 return Result<IGrimoireMaintenanceConnectionLease>.Success(
                     new CountingLease(opened.Value, this));
-
             }
 
             public Task<Result<IGrimoireMaintenanceConnectionLease>> OpenJournalCanonicalErasureAsync(
@@ -1262,27 +1730,28 @@ public sealed class CovenantErasureInventorySourceTests
                 IGrimoireMaintenanceConnectionLease inner,
                 CountingMaintenanceFactory owner) : IGrimoireMaintenanceConnectionLease
             {
-
                 public SqliteConnection Connection => inner.Connection;
 
                 public async ValueTask DisposeAsync()
                 {
-
                     await inner.DisposeAsync().ConfigureAwait(false);
 
                     owner.LiveLeaseCount--;
 
+                    owner.BeforeDisposeFailure?.Invoke();
+
+                    if (owner.DisposeFailure is { } failure)
+                    {
+                        throw failure;
+                    }
                 }
-
             }
-
         }
 
         private static async Task InsertLabelAsync(
             SqliteTransaction transaction,
             ArtifactSensitivityLabel label)
         {
-
             await using SqliteCommand command = transaction.Connection!.CreateCommand();
 
             command.Transaction = transaction;
@@ -1322,7 +1791,6 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$created", Now);
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private static async Task InsertManagedProducerAsync(
@@ -1330,7 +1798,6 @@ public sealed class CovenantErasureInventorySourceTests
             int index,
             ArtifactSensitivityLabel label)
         {
-
             ManagedFileDurableLocationEvidence target = new(
                 new CovenantDigest(DigestBytes(index + 3000)),
                 pathRevision: 1,
@@ -1383,14 +1850,12 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$now", Now);
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private static async Task InsertExistingWorkItemAsync(
             SqliteTransaction transaction,
             int index)
         {
-
             await using SqliteCommand command = transaction.Connection!.CreateCommand();
 
             command.Transaction = transaction;
@@ -1419,18 +1884,15 @@ public sealed class CovenantErasureInventorySourceTests
             _ = command.Parameters.AddWithValue("$now", Now);
 
             _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         private static byte[] DigestBytes(int value)
         {
-
             byte[] bytes = new byte[32];
 
             BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(28), value + 1);
 
             return bytes;
-
         }
 
         private static ArtifactSensitivityLabel DatabaseLabel(int index) =>
@@ -1449,13 +1911,11 @@ public sealed class CovenantErasureInventorySourceTests
                 producingAdmissionDigest: null,
                 producingMaintenanceReceiptDigest: null,
                 DateTimeOffset.Parse(Now));
-
     }
 
     internal sealed class CountingConnectionFactory(IDesignTimeGrimoireConnectionFactory inner)
         : IDesignTimeGrimoireConnectionFactory
     {
-
         private int _readOnlyOpenCount;
 
         public string DatabasePath => inner.DatabasePath;
@@ -1469,7 +1929,6 @@ public sealed class CovenantErasureInventorySourceTests
 
         public async Task<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
         {
-
             _ = Interlocked.Increment(ref _readOnlyOpenCount);
 
             SqliteConnection connection = await inner.OpenReadOnlyAsync(cancellationToken);
@@ -1477,7 +1936,6 @@ public sealed class CovenantErasureInventorySourceTests
             LastReadOnlyConnection = connection;
 
             return connection;
-
         }
 
         public Task<SqliteConnection> OpenSidecarFreeReadOnlyAsync(CancellationToken cancellationToken) =>
@@ -1494,13 +1952,11 @@ public sealed class CovenantErasureInventorySourceTests
             string path,
             CancellationToken cancellationToken) =>
             inner.AttachSideFileAsync(connection, alias, path, cancellationToken);
-
     }
 
     internal sealed class TrackingConnectionDrain(ICovenantConnectionDrain inner)
         : ICovenantConnectionDrain
     {
-
         private int _activeCount;
 
         private int _maximumActiveCount;
@@ -1511,7 +1967,6 @@ public sealed class CovenantErasureInventorySourceTests
 
         public IDisposable Register(SqliteConnection connection)
         {
-
             IDisposable enrollment = inner.Register(connection);
 
             int active = Interlocked.Increment(ref _activeCount);
@@ -1520,22 +1975,17 @@ public sealed class CovenantErasureInventorySourceTests
 
             do
             {
-
                 maximum = Volatile.Read(ref _maximumActiveCount);
 
                 if (active <= maximum)
                 {
-
                     break;
-
                 }
-
             }
 
             while (Interlocked.CompareExchange(ref _maximumActiveCount, active, maximum) != maximum);
 
             return new TrackingEnrollment(this, enrollment);
-
         }
 
         public Task<Result> DrainAsync(CancellationToken cancellationToken) =>
@@ -1548,27 +1998,19 @@ public sealed class CovenantErasureInventorySourceTests
             TrackingConnectionDrain owner,
             IDisposable inner) : IDisposable
         {
-
             private int _disposed;
 
             public void Dispose()
             {
-
                 if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 {
-
                     return;
-
                 }
 
                 inner.Dispose();
 
                 _ = Interlocked.Decrement(ref owner._activeCount);
-
             }
-
         }
-
     }
-
 }

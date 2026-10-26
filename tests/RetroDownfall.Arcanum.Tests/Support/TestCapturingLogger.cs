@@ -24,10 +24,12 @@ internal sealed class TestCapturingLogger<TCategory> : ILogger<TCategory>
         _entries.Enqueue(new TestLogEntry(
             logLevel,
             formatter(state, exception),
-            exception));
+            exception,
+            state is IEnumerable<KeyValuePair<string, object?>> values ? values.ToArray() : []));
 }
 
 internal sealed record TestLogEntry(
     LogLevel Level,
     string Message,
-    Exception? Exception);
+    Exception? Exception,
+    IReadOnlyList<KeyValuePair<string, object?>>? Properties = null);

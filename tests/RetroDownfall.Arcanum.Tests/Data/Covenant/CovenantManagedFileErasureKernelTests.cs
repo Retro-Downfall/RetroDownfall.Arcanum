@@ -172,6 +172,193 @@ public sealed class CovenantManagedFileErasureKernelTests
         Assert.Equal(3, await fixture.CountAsync("SELECT StateCode FROM local_erasure_work_items;"));
     }
 
+    [Theory]
+    [InlineData(1.5, false)]
+    [InlineData(0, true)]
+    [InlineData(-1, true)]
+    public async Task Noncanonical_campaign_root_revision_never_authorizes_a_managed_file_delete(double revision, bool bypassRangeCheck)
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("guarded-root.md", "PRIVATE-OWNED-FILE-CANARY");
+
+        await using (SqliteCommand corrupt = fixture.Connection.CreateCommand())
+        {
+            corrupt.CommandText = (bypassRangeCheck ? "PRAGMA ignore_check_constraints = ON; " : string.Empty)
+                + "UPDATE campaign_path_identities SET Revision = $revision; PRAGMA ignore_check_constraints = OFF;";
+
+            corrupt.Parameters.AddWithValue("$revision", revision);
+
+            await corrupt.ExecuteNonQueryAsync(Token);
+        }
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize), Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority
+            .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize).Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await fixture.Kernel.EraseAsync(
+            file.Request(Guid.NewGuid(), Guid.NewGuid()), authority, Token);
+
+        Assert.True(File.Exists(file.FullPath));
+
+        Assert.Equal("PRIVATE-OWNED-FILE-CANARY", await File.ReadAllTextAsync(file.FullPath, Token));
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.True(erased.Value.IsBlocked);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(7, await fixture.CountAsync("SELECT PhaseCode FROM managed_file_write_intents;"));
+    }
+
+    [Theory]
+    [InlineData("ExpectedSourceRevision", false)]
+    [InlineData("CheckpointRevision", false)]
+    [InlineData("ExpectedSourceRevision", true)]
+    [InlineData("CheckpointRevision", true)]
+    public async Task Malformed_resumed_ownership_revisions_never_authorize_a_file_delete(string field, bool negative)
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("guarded-resume.md", "PRIVATE-RESUMED-FILE-CANARY");
+
+        Guid workItemId = Guid.NewGuid();
+
+        Guid operationId = Guid.NewGuid();
+
+        await fixture.SeedPreparedWorkItemAsync(file, workItemId, operationId);
+
+        await fixture.CorruptWorkRevisionAsync(field, negative ? -1 : field == "ExpectedSourceRevision" ? file.Revision + 0.5 : 0.5);
+
+        CovenantOperationGate gate = CovenantOperationGateFixture.CreateGate();
+
+        await using CovenantExclusiveLease lease = (await gate.AcquireExclusiveAsync(
+            CovenantOperationGateFixture.Owner(CovenantExclusiveOperation.CovenantFamilyReinitialize), Token)).Value;
+
+        CovenantArtifactErasureAuthority authority = CovenantArtifactErasureAuthority
+            .ForExclusive(lease, CovenantExclusiveOperation.CovenantFamilyReinitialize).Value;
+
+        Result<CovenantArtifactErasureProgress> erased = await fixture.Kernel.EraseAsync(
+            file.Request(workItemId, operationId), authority, Token);
+
+        Assert.True(File.Exists(file.FullPath));
+
+        Assert.Equal("PRIVATE-RESUMED-FILE-CANARY", await File.ReadAllTextAsync(file.FullPath, Token));
+
+        Assert.True(erased.IsSuccess);
+
+        Assert.True(erased.Value.IsBlocked);
+
+        Assert.Equal(0UL, erased.Value.ErasedCount);
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(7, await fixture.CountAsync("SELECT PhaseCode FROM managed_file_write_intents;"));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT StateCode FROM local_erasure_work_items;"));
+
+        Result<LocalErasureWorkItemRow?> refused = await LocalErasureWorkItemStore.TryReadAsync(
+            fixture.Connection, null, workItemId, Token);
+
+        Assert.True(refused.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.ManualArtifactErasureRequired, refused.Error.Code);
+
+        Assert.Equal(CovenantInventoryFailureReason.ManagedOwnershipMismatch, refused.Error.CovenantInventoryFailure?.Reason);
+
+        Assert.Equal(file.LabelId, refused.Error.CovenantInventoryFailure?.LabelId);
+
+        Assert.Equal(file.ArtifactId, refused.Error.CovenantInventoryFailure?.ArtifactId);
+
+        Assert.DoesNotContain("PRIVATE", refused.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(file.FullPath, refused.Error.Message, StringComparison.Ordinal);
+
+        string json = System.Text.Json.JsonSerializer.Serialize(refused.Error,
+            RetroDownfall.Arcanum.Api.Serialization.ArcanumJsonContext.Default.Error);
+
+        Assert.DoesNotContain("PRIVATE", json, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("covenantInventoryFailure", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(1L)]
+    [InlineData(long.MaxValue)]
+    public async Task Canonical_campaign_root_revision_boundaries_are_preserved_exactly(long revision)
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("root-boundary.md", "preserved bytes");
+
+        await using (SqliteCommand update = fixture.Connection.CreateCommand())
+        {
+            update.CommandText = "UPDATE campaign_path_identities SET Revision = $revision;";
+
+            update.Parameters.AddWithValue("$revision", revision);
+
+            await update.ExecuteNonQueryAsync(Token);
+        }
+
+        ManagedFileDurableLocationEvidence location = new(file.Location.CampaignRootIdentityDigest, revision,
+            file.Location.NormalizedParentSegments, file.Location.ParentPhysicalIdentityDigest, file.Location.TargetLeaf);
+
+        Result<ManagedFileResolvedRoot?> resolved = await ManagedFileRootResolver.ResolveAsync(
+            fixture.Connection, null, location, Token);
+
+        Assert.True(resolved.IsSuccess);
+
+        Assert.NotNull(resolved.Value);
+
+        Assert.Equal(revision, resolved.Value.PathRevision);
+
+        Assert.True(File.Exists(file.FullPath));
+    }
+
+    [Theory]
+    [InlineData(0L, 0L)]
+    [InlineData(6L, 7L)]
+    [InlineData(long.MaxValue, long.MaxValue)]
+    public async Task Canonical_resumed_revision_boundaries_are_materialized_exactly_without_effects(
+        long sourceRevision, long checkpointRevision)
+    {
+        await using ManagedFileFixture fixture = await ManagedFileFixture.CreateAsync();
+
+        SeededManagedFile file = await fixture.SeedAdoptedFileAsync("resume-boundary.md", "preserved bytes");
+
+        Guid workItemId = Guid.NewGuid();
+
+        await fixture.SeedPreparedWorkItemAsync(file, workItemId);
+
+        await fixture.CorruptWorkRevisionAsync("ExpectedSourceRevision", sourceRevision);
+
+        await fixture.CorruptWorkRevisionAsync("CheckpointRevision", checkpointRevision);
+
+        Result<LocalErasureWorkItemRow?> row = await LocalErasureWorkItemStore.TryReadAsync(
+            fixture.Connection, null, workItemId, Token);
+
+        Assert.True(row.IsSuccess);
+
+        Assert.NotNull(row.Value);
+
+        Assert.Equal(sourceRevision, row.Value.ExpectedSourceRevision);
+
+        Assert.Equal(checkpointRevision, row.Value.CheckpointRevision);
+
+        Assert.True(File.Exists(file.FullPath));
+
+        Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity;"));
+
+        Assert.Equal(7, await fixture.CountAsync("SELECT PhaseCode FROM managed_file_write_intents;"));
+    }
+
     [Fact]
     public async Task An_already_absent_file_is_idempotent_and_still_completes_its_producer()
     {
@@ -508,7 +695,7 @@ public sealed class CovenantManagedFileErasureKernelTests
                 ownership);
         }
 
-        internal async Task SeedPreparedWorkItemAsync(SeededManagedFile file)
+        internal async Task SeedPreparedWorkItemAsync(SeededManagedFile file, Guid? workItemId = null, Guid? operationId = null)
         {
             await using SqliteTransaction transaction = Connection.BeginTransaction(deferred: false);
 
@@ -519,8 +706,8 @@ public sealed class CovenantManagedFileErasureKernelTests
                 await LocalErasureWorkItemStore.InsertPreparedAsync(
                     Connection,
                     transaction,
-                    Guid.NewGuid(),
-                    Guid.NewGuid(),
+                    workItemId ?? Guid.NewGuid(),
+                    operationId ?? Guid.NewGuid(),
                     file.WriteOperationId,
                     file.Revision,
                     file.ArtifactId,
@@ -532,6 +719,23 @@ public sealed class CovenantManagedFileErasureKernelTests
             }
 
             await transaction.CommitAsync(Token);
+        }
+
+        internal async Task CorruptWorkRevisionAsync(string field, object value)
+        {
+            // A legacy/corrupt persisted row is installed deliberately, then the real update guard
+            // is restored before the production erasure sees it.
+            await using (SqliteCommand corrupt = Connection.CreateCommand())
+            {
+                corrupt.CommandText = "DROP TRIGGER local_erasure_work_items_guard_update; PRAGMA ignore_check_constraints = ON; "
+                    + "UPDATE local_erasure_work_items SET " + field + " = $value; PRAGMA ignore_check_constraints = OFF;";
+
+                corrupt.Parameters.AddWithValue("$value", value);
+
+                await corrupt.ExecuteNonQueryAsync(Token);
+            }
+
+            await _database.InstallCoreObjectsAsync(["local_erasure_work_items_guard_update"], Token);
         }
 
         internal async Task<long> CountAsync(string sql) =>

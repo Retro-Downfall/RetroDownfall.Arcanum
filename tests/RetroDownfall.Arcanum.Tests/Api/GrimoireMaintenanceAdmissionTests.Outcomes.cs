@@ -628,21 +628,25 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             Assert.Null(entry.Exception);
         });
 
-        MaintenanceHostLog warning = Assert.Single(warnings, entry =>
-            entry.Template?.StartsWith("A Covenant erasure aborted", StringComparison.Ordinal) == true
-            || entry.Template?.StartsWith("A Covenant erasure stopped", StringComparison.Ordinal) == true);
+        MaintenanceHostLog warning = Assert.Single(warnings, entry => entry.Template ==
+            "Covenant erasure inventory refused for durable operation {OperationId} at phase {ResetPhase} "
+            + "with {ErrorCode}: {InventoryDiagnostic} {Admission}.");
+
+        string admission = boundary is CovenantErasureFaultBoundary.BeforePhaseBegin
+            ? "admission reopens"
+            : "admission stays closed";
+
+        Assert.Equal(
+            $"Covenant erasure inventory refused for durable operation {operationId} at phase InventoryPrepared "
+                + $"with {ErrorCodes.Covenant.ErasureIncomplete}: The pre-effect checks could not be proved. "
+                + "Preserve the installation and inspect the operation and safe diagnostics before retrying. "
+                + $"{admission}.",
+            warning.Message);
+
+        Assert.DoesNotContain("Injected outcome fault", warning.Message, StringComparison.Ordinal);
 
         if (boundary is CovenantErasureFaultBoundary.BeforePhaseBegin)
         {
-            Assert.Equal(
-                "A Covenant erasure aborted before any artifact was touched with {ErrorCode}; admission reopens.",
-                warning.Template);
-
-            Assert.Equal(
-                $"A Covenant erasure aborted before any artifact was touched with "
-                    + $"{ErrorCodes.Covenant.ErasureIncomplete}; admission reopens.",
-                warning.Message);
-
             return;
         }
 
@@ -652,17 +656,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal($"A Covenant erasure must park durable operation {operationId} at phase InventoryPrepared "
             + "and journal state Applying: TerminalIntentUnavailable; admission stays closed.", parked.Message);
-
-        Assert.Equal(
-            "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
-                + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
-            warning.Template);
-
-        Assert.Equal(
-            $"A Covenant erasure stopped at phase {CovenantResetPhase.InventoryPrepared} for durable operation "
-                + $"{operationId} with {ErrorCodes.Covenant.ErasureIncomplete}: Injected outcome fault at "
-                + $"{boundary} of {CovenantResetPhase.CanonicalApplied}.; admission stays closed.",
-            warning.Message);
     }
 
     private static RecordedMaintenanceOperationRead AssertInitialBindingOperation(

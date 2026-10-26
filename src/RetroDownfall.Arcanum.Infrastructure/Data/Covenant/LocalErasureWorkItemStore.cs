@@ -573,6 +573,20 @@ internal static class LocalErasureWorkItemStore
 
     private static Result<LocalErasureWorkItemRow> Read(SqliteDataReader reader)
     {
+        if (reader.GetValue(3) is not long expectedSourceRevision || expectedSourceRevision < 0
+            || reader.GetValue(10) is not long checkpointRevision || checkpointRevision < 0)
+        {
+            Guid? labelId = reader.GetValue(5) is string labelText
+                && Guid.TryParse(labelText, out Guid label) && label != Guid.Empty ? label : null;
+
+            Guid? artifactId = reader.GetValue(4) is string artifactText
+                && Guid.TryParse(artifactText, out Guid artifact) && artifact != Guid.Empty ? artifact : null;
+
+            return Result<LocalErasureWorkItemRow>.Failure(
+                new CovenantInventoryFailureDetails(CovenantInventoryFailureReason.ManagedOwnershipMismatch,
+                    labelId, artifactId, SensitiveArtifactKind.ManagedWorkspaceFile).ToError());
+        }
+
         Result<ManagedFileDurableLocationEvidence> location =
             ManagedFileEvidenceCodec.DecodeLocation((byte[])reader.GetValue(6));
 
@@ -594,14 +608,14 @@ internal static class LocalErasureWorkItemStore
                 Guid.Parse(reader.GetString(0), CultureInfo.InvariantCulture),
                 Guid.Parse(reader.GetString(1), CultureInfo.InvariantCulture),
                 Guid.Parse(reader.GetString(2), CultureInfo.InvariantCulture),
-                reader.GetInt64(3),
+                expectedSourceRevision,
                 Guid.Parse(reader.GetString(4), CultureInfo.InvariantCulture),
                 Guid.Parse(reader.GetString(5), CultureInfo.InvariantCulture),
                 location.Value,
                 ownership.Value,
                 (LocalErasureWorkItemState)reader.GetInt32(8),
                 reader.IsDBNull(9) ? null : (LocalErasureDeletionEvidenceCode)reader.GetInt32(9),
-                reader.GetInt64(10)));
+                checkpointRevision));
     }
 
     private static string Iso(DateTimeOffset value) =>

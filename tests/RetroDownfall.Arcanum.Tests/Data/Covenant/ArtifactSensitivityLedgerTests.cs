@@ -74,6 +74,46 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.Equal(1, projection.Revision);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Malformed_timestamp_diagnostic_keeps_only_independently_validated_ids(bool malformedLabelId)
+    {
+        await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
+
+        Guid artifactId = Guid.NewGuid();
+
+        Result<LabeledArtifactWriteReceipt> written = await fixture.Ledger.LabelAsync(
+            Tainted(SensitiveArtifactKind.Lexicon, artifactId, GenerationOne), CancellationToken.None);
+
+        Guid labelId = written.Value.LabelId!.Value;
+
+        await using SqliteCommand corrupt = fixture.Connection.CreateCommand();
+
+        corrupt.CommandText = "DROP TRIGGER IF EXISTS artifact_sensitivity_guard_update; PRAGMA ignore_check_constraints = ON; "
+            + "UPDATE artifact_sensitivity SET CreatedAtUtc = $canary"
+            + (malformedLabelId ? ", LabelId = $canary;" : ";");
+
+        corrupt.Parameters.AddWithValue("$canary", "PRIVATE-LEDGER-TIMESTAMP\r\nforged-diagnostic");
+
+        await corrupt.ExecuteNonQueryAsync();
+
+        Result<ArtifactSensitivityLabel?> read = await fixture.Ledger.TryReadLabelAsync(
+            SensitiveArtifactKind.Lexicon, artifactId, CancellationToken.None);
+
+        Assert.True(read.IsFailure);
+
+        Assert.Equal(CovenantInventoryFailureReason.MalformedLabel, read.Error.CovenantInventoryFailure?.Reason);
+
+        Assert.Equal(malformedLabelId ? null : (Guid?)labelId, read.Error.CovenantInventoryFailure?.LabelId);
+
+        Assert.Equal(artifactId, read.Error.CovenantInventoryFailure?.ArtifactId);
+
+        Assert.DoesNotContain("PRIVATE", read.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("forged-diagnostic", read.Error.Message, StringComparison.Ordinal);
+    }
+
     private static readonly Guid Session = Guid.Parse("0A1B2C3D-4E5F-4A6B-8C9D-0E1F2A3B4C5D");
 
     private static readonly Guid Campaign = Guid.Parse("1B2C3D4E-5F60-4B7C-8D9E-1F2A3B4C5D6E");
@@ -85,7 +125,6 @@ public sealed class ArtifactSensitivityLedgerTests
     [Fact]
     public async Task An_untainted_write_persists_no_label_and_no_projection()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Result<LabeledArtifactWriteReceipt> receipt = await fixture.Ledger.LabelAsync(
@@ -102,13 +141,11 @@ public sealed class ArtifactSensitivityLedgerTests
 
         Assert.False((await fixture.Ledger.ReadSessionProjectionAsync(Session, CancellationToken.None))
             .Value.IsTainted);
-
     }
 
     [Fact]
     public async Task A_tainted_write_persists_its_label_and_advances_the_session_projection()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -142,13 +179,11 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.Equal(1, projection.TaintedArtifactCount);
 
         Assert.Equal(1, projection.Revision);
-
     }
 
     [Fact]
     public async Task Repeating_the_exact_same_label_is_an_idempotent_replay()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -170,13 +205,11 @@ public sealed class ArtifactSensitivityLedgerTests
             1,
             (await fixture.Ledger.ReadSessionProjectionAsync(Session, CancellationToken.None))
                 .Value.TaintedArtifactCount);
-
     }
 
     [Fact]
     public async Task A_tainted_artifact_can_never_be_relabelled_clean()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -199,13 +232,11 @@ public sealed class ArtifactSensitivityLedgerTests
                 SensitiveArtifactKind.ToolArtifact,
                 artifactId,
                 CancellationToken.None)).Value!.Sensitivity);
-
     }
 
     [Fact]
     public async Task A_different_label_for_the_same_artifact_is_refused_rather_than_added_beside_it()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -221,13 +252,11 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.True(conflicting.IsFailure);
 
         Assert.Equal(1, await fixture.CountLabelsAsync());
-
     }
 
     [Fact]
     public async Task The_same_artifact_identity_under_two_kinds_is_two_independent_labels()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -241,20 +270,17 @@ public sealed class ArtifactSensitivityLedgerTests
             CancellationToken.None)).IsSuccess);
 
         Assert.Equal(2, await fixture.CountLabelsAsync());
-
     }
 
     [Fact]
     public async Task A_rolled_back_caller_transaction_leaves_no_label_behind()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
 
         await using (SqliteTransaction transaction = fixture.Connection.BeginTransaction(deferred: false))
         {
-
             Result<LabeledArtifactWriteReceipt> written = await ArtifactSensitivityLedger.WriteWithinAsync(
                 fixture.Connection,
                 transaction,
@@ -264,7 +290,6 @@ public sealed class ArtifactSensitivityLedgerTests
             Assert.True(written.IsSuccess);
 
             await transaction.RollbackAsync(CancellationToken.None);
-
         }
 
         Assert.Equal(0, await fixture.CountLabelsAsync());
@@ -273,13 +298,11 @@ public sealed class ArtifactSensitivityLedgerTests
             SensitiveArtifactKind.SessionTitle,
             artifactId,
             CancellationToken.None)).Value);
-
     }
 
     [Fact]
     public async Task Two_generations_in_one_session_merge_into_one_projection_fingerprint()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         _ = await fixture.Ledger.LabelAsync(
@@ -316,13 +339,11 @@ public sealed class ArtifactSensitivityLedgerTests
             merged.GenerationProvenanceDigest,
             (await reversed.Ledger.ReadSessionProjectionAsync(Session, CancellationToken.None))
                 .Value.GenerationProvenanceDigest);
-
     }
 
     [Fact]
     public async Task A_malformed_label_row_fails_closed_rather_than_reading_as_absent()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -334,11 +355,9 @@ public sealed class ArtifactSensitivityLedgerTests
         // Corrupt only the stored timestamp, which the row's own CHECK constraints do not police.
         await using (SqliteCommand corrupt = fixture.Connection.CreateCommand())
         {
-
             corrupt.CommandText = "UPDATE artifact_sensitivity SET CreatedAtUtc = 'not-a-timestamp';";
 
             _ = await corrupt.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         Result<ArtifactSensitivityLabel?> read = await fixture.Ledger.TryReadLabelAsync(
@@ -349,13 +368,11 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.True(read.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
-
     }
 
     [Fact]
     public async Task A_read_through_the_provider_neutral_transaction_answers_what_the_point_read_answers()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid labelled = Guid.NewGuid();
@@ -407,13 +424,11 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.True(otherKind.IsSuccess);
 
         Assert.Null(otherKind.Value);
-
     }
 
     [Fact]
     public async Task A_malformed_label_row_fails_closed_through_the_provider_neutral_transaction_too()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         Guid artifactId = Guid.NewGuid();
@@ -424,11 +439,9 @@ public sealed class ArtifactSensitivityLedgerTests
 
         await using (SqliteCommand corrupt = fixture.Connection.CreateCommand())
         {
-
             corrupt.CommandText = "UPDATE artifact_sensitivity SET CreatedAtUtc = 'not-a-timestamp';";
 
             _ = await corrupt.ExecuteNonQueryAsync(CancellationToken.None);
-
         }
 
         await using SqliteTransaction transaction = fixture.Connection.BeginTransaction();
@@ -443,13 +456,11 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.True(read.IsFailure);
 
         Assert.Equal(ErrorCodes.Covenant.IntegrityFailure, read.Error.Code);
-
     }
 
     [Fact]
     public void An_untainted_write_cannot_claim_producing_covenant_evidence()
     {
-
         _ = Assert.Throws<ArgumentException>(() => new DerivedArtifactWrite(
             SensitiveArtifactKind.AssistantEntry,
             Guid.NewGuid(),
@@ -461,13 +472,11 @@ public sealed class ArtifactSensitivityLedgerTests
             ContentSensitivity.None,
             GenerationProvenance.CreateExact([]),
             producingMaintenanceReceiptDigest: Digest(9)));
-
     }
 
     [Fact]
     public void A_producing_plan_without_its_admission_is_refused()
     {
-
         _ = Assert.Throws<ArgumentException>(() => new DerivedArtifactWrite(
             SensitiveArtifactKind.AssistantEntry,
             Guid.NewGuid(),
@@ -479,7 +488,6 @@ public sealed class ArtifactSensitivityLedgerTests
             ContentSensitivity.CovenantDerived,
             GenerationProvenance.CreateExact([GenerationOne]),
             producingPlanDigest: Digest(4)));
-
     }
 
     private static DerivedArtifactWrite Clean(SensitiveArtifactKind kind, Guid artifactId) =>
@@ -511,18 +519,14 @@ public sealed class ArtifactSensitivityLedgerTests
 
     private static CovenantDigest Digest(byte seed)
     {
-
         byte[] bytes = new byte[32];
 
         for (int index = 0; index < bytes.Length; index++)
         {
-
             bytes[index] = (byte)(seed + index);
-
         }
 
         return new CovenantDigest(bytes);
-
     }
 
     /// <summary>
@@ -536,7 +540,6 @@ public sealed class ArtifactSensitivityLedgerTests
     [Fact]
     public async Task Reading_the_session_projection_never_takes_the_residence_latching_connection()
     {
-
         await using LedgerFixture fixture = await LedgerFixture.CreateAsync();
 
         RecordingConnectionSource connections = new(fixture.Connection);
@@ -551,7 +554,6 @@ public sealed class ArtifactSensitivityLedgerTests
         Assert.Equal(0, connections.LatchingCalls);
 
         Assert.Equal(1, connections.CoreCalls);
-
     }
 
     /// <summary>
@@ -564,29 +566,23 @@ public sealed class ArtifactSensitivityLedgerTests
     /// </remarks>
     private sealed class RecordingConnectionSource(SqliteConnection connection) : ICovenantConnectionSource
     {
-
         internal int LatchingCalls { get; private set; }
 
         internal int CoreCalls { get; private set; }
 
         public ValueTask<SqliteConnection> GetOpenConnectionAsync(CancellationToken cancellationToken)
         {
-
             LatchingCalls++;
 
             return ValueTask.FromResult(connection);
-
         }
 
         public ValueTask<SqliteConnection> GetOpenCoreConnectionAsync(CancellationToken cancellationToken)
         {
-
             CoreCalls++;
 
             return ValueTask.FromResult(connection);
-
         }
-
     }
 
     /// <summary>
@@ -598,16 +594,13 @@ public sealed class ArtifactSensitivityLedgerTests
     /// </remarks>
     private sealed class LedgerFixture : IAsyncDisposable
     {
-
         private readonly CovenantSchemaScratchDatabase _database;
 
         private LedgerFixture(CovenantSchemaScratchDatabase database)
         {
-
             _database = database;
 
             Ledger = new ArtifactSensitivityLedger(new FixedCovenantConnectionSource(database.Connection));
-
         }
 
         internal ArtifactSensitivityLedger Ledger { get; }
@@ -616,13 +609,11 @@ public sealed class ArtifactSensitivityLedgerTests
 
         internal static async Task<LedgerFixture> CreateAsync()
         {
-
             CovenantSchemaScratchDatabase database = await CovenantSchemaScratchDatabase
                 .CreateAsync(CancellationToken.None);
 
             try
             {
-
                 await database.InstallCoreObjectsAsync(
                     ["Campaigns", "Sessions", "artifact_sensitivity", "session_sensitivity_state"],
                     CancellationToken.None);
@@ -641,24 +632,18 @@ public sealed class ArtifactSensitivityLedgerTests
                 _ = await seed.ExecuteNonQueryAsync(CancellationToken.None);
 
                 return new LedgerFixture(database);
-
             }
             catch
             {
-
                 await database.DisposeAsync();
 
                 throw;
-
             }
-
         }
 
         internal Task<long> CountLabelsAsync() =>
             _database.ScalarLongAsync("SELECT COUNT(*) FROM artifact_sensitivity;", CancellationToken.None);
 
         public ValueTask DisposeAsync() => _database.DisposeAsync();
-
     }
-
 }

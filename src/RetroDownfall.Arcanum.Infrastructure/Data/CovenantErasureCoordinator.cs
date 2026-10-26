@@ -2842,7 +2842,7 @@ internal sealed class CovenantErasureCoordinator(
                     DurablyMutated: progress.DurablyMutated,
                     HealthPublished: false));
 
-            return await CloseAsync(
+            Result<CovenantErasureCompletion> completion = await CloseAsync(
                 operation,
                 checkpoint,
                 ownerId,
@@ -2852,6 +2852,10 @@ internal sealed class CovenantErasureCoordinator(
                 error.Code,
                 phases,
                 closure).ConfigureAwait(false);
+
+            LogPreEffectRefusal(operation, checkpoint, error, completion);
+
+            return completion;
         }
 
         if (closure is null)
@@ -2966,25 +2970,39 @@ internal sealed class CovenantErasureCoordinator(
             closure,
             stranded).ConfigureAwait(false);
 
-        if (completion.IsSuccess
-            && completion.Value.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen)
-        {
-            _logger.LogWarning(
-                "A Covenant erasure aborted before any artifact was touched with {ErrorCode}; admission reopens.",
-                error.Code);
-        }
-        else if (completion.IsSuccess)
-        {
-            _logger.LogWarning(
-                "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
-                + "with {ErrorCode}: {ErrorMessage}; admission stays closed.",
-                checkpoint.Phase,
-                operation.Id,
-                error.Code,
-                error.Message);
-        }
+        LogPreEffectRefusal(operation, checkpoint, error, completion);
 
         return completion;
+    }
+
+    private void LogPreEffectRefusal(
+        LongRunningOperation operation,
+        CovenantErasureCheckpointState checkpoint,
+        Error error,
+        Result<CovenantErasureCompletion> completion)
+    {
+        string diagnostic = error.CovenantInventoryFailure is { } inventory
+            ? inventory.ToError().Message
+            : "The pre-effect checks could not be proved. Preserve the installation and inspect the operation and safe diagnostics before retrying.";
+
+        string admission = completion.IsFailure
+            ? "admission reopening is unconfirmed"
+            : completion.Value.Disposition switch
+            {
+                CovenantExclusiveLeaseDisposition.RollbackAndReopen or CovenantExclusiveLeaseDisposition.CommitAndReopen
+                    => "admission reopens",
+                CovenantExclusiveLeaseDisposition.KeepClosed => "admission stays closed",
+                _ => "admission reopening is unconfirmed",
+            };
+
+        _logger.LogWarning(
+            "Covenant erasure inventory refused for durable operation {OperationId} at phase {ResetPhase} "
+            + "with {ErrorCode}: {InventoryDiagnostic} {Admission}.",
+            operation.Id,
+            checkpoint.Phase,
+            error.Code,
+            diagnostic,
+            admission);
     }
 
     private async Task<Result> EraseDatabaseArtifactsAsync(

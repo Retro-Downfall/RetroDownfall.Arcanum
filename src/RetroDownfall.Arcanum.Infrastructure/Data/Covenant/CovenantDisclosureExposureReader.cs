@@ -24,7 +24,6 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantDisclosureExposureReader
 {
-
     private static readonly Error MalformedExposure = new(
         ErrorCodes.Covenant.IntegrityFailure,
         "The nonrevocable Covenant disclosure exposure could not be folded safely.");
@@ -61,19 +60,16 @@ internal sealed class CovenantDisclosureExposureReader
         SqliteTransaction? transaction,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(callerOwnedConnection);
 
         try
         {
-
             bool persisted = false;
 
             int receiptTables = 0;
 
             await using (SqliteCommand probe = callerOwnedConnection.CreateCommand())
             {
-
                 probe.Transaction = transaction;
 
                 probe.CommandText = """
@@ -92,22 +88,15 @@ internal sealed class CovenantDisclosureExposureReader
 
                 while (await tables.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-
                     if (tables.GetString(0) == "external_disclosure_state")
                     {
-
                         persisted = true;
-
                     }
                     else
                     {
-
                         receiptTables++;
-
                     }
-
                 }
-
             }
 
             // A missing table is absence, not failure: an installation that predates it has nothing
@@ -124,10 +113,8 @@ internal sealed class CovenantDisclosureExposureReader
 
             if (sql is null)
             {
-
                 return Result<CovenantDisclosureExposure>.Success(
                     new CovenantDisclosureExposure(attempts, joinedKind));
-
             }
 
             await using SqliteCommand command = callerOwnedConnection.CreateCommand();
@@ -148,7 +135,6 @@ internal sealed class CovenantDisclosureExposureReader
 
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-
                 if (reader.GetValue(0) is not long part
                     || part is not (1 or 2)
                     || reader.GetValue(1) is not long destination
@@ -160,9 +146,7 @@ internal sealed class CovenantDisclosureExposureReader
                     || reader.GetValue(3) is not long count
                     || count < 0)
                 {
-
                     return Result<CovenantDisclosureExposure>.Failure(MalformedExposure);
-
                 }
 
                 attempts = checked(attempts + count);
@@ -171,31 +155,26 @@ internal sealed class CovenantDisclosureExposureReader
                 // would reach does.
                 if (countKindCode == (long)CovenantDisclosureCountKind.LowerBound)
                 {
-
                     joinedKind = CovenantDisclosureCountKind.LowerBound;
-
                 }
-
             }
 
             return Result<CovenantDisclosureExposure>.Success(
                 new CovenantDisclosureExposure(attempts, joinedKind));
-
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-
             throw;
-
+        }
+        catch (SqliteException exception)
+        {
+            return Result<CovenantDisclosureExposure>.Failure(
+                CovenantInventoryFailureDetails.FromSqliteCode(exception.SqliteErrorCode).ToError());
         }
         catch (Exception exception) when (
-            exception is SqliteException or InvalidCastException or OverflowException or ArgumentException)
+            exception is InvalidCastException or OverflowException or ArgumentException)
         {
-
             return Result<CovenantDisclosureExposure>.Failure(MalformedExposure);
-
         }
-
     }
-
 }

@@ -487,7 +487,10 @@ internal static class ManagedFileRootResolver
             return Result<ManagedFileResolvedRoot?>.Success(null);
         }
 
-        long revision = reader.GetInt64(1);
+        if (reader.GetValue(1) is not long revision || revision <= 0)
+        {
+            return Result<ManagedFileResolvedRoot?>.Success(null);
+        }
 
         // A root that has been re-registered since the producer recorded this location is not the same
         // root. Following the same relative segments under it would delete a file at a path that
