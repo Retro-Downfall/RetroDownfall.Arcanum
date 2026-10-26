@@ -4055,3 +4055,16 @@ RV-103/104 are integrated in `03a3ec0eeec0cf3e73ac877e95932b452521d148`, exact t
 The combined candidate passed **442 distinct tests, zero failures/skips**, normal zero-warning build, both house formatting checks, explicit Roslyn verification and diff checks. The raw validator retains the separately approved pre-mapping image validation; all other C# files match the approved OpenAI candidate. The documentation conflict retained both contracts. Source paths/catalog are unchanged, so the prior controlled catalog evidence was retained without a redundant rerun. Evidence: `/private/tmp/arcanum-integrated-wave28-qualification.json` and commit receipt.
 
 Full native FTS5 remains integrated; the separate literal-memory performance/continuation implementation owns Core28. RAPTOR retrieval will respect trustworthy source/event recency for semantic ties, without treating summary build time as fact recency or altering the numerical kernel's stable-ID ordering. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending; main and the original review branch are preserved.
+
+
+### 2026-10-26 checkpoint — 107 original findings integrated
+
+**107 of 272 findings (39.3%) are independently reviewed and integrated:** 3 Critical, 75 Important and 29 Minor. **165 remain:** 1 Important and 164 Minor. 6 further original findings have approved candidates awaiting integration: RV-082, RV-083, RV-085, RV-086, RV-094, RV-099.
+
+RV-098/106/112/115 are integrated. Attachment validation separates declared caller refusals from safe server failures; extraction markers preserve actionable closed causes; refresh integrity failures are distinguished from storage limits; selectors, tool names and truncation guidance identify a useful next step. The separately reproduced unadvertised-tool defect is repaired: a guessed attachment tool name cannot initiate lookup, refresh or content injection.
+
+The integration preserves the previously qualified actual-embedding provenance guard in Wizard; every other changed C# file matches the approved attachment candidate. Complete attachment/storage/tool/Wizard classes, projection controls and current native/OpenAI request-validation and batch cases passed together. The independent review approved the candidate and verified its seven causal mutations and all source/evidence seals.
+
+The exact runtime commit is `1365e859978a889fe13db99caec091db7eccc30c`, tested tree `cec97e6570f7a5a1f0f90a3390c9c07dff9d7b10`. **1394 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave29-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
+
+Actual RAPTOR remains **7 of 12 stages integrated**, with the production builder executing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
