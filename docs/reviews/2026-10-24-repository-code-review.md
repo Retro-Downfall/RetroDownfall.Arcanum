@@ -4044,3 +4044,14 @@ RV-084/091/093/095/096 and the independently verified duplicate RV-131 are integ
 The combined tree passed **1,291 distinct tests, zero failures/skips**, a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Every changed C# file matches independently approved `f78d78d5` exactly. Current72-case maintenance behavior and the raw live/batch image cases remain in the qualified union. Evidence: `/private/tmp/arcanum-integrated-wave27-qualification.json`, commit receipt and `/private/tmp/arcanum-rv131-review.md`.
 
 Full native FTS5 grammar stays integrated. Core27 is frozen; RV-030 owns Core28. The next integrations are explicit OpenAI parameter handling, attachment diagnostics and turn-commit outcomes. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain outstanding. No main merge or push.
+
+
+### 2026-10-26 checkpoint — 103 original findings integrated
+
+**103 of 272 findings (37.9%) are independently reviewed and integrated:** 3 Critical,75 Important and25 Minor. **169 remain:** RV-030 and168 Minor findings. Ten more original findings are approved awaiting integration: RV-082/083/085/086/094/098/099/106/112/115. Six original findings are implementing in the separate search and web-workflow branches. Actual RAPTOR remains7 of12 integrated, with production builder stage8 executing.
+
+RV-103/104 are integrated in `03a3ec0eeec0cf3e73ac877e95932b452521d148`, exact tested tree `686dd56280c830443f85e4b25b44c4ae288ce2df`. Unsupported log-probability requests are explicitly refused before buffered, streaming or batch inference; omitted/false remains valid. Explicit embedding dimensions must match the configured width, and the actual returned vector width is checked before serialization. No vector slicing was introduced. Models documentation now describes the actual flat wire fields.
+
+The combined candidate passed **442 distinct tests, zero failures/skips**, normal zero-warning build, both house formatting checks, explicit Roslyn verification and diff checks. The raw validator retains the separately approved pre-mapping image validation; all other C# files match the approved OpenAI candidate. The documentation conflict retained both contracts. Source paths/catalog are unchanged, so the prior controlled catalog evidence was retained without a redundant rerun. Evidence: `/private/tmp/arcanum-integrated-wave28-qualification.json` and commit receipt.
+
+Full native FTS5 remains integrated; the separate literal-memory performance/continuation implementation owns Core28. RAPTOR retrieval will respect trustworthy source/event recency for semantic ties, without treating summary build time as fact recency or altering the numerical kernel's stable-ID ordering. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending; main and the original review branch are preserved.
