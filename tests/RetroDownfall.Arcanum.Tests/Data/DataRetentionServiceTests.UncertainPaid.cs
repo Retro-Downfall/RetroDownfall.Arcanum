@@ -8,9 +8,11 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 public sealed partial class DataRetentionServiceTests
 {
     [SkippableTheory]
-    [InlineData(DataRetentionOperation.Prune)]
-    [InlineData(DataRetentionOperation.FactoryReset)]
-    public async Task UncertainPaid_ProtectsFailedRunFromAccountingPruneAndGlobalReset(DataRetentionOperation operation)
+    [InlineData(DataRetentionOperation.Prune, BudgetReservationStatus.UncertainPaid)]
+    [InlineData(DataRetentionOperation.Prune, BudgetReservationStatus.Reserved)]
+    [InlineData(DataRetentionOperation.FactoryReset, BudgetReservationStatus.UncertainPaid)]
+    [InlineData(DataRetentionOperation.FactoryReset, BudgetReservationStatus.Reserved)]
+    public async Task OutstandingReservation_ProtectsFailedRunFromAccountingPruneAndGlobalReset(DataRetentionOperation operation, BudgetReservationStatus status)
     {
         RequireSqlCipher();
 
@@ -27,8 +29,8 @@ public sealed partial class DataRetentionServiceTests
 
         await ExecuteAsync("""
             INSERT INTO BudgetReservations (Id, RunId, BudgetPeriod, ReservedUsd, ReconciledUsd, Status, ExpiresAt, CreatedAt, UpdatedAt)
-            VALUES (@id, @run, '2020-01-01', '5', '0', 4, @old, @old, @old)
-            """, ("@id", reservation.ToString("N")), ("@run", run.ToString("N")), ("@old", old));
+            VALUES (@id, @run, '2020-01-01', '5', '0', @status, @old, @old, @old)
+            """, ("@id", reservation.ToString("N")), ("@run", run.ToString("N")), ("@old", old), ("@status", (int)status));
 
         ArcanumSettings settings = CreatePruneSettings();
 

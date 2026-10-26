@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -83,6 +84,7 @@ internal sealed class TurnAccountingHandle
     /// <summary>
     /// True once the run this handle ledgers against has frozen its completion: its status and its
     /// reservation disposition are decided, and nothing recorded from here on is part of either.
+    /// This cuts off ambient reuse even when a durable disposition still needs retry.
     /// </summary>
     public bool IsSettled
     {
@@ -343,48 +345,91 @@ internal sealed class TurnAccountingHandle
                 }
             }
 
-            if (!_reservationDispositionCompleted)
-            {
-                if (!_completionAccountingFailed
-                    && ReservationActive
-                    && ReservationId is Guid reservationId
-                    && budgetReservations is not null)
-                {
-                    if (_completionStatus == InferenceRunStatus.Completed
-                        || _completionCostUsd > 0m
-                        || _completionHasRecordedOperations)
-                    {
-                        await budgetReservations
-                            .ReconcileAsync(reservationId, _completionCostUsd, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await budgetReservations
-                            .ReleaseAsync(reservationId, cancellationToken)
-                            .ConfigureAwait(false);
-                    }
-                }
+            Exception? reservationFailure = null;
 
-                _reservationDispositionCompleted = true;
+            try
+            {
+                if (!_reservationDispositionCompleted)
+                {
+                    if (!_completionAccountingFailed
+                        && ReservationActive
+                        && ReservationId is Guid reservationId
+                        && budgetReservations is not null)
+                    {
+                        if (_completionStatus == InferenceRunStatus.Completed
+                            || _completionCostUsd > 0m
+                            || _completionHasRecordedOperations)
+                        {
+                            await budgetReservations
+                                .ReconcileAsync(reservationId, _completionCostUsd, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await budgetReservations
+                                .ReleaseAsync(reservationId, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                    }
+
+                    _reservationDispositionCompleted = true;
+                }
+            }
+            catch (Exception failure)
+            {
+                reservationFailure = failure;
             }
 
-            if (!_runDispositionCompleted)
-            {
-                if (RunId is Guid runId && turnRunWriter is not null)
-                {
-                    await turnRunWriter
-                        .CompleteRunAsync(runId, _completionStatus, cancellationToken)
-                        .ConfigureAwait(false);
-                }
+            Exception? runFailure = null;
 
-                _runDispositionCompleted = true;
+            try
+            {
+                if (!_runDispositionCompleted)
+                {
+                    if (RunId is Guid runId && turnRunWriter is not null)
+                    {
+                        await turnRunWriter
+                            .CompleteRunAsync(runId, _completionStatus, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
+                    _runDispositionCompleted = true;
+                }
             }
+            catch (Exception failure)
+            {
+                runFailure = failure;
+            }
+
+            ThrowAccountingFailures(reservationFailure, runFailure, cancellationToken);
         }
         finally
         {
             _completionGate.Release();
         }
+    }
+
+    private static void ThrowAccountingFailures(Exception? reservationFailure, Exception? runFailure, CancellationToken cancellationToken)
+    {
+        if (reservationFailure is not null && runFailure is not null)
+        {
+            AggregateException combined = new(
+                "Reservation and run accounting dispositions both failed.",
+                reservationFailure,
+                runFailure);
+
+            if (cancellationToken.IsCancellationRequested
+                && (reservationFailure is OperationCanceledException || runFailure is OperationCanceledException))
+            {
+                throw new OperationCanceledException("Accounting completion was canceled.", combined, cancellationToken);
+            }
+
+            throw combined;
+        }
+
+        if (reservationFailure is not null) ExceptionDispatchInfo.Capture(reservationFailure).Throw();
+
+        if (runFailure is not null) ExceptionDispatchInfo.Capture(runFailure).Throw();
     }
 
     public static async Task<Result<TurnAccountingHandle>> BeginAsync(
@@ -453,10 +498,21 @@ internal sealed class TurnAccountingHandle
                     cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception reservationFailure)
         {
-            await turnRunWriter.CompleteRunAsync(runId, InferenceRunStatus.Failed, CancellationToken.None)
-                .ConfigureAwait(false);
+            Exception? runFailure = null;
+
+            try
+            {
+                await turnRunWriter.CompleteRunAsync(runId, InferenceRunStatus.Failed, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception failure)
+            {
+                runFailure = failure;
+            }
+
+            ThrowAccountingFailures(reservationFailure, runFailure, cancellationToken);
 
             throw;
         }

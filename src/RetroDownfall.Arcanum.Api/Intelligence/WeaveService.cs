@@ -267,7 +267,11 @@ public sealed class WeaveService(
                 }
                 catch (Exception ex)
                 {
-                    logger.LogDebug(ex, "Failed to complete standalone embedding accounting.");
+                    logger.LogWarning(
+                        "Standalone embedding accounting completion failed for run {RunId}, reservation {ReservationId} (exception type {ExceptionType}).",
+                        accounting.RunId,
+                        accounting.ReservationId,
+                        ex.GetType().FullName);
                 }
 
                 accountingScope?.Dispose();

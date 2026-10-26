@@ -1,4 +1,5 @@
 using System.Data.Common;
+using RetroDownfall.Arcanum.Api.Intelligence;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -14,7 +15,6 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 [Trait("Category", "Integration")]
 public sealed class InferenceAccountingStoreTests : IAsyncLifetime
 {
-
     private readonly GrimoireFixture _fixture;
 
     private string _dbPath = string.Empty;
@@ -48,6 +48,85 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
         {
             File.Delete(_dbPath);
         }
+    }
+
+    [SkippableTheory]
+    [InlineData(InferenceRunStatus.Completed)]
+    [InlineData(InferenceRunStatus.Failed)]
+    public async Task Completion_ActualReservationWriteFaultStillPersistsRunAndRetainsOutstandingBudget(InferenceRunStatus status)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        TurnRunWriter writer = new(_db!);
+
+        BudgetReservationService reservations = new(_db!, new TestOptionsMonitor<ArcanumSettings>(new()
+        {
+            Cost = new CostSettings { Budget = new BudgetPolicySettings { Enabled = true, DailyLimitUsd = 100m } },
+        }));
+
+        var handle = (await TurnAccountingHandle.BeginAsync(writer, reservations, new PricingSettings(), null, null,
+            "test", "terminal-disposition", "private-accounting-input", CancellationToken.None, reservedUsdOverride: 5m)).Value;
+
+        DbConnection connection = _db!.Database.GetDbConnection();
+
+        await using (DbCommand trigger = connection.CreateCommand())
+        {
+            trigger.CommandText = "CREATE TEMP TRIGGER FailReservationDisposition BEFORE UPDATE ON BudgetReservations BEGIN SELECT RAISE(ABORT, 'private-reservation-fault'); END;";
+
+            await trigger.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(() => handle.CompleteAsync(writer, reservations, status, CancellationToken.None));
+
+        await using (DbCommand state = connection.CreateCommand())
+        {
+            state.CommandText = "SELECT run.Status, run.CompletedAt, reservation.Status FROM InferenceRuns run JOIN BudgetReservations reservation ON reservation.RunId = run.Id WHERE run.Id = @id";
+
+            DbParameter id = state.CreateParameter();
+
+            id.ParameterName = "@id";
+
+            id.Value = handle.RunId!.Value.ToString("N");
+
+            state.Parameters.Add(id);
+
+            await using DbDataReader row = await state.ExecuteReaderAsync();
+
+            Assert.True(await row.ReadAsync());
+
+            Assert.Equal((int)status, row.GetInt32(0));
+
+            Assert.False(row.IsDBNull(1));
+
+            Assert.Equal((int)BudgetReservationStatus.Reserved, row.GetInt32(2));
+        }
+        Assert.Equal(5m, await reservations.GetTodayOutstandingReservationsAsync());
+
+        await using (DbCommand trigger = connection.CreateCommand())
+        {
+            trigger.CommandText = "DROP TRIGGER FailReservationDisposition";
+
+            await trigger.ExecuteNonQueryAsync();
+        }
+        handle.AddCost(10m);
+
+        await handle.CompleteAsync(writer, reservations, InferenceRunStatus.Abandoned, CancellationToken.None);
+
+        Assert.Equal(0m, await reservations.GetTodayOutstandingReservationsAsync());
+
+        await using DbCommand final = connection.CreateCommand();
+
+        final.CommandText = "SELECT Status FROM InferenceRuns WHERE Id = @id";
+
+        DbParameter parameter = final.CreateParameter();
+
+        parameter.ParameterName = "@id";
+
+        parameter.Value = handle.RunId!.Value.ToString("N");
+
+        final.Parameters.Add(parameter);
+
+        Assert.Equal((long)status, await final.ExecuteScalarAsync());
     }
 
     [SkippableFact]
@@ -235,5 +314,4 @@ public sealed class InferenceAccountingStoreTests : IAsyncLifetime
 
         Assert.Equal(0.01m, committed);
     }
-
 }
