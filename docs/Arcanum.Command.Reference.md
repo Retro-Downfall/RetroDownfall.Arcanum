@@ -236,6 +236,8 @@ One registry defines every slash command, its help text, and the canonical repla
 | `/ward deny <id>` | Explicitly deny one retained active compatibility Ward. |
 | `/exit`, `/quit` | Leave Command Center. |
 
+Once the host creates a fork, a later failure to load or save the selected branch names its created id and gives the exact `/resume <id>` command. The source stays selected until opening succeeds. Command Center refreshes the Session list when the caller remains active; a failed refresh does not replace the original recovery guidance. Cancellation still propagates and retains the known branch id in the transcript. No recovery step creates another fork.
+
 Fork confirmation counts only attachments selected by the cutoff (at least ten attachments or 10 MiB). Session changes discard pending confirmation and staged session attachment references, reporting how many references were dropped; staged local file paths remain. Clear, resume, fork, branch navigation, and archiving the active session require the generating turn to finish or be cancelled first.
 
 Ward stream frames are informational Incantation notes. Command Center opens no Ward modal, consumes no allow/deny keys, keeps no session allowlist, and posts no automatic resolution. The explicit `/ward` commands above remain available only for the retained active-record compatibility API.

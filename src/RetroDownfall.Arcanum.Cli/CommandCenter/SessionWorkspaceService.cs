@@ -468,6 +468,17 @@ internal sealed class SessionWorkspaceService(
             return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: "Open a session before forking.");
         }
 
+        Guid? createdForkId = null;
+        string? createdFailureMessage = null;
+        bool cancelled = false;
+
+        SessionForkResult CreatedFailure(string reason)
+        {
+            createdFailureMessage = $"Branch {createdForkId:D} was created. {reason} Use /resume {createdForkId:D} to open that branch instead of repeating /fork.";
+            state.LastError = createdFailureMessage;
+            return new SessionForkResult(SessionForkOutcome.Failed, createdForkId, createdFailureMessage);
+        }
+
         state.TransientStatus = "Forking session…";
         try
         {
@@ -504,6 +515,7 @@ internal sealed class SessionWorkspaceService(
             }
 
             Guid forkId = forkResult.Value.Id;
+            createdForkId = forkId;
             Result<SessionDetailDto> detailResult = await apiClient
                 .GetSessionAsync(forkId, cancellationToken).ConfigureAwait(false);
             Result<EntryDto[]> entriesResult = await apiClient
@@ -519,9 +531,7 @@ internal sealed class SessionWorkspaceService(
                 Error error = !detailResult.IsSuccess
                     ? detailResult.Error
                     : !entriesResult.IsSuccess ? entriesResult.Error : attachmentsResult.Error;
-                string message = FormatForkError(error);
-                state.LastError = message;
-                return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: message);
+                return CreatedFailure(string.IsNullOrWhiteSpace(error.Message) ? "Opening the branch did not finish." : error.Message);
             }
 
             SessionDetailDto detail = detailResult.Value;
@@ -543,13 +553,7 @@ internal sealed class SessionWorkspaceService(
 
             if (!persisted.IsCompleted)
             {
-                string message = persisted.Error.Message;
-
-                state.LastError = message;
-
-                return new SessionForkResult(
-                    SessionForkOutcome.Failed,
-                    ErrorMessage: message);
+                return CreatedFailure(persisted.Error.Message);
             }
 
             state.ApplySessionMeta(
@@ -561,15 +565,46 @@ internal sealed class SessionWorkspaceService(
             await RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
             return new SessionForkResult(SessionForkOutcome.Success, detail.Id);
         }
+        catch (OperationCanceledException) when (createdForkId is not null)
+        {
+            cancelled = true;
+            _ = CreatedFailure("The operation was cancelled.");
+            state.Log.Append(SessionLogEntryKind.Error, createdFailureMessage!);
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogDebug(ex, "Session fork failed for {SessionId}.", sourceId);
+            if (createdForkId is not null)
+            {
+                return CreatedFailure(ex.Message);
+            }
             state.LastError = ex.Message;
             return new SessionForkResult(SessionForkOutcome.Failed, ErrorMessage: ex.Message);
         }
         finally
         {
-            state.TransientStatus = null;
+            try
+            {
+                if (createdFailureMessage is not null && !cancelled && !cancellationToken.IsCancellationRequested)
+                {
+                    await RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation during the recovery listing must still leave the known branch visible.
+                state.Log.Append(SessionLogEntryKind.Error, createdFailureMessage!);
+                throw;
+            }
+            finally
+            {
+                if (createdFailureMessage is not null)
+                {
+                    state.LastError = createdFailureMessage;
+                }
+                state.TransientStatus = null;
+            }
         }
     }
 
