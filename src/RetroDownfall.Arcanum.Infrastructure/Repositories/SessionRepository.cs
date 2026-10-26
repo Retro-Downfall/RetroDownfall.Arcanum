@@ -84,13 +84,19 @@ internal sealed class SessionRepository(
             ?? settings.DefaultQueryLimit
             ?? ArcanumRuntimeDefaults.Sessions.DefaultQueryLimit!.Value);
 
-        string statusFilter = string.IsNullOrWhiteSpace(request.Status) ? "active" : request.Status.Trim();
+        string statusFilter = string.IsNullOrWhiteSpace(request.Status) ? "active" : request.Status.Trim().ToLowerInvariant();
 
         string? searchTitlePattern = null;
 
         string? ftsMatchQuery = null;
 
         ct.ThrowIfCancellationRequested();
+
+        if (statusFilter is not ("active" or "archived" or "all"))
+        {
+            return Result<SessionQueryResult>.Failure(
+                new Error(ErrorCodes.Session.InvalidStatus, "Status must be 'active', 'archived' or 'all'."));
+        }
 
         if (request.Search is not null)
         {

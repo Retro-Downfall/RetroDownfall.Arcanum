@@ -10,6 +10,7 @@ using RetroDownfall.Arcanum.Infrastructure.Data;
 using RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 using Microsoft.EntityFrameworkCore;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Tower;
 using RetroDownfall.Arcanum.Core.Weave;
 using RetroDownfall.Arcanum.Tests.Fixtures;
 
@@ -21,7 +22,6 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 [Collection("ApiHost")]
 public sealed class SagaEndpointTests
 {
-
     /// <summary>
     /// Matches ArcanumSettingClamps.EmbeddingsDimensions' 64-dimension floor, so SagaMemoryStore's
     /// dimension-validation guard (see InsertAsync) does not reject test inserts.
@@ -32,24 +32,21 @@ public sealed class SagaEndpointTests
 
     public SagaEndpointTests(ArcanumWebApplicationFactory factory)
     {
-
         _factory = factory;
-
     }
 
     [SkippableFact]
     public async Task List_ReturnsSeededMemories_FilteredBySessionAndQuery()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
-        Guid sessionA = Guid.NewGuid();
+        Guid sessionA = await SeedExistingSessionAsync(client);
 
-        Guid sessionB = Guid.NewGuid();
+        Guid sessionB = await SeedExistingSessionAsync(client);
 
         await SeedMemoryAsync(factory, "mem-a", "prefers dark mode", sessionA);
 
@@ -78,13 +75,11 @@ public sealed class SagaEndpointTests
         Assert.Single(queryMemories);
 
         Assert.Equal("mem-b", queryMemories[0].Id);
-
     }
 
     [SkippableFact]
     public async Task List_RespectsLimitAndOffset()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
@@ -93,9 +88,7 @@ public sealed class SagaEndpointTests
 
         for (int i = 0; i < 3; i++)
         {
-
             await SeedMemoryAsync(factory, $"mem-{i}", $"memory {i}", sessionId: null);
-
         }
 
         HttpResponseMessage response = await client.GetAsync("/api/saga?limit=2&offset=0");
@@ -103,7 +96,6 @@ public sealed class SagaEndpointTests
         SagaMemoryDto[] page = await ReadListAsync(response);
 
         Assert.Equal(2, page.Length);
-
     }
 
     /// <summary>
@@ -118,26 +110,23 @@ public sealed class SagaEndpointTests
     [SkippableFact]
     public async Task List_PagesMemoriesSharingOneInstantExactlyOnceInIdentityOrder()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
 
         HttpClient client = factory.CreateAuthenticatedClient();
 
-        Guid session = Guid.NewGuid();
+        Guid session = await SeedExistingSessionAsync(client);
 
         DateTimeOffset tie = new(2026, 3, 1, 12, 0, 0, TimeSpan.Zero);
 
         for (int step = 0; step < 31; step++)
         {
-
             int index = step * 7 % 31;
 
             DateTimeOffset createdAt = index < 3 ? tie.AddMinutes(1) : index < 28 ? tie : tie.AddMinutes(-1);
 
             await SeedMemoryAsync(factory, $"mem-{index:D2}", $"ward-stone {index}", session, createdAt: createdAt);
-
         }
 
         string[] expected =
@@ -150,30 +139,24 @@ public sealed class SagaEndpointTests
 
         foreach (string filter in new[] { string.Empty, "&q=ward-stone", $"&sessionId={session:D}" })
         {
-
             List<string> paged = [];
 
             for (int offset = 0; offset < expected.Length; offset += 6)
             {
-
                 HttpResponseMessage response = await client.GetAsync($"/api/saga?limit=6&offset={offset}{filter}");
 
                 Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
                 paged.AddRange((await ReadListAsync(response)).Select(static memory => memory.Id));
-
             }
 
             Assert.Equal(expected, paged);
-
         }
-
     }
 
     [SkippableFact]
     public async Task List_QueryTooLong_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
@@ -195,13 +178,11 @@ public sealed class SagaEndpointTests
         Assert.False(body!.IsSuccess);
 
         Assert.Equal("Validation.InvalidBody", body.Error?.Code);
-
     }
 
     [SkippableFact]
     public async Task Divine_WhenDisabled_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         HttpClient client = _factory.CreateAuthenticatedClient();
@@ -213,13 +194,11 @@ public sealed class SagaEndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         await AssertDivineErrorCodeAsync(response, "Embeddings.FeatureDisabled");
-
     }
 
     [SkippableFact]
     public async Task Divine_EmptyQuery_Returns400()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
@@ -231,13 +210,11 @@ public sealed class SagaEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         await AssertDivineErrorCodeAsync(response, "Validation.InvalidBody");
-
     }
 
     [SkippableFact]
     public async Task Divine_ProviderUnavailable_Returns503()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService { Available = false });
@@ -249,13 +226,11 @@ public sealed class SagaEndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         await AssertDivineErrorCodeAsync(response, "Embeddings.ProviderUnavailable");
-
     }
 
     [SkippableFact]
     public async Task Divine_DivinationSearchFails_PreservesOriginalErrorCode_NotRemappedTo500()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         // A divination search failure (e.g. the embedding provider going down mid-search) must
@@ -288,7 +263,6 @@ public sealed class SagaEndpointTests
             },
             ServiceOverrides = services =>
             {
-
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton<IWeaveService>(weave);
@@ -296,7 +270,6 @@ public sealed class SagaEndpointTests
                 services.RemoveAll<IDivinationService>();
 
                 services.AddScoped<IDivinationService>(_ => divination);
-
             },
         };
 
@@ -307,13 +280,11 @@ public sealed class SagaEndpointTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
         await AssertDivineErrorCodeAsync(response, "Embeddings.ProviderUnavailable");
-
     }
 
     [SkippableFact]
     public async Task Divine_HappyPath_ReturnsMemoriesWithSimilarities()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FakeWeaveService weave = new() { QueryVector = Vec(1f) };
@@ -337,13 +308,11 @@ public sealed class SagaEndpointTests
         Assert.Single(result.Similarities);
 
         Assert.True(result.Similarities[0] > 0.99f);
-
     }
 
     [SkippableFact]
     public async Task DeleteSingle_RemovesMemory_ReturnsNoContent_404WhenMissing()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
@@ -363,13 +332,11 @@ public sealed class SagaEndpointTests
         HttpResponseMessage missingResponse = await client.DeleteAsync("/api/saga/mem-1");
 
         Assert.Equal(HttpStatusCode.NotFound, missingResponse.StatusCode);
-
     }
 
     [SkippableFact]
     public async Task DeleteAll_RequiresConfirm_400WithoutConfirm_204WithConfirm()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
@@ -397,13 +364,11 @@ public sealed class SagaEndpointTests
         HttpResponseMessage listResponse = await client.GetAsync("/api/saga");
 
         Assert.Empty(await ReadListAsync(listResponse));
-
     }
 
     [SkippableFact]
     public async Task Stats_ReportsCountsAndSessionCount()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await using ArcanumWebApplicationFactory factory = CreateEnabledFactory(new FakeWeaveService());
@@ -431,7 +396,6 @@ public sealed class SagaEndpointTests
         Assert.Equal(2, body.Data!.TotalCount);
 
         Assert.Equal(2, body.Data.SessionCount);
-
     }
 
     /// <summary>
@@ -447,7 +411,6 @@ public sealed class SagaEndpointTests
     [SkippableFact]
     public async Task Divine_WhenCampaignScopingIsOn_ReturnsThisSessionsCampaignAndTheGlobalMemoriesOnly()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid campaignA = new("A0000000-0000-4000-8000-0000000000C1");
@@ -476,7 +439,6 @@ public sealed class SagaEndpointTests
         Assert.Equal(
             ["mem-b", "mem-global"],
             await DivineIdsAsync(client, sessionB));
-
     }
 
     /// <summary>
@@ -485,7 +447,6 @@ public sealed class SagaEndpointTests
     [SkippableFact]
     public async Task Divine_WhenCampaignScopingIsOff_ReturnsEveryMemoryRegardlessOfCampaign()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         Guid campaignA = new("A0000000-0000-4000-8000-0000000000C3");
@@ -507,13 +468,11 @@ public sealed class SagaEndpointTests
         Assert.Equal(
             ["mem-a", "mem-b"],
             await DivineIdsAsync(client, sessionA));
-
     }
 
     /// <summary>The ids a divination returns, ordered so a comparison is about membership, not rank.</summary>
     private static async Task<string[]> DivineIdsAsync(HttpClient client, Guid? sessionId)
     {
-
         using HttpResponseMessage response = await client.PostAsync(
             "/api/saga/divine",
             new StringContent(
@@ -534,7 +493,6 @@ public sealed class SagaEndpointTests
         Assert.True(body!.IsSuccess);
 
         return [.. body.Data!.Memories.Select(static memory => memory.Id).Order(StringComparer.Ordinal)];
-
     }
 
     /// <summary>
@@ -559,7 +517,6 @@ public sealed class SagaEndpointTests
         ArcanumWebApplicationFactory factory,
         Guid campaignId)
     {
-
         Guid sessionId = Guid.NewGuid();
 
         string now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)
@@ -573,9 +530,7 @@ public sealed class SagaEndpointTests
 
         if (connection.State != System.Data.ConnectionState.Open)
         {
-
             await db.Database.OpenConnectionAsync(CancellationToken.None);
-
         }
 
         await ExecuteAsync(
@@ -622,7 +577,6 @@ public sealed class SagaEndpointTests
             ("$now", now));
 
         return sessionId;
-
     }
 
     private static async Task ExecuteAsync(
@@ -630,20 +584,16 @@ public sealed class SagaEndpointTests
         string sql,
         params (string Name, object Value)[] parameters)
     {
-
         await using SqliteCommand command = connection.CreateCommand();
 
         command.CommandText = sql;
 
         foreach ((string name, object value) in parameters)
         {
-
             _ = command.Parameters.AddWithValue(name, value);
-
         }
 
         _ = await command.ExecuteNonQueryAsync(CancellationToken.None);
-
     }
 
     private static ArcanumWebApplicationFactory CreateEnabledFactory(
@@ -674,9 +624,24 @@ public sealed class SagaEndpointTests
                 services.RemoveAll<IWeaveService>();
 
                 services.AddSingleton(weaveService);
-
             },
         };
+
+    private static async Task<Guid> SeedExistingSessionAsync(HttpClient client)
+    {
+        CreateSessionRequest request = new(null, "Saga listing fixture");
+
+        using HttpResponseMessage response = await client.PostAsync("/api/sessions",
+            new StringContent(JsonSerializer.Serialize(request, ArcanumJsonContext.Default.CreateSessionRequest), Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        ApiResponse<SessionDetailDto>? body = JsonSerializer.Deserialize(await response.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.ApiResponseSessionDetailDto);
+
+        Assert.True(body?.IsSuccess);
+
+        return body!.Data!.Id;
+    }
 
     private static async Task SeedMemoryAsync(
         ArcanumWebApplicationFactory factory,
@@ -686,7 +651,6 @@ public sealed class SagaEndpointTests
         float[]? vector = null,
         DateTimeOffset? createdAt = null)
     {
-
         using IServiceScope scope = factory.Services.CreateScope();
 
         ISagaMemoryStore store = scope.ServiceProvider.GetRequiredService<ISagaMemoryStore>();
@@ -700,33 +664,27 @@ public sealed class SagaEndpointTests
             source: "extraction",
             vector ?? Vec(1f),
             CancellationToken.None);
-
     }
 
     /// <summary>Builds a <see cref="TestDimensions"/>-length vector with <paramref name="leading"/> in its first slots and zeros elsewhere.</summary>
     private static float[] Vec(params float[] leading)
     {
-
         float[] result = new float[TestDimensions];
 
         leading.AsSpan().CopyTo(result);
 
         return result;
-
     }
 
     private static async Task<HttpResponseMessage> PostDivineAsync(HttpClient client, SagaSearchRequest request)
     {
-
         string payload = JsonSerializer.Serialize(request, ArcanumJsonContext.Default.SagaSearchRequest);
 
         return await client.PostAsync("/api/saga/divine", new StringContent(payload, Encoding.UTF8, "application/json"));
-
     }
 
     private static async Task<SagaMemoryDto[]> ReadListAsync(HttpResponseMessage response)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<SagaMemoryDto[]>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSagaMemoryDtoArray);
@@ -736,12 +694,10 @@ public sealed class SagaEndpointTests
         Assert.True(body!.IsSuccess);
 
         return body.Data ?? [];
-
     }
 
     private static async Task<SagaSearchResult> ReadDivineResultAsync(HttpResponseMessage response)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<SagaSearchResult>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSagaSearchResult);
@@ -753,12 +709,10 @@ public sealed class SagaEndpointTests
         Assert.NotNull(body.Data);
 
         return body.Data!;
-
     }
 
     private static async Task AssertDivineErrorCodeAsync(HttpResponseMessage response, string expectedCode)
     {
-
         string json = await response.Content.ReadAsStringAsync();
 
         ApiResponse<SagaSearchResult>? body = JsonSerializer.Deserialize(json, ArcanumJsonContext.Default.ApiResponseSagaSearchResult);
@@ -768,12 +722,10 @@ public sealed class SagaEndpointTests
         Assert.False(body!.IsSuccess);
 
         Assert.Equal(expectedCode, body.Error?.Code);
-
     }
 
     private sealed class FailingDivinationService : IDivinationService
     {
-
         public Task<Result<DivinationResult[]>> SearchAsync(
             string tableName,
             string primaryKeyColumn,
@@ -810,12 +762,10 @@ public sealed class SagaEndpointTests
             float similarityThreshold,
             CancellationToken cancellationToken) =>
             SearchAsync(tableName, primaryKeyColumn, embeddingColumn, queryEmbedding, maxResults, similarityThreshold, cancellationToken);
-
     }
 
     private sealed class FakeWeaveService : IWeaveService
     {
-
         public bool Available { get; set; } = true;
 
         public float[] QueryVector { get; set; } = Vec(1f);
@@ -830,7 +780,5 @@ public sealed class SagaEndpointTests
 
         public Task<Result<(string Chunk, int Offset)[]>> ChunkAsync(string text, CancellationToken cancellationToken) =>
             throw new NotSupportedException("Not used by the Saga endpoints.");
-
     }
-
 }
