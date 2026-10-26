@@ -4139,3 +4139,16 @@ The review verified initial behavioral RED, five causal mutations with exact res
 The exact runtime commit is `5cf77069cf8f2cd3c8d12618f0f8a49a134ac5c8`, tested tree `1f57554bdde3736ed5ab4ecdcfb28a7ee21ec285`. **1701 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave34-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
 
 Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 implementing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
+
+
+### 2026-10-26 checkpoint — 122 original findings integrated
+
+**122 of 272 findings (44.9%) are independently reviewed and integrated:** 3 Critical, 75 Important and 44 Minor. **150 remain:** 1 Important and 149 Minor. 0 further original findings have approved candidates awaiting integration: none.
+
+RV-107 is integrated from independently approved candidate `45b6279e64c82240b0e3f53bcc08bef8530fe079`. Input guardrail rejection records now retain the requested Session id and prospective canonical model from pure configuration resolution, including default-model requests. Unresolved model settings preserve the original guardrail refusal and requested value. No provider acquisition, session lookup/creation or authority is introduced; output audit context remains the actual attempt context. API and DESIGN explicitly distinguish preflight metadata from a completed provider call.
+
+The review verified six genuine RED cases with four controls, ten focused GREEN cases, the killed original-context mutation and exact restoration, and 1,706 candidate passes. Fresh combined integration passed 1,711 tests. The sole C# difference from approved source is the previously integrated RAPTOR model-safe scope formatter in Wizard, preserved and recorded in `/private/tmp/arcanum-integrated-wave35-preserved-wizard.diff`. Review: `/private/tmp/arcanum-guardrail-audit-review.md`.
+
+The exact runtime commit is `93adf675510ff5eb20428ca1c4d05cb9d5317910`, tested tree `3eded15beef124753e9aa448eee6083e6c3d9fb6`. **1711 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave35-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
+
+Actual RAPTOR remains **8 of 12 stages integrated**, with typed DAG retrieval Task9 implementing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
