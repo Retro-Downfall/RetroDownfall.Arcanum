@@ -58,8 +58,6 @@ namespace RetroDownfall.Arcanum.Tests.Api;
 
 public sealed partial class GrimoireMaintenanceAdmissionTests
 {
-    private const string OutcomeFailureMessage = "The Covenant reset did not reach a committed reopen disposition.";
-
     private static readonly string[] OutcomeTables =
     [
         "covenant_state",
@@ -109,7 +107,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     private static async Task AssertRollbackScenarioAsync(
         GrimoireTransitionEntryPoint entryPoint)
     {
-
         OneShotOutcomeFault fault = new(
             CovenantErasureFaultBoundary.BeforePhaseBegin,
             CovenantResetPhase.CanonicalApplied);
@@ -146,7 +143,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
             ErrorCodes.Covenant.ErasureIncomplete,
             operationId,
             entryPoint,
-            timeout.Token);
+            timeout.Token,
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen);
 
         GrimoireOwnerObservation grimoire = Assert.Single(harness.Admission.ClosedLeases);
 
@@ -243,7 +241,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
     private static async Task AssertKeepClosedScenarioAsync(
         GrimoireTransitionEntryPoint entryPoint)
     {
-
         OneShotOutcomeFault fault = new(
             CovenantErasureFaultBoundary.AfterPhaseBegin,
             CovenantResetPhase.CanonicalApplied);
@@ -550,7 +547,8 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         string expectedCode,
         Guid operationId,
         GrimoireTransitionEntryPoint entryPoint,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CovenantExclusiveLeaseDisposition expectedDisposition = CovenantExclusiveLeaseDisposition.KeepClosed)
     {
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
 
@@ -566,7 +564,34 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(expectedCode, body.Error!.Value.Code);
 
-        Assert.Equal(OutcomeFailureMessage, body.Error.Value.Message);
+        string message = body.Error.Value.Message;
+
+        Assert.Contains($"Covenant erasure operation {operationId} requires attention.", message, StringComparison.Ordinal);
+
+        Assert.Contains("Canonical erasure: not confirmed. Local secure erasure: not confirmed.", message, StringComparison.Ordinal);
+
+        Assert.Contains($"Run arcanum operation show {operationId}.", message, StringComparison.Ordinal);
+
+        Assert.Contains("External disclosures are not revoked by local erasure.", message, StringComparison.Ordinal);
+
+        if (expectedDisposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen)
+        {
+            Assert.Contains("Nothing was erased; rollback was verified.", message, StringComparison.Ordinal);
+
+            Assert.Contains("Admission reopened after verified rollback.", message, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains("Unconfirmed erasure does not establish that no data was erased.", message, StringComparison.Ordinal);
+
+            Assert.Contains("Admission stays closed.", message, StringComparison.Ordinal);
+
+            Assert.Contains("Do not start a second erasure until this operation's outcome is resolved.", message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("Nothing was erased", message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("Admission reopened", message, StringComparison.Ordinal);
+        }
 
         string lower = raw.ToLowerInvariant();
 
@@ -582,7 +607,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.DoesNotContain("exception", lower);
 
-        Assert.DoesNotContain(operationId.ToString(), raw, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(operationId.ToString(), raw, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AssertOnlyExpectedOutcomeFaultWarning(
@@ -590,17 +615,25 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         CovenantErasureFaultBoundary boundary,
         Guid operationId)
     {
-        MaintenanceHostLog warning = Assert.Single(harness.HostLogs.Unexpected);
+        MaintenanceHostLog[] warnings = [.. harness.HostLogs.Unexpected];
 
-        Assert.Equal(typeof(CovenantErasureCoordinator).FullName, warning.Category);
+        Assert.Equal(boundary is CovenantErasureFaultBoundary.BeforePhaseBegin ? 1 : 2, warnings.Length);
 
-        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.All(warnings, entry =>
+        {
+            Assert.Equal(typeof(CovenantErasureCoordinator).FullName, entry.Category);
 
-        Assert.Null(warning.Exception);
+            Assert.Equal(LogLevel.Warning, entry.Level);
+
+            Assert.Null(entry.Exception);
+        });
+
+        MaintenanceHostLog warning = Assert.Single(warnings, entry =>
+            entry.Template?.StartsWith("A Covenant erasure aborted", StringComparison.Ordinal) == true
+            || entry.Template?.StartsWith("A Covenant erasure stopped", StringComparison.Ordinal) == true);
 
         if (boundary is CovenantErasureFaultBoundary.BeforePhaseBegin)
         {
-
             Assert.Equal(
                 "A Covenant erasure aborted before any artifact was touched with {ErrorCode}; admission reopens.",
                 warning.Template);
@@ -611,8 +644,14 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
                 warning.Message);
 
             return;
-
         }
+
+        MaintenanceHostLog parked = Assert.Single(warnings, entry => entry.Template ==
+            "A Covenant erasure must park durable operation {OperationId} at phase {ResetPhase} "
+            + "and journal state {JournalState}: {ParkReason}; admission stays closed.");
+
+        Assert.Equal($"A Covenant erasure must park durable operation {operationId} at phase InventoryPrepared "
+            + "and journal state Applying: TerminalIntentUnavailable; admission stays closed.", parked.Message);
 
         Assert.Equal(
             "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "

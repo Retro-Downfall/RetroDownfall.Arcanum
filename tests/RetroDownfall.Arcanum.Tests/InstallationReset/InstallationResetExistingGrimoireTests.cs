@@ -793,6 +793,61 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
     }
 
+    [SkippableFact]
+    public async Task FactoryInventory_TypedFailureAfterWorkspaceEffect_PreservesRecoveryRequired()
+    {
+        // The service retires a record whose data apply failed with a code from its closed set of
+        // refusals made before anything changed, and inventory unavailable is in that set. A failure
+        // after the canonical action has started is the opposite case: the reset may have committed, so
+        // reporting it as inventory unavailable would get the record - the only evidence of that -
+        // retired. The lease release is a failure the action cannot see, which is what makes it a
+        // faithful stand-in for the I/O and SQLite failures the recovery and apply steps can raise.
+        Skip.IfNot(
+            GrimoireFixture.SqlCipherAvailable,
+            GrimoireFixture.SqlCipherUnavailableReason);
+
+        using ServiceProvider provider = CreateProvider(FailTypedApplyLeaseDisposal);
+
+        await InstallExistingGrimoireAsync(provider);
+
+        Guid campaignId = Guid.NewGuid();
+
+        string workspaceRoot = Path.GetFullPath(
+            Path.Combine(_testHome, "workspace-fails-after-reset"));
+
+        await AddWorkspaceDataAsync(campaignId, workspaceRoot);
+
+        DataRetentionWorkspaceBinding binding = new(
+            campaignId,
+            workspaceRoot);
+
+        using IServiceScope scope = provider.CreateScope();
+
+        IInstallationResetDataService dataService = StoppedHostDataService(scope);
+
+        Result<DataRetentionPlan> plan = await dataService.PlanAsync(
+            new InstallationResetDataPlanRequest(
+                InstallationResetDataScope.Workspace,
+                binding),
+            CancellationToken.None);
+
+        Assert.True(plan.IsSuccess, plan.Error.Message);
+
+        Result<DataRetentionApplyResult> applied = await dataService.ApplyAsync(
+            new DataRetentionApplyRequest(
+                new DataRetentionRequest(
+                    DataRetentionOperation.ResetWorkspace,
+                    Workspace: binding),
+                plan.Value.PlanId),
+            CancellationToken.None);
+
+        Assert.Equal(0, await CountWorkspaceContextsAsync(workspaceRoot));
+
+        Assert.True(applied.IsFailure);
+
+        Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
+    }
+
     [Fact]
     public async Task A_workspace_apply_without_a_database_reports_inventory_unavailable_because_nothing_ran()
     {
@@ -842,6 +897,64 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         Assert.Equal(ErrorCodes.Data.RecoveryRequired, applied.Error.Code);
     }
 
+    [SkippableFact]
+    public async Task FactoryInventory_LocalPlan_NamesRefusedEntryInsteadOfGrimoireOpenFailure()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires Windows privileges.");
+
+        using ServiceProvider provider = CreateProvider();
+
+        await InstallExistingGrimoireAsync(provider);
+
+        await provider.GetRequiredService<ISecretStore>().SaveApiKeyAsync("existing-grimoire-test-master-key");
+
+        string nested = Path.Combine(ArcanumPaths.FilesDirectory, "session-a", "nested");
+
+        Directory.CreateDirectory(nested);
+
+        string target = Path.Combine(_testHome, "PRIVATE-OUTSIDE-TARGET");
+
+        await File.WriteAllTextAsync(target, "PRIVATE-OUTSIDE-CONTENT");
+
+        File.CreateSymbolicLink(Path.Combine(nested, "linked"), target);
+
+        using IServiceScope scope = provider.CreateScope();
+
+        Result<DataRetentionPlan> result = await StoppedHostDataService(scope).PlanAsync(
+            new InstallationResetDataPlanRequest(InstallationResetDataScope.Global), CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal("Data.ManagedTreeRefused", result.Error.Code);
+
+        Assert.Contains("files", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("session-a/nested/linked", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(_testHome, result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PRIVATE-OUTSIDE", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("could not be opened", result.Error.Message, StringComparison.Ordinal);
+
+        IInstallationResetService installation = scope.ServiceProvider.GetRequiredService<IInstallationResetService>();
+
+        Result<StoppedHostInstallationResetPlan> outerPlan = await UnderStoppedHostAuthorityAsync(
+            (issuer, token) => ((IInstallationResetStoppedHostPlanner)installation).PlanUnderStoppedHostLockAsync(
+                new InstallationResetPlanRequest(InstallationResetScope.Global, _testHome), issuer, token),
+            CancellationToken.None);
+
+        Assert.True(outerPlan.IsFailure);
+
+        Assert.Equal("Data.ManagedTreeRefused", outerPlan.Error.Code);
+
+        Assert.Contains("session-a/nested/linked", outerPlan.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal("PRIVATE-OUTSIDE-CONTENT", await File.ReadAllTextAsync(target));
+    }
+
     private ServiceProvider CreateProvider(
         Action<IServiceCollection>? configure = null)
     {
@@ -884,6 +997,16 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
                 (IStoppedHostGrimoireConnectionFactory)original.ImplementationFactory!(sp)));
     }
 
+    private static void FailTypedApplyLeaseDisposal(IServiceCollection services)
+    {
+        ServiceDescriptor original = services.Single(static descriptor => descriptor.ServiceType == typeof(IStoppedHostGrimoireConnectionFactory));
+
+        services.Remove(original);
+
+        services.AddSingleton<IStoppedHostGrimoireConnectionFactory>(sp => new ApplyLeaseDisposalFailingConnectionFactory(
+            (IStoppedHostGrimoireConnectionFactory)original.ImplementationFactory!(sp), typed: true));
+    }
+
     private static IInstallationResetDataService StoppedHostDataService(
         IServiceScope scope) =>
         new StoppedHostDataServiceAdapter(
@@ -913,7 +1036,8 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
     }
 
     private sealed class ApplyLeaseDisposalFailingConnectionFactory(
-        IStoppedHostGrimoireConnectionFactory inner)
+        IStoppedHostGrimoireConnectionFactory inner,
+        bool typed = false)
         : IStoppedHostGrimoireConnectionFactory
     {
         public Task<Result<IStoppedHostGrimoireConnectionLease>>
@@ -956,7 +1080,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             return opened.IsFailure
                 ? opened
                 : Result<IStoppedHostGrimoireConnectionLease>.Success(
-                    new DisposalFailingLease(opened.Value));
+                    new DisposalFailingLease(opened.Value, typed));
         }
 
         public Task<Result<IStoppedHostGrimoireConnectionLease>>
@@ -966,7 +1090,7 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
             inner.OpenStoppedHostMarkerPairResetAsync(authority, cancellationToken);
     }
 
-    private sealed class DisposalFailingLease(IStoppedHostGrimoireConnectionLease inner)
+    private sealed class DisposalFailingLease(IStoppedHostGrimoireConnectionLease inner, bool typed)
         : IStoppedHostGrimoireConnectionLease
     {
         public Microsoft.Data.Sqlite.SqliteConnection Connection => inner.Connection;
@@ -975,7 +1099,10 @@ public sealed class InstallationResetExistingGrimoireTests : IDisposable
         {
             await inner.DisposeAsync().ConfigureAwait(false);
 
-            throw new IOException("The stopped-host lease could not be released.");
+            throw typed
+                ? ManagedTreeInventoryRefusalException.Create(ManagedDataRootRole.Files, ManagedTreeRefusalReason.FileInspectionFailed,
+                    ArcanumPaths.FilesDirectory, Path.Combine(ArcanumPaths.FilesDirectory, "operator-entry"))
+                : new IOException("The stopped-host lease could not be released.");
         }
     }
 

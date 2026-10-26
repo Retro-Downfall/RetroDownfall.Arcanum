@@ -54,6 +54,320 @@ namespace RetroDownfall.Arcanum.Tests.Data;
 
 public sealed partial class DataRetentionServiceTests
 {
+    [SkippableFact]
+    public async Task FactoryInventory_MissingManagedRoots_AreHealthyEmptyControl()
+    {
+        RequireSqlCipher();
+
+        Directory.Delete(_attachmentsRoot);
+
+        Directory.Delete(_filesRoot);
+
+        Directory.Delete(_logsRoot);
+
+        DataRetentionPlan plan = await CreateService().PlanAsync(new DataRetentionRequest(DataRetentionOperation.FactoryReset));
+
+        Assert.Equal(0, plan.Files);
+
+        Assert.False(Directory.Exists(_filesRoot));
+    }
+
+    [SkippableFact]
+    public async Task FactoryInventory_UnsupportedSocket_RefusesWithoutRemovingEntry()
+    {
+        RequireSqlCipher();
+
+        Skip.If(OperatingSystem.IsWindows(), "Unix domain socket entry is a Unix filesystem control.");
+
+        string previousRoot = _filesRoot;
+
+        _filesRoot = Path.Combine("/private/tmp", "rv068-socket-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(_filesRoot);
+
+        string path = Path.Combine(_filesRoot, "unsupported.sock");
+
+        using System.Net.Sockets.Socket socket = new(System.Net.Sockets.AddressFamily.Unix,
+            System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Unspecified);
+
+        socket.Bind(new System.Net.Sockets.UnixDomainSocketEndPoint(path));
+
+        try
+        {
+            IOException refusal = await Assert.ThrowsAnyAsync<IOException>(() => CreateService().PlanAsync(
+                new DataRetentionRequest(DataRetentionOperation.FactoryReset)));
+
+            Assert.Contains("Data.ManagedTreeRefused", refusal.Message, StringComparison.Ordinal);
+
+            Assert.Contains("UnsupportedEntry", refusal.Message, StringComparison.Ordinal);
+
+            Assert.True(File.Exists(path));
+        }
+        finally
+        {
+            Directory.Delete(_filesRoot, recursive: true);
+
+            _filesRoot = previousRoot;
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("attachments")]
+    [InlineData("files")]
+    [InlineData("logs")]
+    public async Task FactoryInventory_RootRefusal_NamesClosedRoleAndPreservesTarget(string role)
+    {
+        RequireSqlCipher();
+
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires Windows privileges.");
+
+        string root = role switch { "files" => _filesRoot, "logs" => _logsRoot, _ => _attachmentsRoot };
+
+        string outside = Path.Combine(Directory.GetParent(root)!.FullName, "PRIVATE-OUTSIDE-ROOT-" + Guid.NewGuid().ToString("N"));
+
+        Directory.CreateDirectory(outside);
+
+        string sentinel = Path.Combine(outside, "preserve.txt");
+
+        await File.WriteAllTextAsync(sentinel, "PRIVATE-OUTSIDE-CONTENT");
+
+        Directory.Delete(root);
+
+        Directory.CreateSymbolicLink(root, outside);
+
+        try
+        {
+            IOException refusal = await Assert.ThrowsAnyAsync<IOException>(() => CreateService().PlanAsync(
+                new DataRetentionRequest(DataRetentionOperation.FactoryReset)));
+
+            Assert.Contains("Data.ManagedTreeRefused", refusal.Message, StringComparison.Ordinal);
+
+            Assert.Contains(role, refusal.Message, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(outside, refusal.ToString(), StringComparison.Ordinal);
+
+            Assert.DoesNotContain(root, refusal.Message, StringComparison.Ordinal);
+
+            Assert.Contains("entry '.'", Assert.IsType<ManagedTreeInventoryRefusalException>(refusal).ToError().Message, StringComparison.Ordinal);
+
+            Assert.Equal("PRIVATE-OUTSIDE-CONTENT", await File.ReadAllTextAsync(sentinel));
+        }
+        finally
+        {
+            Directory.Delete(root);
+
+            Directory.CreateDirectory(root);
+        }
+    }
+
+    [SkippableFact]
+    public async Task FactoryInventory_NestedRefusal_ReportsSafeCauseWithoutLeakingEntryIntoLogs()
+    {
+        RequireSqlCipher();
+
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires Windows privileges.");
+
+        string outside = Path.Combine(Directory.GetParent(_filesRoot)!.FullName, "PRIVATE-OUTSIDE-TARGET");
+
+        await File.WriteAllTextAsync(outside, "PRIVATE-OUTSIDE-CONTENT");
+
+        string nested = Path.Combine(_filesRoot, "session-a", "nested");
+
+        Directory.CreateDirectory(nested);
+
+        string link = Path.Combine(nested, "operator-entry\r\nforged-log-line");
+
+        File.CreateSymbolicLink(link, outside);
+
+        MutationRecoveryLogger log = new();
+
+        IOException refusal = await Assert.ThrowsAnyAsync<IOException>(() => CreateService(logger: log).PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset)));
+
+        Assert.Contains("Data.ManagedTreeRefused", refusal.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("operator-entry", refusal.ToString(), StringComparison.Ordinal);
+
+        MutationRecoveryLog warning = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Contains("files", warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("operator-entry", warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("forged-log-line", warning.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PRIVATE-OUTSIDE", warning.Message, StringComparison.Ordinal);
+
+        Assert.Equal(new[] { "OperationId", "Reason", "RootRole", "{OriginalFormat}" }, warning.Values.Keys.Order(StringComparer.Ordinal));
+
+        Assert.Equal("files", warning.Values["RootRole"]);
+
+        Assert.Null(warning.Values["OperationId"]);
+
+        Assert.IsAssignableFrom<Enum>(warning.Values["Reason"]);
+
+        foreach (object? value in warning.Values.Values)
+        {
+            string text = value?.ToString() ?? string.Empty;
+
+            Assert.DoesNotContain("operator-entry", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("forged-log-line", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain("PRIVATE-OUTSIDE", text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain(_filesRoot, text, StringComparison.Ordinal);
+
+            Assert.DoesNotContain('\r', text);
+
+            Assert.DoesNotContain('\n', text);
+        }
+
+        ManagedTreeInventoryRefusalException typed = Assert.IsType<ManagedTreeInventoryRefusalException>(refusal);
+
+        Assert.Contains("session-a/nested/operator-entry\\u000D\\u000Aforged-log-line", typed.ToError().Message, StringComparison.Ordinal);
+
+        Assert.True(File.Exists(link));
+
+        Assert.Equal("PRIVATE-OUTSIDE-CONTENT", await File.ReadAllTextAsync(outside));
+    }
+
+    [Fact]
+    public void FactoryInventory_UnprovenExternalEntry_IsNeverDisplayedOrRetained()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "managed-files");
+
+        string external = root + "-other/PRIVATE-OUTSIDE-TARGET";
+
+        ManagedTreeInventoryRefusalException refusal = ManagedTreeInventoryRefusalException.Create(
+            ManagedDataRootRole.Files, ManagedTreeRefusalReason.EntryInspectionFailed, root, external);
+
+        Assert.Contains("<unavailable>", refusal.ToError().Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PRIVATE-OUTSIDE", refusal.ToError().Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(root, refusal.ToError().Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(external, refusal.ToString(), StringComparison.Ordinal);
+
+        Assert.Null(refusal.InnerException);
+    }
+
+    [SkippableFact]
+    public async Task FactoryInventory_CancelledPlan_PropagatesWithoutRefusalDiagnostic()
+    {
+        RequireSqlCipher();
+
+        MutationRecoveryLogger log = new();
+
+        using CancellationTokenSource cancellation = new();
+
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => CreateService(logger: log).PlanAsync(
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset), cancellation.Token));
+
+        Assert.Empty(log.Entries);
+    }
+
+    [SkippableFact]
+    public async Task FactoryInventory_ExistingRecovery_ParksWithClosedOperationDiagnostic()
+    {
+        RequireSqlCipher();
+
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires Windows privileges.");
+
+        string target = Path.Combine(Directory.GetParent(_filesRoot)!.FullName, "PRIVATE-OUTSIDE-TARGET");
+
+        await File.WriteAllTextAsync(target, "preserve");
+
+        File.CreateSymbolicLink(Path.Combine(_filesRoot, "operator-entry"), target);
+
+        LongRunningOperationStore store = new(_db!, TestOrdinaryConnectionFactory.For(_db!));
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        LongRunningOperation operation = await store.CreateAsync(new LongRunningOperationCreateRequest(
+            LongRunningOperationKinds.DataRetentionFactoryReset, LongRunningOperationRecoveryPolicy.RestartIdempotently,
+            "Interrupted factory cleanup.", now));
+
+        LongRunningOperationLeaseResult lease = await store.TryAcquireLeaseAsync(operation.Id, "recovery-owner", now, now.AddMinutes(5));
+
+        Assert.True(lease.Acquired);
+
+        MutationRecoveryLogger log = new();
+
+        LongRunningOperationRecoveryResult result = await CreateService(logger: log).RecoverFactoryResetAsync(lease.Operation, CancellationToken.None);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, result.State);
+
+        Assert.Equal(ErrorCodes.Data.ReconciliationFailed, result.ErrorCode);
+
+        MutationRecoveryLog warning = Assert.Single(log.Entries);
+
+        Assert.Equal(LogLevel.Warning, warning.Level);
+
+        Assert.Null(warning.Exception);
+
+        Assert.Equal(operation.Id, warning.Values["OperationId"]);
+
+        Assert.DoesNotContain("operator-entry", warning.Message, StringComparison.Ordinal);
+
+        Assert.Equal("preserve", await File.ReadAllTextAsync(target));
+    }
+
+    [SkippableFact]
+    public async Task FactoryInventory_FileReplacedDuringCapture_ReportsIdentityChangeAndPreservesBothFiles()
+    {
+        RequireSqlCipher();
+
+        string original = Path.Combine(_filesRoot, "operator-entry");
+
+        string held = original + ".held";
+
+        await File.WriteAllTextAsync(original, "original-bytes");
+
+        Func<string, FileHandleMetadata?>? previous = FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests;
+
+        int reads = 0;
+
+        try
+        {
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = path =>
+            {
+                if (string.Equals(path, original, StringComparison.Ordinal) && ++reads == 2)
+                {
+                    File.Move(original, held);
+
+                    File.WriteAllText(original, "replacement-bytes");
+                }
+
+                return ReadActualNoFollowMetadata(path);
+            };
+
+            IOException failure = await Assert.ThrowsAnyAsync<IOException>(() => CreateService().PlanAsync(
+                new DataRetentionRequest(DataRetentionOperation.FactoryReset)));
+
+            ManagedTreeInventoryRefusalException refusal = Assert.IsType<ManagedTreeInventoryRefusalException>(failure);
+
+            Assert.Equal(ManagedTreeRefusalReason.FileIdentityChanged, refusal.Reason);
+
+            Assert.Contains("operator-entry", refusal.ToError().Message, StringComparison.Ordinal);
+
+            Assert.Equal("original-bytes", await File.ReadAllTextAsync(held));
+
+            Assert.Equal("replacement-bytes", await File.ReadAllTextAsync(original));
+        }
+        finally
+        {
+            FileHandleIdentityInterop.TryGetPathMetadataNoFollowForTests = previous;
+        }
+    }
+
     [SkippableTheory]
     [InlineData("kind", "WrongKind")]
     [InlineData("reference", "CheckpointReferenceMismatch")]

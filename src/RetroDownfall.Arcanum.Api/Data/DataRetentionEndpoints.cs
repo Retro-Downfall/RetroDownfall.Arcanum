@@ -666,6 +666,7 @@ internal static class DataRetentionEndpoints
                 StatusCodes.Status404NotFound,
 
             ErrorCodes.Data.PlanChanged
+                or ErrorCodes.Data.ManagedTreeRefused
                 or ErrorCodes.Data.Blocked
                 or ErrorCodes.Data.Conflict
                 or ErrorCodes.Data.OperationNotFinalized =>

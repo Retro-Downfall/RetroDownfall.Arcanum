@@ -637,6 +637,16 @@ internal sealed class InstallationResetExistingGrimoire(
         {
             throw;
         }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            loggerFactory.CreateLogger<InstallationResetExistingGrimoire>().LogWarning(
+                "Stopped-host managed inventory refused root {RootRole}, cause {Reason}.",
+                refusal.RootRoleName, refusal.Reason);
+
+            return actionStarted && actionMayChangeState
+                ? OutcomeUnconfirmed<T>()
+                : Result<T>.Failure(refusal.ToError());
+        }
         catch (Exception exception) when (
             exception is IOException
                 or UnauthorizedAccessException

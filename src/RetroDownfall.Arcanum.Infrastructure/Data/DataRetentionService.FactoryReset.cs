@@ -247,7 +247,7 @@ internal sealed partial class DataRetentionService
             operationRows);
 
         (long attachmentFiles, long attachmentBytes) = CountManagedTreeContents(
-            _attachmentsRoot);
+            _attachmentsRoot, ManagedDataRootRole.Attachments);
 
         AddFactoryFilePlanItem(
             items,
@@ -256,7 +256,7 @@ internal sealed partial class DataRetentionService
             attachmentBytes);
 
         (long uploadedFiles, long uploadedBytes) = CountManagedTreeContents(
-            _filesRoot);
+            _filesRoot, ManagedDataRootRole.Files);
 
         AddFactoryFilePlanItem(
             items,
@@ -670,13 +670,26 @@ internal sealed partial class DataRetentionService
         }
         catch (RetentionQuarantineRecoveryRequiredException ex)
         {
-            logger.LogWarning(
-                ex,
-                "Factory-reset recovery still requires post-commit cleanup for durable operation {OperationId}.",
-                operation.Id);
+            if (ex.InnerException is ManagedTreeInventoryRefusalException refusal)
+            {
+                LogFactoryInventoryRefusal(refusal, operation.Id);
+            }
+            else
+            {
+                logger.LogWarning(
+                    ex,
+                    "Factory-reset recovery still requires post-commit cleanup for durable operation {OperationId}.",
+                    operation.Id);
+            }
 
             return LongRunningOperationRecoveryResult.RequiresAttention(
                 ErrorCodes.Data.ReconciliationFailed);
+        }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            LogFactoryInventoryRefusal(refusal, operation.Id);
+
+            return LongRunningOperationRecoveryResult.RequiresAttention(ErrorCodes.Data.ReconciliationFailed);
         }
         catch (Exception ex)
         {
@@ -836,9 +849,9 @@ internal sealed partial class DataRetentionService
                 cancellationToken).ConfigureAwait(false) == 0;
         }
 
-        reconciled &= CountManagedTreeContents(_attachmentsRoot).Files == 0;
+        reconciled &= CountManagedTreeContents(_attachmentsRoot, ManagedDataRootRole.Attachments).Files == 0;
 
-        reconciled &= CountManagedTreeContents(_filesRoot).Files == 0;
+        reconciled &= CountManagedTreeContents(_filesRoot, ManagedDataRootRole.Files).Files == 0;
 
         (long remainingAuditLogs, _) = CountFactoryLogFiles(
             _logsRoot,
@@ -1174,13 +1187,13 @@ internal sealed partial class DataRetentionService
         items.Add(new DataRetentionPlanItem(dataClass, 0, files, bytes, 0));
     }
 
-    private static (long Files, long Bytes) CountManagedTreeContents(string root)
+    private static (long Files, long Bytes) CountManagedTreeContents(string root, ManagedDataRootRole role)
     {
         List<FactoryFileCandidate> files = [];
 
         List<IdentityOwnedFileSystemArtifact> directories = [];
 
-        CaptureManagedTree(root, files, directories);
+        CaptureManagedTree(root, files, directories, role);
 
         return (
             files.Count,
@@ -1193,9 +1206,9 @@ internal sealed partial class DataRetentionService
 
         List<IdentityOwnedFileSystemArtifact> directories = [];
 
-        CaptureManagedTree(_attachmentsRoot, files, directories);
+        CaptureManagedTree(_attachmentsRoot, files, directories, ManagedDataRootRole.Attachments);
 
-        CaptureManagedTree(_filesRoot, files, directories);
+        CaptureManagedTree(_filesRoot, files, directories, ManagedDataRootRole.Files);
 
         CaptureFactoryLogFiles(
             _logsRoot,
@@ -1218,9 +1231,12 @@ internal sealed partial class DataRetentionService
     private static void CaptureManagedTree(
         string root,
         List<FactoryFileCandidate> files,
-        List<IdentityOwnedFileSystemArtifact> directories)
+        List<IdentityOwnedFileSystemArtifact> directories,
+        ManagedDataRootRole role)
     {
-        if (!TryEnsureStrictFactoryRoot(root))
+        FactoryInventoryScope scope = new(root, role);
+
+        if (!TryEnsureStrictFactoryRoot(scope))
         {
             return;
         }
@@ -1231,39 +1247,44 @@ internal sealed partial class DataRetentionService
 
         while (pending.TryPop(out string? directory))
         {
-            foreach (string path in EnumerateStrictFactoryEntries(directory))
+            foreach (string path in EnumerateStrictFactoryEntries(directory, scope))
             {
                 if (!FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                         path,
-                        out FileHandleMetadata metadata)
-                    || IsFactoryReparsePoint(path))
+                        out FileHandleMetadata metadata))
                 {
-                    throw new IOException(
-                        "Factory reset refused a managed entry whose no-follow identity could not be captured.");
+                    throw scope.Refuse(ManagedTreeRefusalReason.EntryIdentityUnavailable, path);
+                }
+
+                if (IsFactoryReparsePoint(path, scope))
+                {
+                    throw scope.Refuse(ManagedTreeRefusalReason.EntryReparsePoint, path);
                 }
 
                 if (metadata.Kind == FileSystemObjectKind.RegularFile)
                 {
-                    FactoryFileCandidate file = CaptureFactoryFile(path, files);
+                    FactoryFileCandidate file = CaptureFactoryFile(path, files, scope);
 
                     if (file.Artifact.Metadata != metadata)
                     {
-                        throw new IOException(
-                            "Factory reset refused a managed file whose identity changed during inventory.");
+                        throw scope.Refuse(ManagedTreeRefusalReason.FileIdentityChanged, path);
                     }
 
                     continue;
                 }
 
-                if (metadata.Kind != FileSystemObjectKind.Directory
-                    || !IdentityOwnedFileSystemCleanup.TryCapturePath(
+                if (metadata.Kind != FileSystemObjectKind.Directory)
+                {
+                    throw scope.Refuse(ManagedTreeRefusalReason.UnsupportedEntry, path);
+                }
+
+                if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                         path,
                         FileSystemObjectKind.Directory,
                         out IdentityOwnedFileSystemArtifact artifact)
                     || artifact.Metadata != metadata)
                 {
-                    throw new IOException(
-                        "Factory reset refused a managed entry that was not an owned regular file or directory.");
+                    throw scope.Refuse(ManagedTreeRefusalReason.DirectoryIdentityUnavailable, path);
                 }
 
                 directories.Add(artifact);
@@ -1279,29 +1300,26 @@ internal sealed partial class DataRetentionService
         List<FactoryFileCandidate> files,
         List<IdentityOwnedFileSystemArtifact> directories)
     {
-        if (!TryEnsureStrictFactoryRoot(root))
+        FactoryInventoryScope scope = new(root, ManagedDataRootRole.Logs);
+
+        if (!TryEnsureStrictFactoryRoot(scope))
         {
             return;
         }
 
-        foreach (string path in Directory.EnumerateFiles(
-                     root,
-                     pattern,
-                     FactoryLogEnumeration))
+        foreach (string path in EnumerateFactoryLogEntries(root, pattern, false, scope))
         {
-            CaptureFactoryFile(path, files);
+            CaptureFactoryFile(path, files, scope);
         }
 
-        foreach (string directory in Directory.EnumerateDirectories(
-                     root,
-                     ".arcanum-cleanup-*",
-                     FactoryLogEnumeration))
+        foreach (string directory in EnumerateFactoryLogEntries(root, ".arcanum-cleanup-*", true, scope))
         {
             _ = CaptureFactoryQuarantinedLogFiles(
                 directory,
                 pattern,
                 files,
-                directories);
+                directories,
+                scope);
         }
     }
 
@@ -1309,32 +1327,28 @@ internal sealed partial class DataRetentionService
         string directory,
         string pattern,
         List<FactoryFileCandidate> files,
-        List<IdentityOwnedFileSystemArtifact> directories)
+        List<IdentityOwnedFileSystemArtifact> directories,
+        FactoryInventoryScope scope)
     {
-        EnsureStrictFactoryDirectory(directory);
+        EnsureStrictFactoryDirectory(directory, scope);
 
         bool captured = false;
 
-        foreach (string path in Directory.EnumerateFiles(
-                     directory,
-                     pattern,
-                     FactoryLogEnumeration))
+        foreach (string path in EnumerateFactoryLogEntries(directory, pattern, false, scope))
         {
-            CaptureFactoryFile(path, files);
+            CaptureFactoryFile(path, files, scope);
 
             captured = true;
         }
 
-        foreach (string child in Directory.EnumerateDirectories(
-                     directory,
-                     ".arcanum-cleanup-*",
-                     FactoryLogEnumeration))
+        foreach (string child in EnumerateFactoryLogEntries(directory, ".arcanum-cleanup-*", true, scope))
         {
             captured |= CaptureFactoryQuarantinedLogFiles(
                 child,
                 pattern,
                 files,
-                directories);
+                directories,
+                scope);
         }
 
         if (!captured)
@@ -1347,8 +1361,7 @@ internal sealed partial class DataRetentionService
                 FileSystemObjectKind.Directory,
                 out IdentityOwnedFileSystemArtifact artifact))
         {
-            throw new IOException(
-                "Factory reset refused an interrupted log-cleanup directory whose no-follow identity could not be captured.");
+            throw scope.Refuse(ManagedTreeRefusalReason.DirectoryIdentityUnavailable, directory);
         }
 
         directories.Add(artifact);
@@ -1362,9 +1375,11 @@ internal sealed partial class DataRetentionService
     {
         List<FactoryFileCandidate> files = [];
 
+        FactoryInventoryScope scope = new(root, ManagedDataRootRole.Logs);
+
         foreach (string path in EnumerateFactoryLogFiles(root, pattern))
         {
-            CaptureFactoryFile(path, files);
+            CaptureFactoryFile(path, files, scope);
         }
 
         return (
@@ -1376,27 +1391,24 @@ internal sealed partial class DataRetentionService
         string root,
         string pattern)
     {
-        if (!TryEnsureStrictFactoryRoot(root))
+        FactoryInventoryScope scope = new(root, ManagedDataRootRole.Logs);
+
+        if (!TryEnsureStrictFactoryRoot(scope))
         {
             yield break;
         }
 
-        foreach (string path in Directory.EnumerateFiles(
-                     root,
-                     pattern,
-                     FactoryLogEnumeration))
+        foreach (string path in EnumerateFactoryLogEntries(root, pattern, false, scope))
         {
             yield return path;
         }
 
-        foreach (string directory in Directory.EnumerateDirectories(
-                     root,
-                     ".arcanum-cleanup-*",
-                     FactoryLogEnumeration))
+        foreach (string directory in EnumerateFactoryLogEntries(root, ".arcanum-cleanup-*", true, scope))
         {
             foreach (string path in EnumerateFactoryQuarantinedLogFiles(
                          directory,
-                         pattern))
+                         pattern,
+                         scope))
             {
                 yield return path;
             }
@@ -1405,26 +1417,22 @@ internal sealed partial class DataRetentionService
 
     private static IEnumerable<string> EnumerateFactoryQuarantinedLogFiles(
         string directory,
-        string pattern)
+        string pattern,
+        FactoryInventoryScope scope)
     {
-        EnsureStrictFactoryDirectory(directory);
+        EnsureStrictFactoryDirectory(directory, scope);
 
-        foreach (string path in Directory.EnumerateFiles(
-                     directory,
-                     pattern,
-                     FactoryLogEnumeration))
+        foreach (string path in EnumerateFactoryLogEntries(directory, pattern, false, scope))
         {
             yield return path;
         }
 
-        foreach (string child in Directory.EnumerateDirectories(
-                     directory,
-                     ".arcanum-cleanup-*",
-                     FactoryLogEnumeration))
+        foreach (string child in EnumerateFactoryLogEntries(directory, ".arcanum-cleanup-*", true, scope))
         {
             foreach (string path in EnumerateFactoryQuarantinedLogFiles(
                          child,
-                         pattern))
+                         pattern,
+                         scope))
             {
                 yield return path;
             }
@@ -1433,27 +1441,36 @@ internal sealed partial class DataRetentionService
 
     private static FactoryFileCandidate CaptureFactoryFile(
         string path,
-        List<FactoryFileCandidate> files)
+        List<FactoryFileCandidate> files,
+        FactoryInventoryScope scope)
     {
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                 path,
                 FileSystemObjectKind.RegularFile,
                 out IdentityOwnedFileSystemArtifact artifact))
         {
-            throw new IOException(
-                "Factory reset refused a managed file whose no-follow identity could not be captured.");
+            throw scope.Refuse(ManagedTreeRefusalReason.EntryIdentityUnavailable, path);
         }
 
-        FactoryFileCandidate candidate = new(
-            artifact,
-            new FileInfo(path).Length);
+        long bytes;
+
+        try
+        {
+            bytes = new FileInfo(path).Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            throw scope.Refuse(ManagedTreeRefusalReason.FileInspectionFailed, path);
+        }
+
+        FactoryFileCandidate candidate = new(artifact, bytes);
 
         files.Add(candidate);
 
         return candidate;
     }
 
-    private static string[] EnumerateStrictFactoryEntries(string directory)
+    private static string[] EnumerateStrictFactoryEntries(string directory, FactoryInventoryScope scope)
     {
         try
         {
@@ -1466,43 +1483,41 @@ internal sealed partial class DataRetentionService
                     .OrderBy(static path => path, StringComparer.Ordinal),
             ];
         }
-        catch (UnauthorizedAccessException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            throw new IOException(
-                "Factory reset could not enumerate every entry in a managed directory.",
-                ex);
+            throw scope.Refuse(ManagedTreeRefusalReason.DirectoryEnumerationFailed, directory);
         }
     }
 
-    private static void EnsureStrictFactoryDirectory(string directory)
+    private static void EnsureStrictFactoryDirectory(string directory, FactoryInventoryScope scope)
     {
         if (!IdentityOwnedFileSystemCleanup.TryCapturePath(
                 directory,
                 FileSystemObjectKind.Directory,
                 out _)
-            || IsFactoryReparsePoint(directory))
+            || IsFactoryReparsePoint(directory, scope))
         {
-            throw new IOException(
-                "Factory reset refused a managed directory whose no-follow identity could not be captured.");
+            throw scope.Refuse(ManagedTreeRefusalReason.DirectoryIdentityUnavailable, directory);
         }
     }
 
-    private static bool TryEnsureStrictFactoryRoot(string root)
+    private static bool TryEnsureStrictFactoryRoot(FactoryInventoryScope scope)
     {
+        string root = scope.Root;
+
         if (FileHandleIdentityInterop.TryGetPathMetadataNoFollow(
                 root,
                 out FileHandleMetadata metadata))
         {
             if (metadata.Kind != FileSystemObjectKind.Directory
-                || IsFactoryReparsePoint(root)
+                || IsFactoryReparsePoint(root, scope)
                 || !IdentityOwnedFileSystemCleanup.TryCapturePath(
                     root,
                     FileSystemObjectKind.Directory,
                     out IdentityOwnedFileSystemArtifact rootArtifact)
                 || rootArtifact.Metadata != metadata)
             {
-                throw new IOException(
-                    "Factory reset refused a managed root that was not an owned ordinary directory.");
+                throw scope.Refuse(ManagedTreeRefusalReason.RootNotOrdinary, root);
             }
 
             return true;
@@ -1520,29 +1535,48 @@ internal sealed partial class DataRetentionService
         {
             return false;
         }
-        catch (UnauthorizedAccessException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            throw new IOException(
-                "Factory reset could not inspect a managed root.",
-                ex);
+            throw scope.Refuse(ManagedTreeRefusalReason.RootInspectionFailed, root);
         }
 
-        throw new IOException(
-            "Factory reset could not prove the no-follow identity of an existing managed root.");
+        throw scope.Refuse(ManagedTreeRefusalReason.RootInspectionFailed, root);
     }
 
-    private static bool IsFactoryReparsePoint(string path)
+    private static bool IsFactoryReparsePoint(string path, FactoryInventoryScope scope)
     {
         try
         {
             return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
         }
-        catch (UnauthorizedAccessException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            throw new IOException(
-                "Factory reset could not inspect a managed entry without following it.",
-                ex);
+            throw scope.Refuse(ManagedTreeRefusalReason.EntryInspectionFailed, path);
         }
+    }
+
+    private static string[] EnumerateFactoryLogEntries(
+        string directory,
+        string pattern,
+        bool directories,
+        FactoryInventoryScope scope)
+    {
+        try
+        {
+            return directories
+                ? [.. Directory.EnumerateDirectories(directory, pattern, FactoryLogEnumeration)]
+                : [.. Directory.EnumerateFiles(directory, pattern, FactoryLogEnumeration)];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            throw scope.Refuse(ManagedTreeRefusalReason.DirectoryEnumerationFailed, directory);
+        }
+    }
+
+    private readonly record struct FactoryInventoryScope(string Root, ManagedDataRootRole Role)
+    {
+        internal ManagedTreeInventoryRefusalException Refuse(ManagedTreeRefusalReason reason, string entry) =>
+            ManagedTreeInventoryRefusalException.Create(Role, reason, Root, entry);
     }
 
     private static void ValidateFactoryFileSystemSnapshot(

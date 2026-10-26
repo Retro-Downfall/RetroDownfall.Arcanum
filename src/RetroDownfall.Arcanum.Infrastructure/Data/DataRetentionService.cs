@@ -558,7 +558,44 @@ internal sealed partial class DataRetentionService(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default)
     {
-        Result<DataRetentionPlanAdmission> admission = await PlanAdmissionAsync(
+        try
+        {
+            return await PlanCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            LogFactoryInventoryRefusal(refusal);
+
+            throw;
+        }
+    }
+
+    public async Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken = default,
+        DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
+    {
+        try
+        {
+            return await PlanAdmissionCoreAsync(request, cancellationToken, capability).ConfigureAwait(false);
+        }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            LogFactoryInventoryRefusal(refusal);
+
+            return Result<DataRetentionPlanAdmission>.Failure(refusal.ToError());
+        }
+    }
+
+    private void LogFactoryInventoryRefusal(ManagedTreeInventoryRefusalException refusal, Guid? operationId = null) =>
+        logger.LogWarning("Factory-reset inventory refused managed root {RootRole}, cause {Reason}, operation {OperationId}.",
+            refusal.RootRoleName, refusal.Reason, operationId);
+
+    private async Task<DataRetentionPlan> PlanCoreAsync(
+        DataRetentionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        Result<DataRetentionPlanAdmission> admission = await PlanAdmissionCoreAsync(
             request,
             cancellationToken).ConfigureAwait(false);
 
@@ -578,7 +615,7 @@ internal sealed partial class DataRetentionService(
         return admission.Value.Plan;
     }
 
-    public async Task<Result<DataRetentionPlanAdmission>> PlanAdmissionAsync(
+    private async Task<Result<DataRetentionPlanAdmission>> PlanAdmissionCoreAsync(
         DataRetentionRequest request,
         CancellationToken cancellationToken = default,
         DataRetentionPlanAdmissionCapability capability = DataRetentionPlanAdmissionCapability.Request)
@@ -1371,6 +1408,10 @@ internal sealed partial class DataRetentionService(
             current = await PlanAsync(
                 request.Request,
                 cancellationToken).ConfigureAwait(false);
+        }
+        catch (ManagedTreeInventoryRefusalException refusal)
+        {
+            return Result<DataRetentionApplyResult>.Failure(refusal.ToError());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

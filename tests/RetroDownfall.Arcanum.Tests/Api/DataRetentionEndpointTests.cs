@@ -1702,6 +1702,93 @@ public sealed class DataRetentionEndpointTests
         Assert.Equal(91, response.Data?.ArchivedSessions.Days);
     }
 
+    [SkippableTheory]
+    [InlineData("plain")]
+    [InlineData("controls")]
+    [InlineData("long")]
+    public async Task FactoryInventory_RealPlanRoute_ReturnsActionable409WithoutTargetDisclosure(string shape)
+    {
+        RequireSqlCipher();
+
+        Skip.If(OperatingSystem.IsWindows(), "Symbolic-link creation requires Windows privileges.");
+
+        await using ArcanumWebApplicationFactory factory = new();
+
+        _ = factory.CreateClient();
+
+        using HttpClient client = CreateLoopbackAuthenticatedClient(factory);
+
+        string target = Path.Combine(factory.TempHome, "PRIVATE-OUTSIDE-TARGET");
+
+        await File.WriteAllTextAsync(target, "PRIVATE-OUTSIDE-CONTENT");
+
+        string nested = Path.Combine(ArcanumPaths.FilesDirectory, "session-a", "nested");
+
+        Directory.CreateDirectory(nested);
+
+        if (shape == "long")
+        {
+            nested = Path.Combine(nested, new string('x', 120), new string('y', 120));
+
+            Directory.CreateDirectory(nested);
+        }
+
+        File.CreateSymbolicLink(Path.Combine(nested, shape == "controls" ? "linked\r\nforged-line\u001B" : "linked"), target);
+
+        using StringContent content = new("{\"scope\":\"Global\"}", Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response = await client.PostAsync("/api/data/factory-reset/plan", content);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        string json = await response.Content.ReadAsStringAsync();
+
+        ApiResponse<DataRetentionPlan> envelope = JsonSerializer.Deserialize(json,
+            ArcanumJsonContext.Default.ApiResponseDataRetentionPlan)!;
+
+        Assert.Equal("Data.ManagedTreeRefused", envelope.Error?.Code);
+
+        Assert.Contains("files", envelope.Error?.Message, StringComparison.Ordinal);
+
+        Assert.Contains("session-a/nested/", envelope.Error?.Message, StringComparison.Ordinal);
+
+        if (shape == "controls")
+        {
+            Assert.Contains("linked\\u000D\\u000Aforged-line\\u001B", envelope.Error?.Message, StringComparison.Ordinal);
+        }
+        else if (shape == "long")
+        {
+            Assert.Contains("...", envelope.Error?.Message, StringComparison.Ordinal);
+
+            Assert.True(envelope.Error?.Message.Length < 500);
+        }
+
+        Assert.DoesNotContain('\r', envelope.Error!.Value.Message);
+
+        Assert.DoesNotContain('\n', envelope.Error!.Value.Message);
+
+        Assert.DoesNotContain('\u001B', envelope.Error!.Value.Message);
+
+        Assert.DoesNotContain(factory.TempHome, json, StringComparison.Ordinal);
+
+        Assert.DoesNotContain("PRIVATE-OUTSIDE", json, StringComparison.Ordinal);
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        IDataRetentionService realService = scope.ServiceProvider.GetRequiredService<IDataRetentionService>();
+
+        Result<DataRetentionApplyResult> apply = await realService.ApplyAsync(new DataRetentionApplyRequest(
+            new DataRetentionRequest(DataRetentionOperation.FactoryReset), "preflight-plan"));
+
+        Assert.True(apply.IsFailure);
+
+        Assert.Equal("Data.ManagedTreeRefused", apply.Error.Code);
+
+        Assert.True(File.Exists(Path.Combine(nested, shape == "controls" ? "linked\r\nforged-line\u001B" : "linked")));
+
+        Assert.Equal("PRIVATE-OUTSIDE-CONTENT", await File.ReadAllTextAsync(target));
+    }
+
     private static ArcanumWebApplicationFactory CreateFactory(
         FakeDataRetentionService service,
         ResponseWriteProbe? responseWrite = null,
