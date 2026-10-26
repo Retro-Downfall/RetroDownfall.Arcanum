@@ -61,7 +61,8 @@ internal static class ArcanumErrorMapper
                 or ErrorCodes.LongRest.MissingClaim
                 or ErrorCodes.LongRest.SweepParked
                 or ErrorCodes.LongRest.OperationBusy
-                or ErrorCodes.LongRest.ModelContextTooSmall =>
+                or ErrorCodes.LongRest.ModelContextTooSmall
+                or ErrorCodes.LongRest.CredentialUnavailable =>
                 StatusCodes.Status409Conflict,
 
             ErrorCodes.LongRest.Unavailable

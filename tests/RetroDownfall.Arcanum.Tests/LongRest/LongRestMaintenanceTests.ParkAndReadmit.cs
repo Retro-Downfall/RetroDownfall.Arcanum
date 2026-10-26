@@ -538,7 +538,7 @@ public sealed partial class LongRestMaintenanceTests
 
         LongRestSweepCoordinator coordinator = new(operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch,
             CleanReviewFacts(f), f.Maintenance, f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(),
-            f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+            f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
         try
         {
@@ -720,7 +720,7 @@ public sealed partial class LongRestMaintenanceTests
 
     private static LongRestSweepCoordinator ParkedActiveCoordinator(MaintenanceFixture f, LongRestSweepQueue queue) =>
         new(f.Operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, CleanReviewFacts(f), f.Maintenance, f.Gate,
-            new LongRunningOperationOwnership(), queue, f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+            new LongRunningOperationOwnership(), queue, f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
     /// <summary>A protected sweep: park it through the real reconciler with the pure handler (the sweep must have begun).</summary>
     private static async Task ParkExpiredProtectedSweepAsync(MaintenanceFixture f)

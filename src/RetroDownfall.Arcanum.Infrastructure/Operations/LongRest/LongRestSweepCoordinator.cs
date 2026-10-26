@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.LongRest;
@@ -16,7 +17,7 @@ internal sealed partial class LongRestSweepCoordinator(ILongRunningOperationStor
     ILongRestDiscoveryStore discovery, ILongRestConfigurationProvider configuration, LongRestLiveFenceReader facts,
     ILongRestAdmittedMaintenance maintenance, ICovenantOperationGate gate, LongRunningOperationOwnership ownership,
     LongRestSweepQueue queue, IServiceScopeFactory scopes, TimeProvider timeProvider,
-    IGrimoireConnectionAdmissionGate admissionGate) : ILongRestSweepCoordinator, ILongRestAdmittedSweep
+    IGrimoireConnectionAdmissionGate admissionGate, ILogger<LongRestSweepCoordinator> logger) : ILongRestSweepCoordinator, ILongRestAdmittedSweep
 {
     internal const string AuthorizedRequestRequired = LongRestParkCodes.AuthorizedRequestRequired;
 

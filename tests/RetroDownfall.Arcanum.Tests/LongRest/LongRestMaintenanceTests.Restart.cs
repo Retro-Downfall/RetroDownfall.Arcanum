@@ -224,6 +224,15 @@ public sealed partial class LongRestMaintenanceTests
 
         Assert.Equal(0, clock.ActiveTimers);
 
+        if (scenario == "store-fault")
+        {
+            Dictionary<string, object?> diagnostic = Assert.Single(claim ? f.MaintenanceLog.Fields : f.CoordinatorLog.Fields);
+
+            Assert.Equal(claim ? "long_rest.claim_heartbeat_failed" : "long_rest.worker_heartbeat_failed", diagnostic["Code"]);
+
+            Assert.Equal(f.Operation, diagnostic["OperationId"]);
+        }
+
         Assert.Equal(scenario == "callback-fault" ? (long)f.Handler.SendCount : 0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
 
         if (scenario == "callback-fault")

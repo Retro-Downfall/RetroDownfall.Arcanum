@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -100,7 +101,7 @@ public sealed class MaintenanceOutputTokenLimitWireTests
 
     private static IDisposable Factory(string lane, ProviderSettings provider, RecordingKeys keys, Capture handler) => lane switch
     {
-        "long-rest" => new LongRestProviderClientFactory(keys, handler),
+        "long-rest" => new LongRestProviderClientFactory(keys, handler, NullLogger<LongRestProviderClientFactory>.Instance),
         "evaluation" => new MemoryEvaluationProviderClientFactory(keys, handler),
         "rollup" => new CampaignRollupProviderClientFactory(
             new TestOptionsMonitor<ArcanumSettings>(new() { DefaultModel = "model", Providers = [provider] }), keys, handler),

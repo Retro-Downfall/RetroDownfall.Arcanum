@@ -101,9 +101,16 @@ public sealed partial class ModelCallExecutor
         }
         catch (Exception exception)
         {
-            _logger?.LogWarning("Long Rest provider call failed ({ExceptionType}).", exception.GetType().FullName);
+            int? status = null;
 
-            return dispatched ? LongRestProviderFailure.Classify(exception) : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+            Error failure = dispatched ? LongRestProviderFailure.Classify(exception, out status)
+                : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+
+            _logger?.LogWarning("Long Rest call failed: {Code}; provider {Provider}, model {Model}, HTTP {HttpStatus}, operation {OperationId} ({ExceptionType}). {Remedy}",
+                failure.Code, LongRestProviderFailure.Label(chat.Context.Provider.Name), LongRestProviderFailure.Label(chat.Context.Model), status,
+                payload.Work.OperationId, exception.GetType().Name, dispatched ? failure.Message : "The local dispatch or accounting step failed.");
+
+            return failure;
         }
     }
 
@@ -182,9 +189,16 @@ public sealed partial class ModelCallExecutor
         }
         catch (Exception exception)
         {
-            _logger?.LogWarning("Long Rest embedding call failed ({ExceptionType}).", exception.GetType().FullName);
+            int? status = null;
 
-            return dispatched ? LongRestProviderFailure.Classify(exception) : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+            Error failure = dispatched ? LongRestProviderFailure.Classify(exception, out status)
+                : new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+
+            _logger?.LogWarning("Long Rest call failed: {Code}; provider {Provider}, model {Model}, HTTP {HttpStatus}, operation {OperationId} ({ExceptionType}). {Remedy}",
+                failure.Code, LongRestProviderFailure.Label(embedding.Provider.Name), LongRestProviderFailure.Label(embedding.Model), status,
+                payload.Work.OperationId, exception.GetType().Name, dispatched ? failure.Message : "The local dispatch or accounting step failed.");
+
+            return failure;
         }
     }
 

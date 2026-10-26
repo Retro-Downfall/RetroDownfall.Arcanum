@@ -59,6 +59,8 @@ public sealed class LongRestFaultPolicyTests
 
         { "LongRest.ProviderRejected", LongRestFaultClass.NeedsOperator },
 
+        { "LongRest.CredentialUnavailable", LongRestFaultClass.NeedsOperator },
+
         { "LongRest.TransportUnknown", LongRestFaultClass.NeedsOperator },
 
         { "LongRest.ModelContextTooSmall", LongRestFaultClass.NeedsOperator },

@@ -127,6 +127,8 @@ public static class LongRestFaultPolicy
 
         [ErrorCodes.LongRest.ProviderRejected] = LongRestFaultClass.NeedsOperator,
 
+        [ErrorCodes.LongRest.CredentialUnavailable] = LongRestFaultClass.NeedsOperator,
+
         [ErrorCodes.LongRest.TransportUnknown] = LongRestFaultClass.NeedsOperator,
 
         // An attempt's failure reason, never a park code: it is in the table so that every code the surface writes has a class.

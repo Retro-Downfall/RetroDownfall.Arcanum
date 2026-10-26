@@ -447,7 +447,7 @@ public sealed partial class LongRestMaintenanceTests
                 }
             },
         }, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, f.Facts, f.Maintenance, f.Gate, new LongRunningOperationOwnership(),
-        new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+        new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
     [Fact]
     public async Task A_request_that_arrives_between_a_generation_completing_and_its_operation_settling_joins_the_sweep()
@@ -760,7 +760,7 @@ public sealed partial class LongRestMaintenanceTests
     /// <summary>A coordinator over the fixture whose completed-sweep lookup answers with a candidate found earlier, as a request that raced does.</summary>
     private static LongRestSweepCoordinator Racing(MaintenanceFixture f, LongRestSweepStore sweeps, Guid? candidate) =>
         new(f.Operations, new StaleLookupSweeps(sweeps, candidate), f.H.Store, f.Epoch, f.Facts, f.Maintenance, f.Gate, f.Ownership,
-            new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+            new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
     private sealed class StaleLookupSweeps(LongRestSweepStore inner, Guid? candidate) : ILongRestSweepStore, ILongRestCompletedRequestReplay, ILongRestSweepRequestAdmission
     {

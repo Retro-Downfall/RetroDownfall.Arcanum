@@ -299,7 +299,7 @@ public sealed partial class LongRestMaintenanceTests
     private static LongRestSweepCoordinator CleanReviewCoordinator(MaintenanceFixture f, IGrimoireConnectionAdmissionGate leaseGate, ILongRestAdmittedMaintenance handoff,
         IGrimoireConnectionAdmissionGate? factsAdmission = null) =>
         new(f.Operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, CleanReviewFacts(f, factsAdmission), handoff,
-            f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, leaseGate);
+            f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, leaseGate, NullLogger<LongRestSweepCoordinator>.Instance);
 
     // Recovery only parks the expired sweep (under the recovery lease minted from the same gate), and the hosted worker's
     // door then readmits the parked clean sweep under a Long Rest lease of its own from that gate.

@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -30,6 +31,28 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 [Collection("Grimoire")]
 public sealed partial class LongRestMaintenanceTests
 {
+    internal sealed class DiagnosticLog<T> : ILogger<T>
+    {
+        internal List<Dictionary<string, object?>> Fields = [];
+
+        internal List<LogLevel> Levels = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel level) => true;
+
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Assert.Null(exception);
+
+            Levels.Add(level);
+
+            Assert.DoesNotContain("private-fault-body", formatter(state, exception), StringComparison.Ordinal);
+
+            Fields.Add(((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary(pair => pair.Key, pair => pair.Value));
+        }
+    }
+
     /// <summary>How long a wait that only guards against a hang may take: the awaited task is expected to finish, so the bound decides nothing but how long a broken build hangs, and a second or two is not enough on a loaded CI runner.</summary>
     private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
 
@@ -188,6 +211,14 @@ public sealed partial class LongRestMaintenanceTests
 
         internal LongRestSweepCoordinator Coordinator = null!;
 
+        internal DiagnosticLog<LongRestMaintenance> MaintenanceLog = new();
+
+        internal DiagnosticLog<LongRestProviderClientFactory> CredentialLog = new();
+
+        internal DiagnosticLog<LongRestSweepCoordinator> CoordinatorLog = new();
+
+        internal Func<LongRestDispatchAttempt, CancellationToken, Task<Result>?>? ReleaseUnsent;
+
         internal CovenantOperationGate Gate = null!;
 
         internal Guid? CampaignId;
@@ -311,6 +342,10 @@ public sealed partial class LongRestMaintenanceTests
 
             ServiceCollection services = [];
 
+            services.AddSingleton<ILogger<LongRestMaintenance>>(f.MaintenanceLog);
+
+            services.AddSingleton<ILogger<LongRestSweepCoordinator>>(f.CoordinatorLog);
+
             services.AddScoped(_ => new IndependentScopeWitness(f.IndependentScopeDisposed));
 
             services.AddScoped(provider =>
@@ -418,22 +453,23 @@ public sealed partial class LongRestMaintenanceTests
 
             ILongRestAttemptStore attempts = new PaidFenceAttemptStore(new LongRestAttemptStore(H.Saga.Context, Clock),
                 (attempt, token) => AfterAttemptValidated?.Invoke(attempt, token) ?? Task.CompletedTask,
-                (attempt, outcome, token) => SettleUnresolved?.Invoke(attempt, outcome, token));
+                (attempt, outcome, token) => SettleUnresolved?.Invoke(attempt, outcome, token),
+                (attempt, token) => ReleaseUnsent?.Invoke(attempt, token));
 
             ModelTokenEstimator estimator = new(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance));
 
-            _clientFactory ??= new(new LateKeys(this), Handler);
+            _clientFactory ??= new(new LateKeys(this), Handler, CredentialLog);
 
             LongRestProvider provider = new(_clientFactory,
                 new ModelCallExecutor(estimator, Options), Epoch, new PaidWriter(new TurnRunWriter(H.Saga.Context), () => PaidRecorded?.Invoke(), () => Completing?.Invoke()),
                 new BudgetReservationService(H.Saga.Context, Options));
 
-            Maintenance = new(Epoch, new DiscoveryTap(H.Store, this), sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,
+            Maintenance = ActivatorUtilities.CreateInstance<LongRestMaintenance>(Services, Epoch, new DiscoveryTap(H.Store, this), sweeps, attempts, facts, Gate, new ObservedProvider(provider, result => ProviderResult = result, () => RepeatDispatch, payload => Payloads.Add(payload), ct => DispatchObserved?.Invoke(ct), () => ProviderReturned?.Invoke() ?? Task.CompletedTask), estimator, Journal,
                 Services.GetRequiredService<IServiceScopeFactory>(), Clock);
 
             Operations = new(H.Saga.Context, TestOrdinaryConnectionFactory.For(H.Saga.Context));
 
-            Coordinator = new(Operations, sweeps, H.Store, Epoch, facts, Maintenance, Gate,
+            Coordinator = ActivatorUtilities.CreateInstance<LongRestSweepCoordinator>(Services, Operations, sweeps, H.Store, Epoch, facts, Maintenance, Gate,
                 Ownership, new LongRestSweepQueue(), Services.GetRequiredService<IServiceScopeFactory>(), Clock, RecordedAdmission);
         }
 

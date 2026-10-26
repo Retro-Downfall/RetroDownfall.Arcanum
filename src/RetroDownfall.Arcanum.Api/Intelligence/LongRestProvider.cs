@@ -179,7 +179,7 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
 
                 if (payload.Kind == LongRestProviderPayloadKind.Embedding)
                 {
-                    Result<EmbeddingGeneratorLease> client = await factory.ResolveEmbeddingAsync(selected, ct).ConfigureAwait(false);
+                    Result<EmbeddingGeneratorLease> client = await factory.ResolveEmbeddingAsync(selected, ct, payload.Work.OperationId).ConfigureAwait(false);
 
                     if (client.IsFailure)
                     {
@@ -192,7 +192,7 @@ public sealed class LongRestProvider(LongRestProviderClientFactory factory, IMod
                 }
                 else
                 {
-                    Result<ChatClientLease> client = await factory.ResolveChatAsync(selected, ct).ConfigureAwait(false);
+                    Result<ChatClientLease> client = await factory.ResolveChatAsync(selected, ct, payload.Work.OperationId).ConfigureAwait(false);
 
                     if (client.IsFailure)
                     {

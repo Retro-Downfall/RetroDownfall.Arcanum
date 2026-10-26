@@ -617,6 +617,12 @@ public sealed class NullableInterfaceConstructorDefaultTests
     /// </remarks>
     public static TheoryData<Type> FaultLoggingOwners => new()
     {
+        typeof(RetroDownfall.Arcanum.Api.Intelligence.LongRestMaintenance),
+
+        typeof(RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory),
+
+        typeof(RetroDownfall.Arcanum.Infrastructure.Operations.LongRest.LongRestSweepCoordinator),
+
         typeof(SagaMemoryReviewService),
         typeof(CovenantMemoryReviewService),
         typeof(CovenantOperationGate),

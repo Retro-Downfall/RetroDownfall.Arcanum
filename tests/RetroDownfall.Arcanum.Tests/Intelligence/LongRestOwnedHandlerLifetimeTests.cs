@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Text;
 using Microsoft.Extensions.AI;
@@ -15,7 +16,7 @@ public sealed class LongRestOwnedHandlerLifetimeTests
     {
         CountingHandler handler = new();
 
-        using LongRestProviderClientFactory factory = new(new Keys(), handler);
+        using LongRestProviderClientFactory factory = new(new Keys(), handler, NullLogger<LongRestProviderClientFactory>.Instance);
 
         using (ChatClientLease chat = (await factory.ResolveChatAsync(Selection(false), CancellationToken.None)).Value)
         {
