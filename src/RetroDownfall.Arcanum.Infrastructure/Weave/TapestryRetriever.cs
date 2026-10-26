@@ -17,6 +17,49 @@ internal sealed class TapestryRetriever(ITapestryStore store, IModelTokenEstimat
 
     private sealed record Candidate(ScopeRead Scope, TapestryRankedNode Rank);
 
+    private sealed record Materialization(Candidate Candidate, TapestryRetrievedNode Node, TapestrySelectionMetadata Metadata);
+
+    private sealed record Evaluation(string Prefix, bool Accepted);
+
+    private static readonly Comparer<Candidate> CandidateOrder = Comparer<Candidate>.Create(static (a, b) => TapestrySelectionPolicy.Compare(a.Rank, b.Rank));
+
+    private sealed class TraversalState(ScopeRead scope)
+    {
+        internal ScopeRead Scope { get; } = scope;
+
+        internal Dictionary<string, TapestryRankedNode> Scored { get; } = new(StringComparer.Ordinal);
+
+        internal HashSet<string> Considered { get; } = new(StringComparer.Ordinal);
+
+        internal HashSet<string> Visited { get; } = new(StringComparer.Ordinal);
+
+        internal Stack<string[]> Pending { get; } = new();
+
+        internal bool Truncated { get; set; }
+    }
+
+    /// <summary>Scalar cursors/memos persist; hydrated payloads belong only to accepted slices.</summary>
+    private sealed class SelectionState
+    {
+        internal SortedSet<Candidate> Candidates { get; } = new(CandidateOrder);
+
+        internal Dictionary<string, Evaluation> Evaluations { get; } = new(StringComparer.Ordinal);
+
+        internal List<Materialization> Accepted { get; set; } = [];
+
+        internal Candidate? DirtyFrom { get; set; }
+
+        internal Candidate? LastVisited { get; set; }
+
+        internal void Add(Candidate candidate)
+        {
+            if (Candidates.Add(candidate) && (DirtyFrom is null || CandidateOrder.Compare(candidate, DirtyFrom) < 0))
+            {
+                DirtyFrom = candidate;
+            }
+        }
+    }
+
     public async Task<Result<IReadOnlyList<TapestryRetrievedNode>>> RetrieveAsync(TapestryRetrievalRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -39,7 +82,9 @@ internal sealed class TapestryRetriever(ITapestryStore store, IModelTokenEstimat
 
         List<ScopeRead> scopes = [];
 
-        List<Candidate> candidates = [];
+        List<TraversalState> traversals = [];
+
+        SelectionState selection = new();
 
         bool truncated = false;
 
@@ -74,30 +119,68 @@ internal sealed class TapestryRetriever(ITapestryStore store, IModelTokenEstimat
                     return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(ranked.Error);
                 }
 
-                candidates.AddRange(ranked.Value.Nodes.Select(rank => new Candidate(read, rank)));
+                foreach (TapestryRankedNode node in ranked.Value.Nodes)
+                {
+                    selection.Add(new(read, node));
+                }
 
                 truncated |= ranked.Value.Truncated;
             }
             else
             {
-                var traversed = await TraverseAsync(read, request, candidates, maxNodes, cancellationToken).ConfigureAwait(false);
+                HashSet<string> incoming = new(read.Graph.Vertices.Values.SelectMany(static vertex => vertex.Children), StringComparer.Ordinal);
 
-                if (traversed.IsFailure)
-                {
-                    return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(traversed.Error);
-                }
+                TraversalState state = new(read);
 
-                candidates.AddRange(traversed.Value.Nodes.Select(rank => new Candidate(read, rank)));
+                state.Pending.Push([.. read.Graph.Vertices.Keys.Where(id => !incoming.Contains(id)).Order(StringComparer.Ordinal)]);
 
-                truncated |= traversed.Value.Truncated;
+                traversals.Add(state);
             }
         }
 
-        var selected = await SelectAsync(candidates, request, maxNodes, maxBytes, maxTokens, cancellationToken).ConfigureAwait(false);
-
-        if (selected.IsFailure)
+        // Every captured scope contributes its initial beam before global budget selection.
+        foreach (TraversalState state in traversals)
         {
-            return selected;
+            var advanced = await AdvanceTraversalAsync(state, selection, request, maxNodes, cancellationToken).ConfigureAwait(false);
+
+            if (advanced.IsFailure)
+            {
+                return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(advanced.Error);
+            }
+        }
+
+        while (true)
+        {
+            var selected = await SelectAsync(selection, request, maxNodes, maxBytes, maxTokens, cancellationToken).ConfigureAwait(false);
+
+            if (selected.IsFailure)
+            {
+                return selected;
+            }
+
+            if (selected.Value.Count == maxNodes)
+            {
+                break;
+            }
+
+            bool advancedAny = false;
+
+            foreach (TraversalState state in traversals.Where(static state => state.Pending.Count != 0))
+            {
+                var advanced = await AdvanceTraversalAsync(state, selection, request, maxNodes, cancellationToken).ConfigureAwait(false);
+
+                if (advanced.IsFailure)
+                {
+                    return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(advanced.Error);
+                }
+
+                advancedAny |= advanced.Value;
+            }
+
+            if (!advancedAny)
+            {
+                break;
+            }
         }
 
         // Revalidate every captured scope after materialization; never combine an old scope with its replacement.
@@ -111,144 +194,175 @@ internal sealed class TapestryRetriever(ITapestryStore store, IModelTokenEstimat
             }
         }
 
-        if (truncated && selected.Value.Count < maxNodes)
+        if ((truncated || traversals.Any(static state => state.Truncated)) && selection.Accepted.Count < maxNodes)
         {
             logger.LogWarning("Tapestry retrieval reached its retained candidate bound {CandidateLimit}; eligible vectors were scored completely but backfill is incomplete.", CandidateLimit);
 
             return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(new("Tapestry.CandidateLimitReached", "Tapestry backfill exceeded its retained candidate bound."));
         }
 
-        return selected;
+        return Result<IReadOnlyList<TapestryRetrievedNode>>.Success([.. selection.Accepted.Select(static item => item.Node)]);
     }
 
-    private async Task<Result<TapestryRankedPage>> TraverseAsync(ScopeRead scope, TapestryRetrievalRequest request, IReadOnlyList<Candidate> previousScopes, int width, CancellationToken cancellationToken)
+    private async Task<Result<bool>> AdvanceTraversalAsync(TraversalState state, SelectionState selection, TapestryRetrievalRequest request, int width, CancellationToken cancellationToken)
     {
-        HashSet<string> incoming = new(scope.Graph.Vertices.Values.SelectMany(static vertex => vertex.Children), StringComparer.Ordinal);
+        bool advanced = false;
 
-        string[] roots = [.. scope.Graph.Vertices.Keys.Where(id => !incoming.Contains(id)).Order(StringComparer.Ordinal)];
-
-        Dictionary<string, TapestryRankedNode> scored = new(StringComparer.Ordinal);
-
-        HashSet<string> considered = new(StringComparer.Ordinal);
-
-        HashSet<string> visited = new(StringComparer.Ordinal);
-
-        Stack<string[]> pending = new();
-
-        pending.Push(roots);
-
-        List<TapestryRankedNode> candidates = [];
-
-        bool truncated = false;
-
-        int scoredCount = 0;
-
-        while (pending.TryPop(out string[]? frontier))
+        while (state.Pending.TryPop(out string[]? frontier))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            string[] unseen = [.. frontier.Distinct(StringComparer.Ordinal).Where(id => !considered.Contains(id))];
+            string[] unseen = [.. frontier.Distinct(StringComparer.Ordinal).Where(id => !state.Considered.Contains(id))];
 
             if (unseen.Length != 0)
             {
-                var ranked = await store.RankRetrievalNodesAsync(scope.Access, request.QueryVector, scope.Graph, unseen, CandidateLimit, cancellationToken).ConfigureAwait(false);
+                var ranked = await store.RankRetrievalNodesAsync(state.Scope.Access, request.QueryVector, state.Scope.Graph, unseen, CandidateLimit, cancellationToken).ConfigureAwait(false);
 
                 if (ranked.IsFailure)
                 {
-                    return Result<TapestryRankedPage>.Failure(ranked.Error);
+                    return Result<bool>.Failure(ranked.Error);
                 }
 
-                considered.UnionWith(unseen);
+                state.Considered.UnionWith(unseen);
 
-                scoredCount += ranked.Value.ScoredCount;
-
-                truncated |= ranked.Value.Truncated;
+                state.Truncated |= ranked.Value.Truncated;
 
                 foreach (TapestryRankedNode node in ranked.Value.Nodes)
                 {
-                    scored.Add(node.NodeId, node);
+                    state.Scored.Add(node.NodeId, node);
                 }
             }
 
-            TapestryRankedNode[] rankedFrontier = [.. frontier.Distinct(StringComparer.Ordinal).Where(id => !visited.Contains(id) && scored.ContainsKey(id))
-                .Select(id => scored[id]).Order(Comparer<TapestryRankedNode>.Create(TapestrySelectionPolicy.Compare))];
+            TapestryRankedNode[] rankedFrontier = [.. frontier.Distinct(StringComparer.Ordinal).Where(id => !state.Visited.Contains(id) && state.Scored.ContainsKey(id))
+                .Select(id => state.Scored[id]).Order(Comparer<TapestryRankedNode>.Create(TapestrySelectionPolicy.Compare))];
 
             TapestryRankedNode[] selected = [.. rankedFrontier.Take(width)];
 
             if (rankedFrontier.Length > width)
             {
-                // Retain the lower ranked continuation, but descend the best distinct union first.
-                pending.Push([.. rankedFrontier.Skip(width).Select(static node => node.NodeId)]);
+                state.Pending.Push([.. rankedFrontier.Skip(width).Select(static node => node.NodeId)]);
             }
 
             foreach (TapestryRankedNode node in selected)
             {
-                visited.Add(node.NodeId);
+                state.Visited.Add(node.NodeId);
 
-                candidates.Add(node);
+                selection.Add(new(state.Scope, node));
+
+                advanced = true;
             }
 
-            string[] children = TapestrySelectionPolicy.Children(scope.Graph, [.. selected.Select(static node => node.NodeId)]);
+            string[] children = TapestrySelectionPolicy.Children(state.Scope.Graph, [.. selected.Select(static node => node.NodeId)]);
 
-            if (children.Any(id => !visited.Contains(id)))
+            if (children.Any(id => !state.Visited.Contains(id)))
             {
-                pending.Push(children);
+                state.Pending.Push(children);
 
                 continue;
             }
 
-            var materialized = await SelectAsync([.. previousScopes, .. candidates.Select(rank => new Candidate(scope, rank))], request, width,
-                Math.Clamp(request.MaxBytes, 1024, 16 * 1024 * 1024), Math.Clamp(request.MaxTokens, 128, 1048576), cancellationToken).ConfigureAwait(false);
-
-            if (materialized.IsFailure)
-            {
-                return Result<TapestryRankedPage>.Failure(materialized.Error);
-            }
-
-            if (materialized.Value.Count == width)
+            if (advanced)
             {
                 break;
             }
         }
 
-        return Result<TapestryRankedPage>.Success(new(candidates, scoredCount, truncated));
+        return Result<bool>.Success(advanced);
     }
 
-    private async Task<Result<IReadOnlyList<TapestryRetrievedNode>>> SelectAsync(List<Candidate> candidates, TapestryRetrievalRequest request,
+    private async Task<Result<IReadOnlyList<TapestryRetrievedNode>>> SelectAsync(SelectionState state, TapestryRetrievalRequest request,
         int maxNodes, int maxBytes, int maxTokens, CancellationToken cancellationToken)
     {
-        List<(TapestryRetrievedNode Node, TapestrySelectionMetadata Metadata)> accepted = [];
+        cancellationToken.ThrowIfCancellationRequested();
 
-        foreach (Candidate candidate in candidates.Order(Comparer<Candidate>.Create(static (a, b) => TapestrySelectionPolicy.Compare(a.Rank, b.Rank))))
+        Candidate? dirty = state.DirtyFrom;
+
+        if (dirty is null || (state.Accepted.Count == maxNodes && state.LastVisited is not null && CandidateOrder.Compare(dirty, state.LastVisited) > 0))
+        {
+            state.DirtyFrom = null;
+
+            return Result<IReadOnlyList<TapestryRetrievedNode>>.Success([.. state.Accepted.Select(static item => item.Node)]);
+        }
+
+        Dictionary<string, Materialization> previous = state.Accepted.ToDictionary(static item => item.Node.NodeId, StringComparer.Ordinal);
+
+        List<Materialization> accepted = [.. state.Accepted.Where(item => CandidateOrder.Compare(item.Candidate, dirty) < 0)];
+
+        string prefix = TapestryHash.OfParts(accepted.Select(static item => item.Node.NodeId));
+
+        foreach (Candidate candidate in state.Candidates.GetViewBetween(dirty, state.Candidates.Max!))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            state.LastVisited = candidate;
+
+            string id = candidate.Rank.NodeId;
+
             if (candidate.Rank.Similarity < request.MinSimilarity
-                || candidate.Scope.Graph.Vertices[candidate.Rank.NodeId].MaterializedBytes > maxBytes)
+                || candidate.Scope.Graph.Vertices[id].MaterializedBytes > maxBytes)
             {
                 continue;
             }
 
-            IReadOnlyList<TapestryRetrievedNode> hydrated = await store.HydrateRetrievedNodesAsync(candidate.Scope.Access,
-                [(candidate.Rank.NodeId, candidate.Rank.Similarity)], request.Mode, cancellationToken).ConfigureAwait(false);
-
-            if (hydrated.Count == 0)
+            if (state.Evaluations.TryGetValue(id, out Evaluation? evaluation) && evaluation.Prefix == prefix)
             {
-                continue;
+                if (!evaluation.Accepted)
+                {
+                    continue;
+                }
+
+                if (previous.TryGetValue(id, out Materialization? unchanged))
+                {
+                    accepted.Add(unchanged);
+
+                    prefix = TapestryHash.OfParts(accepted.Select(static item => item.Node.NodeId));
+
+                    if (accepted.Count == maxNodes)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
             }
 
-            var metadata = await store.ReadSelectionMetadataAsync(candidate.Scope.Access, [candidate.Rank.NodeId], cancellationToken).ConfigureAwait(false);
+            TapestryRetrievedNode node;
 
-            if (metadata.IsFailure)
+            TapestrySelectionMetadata coverage;
+
+            if (previous.TryGetValue(id, out Materialization? cached))
             {
-                return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(metadata.Error);
+                node = cached.Node;
+
+                coverage = cached.Metadata;
+            }
+            else
+            {
+                var hydrated = await store.HydrateRetrievedNodesAsync(candidate.Scope.Access,
+                    [(id, candidate.Rank.Similarity)], request.Mode, cancellationToken).ConfigureAwait(false);
+
+                if (hydrated.Count == 0)
+                {
+                    state.Evaluations[id] = new(prefix, false);
+
+                    continue;
+                }
+
+                var metadata = await store.ReadSelectionMetadataAsync(candidate.Scope.Access, [id], cancellationToken).ConfigureAwait(false);
+
+                if (metadata.IsFailure)
+                {
+                    return Result<IReadOnlyList<TapestryRetrievedNode>>.Failure(metadata.Error);
+                }
+
+                node = hydrated[0];
+
+                coverage = metadata.Value[id];
             }
 
-            TapestryRetrievedNode node = hydrated[0];
+            state.Evaluations[id] = new(prefix, false);
 
-            TapestrySelectionMetadata coverage = metadata.Value[node.NodeId];
-
-            if (!TapestrySelectionPolicy.CanAccept(node, coverage, accepted))
+            if (!TapestrySelectionPolicy.CanAccept(node, coverage, [.. accepted.Select(static item => (item.Node, item.Metadata))]))
             {
                 continue;
             }
@@ -267,13 +381,21 @@ internal sealed class TapestryRetriever(ITapestryStore store, IModelTokenEstimat
                 continue;
             }
 
-            accepted.Add((node, coverage));
+            state.Evaluations[id] = new(prefix, true);
+
+            accepted.Add(new(candidate, node, coverage));
+
+            prefix = TapestryHash.OfParts(accepted.Select(static item => item.Node.NodeId));
 
             if (accepted.Count == maxNodes)
             {
                 break;
             }
         }
+
+        state.Accepted = accepted;
+
+        state.DirtyFrom = null;
 
         return Result<IReadOnlyList<TapestryRetrievedNode>>.Success([.. accepted.Select(static item => item.Node)]);
     }

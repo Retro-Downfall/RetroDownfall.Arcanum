@@ -11,6 +11,10 @@ public sealed partial class TapestryGraphStoreTests
 
         internal int LookupCount { get; private set; }
 
+        internal int HydrationCount { get; private set; }
+
+        internal int MetadataCount { get; private set; }
+
         internal List<string[]> RankRequests { get; } = [];
 
         internal Func<Task>? BeforeHydrate { get; set; }
@@ -31,7 +35,12 @@ public sealed partial class TapestryGraphStoreTests
             return result;
         }
 
-        public Task<Result<IReadOnlyDictionary<string, TapestrySelectionMetadata>>> ReadSelectionMetadataAsync(TapestryGenerationAccess access, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => inner.ReadSelectionMetadataAsync(access, nodeIds, cancellationToken);
+        public Task<Result<IReadOnlyDictionary<string, TapestrySelectionMetadata>>> ReadSelectionMetadataAsync(TapestryGenerationAccess access, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken)
+        {
+            MetadataCount += nodeIds.Count;
+
+            return inner.ReadSelectionMetadataAsync(access, nodeIds, cancellationToken);
+        }
 
         public Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken)
         {
@@ -42,6 +51,8 @@ public sealed partial class TapestryGraphStoreTests
 
         public async Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken)
         {
+            HydrationCount += hits.Count;
+
             if (BeforeHydrate is { } before)
             {
                 BeforeHydrate = null;

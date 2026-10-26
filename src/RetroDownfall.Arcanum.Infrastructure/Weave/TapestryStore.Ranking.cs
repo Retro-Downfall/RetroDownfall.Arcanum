@@ -165,7 +165,11 @@ internal sealed partial class TapestryStore
                 return Result<TapestryRankedPage>.Failure(RetrievalChanged);
             }
 
-            HashSet<string>? eligible = nodeIds is null ? null : new(nodeIds, StringComparer.Ordinal);
+            bool allNodes = nodeIds is null;
+
+            IEnumerable<string[]> pages = allNodes
+                ? [Array.Empty<string>()]
+                : nodeIds!.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Chunk(LeafPageSize);
 
             PriorityQueue<TapestryRankedNode, TapestryRankedNode> best = new(Comparer<TapestryRankedNode>.Create(static (a, b) => TapestrySelectionPolicy.Compare(b, a)));
 
@@ -173,71 +177,81 @@ internal sealed partial class TapestryStore
 
             int scored = 0;
 
-            string after = string.Empty;
-
-            while (true)
+            foreach (string[] page in pages)
             {
-                int count = 0;
+                string? after = null;
 
-                await using DbCommand command = connection.CreateCommand();
+                while (true)
+                {
+                    int count = 0;
 
-                command.Transaction = transaction;
+                    await using DbCommand command = connection.CreateCommand();
 
-                command.CommandText = """
+                    command.Transaction = transaction;
+
+                    string selected = allNodes ? string.Empty : $"AND n.NodeId IN ({BindIdList(command, page)})";
+
+                    string continuation = after is null ? string.Empty : "AND n.NodeId COLLATE BINARY>@after";
+
+                    command.CommandText = $"""
                     SELECT n.NodeId,CASE WHEN length(e.Embedding)=@bytes THEN e.Embedding END
                     FROM tapestry_nodes n JOIN tapestry_node_embeddings e ON e.NodeId=n.NodeId
-                    WHERE n.GenerationId=@generation AND n.NodeId COLLATE BINARY>@after
+                    WHERE n.GenerationId=@generation {selected} {continuation}
                     ORDER BY n.NodeId COLLATE BINARY LIMIT @page
                     """;
 
-                AddParameter(command, "@generation", access.Generation.GenerationId);
+                    AddParameter(command, "@generation", access.Generation.GenerationId);
 
-                AddParameter(command, "@bytes", checked(queryVector.Length * sizeof(float)));
+                    AddParameter(command, "@bytes", checked(queryVector.Length * sizeof(float)));
 
-                AddParameter(command, "@after", after);
-
-                AddParameter(command, "@page", LeafPageSize);
-
-                await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    after = reader.GetString(0);
-
-                    count++;
-
-                    if ((eligible is not null && !eligible.Contains(after)) || reader.IsDBNull(1)
-                        || !graph.Vertices.TryGetValue(after, out TapestryRetrievalVertex? vertex))
+                    if (after is not null)
                     {
-                        continue;
+                        AddParameter(command, "@after", after);
                     }
 
-                    byte[] blob = (byte[])reader.GetValue(1);
+                    AddParameter(command, "@page", LeafPageSize);
 
-                    if (!EmbeddingBlobCodec.TryCosineSimilarity(queryVector, norm, EmbeddingBlobCodec.AsVector(blob), out float similarity))
+                    await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
-                        continue;
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        after = reader.GetString(0);
+
+                        count++;
+
+                        if (reader.IsDBNull(1)
+                            || !graph.Vertices.TryGetValue(after, out TapestryRetrievalVertex? vertex))
+                        {
+                            continue;
+                        }
+
+                        byte[] blob = (byte[])reader.GetValue(1);
+
+                        if (!EmbeddingBlobCodec.TryCosineSimilarity(queryVector, norm, EmbeddingBlobCodec.AsVector(blob), out float similarity))
+                        {
+                            continue;
+                        }
+
+                        scored++;
+
+                        TapestryRankedNode candidate = new(after, similarity, vertex.SourceEventAt);
+
+                        if (best.Count < limit)
+                        {
+                            best.Enqueue(candidate, candidate);
+                        }
+                        else
+                        {
+                            _ = best.EnqueueDequeue(candidate, candidate);
+                        }
                     }
 
-                    scored++;
-
-                    TapestryRankedNode candidate = new(after, similarity, vertex.SourceEventAt);
-
-                    if (best.Count < limit)
+                    if (!allNodes || count < LeafPageSize)
                     {
-                        best.Enqueue(candidate, candidate);
+                        break;
                     }
-                    else
-                    {
-                        _ = best.EnqueueDequeue(candidate, candidate);
-                    }
-                }
-
-                if (count < LeafPageSize)
-                {
-                    break;
                 }
             }
 
