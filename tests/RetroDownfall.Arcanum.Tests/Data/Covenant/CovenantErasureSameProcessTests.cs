@@ -1,5 +1,9 @@
 using System.Data;
 
+using System.Net;
+
+using System.Net.Http.Json;
+
 using System.Data.Common;
 
 using System.Globalization;
@@ -11,6 +15,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+
+using RetroDownfall.Arcanum.Api.Serialization;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -52,6 +58,95 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 [Trait("Category", "Integration")]
 public sealed class CovenantErasureSameProcessTests
 {
+    [Theory]
+    [InlineData(CovenantExclusiveLeaseDisposition.CommitAndReopen, "Admission reopened after verified commit")]
+    [InlineData(CovenantExclusiveLeaseDisposition.RollbackAndReopen, "Admission reopened after verified rollback")]
+    [InlineData(CovenantExclusiveLeaseDisposition.KeepClosed, "Admission stays closed")]
+    [InlineData((CovenantExclusiveLeaseDisposition)255, "Admission reopening is not confirmed")]
+    public void Failure_guidance_reports_only_the_completion_disposition_it_was_given(
+        CovenantExclusiveLeaseDisposition disposition,
+        string expectedAdmission)
+    {
+        // The factory caller can request failure guidance even after verified commit when its
+        // separate ordinary result is unavailable. Unknown future dispositions must not claim a
+        // reopen. These defensive projections have no naturally reachable crash seam.
+        System.Reflection.MethodInfo method = typeof(DataRetentionService).GetMethod(
+            "CovenantResetFailure",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+        CovenantErasureCompletion completion = new(
+            disposition,
+            true,
+            true,
+            new CovenantDisclosureExposure(0, CovenantDisclosureCountKind.Exact),
+            ErrorCodes.Covenant.MaintenanceFailed);
+
+        Error error = Assert.IsType<Error>(method.Invoke(null, [Guid.NewGuid(), completion]));
+
+        Assert.Contains(expectedAdmission, error.Message);
+
+        if (disposition is CovenantExclusiveLeaseDisposition.CommitAndReopen)
+        {
+            Assert.DoesNotContain("did not reach a committed reopen", error.Message);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_proven_erasure_with_writer_restart_failure_reports_proof_and_same_operation_guidance(bool factoryReset)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        RouteOperationWriteObserver writes = new();
+
+        await using SameProcessHarness harness = await SameProcessHarness.CreateAsync(
+            operationWrites: writes,
+            serviceOverrides: services =>
+            {
+                services.RemoveAll<ICovenantDisclosureWriterLifecycle>();
+
+                services.AddSingleton<ICovenantDisclosureWriterLifecycle>(provider =>
+                    new RefusingRestartWriter(provider.GetRequiredService<CovenantDisclosureWriter>()));
+            });
+
+        SameProcessBefore before = await harness.SeedAndCaptureAsync();
+
+        await before.ReadLease.DisposeAsync();
+
+        DataRetentionPlan plan = factoryReset ? await harness.PlanFactoryAsync() : await harness.PlanResetAsync();
+
+        Result<DataRetentionApplyResult> result = factoryReset
+            ? await harness.ApplyFactoryAsync(plan.PlanId)
+            : await harness.ApplyResetViaHttpAsync(plan.PlanId);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.MaintenanceFailed, result.Error.Code);
+
+        Assert.Contains("Canonical erasure: confirmed", result.Error.Message);
+
+        Assert.Contains("Local secure erasure: confirmed", result.Error.Message);
+
+        Assert.Contains("Admission stays closed", result.Error.Message);
+
+        Assert.Contains($"arcanum operation show {writes.LastSuccessfulWrite.Id}", result.Error.Message);
+
+        Assert.Contains("Do not start a second erasure", result.Error.Message);
+
+        Assert.DoesNotContain("PRIVATE-writer-sentinel", result.Error.Message);
+
+        Assert.Equal(LongRunningOperationState.ReconciliationRequired, writes.LastSuccessfulWrite.State);
+    }
+
+    private sealed class RefusingRestartWriter(ICovenantDisclosureWriterLifecycle inner) : ICovenantDisclosureWriterLifecycle
+    {
+        public ValueTask<Result> QuiesceAsync(CancellationToken cancellationToken) => inner.QuiesceAsync(cancellationToken);
+
+        public ValueTask<Result> ReopenAsync(CancellationToken cancellationToken) => ValueTask.FromResult(
+            Result.Failure(new Error(ErrorCodes.Covenant.MaintenanceFailed, "PRIVATE-writer-sentinel")));
+    }
+
     [SkippableFact]
     public async Task Factory_named_operation_creates_server_identity_and_commits_requested_checkpoint_proof()
     {
@@ -437,8 +532,10 @@ public sealed class CovenantErasureSameProcessTests
     /// initiator; this is the watcher, the slow call, the client that stopped reading — the caller a
     /// drain genuinely cannot wait out.</para>
     /// </remarks>
-    [SkippableFact]
-    public async Task Factory_erasure_that_cannot_drain_reopens_ordinary_admission()
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Erasure_that_cannot_drain_reports_verified_no_erasure_and_idle_retry(bool factoryReset)
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -448,7 +545,9 @@ public sealed class CovenantErasureSameProcessTests
 
         await before.ReadLease.DisposeAsync();
 
-        DataRetentionPlan confirmed = await harness.PlanFactoryAsync();
+        CovenantRouteState preserved = await harness.CaptureRouteStateAsync();
+
+        DataRetentionPlan confirmed = factoryReset ? await harness.PlanFactoryAsync() : await harness.PlanResetAsync();
 
         IGrimoireConnectionAdmissionGate admission = harness.Services
             .GetRequiredService<IGrimoireConnectionAdmissionGate>();
@@ -458,7 +557,9 @@ public sealed class CovenantErasureSameProcessTests
                 GrimoireRequestKind.Finite,
                 out IGrimoireRequestLease? blocking));
 
-        Result<DataRetentionApplyResult> result = await harness.ApplyFactoryAsync(confirmed.PlanId);
+        Result<DataRetentionApplyResult> result = factoryReset
+            ? await harness.ApplyFactoryAsync(confirmed.PlanId)
+            : await harness.ApplyResetAsync(confirmed.PlanId);
 
         Assert.True(result.IsFailure);
 
@@ -475,6 +576,28 @@ public sealed class CovenantErasureSameProcessTests
         await afterwards!.DisposeAsync();
 
         await blocking!.DisposeAsync();
+
+        Assert.Equal(preserved, await harness.CaptureRouteStateAsync());
+
+        LongRunningOperation operation = factoryReset
+            ? await harness.ReadFactoryOperationAsync()
+            : await harness.ReadResetOperationAsync();
+
+        Assert.Equal(LongRunningOperationState.Failed, operation.State);
+
+        Assert.Equal(GrimoireOfflineTransitionDatabaseReconciler.PreEffectFailureCode, operation.TerminalErrorCode);
+
+        Assert.Contains("Nothing was erased", result.Error.Message);
+
+        Assert.Contains("Ordinary work did not finish within the drain window", result.Error.Message);
+
+        Assert.Contains("Retry when the host is idle", result.Error.Message);
+
+        Assert.Contains("Admission reopened", result.Error.Message);
+
+        Assert.Contains($"arcanum operation show {operation.Id}", result.Error.Message);
+
+        Assert.DoesNotContain("Admission stays closed", result.Error.Message);
     }
 
     [SkippableFact]
@@ -1311,6 +1434,18 @@ public sealed class CovenantErasureSameProcessTests
             : await harness.ReadResetOperationAsync();
 
         Assert.Equal(expectedState, operation.State);
+
+        Assert.Contains($"arcanum operation show {operation.Id}", reset.Error.Message);
+
+        Assert.Contains("Canonical erasure: not confirmed", reset.Error.Message);
+
+        Assert.Contains("Local secure erasure: not confirmed", reset.Error.Message);
+
+        Assert.Contains(failure is RouteFailure.Rollback ? "Admission reopened" : "Admission stays closed", reset.Error.Message);
+
+        Assert.Contains(failure is RouteFailure.Rollback
+            ? "Resolve the reported blocker before retrying"
+            : "Do not start a second erasure", reset.Error.Message);
 
         Assert.Equal(expectedDurableError, operation.TerminalErrorCode);
 
@@ -2865,6 +3000,7 @@ public sealed class CovenantErasureSameProcessTests
     [SkippableTheory]
     [InlineData("stage-two")]
     [InlineData("lane")]
+    [InlineData("lane-throw")]
     public async Task Authenticated_closure_reconstruction_failure_never_reopens_ordinary_admission(
         string failureStage)
     {
@@ -2916,6 +3052,21 @@ public sealed class CovenantErasureSameProcessTests
         Assert.Equal(retainedGeneration, gate.CurrentGeneration);
 
         await AssertBothAdmissionsClosedAsync(harness);
+
+        if (failureStage == "lane-throw")
+        {
+            TestLogEntry diagnostic = Assert.Single(
+                harness.Services.GetRequiredService<TestCapturingLogger<CovenantErasureCoordinator>>().Entries,
+                entry => entry.Message.Contains("could not finish reconstructing", StringComparison.Ordinal));
+
+            Assert.Null(diagnostic.Exception);
+
+            Assert.Contains(nameof(IOException), diagnostic.Message);
+
+            Assert.Contains(operationWrites.LastSuccessfulWrite.Id.ToString(), diagnostic.Message);
+
+            Assert.DoesNotContain("PRIVATE-authenticated-closure-sentinel", diagnostic.Message);
+        }
     }
 
     private static async Task AssertBothAdmissionsClosedAsync(SameProcessHarness harness)
@@ -3552,6 +3703,30 @@ public sealed class CovenantErasureSameProcessTests
                         DataRetentionOperation.ResetMemory,
                         MemoryScope: MemoryResetScope.Covenant),
                     CancellationToken.None);
+        }
+
+        internal async Task<Result<DataRetentionApplyResult>> ApplyResetViaHttpAsync(string expectedPlanId)
+        {
+            using HttpResponseMessage response = await _client.PostAsync(
+                "/api/data/memory/reset",
+                JsonContent.Create(
+                    new MemoryResetRequest(MemoryResetScope.Covenant, expectedPlanId),
+                    ArcanumJsonContext.Default.MemoryResetRequest));
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+            ApiResponse<DataRetentionApplyResult>? body = await response.Content.ReadFromJsonAsync(
+                ArcanumJsonContext.Default.ApiResponseDataRetentionApplyResult);
+
+            Assert.NotNull(body);
+
+            Assert.False(body.IsSuccess);
+
+            Assert.NotNull(body.Error);
+
+            Assert.Null(body.Data);
+
+            return Result<DataRetentionApplyResult>.Failure(body.Error.Value);
         }
 
         internal async Task<Result<DataRetentionApplyResult>> ApplyResetAsync(
@@ -5870,10 +6045,13 @@ public sealed class CovenantErasureSameProcessTests
                 Func<CovenantExclusiveRecoveryOwner, long, CancellationToken, ValueTask<bool>>
                     revalidateDurableOwnerAsync,
                 CancellationToken cancellationToken) =>
-                failure.Take("lane")
-                    ? ValueTask.FromResult(Result<IGrimoireMaintenanceIoLane>.Failure(
-                        InjectedFailure()))
-                    : inner.AcquireMaintenanceIoLaneAsync(
+                failure.Take("lane-throw")
+                    ? ValueTask.FromException<Result<IGrimoireMaintenanceIoLane>>(
+                        new IOException("PRIVATE-authenticated-closure-sentinel"))
+                    : failure.Take("lane")
+                        ? ValueTask.FromResult(Result<IGrimoireMaintenanceIoLane>.Failure(
+                            InjectedFailure()))
+                        : inner.AcquireMaintenanceIoLaneAsync(
                         revalidateDurableOwnerAsync,
                         cancellationToken);
 

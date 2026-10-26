@@ -534,7 +534,8 @@ internal sealed partial class DataRetentionService(
                 "OS credential and Data Protection stores",
                 "Registered workspaces outside the Arcanum data root",
             ],
-            covenant) with { MemoryErasure = memoryErasure };
+            covenant) with
+        { MemoryErasure = memoryErasure };
     }
 
     /// <summary>
@@ -2006,14 +2007,14 @@ internal sealed partial class DataRetentionService(
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.Failed).ConfigureAwait(false);
             }
 
             if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
             {
                 return Result<DataRetentionApplyResult>.Failure(
-                    CovenantResetFailure(erased.Value.BlockingErrorCode));
+                    CovenantResetFailure(operation.Id, erased.Value));
             }
 
             if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen)
@@ -2021,7 +2022,7 @@ internal sealed partial class DataRetentionService(
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
             }
 
@@ -2305,12 +2306,40 @@ internal sealed partial class DataRetentionService(
         }
     }
 
-    private static Error CovenantResetFailure(string? errorCode) =>
-        new(
-            string.IsNullOrWhiteSpace(errorCode)
+    private static Error CovenantResetFailure(Guid operationId, CovenantErasureCompletion completion)
+    {
+        string canonical = completion.CanonicalResetApplied ? "confirmed" : "not confirmed";
+
+        string local = completion.LocalSecureErasureComplete ? "confirmed" : "not confirmed";
+
+        string admission = completion.Disposition switch
+        {
+            CovenantExclusiveLeaseDisposition.CommitAndReopen => "Admission reopened after verified commit.",
+            CovenantExclusiveLeaseDisposition.RollbackAndReopen => "Admission reopened after verified rollback.",
+            CovenantExclusiveLeaseDisposition.KeepClosed => "Admission stays closed.",
+            _ => "Admission reopening is not confirmed.",
+        };
+
+        string effect = completion.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen
+            ? "Nothing was erased; rollback was verified. "
+            : "Unconfirmed erasure does not establish that no data was erased. ";
+
+        string remedy = completion.Disposition is CovenantExclusiveLeaseDisposition.RollbackAndReopen
+            ? completion.BlockingErrorCode == ErrorCodes.Grimoire.WorkDrainTimeout
+                ? "Ordinary work did not finish within the drain window. Retry when the host is idle."
+                : "Resolve the reported blocker before retrying."
+            : "Do not start a second erasure until this operation's outcome is resolved.";
+
+        return new Error(
+            string.IsNullOrWhiteSpace(completion.BlockingErrorCode)
                 ? ErrorCodes.Covenant.MaintenanceFailed
-                : errorCode,
-            "The Covenant reset did not reach a committed reopen disposition.");
+                : completion.BlockingErrorCode,
+            $"Covenant erasure operation {operationId} requires attention. "
+            + $"Canonical erasure: {canonical}. Local secure erasure: {local}. "
+            + effect
+            + $"{admission} Run arcanum operation show {operationId}. {remedy} "
+            + "External disclosures are not revoked by local erasure.");
+    }
 
     /// <summary>
     /// Surrenders a cancelled apply's lease to <see cref="LongRunningOperationState.ReconciliationRequired"/>,

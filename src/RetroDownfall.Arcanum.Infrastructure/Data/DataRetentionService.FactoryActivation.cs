@@ -482,14 +482,14 @@ internal sealed partial class DataRetentionService
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.Failed).ConfigureAwait(false);
             }
 
             if (erased.Value.Disposition is CovenantExclusiveLeaseDisposition.KeepClosed)
             {
                 return Result<DataRetentionApplyResult>.Failure(
-                    CovenantResetFailure(erased.Value.BlockingErrorCode));
+                    CovenantResetFailure(operation.Id, erased.Value));
             }
 
             if (erased.Value.Disposition is not CovenantExclusiveLeaseDisposition.CommitAndReopen
@@ -498,7 +498,7 @@ internal sealed partial class DataRetentionService
                 return await FailCovenantResetAsync(
                     committed,
                     ownerId,
-                    CovenantResetFailure(erased.Value.BlockingErrorCode),
+                    CovenantResetFailure(operation.Id, erased.Value),
                     LongRunningOperationState.ReconciliationRequired).ConfigureAwait(false);
             }
 

@@ -1294,9 +1294,10 @@ internal sealed class CovenantErasureCoordinator(
             await closingOwner.DisposeAsync().ConfigureAwait(false);
 
             _logger.LogWarning(
-                failed,
-                "An authenticated Covenant recovery could not finish reconstructing its "
-                + "Grimoire closure; ordinary admission remains closed.");
+                "An authenticated Covenant recovery for durable operation {OperationId} could not finish reconstructing its "
+                + "Grimoire closure ({ExceptionType}); ordinary admission remains closed.",
+                owner.OperationId,
+                failed.GetType().Name);
 
             throw;
         }
@@ -2512,8 +2513,16 @@ internal sealed class CovenantErasureCoordinator(
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception failure)
         {
+            _logger.LogWarning(
+                "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
+                + "with {FailureReason} ({ExceptionType}); disposition will reconcile from durable evidence.",
+                state.Phase,
+                operation.Id,
+                "ExecutionFailed",
+                failure.GetType().Name);
+
             Error interrupted = MaintenanceFailure();
 
             return progress.EffectAttempted || progress.DurablyMutated
@@ -2588,8 +2597,16 @@ internal sealed class CovenantErasureCoordinator(
                     phases,
                     closure).ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception failure)
         {
+            _logger.LogWarning(
+                "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
+                + "with {FailureReason} ({ExceptionType}); disposition will reconcile from durable evidence.",
+                state.Phase,
+                operation.Id,
+                "ProofPublicationFailed",
+                failure.GetType().Name);
+
             Error interrupted = MaintenanceFailure();
 
             return await CloseAsync(
@@ -2651,6 +2668,16 @@ internal sealed class CovenantErasureCoordinator(
 
         if (writer.IsFailure)
         {
+            _logger.LogWarning(
+                "A Covenant erasure stopped at phase {ResetPhase} for durable operation {OperationId} "
+                + "with WriterRestartRefused ({ErrorCode}); canonical erasure confirmed: {CanonicalResetApplied}; "
+                + "local secure erasure confirmed: {LocalSecureErasureComplete}; admission stays closed.",
+                state.Phase,
+                operation.Id,
+                writer.Error.Code,
+                progress.CanonicalResetApplied,
+                progress.LocalSecureErasureComplete);
+
             return await CloseAsync(
                 operation,
                 state,
@@ -2703,8 +2730,16 @@ internal sealed class CovenantErasureCoordinator(
                 ? Result.Failure(MaintenanceFailure())
                 : await phases.ParkAsync(retention.Token).ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception cleanupFailure)
         {
+            _logger.LogWarning(
+                "A Covenant erasure closure for durable operation {OperationId} at phase {ResetPhase} "
+                + "encountered {FailureReason} ({ExceptionType}); admission stays closed.",
+                operation.Id,
+                checkpoint.Phase,
+                "JournalParkFailed",
+                cleanupFailure.GetType().Name);
+
             parked = Result.Failure(MaintenanceFailure());
         }
 
@@ -2718,18 +2753,28 @@ internal sealed class CovenantErasureCoordinator(
                     retention.Token)
                 .ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception cleanupFailure)
         {
+            _logger.LogWarning(
+                "A Covenant erasure closure for durable operation {OperationId} at phase {ResetPhase} "
+                + "encountered {FailureReason} ({ExceptionType}); admission stays closed.",
+                operation.Id,
+                checkpoint.Phase,
+                "ClosedDispositionFailed",
+                cleanupFailure.GetType().Name);
+
             covenant = Result.Failure(MaintenanceFailure());
         }
 
         _logger.LogWarning(
-            failure,
             "A Covenant erasure was interrupted while closing Grimoire for durable operation "
-            + "{OperationId} at phase {ResetPhase}; its closed gate and active journal are retained "
+            + "{OperationId} at phase {ResetPhase} ({ExceptionType}); its closed gate and active journal are retained "
             + "for retry.",
             operation.Id,
-            checkpoint.Phase);
+            checkpoint.Phase,
+            (failure is GrimoireClosureRetainedException { InnerException: { } cause }
+                ? cause
+                : failure).GetType().Name);
 
         if (parked.IsFailure || covenant.IsFailure)
         {
@@ -3903,7 +3948,7 @@ internal sealed class CovenantErasureCoordinator(
                 // A transition that cannot reach a terminal intent has neither answer available, which
                 // is the correct outcome for a run that stopped in the middle rather than a failure of
                 // this step. It parks, and the caller must not then retire what it just parked.
-                return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+                return await ParkWithDiagnosticAsync(phases, "TerminalIntentUnavailable", cancellationToken).ConfigureAwait(false);
             }
 
             Result opened = await phases.BeginReconciliationAsync(cancellationToken)
@@ -3935,7 +3980,7 @@ internal sealed class CovenantErasureCoordinator(
                 // A reconciliation that cannot name the exact terminal winner has no answer this
                 // transition may act on. The row is missing, or belongs to another launch, or moved,
                 // or somebody else terminalized it - four different facts, none to overwrite.
-                return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+                return await ParkWithDiagnosticAsync(phases, "TerminalWinnerUnproven", cancellationToken).ConfigureAwait(false);
             }
 
             Result interrupted = await _terminalSuffixFaultSeam(
@@ -3978,7 +4023,7 @@ internal sealed class CovenantErasureCoordinator(
                 if (phases.Current.Payload.Lifecycle.ReconciliationEvidence
                         ?.DatabaseTerminalWinnerDigest is not { IsValid: true } winner)
                 {
-                    return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+                    return await ParkWithDiagnosticAsync(phases, "ParentWinnerMissing", cancellationToken).ConfigureAwait(false);
                 }
 
                 Result<CovenantDigest> published = await sink
@@ -3991,7 +4036,7 @@ internal sealed class CovenantErasureCoordinator(
                     // not be published, or that read back as something else, means the two records
                     // disagree about what happened - which is a state to stay closed in, not one to
                     // resolve by preferring either of them.
-                    return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
+                    return await ParkWithDiagnosticAsync(phases, "ParentReceiptUnproven", cancellationToken).ConfigureAwait(false);
                 }
 
                 proved = published.Value;
@@ -4101,6 +4146,22 @@ internal sealed class CovenantErasureCoordinator(
             ? await phases.RecordVerificationAsync(true, true, true, cancellationToken)
                 .ConfigureAwait(false)
             : Result.Success();
+    }
+
+    private async Task<Result<ReconciliationSuffix>> ParkWithDiagnosticAsync(
+        GrimoireOfflineTransitionPhaseSession phases,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogWarning(
+            "A Covenant erasure must park durable operation {OperationId} at phase {ResetPhase} "
+            + "and journal state {JournalState}: {ParkReason}; admission stays closed.",
+            phases.Launch.OperationId,
+            phases.LastCompletedPhase,
+            phases.State,
+            reason);
+
+        return Parked(await phases.ParkAsync(cancellationToken).ConfigureAwait(false));
     }
 
     private static Result<ReconciliationSuffix> Parked(Result parked) =>
