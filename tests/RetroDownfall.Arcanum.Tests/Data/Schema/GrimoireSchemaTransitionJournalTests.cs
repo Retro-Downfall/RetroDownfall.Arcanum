@@ -13,7 +13,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Schema;
 /// </summary>
 public sealed class GrimoireSchemaTransitionJournalTests
 {
-
     static GrimoireSchemaTransitionJournalTests() => SqliteNativeRuntime.Instance.Initialize();
 
     private const string TargetFingerprint =
@@ -28,7 +27,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
     [Fact]
     public async Task A_row_survives_a_round_trip_field_for_field()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         GrimoireSchemaTransitionJournalRow row = SampleRow();
@@ -42,13 +40,11 @@ public sealed class GrimoireSchemaTransitionJournalTests
             CancellationToken.None);
 
         Assert.Equal(row, read);
-
     }
 
     [Fact]
     public async Task Reading_a_tier_with_no_run_returns_nothing()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         Assert.Null(
@@ -57,7 +53,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
                 transaction: null,
                 GrimoireSchemaTransactionTier.Core,
                 CancellationToken.None));
-
     }
 
     /// <summary>
@@ -67,7 +62,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
     [Fact]
     public async Task An_advance_at_a_stale_revision_is_refused()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         GrimoireSchemaTransitionJournalRow row = SampleRow();
@@ -93,13 +87,11 @@ public sealed class GrimoireSchemaTransitionJournalTests
         Assert.Equal(55, read.BackfillRowsProcessed);
 
         Assert.Equal(1, read.Revision);
-
     }
 
     [Fact]
     public async Task A_delete_at_a_stale_revision_is_refused()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         GrimoireSchemaTransitionJournalRow row = SampleRow();
@@ -125,13 +117,71 @@ public sealed class GrimoireSchemaTransitionJournalTests
                 transaction: null,
                 GrimoireSchemaTransactionTier.CovenantAccelerator,
                 CancellationToken.None));
+    }
 
+    [Theory]
+    [InlineData("revision")]
+    [InlineData("family")]
+    [InlineData("from")]
+    [InlineData("target")]
+    [InlineData("fingerprint")]
+    public async Task A_failure_cannot_mark_a_different_run_or_revision(string changed)
+    {
+        await using SqliteConnection connection = await InstallAsync();
+
+        GrimoireSchemaTransitionJournalRow actual = SampleRow();
+
+        await InsertAsync(connection, actual);
+
+        GrimoireSchemaTransitionJournalRow stale = changed switch
+        {
+            "revision" => actual with { Revision = actual.Revision + 1 },
+            "family" => actual with { Family = GrimoireSchemaFamily.Core },
+            "from" => actual with { FromVersion = 2 },
+            "target" => actual with { TargetVersion = 4 },
+            _ => actual with { TargetSourceDefinitionFingerprint = new string('F', 64) },
+        };
+
+        Assert.False(await GrimoireSchemaTransitionJournal.TryRecordErrorAsync(
+            connection, stale, "Grimoire.Schema.FinalizationFailed", Now.AddMinutes(1), CancellationToken.None));
+
+        Assert.Equal(actual, await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, actual.TransactionTier, CancellationToken.None));
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT LastDurableErrorCode IS NULL AND UpdatedAtUtc = $started FROM grimoire_schema_transitions;";
+
+        _ = command.Parameters.AddWithValue("$started", UtcInstantText.Format(Now));
+
+        Assert.Equal(1L, await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task A_current_run_records_its_failure_without_changing_committed_progress()
+    {
+        await using SqliteConnection connection = await InstallAsync();
+
+        GrimoireSchemaTransitionJournalRow row = SampleRow();
+
+        await InsertAsync(connection, row);
+
+        Assert.True(await GrimoireSchemaTransitionJournal.TryRecordErrorAsync(
+            connection, row, "Grimoire.Schema.FinalizationFailed", Now.AddMinutes(1), CancellationToken.None));
+
+        Assert.Equal(row, await GrimoireSchemaTransitionJournal.ReadAsync(
+            connection, null, row.TransactionTier, CancellationToken.None));
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT LastDurableErrorCode FROM grimoire_schema_transitions;";
+
+        Assert.Equal("Grimoire.Schema.FinalizationFailed", await command.ExecuteScalarAsync());
     }
 
     [Fact]
     public async Task Every_in_flight_run_is_listed()
     {
-
         await using SqliteConnection connection = await InstallAsync();
 
         await InsertAsync(connection, SampleRow());
@@ -140,7 +190,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
             connection,
             SampleRow() with
             {
-
                 Family = GrimoireSchemaFamily.Core,
 
                 TransactionTier = GrimoireSchemaTransactionTier.Core,
@@ -148,7 +197,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
                 BackfillName = null,
 
                 BackfillCursor = null,
-
             });
 
         IReadOnlyList<GrimoireSchemaTransitionJournalRow> all =
@@ -161,7 +209,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
         Assert.Contains(
             all,
             candidate => candidate.TransactionTier == GrimoireSchemaTransactionTier.CovenantAccelerator);
-
     }
 
     /// <summary>
@@ -185,7 +232,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
         SqliteConnection connection,
         GrimoireSchemaTransitionJournalRow row)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(CancellationToken.None);
 
@@ -197,7 +243,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
             CancellationToken.None);
 
         await transaction.CommitAsync(CancellationToken.None);
-
     }
 
     private static async Task<bool> AdvanceAsync(
@@ -206,7 +251,6 @@ public sealed class GrimoireSchemaTransitionJournalTests
         string? cursor,
         long rowsProcessed)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(CancellationToken.None);
 
@@ -224,14 +268,12 @@ public sealed class GrimoireSchemaTransitionJournalTests
         await transaction.CommitAsync(CancellationToken.None);
 
         return advanced;
-
     }
 
     private static async Task<bool> DeleteAsync(
         SqliteConnection connection,
         GrimoireSchemaTransitionJournalRow row)
     {
-
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(CancellationToken.None);
 
@@ -244,12 +286,10 @@ public sealed class GrimoireSchemaTransitionJournalTests
         await transaction.CommitAsync(CancellationToken.None);
 
         return deleted;
-
     }
 
     private static async Task<SqliteConnection> InstallAsync()
     {
-
         SqliteConnection connection = await GrimoireSchemaTestInstaller.OpenAsync(
             "Data Source=:memory:",
             CancellationToken.None);
@@ -257,7 +297,5 @@ public sealed class GrimoireSchemaTransitionJournalTests
         _ = await GrimoireSchemaTestInstaller.InstallAsync(connection, 1536, CancellationToken.None);
 
         return connection;
-
     }
-
 }

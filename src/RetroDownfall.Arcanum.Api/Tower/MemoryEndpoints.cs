@@ -233,14 +233,33 @@ internal static class MemoryEndpoints
     {
         MemoryScope scope = await ResolveScopeAsync(sessionId, context).ConfigureAwait(false);
 
-        Result<MemoryStatusDto> result = await BuildStatusAsync(
-            sessionId,
-            db,
-            options.CurrentValue,
-            context.RequestServices.GetService<ICovenantAvailability>(),
-            context.RequestServices.GetService<ICovenantManagementService>(),
-            context.RequestServices.GetRequiredService<IGrimoireOrdinaryConnectionFactory>(),
-            context.RequestAborted).ConfigureAwait(false);
+        IGrimoireOrdinaryConnectionFactory connections = context.RequestServices
+            .GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+        GrimoireSchemaTransitionStatusDto schemaTransitions;
+
+        await using (IGrimoireOrdinaryConnectionLease lease = await OpenConnectionAsync(
+            db, connections, context.RequestAborted).ConfigureAwait(false))
+        {
+            schemaTransitions = await RetroDownfall.Arcanum.Infrastructure.Diagnostics.GrimoireSchemaTransitionDiagnostics
+                .ReadAsync(lease.Connection, context.RequestAborted).ConfigureAwait(false);
+        }
+
+        // Later stores may not exist while Core is evolving. Their absent tables are not empty
+        // stores, and diagnostics must remain readable before their schemas become available.
+        bool coreTransition = schemaTransitions.Runs.Any(static run => run.Tier == "Core");
+
+        Result<MemoryStatusDto> result = coreTransition
+            ? Result<MemoryStatusDto>.Success(new MemoryStatusDto(
+                sessionId, null, [], SchemaTransitions: schemaTransitions, StoreCensusAvailable: false))
+            : await BuildStatusAsync(
+                sessionId,
+                db,
+                options.CurrentValue,
+                context.RequestServices.GetService<ICovenantAvailability>(),
+                context.RequestServices.GetService<ICovenantManagementService>(),
+                connections,
+                context.RequestAborted).ConfigureAwait(false);
 
         if (result.IsSuccess)
         {
@@ -248,8 +267,10 @@ internal static class MemoryEndpoints
                 result.Value with
                 {
                     CampaignScope = MemoryCampaignScopeReport.Describe(scope),
-                    SagaRanking = await context.RequestServices.GetRequiredService<ISagaMemoryStore>()
-                        .ReadRankingStatusAsync(scope, sessionId, context.RequestAborted).ConfigureAwait(false),
+                    SagaRanking = result.Value.StoreCensusAvailable
+                        ? await context.RequestServices.GetRequiredService<ISagaMemoryStore>()
+                            .ReadRankingStatusAsync(scope, sessionId, context.RequestAborted).ConfigureAwait(false)
+                        : null,
                 });
         }
 
@@ -1123,7 +1144,9 @@ internal static class MemoryEndpoints
                 stores,
                 await BuildCovenantStatusAsync(availability, management, cancellationToken)
                     .ConfigureAwait(false),
-                CampaignSummary: campaignSummary));
+                CampaignSummary: campaignSummary,
+                SchemaTransitions: await RetroDownfall.Arcanum.Infrastructure.Diagnostics.GrimoireSchemaTransitionDiagnostics
+                    .ReadAsync(connection, cancellationToken).ConfigureAwait(false)));
     }
 
     private static async Task<MemoryCampaignSummaryDto?> ReadCampaignSummaryMetadataAsync(

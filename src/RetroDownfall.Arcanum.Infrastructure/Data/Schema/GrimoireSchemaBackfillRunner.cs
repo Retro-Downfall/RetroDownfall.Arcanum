@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Primitives;
+
 using Microsoft.Data.Sqlite;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
@@ -10,7 +12,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data.Schema;
 /// version was recorded on the journal row, or, for the last step, the whole run was finished. It
 /// does <b>not</b> mean the tier reached head; a chain with further steps still needs their DDL.
 /// </remarks>
-internal sealed record GrimoireSchemaBackfillProgress(int BatchesRun, long RowsProcessed, bool StepComplete);
+internal sealed record GrimoireSchemaBackfillProgress(
+    int BatchesRun, long RowsProcessed, bool StepComplete, string? FailureCode = null);
 
 /// <summary>
 /// Drains one pending sweep in bounded batches, writing each cursor inside the batch that earned it.
@@ -27,7 +30,6 @@ internal sealed record GrimoireSchemaBackfillProgress(int BatchesRun, long RowsP
 /// </remarks>
 internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller installer, TimeProvider timeProvider)
 {
-
     private readonly GrimoireSchemaInstaller _installer =
         installer ?? throw new ArgumentNullException(nameof(installer));
 
@@ -41,7 +43,6 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
         int maxBatches,
         CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(connection);
 
         ArgumentNullException.ThrowIfNull(chain);
@@ -56,12 +57,10 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
             || step.Backfill is null
             || !string.Equals(step.Backfill.Name, journal.BackfillName, StringComparison.Ordinal))
         {
-
             throw new InvalidOperationException(
                 $"The {chain.TransactionTier} schema journal names a sweep this chain does not declare "
                 + "for the step it is stopped at. Classification must refuse such a row rather than "
                 + "hand it here.");
-
         }
 
         GrimoireSchemaTransitionJournalRow row = journal;
@@ -72,7 +71,6 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
 
         while (batches < maxBatches)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             await using SqliteTransaction transaction =
@@ -80,33 +78,30 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
 
             try
             {
-
                 GrimoireSchemaBackfillBatch batch = await step.Backfill
                     .AdvanceBatchAsync(connection, transaction, row.BackfillCursor, cancellationToken)
                     .ConfigureAwait(false);
 
-                batches++;
-
-                processed += batch.RowsProcessed;
-
                 if (batch.RowsProcessed > step.Backfill.MaxRowsPerBatch)
                 {
-
                     // A sweep that ignores its own bound can hold one transaction open over an
                     // unbounded corpus, which is the migration this design refuses to be. Refuse the
                     // batch rather than commit the work it should not have done.
                     throw new InvalidOperationException(
                         $"The '{step.Backfill.Name}' schema backfill reported {batch.RowsProcessed} rows in one "
                         + $"batch, above its declared bound of {step.Backfill.MaxRowsPerBatch}.");
-
                 }
 
                 if (!batch.IsComplete)
                 {
-
                     // The cursor is written in the same transaction as the work it describes, which is
                     // the whole of "never advance past uncommitted work": there is no ordering between
                     // the two to get wrong.
+                    if (batch.RowsProcessed == 0 && string.Equals(batch.NextCursor, row.BackfillCursor, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException("The schema backfill made no durable progress.");
+                    }
+
                     row = await AdvanceJournalAsync(
                         connection,
                         transaction,
@@ -120,32 +115,32 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
 
                     await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                    continue;
+                    batches++;
 
+                    processed += batch.RowsProcessed;
+
+                    continue;
                 }
 
                 if (step.ToVersion == chain.HeadVersion)
                 {
-
                     GrimoireSchemaTierInstallResult finished = await _installer
                         .FinalizeRunAsync(connection, transaction, chain, row, context, cancellationToken)
                         .ConfigureAwait(false);
 
                     if (finished.IsHealthy)
                     {
-
                         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                        return new GrimoireSchemaBackfillProgress(batches, processed, StepComplete: true);
-
+                        return new GrimoireSchemaBackfillProgress(batches + 1, processed + batch.RowsProcessed, StepComplete: true);
                     }
 
                     // The journal row is left exactly as it was, so the run is retried rather than
                     // half-recorded.
                     await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
 
-                    return new GrimoireSchemaBackfillProgress(batches, processed, StepComplete: false);
-
+                    return new GrimoireSchemaBackfillProgress(batches, processed, StepComplete: false,
+                        FailureCode: ErrorCodes.Grimoire.Schema.FinalizationFailed);
                 }
 
                 _ = await AdvanceJournalAsync(
@@ -161,34 +156,25 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
 
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
-                return new GrimoireSchemaBackfillProgress(batches, processed, StepComplete: true);
-
+                return new GrimoireSchemaBackfillProgress(batches + 1, processed + batch.RowsProcessed, StepComplete: true);
             }
             catch
             {
-
                 try
                 {
-
                     await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-
                 }
                 catch (Exception)
                 {
-
                     // Best-effort: disposal rolls an uncommitted transaction back anyway, and keeping
                     // the original failure is worth more than reporting the rollback's.
-
                 }
 
                 throw;
-
             }
-
         }
 
         return new GrimoireSchemaBackfillProgress(batches, processed, StepComplete: false);
-
     }
 
     private async Task<GrimoireSchemaTransitionJournalRow> AdvanceJournalAsync(
@@ -202,7 +188,6 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
         long backfillRowsProcessed,
         CancellationToken cancellationToken)
     {
-
         if (!await GrimoireSchemaTransitionJournal.AdvanceAsync(
                 connection,
                 transaction,
@@ -214,15 +199,12 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
                 _time.GetUtcNow(),
                 cancellationToken).ConfigureAwait(false))
         {
-
             throw new InvalidOperationException(
                 $"The {chain.TransactionTier} schema transition journal moved while this sweep was draining.");
-
         }
 
         return row with
         {
-
             CompletedThroughVersion = completedThroughVersion,
 
             BackfillName = backfillName,
@@ -232,9 +214,6 @@ internal sealed class GrimoireSchemaBackfillRunner(GrimoireSchemaInstaller insta
             BackfillRowsProcessed = backfillRowsProcessed,
 
             Revision = row.Revision + 1,
-
         };
-
     }
-
 }

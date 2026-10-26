@@ -78,6 +78,11 @@ public sealed partial class MemoryCommands(
 
         table.AddColumn(themePalette.HeadingTableColumn("Retention"));
 
+        if (!result.Value.StoreCensusAvailable)
+        {
+            dispatcher.WritePayload("Memory stores were not counted while the Core schema transition is pending.");
+        }
+
         foreach (MemoryStoreStatusDto store in result.Value.Stores)
         {
             table.AddRow(
@@ -95,6 +100,23 @@ public sealed partial class MemoryCommands(
         WriteCovenantStatus(result.Value.Covenant);
 
         WriteSagaRankingStatus(result.Value.SagaRanking);
+
+        if (result.Value.SchemaTransitions is { } transitions)
+        {
+            if (!transitions.JournalAvailable)
+            {
+                dispatcher.WritePayload("Schema transition progress is unavailable: this database has no transition journal.");
+            }
+            else if (transitions.Runs.Length > 0)
+            {
+                foreach (GrimoireSchemaTransitionRunDto run in transitions.Runs)
+                {
+                    dispatcher.WritePayload("Schema transition " + GrimoireSchemaTransitionFacts.Describe(run));
+                }
+
+                dispatcher.WritePayload("Keep the compatible host running; use arcanum doctor --only grimoire.schema_transition to inspect progress locally.");
+            }
+        }
 
         return 0;
     }

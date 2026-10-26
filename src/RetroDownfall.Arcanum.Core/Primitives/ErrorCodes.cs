@@ -345,6 +345,32 @@ public static class ErrorCodes
     /// <summary>Grimoire — lore and knowledge store.</summary>
     public static class Grimoire
     {
+        /// <summary>Content-free schema transition diagnostics, also reported by read-only status.</summary>
+        public static class Schema
+        {
+            public const string TransitionPassFailed = "Grimoire.Schema.TransitionPassFailed";
+
+            public const string TransitionUnresumable = "Grimoire.Schema.TransitionUnresumable";
+
+            public const string FinalizationFailed = "Grimoire.Schema.FinalizationFailed";
+
+            public const string Busy = "Grimoire.Schema.Busy";
+
+            public const string DiskFull = "Grimoire.Schema.DiskFull";
+
+            public const string StorageUnavailable = "Grimoire.Schema.StorageUnavailable";
+
+            public const string CorruptDatabase = "Grimoire.Schema.CorruptDatabase";
+
+            public const string SqliteFailure = "Grimoire.Schema.SqliteFailure";
+
+            public const string AccessDenied = "Grimoire.Schema.AccessDenied";
+
+            public const string InvariantViolation = "Grimoire.Schema.InvariantViolation";
+
+            public const string UnrecognizedFailure = "Grimoire.Schema.UnrecognizedFailure";
+        }
+
         public const string LoreNotFound = "Grimoire.LoreNotFound";
 
         /// <summary>A durable Grimoire write did not commit. The transaction wrote nothing.</summary>

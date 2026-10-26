@@ -614,7 +614,7 @@ internal sealed class GrimoireSchemaInstaller(
     /// Reads the two metadata fields that decide what may happen next, or null when nothing is
     /// recorded.
     /// </summary>
-    private static async Task<GrimoireSchemaRecordedTier?> ReadRecordedTierAsync(
+    internal static async Task<GrimoireSchemaRecordedTier?> ReadRecordedTierAsync(
         SqliteConnection connection,
         GrimoireSchemaVersionChain chain,
         CancellationToken cancellationToken)

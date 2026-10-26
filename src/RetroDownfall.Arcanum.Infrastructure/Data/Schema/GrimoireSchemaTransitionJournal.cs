@@ -265,6 +265,51 @@ internal static class GrimoireSchemaTransitionJournal
         _ = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Records a failure only while the observed run and revision still own this tier's journal.
+    /// </summary>
+    internal static async Task<bool> TryRecordErrorAsync(
+        SqliteConnection connection,
+        GrimoireSchemaTransitionJournalRow row,
+        string errorCode,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+
+        ArgumentNullException.ThrowIfNull(row);
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(errorCode);
+
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = """
+            UPDATE grimoire_schema_transitions
+            SET LastDurableErrorCode = $code, UpdatedAtUtc = $now
+            WHERE FamilyCode = $familyCode AND TransactionTierCode = $tierCode
+                AND FromVersion = $from AND TargetVersion = $target
+                AND TargetSourceDefinitionFingerprint = $fingerprint AND Revision = $revision;
+            """;
+
+        _ = command.Parameters.AddWithValue("$code", errorCode.Length <= 64 ? errorCode : errorCode[..64]);
+
+        _ = command.Parameters.AddWithValue("$now", UtcInstantText.Format(nowUtc));
+
+        _ = command.Parameters.AddWithValue("$familyCode", (long)row.Family);
+
+        _ = command.Parameters.AddWithValue("$tierCode", (long)row.TransactionTier);
+
+        _ = command.Parameters.AddWithValue("$from", row.FromVersion);
+
+        _ = command.Parameters.AddWithValue("$target", row.TargetVersion);
+
+        _ = command.Parameters.AddWithValue("$fingerprint", row.TargetSourceDefinitionFingerprint);
+
+        _ = command.Parameters.AddWithValue("$revision", row.Revision);
+
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+    }
+
     private static GrimoireSchemaTransitionJournalRow Project(SqliteDataReader reader) =>
         new(
             (GrimoireSchemaFamily)reader.GetInt64(0),

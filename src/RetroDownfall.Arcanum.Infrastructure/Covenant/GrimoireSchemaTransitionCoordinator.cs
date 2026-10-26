@@ -21,7 +21,10 @@ internal sealed record GrimoireSchemaTransitionPassOutcome(
     bool Advanced,
     int RunsSeen,
     int BatchesRun,
-    long RowsProcessed);
+    long RowsProcessed,
+    int RunsAdvanced,
+    int RunsPending,
+    bool Deferred);
 
 /// <summary>
 /// Drives every in-flight schema version run to completion, one bounded pass at a time.
@@ -52,12 +55,8 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
     TimeProvider? timeProvider = null,
     ILogger<GrimoireSchemaTransitionCoordinator>? logger = null)
 {
-
     /// <summary>How many bounded batches one pass may run for one tier before yielding.</summary>
     internal const int MaxBatchesPerPass = 16;
-
-    /// <summary>The bounded code recorded on a run whose pass failed. Never an exception message.</summary>
-    private const string PassFailedCode = "Grimoire.Schema.TransitionPassFailed";
 
     private readonly ICovenantConnectionSource _connections =
         connections ?? throw new ArgumentNullException(nameof(connections));
@@ -79,7 +78,6 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
     internal async Task<Result<GrimoireSchemaTransitionPassOutcome>> RunOnceAsync(
         CancellationToken cancellationToken)
     {
-
         SqliteConnection connection = await _connections
             .GetOpenCoreConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -90,10 +88,8 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
 
         if (runs.Count == 0)
         {
-
             return Result<GrimoireSchemaTransitionPassOutcome>.Success(
-                new GrimoireSchemaTransitionPassOutcome(Advanced: false, 0, 0, 0));
-
+                new GrimoireSchemaTransitionPassOutcome(Advanced: false, 0, 0, 0, 0, 0, Deferred: false));
         }
 
         // Resolved once for the whole pass: it is the installation's own identity, it cannot change
@@ -106,92 +102,238 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
 
         long rows = 0;
 
-        bool advanced = false;
+        Dictionary<GrimoireSchemaTransactionTier, long> committedRows = [];
+
+        bool converge = false;
+
+        bool deferred = false;
+
+        HashSet<GrimoireSchemaTransactionTier> advancedTiers = [];
 
         foreach (GrimoireSchemaTransitionJournalRow run in runs)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
+
+            GrimoireSchemaVersionChain chain = _chains.ForTier(run.TransactionTier);
+
+            GrimoireSchemaRecordedTier? recorded = await GrimoireSchemaInstaller
+                .ReadRecordedTierAsync(connection, chain, cancellationToken).ConfigureAwait(false);
+
+            GrimoireSchemaEvolutionDecision decision = GrimoireSchemaEvolutionPlanner.Decide(
+                chain, recorded, anyOwnedObjectPresent: true, run);
+
+            if (decision.Action != GrimoireSchemaEvolutionAction.ResumeRun)
+            {
+                await RecordFailureAsync(connection, run, ErrorCodes.Grimoire.Schema.TransitionUnresumable, cancellationToken)
+                    .ConfigureAwait(false);
+
+                deferred = true;
+
+                continue;
+            }
 
             if (run.BackfillName is null)
             {
-
-                // The next step's DDL has not run. That belongs to convergence, not to a sweep.
-                advanced = true;
+                converge = true;
 
                 continue;
-
             }
+
+            string? failureCode = null;
 
             try
             {
-
                 GrimoireSchemaBackfillProgress progress = await SqliteBusyRetry.ExecuteAsync(
                     () => _runner.AdvanceAsync(
-                        connection,
-                        _chains.ForTier(run.TransactionTier),
-                        run,
-                        context,
-                        MaxBatchesPerPass,
-                        cancellationToken),
+                        connection, chain, run, context, MaxBatchesPerPass, cancellationToken),
                     cancellationToken).ConfigureAwait(false);
 
                 batches += progress.BatchesRun;
 
                 rows += progress.RowsProcessed;
 
-                advanced |= progress.BatchesRun > 0;
+                committedRows[run.TransactionTier] = progress.RowsProcessed;
 
+                converge |= progress.StepComplete;
+
+                failureCode = progress.FailureCode;
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
+                // Earlier batches may have committed before this failure. Only their journal
+                // revisions and rows count; the failed transaction never earns progress.
+                GrimoireSchemaTransitionJournalRow? durable = await GrimoireSchemaTransitionJournal
+                    .ReadAsync(connection, null, run.TransactionTier, cancellationToken).ConfigureAwait(false);
 
-                logger?.LogWarning(
-                    exception,
-                    "A {Tier} schema transition pass failed; the run is left for the next pass.",
-                    run.TransactionTier);
+                if (durable is not null)
+                {
+                    batches += checked((int)Math.Max(0, durable.Revision - run.Revision));
 
-                await GrimoireSchemaTransitionJournal
-                    .RecordErrorAsync(connection, run.TransactionTier, PassFailedCode, _time.GetUtcNow(), CancellationToken.None)
-                    .ConfigureAwait(false);
+                    long committed = Math.Max(0, durable.BackfillRowsProcessed - run.BackfillRowsProcessed);
 
+                    rows += committed;
+
+                    committedRows[run.TransactionTier] = committed;
+                }
+
+                failureCode = FailureCode(exception);
             }
 
+            if (failureCode is not null)
+            {
+                await RecordFailureAsync(connection, run, failureCode, cancellationToken).ConfigureAwait(false);
+
+                deferred = true;
+            }
         }
 
-        if (advanced)
+        if (converge)
         {
+            deferred |= await ConvergeAsync(connection, context, cancellationToken).ConfigureAwait(false);
+        }
 
-            await ConvergeAsync(connection, context, cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<GrimoireSchemaTransitionJournalRow> remaining = await GrimoireSchemaTransitionJournal
+            .ReadAllAsync(connection, cancellationToken).ConfigureAwait(false);
 
+        foreach (GrimoireSchemaTransitionJournalRow before in runs)
+        {
+            GrimoireSchemaTransitionJournalRow? after = remaining.FirstOrDefault(
+                row => row.TransactionTier == before.TransactionTier);
+
+            if (after is null || after.CompletedThroughVersion != before.CompletedThroughVersion
+                || after.BackfillName != before.BackfillName || after.BackfillCursor != before.BackfillCursor
+                || after.BackfillRowsProcessed != before.BackfillRowsProcessed)
+            {
+                advancedTiers.Add(before.TransactionTier);
+
+                logger?.LogInformation(
+                    "Grimoire {Tier} schema sweep {Sweep} advanced from version {FromVersion} through {CompletedThroughVersion} toward {TargetVersion}; cumulative committed rows {Rows}; run complete {Complete}.",
+                    before.TransactionTier, SafeSweep(before), before.FromVersion,
+                    after?.CompletedThroughVersion ?? before.TargetVersion, before.TargetVersion,
+                    after?.BackfillRowsProcessed ?? before.BackfillRowsProcessed + committedRows.GetValueOrDefault(before.TransactionTier), after is null);
+            }
         }
 
         return Result<GrimoireSchemaTransitionPassOutcome>.Success(
-            new GrimoireSchemaTransitionPassOutcome(advanced, runs.Count, batches, rows));
-
+            new GrimoireSchemaTransitionPassOutcome(
+                advancedTiers.Count > 0, runs.Count, batches, rows,
+                advancedTiers.Count, remaining.Count, deferred));
     }
+
+    private async Task RecordFailureAsync(
+        SqliteConnection connection,
+        GrimoireSchemaTransitionJournalRow run,
+        string code,
+        CancellationToken cancellationToken)
+    {
+        GrimoireSchemaTransitionJournalRow? current = await GrimoireSchemaTransitionJournal
+            .ReadAsync(connection, null, run.TransactionTier, cancellationToken).ConfigureAwait(false);
+
+        if (current is null || current.Family != run.Family || current.FromVersion != run.FromVersion
+            || current.TargetVersion != run.TargetVersion || current.Revision < run.Revision
+            || !string.Equals(current.TargetSourceDefinitionFingerprint, run.TargetSourceDefinitionFingerprint, StringComparison.Ordinal)
+            || !await GrimoireSchemaTransitionJournal.TryRecordErrorAsync(
+                connection, current, code, _time.GetUtcNow(), cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        logger?.LogWarning(
+            "Grimoire {Tier} schema sweep {Sweep} at version {CompletedThroughVersion} toward {TargetVersion} deferred with {Code}; cumulative committed rows {Rows}.",
+            current.TransactionTier, SafeSweep(current), current.CompletedThroughVersion, current.TargetVersion,
+            code, current.BackfillRowsProcessed);
+    }
+
+    private string SafeSweep(GrimoireSchemaTransitionJournalRow run) =>
+        run.BackfillName is null ? "DDL" :
+        _chains.ForTier(run.TransactionTier).TryGetStep(run.CompletedThroughVersion, out GrimoireSchemaVersionStep step)
+        && step.Backfill is { Name: var name }
+        && string.Equals(name, run.BackfillName, StringComparison.Ordinal)
+            ? name : "unrecognized";
+
+    internal static string FailureCode(Exception exception) => exception switch
+    {
+        SqliteException { SqliteErrorCode: 5 or 6 } => ErrorCodes.Grimoire.Schema.Busy,
+        SqliteException { SqliteErrorCode: 13 } => ErrorCodes.Grimoire.Schema.DiskFull,
+        SqliteException { SqliteErrorCode: 10 or 14 } => ErrorCodes.Grimoire.Schema.StorageUnavailable,
+        SqliteException { SqliteErrorCode: 11 or 26 } => ErrorCodes.Grimoire.Schema.CorruptDatabase,
+        SqliteException => ErrorCodes.Grimoire.Schema.SqliteFailure,
+        UnauthorizedAccessException => ErrorCodes.Grimoire.Schema.AccessDenied,
+        IOException => ErrorCodes.Grimoire.Schema.StorageUnavailable,
+        GrimoireSchemaRefusedException => ErrorCodes.Grimoire.Schema.TransitionUnresumable,
+        InvalidOperationException => ErrorCodes.Grimoire.Schema.InvariantViolation,
+        _ => ErrorCodes.Grimoire.Schema.TransitionPassFailed,
+    };
 
     /// <summary>
     /// Re-enters the installer so the next step's DDL runs without a restart, and republishes what the
     /// tiers now are.
     /// </summary>
-    private async Task ConvergeAsync(
+    private async Task<bool> ConvergeAsync(
         SqliteConnection connection,
         GrimoireSchemaInitializationContext context,
         CancellationToken cancellationToken)
     {
+        IReadOnlyList<GrimoireSchemaTransitionJournalRow> pending = await GrimoireSchemaTransitionJournal
+            .ReadAllAsync(connection, cancellationToken).ConfigureAwait(false);
 
-        GrimoireSchemaInstallResult result = await _installer.InstallAsync(
-            connection,
-            GrimoireEmbeddingDimensionResolver.Resolve(_services),
-            context,
-            cancellationToken).ConfigureAwait(false);
+        GrimoireSchemaInstallResult result;
+
+        try
+        {
+            result = await _installer.InstallAsync(
+                connection,
+                GrimoireEmbeddingDimensionResolver.Resolve(_services),
+                context,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Optional tiers return their closed health result. Only Core failures escape the
+            // installer, and a typed refusal identifies its tier without parsing exception text.
+            GrimoireSchemaTransactionTier tier = exception is GrimoireSchemaRefusedException refused
+                ? refused.Tier : GrimoireSchemaTransactionTier.Core;
+
+            GrimoireSchemaTransitionJournalRow? failed = pending.FirstOrDefault(row => row.TransactionTier == tier);
+
+            if (failed is null)
+            {
+                throw;
+            }
+
+            await RecordFailureAsync(connection, failed, FailureCode(exception), cancellationToken).ConfigureAwait(false);
+
+            return true;
+        }
+
+        bool deferred = false;
+
+        foreach (GrimoireSchemaTierInstallResult tier in new[] { result.Core, result.CovenantCanonical, result.CovenantAccelerator })
+        {
+            // Incomplete means a declared sweep is still draining; dependency unavailability
+            // means this tier was never attempted. Neither is a failed convergence for its run.
+            if (tier.IsHealthy || tier.Health is GrimoireSchemaTierHealth.TransitionIncomplete
+                or GrimoireSchemaTierHealth.DependencyUnavailable)
+            {
+                continue;
+            }
+
+            GrimoireSchemaTransitionJournalRow? failed = pending.FirstOrDefault(row => row.TransactionTier == tier.TransactionTier);
+
+            if (failed is not null)
+            {
+                await RecordFailureAsync(connection, failed,
+                    tier.Health == GrimoireSchemaTierHealth.TransitionUnresumable
+                        ? ErrorCodes.Grimoire.Schema.TransitionUnresumable : ErrorCodes.Grimoire.Schema.FinalizationFailed,
+                    cancellationToken).ConfigureAwait(false);
+
+                deferred = true;
+            }
+        }
 
         if (availability is null)
         {
-
-            return;
-
+            return deferred;
         }
 
         _ = availability.PublishSchema(result, CovenantHealthTransition.SchemaEvolution);
@@ -204,6 +346,7 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
                 cancellationToken)
             .ConfigureAwait(false);
 
+        return deferred;
     }
 
     /// <summary>
@@ -223,5 +366,4 @@ internal sealed class GrimoireSchemaTransitionCoordinator(
         ?? throw new InvalidOperationException(
             "The Grimoire holds a schema transition but no usable authority row, so no tier initializer "
             + "can be given the installation it belongs to.");
-
 }
