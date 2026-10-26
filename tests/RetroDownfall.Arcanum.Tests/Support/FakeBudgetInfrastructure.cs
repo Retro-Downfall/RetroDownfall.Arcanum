@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Tests.Support;
 
 internal sealed class FakeCommLinkDispatcher : ICommLinkDispatcher
 {
-
     public List<CommLinkMessage> Dispatched { get; } = [];
 
     public Task<Result<CommLinkDeliveryResult>> DispatchAsync(
@@ -19,16 +18,20 @@ internal sealed class FakeCommLinkDispatcher : ICommLinkDispatcher
             Result<CommLinkDeliveryResult>.Success(
                 new CommLinkDeliveryResult(CommLinkDeliveryStatus.Delivered)));
     }
-
 }
 
 internal sealed class FakeBudgetAlertRepository : IBudgetAlertRepository
 {
-
     public HashSet<int> AlertedThresholdsToday { get; } = new();
+
+    public int RecordCalls { get; private set; }
+
+    public int PrecheckCalls { get; private set; }
 
     public Task<bool> RecordAlertAsync(int threshold, decimal spendUsd, decimal dailyLimitUsd, CancellationToken cancellationToken = default)
     {
+        RecordCalls++;
+
         bool added = AlertedThresholdsToday.Add(threshold);
 
         return Task.FromResult(added);
@@ -36,7 +39,8 @@ internal sealed class FakeBudgetAlertRepository : IBudgetAlertRepository
 
     public Task<bool> HasAlertedTodayAsync(int threshold, CancellationToken cancellationToken = default)
     {
+        PrecheckCalls++;
+
         return Task.FromResult(AlertedThresholdsToday.Contains(threshold));
     }
-
 }

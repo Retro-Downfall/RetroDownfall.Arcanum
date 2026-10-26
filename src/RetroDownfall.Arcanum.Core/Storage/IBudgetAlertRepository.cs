@@ -4,15 +4,14 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 /// <summary>
 /// Persistence surface for <see cref="BudgetAlert"/> rows. The unique index on (Threshold, date(AlertedAt))
-/// prevents duplicate alerts; <see cref="RecordAlertAsync"/> gracefully handles constraint violations.
+/// prevents duplicate alerts; <see cref="RecordAlertAsync"/> handles only that specific conflict.
 /// </summary>
 public interface IBudgetAlertRepository
 {
-
     /// <summary>
     /// Records a budget alert. Returns <see langword="true"/> when a new row was inserted, or
     /// <see langword="false"/> when a duplicate alert for the same (threshold, UTC day) already exists
-    /// (the constraint violation is swallowed). Never throws on duplicate inserts.
+    /// without raising a constraint exception. Unrelated constraint and storage failures propagate.
     /// </summary>
     Task<bool> RecordAlertAsync(
         int threshold,
@@ -25,5 +24,4 @@ public interface IBudgetAlertRepository
     /// recorded today (UTC). Used as a cheap pre-check to avoid the insert path entirely.
     /// </summary>
     Task<bool> HasAlertedTodayAsync(int threshold, CancellationToken cancellationToken = default);
-
 }

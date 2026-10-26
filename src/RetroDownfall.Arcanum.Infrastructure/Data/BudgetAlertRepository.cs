@@ -11,8 +11,8 @@ namespace RetroDownfall.Arcanum.Infrastructure.Data;
 /// Raw-SQL persistence for <c>BudgetAlerts</c> rows, reusing the scoped <see cref="ArcanumDbContext"/>'s
 /// connection. The declarative <c>BudgetAlerts</c> table is deliberately not part of the compiled EF
 /// model. A unique index on (<c>Threshold</c>, <c>date(AlertedAt)</c>) prevents duplicate per-day alerts;
-/// <see cref="RecordAlertAsync"/> swallows the resulting unique-constraint violation (and only that) and returns
-/// <see langword="false"/>.
+/// <see cref="RecordAlertAsync"/> targets only that conflict and returns <see langword="false"/>
+/// without raising an exception. Other constraint and storage failures propagate.
 /// </summary>
 internal sealed class BudgetAlertRepository(ArcanumDbContext db, ILogger<BudgetAlertRepository> logger) : IBudgetAlertRepository
 {
@@ -22,45 +22,40 @@ internal sealed class BudgetAlertRepository(ArcanumDbContext db, ILogger<BudgetA
         decimal dailyLimitUsd,
         CancellationToken cancellationToken = default)
     {
-        try
+        return await SqliteBusyRetry.ExecuteAsync(async () =>
         {
-            return await SqliteBusyRetry.ExecuteAsync(async () =>
+            DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+            await using DbCommand cmd = connection.CreateCommand();
+
+            cmd.Transaction = transaction;
+
+            cmd.CommandText =
+                """
+                INSERT INTO "BudgetAlerts" ("Id", "Threshold", "AlertedAt", "SpendUsd", "DailyLimitUsd")
+                VALUES (@id, @threshold, @alertedAt, @spendUsd, @dailyLimitUsd)
+                ON CONFLICT ("Threshold", date("AlertedAt")) DO NOTHING
+                """;
+
+            AddParameter(cmd, "@id", Guid.NewGuid().ToString("N"));
+            AddParameter(cmd, "@threshold", threshold);
+            AddParameter(cmd, "@alertedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
+            _ = ExactUsdText.AddParameter(cmd, "@spendUsd", spendUsd);
+            _ = ExactUsdText.AddParameter(cmd, "@dailyLimitUsd", dailyLimitUsd);
+
+            int inserted = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            if (inserted == 0)
             {
-                DbConnection connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                logger.LogDebug("Budget alert for threshold {Threshold} already recorded today; skipping duplicate.", threshold);
+            }
 
-                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-
-                await using DbCommand cmd = connection.CreateCommand();
-
-                cmd.Transaction = transaction;
-
-                cmd.CommandText =
-                    """
-                    INSERT INTO "BudgetAlerts" ("Id", "Threshold", "AlertedAt", "SpendUsd", "DailyLimitUsd")
-                    VALUES (@id, @threshold, @alertedAt, @spendUsd, @dailyLimitUsd)
-                    """;
-
-                AddParameter(cmd, "@id", Guid.NewGuid().ToString("N"));
-                AddParameter(cmd, "@threshold", threshold);
-                AddParameter(cmd, "@alertedAt", UtcInstantText.Format(DateTimeOffset.UtcNow));
-                _ = ExactUsdText.AddParameter(cmd, "@spendUsd", spendUsd);
-                _ = ExactUsdText.AddParameter(cmd, "@dailyLimitUsd", dailyLimitUsd);
-
-                _ = await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-
-                return true;
-            }, cancellationToken).ConfigureAwait(false);
-        }
-        catch (DbException ex) when (SqliteUniqueConstraintViolation.Is(ex))
-        {
-            logger.LogWarning(
-                "Budget alert for threshold {Threshold} already recorded today; skipping duplicate.",
-                threshold);
-
-            return false;
-        }
+            return inserted > 0;
+        }, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> HasAlertedTodayAsync(int threshold, CancellationToken cancellationToken = default)

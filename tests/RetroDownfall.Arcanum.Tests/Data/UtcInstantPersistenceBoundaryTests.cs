@@ -153,11 +153,16 @@ public sealed class UtcInstantPersistenceBoundaryTests
     }
 
     [Theory]
-    [InlineData("string", "ListPositionsAfterAsync", true)]
-    [InlineData("DateTimeOffset", "ListPositionsAfterAsync", false)]
-    [InlineData("string", "AnotherRead", false)]
+    [InlineData("string", "ListPositionsAfterAsync", "@afterCreatedText", true)]
+    [InlineData("DateTimeOffset", "ListPositionsAfterAsync", "@afterCreatedText", false)]
+    [InlineData("string", "AnotherRead", "@afterCreatedText", false)]
+    [InlineData("string", "BuildListCommand", "@afterTime", true)]
+    [InlineData("DateTimeOffset", "BuildListCommand", "@afterTime", false)]
+    [InlineData("string", "AnotherRead", "@afterTime", false)]
+    [InlineData("string", "BuildListCommand", "@afterCreatedText", false)]
+    [InlineData("string", "ListPositionsAfterAsync", "@afterTime", false)]
     public void Stored_ordering_cursor_exception_preserves_only_the_exact_string_binding(
-        string propertyType, string method, bool allowed)
+        string propertyType, string method, string parameter, bool allowed)
     {
         string source = $$"""
             using Microsoft.Data.Sqlite;
@@ -168,8 +173,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
             {
                 internal static void {{method}}(SqliteCommand cmd, SagaMemoryPosition after)
                 {
-                    cmd.CommandText = "SELECT Id FROM saga_memories WHERE CreatedAt <= @afterCreatedText;";
-                    AddParameter(cmd, "@afterCreatedText", after.CreatedAt);
+                    cmd.CommandText = "SELECT Id FROM saga_memories WHERE CreatedAt <= {{parameter}};";
+                    AddParameter(cmd, "{{parameter}}", after.CreatedAt);
                 }
             }
             """;
@@ -690,6 +695,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
     {
         string[] expectedOwners =
         [
+            // The inspection continuation fallback formats a DTO instant, not a new database write.
+            "src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/A2A/A2AExternalSpendLedger.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupCovenantRestoreReconciler.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Backup/BackupRestoreErasureEvidenceApplier.cs",
@@ -807,6 +814,8 @@ public sealed class UtcInstantPersistenceBoundaryTests
             "src/RetroDownfall.Arcanum.Api/Tower/MemoryEndpoints.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Covenant/CovenantCampaignScopeProbe.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/BatchRepository.cs",
+            // Native memory inspection formats a parsed Session Guid, never a timestamp.
+            "src/RetroDownfall.Arcanum.Infrastructure/Data/NativeMemorySearchReader.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.Lifecycle.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/SessionAttachmentStore.cs",
             "src/RetroDownfall.Arcanum.Infrastructure/Data/UploadedFileRepository.cs",
@@ -1268,10 +1277,11 @@ public sealed class UtcInstantPersistenceBoundaryTests
         SyntaxNode binding,
         IReadOnlyDictionary<string, HashSet<string>> memberTypes) =>
         source.IsExactOwner("src/RetroDownfall.Arcanum.Infrastructure/Data/SagaMemoryStore.cs")
-            && parameterName == "@afterCreatedText"
             && value.ToString() == "after.CreatedAt"
-            && binding.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault()
-                ?.Identifier.ValueText == "ListPositionsAfterAsync"
+            // Both cursor paths bind the exact stored ordering text carried by SagaMemoryPosition.
+            // No other method/parameter pair or DateTimeOffset value inherits this exception.
+            && (binding.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault()
+                ?.Identifier.ValueText, parameterName) is ("ListPositionsAfterAsync", "@afterCreatedText") or ("BuildListCommand", "@afterTime")
             && InferExpressionType(value, binding, memberTypes) == "string";
 
     private static void MarkAlternativeQueryContracts(
