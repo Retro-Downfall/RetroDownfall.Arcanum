@@ -37,6 +37,51 @@ public sealed class SessionEndpointTests
         _factory = factory;
     }
 
+    [SkippableTheory]
+    [InlineData(25, false)]
+    [InlineData(25, true)]
+    [InlineData(100, false)]
+    [InlineData(100, true)]
+    public async Task Native_parser_nesting_limit_has_the_same_HTTP_contract_on_both_session_routes(int depth, bool campaignRoute)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Guid campaignId = Guid.NewGuid();
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        db.Campaigns.Add(new Campaign { Id = campaignId, Name = "Native nesting " + campaignId, NameLower = "native nesting " + campaignId, Path = "/fts-nesting/" + campaignId });
+
+        await db.SaveChangesAsync();
+
+        string expression = new string('(', depth) + "schema" + new string(')', depth);
+
+        string route = campaignRoute ? $"/api/campaigns/{campaignId}/sessions?" : "/api/sessions?";
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync(route + "search=" + Uri.EscapeDataString(expression));
+
+        Assert.Equal(depth == 25 ? HttpStatusCode.OK : HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<SessionQueryResult>? body = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
+
+        Assert.NotNull(body);
+
+        Assert.Equal(depth == 25, body.IsSuccess);
+
+        if (depth == 100)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidQuery, body.Error?.Code);
+
+            Assert.Contains("nesting", body.Error!.Value.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Assert.DoesNotContain(expression, await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
     [SkippableFact]
     public async Task Native_search_grammar_and_failures_flow_through_campaign_and_session_routes()
     {

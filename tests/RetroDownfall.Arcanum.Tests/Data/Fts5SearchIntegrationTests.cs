@@ -238,6 +238,52 @@ public sealed class Fts5SearchIntegrationTests(GrimoireFixture fixture) : IAsync
         Assert.Contains("schema survived", (await CreateArchives().SearchArchivesAsync("schema", 50)).Value, StringComparison.Ordinal);
     }
 
+    [SkippableTheory]
+    [InlineData(25, false)]
+    [InlineData(25, true)]
+    [InlineData(100, false)]
+    [InlineData(100, true)]
+    public async Task Native_parser_nesting_limit_is_actionable_without_disclosing_the_expression(int depth, bool archive)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        string expression = new string('(', depth) + "schema" + new string(')', depth);
+
+        Assert.True(expression.Length < new ArcanumSettings().ResolveIntelligence().ArchiveSearchMaxQueryLength);
+
+        TestCapturingLogger<GrimoireRepository> logger = new();
+
+        Result result;
+
+        if (archive)
+        {
+            GrimoireRepository repository = new(_db, new NoOpSessionAttachmentStore(), logger,
+                new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()), covenantKernel: null, availabilityRepublisher: null,
+                FixtureOrdinaryConnectionFactory.For(_db), FixtureLabeledArtifactGuard.For(_db), memoryDelegation: null);
+
+            result = await repository.SearchArchivesAsync(expression, 50);
+        }
+        else
+        {
+            SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db));
+
+            result = await repository.QueryAsync(new SessionQueryRequest(Search: expression), CancellationToken.None);
+        }
+
+        Assert.Equal(depth == 25, result.IsSuccess);
+
+        if (depth == 100)
+        {
+            Assert.Equal(ErrorCodes.Validation.InvalidQuery, result.Error.Code);
+
+            Assert.Contains("nesting", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain(expression, result.Error.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Empty(logger.Entries);
+    }
+
     private GrimoireRepository CreateArchives() => new(
         _db, new NoOpSessionAttachmentStore(), NullLogger<GrimoireRepository>.Instance,
         new TestOptionsSnapshot<ArcanumSettings>(new ArcanumSettings()), covenantKernel: null, availabilityRepublisher: null,

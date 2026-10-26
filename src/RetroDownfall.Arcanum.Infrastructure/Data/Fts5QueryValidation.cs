@@ -41,6 +41,12 @@ internal static class Fts5QueryValidation
 
             return Result.Success();
         }
+        catch (SqliteException exception) when (exception.SqliteErrorCode == 1
+            && string.Equals(exception.Message, "SQLite Error 1: 'fts5: parser stack overflow'.", StringComparison.Ordinal))
+        {
+            return Result.Failure(new Error(ErrorCodes.Validation.InvalidQuery,
+                "FTS5 query nesting exceeds the native parser limit. Reduce parentheses nesting and retry."));
+        }
         catch (SqliteException exception) when (IsQuerySyntaxError(exception))
         {
             // Native diagnostics may contain query fragments. Neither expose nor log them.
