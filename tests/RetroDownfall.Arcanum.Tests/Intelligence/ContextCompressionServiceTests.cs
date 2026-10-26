@@ -852,7 +852,7 @@ public sealed class ContextCompressionServiceTests
             CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
-        public Task<string> SearchArchivesAsync(
+        public Task<Result<string>> SearchArchivesAsync(
             string query,
             int maxResults,
             CancellationToken cancellationToken = default) =>

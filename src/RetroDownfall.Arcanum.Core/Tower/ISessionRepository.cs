@@ -9,7 +9,7 @@ public interface ISessionRepository
 
     Task<Session?> GetByIdAsync(Guid id, CancellationToken ct);
 
-    Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct);
+    Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct);
 
     Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct);
 

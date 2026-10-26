@@ -6323,7 +6323,7 @@ public sealed partial class ApprenticeServiceReliabilityTests
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>

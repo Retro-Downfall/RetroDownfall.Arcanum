@@ -1041,7 +1041,7 @@ internal sealed partial class ArcanumInternalToolServer
                 {
                     Name = "search_archives",
                     Description =
-                        "Search the Grimoire conversation history using keyword matching to recall past decisions or context.",
+                        "Search Grimoire conversation content with native FTS5 expressions: words use implicit AND; use OR, NOT, quoted phrases, prefixes, NEAR, anchors and Content column filters. Quote literal punctuation and double embedded quotes. Invalid or overlong expressions are tool errors.",
                     InputSchema = _searchArchivesSchema,
                 });
         }

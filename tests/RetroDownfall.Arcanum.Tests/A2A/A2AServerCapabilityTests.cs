@@ -495,18 +495,18 @@ public sealed class A2AServerCapabilityTests
             string text,
             string taskId = "task-1",
             SendMessageConfiguration? configuration = null) => new()
-        {
-            Message = new Message
             {
-                Role = Role.User,
-                MessageId = Guid.NewGuid().ToString("N"),
-                Parts = [Part.FromText(text)],
-            },
-            TaskId = taskId,
-            ContextId = "ctx-1",
-            StreamingResponse = false,
-            Configuration = configuration,
-        };
+                Message = new Message
+                {
+                    Role = Role.User,
+                    MessageId = Guid.NewGuid().ToString("N"),
+                    Parts = [Part.FromText(text)],
+                },
+                TaskId = taskId,
+                ContextId = "ctx-1",
+                StreamingResponse = false,
+                Configuration = configuration,
+            };
 
         public void QueueEscalation(string reason) =>
             _chronicle.Writer.TryWrite(new ApprenticeEvent
@@ -783,7 +783,7 @@ public sealed class A2AServerCapabilityTests
 
         public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) => throw new NotSupportedException();
 
-        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
+        public Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
             throw new NotSupportedException();
 
         public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) => throw new NotSupportedException();

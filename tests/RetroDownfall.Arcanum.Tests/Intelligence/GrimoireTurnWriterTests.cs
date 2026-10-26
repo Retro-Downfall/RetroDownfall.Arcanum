@@ -32,7 +32,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class GrimoireTurnWriterTests
 {
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -219,7 +218,6 @@ public sealed class GrimoireTurnWriterTests
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_StatelessRequest_ReturnsEmptyHandle()
     {
-
         GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository());
 
         GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
@@ -238,20 +236,16 @@ public sealed class GrimoireTurnWriterTests
         Assert.Null(handle.SessionId);
 
         Assert.False(handle.IsFinalized);
-
     }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_SessionRequest_BeginsAndPublishes()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         TrackingGrimoireRepository grimoire = new()
         {
-
             FixedSessionId = sessionId,
-
         };
 
         FakeSessionTurnBeginStore beginStore = new();
@@ -281,13 +275,11 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(sessionId, beginStore.LastBeginSessionId);
 
         Assert.Equal(1, grimoire.RecentEntriesPublishCount);
-
     }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_SameSessionTurnInFlight_ReturnsBusyUntilFinalized()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         SessionTurnConcurrencyGate turnGate = new();
@@ -357,13 +349,11 @@ public sealed class GrimoireTurnWriterTests
             admitted.Value,
             streamedContent: null,
             CancellationToken.None));
-
     }
 
     [Fact]
     public async Task Dispose_ReleasesAnUnfinishedSessionTurnLease()
     {
-
         Guid sessionId = Guid.NewGuid();
 
         SessionTurnConcurrencyGate turnGate = new();
@@ -404,13 +394,11 @@ public sealed class GrimoireTurnWriterTests
             admitted.Value,
             streamedContent: null,
             CancellationToken.None));
-
     }
 
     [Fact]
     public async Task TryFinalizeBufferedAssistantEntryAsync_SetsFinalizedFlag()
     {
-
         TrackingGrimoireRepository grimoire = new();
 
         GrimoireTurnWriter writer = CreateWriter(grimoire);
@@ -443,13 +431,11 @@ public sealed class GrimoireTurnWriterTests
         // Compatibility repositories can finalize without an exact frontier, but that must remain
         // explicit so the Wizard skips extraction instead of guessing from a later live MAX.
         Assert.Null(handle.SagaExtractionThroughSequence);
-
     }
 
     [Fact]
     public async Task TryFinalizeBufferedAssistantEntryAsync_DbFailure_ReturnsFalse_InterruptsAndMarksFinalized()
     {
-
         TrackingGrimoireRepository grimoire = new() { FinalizeThrows = true };
 
         CapturingLogger logger = new();
@@ -458,11 +444,9 @@ public sealed class GrimoireTurnWriterTests
 
         GrimoireTurnWriter.TurnHandle handle = new()
         {
-
             AssistantEntryId = Guid.NewGuid(),
 
             SessionId = Guid.NewGuid(),
-
         };
 
         bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
@@ -476,20 +460,16 @@ public sealed class GrimoireTurnWriterTests
         Assert.Contains(
             logger.Entries,
             e => e.Exception is InvalidOperationException && e.Message.Contains("could not finalize", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public async Task TryFinalizeBufferedAssistantEntryAsync_HubPublishFailureAfterDbSuccess_ReturnsTrue()
     {
-
         TrackingGrimoireRepository grimoire = new()
         {
-
             EntryByIdThrows = true,
 
             ReturnEntryOnLookup = true,
-
         };
 
         CapturingLogger logger = new();
@@ -521,20 +501,16 @@ public sealed class GrimoireTurnWriterTests
             logger.Entries,
             e => e.Level == LogLevel.Warning
                 && e.Message.Contains("could not publish finalized", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public async Task TryFinalizeBufferedAssistantEntryAsync_DbAndCleanupBothFail_PreservesOriginalFailurePath()
     {
-
         TrackingGrimoireRepository grimoire = new()
         {
-
             FinalizeThrows = true,
 
             DiscardThrows = true,
-
         };
 
         CapturingLogger logger = new();
@@ -543,11 +519,9 @@ public sealed class GrimoireTurnWriterTests
 
         GrimoireTurnWriter.TurnHandle handle = new()
         {
-
             AssistantEntryId = Guid.NewGuid(),
 
             SessionId = Guid.NewGuid(),
-
         };
 
         bool ok = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "done", "test-model", CancellationToken.None);
@@ -565,13 +539,11 @@ public sealed class GrimoireTurnWriterTests
             logger.Entries,
             e => e.Exception is InvalidOperationException
                 && e.Message.Contains("after finalize failure", StringComparison.OrdinalIgnoreCase));
-
     }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_OperationCanceled_Rethrows()
     {
-
         FakeSessionTurnBeginStore beginStore = new()
         {
             BeginThrows = new OperationCanceledException("begin cancelled"),
@@ -594,22 +566,18 @@ public sealed class GrimoireTurnWriterTests
                 "hello",
                 "test-model",
                 cts.Token));
-
     }
 
     [Fact]
     public async Task ResolveInterruptedAsync_WithPartialContent_FinalizesEntry()
     {
-
         TrackingGrimoireRepository grimoire = new();
 
         GrimoireTurnWriter writer = CreateWriter(grimoire);
 
         GrimoireTurnWriter.TurnHandle handle = new()
         {
-
             AssistantEntryId = Guid.NewGuid(),
-
         };
 
         await writer.ResolveInterruptedAsync(handle, "partial", CancellationToken.None);
@@ -617,22 +585,18 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(1, grimoire.FinalizeCallCount);
 
         Assert.Equal(0, grimoire.DiscardCallCount);
-
     }
 
     [Fact]
     public async Task ResolveInterruptedAsync_WithoutContent_DiscardsEntry()
     {
-
         TrackingGrimoireRepository grimoire = new();
 
         GrimoireTurnWriter writer = CreateWriter(grimoire);
 
         GrimoireTurnWriter.TurnHandle handle = new()
         {
-
             AssistantEntryId = Guid.NewGuid(),
-
         };
 
         await writer.ResolveInterruptedAsync(handle, null, CancellationToken.None);
@@ -640,22 +604,18 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(0, grimoire.FinalizeCallCount);
 
         Assert.Equal(1, grimoire.DiscardCallCount);
-
     }
 
     [Fact]
     public async Task ResolveInterruptedAndMarkFinalizedAsync_SetsFinalizedFlag()
     {
-
         TrackingGrimoireRepository grimoire = new();
 
         GrimoireTurnWriter writer = CreateWriter(grimoire);
 
         GrimoireTurnWriter.TurnHandle handle = new()
         {
-
             AssistantEntryId = Guid.NewGuid(),
-
         };
 
         bool resolved = await writer.ResolveInterruptedAndMarkFinalizedAsync(
@@ -665,22 +625,18 @@ public sealed class GrimoireTurnWriterTests
 
         Assert.True(resolved);
         Assert.True(handle.IsFinalized);
-
     }
 
     [Fact]
     public async Task TryResolveInterruptedOnStreamExitAsync_UsesNonCancellableToken()
     {
-
         TrackingGrimoireRepository grimoire = new();
 
         GrimoireTurnWriter writer = CreateWriter(grimoire);
 
         GrimoireTurnWriter.TurnHandle handle = new()
         {
-
             AssistantEntryId = Guid.NewGuid(),
-
         };
 
         using CancellationTokenSource cancelled = new();
@@ -692,7 +648,6 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(CancellationToken.None, grimoire.LastDiscardToken);
 
         Assert.True(handle.IsFinalized);
-
     }
 
     [Fact]
@@ -726,7 +681,6 @@ public sealed class GrimoireTurnWriterTests
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_RethrowsOperationCanceledException()
     {
-
         FakeSessionTurnBeginStore beginStore = new()
         {
             BeginThrows = new OperationCanceledException("begin cancelled"),
@@ -745,13 +699,11 @@ public sealed class GrimoireTurnWriterTests
                 "hello",
                 "test-model",
                 CancellationToken.None));
-
     }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_DoesNotDowngradeBeginFailureToHandleFreeTurn()
     {
-
         // The exact defect this slice removes. A deleted Campaign, a missing Session, or a binding
         // mismatch used to be caught and returned as an empty handle, so the turn continued and the
         // operator received a normal-looking answer that nothing durable was attached to (§10.12).
@@ -776,13 +728,11 @@ public sealed class GrimoireTurnWriterTests
 
         Assert.False(result.IsSuccess);
         Assert.Equal(ErrorCodes.Session.NotFound, result.Error.Code);
-
     }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_CampaignDeletedBeforeBeginCreatesNoEntries()
     {
-
         FakeSessionTurnBeginStore beginStore = new()
         {
             BeginResult = Result<AssistantReplyBeginReceipt>.Failure(
@@ -809,13 +759,11 @@ public sealed class GrimoireTurnWriterTests
 
         // No placeholder was published, because none was written.
         Assert.Equal(0, grimoire.RecentEntriesPublishCount);
-
     }
 
     [Fact]
     public async Task BeginBufferedAssistantReplyAsync_ARequestWithNoSessionCreatesOneBoundToTheResolvedCampaign()
     {
-
         FakeSessionTurnBeginStore beginStore = new();
 
         GrimoireTurnWriter writer = CreateWriter(new TrackingGrimoireRepository(), beginStore);
@@ -834,7 +782,6 @@ public sealed class GrimoireTurnWriterTests
         Assert.Equal(1, beginStore.CreateCalls);
         Assert.Equal(1, beginStore.BeginCalls);
         Assert.True(beginStore.LastCampaign!.Value.IsCampaignBound);
-
     }
 
     [Fact]
@@ -1191,24 +1138,17 @@ public sealed class GrimoireTurnWriterTests
 
     private sealed class CapturingLogger : ILogger<GrimoireTurnWriter>
     {
-
         private readonly List<(LogLevel Level, string Message, Exception? Exception)> _entries = [];
 
         public IReadOnlyList<(LogLevel Level, string Message, Exception? Exception)> Entries
         {
-
             get
             {
-
                 lock (_entries)
                 {
-
                     return _entries.ToList();
-
                 }
-
             }
-
         }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -1222,21 +1162,15 @@ public sealed class GrimoireTurnWriterTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-
             lock (_entries)
             {
-
                 _entries.Add((logLevel, formatter(state, exception), exception));
-
             }
-
         }
-
     }
 
     private sealed class TrackingGrimoireRepository : IGrimoireRepository
     {
-
         public Guid? FixedSessionId { get; init; }
 
         public int BeginCallCount { get; private set; }
@@ -1288,84 +1222,64 @@ public sealed class GrimoireTurnWriterTests
             string model,
             CancellationToken cancellationToken = default)
         {
-
             BeginCallCount++;
 
             if (BeginThrowsCanceled)
             {
-
                 cancellationToken.ThrowIfCancellationRequested();
 
                 throw new OperationCanceledException(cancellationToken);
-
             }
 
             if (BeginThrows is not null)
             {
-
                 throw BeginThrows;
-
             }
 
             return Task.FromResult((FixedSessionId ?? sessionId ?? Guid.NewGuid(), Guid.NewGuid()));
-
         }
 
         public Task FinalizeAssistantEntryAsync(Guid assistantEntryId, string fullContent, CancellationToken cancellationToken = default)
         {
-
             FinalizeCallCount++;
 
             if (FinalizeException is not null)
             {
-
                 throw FinalizeException;
-
             }
 
             if (FinalizeThrows)
             {
-
                 throw new InvalidOperationException("finalize failed");
-
             }
 
             if (FinalizeFailuresRemaining > 0)
             {
-
                 FinalizeFailuresRemaining--;
 
                 throw new InvalidOperationException("finalize failed");
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task DiscardAssistantEntryAsync(Guid assistantEntryId, CancellationToken cancellationToken = default)
         {
-
             DiscardCallCount++;
 
             LastDiscardToken = cancellationToken;
 
             if (DiscardException is not null)
             {
-
                 throw DiscardException;
-
             }
 
             if (DiscardThrows)
             {
-
                 throw new InvalidOperationException("discard failed");
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task AppendToolInteractionAsync(
@@ -1376,18 +1290,14 @@ public sealed class GrimoireTurnWriterTests
             string modelUsed,
             CancellationToken cancellationToken = default)
         {
-
             AppendCallCount++;
 
             if (AppendException is not null)
             {
-
                 throw AppendException;
-
             }
 
             return Task.CompletedTask;
-
         }
 
         public Task<MandatoryToolInteractionAppendResult>
@@ -1412,37 +1322,28 @@ public sealed class GrimoireTurnWriterTests
 
         public Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(Guid sessionId, int takeLast, CancellationToken cancellationToken = default)
         {
-
             RecentEntriesPublishCount++;
 
             if (RecentEntriesException is not null)
             {
-
                 throw RecentEntriesException;
-
             }
 
             return Task.FromResult(RecentEntries);
-
         }
 
         public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default)
         {
-
             EntryByIdPublishCount++;
 
             if (EntryByIdThrows)
             {
-
                 throw new InvalidOperationException("hub lookup failed");
-
             }
 
             if (!ReturnEntryOnLookup)
             {
-
                 return Task.FromResult<GrimoireEntryDto?>(null);
-
             }
 
             return Task.FromResult<GrimoireEntryDto?>(new GrimoireEntryDto(
@@ -1451,7 +1352,6 @@ public sealed class GrimoireTurnWriterTests
                 "content",
                 "test-model",
                 DateTimeOffset.UtcNow));
-
         }
 
         public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
@@ -1502,8 +1402,8 @@ public sealed class GrimoireTurnWriterTests
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             Task.FromResult<LoreDto?>(null);
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
-            Task.FromResult(string.Empty);
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<string>.Success(string.Empty));
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -1516,7 +1416,5 @@ public sealed class GrimoireTurnWriterTests
 
         public Task<Session?> GetSessionHeaderAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Session?>(null);
-
     }
-
 }

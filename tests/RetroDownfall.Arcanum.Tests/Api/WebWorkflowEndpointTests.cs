@@ -1814,7 +1814,7 @@ public sealed class WebWorkflowEndpointTests
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
             inner.CreateAsync(campaignId, title, ct);
 
-        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
+        public Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
             inner.QueryAsync(request, ct);
 
         public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) =>

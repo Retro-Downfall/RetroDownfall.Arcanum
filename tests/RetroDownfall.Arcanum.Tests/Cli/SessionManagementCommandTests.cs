@@ -1,3 +1,6 @@
+using RetroDownfall.Arcanum.Tests.Fixtures;
+using RetroDownfall.Arcanum.Infrastructure.Data;
+using RetroDownfall.Arcanum.Core.Storage.Entities;
 using System.Net;
 
 using System.Text.Json;
@@ -30,6 +33,48 @@ namespace RetroDownfall.Arcanum.Tests.Cli;
 
 public sealed class SessionManagementCommandTests
 {
+    [SkippableFact]
+    public async Task Native_search_round_trips_the_real_API_and_returns_actionable_invalid_query_failure()
+    {
+        await using ArcanumWebApplicationFactory factory = new();
+
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = factory.CreateAuthenticatedClient();
+
+        using IServiceScope scope = factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        Session first = new() { Title = "cli first" };
+
+        Session second = new() { Title = "cli second" };
+
+        db.Sessions.AddRange(first, second);
+
+        db.Entries.AddRange(
+            new Entry { SessionId = first.Id, Role = MessageRole.User, Content = "cliamber", Sequence = 1 },
+            new Entry { SessionId = second.Id, Role = MessageRole.User, Content = "cliopal", Sequence = 1 });
+
+        await db.SaveChangesAsync();
+
+        RecordingHandler handler = new(request => client.GetAsync(request.RequestUri!.PathAndQuery).GetAwaiter().GetResult());
+
+        CliTestResult result = RunCommand(handler, ["session", "list", "--search", "cliamber OR cliopal", "--json"]);
+
+        Assert.Equal(0, result.ExitCode);
+
+        using JsonDocument json = JsonDocument.Parse(result.Output);
+
+        Assert.Equal(new[] { first.Id, second.Id }.Order(), json.RootElement.EnumerateArray().Select(item => item.GetProperty("id").GetGuid()).Order());
+
+        CliTestResult invalid = RunCommand(handler, ["session", "list", "--search", "cliamber OR", "--plain"]);
+
+        Assert.NotEqual(0, invalid.ExitCode);
+
+        Assert.Contains("Validation.InvalidQuery", invalid.Error, StringComparison.Ordinal);
+    }
+
     [Fact]
 
     public void Session_help_exposes_complete_lifecycle_command_family()

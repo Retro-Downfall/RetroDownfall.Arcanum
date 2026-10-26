@@ -576,7 +576,7 @@ internal sealed partial class ArcanumInternalToolServer
             WriteStringProperty(
                 w,
                 "query",
-                "Keywords or FTS5 query text to match against archived chat message content.");
+                "Native FTS5 expression over Content, e.g. schema OR migration, schema NOT migration, \"schema migration\", migrat*, NEAR(schema migration, 2), or Content:^schema. Quote literal text such as \"C++\"; escape embedded quotes by doubling them. Id, SessionId and Role are unindexed. Empty or overlong expressions are rejected intact.");
 
             w.WriteEndObject();
 

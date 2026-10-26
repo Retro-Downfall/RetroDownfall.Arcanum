@@ -5375,8 +5375,8 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
     /// </summary>
     private sealed class ArchiveSearchGrimoireRepository(string archiveSearchResult) : IGrimoireRepository
     {
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
-            Task.FromResult(archiveSearchResult);
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<string>.Success(archiveSearchResult));
 
         public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
             Guid? sessionId,
@@ -6111,14 +6111,14 @@ public sealed partial class ArcanumInternalToolServerTests : IAsyncLifetime
             CancellationToken ct = default) =>
             Task.FromResult<SanctumChildProcessBoundary?>(null);
 
-public Task RecordResourceLimitBreachAsync(
-            string? workspaceRoot,
-            string toolName,
-            Core.Platform.ResourceLimitKind resource,
-            string limitValue,
-            string? actualValue,
-            CancellationToken ct = default) =>
-            Task.CompletedTask;
+        public Task RecordResourceLimitBreachAsync(
+                    string? workspaceRoot,
+                    string toolName,
+                    Core.Platform.ResourceLimitKind resource,
+                    string limitValue,
+                    string? actualValue,
+                    CancellationToken ct = default) =>
+                    Task.CompletedTask;
     }
 
     private sealed class FakeEventBus : Core.Events.IEventBus

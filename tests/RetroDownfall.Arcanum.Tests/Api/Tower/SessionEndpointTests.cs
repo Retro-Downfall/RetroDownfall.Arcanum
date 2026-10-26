@@ -38,6 +38,82 @@ public sealed class SessionEndpointTests
     }
 
     [SkippableFact]
+    public async Task Native_search_grammar_and_failures_flow_through_campaign_and_session_routes()
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using IServiceScope scope = _factory.Services.CreateScope();
+
+        ArcanumDbContext db = scope.ServiceProvider.GetRequiredService<ArcanumDbContext>();
+
+        Guid campaignId = Guid.NewGuid();
+
+        db.Campaigns.Add(new Campaign { Id = campaignId, Name = "Native FTS", NameLower = "native fts", Path = "/fts/" + campaignId });
+
+        Session first = new() { CampaignId = campaignId, Title = "first" };
+
+        Session second = new() { CampaignId = campaignId, Title = "second" };
+
+        Session excluded = new() { CampaignId = campaignId, Title = "third" };
+
+        db.Sessions.AddRange(first, second, excluded);
+
+        db.Entries.AddRange(
+            new Entry { SessionId = first.Id, Role = MessageRole.User, Content = "opalneedle", Sequence = 1 },
+            new Entry { SessionId = second.Id, Role = MessageRole.User, Content = "amberneedle", Sequence = 1 },
+            new Entry { SessionId = excluded.Id, Role = MessageRole.User, Content = "unrelated", Sequence = 1 });
+
+        await db.SaveChangesAsync();
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        foreach (string route in new[] { "/api/sessions?campaignId=" + campaignId + "&", $"/api/campaigns/{campaignId}/sessions?" })
+        {
+            using HttpResponseMessage response = await client.GetAsync(route + "search=" + Uri.EscapeDataString("opalneedle OR amberneedle"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+            ApiResponse<SessionQueryResult>? body = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
+
+            Assert.Equal(new[] { first.Id, second.Id }.Order(), body!.Data!.Summaries.Select(item => item.Id).Order());
+
+            using HttpResponseMessage invalid = await client.GetAsync(route + "search=" + Uri.EscapeDataString("opalneedle OR"));
+
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+
+            ApiResponse<SessionQueryResult>? failure = await invalid.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
+
+            Assert.Equal(ErrorCodes.Validation.InvalidQuery, failure!.Error?.Code);
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("schema OR")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\"private-query-sentinel")]
+    public async Task Native_search_invalid_expression_returns_400_without_query_disclosure(string query)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.GetAsync("/api/sessions?search=" + Uri.EscapeDataString(query));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        ApiResponse<SessionQueryResult>? body = await response.Content.ReadFromJsonAsync(ArcanumJsonContext.Default.ApiResponseSessionQueryResult);
+
+        Assert.NotNull(body);
+
+        Assert.False(body.IsSuccess);
+
+        Assert.Equal(ErrorCodes.Validation.InvalidQuery, body.Error?.Code);
+
+        Assert.DoesNotContain("private-query-sentinel", await response.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task GetEntries_CountOnly_ReturnsEntryCount()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
@@ -1619,7 +1695,7 @@ public sealed class SessionEndpointTests
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) =>
             throw new NotSupportedException();
 
-        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
+        public Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
             throw new NotSupportedException();
 
         public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) =>

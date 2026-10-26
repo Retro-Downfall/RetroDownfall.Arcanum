@@ -24,11 +24,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
 public sealed class InferenceContextBuilderTests
 {
-
     [Fact]
     public void HasStatelessMessages_WhenMessagesPresent_ReturnsTrue()
     {
-
         PingRequest request = new(
             Prompt: "x",
             Model: "m",
@@ -36,27 +34,21 @@ public sealed class InferenceContextBuilderTests
             StatelessMessages: [new CoreChatMessage("user", "hi")]);
 
         Assert.True(InferenceContextBuilder.HasStatelessMessages(request));
-
     }
 
     [Fact]
     public void MapGrimoireToMeAiMessages_StripsTrailingEmptyAssistant()
     {
-
         Session session = new()
         {
-
             Id = Guid.NewGuid(),
 
             Entries =
             [
-
                 new Entry { Role = MessageRole.User, Content = "q", CreatedAt = DateTimeOffset.UtcNow },
 
                 new Entry { Role = MessageRole.Assistant, Content = string.Empty, CreatedAt = DateTimeOffset.UtcNow.AddSeconds(1) },
-
             ],
-
         };
 
         List<MeAiChatMessage> messages = InferenceContextBuilder.MapGrimoireToMeAiMessages(session, "next");
@@ -70,23 +62,19 @@ public sealed class InferenceContextBuilderTests
         Assert.Equal(ChatRole.User, messages[1].Role);
 
         Assert.Equal("next", messages[1].Text);
-
     }
 
     [Fact]
     public void ComputeEffectiveCompressionLimit_MatchesThresholdMath()
     {
-
         int limit = InferenceContextBuilder.ComputeEffectiveCompressionLimit(8192, 80);
 
         Assert.Equal(6553, limit);
-
     }
 
     [Fact]
     public void BuildInitialMeAiChatMessages_Stateless_MapsRoles()
     {
-
         PingRequest request = new(
             Prompt: "ignored",
             Model: "m",
@@ -104,13 +92,11 @@ public sealed class InferenceContextBuilderTests
         Assert.Equal(ChatRole.System, messages[0].Role);
 
         Assert.Equal(ChatRole.User, messages[1].Role);
-
     }
 
     [Fact]
     public async Task LoadThreadAsync_StatelessRequest_ReturnsNull()
     {
-
         InferenceContextBuilder builder = CreateBuilder(new NullGrimoireRepository());
 
         Session? thread = await builder.LoadThreadAsync(
@@ -122,7 +108,6 @@ public sealed class InferenceContextBuilderTests
             CancellationToken.None);
 
         Assert.Null(thread);
-
     }
 
     /// <summary>
@@ -133,7 +118,6 @@ public sealed class InferenceContextBuilderTests
     [Fact]
     public void TryApplyContextCompressionIfNeeded_WhenCompressed_ReAttachesScryingFoci()
     {
-
         InferenceContextBuilder builder = CreateBuilder(new NullGrimoireRepository());
 
         Session thread = CreateSummarizedSession();
@@ -159,7 +143,6 @@ public sealed class InferenceContextBuilderTests
         (bool compressed, List<MeAiChatMessage> rebuilt) = builder.TryApplyContextCompressionIfNeeded(
             new ContextCompressionRequest
             {
-
                 Request = request,
 
                 Messages = messages,
@@ -173,7 +156,6 @@ public sealed class InferenceContextBuilderTests
                 ChatOptions = new ChatOptions(),
 
                 ScryingFoci = request.ScryingFoci,
-
             });
 
         Assert.True(compressed);
@@ -181,43 +163,34 @@ public sealed class InferenceContextBuilderTests
         DataContent image = Assert.Single(rebuilt[^1].Contents.OfType<DataContent>());
 
         Assert.Equal("image/png", image.MediaType);
-
     }
 
     private static Session CreateSummarizedSession()
     {
-
         DateTimeOffset start = DateTimeOffset.UtcNow.AddHours(-1);
 
         Session thread = new()
         {
-
             Id = Guid.NewGuid(),
 
             Summary = "The campaign so far.",
 
             LastSummarizedMessageAt = start.UtcDateTime,
-
         };
 
         for (int index = 0; index < 40; index++)
         {
-
             thread.Entries.Add(new Entry
             {
-
                 Role = index % 2 == 0 ? MessageRole.User : MessageRole.Assistant,
 
                 Content = $"turn {index}: " + new string('w', 256),
 
                 CreatedAt = start.AddMinutes(index + 1),
-
             });
-
         }
 
         return thread;
-
     }
 
     private static ChatClientLease CreateLease() =>
@@ -225,7 +198,6 @@ public sealed class InferenceContextBuilderTests
             new NullChatClient(),
             new ProviderSettings
             {
-
                 Name = "test",
 
                 Type = AiProviderKind.OpenAICompatible,
@@ -233,14 +205,12 @@ public sealed class InferenceContextBuilderTests
                 Endpoint = "http://localhost",
 
                 ContextWindowLimit = 256,
-
             },
             "m",
             ownedHttpClient: null);
 
     private sealed class NullChatClient : IChatClient
     {
-
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<MeAiChatMessage> messages,
             ChatOptions? options = null,
@@ -252,11 +222,9 @@ public sealed class InferenceContextBuilderTests
             ChatOptions? options = null,
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-
             await Task.CompletedTask;
 
             yield break;
-
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
@@ -264,12 +232,10 @@ public sealed class InferenceContextBuilderTests
         public void Dispose()
         {
         }
-
     }
 
     private static InferenceContextBuilder CreateBuilder(IGrimoireRepository grimoire)
     {
-
         ArcanumSettings settings = new();
 
         InferenceTokenizerResolver tokenizerResolver = new(NullLogger<InferenceTokenizerResolver>.Instance);
@@ -285,12 +251,10 @@ public sealed class InferenceContextBuilderTests
             new TestOptionsSnapshot<ArcanumSettings>(settings),
             NullLogger<InferenceContextBuilder>.Instance,
             compression);
-
     }
 
     private sealed class NullGrimoireRepository : IGrimoireRepository
     {
-
         public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
             Guid? sessionId,
             string prompt,
@@ -373,7 +337,7 @@ public sealed class InferenceContextBuilderTests
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>
@@ -387,7 +351,5 @@ public sealed class InferenceContextBuilderTests
 
         public Task<Session?> GetSessionHeaderAsync(Guid id, CancellationToken cancellationToken = default) =>
             Task.FromResult<Session?>(null);
-
     }
-
 }

@@ -1153,9 +1153,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
 
-        SessionQueryResult firstPage = await repository.QueryAsync(
+        SessionQueryResult firstPage = (await repository.QueryAsync(
             new SessionQueryRequest(Limit: 2),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.True(firstPage.HasMore);
 
@@ -1163,9 +1163,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Assert.Equal(baseline.AddMinutes(20), firstPage.NextBeforeUpdatedAt);
 
-        SessionQueryResult secondPage = await repository.QueryAsync(
+        SessionQueryResult secondPage = (await repository.QueryAsync(
             new SessionQueryRequest(Limit: 2, BeforeUpdatedAt: firstPage.NextBeforeUpdatedAt),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.False(secondPage.HasMore);
 
@@ -1201,12 +1201,12 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
 
-        SessionQueryResult result = await repository.QueryAsync(
+        SessionQueryResult result = (await repository.QueryAsync(
             new SessionQueryRequest(
                 From: baseline.AddHours(1),
                 To: baseline.AddHours(2),
                 Limit: 50),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(new[] { s3, s2 }, result.Summaries.Select(x => x.Id).ToArray());
     }
@@ -1438,9 +1438,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             },
             CancellationToken.None);
 
-        SessionQueryResult result = await repository.QueryAsync(
+        SessionQueryResult result = (await repository.QueryAsync(
             new SessionQueryRequest(Search: "cobalt", Limit: 50),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Guid[] ids = result.Summaries.Select(x => x.Id).ToArray();
 
@@ -1530,11 +1530,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             _fixture.CreateOptionsMonitor(),
             FixtureOrdinaryConnectionFactory.For(_db!));
 
-        SessionQueryResult result = await repository.QueryAsync(
+        SessionQueryResult result = (await repository.QueryAsync(
             new SessionQueryRequest(
                 Search: "formerftsbound",
                 Limit: 50),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Contains(result.Summaries, session => session.Id == expectedId);
     }
@@ -1580,15 +1580,15 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
 
-        SessionQueryResult byRole = await repository.QueryAsync(
+        SessionQueryResult byRole = (await repository.QueryAsync(
             new SessionQueryRequest(Role: MessageRole.User, Limit: 50),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(new[] { withUser }, byRole.Summaries.Select(x => x.Id).ToArray());
 
-        SessionQueryResult byModel = await repository.QueryAsync(
+        SessionQueryResult byModel = (await repository.QueryAsync(
             new SessionQueryRequest(Model: "llama-scribe", Limit: 50),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(new[] { assistantOnly }, byModel.Summaries.Select(x => x.Id).ToArray());
     }
@@ -1736,9 +1736,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int page = 0; page < 10; page++)
         {
-            SessionQueryResult result = await repository.QueryAsync(
+            SessionQueryResult result = (await repository.QueryAsync(
                 new SessionQueryRequest(Limit: 2, BeforeUpdatedAt: cursor),
-                CancellationToken.None);
+                CancellationToken.None)).Value;
 
             seen.AddRange(result.Summaries.Select(x => x.Id));
 
@@ -1786,9 +1786,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         for (int page = 0; page < 10; page++)
         {
-            SessionQueryResult result = await repository.QueryAsync(
+            SessionQueryResult result = (await repository.QueryAsync(
                 new SessionQueryRequest(Limit: 1, BeforeUpdatedAt: cursor),
-                CancellationToken.None);
+                CancellationToken.None)).Value;
 
             seen.AddRange(result.Summaries.Select(x => x.Id));
 
@@ -1839,9 +1839,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             _fixture.CreateOptionsMonitor(),
             FixtureOrdinaryConnectionFactory.For(_db));
 
-        SessionQueryResult first = await repository.QueryAsync(
+        SessionQueryResult first = (await repository.QueryAsync(
             new SessionQueryRequest(Limit: 1),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(
             new HashSet<Guid> { east, west },
@@ -1853,11 +1853,11 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         Assert.Equal(tiedInstant, first.NextBeforeUpdatedAt.Value);
 
-        SessionQueryResult second = await repository.QueryAsync(
+        SessionQueryResult second = (await repository.QueryAsync(
             new SessionQueryRequest(
                 Limit: 1,
                 BeforeUpdatedAt: first.NextBeforeUpdatedAt),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal([older], second.Summaries.Select(summary => summary.Id));
 
@@ -1889,9 +1889,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
             _fixture.CreateOptionsMonitor(),
             FixtureOrdinaryConnectionFactory.For(_db!));
 
-        SessionQueryResult result = await repository.QueryAsync(
+        SessionQueryResult result = (await repository.QueryAsync(
             new SessionQueryRequest(Limit: 1),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(new HashSet<Guid> { first, second }, result.Summaries.Select(x => x.Id).ToHashSet());
 
@@ -1954,9 +1954,9 @@ public sealed class SessionRepositoryTests : IAsyncLifetime
 
         SessionRepository repository = new(_db, new NoOpSessionAttachmentStore(), _fixture.CreateOptionsMonitor(), FixtureOrdinaryConnectionFactory.For(_db!));
 
-        SessionQueryResult result = await repository.QueryAsync(
+        SessionQueryResult result = (await repository.QueryAsync(
             new SessionQueryRequest(Limit: 10),
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         Assert.Equal(3, result.Summaries.Single(x => x.Id == busy).EntryCount);
 

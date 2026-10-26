@@ -29,6 +29,15 @@ public sealed class FtsMatchQuerySanitizerTests
     }
 
     [Theory]
+    [InlineData("_")]
+    [InlineData("___")]
+    [InlineData("_\u0301_")]
+    public void Sanitize_returns_empty_without_a_letter_or_number(string input)
+    {
+        Assert.Equal(string.Empty, FtsMatchQuerySanitizer.Sanitize(input));
+    }
+
+    [Theory]
     [InlineData("a AND b", "a \"AND\" b")]
     [InlineData("foo OR bar", "foo \"OR\" bar")]
     [InlineData("NOT hello", "\"NOT\" hello")]

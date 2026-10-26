@@ -6,7 +6,6 @@ namespace RetroDownfall.Arcanum.Core.Storage;
 
 public interface IGrimoireRepository
 {
-
     Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
         Guid? sessionId,
         string prompt,
@@ -23,7 +22,6 @@ public interface IGrimoireRepository
         string fullContent,
         CancellationToken cancellationToken = default)
     {
-
         await FinalizeAssistantEntryAsync(
             assistantEntryId,
             fullContent,
@@ -32,7 +30,6 @@ public interface IGrimoireRepository
         // Compatibility implementations can still finalize, but null explicitly means there is no
         // exact committed frontier and callers must not enqueue Saga extraction for this turn.
         return null;
-
     }
 
     Task DiscardAssistantEntryAsync(
@@ -51,20 +48,16 @@ public interface IGrimoireRepository
         MandatoryToolInteractionProbe probe,
         CancellationToken cancellationToken = default)
     {
-
         if (cancellationToken.IsCancellationRequested)
         {
-
             return Task.FromCanceled<MandatoryToolInteractionProbeResult>(
                 cancellationToken);
-
         }
 
         return Task.FromResult(
             new MandatoryToolInteractionProbeResult(
                 MandatoryToolInteractionProbeOutcome.Unavailable,
                 Result: null));
-
     }
 
     Task<MandatoryToolInteractionPreflightResult>
@@ -72,20 +65,16 @@ public interface IGrimoireRepository
             MandatoryToolInteraction interaction,
             CancellationToken cancellationToken = default)
     {
-
         if (cancellationToken.IsCancellationRequested)
         {
-
             return Task.FromCanceled<MandatoryToolInteractionPreflightResult>(
                 cancellationToken);
-
         }
 
         return Task.FromResult(
             new MandatoryToolInteractionPreflightResult(
                 MandatoryToolInteractionPreflightOutcome.Unavailable,
                 Result: null));
-
     }
 
     /// <summary>
@@ -97,19 +86,15 @@ public interface IGrimoireRepository
         MandatoryToolInteraction interaction,
         CancellationToken cancellationToken = default)
     {
-
         if (cancellationToken.IsCancellationRequested)
         {
-
             return Task.FromCanceled<MandatoryToolInteractionAppendResult>(cancellationToken);
-
         }
 
         return Task.FromResult(
             new MandatoryToolInteractionAppendResult(
                 MandatoryToolInteractionAppendOutcome.Failed,
                 interaction.Receipt));
-
     }
 
     Task SaveCompletedExchangeAsync(
@@ -173,13 +158,11 @@ public interface IGrimoireRepository
         int batchSize,
         CancellationToken cancellationToken = default)
     {
-
         cancellationToken.ThrowIfCancellationRequested();
 
         return Task.FromException<List<Entry>>(
             new NotSupportedException(
                 "This Grimoire repository does not expose sequence-bounded Saga extraction pages."));
-
     }
 
     Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default);
@@ -227,10 +210,9 @@ public interface IGrimoireRepository
 
     Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default);
 
-    Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default);
+    Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default);
 
     Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default);
 
     Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default);
-
 }

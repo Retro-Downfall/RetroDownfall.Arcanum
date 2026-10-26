@@ -374,7 +374,7 @@ internal static class BudgetEndpointTestFactoryExtensions
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>

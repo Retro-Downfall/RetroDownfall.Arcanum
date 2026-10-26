@@ -41,6 +41,23 @@ public sealed class LexiconServiceTests : IAsyncLifetime
     private LexiconService? _service;
 
     [SkippableTheory]
+    [InlineData("___")]
+    [InlineData("_\u0301_")]
+    [InlineData("\u0301")]
+    public async Task Non_token_terms_do_not_poison_native_FTS_matching_of_other_entities(string noise)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        Assert.True((await _service!.UpsertAsync("Beacon", "Project", ["saffron"], LexiconScope.Global)).IsSuccess);
+
+        Result<IReadOnlyList<LexiconEntryDto>> result = await _service.MatchEntitiesAsync([noise, "saffron"], 10, LexiconScope.Global);
+
+        Assert.True(result.IsSuccess);
+
+        Assert.Equal("Beacon", Assert.Single(result.Value).Name);
+    }
+
+    [SkippableTheory]
     [InlineData("empty", false, false)]
     [InlineData("empty", true, false)]
     [InlineData("active-global", false, true)]

@@ -191,18 +191,18 @@ public sealed class EntryTimestampComparisonTests(GrimoireFixture fixture) : IAs
 
         DateTimeOffset to = from.AddMinutes(2);
 
-        SessionQueryResult injectedStatus = await sessions.QueryAsync(
-            new SessionQueryRequest(Status: "active' OR 1=1 --", From: from, To: to), Token);
+        SessionQueryResult injectedStatus = (await sessions.QueryAsync(
+            new SessionQueryRequest(Status: "active' OR 1=1 --", From: from, To: to), Token)).Value;
 
         Assert.Empty(injectedStatus.Summaries);
 
-        SessionQueryResult literalTitle = await sessions.QueryAsync(
-            new SessionQueryRequest(Title: hostileTitle, From: from, To: to), Token);
+        SessionQueryResult literalTitle = (await sessions.QueryAsync(
+            new SessionQueryRequest(Title: hostileTitle, From: from, To: to), Token)).Value;
 
         Assert.Equal(literal.Id, Assert.Single(literalTitle.Summaries).Id);
 
-        SessionQueryResult surviving = await sessions.QueryAsync(
-            new SessionQueryRequest(From: from, To: to), Token);
+        SessionQueryResult surviving = (await sessions.QueryAsync(
+            new SessionQueryRequest(From: from, To: to), Token)).Value;
 
         Assert.Equal(2, surviving.Summaries.Length);
     }
