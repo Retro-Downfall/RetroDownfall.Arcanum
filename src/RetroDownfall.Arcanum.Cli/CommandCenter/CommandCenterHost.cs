@@ -2337,23 +2337,46 @@ internal sealed class CommandCenterHost(
             return;
         }
 
+        TurnTranscriptReceipt? receipt = null;
         try
         {
             app.Invoke(() => window.ClearComposer());
-            await chatRunner
+            receipt = await chatRunner
                 .RunTurnAsync(payload, state, ui, turnCts!.Token)
                 .ConfigureAwait(false);
 
             attachmentDriftMonitor.RequestRefresh();
 
-            await RunGatedAsync(state, ui, linked.Token,
-                    () => sessionWorkspace.RefreshSessionsAsync(state, linked.Token))
-                .ConfigureAwait(false);
+            if (receipt.DurableResult)
+            {
+                await RunGatedAsync(state, ui, turnCts.Token, async () =>
+                    {
+                        await sessionWorkspace.ReconcileCompletedTurnAsync(state, receipt, () => !window.FollowTail, turnCts.Token)
+                            .ConfigureAwait(false);
+                        string? warning = state.LastError;
+                        try
+                        {
+                            await sessionWorkspace.RefreshSessionsAsync(state, turnCts.Token).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            if (warning is not null)
+                            {
+                                state.LastError = warning;
+                            }
+                        }
+                    })
+                    .ConfigureAwait(false);
+            }
             _ = ui.TryWrite(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll));
         }
-        catch (OperationCanceledException) when (linked.IsCancellationRequested)
+        catch (OperationCanceledException) when (linked.IsCancellationRequested || turnCts!.IsCancellationRequested)
         {
-            // Ordinary invocation shutdown may cancel the post-turn session refresh.
+            // The durable Result does not prove that this client adopted its snapshot.
+            if (receipt?.DurableResult == true && state.AttachmentBinding == receipt.Binding)
+            {
+                state.Log.Append(SessionLogEntryKind.Status, SessionWorkspaceService.TranscriptRecoveryMessage);
+            }
         }
         catch (Exception ex)
         {
@@ -2367,7 +2390,7 @@ internal sealed class CommandCenterHost(
 
             app.Invoke(() =>
             {
-                window.ApplyState(state, forceFollowTail: true);
+                window.ApplyState(state);
                 if (state.Overlay == CommandCenterOverlayKind.None
                     && state.FocusRegion == CommandCenterFocusRegion.Composer)
                 {
