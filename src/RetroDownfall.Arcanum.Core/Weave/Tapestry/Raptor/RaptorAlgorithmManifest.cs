@@ -48,6 +48,10 @@ public sealed record RaptorAlgorithmManifest(RaptorNumericOptions Options)
             nameof(Options.FuzzyUnionMix), Number(Options.FuzzyUnionMix),
             nameof(Options.MinimumDistance), Number(Options.MinimumDistance),
             nameof(Options.Spread), Number(Options.Spread),
+            nameof(Options.UmapProgressInterval), Number(Options.UmapProgressInterval),
+            nameof(Options.InitialRescaleRange), Number(Options.InitialRescaleRange),
+            nameof(Options.CurveB), Number(Options.CurveB),
+            nameof(Options.CurveA), Number(Options.CurveA),
             nameof(Options.SmallEpochs), Number(Options.SmallEpochs),
             nameof(Options.LargeEpochs), Number(Options.LargeEpochs),
             nameof(Options.LargeEpochBoundary), Number(Options.LargeEpochBoundary),
@@ -64,6 +68,9 @@ public sealed record RaptorAlgorithmManifest(RaptorNumericOptions Options)
             nameof(Options.NumericRecipe), Options.NumericRecipe,
             nameof(Options.NeighborRecipe), Options.NeighborRecipe,
             nameof(Options.InitializationRecipe), Options.InitializationRecipe,
+            nameof(Options.OptimizerRecipe), Options.OptimizerRecipe,
+            nameof(Options.FuzzyRecipe), Options.FuzzyRecipe,
+            nameof(Options.CurveRecipe), Options.CurveRecipe,
             nameof(Options.MixtureRecipe), Options.MixtureRecipe,
         ]);
     }

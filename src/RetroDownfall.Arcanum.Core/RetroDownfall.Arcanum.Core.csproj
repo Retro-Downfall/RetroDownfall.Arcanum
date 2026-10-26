@@ -64,4 +64,10 @@
 
   </ItemGroup>
 
+  <ItemGroup>
+
+    <None Update="Weave/Tapestry/Raptor/UMAP-LICENSE.txt" Link="licenses/umap-learn-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+
+  </ItemGroup>
+
 </Project>
