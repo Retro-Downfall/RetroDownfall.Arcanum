@@ -1425,7 +1425,7 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
 
         if (acquired.IsFailure)
         {
-            throw new InvalidOperationException(acquired.Error.Message);
+            throw GrimoireConnectionUnavailableException.FromError(acquired.Error);
         }
 
         await using IGrimoireOrdinaryConnectionLease lease = acquired.Value;

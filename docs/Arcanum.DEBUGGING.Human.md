@@ -198,3 +198,8 @@ Provider connectivity diagnostics run through `ProviderTestEndpoints`, the guard
 - Agent/operator primer: [`Arcanum.Engineering.md`](Arcanum.Engineering.md)
 - Complete configuration reference: [`Compendium.README.md`](Compendium.README.md)
 - The breakpoints above are verified against the code. Correct any discrepancy here and update the owning architecture, API, or configuration document when its contract also changed.
+
+
+## Grimoire connection failures
+
+When health or `arcanum doctor` reports a Grimoire open or initialization failure, look for the matching Warning diagnostic. Its fixed stage distinguishes native runtime loading, admission, provider construction, opening, and initialization; SQLite primary and extended numeric codes identify the storage failure without publishing paths or key material. `Grimoire.NativeRuntimeUnavailable` means the packaged hermetic native runtime could not load. Check the installed application's native assets and the installation's storage accessibility and free space as appropriate to the stage/code. A connection failure does not establish that a maintenance operation is running. Only `Grimoire.MaintenanceUnavailable` is the deliberate admission refusal described in the maintenance recovery guidance. Do not infer a key mismatch from an open code alone, and do not reset or replace credentials to diagnose it.

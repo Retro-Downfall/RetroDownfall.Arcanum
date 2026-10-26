@@ -2932,7 +2932,8 @@ public sealed class CovenantErasureCoordinatorTests
                 : new GrimoireMaintenanceConnectionFactory(
                     new ScratchPassphraseSource(),
                     CovenantSqliteConnectionInitializer.Instance,
-                    SqliteNativeRuntime.Instance);
+                    SqliteNativeRuntime.Instance,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
             MaintenancePaths = new ScratchMaintenancePaths(databasePath);
 

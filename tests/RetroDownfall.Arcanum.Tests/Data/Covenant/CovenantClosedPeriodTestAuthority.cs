@@ -33,7 +33,6 @@ namespace RetroDownfall.Arcanum.Tests.Data.Covenant;
 /// </remarks>
 internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
 {
-
     private readonly IGrimoireClosingOwner _closing;
 
     private readonly IGrimoireExclusiveClosedLease _closed;
@@ -48,7 +47,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
         IGrimoireMaintenancePathAuthority paths,
         IGrimoireDbPassphraseSource passphrase)
     {
-
         _closing = closing;
 
         _closed = closed;
@@ -60,7 +58,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
         Paths = paths;
 
         Passphrase = passphrase;
-
     }
 
     /// <summary>The authority every kernel under test performs its opens through.</summary>
@@ -107,7 +104,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
         ICovenantConnectionDrain? drain = null,
         Func<IGrimoireMaintenanceConnectionFactory, IGrimoireMaintenanceConnectionFactory>? decorate = null)
     {
-
         ScratchPaths paths = new(databasePath);
 
         FixedPassphrase key = new(passphrase);
@@ -131,7 +127,8 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
         IGrimoireMaintenanceConnectionFactory factory = new GrimoireMaintenanceConnectionFactory(
             key,
             initializer,
-            SqliteNativeRuntime.Instance);
+            SqliteNativeRuntime.Instance,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         return new CovenantClosedPeriodTestAuthority(
             closing,
@@ -146,12 +143,10 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
                 key),
             paths,
             key);
-
     }
 
     public async ValueTask DisposeAsync()
     {
-
         await _lane.DisposeAsync();
 
         _ = await _closed.CompleteAsync(
@@ -161,7 +156,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
         await _closed.DisposeAsync();
 
         await _closing.DisposeAsync();
-
     }
 
     private static CovenantExclusiveRecoveryOwner Owner { get; } = new(
@@ -183,7 +177,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
         string databasePath,
         ICovenantConnectionDrain drain)
     {
-
         GrimoireConnectionAdmissionGate gate = new(
             TimeProvider.System,
             drain,
@@ -193,14 +186,11 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
 
         await using (closing.ConfigureAwait(false))
         {
-
             Result drained = await gate.DrainRequestAndWorkAsync(closing, CancellationToken.None);
 
             if (drained.IsFailure)
             {
-
                 return drained;
-
             }
 
             Result<IGrimoireExclusiveClosedLease> closed =
@@ -208,9 +198,7 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
 
             if (closed.IsFailure)
             {
-
                 return Result.Failure(closed.Error);
-
             }
 
             _ = await closed.Value.CompleteAsync(
@@ -220,9 +208,7 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
             await closed.Value.DisposeAsync();
 
             return Result.Success();
-
         }
-
     }
 
     /// <summary>
@@ -252,12 +238,10 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
     /// <summary>The scratch file every maintenance purpose in this suite resolves to.</summary>
     private sealed class ScratchPaths(string databasePath) : IGrimoireMaintenancePathAuthority
     {
-
         public string CanonicalDatabasePath => databasePath;
 
         public string ExportStagingDatabasePath(Guid operationId) =>
             CovenantResidualArtifacts.ExportStagingPath(databasePath, operationId);
-
     }
 
     private static Exception Unreachable([CallerMemberName] string member = "") =>
@@ -267,7 +251,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
 
     private sealed class InertClosedLease : IGrimoireExclusiveClosedLease
     {
-
         public CovenantExclusiveRecoveryOwner Owner => throw Unreachable();
 
         public long Generation => throw Unreachable();
@@ -297,12 +280,10 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
             throw Unreachable();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class InertLane : IGrimoireMaintenanceIoLane
     {
-
         public CovenantExclusiveRecoveryOwner Owner => throw Unreachable();
 
         public long Generation => throw Unreachable();
@@ -314,18 +295,14 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
             throw Unreachable();
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
     }
 
     private sealed class FixedPassphrase(string passphrase) : IGrimoireDbPassphraseSource
     {
-
         public string Passphrase { get; private set; } = passphrase;
 
         public void SetPassphrase(string value) => Passphrase = value;
-
     }
-
 }
 
 /// <summary>
@@ -339,7 +316,6 @@ internal sealed class CovenantClosedPeriodTestAuthority : IAsyncDisposable
 /// </remarks>
 internal sealed class UnreachableMaintenanceFactory : IGrimoireMaintenanceConnectionFactory
 {
-
     private static Exception Unreachable([CallerMemberName] string member = "") =>
         new InvalidOperationException(
             $"An unreachable maintenance factory was asked to {member}, but the caller under test is "
@@ -392,13 +368,11 @@ internal sealed class UnreachableMaintenanceFactory : IGrimoireMaintenanceConnec
         IGrimoireMaintenanceIoLane lane,
         CancellationToken cancellationToken) =>
         throw Unreachable();
-
 }
 
 /// <summary>Scratch paths for a gate whose purposes this suite never actually opens.</summary>
 internal sealed class ScratchMaintenancePaths : IGrimoireMaintenancePathAuthority
 {
-
     /// <summary>
     /// Names a real database when the suite has one, and an unused temporary path when it does not.
     /// </summary>
@@ -411,25 +385,21 @@ internal sealed class ScratchMaintenancePaths : IGrimoireMaintenancePathAuthorit
     /// </remarks>
     internal ScratchMaintenancePaths(string? databasePath = null)
     {
-
         CanonicalDatabasePath = databasePath ?? Path.Combine(
             Path.GetTempPath(),
             $"covenant-unused-{Guid.NewGuid():N}",
             "arcanum.db");
-
     }
 
     public string CanonicalDatabasePath { get; }
 
     public string ExportStagingDatabasePath(Guid operationId) =>
         CovenantResidualArtifacts.ExportStagingPath(CanonicalDatabasePath, operationId);
-
 }
 
 /// <summary>The one connection object the gate admits for this harness's ledger step.</summary>
 internal sealed class ScratchLedgerConnection : ICovenantClosedPeriodLedgerConnection, IDisposable
 {
-
     private readonly string _directory = Directory.CreateDirectory(
         Path.Combine(Path.GetTempPath(), $"covenant-ledger-{Guid.NewGuid():N}")).FullName;
 
@@ -458,14 +428,11 @@ internal sealed class ScratchLedgerConnection : ICovenantClosedPeriodLedgerConne
 
     public async Task OpenAsync(CancellationToken cancellationToken)
     {
-
         Opens++;
 
         if (_connection.State is System.Data.ConnectionState.Open)
         {
-
             return;
-
         }
 
         await _connection.OpenAsync(cancellationToken);
@@ -476,54 +443,42 @@ internal sealed class ScratchLedgerConnection : ICovenantClosedPeriodLedgerConne
         // exists to guarantee.
         await using (SqliteCommand apply = _connection.CreateCommand())
         {
-
             apply.CommandText = "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON;";
 
             _ = await apply.ExecuteNonQueryAsync(cancellationToken);
-
         }
 
         EveryOpenCarriedThePolicy &= await ReadsOneAsync("foreign_keys", cancellationToken)
             && await ReadsOneAsync("secure_delete", cancellationToken);
-
     }
 
     private async Task<bool> ReadsOneAsync(string pragma, CancellationToken cancellationToken)
     {
-
         await using SqliteCommand read = _connection.CreateCommand();
 
         read.CommandText = $"PRAGMA {pragma};";
 
         return Convert.ToInt64(await read.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
-
     }
 
     public void Dispose()
     {
-
         _connection.Dispose();
 
         try
         {
-
             Directory.Delete(_directory, recursive: true);
-
         }
         catch (IOException)
         {
         }
-
     }
-
 }
 
 /// <summary>The scratch databases' fixed key, for a suite that opens one through the real factory.</summary>
 internal sealed class ScratchPassphraseSource : IGrimoireDbPassphraseSource
 {
-
     public string Passphrase { get; private set; } = CovenantSchemaScratchDatabase.ScratchPassphrase;
 
     public void SetPassphrase(string value) => Passphrase = value;
-
 }

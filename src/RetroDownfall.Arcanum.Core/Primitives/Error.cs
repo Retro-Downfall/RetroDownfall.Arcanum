@@ -24,16 +24,20 @@ public readonly record struct Error(
     [JsonIgnore]
     public ContextOverflowDetails? ContextOverflow { get; init; }
 
+    /// <summary>Closed, content-free connection diagnostics; never part of the error wire shape.</summary>
+    [JsonIgnore]
+    public GrimoireConnectionFailureDetails? ConnectionFailure { get; init; }
+
     public static readonly Error None = new(string.Empty, string.Empty);
 
     /// <summary>
     /// Whether this error has exactly the field values of <see cref="None"/>: empty code, empty
-    /// message, no details and no context overflow. It is the same answer as <c>this == None</c>, read from the
+    /// message, no details, context overflow or connection failure. It is the same answer as <c>this == None</c>, read from the
     /// fields so a caller never runs the generated record comparison, which would compare
     /// <see cref="Details"/> through its interface.
     /// </summary>
     [JsonIgnore]
-    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null;
+    public bool IsNone => Code is { Length: 0 } && Message is { Length: 0 } && Details is null && ContextOverflow is null && ConnectionFailure is null;
 }
 
 /// <summary>Only configured public identities and numeric context-window accounting, never prompt or response text.</summary>
@@ -64,4 +68,64 @@ public readonly record struct ContextOverflowDetails(
 public static class BudgetErrorMessages
 {
     public const string Guidance = "The budget day is UTC; a new accounting day starts at 00:00 UTC. Outstanding reservations from prior days may still count. Review Arcanum:Cost:Budget:DailyLimitUsd and raise it if appropriate.";
+}
+
+/// <summary>The fixed stages at which opening an admitted Grimoire connection can fail.</summary>
+public enum GrimoireConnectionFailureStage
+{
+    NativeRuntime,
+    Admission,
+    ProviderConstruction,
+    Open,
+    Initialization,
+    TicketResolution,
+}
+
+/// <summary>Closed exception classifications; no collaborator text or loader paths.</summary>
+public enum GrimoireConnectionFailureKind
+{
+    Other,
+    Sqlite,
+    NativeRuntime,
+    InvalidOperation,
+    IO,
+    UnauthorizedAccess,
+    Argument,
+}
+
+/// <summary>Only fixed classifications and numeric SQLite codes may cross the storage boundary.</summary>
+public readonly record struct GrimoireConnectionFailureDetails(
+    GrimoireConnectionFailureStage Stage,
+    GrimoireConnectionFailureKind Kind,
+    int? SqliteErrorCode = null,
+    int? SqliteExtendedErrorCode = null)
+{
+    public string ToPublicMessage()
+    {
+        string stage = Stage switch
+        {
+            GrimoireConnectionFailureStage.NativeRuntime => "native runtime",
+            GrimoireConnectionFailureStage.Admission => "admission",
+            GrimoireConnectionFailureStage.ProviderConstruction => "provider construction",
+            GrimoireConnectionFailureStage.Open => "open",
+            GrimoireConnectionFailureStage.Initialization => "initialization",
+            GrimoireConnectionFailureStage.TicketResolution => "admission ticket resolution",
+            _ => "connection",
+        };
+
+        string kind = Kind switch
+        {
+            GrimoireConnectionFailureKind.Sqlite => "SqliteException",
+            GrimoireConnectionFailureKind.NativeRuntime => "SqliteNativeRuntimeUnavailableException; Grimoire.NativeRuntimeUnavailable",
+            GrimoireConnectionFailureKind.InvalidOperation => "InvalidOperationException",
+            GrimoireConnectionFailureKind.IO => "IOException",
+            GrimoireConnectionFailureKind.UnauthorizedAccess => "UnauthorizedAccessException",
+            GrimoireConnectionFailureKind.Argument => "ArgumentException",
+            _ => "Exception",
+        };
+
+        return Kind == GrimoireConnectionFailureKind.Sqlite
+            ? FormattableString.Invariant($"Grimoire {stage} failed: {kind} (SQLite {SqliteErrorCode}, extended {SqliteExtendedErrorCode}).")
+            : $"Grimoire {stage} failed: {kind}.";
+    }
 }

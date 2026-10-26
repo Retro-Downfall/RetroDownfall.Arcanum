@@ -2149,7 +2149,9 @@ public static class ServiceCollectionExtensions
             new GrimoireMaintenanceConnectionFactory(
                 sp.GetRequiredService<IGrimoireDbPassphraseSource>(),
                 sp.GetRequiredService<ICovenantSqliteConnectionInitializer>(),
-                sp.GetRequiredService<ISqliteNativeRuntime>()));
+                sp.GetRequiredService<ISqliteNativeRuntime>(),
+                (sp.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance)
+                    .CreateLogger<GrimoireMaintenanceConnectionFactory>()));
 
         services.AddSingleton<ICovenantCampaignScopeProbe>(
             static sp => new CovenantCampaignScopeProbe(sp.GetRequiredService<IServiceScopeFactory>()));

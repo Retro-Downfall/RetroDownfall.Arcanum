@@ -44,6 +44,97 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Maintenance_failure_logs_safe_diagnostics_and_terminalizes_handle(bool runtimeFailure)
+    {
+        const string sentinel = "PRIVATE-maintenance-passphrase-path-SENTINEL";
+
+        RecordingHandle handle = new([]);
+
+        RecordingCapability capability = new(handle, []);
+
+        CapturingLogger logger = new();
+
+        Exception failure = runtimeFailure
+            ? new SqliteNativeRuntimeUnavailableException(sentinel, sentinel, new IOException(sentinel))
+            : new SqliteException(sentinel, 26, 26);
+
+        GrimoireMaintenanceConnectionFactory factory = new(
+            new RecordingPassphraseSource(),
+            new RecordingInitializer() { Failure = runtimeFailure ? null : failure },
+            new RecordingRuntime(initializeProvider: !runtimeFailure) { Failure = runtimeFailure ? failure : null },
+            logger);
+
+        Result<IGrimoireMaintenanceConnectionLease> result = await factory.OpenJournalCanonicalErasureAsync(
+            capability,
+            new RecordingLane(Owner(4), 7),
+            CancellationToken.None);
+
+        AssertUnavailable(result);
+
+        Assert.Contains(runtimeFailure ? "Grimoire.NativeRuntimeUnavailable" : "SQLite 26", result.Error.Message, StringComparison.Ordinal);
+
+        var entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, entry.Level);
+
+        Assert.Null(entry.Exception);
+
+        Assert.Contains("CanonicalErasure", entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(runtimeFailure ? "native runtime failed" : "initialization failed", entry.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(sentinel, entry.Message + result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Equal(runtimeFailure ? 1 : 0, handle.NotOpenedCount);
+
+        Assert.Equal(runtimeFailure ? 0 : 1, handle.PhysicallyClosedCount);
+    }
+
+    private sealed class CapturingLogger : Microsoft.Extensions.Logging.ILogger<GrimoireMaintenanceConnectionFactory>
+    {
+        internal List<(Microsoft.Extensions.Logging.LogLevel Level, string Message, Exception? Exception)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel level) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel level, Microsoft.Extensions.Logging.EventId eventId,
+            TState state, Exception? exception, Func<TState, Exception?, string> formatter) => Entries.Add((level, formatter(state, exception), exception));
+    }
+
+    [Fact]
+    public async Task Runtime_cancellation_propagates_and_terminalizes_handle()
+    {
+        RecordingHandle handle = new([]);
+
+        RecordingCapability capability = new(handle, []);
+
+        using CancellationTokenSource cancelled = new();
+
+        cancelled.Cancel();
+
+        GrimoireMaintenanceConnectionFactory factory = new(
+            new RecordingPassphraseSource(),
+            new RecordingInitializer(),
+            new RecordingRuntime(initializeProvider: false)
+            {
+                Failure = new OperationCanceledException(cancelled.Token),
+            },
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => factory.OpenJournalCanonicalErasureAsync(
+            capability,
+            new RecordingLane(Owner(4), 7),
+            cancelled.Token));
+
+        Assert.Equal(1, handle.NotOpenedCount);
+
+        Assert.Equal(0, handle.OpenStartedCount);
+    }
+
+    [Theory]
     [InlineData(CapabilityMismatch.ForeignOwner)]
     [InlineData(CapabilityMismatch.ForeignGeneration)]
     [InlineData(CapabilityMismatch.WrongLaneInstance)]
@@ -117,7 +208,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             passphrase,
             initializer,
-            runtime);
+            runtime,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -189,7 +281,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             passphrase,
             initializer,
-            runtime);
+            runtime,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -227,7 +320,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             passphrase,
             new RecordingInitializer(events),
-            runtime);
+            runtime,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -268,7 +362,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             passphrase,
             new RecordingInitializer(events),
-            runtime);
+            runtime,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -305,7 +400,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(events),
             new RecordingInitializer(events),
-            new RecordingRuntime(initializeProvider: true, events));
+            new RecordingRuntime(initializeProvider: true, events),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -342,7 +438,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(events),
             initializer,
-            new RecordingRuntime(initializeProvider: true, events));
+            new RecordingRuntime(initializeProvider: true, events),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -387,7 +484,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(events),
             initializer,
-            new RecordingRuntime(initializeProvider: true, events));
+            new RecordingRuntime(initializeProvider: true, events),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Task<Result<IGrimoireMaintenanceConnectionLease>> open =
             factory.OpenJournalCanonicalErasureAsync(
@@ -435,7 +533,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(events),
             initializer,
-            new RecordingRuntime(initializeProvider: true, events));
+            new RecordingRuntime(initializeProvider: true, events),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCanonicalErasureAsync(
@@ -530,7 +629,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(),
             new RecordingInitializer(),
-            new RecordingRuntime(initializeProvider: true));
+            new RecordingRuntime(initializeProvider: true),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> result =
             await factory.OpenJournalCandidateReopenAsync(
@@ -582,7 +682,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(events),
             initializer,
-            new RecordingRuntime(initializeProvider: true, events));
+            new RecordingRuntime(initializeProvider: true, events),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         IGrimoireMaintenanceConnectionLease lease =
             (await factory.OpenJournalCanonicalErasureAsync(
@@ -629,7 +730,8 @@ public sealed class GrimoireMaintenanceConnectionFactoryTests : IDisposable
         GrimoireMaintenanceConnectionFactory factory = new(
             new RecordingPassphraseSource(),
             new RecordingInitializer(),
-            new RecordingRuntime(initializeProvider: true));
+            new RecordingRuntime(initializeProvider: true),
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<GrimoireMaintenanceConnectionFactory>.Instance);
 
         Result<IGrimoireMaintenanceConnectionLease> opened =
             await factory.OpenJournalCanonicalErasureAsync(

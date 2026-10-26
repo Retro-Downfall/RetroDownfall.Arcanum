@@ -49,6 +49,98 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
         Directory.CreateDirectory(ArcanumPaths.GrimoireDirectory);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Open_failure_reports_safe_sqlite_diagnostics_and_warning(bool fresh, bool initialize)
+    {
+        const string sentinel = "PRIVATE-path-passphrase-sql-SENTINEL";
+
+        RecordingLifecycle lifecycle = new();
+
+        CapturingLogger logger = new();
+
+        SqliteException failure = new(sentinel, 14, 526);
+
+        RecordingTestSeam seam = new() { NativeOpenFailure = initialize ? null : failure };
+
+        RecordingInitializer initializer = new() { Failure = initialize ? failure : null };
+
+        GrimoireOrdinaryConnectionFactory factory = CreateFactory(
+            lifecycle,
+            new RecordingRuntime(initializeProvider: true),
+            seam: seam,
+            initializer: initializer,
+            logger: logger);
+
+        await using SqliteConnection connection = CanonicalScopedConnection();
+
+        Result<IGrimoireOrdinaryConnectionLease> result = fresh
+            ? await factory.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadWrite, CancellationToken.None)
+            : await factory.AcquireScopedAsync(connection, CovenantSqliteConnectionMode.ReadWrite, CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(ErrorCodes.Covenant.Unavailable, result.Error.Code);
+
+        Assert.Contains("SqliteException", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains("526", result.Error.Message, StringComparison.Ordinal);
+
+        CapturedLog entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, entry.Level);
+
+        Assert.Null(entry.Exception);
+
+        Assert.Contains("SqliteException", entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains("526", entry.Message, StringComparison.Ordinal);
+
+        Assert.Contains(fresh ? "Kind=ReadWrite" : "Kind=Scoped", entry.Message, StringComparison.Ordinal);
+
+        Assert.DoesNotContain(sentinel, result.Error.Message + entry.Message, StringComparison.Ordinal);
+
+        Assert.Equal(1, lifecycle.LastRegistration!.DisposeCount);
+
+        Assert.Equal(ConnectionState.Closed, connection.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Runtime_failure_reports_fixed_code_without_loader_content(bool fresh)
+    {
+        const string sentinel = "PRIVATE-runtime-path-inner-SENTINEL";
+
+        CapturingLogger logger = new();
+
+        RecordingRuntime runtime = new(initializeProvider: false)
+        {
+            Failure = new SqliteNativeRuntimeUnavailableException(sentinel, sentinel, new IOException(sentinel)),
+        };
+
+        GrimoireOrdinaryConnectionFactory factory = CreateFactory(new RecordingLifecycle(), runtime, logger: logger);
+
+        await using SqliteConnection connection = CanonicalScopedConnection();
+
+        Result<IGrimoireOrdinaryConnectionLease> result = fresh
+            ? await factory.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, CancellationToken.None)
+            : await factory.AcquireScopedAsync(connection, CovenantSqliteConnectionMode.ReadOnly, CancellationToken.None);
+
+        Assert.Contains("Grimoire.NativeRuntimeUnavailable", result.Error.Message, StringComparison.Ordinal);
+
+        CapturedLog entry = Assert.Single(logger.Entries);
+
+        Assert.Equal(LogLevel.Warning, entry.Level);
+
+        Assert.Null(entry.Exception);
+
+        Assert.DoesNotContain(sentinel, result.Error.Message + entry.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Invalid_fresh_kind_is_refused_before_provider_construction()
     {
@@ -185,13 +277,13 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
         RecordingTestSeam seam = new();
 
         string connectionString = new SqliteConnectionStringBuilder
-            {
-                DataSource = target,
+        {
+            DataSource = target,
 
-                Mode = SqliteOpenMode.Memory,
+            Mode = SqliteOpenMode.Memory,
 
-                Pooling = false,
-            }.ToString();
+            Pooling = false,
+        }.ToString();
 
         await using SqliteConnection connection = target == "not-a-valid-connection-string"
             ? new MalformedConnection()
@@ -718,7 +810,9 @@ public sealed class GrimoireOrdinaryConnectionFactoryTests : IDisposable
 
         Assert.Equal(LogLevel.Warning, logged.Level);
 
-        Assert.Same(resolutionFailure, logged.Exception);
+        Assert.Null(logged.Exception);
+
+        Assert.DoesNotContain(resolutionFailure.Message, logged.Message, StringComparison.Ordinal);
 
         Assert.Contains("admission ticket", logged.Message, StringComparison.Ordinal);
     }

@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Api.Primitives;
+using RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
+using RetroDownfall.Arcanum.Api.Security;
 using RetroDownfall.Arcanum.Api.Serialization;
 using RetroDownfall.Arcanum.Core.DataLifecycle;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -78,6 +80,33 @@ public sealed class ArcanumExceptionHandler(ILogger<ArcanumExceptionHandler> log
             // pair this arm exists to avoid, and it would happen on exactly the requests that had
             // already begun a response when admission closed under them. A response whose first byte
             // has left is finished by its own writer; there is nothing further to say about it.
+            return true;
+        }
+
+        if (exception is GrimoireConnectionUnavailableException unavailable)
+        {
+            logger.LogWarning("{Diagnostic}", unavailable.Error.Message);
+
+            if (httpContext.Response.HasStarted)
+            {
+                return true;
+            }
+
+            CovenantProtectedResponseHeaders.Apply(httpContext.Response);
+
+            IResult response = httpContext.Request.Path.StartsWithSegments("/v1", StringComparison.OrdinalIgnoreCase)
+                ? Results.Json(
+                    new OpenAiErrorResponse(new OpenAiErrorDetail(
+                        unavailable.Error.Message, "service_unavailable", Param: null, "grimoire_unavailable")),
+                    ArcanumJsonContext.Default.OpenAiErrorResponse,
+                    statusCode: StatusCodes.Status503ServiceUnavailable)
+                : Results.Json(
+                    ApiResponse<string>.FromResult(Result<string>.Failure(unavailable.Error), traceId),
+                    ArcanumJsonContext.Default.ApiResponseString,
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+
+            await response.ExecuteAsync(httpContext).ConfigureAwait(false);
+
             return true;
         }
 
