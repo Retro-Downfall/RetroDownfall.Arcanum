@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -1190,6 +1191,12 @@ public sealed class ConfigurationValidator(
 
         ValidateScrying(settings, errors);
 
+        GuardrailsPolicySettings? guardrails = settings.Security?.Guardrails;
+
+        ValidateTopicPatterns(guardrails?.AllowedTopics, "security.guardrails.allowedTopics", errors);
+
+        ValidateTopicPatterns(guardrails?.BlockedTopics, "security.guardrails.blockedTopics", errors);
+
         if (errors.Count > 0)
         {
             return Result.Failure(new Error(
@@ -1199,6 +1206,35 @@ public sealed class ConfigurationValidator(
         }
 
         return Result.Success();
+    }
+
+    private static void ValidateTopicPatterns(string[]? patterns, string pointer, List<ConfigurationValidationError> errors)
+    {
+        if (patterns is null)
+        {
+            return;
+        }
+
+        for (int index = 0; index < patterns.Length; index++)
+        {
+            string? pattern = patterns[index];
+
+            if (string.IsNullOrWhiteSpace(pattern))
+            {
+                continue;
+            }
+
+            try
+            {
+                _ = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+            }
+            catch (ArgumentException)
+            {
+                errors.Add(new ConfigurationValidationError(
+                    $"{pointer}[{index}]",
+                    "This entry must be a valid .NET regular expression. Correct its syntax or remove the entry, then validate the configuration again."));
+            }
+        }
     }
 
     /// <summary>

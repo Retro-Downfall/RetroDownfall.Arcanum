@@ -18,6 +18,114 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence.Guardrails;
 public sealed class GuardrailsPipelineTests
 {
     [Fact]
+    public async Task Topic_allowlist_miss_explains_absence_of_a_match()
+    {
+        GuardrailsPipeline pipeline = CreatePipeline(ArcanumRuntimeDefaults.Guardrails with
+        {
+            Enabled = true,
+            DetectPii = false,
+            AllowedTopics = ["weather"],
+        });
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync([new("user", "gardening")], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+        Assert.Contains("did not match any allowed topic", result.Error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Invalid_topic_warning_is_safe_once_per_snapshot_across_parallel_input_output_and_reload()
+    {
+        const string privatePattern = "(private-topic-policy-sentinel";
+        ArcanumSettings snapshot = new()
+        {
+            Features = new() { Guardrails = true },
+            Security = new() { Guardrails = new() { DetectPii = false, BlockedTopics = ["nomatch", privatePattern] } },
+        };
+        MutableTestOptionsMonitor<ArcanumSettings> options = new(snapshot);
+        TestCapturingLogger<GuardrailsPipeline> logger = new();
+        GuardrailsPipeline pipeline = new(options, new FakeGuardrailAuditLogger(), logger);
+
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(index => Task.Run(async () =>
+        {
+            Result<GuardrailsResult> result = index % 2 == 0
+                ? await pipeline.FilterInputAsync([new("user", "harmless")], CancellationToken.None)
+                : await pipeline.FilterOutputAsync("harmless", CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+        })));
+
+        TestLogEntry warning = Assert.Single(logger.Entries);
+
+        Assert.Contains("security.guardrails.blockedTopics[1]", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(privatePattern, warning.Message, StringComparison.Ordinal);
+        Assert.Null(warning.Exception);
+
+        options.CurrentValue = snapshot with { };
+        _ = await pipeline.FilterInputAsync([new("user", "harmless")], CancellationToken.None);
+        _ = await pipeline.FilterOutputAsync("harmless", CancellationToken.None);
+
+        Assert.Equal(2, logger.Entries.Count);
+        Assert.All(logger.Entries, entry => Assert.Null(entry.Exception));
+    }
+
+    [Fact]
+    public async Task Topic_timeout_retains_closed_refusal_without_logging_private_pattern_or_exception()
+    {
+        const string privatePolicy = "private-timeout-policy-sentinel";
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guardrails = true },
+            Security = new() { Guardrails = new() { DetectPii = false, BlockedTopics = ["(?#" + privatePolicy + ")^(a+)+$"] } },
+        };
+        TestCapturingLogger<GuardrailsPipeline> logger = new();
+        FakeGuardrailAuditLogger audit = new();
+        GuardrailsPipeline pipeline = new(new TestOptionsMonitor<ArcanumSettings>(settings), audit, logger);
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync([new("user", new string('a', 64) + "!")], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+        Assert.NotEmpty(audit.Records);
+        TestLogEntry warning = Assert.Single(logger.Entries);
+
+        Assert.Contains("security.guardrails.blockedTopics[0]", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(privatePolicy, warning.Message, StringComparison.Ordinal);
+        Assert.Null(warning.Exception);
+    }
+
+    [Fact]
+    public async Task Pii_timeout_warning_retains_only_the_closed_detector_category()
+    {
+        const string privatePolicy = "private-pii-policy-sentinel";
+        string privateInput = new string('a', 64) + "!";
+        ArcanumSettings settings = new()
+        {
+            Features = new() { Guardrails = true },
+            Security = new() { Guardrails = new() { DetectPii = true } },
+        };
+        TestCapturingLogger<GuardrailsPipeline> logger = new();
+        FakeGuardrailAuditLogger audit = new();
+        GuardrailsPipeline pipeline = new(new TestOptionsMonitor<ArcanumSettings>(settings), audit, logger)
+        {
+            PiiPatterns = [new("pii-email", "Slow pattern.", new Regex("(?#" + privatePolicy + ")^(a+)+$", RegexOptions.None, TimeSpan.FromMilliseconds(50)))],
+        };
+
+        Result<GuardrailsResult> result = await pipeline.FilterInputAsync([new("user", privateInput)], CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+        Assert.Equal(ErrorCodes.Guardrails.Blocked, result.Error.Code);
+        Assert.Equal("pii-undetermined", Assert.Single(audit.Records).ViolationType);
+        TestLogEntry warning = Assert.Single(logger.Entries);
+
+        Assert.Contains("pii-email", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(privatePolicy, warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(privateInput, warning.Message, StringComparison.Ordinal);
+        Assert.Null(warning.Exception);
+    }
+
+    [Fact]
     public async Task FilterInputAsync_WhenDisabled_ReturnsAllowed()
     {
         GuardrailsPipeline pipeline = CreatePipeline(
