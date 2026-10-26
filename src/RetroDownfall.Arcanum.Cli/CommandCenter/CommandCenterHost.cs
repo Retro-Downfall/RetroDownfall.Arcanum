@@ -1458,6 +1458,11 @@ internal sealed class CommandCenterHost(
                 .ResumeSessionAsync(state, sessionId, cancellationToken)
                 .ConfigureAwait(false);
 
+            if (result.Outcome == SessionResumeOutcome.Success)
+            {
+                attachmentDriftMonitor.RequestRefresh();
+            }
+
             await sessionWorkspace.RefreshSessionsAsync(state, cancellationToken).ConfigureAwait(false);
             await ui.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshAll), cancellationToken)
                 .ConfigureAwait(false);

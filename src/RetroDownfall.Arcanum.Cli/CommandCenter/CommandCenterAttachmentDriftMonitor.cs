@@ -223,9 +223,11 @@ internal sealed class CommandCenterAttachmentDriftMonitor(
 
                 RefreshReason reasons = (RefreshReason)Interlocked.Exchange(ref _pendingReasons, 0);
 
+                (Guid? SessionId, long Revision) binding = state.AttachmentBinding;
+
                 if (reasons == RefreshReason.None
                     || (reasons == RefreshReason.FileSystem && !HasWorkspaceSources(state))
-                    || state.SessionId is not { } sessionId)
+                    || binding.SessionId is not { } sessionId)
                 {
                     continue;
                 }
@@ -238,35 +240,52 @@ internal sealed class CommandCenterAttachmentDriftMonitor(
                 // delay the API's first send; internal API authentication/retries stay its contract.
                 lastCompletedRequest = _timeProvider.GetTimestamp();
 
-                if (state.SessionId != sessionId)
+                bool refreshLog = false;
+
+                bool refreshFooter = false;
+
+                bool pending;
+
+                // A Session switch and snapshot admission share one short synchronous region.
+                // The revision also rejects a response from an earlier visit to the same Session.
+                lock (state.AttachmentProjectionGate)
                 {
-                    continue;
+                    if (state.AttachmentBinding != binding)
+                    {
+                        continue;
+                    }
+
+                    if (result.IsSuccess)
+                    {
+                        string? indexingBefore = state.AttachmentIndexingStatusText;
+
+                        IReadOnlyList<string> notices = ApplyBackendSnapshot(state, result.Value ?? []);
+
+                        foreach (string notice in notices)
+                        {
+                            state.Log.Append(SessionLogEntryKind.Status, notice);
+                        }
+
+                        refreshLog = notices.Count > 0;
+
+                        refreshFooter = !string.Equals(indexingBefore, state.AttachmentIndexingStatusText, StringComparison.Ordinal);
+                    }
+
+                    pending = state.SessionAttachments.Any(static row => row.IndexingStatus == SessionAttachmentIndexStatus.Pending);
                 }
 
-                if (result.IsSuccess)
+                if (refreshLog)
                 {
-                    string? indexingBefore = state.AttachmentIndexingStatusText;
+                    await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken).ConfigureAwait(false);
+                }
 
-                    IReadOnlyList<string> notices = ApplyBackendSnapshot(state, result.Value ?? []);
-
-                    foreach (string notice in notices)
-                    {
-                        state.Log.Append(SessionLogEntryKind.Status, notice);
-                    }
-
-                    if (notices.Count > 0)
-                    {
-                        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshLog), cancellationToken).ConfigureAwait(false);
-                    }
-
-                    if (!string.Equals(indexingBefore, state.AttachmentIndexingStatusText, StringComparison.Ordinal))
-                    {
-                        await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter), cancellationToken).ConfigureAwait(false);
-                    }
+                if (refreshFooter)
+                {
+                    await uiUpdates.WriteAsync(new CommandCenterUiUpdate(CommandCenterUiUpdateKind.RefreshFooter), cancellationToken).ConfigureAwait(false);
                 }
 
                 // A transient GET failure must not strand an already pending indexing projection.
-                if (state.SessionAttachments.Any(static row => row.IndexingStatus == SessionAttachmentIndexStatus.Pending))
+                if (pending)
                 {
                     await Task.Delay(MinimumInterval, _timeProvider, cancellationToken).ConfigureAwait(false);
 

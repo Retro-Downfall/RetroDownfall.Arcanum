@@ -1,0 +1,5 @@
+# RV-168 session-bound attachment projections
+
+Start from qualified controller9463c8db, preserving sealed RV169 branch. Prove stale attachment metadata on Session changes and missing refresh on both ordinary/confirmed Host resume through actual Host/SessionWorkspaceService/monitor with controlled HTTP and clock. Clear old attachment projection only on binding change; preserve same-session refresh and failed-resume state. Signal backend refresh after successful resume before unrelated list refresh. New Session clears existing projection already and stays covered.
+
+Investigate stale in-flight monitor application across binding transitions with deterministic blocked response/snapshot controls. Any confirmed race gets its own RED then a narrowly synchronized binding/snapshot application; no cross-session notices or stale ABA request reuse. Keep source provenance host-owned, preserve cadence/watcher/filter behavior. No live provider, install or operator configuration. Qualify owner classes, complete Command Center suite and inventory/docs/build/style before independent frozen review.
