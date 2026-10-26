@@ -144,6 +144,18 @@ internal static partial class OpenAiV1Endpoints
                 StatusCodes.Status400BadRequest);
         }
 
+        if (body.Logprobs == true || body.TopLogprobs.HasValue)
+        {
+            string parameter = body.Logprobs == true ? "logprobs" : "top_logprobs";
+
+            return new ChatCompletionValidationFailure(
+                $"`{parameter}` is not supported. Omit `top_logprobs`, and omit `logprobs` or set it to false.",
+                "invalid_request_error",
+                "unsupported_parameter",
+                parameter,
+                StatusCodes.Status400BadRequest);
+        }
+
         ClientToolForwardingSettings clientTools = settings.ResolveClientTools();
         bool forwardClientTools = clientTools.Enabled && !forceDisableAllTools;
 

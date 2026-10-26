@@ -4,7 +4,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.Tokenizers;
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -43,7 +42,6 @@ internal static partial class OpenAiV1Endpoints
         IWeaveService weave,
         InferenceTokenizerResolver tokenizerResolver,
         IOptionsSnapshot<ArcanumSettings> settings,
-        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         ArcanumSettings arc = settings.Value;
@@ -143,7 +141,30 @@ internal static partial class OpenAiV1Endpoints
 
         string echoModel = string.IsNullOrWhiteSpace(body.Model) ? configuredModel : body.Model;
 
-        ILogger logger = loggerFactory.CreateLogger(typeof(OpenAiV1Endpoints));
+        if (body.Dimensions is int requestedDimensions)
+        {
+            if (requestedDimensions <= 0)
+            {
+                return JsonError(
+                    "'dimensions' must be a positive integer.",
+                    "invalid_request_error",
+                    "invalid_value",
+                    "dimensions",
+                    StatusCodes.Status400BadRequest);
+            }
+
+            int configuredDimensions = ArcanumSettingClamps.EmbeddingsDimensions(embeddings.Dimensions);
+
+            if (requestedDimensions != configuredDimensions)
+            {
+                return JsonError(
+                    $"'dimensions' must equal the configured embedding width ({configuredDimensions}); per-request dimension changes are not supported.",
+                    "invalid_request_error",
+                    "unsupported_parameter",
+                    "dimensions",
+                    StatusCodes.Status400BadRequest);
+            }
+        }
 
         Tokenizer tokenizer = tokenizerResolver.ResolveTokenizer(
             arc.ResolveIntelligence().TokenizerEncoding);
@@ -177,17 +198,6 @@ internal static partial class OpenAiV1Endpoints
                 "invalid_value",
                 "input",
                 StatusCodes.Status400BadRequest);
-        }
-
-        if (body.Dimensions.HasValue)
-        {
-            // Most embedding providers/models do not support server-side dimension truncation;
-            // Arcanum does not attempt to slice the returned vector, to avoid silently corrupting
-            // the vector's L2 norm (naive truncation is not equivalent to a model retrained/
-            // fine-tuned for Matryoshka-style truncation). Logged once per request, not per input.
-            logger.LogWarning(
-                "POST /v1/embeddings requested 'dimensions: {Dimensions}', but Arcanum does not support provider-side dimension truncation; the full embedding vector is returned.",
-                body.Dimensions.Value);
         }
 
         int chunkSizeChars = ArcanumSettingClamps.EmbeddingsChunkSizeChars(embeddings.ChunkSizeChars);
@@ -273,6 +283,13 @@ internal static partial class OpenAiV1Endpoints
             return WeaveErrorToOpenAiResult(new Error(
                 ErrorCodes.Embeddings.ProviderUnavailable,
                 "The embedding provider returned vectors of inconsistent dimensions."));
+        }
+
+        if (body.Dimensions is int expectedWidth && responseWidth != expectedWidth)
+        {
+            return WeaveErrorToOpenAiResult(new Error(
+                ErrorCodes.Embeddings.ProviderUnavailable,
+                "The embedding provider returned vectors that do not match the requested dimensions."));
         }
 
         List<OpenAiEmbeddingData> data = new(inputs.Length);

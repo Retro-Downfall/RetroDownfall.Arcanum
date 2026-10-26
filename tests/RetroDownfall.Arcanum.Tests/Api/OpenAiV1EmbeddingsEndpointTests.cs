@@ -56,6 +56,83 @@ public sealed class OpenAiV1EmbeddingsEndpointTests : IAsyncLifetime
 
     public async Task DisposeAsync() => await _factory.DisposeAsync();
 
+    [SkippableTheory]
+    [InlineData(0, "invalid_value")]
+    [InlineData(-1, "invalid_value")]
+    [InlineData(256, "unsupported_parameter")]
+    public async Task PostEmbeddings_UnsupportedRequestedDimensions_RefusesBeforeEmbedding(int dimensions, string code)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        using HttpResponseMessage response = await client.PostAsync("/v1/embeddings",
+            new StringContent($$"""{"input":"hello","dimensions":{{dimensions}}}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        OpenAiErrorResponse error = JsonSerializer.Deserialize(await response.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.OpenAiErrorResponse)!;
+
+        Assert.Equal(code, error.Error.Code);
+
+        Assert.Equal("dimensions", error.Error.Param);
+
+        Assert.Equal(0, _fake.EmbedCallCount);
+
+        Assert.Equal(0, _fake.EmbedBatchCallCount);
+    }
+
+    [SkippableTheory]
+    [InlineData("float", false)]
+    [InlineData("base64", false)]
+    [InlineData("float", true)]
+    [InlineData("base64", true)]
+    public async Task PostEmbeddings_MatchingRequestedDimensions_ReturnsExactlyThatWidth(string encoding, bool longInput)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        _fake.Dimensions = 64;
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string text = longInput ? new string('x', 1200) : "hello";
+
+        OpenAiEmbeddingResponse body = await PostAndReadAsync(client,
+            $$"""{"input":"{{text}}","dimensions":64,"encoding_format":"{{encoding}}"}""");
+
+        OpenAiEmbeddingData entry = Assert.Single(body.Data);
+
+        if (encoding == "float") Assert.Equal(64, entry.Embedding.Values!.Length);
+        else Assert.Equal(64 * sizeof(float), Convert.FromBase64String(entry.Embedding.Base64!).Length);
+
+        Assert.True(_fake.EmbedBatchCallCount > 0);
+    }
+
+    [SkippableTheory]
+    [InlineData("float", false)]
+    [InlineData("base64", false)]
+    [InlineData("float", true)]
+    [InlineData("base64", true)]
+    public async Task PostEmbeddings_ProviderDoesNotHonorRequestedDimensions_RefusesWrongWidth(string encoding, bool longInput)
+    {
+        Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
+
+        using HttpClient client = _factory.CreateAuthenticatedClient();
+
+        string text = longInput ? new string('x', 1200) : "hello";
+
+        using HttpResponseMessage response = await client.PostAsync("/v1/embeddings", new StringContent(
+            $$"""{"input":"{{text}}","dimensions":64,"encoding_format":"{{encoding}}"}""", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        OpenAiErrorResponse error = JsonSerializer.Deserialize(await response.Content.ReadAsStringAsync(), ArcanumJsonContext.Default.OpenAiErrorResponse)!;
+
+        Assert.Equal("embedding_provider_unavailable", error.Error.Code);
+
+        Assert.True(_fake.EmbedBatchCallCount > 0);
+    }
+
     [SkippableFact]
     public async Task PostEmbeddings_WithStringInput_ReturnsFloatEmbedding()
     {

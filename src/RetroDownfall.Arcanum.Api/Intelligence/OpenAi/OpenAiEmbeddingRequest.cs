@@ -5,8 +5,8 @@ namespace RetroDownfall.Arcanum.Api.Intelligence.OpenAi;
 
 /// <summary>
 /// Body for <c>POST /v1/embeddings</c>. <see cref="EncodingFormat"/> defaults to <c>"float"</c>
-/// when omitted (OpenAI convention); <see cref="Dimensions"/> is accepted for forward-compatibility
-/// but Arcanum does not support provider-side truncation, so it is logged and ignored;
+/// when omitted (OpenAI convention); <see cref="Dimensions"/>, when supplied, must match the
+/// configured width and the returned vectors. Per-request dimension changes are refused;
 /// <see cref="User"/> is parsed but not enforced.
 /// </summary>
 [ExcludeFromCodeCoverage] // Reason: OpenAI-compatible JSON contract POCO; endpoint tests cover wire parsing.
