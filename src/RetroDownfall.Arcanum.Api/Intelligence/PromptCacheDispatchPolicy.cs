@@ -69,5 +69,7 @@ internal sealed class PromptCacheDispatchException(Error error, ModelCallRetryDi
 {
     internal Error Error { get; } = error;
 
+    internal bool HasUncertainProviderEffect { get; init; }
+
     internal ModelCallRetryDirective RetryDirective { get; } = retryDirective;
 }

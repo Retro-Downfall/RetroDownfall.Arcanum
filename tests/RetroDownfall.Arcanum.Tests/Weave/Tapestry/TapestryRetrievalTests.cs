@@ -40,128 +40,49 @@ public sealed class TapestryRetrievalTests
             TapestryRetrievalMode.CollapsedTree,
             ancestors);
 
-    private static TapestryEmbeddingSettings Bounds(
-        int maxRetrievedBytes = 256 * 1024,
-        int maxRetrievedTokens = 32 * 1024) =>
-        new()
-        {
-            MaxRetrievedBytes = maxRetrievedBytes,
-            MaxRetrievedTokens = maxRetrievedTokens,
-        };
-
     [Fact]
-    public void SelectTapestryNodes_SuppressesADescendantOfAnAlreadySelectedAncestor()
+    public void SelectionPolicy_SuppressesADescendantOfAnAlreadySelectedAncestor()
     {
-        // The summary and its leaf cover the same material but have different text and different
-        // hashes, so only lineage — not the ledger's exact-content dedupe — can see the redundancy.
-        List<TapestryRetrievedNode> candidates =
-        [
-            Node("summary", 0.90f, "a roll-up of four chunks", 1, TapestryNodeKind.Summary),
-            Node("leaf", 0.80f, "chunk body", 0, TapestryNodeKind.Leaf, "summary"),
-        ];
+        TapestryRetrievedNode summary = Node("summary", 0.90f, "roll-up", 1, TapestryNodeKind.Summary);
 
-        TapestryRetrievedNode[] selected = WizardIntelligenceProvider.SelectTapestryNodes(
-            candidates,
-            Bounds(),
-            maxNodes: 5);
+        TapestryRetrievedNode leaf = Node("leaf", 0.80f, "chunk body", 0, TapestryNodeKind.Leaf, "summary");
 
-        Assert.Equal("summary", Assert.Single(selected).NodeId);
+        Assert.False(TapestrySelectionPolicy.CanAccept(leaf, new(["summary"], ["leaf"]),
+            [(summary, new([], ["leaf"]))]));
     }
 
     [Fact]
-    public void SelectTapestryNodes_SuppressesAnAncestorWhenTheDescendantScoresHigher()
+    public void SelectionPolicy_SuppressesAnAncestorWhenTheDescendantScoresHigher()
     {
-        List<TapestryRetrievedNode> candidates =
-        [
-            Node("summary", 0.60f, "a roll-up of four chunks", 1, TapestryNodeKind.Summary),
-            Node("leaf", 0.95f, "the exact chunk the query wanted", 0, TapestryNodeKind.Leaf, "summary"),
-        ];
+        TapestryRetrievedNode summary = Node("summary", 0.60f, "roll-up", 1, TapestryNodeKind.Summary);
 
-        TapestryRetrievedNode[] selected = WizardIntelligenceProvider.SelectTapestryNodes(
-            candidates,
-            Bounds(),
-            maxNodes: 5);
+        TapestryRetrievedNode leaf = Node("leaf", 0.95f, "exact chunk", 0, TapestryNodeKind.Leaf, "summary");
 
-        Assert.Equal("leaf", Assert.Single(selected).NodeId);
+        Assert.False(TapestrySelectionPolicy.CanAccept(summary, new([], ["leaf"]),
+            [(leaf, new(["summary"], ["leaf"]))]));
     }
 
     [Fact]
-    public void SelectTapestryNodes_KeepsUnrelatedBranches()
+    public void SelectionPolicy_KeepsUnrelatedBranches()
     {
-        List<TapestryRetrievedNode> candidates =
-        [
-            Node("leafA", 0.90f, "alpha body", 0, TapestryNodeKind.Leaf, "summaryA"),
-            Node("leafB", 0.85f, "beta body", 0, TapestryNodeKind.Leaf, "summaryB"),
-        ];
+        TapestryRetrievedNode one = Node("leafA", 0.90f, "alpha", 0, TapestryNodeKind.Leaf, "summaryA");
 
-        TapestryRetrievedNode[] selected = WizardIntelligenceProvider.SelectTapestryNodes(
-            candidates,
-            Bounds(),
-            maxNodes: 5);
+        TapestryRetrievedNode two = Node("leafB", 0.85f, "beta", 0, TapestryNodeKind.Leaf, "summaryB");
 
-        Assert.Equal(["leafA", "leafB"], selected.Select(static node => node.NodeId));
+        Assert.True(TapestrySelectionPolicy.CanAccept(two, new(["summaryB"], ["leafB"]),
+            [(one, new(["summaryA"], ["leafA"]))]));
     }
 
     [Fact]
-    public void SelectTapestryNodes_OrdersByScoreThenCheaperCoverageThenStableId()
+    public void SelectionPolicy_UnknownRecencyUsesScoreThenStableIdWithoutCheaperCoverageTie()
     {
-        List<TapestryRetrievedNode> candidates =
-        [
-            Node("zzz", 0.80f, "same-length body!!", 0),
-            Node("aaa", 0.80f, "same-length body!!", 0),
-            Node("mmm", 0.80f, "short", 0),
-            Node("top", 0.99f, "the strongest match", 0),
-        ];
+        List<TapestryRankedNode> ranked = [new("zzz", 0.8f, null), new("aaa", 0.8f, null),
+            new("mmm", 0.8f, null), new("top", 0.99f, null)];
 
-        TapestryRetrievedNode[] selected = WizardIntelligenceProvider.SelectTapestryNodes(
-            candidates,
-            Bounds(),
-            maxNodes: 4);
+        ranked.Sort(TapestrySelectionPolicy.Compare);
 
-        Assert.Equal(["top", "mmm", "aaa", "zzz"], selected.Select(static node => node.NodeId));
+        Assert.Equal(["top", "aaa", "mmm", "zzz"], ranked.Select(static node => node.NodeId));
     }
-
-    [Fact]
-    public void SelectTapestryNodes_RespectsTheNodeBound()
-    {
-        List<TapestryRetrievedNode> candidates =
-        [
-            .. Enumerable.Range(0, 10).Select(index =>
-                Node($"n{index:D2}", 0.9f - (index * 0.01f), $"body {index}")),
-        ];
-
-        Assert.Equal(
-            3,
-            WizardIntelligenceProvider.SelectTapestryNodes(candidates, Bounds(), maxNodes: 3).Length);
-    }
-
-    [Fact]
-    public void SelectTapestryNodes_RespectsTheByteAndTokenBounds()
-    {
-        List<TapestryRetrievedNode> candidates =
-        [
-            Node("big", 0.99f, new string('x', 4_000)),
-            Node("small", 0.50f, "tiny"),
-        ];
-
-        TapestryRetrievedNode[] byBytes = WizardIntelligenceProvider.SelectTapestryNodes(
-            candidates,
-            Bounds(maxRetrievedBytes: 1_024),
-            maxNodes: 5);
-
-        Assert.Equal("small", Assert.Single(byBytes).NodeId);
-
-        TapestryRetrievedNode[] byTokens = WizardIntelligenceProvider.SelectTapestryNodes(
-            candidates,
-            Bounds(maxRetrievedTokens: 128),
-            maxNodes: 5);
-
-        Assert.Equal("small", Assert.Single(byTokens).NodeId);
-    }
-
-    [Fact]
-    public void SelectTapestryNodes_EmptyInputSelectsNothing() =>
-        Assert.Empty(WizardIntelligenceProvider.SelectTapestryNodes([], Bounds(), maxNodes: 5));
 
     [Fact]
     public void Ledger_TapestryIsTheFirstSemanticSourceEvicted()

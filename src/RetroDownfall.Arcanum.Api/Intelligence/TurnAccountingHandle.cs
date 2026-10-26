@@ -118,6 +118,8 @@ internal sealed class TurnAccountingHandle
 
     private bool _possiblyDispatched;
 
+    private bool _uncertainProviderEffect;
+
     private bool _hasRecordedOperations;
 
     private bool _completionSnapshotFrozen;
@@ -302,6 +304,27 @@ internal sealed class TurnAccountingHandle
         }
     }
 
+    /// <summary>Records a confirmed attempted send whose usage is unknown; it is never a bill or authority.</summary>
+    internal async Task RecordUncertainProviderEffectAsync(IBudgetReservationService? reservations, CancellationToken cancellationToken)
+    {
+        TurnAccountingHandle root = AccountingRoot;
+
+        lock (root._costGate)
+        {
+            if (root._completionSnapshotFrozen)
+                throw new InvalidOperationException("A provider effect cannot be reported after accounting completion has frozen.");
+
+            // Set before awaiting durable marking: a failed write must not release unknown paid work.
+            root._uncertainProviderEffect = true;
+        }
+
+        if (root.ReservationActive && root.ReservationId is Guid reservationId && root.RunId is Guid runId
+            && reservations is not null)
+        {
+            await reservations.MarkPossiblyDispatchedAsync(reservationId, runId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     /// <summary>Durably retains an upper-bound estimate before a physical send, without inventing actual spend.</summary>
     public async Task MarkPossiblyDispatchedAsync(IBudgetReservationService reservations, CancellationToken cancellationToken)
     {
@@ -337,7 +360,7 @@ internal sealed class TurnAccountingHandle
                 {
                     _completionCostUsd = root._accumulatedCostUsd;
                     _completionHasRecordedOperations = root._hasRecordedOperations;
-                    _completionAccountingFailed = root._accountingFailed || (root._possiblyDispatched && !root._hasRecordedOperations);
+                    _completionAccountingFailed = root._accountingFailed || root._uncertainProviderEffect || (root._possiblyDispatched && !root._hasRecordedOperations);
                     _completionStatus = _completionAccountingFailed
                         ? InferenceRunStatus.Failed
                         : status;

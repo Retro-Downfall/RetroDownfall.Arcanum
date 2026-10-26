@@ -1716,6 +1716,12 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
             new HumanPromptRegistry(),
             ordinaryProvider,
             stagingTurn?.Resolver ?? RefusingCampaignResolver.Instance,
+            new RetroDownfall.Arcanum.Infrastructure.Weave.TapestryRetriever(
+                new RetroDownfall.Arcanum.Infrastructure.Weave.TapestryStore(CreateUnusedDbContext(), new RetroDownfall.Arcanum.Infrastructure.Weave.WeaveIndexAvailability()),
+                new RetroDownfall.Arcanum.Api.Intelligence.ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
+                NullLogger<RetroDownfall.Arcanum.Infrastructure.Weave.TapestryRetriever>.Instance),
+            new TapestryInvocationValidator(ordinaryProvider.GetRequiredService<IServiceScopeFactory>(), new TestOptionsMonitor<ArcanumSettings>(settings),
+                covenantAuthority ?? new UnestablishedTapestryAuthority()),
             withHealthTracker ? healthTracker : null,
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities,
@@ -2556,5 +2562,10 @@ public sealed class WizardIntelligenceProviderFallbackTests : IAsyncLifetime
                     string? actualValue,
                     CancellationToken ct = default) =>
                     Task.CompletedTask;
+    }
+
+    private sealed class UnestablishedTapestryAuthority : ICovenantAuthoritySnapshotProvider
+    {
+        public CovenantAuthoritySnapshot? Current => null;
     }
 }

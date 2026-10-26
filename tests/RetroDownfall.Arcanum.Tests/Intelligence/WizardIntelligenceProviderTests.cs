@@ -7824,6 +7824,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
 
         public int EmbedCallCount { get; private set; }
 
+        public EmbeddingProvenance? QueryProvenance { get; set; }
+
         public bool IsAvailable => Available;
 
         public Task<Result<Embedding<float>>> EmbedAsync(string text, CancellationToken cancellationToken)
@@ -7836,7 +7838,11 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
                     new Error(ErrorCodes.Embeddings.ProviderUnavailable, "Simulated embedding failure.")));
             }
 
-            return Task.FromResult(Result<Embedding<float>>.Success(new Embedding<float>(QueryVector)));
+            Embedding<float> embedding = new(QueryVector);
+
+            if (QueryProvenance is not null) embedding.AdditionalProperties = new() { [EmbeddingProvenance.MetadataKey] = QueryProvenance };
+
+            return Task.FromResult(Result<Embedding<float>>.Success(embedding));
         }
 
         /// <summary>RAG Phase 5 — per-description vectors for <see cref="SpellWeaveCache"/> scenarios; falls back to <see cref="QueryVector"/> for any text not registered here.</summary>
@@ -9916,7 +9922,9 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         PromptCacheDispatchValidator? cacheValidator = null,
         RetroDownfall.Arcanum.Api.Intelligence.Subagents.ISubagentRunner? subagentRunner = null,
         RetroDownfall.Arcanum.Core.Memory.IMemoryRecallCandidateReader? memoryRecallReader = null,
-        RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore? tapestryStore = null)
+        RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore? tapestryStore = null,
+        ICovenantAuthoritySnapshotProvider? tapestryAuthority = null,
+        ICanonicalCampaignContextResolver? tapestryResolver = null)
     {
         settings ??= DefaultSettings();
 
@@ -9988,6 +9996,15 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             ordinaryServices.AddSingleton(cacheValidator);
         }
 
+        if (tapestryAuthority is not null) ordinaryServices.AddSingleton(tapestryAuthority);
+
+        ordinaryServices.AddSingleton<ICanonicalCampaignContextResolver>(tapestryResolver ?? campaignResolver ?? RefusingCampaignResolver.Instance);
+
+        ordinaryServices.AddSingleton<IWorkspaceIndexingService>(workspaceIndexingService);
+
+        ordinaryServices.AddSingleton<RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore>(tapestryStore
+            ?? new RetroDownfall.Arcanum.Infrastructure.Weave.TapestryStore(db, new RetroDownfall.Arcanum.Infrastructure.Weave.WeaveIndexAvailability()));
+
         ServiceProvider ordinaryProvider = ordinaryServices.BuildServiceProvider();
 
         GrimoireTurnWriter grimoireTurnWriter = new(
@@ -10049,7 +10066,12 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             covenantToolCapabilities: covenantToolCapabilities,
             campaignRollups: campaignRollups,
             campaignResolver: campaignResolver ?? RefusingCampaignResolver.Instance,
-            tapestryStore: tapestryStore);
+            tapestryRetriever: new RetroDownfall.Arcanum.Infrastructure.Weave.TapestryRetriever(
+                ordinaryProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore>(),
+                modelTokenEstimator ?? new ModelTokenEstimator(new InferenceTokenizerResolver(NullLogger<InferenceTokenizerResolver>.Instance)),
+                NullLogger<RetroDownfall.Arcanum.Infrastructure.Weave.TapestryRetriever>.Instance),
+            tapestryInvocationValidator: new TapestryInvocationValidator(ordinaryProvider.GetRequiredService<IServiceScopeFactory>(),
+                new TestOptionsMonitor<ArcanumSettings>(settings), tapestryAuthority ?? new RecallAuthority()));
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>
@@ -11600,6 +11622,15 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public int ReconcileCount { get; private set; }
 
         public bool WasReleased { get; private set; }
+
+        public int UncertainCalls { get; private set; }
+
+        public Task MarkPossiblyDispatchedAsync(Guid reservationId, Guid runId, CancellationToken cancellationToken = default)
+        {
+            UncertainCalls++;
+
+            return Task.CompletedTask;
+        }
 
         public Queue<Result> AdjustResults { get; } = new();
 

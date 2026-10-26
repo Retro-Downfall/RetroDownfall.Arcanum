@@ -80,12 +80,13 @@ public sealed partial class WizardIntelligenceProviderTests
         FakeRagDivinationService divination = new() { Results = [new DivinationResult("node", 0.9f, EmptyDivinationMetadata)] };
 
         WizardIntelligenceProvider wizard = CreateWizard(new ScriptingChatClient(), settings, divinationService: divination,
-            workspaceIndexingService: new FakeRagWorkspaceIndexingService { IndexedPath = "/graph" }, tapestryStore: store);
+            workspaceIndexingService: new FakeRagWorkspaceIndexingService { IndexedPath = "/graph" }, tapestryStore: store, tapestryAuthority: new Task10Authority(),
+            campaignResolver: RetroDownfall.Arcanum.Tests.Support.ProductionCampaignResolver.Over(new(), new()));
 
-        TapestryRetrievedNode[]? result = await wizard.RetrieveTapestryContextAsync(BaseRequest() with { WorkingDirectory = "/graph" }, query, CancellationToken.None);
+        TapestryRetrievedNode[]? result = await wizard.RetrieveTapestryContextAsync(BaseRequest() with { WorkingDirectory = "/graph" }, RetroDownfall.Arcanum.Tests.Support.InvocationContexts.StatelessOperator(), query, DefaultProvider(), ModelName, CancellationToken.None);
 
         Assert.Equal(expected, result is { Length: 1 });
 
-        Assert.Equal(expected ? id : null, divination.LastWorkspaceScope);
+        Assert.Null(divination.LastWorkspaceScope);
     }
 }

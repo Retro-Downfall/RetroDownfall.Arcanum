@@ -1039,6 +1039,9 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "A message handler of the OpenAI-compatible provider client, built by the client factory. It forwards the request the classified model call makes, so its send is that call."),
         (P + "Api.Intelligence.OpenAiRequestAugmentingHandler.PrefixedStream", [P + "Api.Intelligence.OpenAiRequestAugmentingHandler.ResponseMentionsStrictAsync"],
             "Replays a response body that handler has already read, inside the handler's send."),
+        (P + "Api.Intelligence.TapestryProviderPolicy",
+            [P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease", P + "Api.Intelligence.EmbeddingGeneratorFactory.BuildOpenAiCompatibleGenerator"],
+            "The SDK invokes the build observation policy before physical attempts of the classified chat/embedding call. It adds read-only admitted source/model validation within that existing effect and grants no authority or independent provider work."),
         (P + "Api.Intelligence.Tools.ArcanumBrowseWebTool", [P + "Api.Intelligence.Tools.BuiltInToolRegistry.Resolve", P + "Api.Intelligence.WizardIntelligenceProvider.BuildToolSetWithMcpAsync"],
             "An AI tool the chat client's function-invocation loop invokes inside the classified model call."),
         (P + "Api.Intelligence.Tools.ArcanumDelegateTaskTool", [P + "Api.Intelligence.WizardIntelligenceProvider.BuildToolSetWithMcpAsync"],
@@ -1061,6 +1064,8 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "Reads a server-sent stream in the command-line client: a client process, not the process that hosts the roots."),
         (P + "Infrastructure.A2A.ArcanumA2AServer", [P + "Infrastructure.DependencyInjection.ServiceCollectionExtensions.AddArcanumInfrastructure"],
             "The A2A server object the container builds; the SDK's request handler calls its override for an inbound HTTP request."),
+        (P + "Infrastructure.Data.SessionAttachmentStore.AttachmentReadStream", [P + "Infrastructure.Data.SessionAttachmentStore.OpenReadAsync"],
+            "Returned only around the already-open decrypted attachment blob in the classified attachment read. Its incremental reads verify the persisted length/digest and its disposal owns that same inner stream; it opens no new file or connection."),
         (P + "Infrastructure.Hosting.CappedOutputStream", [P + "Infrastructure.Hosting.DaemonProcessRunner.RunAsync", P + "Infrastructure.Hosting.DaemonProcessRunner.RunAsync"],
             "Caps the captured output of a daemon process, built inside the runner that IDaemonRunner.RunScheduledAsync, a classified site, calls."),
         (P + "Infrastructure.Logging.ReverseJsonlFileReader.ReadSegmentStream", [P + "Infrastructure.Logging.ReverseJsonlFileReader.DeserializeRangeAsync"],
@@ -1073,9 +1078,24 @@ public sealed class CheckerLimitPinTests(ITestOutputHelper output) : IClassFixtu
             "Bounds the read of that body, inside the same send."),
         (P + "Infrastructure.Storage.EncryptedBlobStore.EncryptedBlobReadStream", [P + "Infrastructure.Storage.EncryptedBlobStore.OpenReadCoreAsync"],
             "Returned only by the encrypted blob store's open-for-read slot, a classified site."),
-        (P + "Infrastructure.Storage.EncryptedBlobStore.StreamingEncryptedBlobWriter", [P + "Infrastructure.Storage.EncryptedBlobStore.CreateWriterAsync"],
+        (P + "Infrastructure.Storage.EncryptedBlobStore.StreamingEncryptedBlobWriter", [P + "Infrastructure.Storage.EncryptedBlobStore.CreateWriterCoreAsync"],
             "Returned only by the encrypted blob store's create-writer slot, a classified site whose publication region the inventory requires to be admitted and completed."),
     ];
+
+    [Fact]
+    public void Tapestry_retrieval_dispatch_observer_has_exact_closed_construction_sites()
+    {
+        // Like PromptCacheDispatchPolicy, its source recheck is a scoped delegate, not a direct
+        // classified site in the override scan. Pin the closed registration separately and keep
+        // the actual per-attempt/native retry and scope-masking proof in TapestryRetrievalDispatchTests.
+        IReadOnlyList<Compilation> production = Production();
+
+        Assert.Equal([P + "Api.Intelligence.ChatClientFactory.CreateOpenAiCompatibleLease"],
+            CheckerLimitScans.ConstructionSites(production, P + "Api.Intelligence.TapestryRetrievalDispatchPolicy"));
+
+        Assert.Equal([P + "Api.Intelligence.TapestryRetrievalDispatchPolicy.Enter"],
+            CheckerLimitScans.ConstructionSites(production, P + "Api.Intelligence.TapestryRetrievalDispatchPolicy.Scope"));
+    }
 
     [Fact]
     public void The_override_probe_flags_an_override_that_reaches_a_site_and_leaves_a_quiet_one_alone()

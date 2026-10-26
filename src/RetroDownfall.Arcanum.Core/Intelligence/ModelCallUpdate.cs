@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using System.Text;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -47,7 +48,11 @@ public sealed record ModelCallFailureUpdate(
     string ModelCallId,
     Error Error,
     ModelCallRetryDirective RetryDirective = ModelCallRetryDirective.None)
-    : ModelCallUpdate(Purpose, ModelCallId);
+    : ModelCallUpdate(Purpose, ModelCallId)
+{
+    [JsonIgnore]
+    internal bool HasUncertainProviderEffect { get; init; }
+}
 
 /// <summary>
 /// One normalized reasoning segment retained by the model/tool loop. <see cref="VisibleText"/> is
@@ -183,6 +188,10 @@ public sealed record ModelCallFailure(
 {
     /// <summary>Content-free host classification retained when a protected exception is redacted.</summary>
     internal bool IsConnectivityFailure { get; init; }
+
+    /// <summary>Host-only observation of a physical attempt without a usage receipt; never authority or a wire field.</summary>
+    [JsonIgnore]
+    internal bool HasUncertainProviderEffect { get; init; }
 }
 
 /// <summary>Strongly typed success/failure outcome for a buffered provider call.</summary>

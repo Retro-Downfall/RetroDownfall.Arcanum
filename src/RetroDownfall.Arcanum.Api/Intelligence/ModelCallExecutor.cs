@@ -35,6 +35,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
     private readonly ITapestryProviderValidator? _tapestryValidator;
 
+    private readonly TapestryInvocationValidator? _tapestryInvocationValidator;
+
     public ModelCallExecutor(IModelTokenEstimator tokenEstimator)
         : this(tokenEstimator, settings: null, logger: (ILogger?)null)
     {
@@ -66,13 +68,28 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
     {
     }
 
+    public ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger<ModelCallExecutor> logger, PromptCacheDispatchValidator? promptCacheDispatchValidator,
+        ITapestryProviderValidator? tapestryValidator, TapestryInvocationValidator tapestryInvocationValidator)
+        : this(tokenEstimator, settings, (ILogger?)logger, promptCacheDispatchValidator, tapestryValidator, tapestryInvocationValidator)
+    {
+    }
+
     internal ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
         ILogger? logger, PromptCacheDispatchValidator? promptCacheDispatchValidator, ITapestryProviderValidator? tapestryValidator)
+        : this(tokenEstimator, settings, logger, promptCacheDispatchValidator, tapestryValidator, null)
+    {
+    }
+
+    internal ModelCallExecutor(IModelTokenEstimator tokenEstimator, IOptionsMonitor<ArcanumSettings>? settings,
+        ILogger? logger, PromptCacheDispatchValidator? promptCacheDispatchValidator, ITapestryProviderValidator? tapestryValidator,
+        TapestryInvocationValidator? tapestryInvocationValidator)
     {
         _tokenEstimator = tokenEstimator ?? throw new ArgumentNullException(nameof(tokenEstimator));
         _settings = settings;
         _promptCacheDispatchValidator = promptCacheDispatchValidator;
         _tapestryValidator = tapestryValidator;
+        _tapestryInvocationValidator = tapestryInvocationValidator;
         _logger = logger;
     }
 
@@ -144,6 +161,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
             using PromptCacheDispatchPolicy.Scope? dispatchScope = EnterPromptCacheDispatchScope(chatClient, messages, options, context, cancellationToken);
 
+            using var retrievalScope = EnterTapestryDispatchScope(context);
+
             var protectedAdmission = await AdmitProtectedAsync(context, cancellationToken).ConfigureAwait(false);
 
             if (protectedAdmission.IsFailure)
@@ -170,11 +189,12 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
                 response = await chatClient.GetResponseAsync(
                     providerPayload.Messages, providerPayload.Options, providerToken).ConfigureAwait(false);
             }
-            catch (AggregateException ex) when (dispatchScope?.IsTerminalRefusal(ex) == true)
+            catch (AggregateException ex) when (retrievalScope.IsTerminalRefusal(ex) || dispatchScope?.IsTerminalRefusal(ex) == true)
             {
-                PromptCacheDispatchException refusal = dispatchScope.Refusal!;
+                PromptCacheDispatchException refusal = retrievalScope.IsTerminalRefusal(ex) ? retrievalScope.Refusal! : dispatchScope!.Refusal!;
 
-                return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, refusal.Error, Cause: null, refusal.RetryDirective));
+                return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, refusal.Error, Cause: null, refusal.RetryDirective)
+                { HasUncertainProviderEffect = refusal.HasUncertainProviderEffect });
             }
 
             await CommitProtectedUsageAsync(context, response.Usage).ConfigureAwait(false);
@@ -202,7 +222,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         }
         catch (PromptCacheDispatchException ex)
         {
-            return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, ex.Error, Cause: null, ex.RetryDirective));
+            return ModelCallOutcome.Failed(new ModelCallFailure(purpose, modelCallId, ex.Error, Cause: null, ex.RetryDirective)
+            { HasUncertainProviderEffect = ex.HasUncertainProviderEffect });
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -342,7 +363,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
 
                 if (next.Refusal is { } refusal)
                 {
-                    yield return new ModelCallFailureUpdate(purpose, modelCallId, refusal.Error, refusal.RetryDirective);
+                    yield return new ModelCallFailureUpdate(purpose, modelCallId, refusal.Error, refusal.RetryDirective)
+                    { HasUncertainProviderEffect = refusal.HasUncertainProviderEffect };
 
                     yield break;
                 }
@@ -474,6 +496,8 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         // requests sharing this lease, and disposal restores the caller even on cancellation/fault.
         using PromptCacheDispatchPolicy.Scope? scope = EnterPromptCacheDispatchScope(client, messages, options, context, ct);
 
+        using var retrievalScope = EnterTapestryDispatchScope(context);
+
         try
         {
             return (await stream.MoveNextAsync().ConfigureAwait(false), null);
@@ -482,9 +506,9 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         {
             return (false, refusal);
         }
-        catch (AggregateException ex) when (scope?.IsTerminalRefusal(ex) == true)
+        catch (AggregateException ex) when (retrievalScope.IsTerminalRefusal(ex) || scope?.IsTerminalRefusal(ex) == true)
         {
-            return (false, scope.Refusal);
+            return (false, retrievalScope.IsTerminalRefusal(ex) ? retrievalScope.Refusal : scope!.Refusal);
         }
     }
 
@@ -605,6 +629,10 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
         ChatOptions options, ModelCallContext? context, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+
+        Result retrieval = await ValidateTapestryRetrievalAsync(context, ct).ConfigureAwait(false);
+
+        if (retrieval.IsFailure) return (retrieval.Error, ModelCallRetryDirective.None);
 
         if (context?.PromptCacheBinding is null)
         {
@@ -979,6 +1007,23 @@ public sealed partial class ModelCallExecutor : IModelCallExecutor
     private readonly record struct ProviderCallPayload(
         IList<ChatMessage> Messages,
         ChatOptions Options);
+
+    private TapestryRetrievalDispatchPolicy.Scope EnterTapestryDispatchScope(ModelCallContext? context) =>
+        TapestryRetrievalDispatchPolicy.Enter((provider, model, token) =>
+            context?.TapestryObservation is not null && (provider != context.Provider.Name || model != context.Model)
+                ? Task.FromResult(TapestryInvocationValidator.Refused())
+                : ValidateTapestryRetrievalAsync(context, token));
+
+    private Task<Result> ValidateTapestryRetrievalAsync(ModelCallContext? context, CancellationToken token)
+    {
+        if (context?.TapestryObservation is null) return Task.FromResult(Result.Success());
+
+        token.ThrowIfCancellationRequested();
+
+        return context.TapestryObservation is TapestryRetrievalObservation observation && _tapestryInvocationValidator is not null
+            ? _tapestryInvocationValidator.ValidateAsync(observation, token)
+            : Task.FromResult(TapestryInvocationValidator.Refused());
+    }
 
     private Task<Result> ValidateTapestryAsync(ModelCallContext? context, CancellationToken cancellationToken)
     {
