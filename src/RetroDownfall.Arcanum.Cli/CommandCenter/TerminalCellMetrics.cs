@@ -1,15 +1,17 @@
 using System.Globalization;
 using System.Text;
 using RetroDownfall.Arcanum.Core.Primitives;
+using Terminal.Gui.Text;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
 /// <summary>
 /// Terminal display-cell measurement shared by every Command Center pane.
 /// A .NET string is UTF-16, so <see cref="string.Length"/> counts code units, not the columns a
-/// terminal paints: an East Asian ideograph or an emoji occupies two cells from one or two code
-/// units, a combining mark occupies none, and slicing by code unit can split a surrogate pair.
-/// Wrapping and truncation must therefore walk grapheme clusters and accumulate cell widths.
+/// terminal paints. Match the pinned Terminal.Gui renderer's rune widths and cap each grapheme at
+/// two cells; combining marks occupy none, while tabs use explicit column-dependent stops.
+/// Wrapping and truncation walk whole graphemes rather than splitting UTF-16 surrogate pairs.
+/// This compatibility policy does not guarantee every terminal/font renders the same way.
 /// </summary>
 internal static class TerminalCellMetrics
 {
@@ -61,6 +63,10 @@ internal static class TerminalCellMetrics
     /// <summary>Display cells of one grapheme cluster painted at <paramref name="column"/>.</summary>
     public static int MeasureGraphemeWidth(string? grapheme, int column) =>
         string.IsNullOrEmpty(grapheme) ? 0 : GraphemeWidth(grapheme.AsSpan(), column);
+
+    /// <summary>Allocation-free display-cell measurement of one already-segmented grapheme.</summary>
+    public static int MeasureGraphemeWidth(ReadOnlySpan<char> grapheme, int column) =>
+        GraphemeWidth(grapheme, column);
 
     /// <summary>
     /// Largest grapheme-aligned slice of <paramref name="text"/> beginning at <paramref name="start"/>
@@ -138,73 +144,21 @@ internal static class TerminalCellMetrics
             return stop <= 0 ? TabStop : stop;
         }
 
+        // Match the pinned renderer's GetColumns policy: sum nonnegative rune widths, capped per
+        // complete grapheme. This is Terminal.Gui compatibility, not a universal terminal/font claim.
         int width = 0;
         foreach (Rune rune in grapheme.EnumerateRunes())
         {
-            width += RuneCellWidth(rune);
-        }
+            width += Math.Max(0, rune.GetColumns());
 
-        // ZWJ / emoji sequences: a cluster that looks emoji-like still paints two cells even when its
-        // individual runes measure narrow.
-        if (width < 2 && LooksLikeEmojiCluster(grapheme))
-        {
-            return 2;
-        }
-
-        return Math.Max(0, width);
-    }
-
-    private static bool LooksLikeEmojiCluster(ReadOnlySpan<char> grapheme)
-    {
-        foreach (Rune rune in grapheme.EnumerateRunes())
-        {
-            int v = rune.Value;
-            if (v is >= 0x1F300 and <= 0x1FAFF)
+            if (width >= 2)
             {
-                return true;
-            }
-
-            if (v is 0x200D or >= 0xFE00 and <= 0xFE0F)
-            {
-                return true;
+                return 2;
             }
         }
 
-        return false;
+        return width;
     }
-
-    private static int RuneCellWidth(Rune rune)
-    {
-        if (Rune.IsControl(rune) || rune.Value == 0)
-        {
-            return 0;
-        }
-
-        UnicodeCategory category = Rune.GetUnicodeCategory(rune);
-        if (category is UnicodeCategory.NonSpacingMark
-            or UnicodeCategory.EnclosingMark
-            or UnicodeCategory.SpacingCombiningMark
-            or UnicodeCategory.Format)
-        {
-            return 0;
-        }
-
-        return IsWideCodePoint(rune.Value) ? 2 : 1;
-    }
-
-    /// <summary>Best-effort East Asian Wide / Fullwidth / emoji ranges used by common terminals.</summary>
-    private static bool IsWideCodePoint(int v) =>
-        v is >= 0x1100 and <= 0x115F
-        || v is 0x2329 or 0x232A
-        || v is >= 0x2E80 and <= 0xA4CF
-        || v is >= 0xAC00 and <= 0xD7A3
-        || v is >= 0xF900 and <= 0xFAFF
-        || v is >= 0xFE10 and <= 0xFE19
-        || v is >= 0xFE30 and <= 0xFE6F
-        || v is >= 0xFF00 and <= 0xFF60
-        || v is >= 0xFFE0 and <= 0xFFE6
-        || v is >= 0x1F300 and <= 0x1FAFF
-        || v is >= 0x20000 and <= 0x3FFFD;
 }
 
 /// <summary>Result of <see cref="TerminalCellMetrics.TakeCells"/>.</summary>

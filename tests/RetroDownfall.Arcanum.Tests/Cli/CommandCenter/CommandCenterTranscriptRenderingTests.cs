@@ -390,12 +390,14 @@ public sealed class CommandCenterTranscriptRenderingTests
         Assert.Equal(5, clipped.Length);
         Assert.Equal(10, TerminalCellMetrics.MeasureWidth(clipped));
 
-        // Emoji: a code-unit budget would leave a lone high surrogate.
-        string emoji = string.Concat(Enumerable.Repeat("🜁", 6));
-        string emojiClipped = TerminalCellMetrics.TruncateToCells(emoji, 5);
+        // The pinned renderer measures this supplementary alchemical symbol as one column, not emoji.
+        // Its public GetColumns and in-memory output buffer independently establish that policy.
+        string symbols = string.Concat(Enumerable.Repeat("🜁", 6));
+        string clippedSymbols = TerminalCellMetrics.TruncateToCells(symbols, 5);
 
-        Assert.Equal(4, emojiClipped.Length);
-        Assert.False(char.IsHighSurrogate(emojiClipped[^1]));
+        Assert.Equal(1, Terminal.Gui.Text.StringExtensions.GetColumns("🜁"));
+        Assert.Equal(10, clippedSymbols.Length);
+        Assert.False(char.IsHighSurrogate(clippedSymbols[^1]));
     }
 
     [Fact]
