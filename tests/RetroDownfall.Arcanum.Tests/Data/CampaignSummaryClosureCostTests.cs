@@ -17,7 +17,7 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
     [InlineData("SELECT ClaimId FROM campaign_maintenance_checkpoints WHERE SessionId = $ownerId OR SourceSessionId = $ownerId OR (OutputArtifactKindCode = 15 AND OutputArtifactId IN (SELECT ArtifactId FROM campaign_contribution_artifacts WHERE SessionId = $ownerId)) OR (OutputArtifactKindCode = 14 AND OutputArtifactId IN (SELECT RollupArtifactId FROM campaign_rollup_sources WHERE SessionId = $ownerId))", "MULTI-INDEX OR")]
     public async Task Session_dependency_lookups_seek_indexes_including_every_checkpoint_arm(string sql, string expected)
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: true);
 
         await using SqliteCommand command = fixture.Connection.CreateCommand();
 
@@ -42,7 +42,7 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
     [Fact]
     public async Task Digest_only_closure_has_bounded_per_row_allocations_at_scale()
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: true);
 
         await fixture.PublishCampaignAsync("published");
 
@@ -83,7 +83,7 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
     [InlineData(false)]
     public async Task Streamed_digest_preserves_legacy_framing_and_snapshot_equality(bool includeOwnerRows)
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: true);
 
         await fixture.PublishCampaignAsync("published");
 
@@ -133,10 +133,12 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
         Assert.Equal(includeOwnerRows, changed != actual);
     }
 
-    [Fact]
-    public async Task Missing_schema_and_installed_empty_schema_keep_distinct_authority()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Missing_schema_and_installed_empty_schema_keep_distinct_authority(bool legacy)
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: legacy);
 
         CampaignSummaryClosureSnapshot empty = await CampaignSummaryLifecycle.ReadSessionClosureAsync(fixture.Connection, null, Guid.NewGuid(), CancellationToken.None);
 
@@ -156,7 +158,7 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
     [Fact]
     public async Task Optional_row_keys_union_shared_dependencies_without_changing_snapshot_authority()
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: true);
 
         await fixture.PublishCampaignAsync("published");
 
@@ -214,10 +216,12 @@ public sealed class CampaignSummaryClosureCostTests(ITestOutputHelper output)
         Assert.Equal(7, keys.Where(key => key != "existing:row").Select(key => key[..key.IndexOf(':')]).Distinct().Count());
     }
 
-    [Fact]
-    public async Task Cancelled_closure_propagates_without_publishing_a_snapshot()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Cancelled_closure_propagates_without_publishing_a_snapshot(bool legacy)
     {
-        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync();
+        await using CampaignRollupStoreTests.StoreFixture fixture = await CampaignRollupStoreTests.StoreFixture.CreateAsync(legacy: legacy);
 
         await fixture.PublishCampaignAsync("published");
 

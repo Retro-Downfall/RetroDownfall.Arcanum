@@ -318,7 +318,7 @@ internal sealed partial class DataRetentionService(
         await AddCompositeDatabaseStatusAsync(
             items,
             RetentionDataClass.CampaignSummaries,
-            ["campaign_rollup_artifacts", "campaign_contribution_artifacts", "campaign_rollup_sources", "campaign_maintenance_checkpoints"],
+            ["campaign_rollup_artifacts", "campaign_contribution_artifacts", "campaign_rollup_sources", "campaign_rollup_manifest_sources", "campaign_rollup_manifests", "campaign_maintenance_checkpoints"],
             "Campaign continuity and exact native Session contributions; content-free generation tombstones survive reset.",
             retention,
             cancellationToken).ConfigureAwait(false);
@@ -2931,6 +2931,8 @@ internal sealed partial class DataRetentionService(
             [
                 new("campaign_maintenance_checkpoints", "CampaignId = @campaignId", campaignAndKind),
                 new("campaign_rollup_sources", "CampaignId = @campaignId", campaignAndKind),
+                new("campaign_rollup_manifest_sources", "CampaignId = @campaignId", campaignAndKind),
+                new("campaign_rollup_manifests", "CampaignId = @campaignId", campaignAndKind),
                 new("campaign_contribution_artifacts", "CampaignId = @campaignId", campaignAndKind),
                 new("campaign_rollup_artifacts", "CampaignId = @campaignId", campaignAndKind),
             ],
@@ -3006,6 +3008,8 @@ internal sealed partial class DataRetentionService(
             [
                 Whole("campaign_maintenance_checkpoints"),
                 Whole("campaign_rollup_sources"),
+                Whole("campaign_rollup_manifest_sources"),
+                Whole("campaign_rollup_manifests"),
                 Whole("campaign_contribution_artifacts"),
                 Whole("campaign_rollup_artifacts"),
             ],
@@ -7782,6 +7786,7 @@ internal sealed partial class DataRetentionService(
             MemoryResetScope.CampaignSummary =>
             [
                 "campaign_maintenance_checkpoints", "campaign_rollup_sources",
+                "campaign_rollup_manifest_sources", "campaign_rollup_manifests",
                 "campaign_contribution_artifacts", "campaign_rollup_artifacts",
             ],
 

@@ -628,6 +628,39 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
         Assert.Equal(1, await fixture.CountAsync("SELECT COUNT(*) FROM tapestry_node_embeddings_vec WHERE NodeId = 'other-session-generation-node';"));
     }
 
+    [Fact]
+    public async Task Protected_source_erasure_follows_legacy_and_shared_roots_and_releases_all_provenance()
+    {
+        await using ErasureFixture fixture = await ErasureFixture.CreateAsync();
+
+        Guid campaignId = Guid.NewGuid();
+
+        Guid contribution = Guid.NewGuid();
+
+        Guid rollup = Guid.NewGuid();
+
+        await fixture.SeedCampaignSummariesAsync(campaignId, contribution, rollup);
+
+        await fixture.SeedSharedCampaignRootsAsync(campaignId, contribution);
+
+        Guid labelId = Guid.Parse((await fixture.LabelIdAsync(contribution))!);
+
+        Assert.Equal(3, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Result<CovenantArtifactErasureProgress> erased = await EraseUnderExclusiveAsync(
+            fixture, fixture.Page(contribution, labelId, SensitiveArtifactKind.CampaignContribution, SessionId, campaignId, revision: 1));
+
+        Assert.True(erased.IsSuccess, erased.Error.Message);
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_artifacts;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifests;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM campaign_rollup_manifest_sources;"));
+
+        Assert.Equal(0, await fixture.CountAsync("SELECT COUNT(*) FROM artifact_sensitivity WHERE ArtifactKindCode IN (14, 15);"));
+    }
+
     [Theory]
     [InlineData(SensitiveArtifactKind.CampaignRollup)]
     [InlineData(SensitiveArtifactKind.CampaignContribution)]
@@ -1121,7 +1154,7 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
             await ExecuteAsync($"""
                 INSERT INTO session_summary_artifacts(ArtifactId,SessionId,Revision,ContentDigest,SensitivityCode,SensitivityDigest,SummarizedThroughUtc,CreatedAtUtc)
-                VALUES('{Format(artifactId)}','{Format(SessionId)}',1,x'{new string('1',64)}',1,x'{sensitivity}',NULL,'2026-10-01T00:00:00Z');
+                VALUES('{Format(artifactId)}','{Format(SessionId)}',1,x'{new string('1', 64)}',1,x'{sensitivity}',NULL,'2026-10-01T00:00:00Z');
                 INSERT INTO session_summary_state(SessionId,CurrentArtifactId,Revision,UpdatedAtUtc)
                 VALUES('{Format(SessionId)}','{Format(artifactId)}',1,'2026-10-01T00:00:00Z');
                 """);
@@ -1160,16 +1193,46 @@ public sealed class CovenantProtectedArtifactErasureKernelTests
 
             await ExecuteAsync($"""
                 INSERT INTO campaign_contribution_artifacts(ArtifactId,CampaignId,SessionId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SummarizedThroughSequence,CreatedAtUtc)
-                VALUES('{Format(contribution)}','{Format(campaignId)}','{Format(SessionId)}',1,'protected source',x'{new string('1',64)}',1,x'{sensitivity}',zeroblob(32),0,7,'2026-10-01T00:00:00Z');
+                VALUES('{Format(contribution)}','{Format(campaignId)}','{Format(SessionId)}',1,'protected source',x'{new string('1', 64)}',1,x'{sensitivity}',zeroblob(32),0,7,'2026-10-01T00:00:00Z');
                 INSERT INTO campaign_contribution_state(SessionId,CampaignId,CurrentArtifactId,Revision,SourceGeneration,SummarizedThroughSequence,RefoldRequired,UpdatedAtUtc)
                 VALUES('{Format(SessionId)}','{Format(campaignId)}','{Format(contribution)}',1,0,7,0,'2026-10-01T00:00:00Z');
                 INSERT INTO campaign_rollup_artifacts(ArtifactId,CampaignId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SourceCount,CreatedAtUtc)
-                VALUES('{Format(rollup)}','{Format(campaignId)}',1,'protected Campaign',x'{new string('1',64)}',1,x'{sensitivity}',zeroblob(32),1,1,'2026-10-01T00:00:00Z');
+                VALUES('{Format(rollup)}','{Format(campaignId)}',1,'protected Campaign',x'{new string('1', 64)}',1,x'{sensitivity}',zeroblob(32),1,1,'2026-10-01T00:00:00Z');
                 INSERT INTO campaign_rollup_state(CampaignId,CurrentArtifactId,Revision,SourceGeneration,RefoldRequired,LastFoldedSessionId,UpdatedAtUtc)
                 VALUES('{Format(campaignId)}','{Format(rollup)}',1,1,0,'{Format(SessionId)}','2026-10-01T00:00:00Z');
                 INSERT INTO campaign_rollup_sources(RollupArtifactId,CampaignId,RollupRevision,SessionId,ContributionArtifactId,ContributionRevision,ContentDigest,SensitivityDigest,SummarizedThroughSequence)
-                VALUES('{Format(rollup)}','{Format(campaignId)}',1,'{Format(SessionId)}','{Format(contribution)}',1,x'{new string('1',64)}',x'{sensitivity}',7);
+                VALUES('{Format(rollup)}','{Format(campaignId)}',1,'{Format(SessionId)}','{Format(contribution)}',1,x'{new string('1', 64)}',x'{sensitivity}',7);
                 """);
+        }
+
+        internal async Task SeedSharedCampaignRootsAsync(Guid campaign, Guid contribution)
+        {
+            Guid manifest = Guid.NewGuid();
+
+            Guid lineage = Guid.NewGuid();
+
+            await ExecuteAsync($"""
+                INSERT INTO campaign_rollup_manifests(ManifestId,LineageId,Ordinal,CampaignId,HashFormatCode,PriorManifestDigest,SourceManifestDigest,SourceCount,AddedSourceCount)
+                VALUES('{Format(manifest)}','{Format(lineage)}',1,'{Format(campaign)}',1,zeroblob(32),zeroblob(32),1,1);
+                INSERT INTO campaign_rollup_manifest_sources(ManifestId,LineageId,CampaignId,SessionId,ContributionArtifactId,ContributionRevision,ContentDigest,SensitivityDigest,SummarizedThroughSequence)
+                SELECT '{Format(manifest)}','{Format(lineage)}',CampaignId,SessionId,ArtifactId,Revision,ContentDigest,SensitivityDigest,SummarizedThroughSequence
+                FROM campaign_contribution_artifacts WHERE ArtifactId = '{Format(contribution)}';
+                """);
+
+            for (ulong revision = 2; revision <= 3; revision++)
+            {
+                Guid artifact = Guid.NewGuid();
+
+                Guid label = await SeedLabelAsync(artifact, SensitiveArtifactKind.CampaignRollup, null, campaign, revision: revision);
+
+                string sensitivity = Convert.ToHexString(CovenantErasureAuthorityFixture.Label(artifact, label,
+                    SensitiveArtifactKind.CampaignRollup, null, campaign, revision: revision).SensitivityDigest.Bytes);
+
+                await ExecuteAsync($"""
+                    INSERT INTO campaign_rollup_artifacts(ArtifactId,CampaignId,Revision,Content,ContentDigest,SensitivityCode,SensitivityDigest,SourceManifestDigest,SourceGeneration,SourceCount,CreatedAtUtc,ManifestId)
+                    VALUES('{Format(artifact)}','{Format(campaign)}',{revision},'protected shared summary',x'{new string('1', 64)}',1,x'{sensitivity}',zeroblob(32),1,1,'2026-10-01T00:00:00Z','{Format(manifest)}');
+                    """);
+            }
         }
 
         internal async Task SeedSagaAsync(Guid artifactId)

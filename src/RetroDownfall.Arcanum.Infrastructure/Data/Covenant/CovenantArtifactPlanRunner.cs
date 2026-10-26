@@ -91,6 +91,14 @@ internal static class CovenantArtifactPlanRunner
 
         foreach (CovenantArtifactPurgeTarget target in plan.Projections)
         {
+            if (target.CampaignManifestNode
+                && !await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+            {
+                targets.Add(new MemoryErasureTableCount(target.Table, 0));
+
+                continue;
+            }
+
             if (target.RequiredFromCoreVersion is { } requiredVersion)
             {
                 coreVersion ??= await GrimoireCoreSchemaVersion

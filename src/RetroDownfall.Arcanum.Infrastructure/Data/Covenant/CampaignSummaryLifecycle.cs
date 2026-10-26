@@ -1,9 +1,11 @@
 using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Primitives;
+using RetroDownfall.Arcanum.Core.Serialization;
 
 namespace RetroDownfall.Arcanum.Infrastructure.Data.Covenant;
 
@@ -39,7 +41,7 @@ internal static class CampaignSummaryLifecycle
         }
 
         Guid[] rollups = await ReadIdsAsync(connection, transaction,
-            "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE SessionId = $ownerId;",
+            "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_source_membership WHERE SessionId = $ownerId;",
             sessionId, cancellationToken).ConfigureAwait(false);
 
         return rollups.Length == 0
@@ -107,7 +109,7 @@ internal static class CampaignSummaryLifecycle
         }
 
         Guid[] dependents = await ReadIdsAsync(connection, transaction,
-            "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE ContributionArtifactId = $ownerId;",
+            "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_source_membership WHERE ContributionArtifactId = $ownerId;",
             artifactId, cancellationToken).ConfigureAwait(false);
 
         return dependents.Length == 0
@@ -140,10 +142,10 @@ internal static class CampaignSummaryLifecycle
                 $"(ArtifactKindCode = $summaryKind AND {summaryOwnerPredicate})"
                 + (installed
                     ? " OR (ArtifactKindCode = 15 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(ArtifactId, '-', '')) FROM campaign_contribution_artifacts WHERE SessionId = $sessionId))"
-                        + " OR (ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_sources WHERE SessionId = $sessionId))"
+                        + " OR (ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_source_membership WHERE SessionId = $sessionId))"
                     : ""),
             SensitiveArtifactKind.CampaignContribution when installed =>
-                "ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_sources WHERE ContributionArtifactId = $artifactId)",
+                "ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_source_membership WHERE ContributionArtifactId = $artifactId)",
             _ => null,
         };
 
@@ -165,6 +167,8 @@ internal static class CampaignSummaryLifecycle
         Add(command, "$sessionId", sessionId is { } session ? Format(session) : DBNull.Value);
 
         List<CovenantOperationScope> owners = [];
+
+        await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
 
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -200,7 +204,7 @@ internal static class CampaignSummaryLifecycle
 
         const string contributions = "SELECT ArtifactId FROM campaign_contribution_artifacts WHERE SessionId = $ownerId";
 
-        const string rollups = "SELECT RollupArtifactId FROM campaign_rollup_sources WHERE SessionId = $ownerId";
+        const string rollups = "SELECT RollupArtifactId FROM campaign_rollup_source_membership WHERE SessionId = $ownerId";
 
         (string Table, string Predicate, string Identity, string Key)[] targets =
         [
@@ -210,8 +214,20 @@ internal static class CampaignSummaryLifecycle
             ("campaign_maintenance_checkpoints", $"SessionId = $ownerId OR SourceSessionId = $ownerId OR (OutputArtifactKindCode = 15 AND OutputArtifactId IN ({contributions})) OR (OutputArtifactKindCode = 14 AND OutputArtifactId IN ({rollups}))", "ClaimId || ':' || StepCode || ':' || hex(InputManifestDigest) || ':' || CheckpointRevision", "ClaimId || ':' || StepCode || ':' || hex(InputManifestDigest)"),
             ("campaign_contribution_state", "SessionId = $ownerId", "SessionId || ':' || Revision || ':' || SourceGeneration || ':' || SummarizedThroughSequence", "SessionId"),
             ("campaign_fork_frontiers", "SessionId = $ownerId", "SessionId || ':' || SourceSessionId || ':' || InheritedThroughSequence || ':' || ProofKindCode", "SessionId"),
-            ("artifact_sensitivity", "(ArtifactKindCode = 15 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(ArtifactId, '-', '')) FROM campaign_contribution_artifacts WHERE SessionId = $ownerId)) OR (ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_sources WHERE SessionId = $ownerId))", "LabelId || ':' || ArtifactRevision || ':' || hex(ArtifactContentDigest)", "LabelId"),
+            ("artifact_sensitivity", "(ArtifactKindCode = 15 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(ArtifactId, '-', '')) FROM campaign_contribution_artifacts WHERE SessionId = $ownerId)) OR (ArtifactKindCode = 14 AND lower(replace(ArtifactId, '-', '')) IN (SELECT lower(replace(RollupArtifactId, '-', '')) FROM campaign_rollup_source_membership WHERE SessionId = $ownerId))", "LabelId || ':' || ArtifactRevision || ':' || hex(ArtifactContentDigest)", "LabelId"),
         ];
+
+        if (await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            string unreferenced = CampaignRollupSourceStorage.UnreferencedSegments(rollups);
+
+            targets = [.. targets,
+                ("campaign_rollup_manifest_sources", $"ManifestId IN ({unreferenced})",
+                    "ManifestId || ':' || SessionId || ':' || ContributionArtifactId || ':' || ContributionRevision || ':' || hex(ContentDigest) || ':' || hex(SensitivityDigest) || ':' || SummarizedThroughSequence", "ManifestId || ':' || SessionId"),
+                ("campaign_rollup_manifests", $"ManifestId IN ({unreferenced})",
+                    "ManifestId || ':' || LineageId || ':' || CampaignId || ':' || HashFormatCode || ':' || Ordinal || ':' || hex(PriorManifestDigest) || ':' || hex(SourceManifestDigest) || ':' || SourceCount || ':' || AddedSourceCount", "ManifestId"),
+            ];
+        }
 
         long rows = 0;
 
@@ -231,6 +247,8 @@ internal static class CampaignSummaryLifecycle
             command.CommandText = $"SELECT {identity}, {key} FROM {table} WHERE {predicate} ORDER BY 1;";
 
             Add(command, "$ownerId", Format(sessionId));
+
+            await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
 
             await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -309,7 +327,7 @@ internal static class CampaignSummaryLifecycle
         if (kind == SensitiveArtifactKind.CampaignContribution)
         {
             Guid[] dependents = await ReadIdsAsync(connection, transaction,
-                "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE ContributionArtifactId = $ownerId;",
+                "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_source_membership WHERE ContributionArtifactId = $ownerId;",
                 artifactId, cancellationToken).ConfigureAwait(false);
 
             foreach (Guid dependent in dependents)
@@ -323,6 +341,12 @@ internal static class CampaignSummaryLifecycle
 
         foreach (CovenantArtifactPurgeTarget target in plan.Projections.Append(plan.Artifact!))
         {
+            if (target.CampaignManifestNode
+                && !await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+            {
+                continue;
+            }
+
             await using SqliteCommand command = connection.CreateCommand();
 
             command.Transaction = transaction;
@@ -330,6 +354,8 @@ internal static class CampaignSummaryLifecycle
             command.CommandText = target.ReadIdentitiesBy("$artifactKey");
 
             Add(command, "$artifactKey", CovenantIdentitySql.Key(artifactId));
+
+            await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
 
             await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
@@ -357,7 +383,58 @@ internal static class CampaignSummaryLifecycle
             rows.Add("artifact_sensitivity:" + labelled.GetString(0));
         }
 
+        if (kind == SensitiveArtifactKind.CampaignContribution)
+        {
+            await AddSharedReclamationRowKeysAsync(connection, transaction, rows, cancellationToken).ConfigureAwait(false);
+        }
+
         return [.. rows.Order(StringComparer.Ordinal)];
+    }
+
+    // A shared segment can become unreferenced only after several independently selected roots
+    // disappear. Resolve the complete selected root set, including roots selected by owner closure.
+    internal static async Task AddSharedReclamationRowKeysAsync(
+        DbConnection connection,
+        DbTransaction? transaction,
+        HashSet<string> rows,
+        CancellationToken cancellationToken)
+    {
+        const string prefix = "campaign_rollup_artifacts:";
+
+        string[] selected = [.. rows.Where(row => row.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(row => row[prefix.Length..])];
+
+        if (selected.Length == 0
+            || !await CampaignRollupSourceStorage.IsInstalledAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        string segments = CampaignRollupSourceStorage.UnreferencedSegments("SELECT value FROM json_each($selectedArtifacts)");
+
+        string selectedJson = JsonSerializer.Serialize(selected, GrimoireJsonContext.Default.StringArray);
+
+        foreach ((string table, string key) in new[]
+        {
+            ("campaign_rollup_manifest_sources", "ManifestId || ':' || SessionId"),
+            ("campaign_rollup_manifests", "ManifestId"),
+        })
+        {
+            await using DbCommand command = connection.CreateCommand();
+
+            command.Transaction = transaction;
+
+            command.CommandText = $"SELECT {key} FROM {table} WHERE ManifestId IN ({segments});";
+
+            Add(command, "$selectedArtifacts", selectedJson);
+
+            await using DbDataReader source = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+            while (await source.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rows.Add(table + ":" + source.GetString(0));
+            }
+        }
     }
 
     internal static async Task<long> CountArtifactClosureAsync(
@@ -367,58 +444,9 @@ internal static class CampaignSummaryLifecycle
         Guid artifactId,
         CancellationToken cancellationToken)
     {
-        long rows = 0;
+        string[] rows = await ReadArtifactClosureRowKeysAsync(connection, transaction, kind, artifactId, cancellationToken).ConfigureAwait(false);
 
-        if (kind == SensitiveArtifactKind.CampaignContribution)
-        {
-            await using SqliteCommand dependencies = connection.CreateCommand();
-
-            dependencies.Transaction = transaction;
-
-            dependencies.CommandText = "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE ContributionArtifactId = $ownerId;";
-
-            Add(dependencies, "$ownerId", Format(artifactId));
-
-            List<Guid> rollups = [];
-
-            await using (SqliteDataReader reader = await dependencies.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-            {
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    rollups.Add(Guid.Parse(reader.GetString(0)));
-                }
-            }
-
-            foreach (Guid rollup in rollups)
-            {
-                rows += await CountArtifactClosureAsync(connection, transaction,
-                    SensitiveArtifactKind.CampaignRollup, rollup, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        else if (kind != SensitiveArtifactKind.CampaignRollup)
-        {
-            throw new ArgumentOutOfRangeException(nameof(kind));
-        }
-
-        CovenantArtifactPlanTally tally = await CovenantArtifactPlanRunner.RunAsync(
-            connection, transaction, kind, CovenantIdentitySql.Key(artifactId), CovenantArtifactPlanMode.Count,
-            cancellationToken).ConfigureAwait(false);
-
-        rows += tally.Targets.Sum(static target => target.Rows);
-
-        await using SqliteCommand labels = connection.CreateCommand();
-
-        labels.Transaction = transaction;
-
-        labels.CommandText = "SELECT COUNT(*) FROM artifact_sensitivity WHERE ArtifactKindCode = $kind AND "
-            + CovenantIdentitySql.Keyed("ArtifactId", "$artifactKey") + ";";
-
-        Add(labels, "$kind", (long)kind);
-
-        Add(labels, "$artifactKey", CovenantIdentitySql.Key(artifactId));
-
-        return rows + Convert.ToInt64(await labels.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
-            System.Globalization.CultureInfo.InvariantCulture);
+        return rows.LongLength;
     }
 
     internal static async Task<long> PurgeArtifactAsync(
@@ -438,7 +466,7 @@ internal static class CampaignSummaryLifecycle
         if (kind == SensitiveArtifactKind.CampaignContribution)
         {
             Guid[] dependents = await ReadIdsAsync(connection, transaction,
-                "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE ContributionArtifactId = $ownerId;",
+                "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_source_membership WHERE ContributionArtifactId = $ownerId;",
                 artifactId, cancellationToken).ConfigureAwait(false);
 
             foreach (Guid dependent in dependents)
@@ -594,6 +622,8 @@ internal static class CampaignSummaryLifecycle
         Add(command, "$ownerId", ownerId is { } owner ? Format(owner) : DBNull.Value);
 
         List<Guid> artifacts = [];
+
+        await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
 
         await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 

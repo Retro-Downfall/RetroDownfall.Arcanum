@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS campaign_rollup_artifacts (
     SourceCount INTEGER NOT NULL CHECK (SourceCount >= 0),
     CreatedAtUtc TEXT NOT NULL,
     ProducingMaintenanceReceiptDigest BLOB NULL CHECK (ProducingMaintenanceReceiptDigest IS NULL OR length(ProducingMaintenanceReceiptDigest) = 32)
-);
+, ManifestId TEXT NULL REFERENCES campaign_rollup_manifests(ManifestId) DEFERRABLE INITIALLY DEFERRED);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_campaign_rollup_artifacts_revision ON campaign_rollup_artifacts(CampaignId, Revision);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_campaign_rollup_artifacts_candidate ON campaign_rollup_artifacts(ArtifactId, CampaignId, Revision);
+CREATE INDEX IF NOT EXISTS idx_campaign_rollup_artifacts_manifest ON campaign_rollup_artifacts(ManifestId);

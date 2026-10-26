@@ -67,6 +67,16 @@ internal sealed partial class DataRetentionService
                 items.Add(new(RetentionDataClass.CampaignSummaries, 1, 0, 0, Math.Max(0, closure - 1)));
             }
         }
+
+        int priorCount = coveredRows.Count;
+
+        await CampaignSummaryLifecycle.AddSharedReclamationRowKeysAsync(
+            connection, null, coveredRows, cancellationToken).ConfigureAwait(false);
+
+        if (coveredRows.Count > priorCount)
+        {
+            items.Add(new(RetentionDataClass.CampaignSummaries, 0, 0, 0, coveredRows.Count - priorCount));
+        }
     }
 
     private async Task<HashSet<string>> AddNativeOwnerClosureItemsAsync(
@@ -99,6 +109,9 @@ internal sealed partial class DataRetentionService
             }
         }
 
+        await CampaignSummaryLifecycle.AddSharedReclamationRowKeysAsync(
+            connection, null, campaignRows, cancellationToken).ConfigureAwait(false);
+
         if (campaignRows.Count > 0)
         {
             items.Add(new(RetentionDataClass.CampaignSummaries, 0, 0, 0, campaignRows.Count));
@@ -119,10 +132,12 @@ internal sealed partial class DataRetentionService
         command.CommandText = sessions
             ? kind == SensitiveArtifactKind.CampaignContribution
                 ? "SELECT SessionId FROM campaign_contribution_artifacts WHERE ArtifactId = @id;"
-                : "SELECT DISTINCT SessionId FROM campaign_rollup_sources WHERE RollupArtifactId = @id;"
-            : "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_sources WHERE ContributionArtifactId = @id;";
+                : "SELECT DISTINCT SessionId FROM campaign_rollup_source_membership WHERE RollupArtifactId = @id;"
+            : "SELECT DISTINCT RollupArtifactId FROM campaign_rollup_source_membership WHERE ContributionArtifactId = @id;";
 
         Add(command, "@id", artifactId.ToString("D").ToUpperInvariant());
+
+        await CampaignRollupSourceStorage.ResolveMembershipAsync(command, cancellationToken).ConfigureAwait(false);
 
         List<Guid> ids = [];
 
