@@ -4100,3 +4100,16 @@ All changed C# bytes match the approved candidate exactly. Fresh combined qualif
 The exact runtime commit is `24dd4a704139d695c93408fd7d37ac65f6b89499`, tested tree `f05aa7c5bcef1822577ecd8786b1d4372dc56339`. **1056 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave31-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
 
 Actual RAPTOR remains **7 of 12 stages integrated**, with the production builder executing. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
+
+
+### 2026-10-26 checkpoint — 120 original findings integrated
+
+**120 of 272 findings (44.1%) are independently reviewed and integrated:** 3 Critical, 75 Important and 42 Minor. **152 remain:** 1 Important and 151 Minor. 0 further original findings have approved candidates awaiting integration: none.
+
+RV-092 now reports explicit, truthful compaction outcomes through the API, CLI and Forge: compacted, not needed, too few messages, only pinned messages remain, or stopped. Short contexts retain measured token counts; protected stop codes and pinned-message behavior are preserved. Older hosts that omit the new optional outcome retain compatible count-only presentation. The independently reviewed candidate is `7e7ab5d052c71e385d23b245d4191cdf675ea1e9`; review evidence is `/private/tmp/arcanum-compaction-review.md`. All integrated C# files exactly match the approved candidate.
+
+RAPTOR production builder Task8 has separately passed independent review at `1c7b4b0d` (1,823 passing tests and one existing Windows-only skip); it is not included in this integration count. The user-required full CI gate and subsequent explicit pause before installation and live Ollama/embedding testing remain mandatory.
+
+The exact runtime commit is `6892ac82f3a6f4bc990697b724533f8b72f056cc`, tested tree `07037abc7c150c4234cac5d2be68537a609113a8`. **754 distinct tests passed with zero failures/skips**, plus a normal zero-warning build, both house formatting modes, explicit Roslyn verification and diff checks. Evidence: `/private/tmp/arcanum-integrated-wave32-qualification.json` and commit receipt. Original source paths/catalog are unchanged; prior controlled catalog qualification remains applicable.
+
+Actual RAPTOR remains **7 of 12 stages integrated**, with the production builder independently approved and awaiting integration. Full native FTS5 grammar is integrated; RV-030 literal-memory search/continuation owns Core28 and remains open. Final whole-suite, coverage, hosted/capsule, Native AOT/shipping/native provenance and live qualification remain pending. Main and the original Claude review branch are preserved.
