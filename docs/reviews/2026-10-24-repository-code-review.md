@@ -3864,3 +3864,19 @@ The independently reviewed, locally integrated count is **70 of272 (25.7%)**:3 C
 Exact candidate `349d7e960c591fc63929e04b3d6d0c24dada9b8f` passed the combined affected verification: **5,153 Arcanum tests and116 Forge tests**, both builds with **zero warnings/errors**. Arcanum skipped5 tests:2 Windows-only filesystem checks,2 opt-in Long Rest scale probes,1 opt-in published native/model qualification. Forge skipped none. The repaired delayed test-host path and the reviewed erasure, connection and owner-recovery changes are included. The command, exact tree, terminal exit codes and log hashes are recorded in `/private/tmp/arcanum-integrated-wave6-manifest.json`; historical failed attempts remain preserved.
 
 This is combined affected verification, not the final full-suite/CI/AOT/live qualification. The integrated finding count remains70/272; pending transcript, FTS5 and RAPTOR work earns no additional completion credit here.
+
+### Native search, Covenant and transcript checkpoint — 2026-10-25
+
+The independently reviewed, locally integrated total is **76 of272 (27.9%)**:3 Critical,59 Important,14 Minor. **196 remain open**:17 Important,179 Minor. Runtime candidate `cb2c4790e91cf8fc645e61cd5881c95d49db5175` includes these additions:
+
+| Findings | Reviewed outcome | Evidence |
+| --- | --- | --- |
+| RV-072 | Full native FTS5 grammar in archive/session search, bound intact with typed and content-free validation propagated through API/MCP/CLI. |3c9cab59;640 affected passes, then197 and227 scoped passes after independently reviewed parser-stack and leading-star repairs; no skips, zero-warning builds, exact mutation/restoration evidence. Counts overlap. |
+| RV-050, RV-051 | Visible Covenant refusal/absence/feature diagnostics and truthful partial eligibility evaluation without protected metadata hydration. |b864bf89;146 affected Arcanum and198 full Compendium passes, zero-warning solution build, behavioral and mutationRED, independent approval. |
+| RV-175, RV-176, RV-184 | Persisted tool markers respect roles; wrapping preserves cell boundaries and whole decorated whitespace graphemes; closed UI channels preserve final state without shutdown exceptions. |d9265cc0;26 original/mutation failures,987 restored passes/4Windows skips; review found and repaired Unicode case with6RED/1control,101 scoped passes and3000 independent generated checks. |
+
+Two additions earn no original-register credit. The exact missing Lexicon projection/caller/snapshot catalog entries are repaired in revieweda5b34dec, with2RED/78controls and141 restored passes; enumeration remains closed. Real RAPTOR stage1 of12 is integrated through65eb378a: a pinned reproducible numerical reference environment, independent fixtures, algorithm fingerprint and seed identities. The existing production builder has not yet switched; neighbor-graph implementation is stage2. Full RAPTOR remains unfinished.
+
+An extra RAPTOR full-project test attempt was cancelled and is not qualified. It exposed the now-repaired Lexicon catalog entries, an owned documentation guard failure repaired before stage1 approval, and an extraction contention fixture timeout now under deterministic diagnosis. No failed or cancelled attempt is treated as green.
+
+The latest passing combined verification still binds to the prior70-finding candidate349d7e96:5153 Arcanum passes/5 disclosed skips and116 Forge passes, zero-warning builds. These newer integrations require their next combined run. Full final qualification and external delivery remain outstanding.
