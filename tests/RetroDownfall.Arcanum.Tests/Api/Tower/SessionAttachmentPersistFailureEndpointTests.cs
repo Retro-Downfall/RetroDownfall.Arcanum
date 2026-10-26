@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Tests.Api.Tower;
 /// must not be told to the caller as one.
 /// </summary>
 [Collection("ApiHost")]
-public sealed class SessionAttachmentPersistFailureEndpointTests
+public sealed partial class SessionAttachmentPersistFailureEndpointTests
 {
     [SkippableFact]
     public async Task PostAttachments_Multipart_with_a_persistence_failure_is_not_reported_as_LimitExceeded()

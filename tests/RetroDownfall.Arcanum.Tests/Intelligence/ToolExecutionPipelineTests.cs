@@ -19,7 +19,7 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// <summary>
 /// How <see cref="ToolExecutionPipeline.ProcessSingleToolCallAsync"/> classifies the way a tool call ends.
 /// </summary>
-public sealed class ToolExecutionPipelineTests
+public sealed partial class ToolExecutionPipelineTests
 {
     [Theory]
     [InlineData(false)]
@@ -46,6 +46,7 @@ public sealed class ToolExecutionPipelineTests
             Assert.Equal("summary", rawText);
             return new("capped", true, rawText.Length, 1);
         }
+
         public ToolResultMaterialization MaterializeStructured<T>(string toolName, T result, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> jsonTypeInfo)
             where T : IStructuredToolResult<T> => throw new NotSupportedException();
     }
@@ -54,6 +55,7 @@ public sealed class ToolExecutionPipelineTests
     {
         private static readonly JsonDocument Schema = JsonDocument.Parse("{}");
         public override string Name => "delegate_task";
+
         public override JsonElement JsonSchema => Schema.RootElement;
         protected override ValueTask<object?> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken) => ValueTask.FromResult<object?>(result);
     }

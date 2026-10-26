@@ -106,21 +106,21 @@ public sealed class TurnBudgetAndMaterializerTests
         ToolResultMaterializer materializer = new();
         string expectedHead = new('h', 32);
         string expectedTail = new('t', 32);
-        string text = expectedHead + Emoji + new string('m', 60) + expectedTail;
+        string text = expectedHead + Emoji + new string('m', 160) + expectedTail;
 
         ToolResultMaterialization result = materializer.Materialize(
             "read_file",
             text,
             new ToolResultMaterializerOptions(
-                MaxTokens: 30,
+                MaxTokens: 44,
                 MaxUtf8Bytes: 1_024,
                 PreservePrefixAndSuffix: true));
 
         Assert.True(result.WasTruncated);
         Assert.StartsWith(expectedHead + "\n…\n", result.TextForModel, StringComparison.Ordinal);
-        Assert.EndsWith(expectedTail + TruncationMarker, result.TextForModel, StringComparison.Ordinal);
+        Assert.EndsWith(expectedTail + "\n[truncated: showing 64 of 226 characters. Narrow the request or use pagination to obtain omitted content.]", result.TextForModel, StringComparison.Ordinal);
         AssertValidUtf8(result.TextForModel);
-        AssertWithinBudgets(result.TextForModel, maxTokens: 30, maxUtf8Bytes: 1_024);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 44, maxUtf8Bytes: 1_024);
     }
 
     [Fact]
@@ -128,21 +128,21 @@ public sealed class TurnBudgetAndMaterializerTests
     {
         ToolResultMaterializer materializer = new();
         string expectedTail = Emoji + new string('z', 30);
-        string text = new string('a', 100) + expectedTail;
+        string text = new string('a', 200) + expectedTail;
 
         ToolResultMaterialization result = materializer.Materialize(
             "read_file",
             text,
             new ToolResultMaterializerOptions(
-                MaxTokens: 30,
+                MaxTokens: 44,
                 MaxUtf8Bytes: 1_024,
                 PreservePrefixAndSuffix: true));
 
         Assert.True(result.WasTruncated);
-        Assert.EndsWith(expectedTail + TruncationMarker, result.TextForModel, StringComparison.Ordinal);
+        Assert.EndsWith(expectedTail + "\n[truncated: showing 65 of 232 characters. Narrow the request or use pagination to obtain omitted content.]", result.TextForModel, StringComparison.Ordinal);
         Assert.Contains("\n…\n", result.TextForModel, StringComparison.Ordinal);
         AssertValidUtf8(result.TextForModel);
-        AssertWithinBudgets(result.TextForModel, maxTokens: 30, maxUtf8Bytes: 1_024);
+        AssertWithinBudgets(result.TextForModel, maxTokens: 44, maxUtf8Bytes: 1_024);
     }
 
     [Fact]
@@ -583,7 +583,6 @@ public sealed class TurnBudgetAndMaterializerTests
     [Fact]
     public void ToolExecutionPipeline_routes_check_results_through_structured_materialization()
     {
-
         WorkspaceCheckToolResultEnvelope envelope = new()
         {
             Status = "failed",
@@ -634,7 +633,6 @@ public sealed class TurnBudgetAndMaterializerTests
     [Fact]
     public void Workspace_check_materialization_drops_raw_streams_before_diagnostics()
     {
-
         WorkspaceCheckToolResultEnvelope envelope = new()
         {
             Status = "failed",
@@ -699,7 +697,6 @@ public sealed class TurnBudgetAndMaterializerTests
     [Fact]
     public void ToolExecutionPipeline_keeps_receipt_handled_patch_result_byte_exact()
     {
-
         // Deliberately past the budget every other result is measured against, so that returning it
         // unchanged is the short circuit being proved rather than a payload that happened to fit.
         WorkspacePatchToolResultEnvelope envelope = new()
@@ -730,7 +727,6 @@ public sealed class TurnBudgetAndMaterializerTests
             new ToolResultMaterializer());
 
         Assert.Equal(frozen, materialized);
-
     }
 
     [Fact]
@@ -831,5 +827,4 @@ public sealed class TurnBudgetAndMaterializerTests
         Assert.Equal(3, retained.OmittedRecoveryArtifactPathCount);
         Assert.True(retained.Truncated);
     }
-
 }

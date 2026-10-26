@@ -10,7 +10,6 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 /// </summary>
 public static class SessionAttachmentRequestValidator
 {
-
     /// <summary>
     /// Validates attachment reference ids on <paramref name="request"/> against
     /// <paramref name="settings"/> and <paramref name="store"/>. No-op when references are null/empty.
@@ -21,7 +20,6 @@ public static class SessionAttachmentRequestValidator
         AttachmentsSettings settings,
         CancellationToken cancellationToken = default)
     {
-
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(settings);
@@ -49,13 +47,11 @@ public static class SessionAttachmentRequestValidator
                 .ValidateReferencesAsync(request.SessionId.Value, refs, cancellationToken)
                 .ConfigureAwait(false);
         }
-        catch (InvalidOperationException ex)
+        catch (SessionAttachmentReferenceException ex)
         {
             return ex.Message;
         }
 
         return null;
-
     }
-
 }

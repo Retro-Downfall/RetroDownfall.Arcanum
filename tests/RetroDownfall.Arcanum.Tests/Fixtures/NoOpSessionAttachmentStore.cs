@@ -16,7 +16,8 @@ internal sealed class NoOpSessionAttachmentStore(
     Func<SessionAttachmentRecord, CancellationToken, Task<Stream>>? openRead = null,
     Func<Guid, IReadOnlyList<Guid>, CancellationToken, Task>? clearEntryIds = null,
     Func<Exception>? lookupFailure = null,
-    Func<Guid, string, int?, SessionAttachmentRecord?>? logicalLookup = null) : ISessionAttachmentStore
+    Func<Guid, string, int?, SessionAttachmentRecord?>? logicalLookup = null,
+    Func<Exception>? validationFailure = null) : ISessionAttachmentStore
 {
     public SessionAttachmentForkScope BeginForkCopyScope(Guid forkSessionId) => new NoOpForkScope();
 
@@ -175,7 +176,7 @@ internal sealed class NoOpSessionAttachmentStore(
         Guid sessionId,
         IReadOnlyList<Guid> attachmentIds,
         CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+        validationFailure is null ? Task.CompletedTask : Task.FromException(validationFailure());
 
     public async Task<IDisposable> AcquireSessionGateAsync(
         Guid sessionId,

@@ -28,11 +28,9 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 [Collection("Telemetry")]
 public sealed class ToolExecutionPipelineHumanPromptMetricTests
 {
-
     [Fact]
     public async Task ProcessSingleToolCall_HumanPromptTimeout_RecordsErrorOutcome()
     {
-
         string toolMarker = $"ask_human_{Guid.NewGuid():N}";
 
         ConcurrentQueue<string> outcomes = new();
@@ -44,7 +42,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
-
             if (instrument.Name != "arcanum_tool_invocations_total")
             {
                 return;
@@ -56,7 +53,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
             foreach (KeyValuePair<string, object?> tag in tags)
             {
-
                 if (tag.Key == "tool_name" && tag.Value is string tn)
                 {
                     toolName = tn;
@@ -66,14 +62,12 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
                 {
                     outcome = o;
                 }
-
             }
 
             if (string.Equals(toolName, toolMarker, StringComparison.Ordinal) && outcome is not null)
             {
                 outcomes.Enqueue(outcome);
             }
-
         });
 
         listener.Start();
@@ -121,13 +115,11 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
         string recorded = Assert.Single(outcomes);
 
         Assert.Equal("error", recorded);
-
     }
 
     [Fact]
     public async Task ProcessSingleToolCall_UseCommlink_RecordsCanonicalSendCommlinkAlertMetric()
     {
-
         ConcurrentQueue<string> toolNames = new();
 
         using MeterListener listener = new()
@@ -137,7 +129,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
-
             if (instrument.Name != "arcanum_tool_invocations_total")
             {
                 return;
@@ -145,14 +136,11 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
             foreach (KeyValuePair<string, object?> tag in tags)
             {
-
                 if (tag.Key == "tool_name" && tag.Value is string tn)
                 {
                     toolNames.Enqueue(tn);
                 }
-
             }
-
         });
 
         listener.Start();
@@ -192,7 +180,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
         string recorded = Assert.Single(toolNames);
 
         Assert.Equal("send_commlink_alert", recorded);
-
     }
 
     /// <summary>
@@ -204,7 +191,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
     [Fact]
     public async Task ProcessSingleToolCall_UnregisteredToolName_RecordsSentinelLabelAndErrorOutcome()
     {
-
         ConcurrentQueue<(string ToolName, string Outcome)> measurements = new();
 
         using MeterListener listener = new()
@@ -214,7 +200,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
         listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
-
             if (instrument.Name != "arcanum_tool_invocations_total")
             {
                 return;
@@ -226,7 +211,6 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
 
             foreach (KeyValuePair<string, object?> tag in tags)
             {
-
                 if (tag.Key == "tool_name" && tag.Value is string tn)
                 {
                     toolName = tn;
@@ -236,14 +220,12 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
                 {
                     outcome = o;
                 }
-
             }
 
             if (toolName is not null && outcome is not null)
             {
                 measurements.Enqueue((toolName, outcome));
             }
-
         });
 
         listener.Start();
@@ -278,19 +260,17 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
                 suppressInvocationFailures: true,
                 cancellationToken: CancellationToken.None);
 
-        Assert.Contains("No local tool registered", processed.ResultText, StringComparison.Ordinal);
+        Assert.Contains("Choose an advertised tool: send_commlink_alert", processed.ResultText, StringComparison.Ordinal);
 
         (string ToolName, string Outcome) recorded = Assert.Single(measurements);
 
         Assert.Equal(ToolExecutionPipeline.UnregisteredToolMetricLabel, recorded.ToolName);
 
         Assert.Equal("error", recorded.Outcome);
-
     }
 
     private sealed class FakeWard : IWard
     {
-
         public Task<WardResolution> WardAsync(
             string wardId,
             string toolName,
@@ -310,12 +290,10 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             new(allowed, reason, DateTimeOffset.UtcNow, origin);
 
         public IReadOnlyList<ActiveWard> GetActiveWards() => [];
-
     }
 
     private sealed class AllowAllSanctumGuard : ISanctumGuard
     {
-
         public Task<SanctumResult> ValidatePathAsync(
             string campaignId,
             string requestedPath,
@@ -352,7 +330,5 @@ public sealed class ToolExecutionPipelineHumanPromptMetricTests
             string? actualValue,
             CancellationToken ct = default) =>
             Task.CompletedTask;
-
     }
-
 }

@@ -356,7 +356,7 @@ public sealed class ToolExecutionPipeline(
             ? new List<IntelligenceEvent>(2)
             : null;
 
-        bool isApplyPatch = string.Equals(
+        bool isApplyPatch = isRegisteredTool && string.Equals(
                 toolName,
                 ToolRiskClassifier.ApplyPatchToolName,
                 StringComparison.OrdinalIgnoreCase);
@@ -530,7 +530,7 @@ public sealed class ToolExecutionPipeline(
 
         AttachmentRefreshEvent? attachmentRefresh = null;
 
-        bool executedSuccessfully = !wardedExecution.Failed && !wardedExecution.Denied;
+        bool executedSuccessfully = isRegisteredTool && !wardedExecution.Failed && !wardedExecution.Denied;
 
         if (executedSuccessfully
             && string.Equals(toolName, "attach_session_file", StringComparison.Ordinal)
@@ -639,7 +639,7 @@ public sealed class ToolExecutionPipeline(
             argsSnapshot,
             resultText,
             wardedExecution.WardEvents,
-            wardedExecution.Failed,
+            wardedExecution.Failed || !isRegisteredTool,
             additionalContext,
             applyPatchContext?.ReceiptHandled == true,
             wardedExecution.Denied,
@@ -668,11 +668,11 @@ public sealed class ToolExecutionPipeline(
             return RefreshError("session_required", "No current session is available for attachment refresh.");
         }
 
-        if (!TryParseRefreshSelector(call.Arguments, out Guid? attachmentId, out string? logicalKey))
+        if (!TryParseRefreshSelector(call.Arguments, out Guid? attachmentId, out string? logicalKey, out string? selectorError))
         {
             return RefreshError(
                 "invalid_selector",
-                "Exactly one of attachmentId or logicalKey is required.");
+                selectorError!);
         }
 
         return await ProcessRefreshSessionFileCoreAsync(
@@ -957,9 +957,18 @@ public sealed class ToolExecutionPipeline(
                     cancellationToken)
                 .ConfigureAwait(false);
         }
+        catch (AttachmentLimitExceededException)
+        {
+            return RefreshError("attachment_budget_exhausted", "The session attachment storage limit was reached. Remove unneeded attachment versions or choose a smaller source.");
+        }
         catch (InvalidOperationException ex)
         {
-            return RefreshError("attachment_budget_exhausted", ex.Message);
+            logger.LogWarning(
+                "Session attachment refresh persistence refused for attachment {AttachmentId}; exception type {ExceptionType}.",
+                latest.Id,
+                ex.GetType().FullName);
+
+            return RefreshError("source_unavailable", "The attachment source could not be verified or saved. Reattach the source; if this continues, check the host logs.");
         }
 
         IReadOnlyList<AIContent>? additional = includeAdditionalContext
@@ -1036,10 +1045,12 @@ public sealed class ToolExecutionPipeline(
     private static bool TryParseRefreshSelector(
         IDictionary<string, object?>? arguments,
         out Guid? attachmentId,
-        out string? logicalKey)
+        out string? logicalKey,
+        out string? error)
     {
         attachmentId = null;
         logicalKey = null;
+        error = "Exactly one of attachmentId or logicalKey is required. Choose an attachment from the session attachment index.";
         if (arguments is null)
         {
             return false;
@@ -1053,20 +1064,30 @@ public sealed class ToolExecutionPipeline(
                 {
                     Guid guid => guid.ToString("D"),
                     JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(),
-                    _ => raw?.ToString(),
+                    string value => value,
+                    _ => null,
                 };
-                if (Guid.TryParse(text, out Guid parsed) && parsed != Guid.Empty)
+                if (!Guid.TryParse(text, out Guid parsed) || parsed == Guid.Empty)
                 {
-                    attachmentId = parsed;
+                    error = "attachmentId must be a valid non-empty GUID from the session attachment index.";
+                    return false;
                 }
+
+                attachmentId = parsed;
             }
             else if (string.Equals(key, "logicalKey", StringComparison.OrdinalIgnoreCase))
             {
                 logicalKey = raw switch
                 {
                     JsonElement { ValueKind: JsonValueKind.String } json => json.GetString()?.Trim(),
-                    _ => raw?.ToString()?.Trim(),
+                    string value => value.Trim(),
+                    _ => null,
                 };
+                if (string.IsNullOrWhiteSpace(logicalKey))
+                {
+                    error = "logicalKey must be a non-empty string from the session attachment index.";
+                    return false;
+                }
             }
         }
 
@@ -1261,7 +1282,26 @@ public sealed class ToolExecutionPipeline(
 
         if (func is null)
         {
-            return $"No local tool registered for '{fcc.Name}'.";
+            List<string> advertised = (chatOptions.Tools ?? [])
+                .OfType<AIFunction>()
+                .Select(static tool => tool.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            List<string> shown = advertised
+                .Where(static name => name.Length is > 0 and <= 64
+                    && name.All(static character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-' or '.' or ':'))
+                .Take(32)
+                .ToList();
+            if (advertised.Count == 0)
+            {
+                return "No callable tools are advertised for this turn. Continue without a tool call.";
+            }
+
+            string remaining = shown.Count < advertised.Count
+                ? $" ({advertised.Count - shown.Count} more; consult the advertised tool schemas.)"
+                : string.Empty;
+            return "The requested tool is not advertised for this turn. Choose an advertised tool: "
+                + string.Join(", ", shown) + remaining;
         }
 
         AIFunctionArguments args = fcc.Arguments is { Count: > 0 }

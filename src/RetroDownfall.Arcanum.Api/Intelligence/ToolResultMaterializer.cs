@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -8,12 +9,10 @@ using RetroDownfall.Arcanum.Infrastructure.Mcp.Protocol;
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
 /// <summary>
-/// Token-aware tool-result materializer. Uses a length/4 token estimate when a real
-/// tokenizer is not injected — sufficient for bounding model-visible text.
+/// Tool-result materializer bounded by UTF-8 bytes and a ceiling-of-length/4 token estimate.
 /// </summary>
 public sealed class ToolResultMaterializer : IToolResultMaterializer
 {
-
     public const int DefaultMaxTokens = 2048;
 
     private const string TruncationMarkerBody =
@@ -154,14 +153,18 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
         bool preserveEnds)
     {
         int maxChars = SaturatingTokenCharBudget(maxTokens);
+        string detailedMarker = DescribeTruncation(text.Length, text.Length);
+        bool useDetailedMarker = detailedMarker.Length + TruncationMarkerSeparator.Length <= maxChars
+            && Encoding.UTF8.GetByteCount(detailedMarker) + 1 <= maxBytes;
+        string marker = useDetailedMarker ? detailedMarker : TruncationMarkerBody;
         string boundedMarker = TakePrefix(
-            TruncationMarkerBody,
+            marker,
             maxChars,
             maxBytes);
 
         if (!string.Equals(
                 boundedMarker,
-                TruncationMarkerBody,
+                marker,
                 StringComparison.Ordinal))
         {
             return boundedMarker;
@@ -169,10 +172,10 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
 
         int markerReserveChars = SaturatingAdd(
             TruncationMarkerSeparator.Length,
-            TruncationMarkerBody.Length);
+            marker.Length);
         int markerReserveBytes = SaturatingAdd(
             Encoding.UTF8.GetByteCount(TruncationMarkerSeparator),
-            Encoding.UTF8.GetByteCount(TruncationMarkerBody));
+            Encoding.UTF8.GetByteCount(marker));
         int contentCharBudget = SaturatingSubtract(
             maxChars,
             markerReserveChars);
@@ -182,22 +185,23 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
 
         if (contentCharBudget == 0 || contentByteBudget == 0)
         {
-            return TruncationMarkerBody;
+            return useDetailedMarker ? DescribeTruncation(0, text.Length) : marker;
         }
 
-        string content = preserveEnds
-            ? TakePrefixAndSuffix(
-                text,
-                contentCharBudget,
-                contentByteBudget)
-            : TakePrefix(
-                text,
-                contentCharBudget,
-                contentByteBudget);
+        int shownCharacters;
+        string content;
+        if (preserveEnds)
+        {
+            content = TakePrefixAndSuffix(text, contentCharBudget, contentByteBudget, out shownCharacters);
+        }
+        else
+        {
+            content = TakePrefix(text, contentCharBudget, contentByteBudget);
+            shownCharacters = content.Length;
+        }
 
-        return content.Length == 0
-            ? TruncationMarkerBody
-            : content + TruncationMarkerSeparator + TruncationMarkerBody;
+        marker = useDetailedMarker ? DescribeTruncation(shownCharacters, text.Length) : marker;
+        return content.Length == 0 ? marker : content + TruncationMarkerSeparator + marker;
     }
 
     private static string TakePrefix(
@@ -230,18 +234,25 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
             : text[..charCount];
     }
 
+    private static string DescribeTruncation(int shown, int original) =>
+        string.Create(CultureInfo.InvariantCulture, $"[truncated: showing {shown} of {original} characters. Narrow the request or use pagination to obtain omitted content.]");
+
     private static string TakePrefixAndSuffix(
         string text,
         int maxChars,
-        int maxBytes)
+        int maxBytes,
+        out int shownCharacters)
     {
+        shownCharacters = 0;
         int separatorBytes =
             Encoding.UTF8.GetByteCount(PreservedEndsSeparator);
 
         if (maxChars <= PreservedEndsSeparator.Length
             || maxBytes <= separatorBytes)
         {
-            return TakePrefix(text, maxChars, maxBytes);
+            string prefix = TakePrefix(text, maxChars, maxBytes);
+            shownCharacters = prefix.Length;
+            return prefix;
         }
 
         int availableChars = maxChars - PreservedEndsSeparator.Length;
@@ -264,7 +275,9 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
         if (headCharBudget < firstScalarChars
             || tailCharBudget < lastScalarChars)
         {
-            return TakePrefix(text, maxChars, maxBytes);
+            string prefix = TakePrefix(text, maxChars, maxBytes);
+            shownCharacters = prefix.Length;
+            return prefix;
         }
 
         int minimumHeadBytes = Encoding.UTF8.GetByteCount(
@@ -277,7 +290,9 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
                 minimumHeadBytes,
                 minimumTailBytes))
         {
-            return TakePrefix(text, maxChars, maxBytes);
+            string prefix = TakePrefix(text, maxChars, maxBytes);
+            shownCharacters = prefix.Length;
+            return prefix;
         }
 
         int desiredHeadByteBudget =
@@ -302,9 +317,12 @@ public sealed class ToolResultMaterializer : IToolResultMaterializer
             || tailStart >= text.Length
             || head.Length >= tailStart)
         {
-            return TakePrefix(text, maxChars, maxBytes);
+            string prefix = TakePrefix(text, maxChars, maxBytes);
+            shownCharacters = prefix.Length;
+            return prefix;
         }
 
+        shownCharacters = head.Length + text.Length - tailStart;
         return head
             + PreservedEndsSeparator
             + text[tailStart..];

@@ -2127,7 +2127,7 @@ public sealed class SessionAttachmentStoreTests : IAsyncLifetime
             "text/plain",
             SessionAttachmentKind.Text);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<SessionAttachmentReferenceException>(() =>
             _store.ValidateReferencesAsync(sessionA, [b.Id]));
 
         await _store.ValidateReferencesAsync(sessionA, [a.Id, a.Id]);

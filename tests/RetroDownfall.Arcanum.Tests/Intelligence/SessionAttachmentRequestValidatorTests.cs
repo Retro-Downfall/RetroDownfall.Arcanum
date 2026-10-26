@@ -8,6 +8,28 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class SessionAttachmentRequestValidatorTests
 {
     [Fact]
+    public async Task AttachmentDiagnostics_Reference_validation_preserves_caller_cancellation()
+    {
+        using CancellationTokenSource caller = new();
+        caller.Cancel();
+        var store = new RetroDownfall.Arcanum.Tests.Fixtures.NoOpSessionAttachmentStore(validationFailure: () => new OperationCanceledException(caller.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SessionAttachmentRequestValidator.ValidateAsync(new PingRequest("hello", SessionId: Guid.NewGuid(), AttachmentReferences: [Guid.NewGuid()]), store, ResolveAttachments(true), caller.Token));
+    }
+
+    [Theory]
+    [InlineData(SessionAttachmentReferenceFailure.NotFound, "was not found")]
+    [InlineData(SessionAttachmentReferenceFailure.NotBound, "is not bound")]
+    [InlineData(SessionAttachmentReferenceFailure.WrongSession, "does not belong")]
+    public async Task AttachmentDiagnostics_Closed_reference_refusals_remain_actionable(SessionAttachmentReferenceFailure reason, string expected)
+    {
+        Guid id = Guid.NewGuid();
+        var store = new RetroDownfall.Arcanum.Tests.Fixtures.NoOpSessionAttachmentStore(validationFailure: () => new SessionAttachmentReferenceException(id, reason));
+        string? result = await SessionAttachmentRequestValidator.ValidateAsync(new PingRequest("hello", SessionId: Guid.NewGuid(), AttachmentReferences: [id]), store, ResolveAttachments(true));
+        Assert.Contains(expected, result, StringComparison.Ordinal);
+        Assert.Contains(id.ToString(), result, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ValidateAsync_NullSessionIdWithRefs_Fails()
     {
         Guid attachmentId = Guid.NewGuid();
@@ -156,7 +178,7 @@ public sealed class SessionAttachmentRequestValidatorTests
             {
                 if (!ValidIds.Contains(id))
                 {
-                    throw new InvalidOperationException($"Attachment '{id}' was not found.");
+                    throw new SessionAttachmentReferenceException(id, SessionAttachmentReferenceFailure.NotFound);
                 }
             }
 

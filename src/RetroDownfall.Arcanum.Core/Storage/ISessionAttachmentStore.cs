@@ -20,6 +20,25 @@ public enum SessionAttachmentState
     Bound,
 }
 
+/// <summary>The closed set of caller-correctable reference refusals.</summary>
+public enum SessionAttachmentReferenceFailure
+{
+    NotFound,
+    NotBound,
+    WrongSession,
+}
+
+/// <summary>A reference refusal with a code-owned message, distinct from an infrastructure fault.</summary>
+public sealed class SessionAttachmentReferenceException(
+    Guid attachmentId,
+    SessionAttachmentReferenceFailure reason) : InvalidOperationException(reason switch
+    {
+        SessionAttachmentReferenceFailure.NotFound => $"Attachment '{attachmentId}' was not found.",
+        SessionAttachmentReferenceFailure.NotBound => $"Attachment '{attachmentId}' is not bound.",
+        SessionAttachmentReferenceFailure.WrongSession => $"Attachment '{attachmentId}' does not belong to the requested session.",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+    });
+
 public enum AttachmentSourceKind
 {
     SnapshotOnly,
@@ -379,6 +398,8 @@ public interface ISessionAttachmentStore
     /// </summary>
     Task ReconcileAsync(TimeSpan pendingOlderThan, CancellationToken cancellationToken = default);
 
+    /// <summary>Throws only a code-owned reference refusal for caller mistakes; infrastructure faults propagate separately.</summary>
+    /// <exception cref="SessionAttachmentReferenceException">A reference is missing, unbound, or belongs to another Session.</exception>
     Task ValidateReferencesAsync(
         Guid sessionId,
         IReadOnlyList<Guid> attachmentIds,

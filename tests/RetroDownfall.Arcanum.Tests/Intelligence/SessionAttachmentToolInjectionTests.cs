@@ -18,7 +18,7 @@ using MeAiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace RetroDownfall.Arcanum.Tests.Intelligence;
 
-public sealed class SessionAttachmentToolInjectionTests
+public sealed partial class SessionAttachmentToolInjectionTests
 {
     [Fact]
     public Task Comprehension_attach_materializes_only_stored_document_bytes() =>
@@ -2153,6 +2153,8 @@ public sealed class SessionAttachmentToolInjectionTests
 
     private class FakeSessionAttachmentStore : ISessionAttachmentStore
     {
+        public Exception? RefreshFailure { get; set; }
+
         public List<SessionAttachmentRecord> Records { get; } = [];
 
         public Dictionary<string, byte[]> BytesByLogical { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -2199,6 +2201,8 @@ public sealed class SessionAttachmentToolInjectionTests
             AttachmentSourceResolution current,
             CancellationToken cancellationToken = default)
         {
+            if (RefreshFailure is not null) throw RefreshFailure;
+
             string hash = current.Metadata.LastObservedContentSha256!;
 
             SessionAttachmentKind refreshedKind = SessionAttachmentContentPolicy.Classify(
