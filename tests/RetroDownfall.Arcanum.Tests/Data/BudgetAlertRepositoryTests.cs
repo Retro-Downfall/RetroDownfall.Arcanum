@@ -115,7 +115,7 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task RecordAlertAsync_duplicate_threshold_today_returns_false_logs_and_keeps_one_row()
+    public async Task RecordAlertAsync_duplicate_threshold_today_returns_false_without_constraint_exceptions_or_warnings()
     {
         RequireSqlCipher();
 
@@ -125,15 +125,128 @@ public sealed class BudgetAlertRepositoryTests : IAsyncLifetime
 
         Assert.True(await repository.RecordAlertAsync(90, 18m, 20m));
 
-        Assert.False(await repository.RecordAlertAsync(90, 19m, 20m));
+        AsyncLocal<bool> observing = new() { Value = true };
+
+        List<int> constraintExceptions = [];
+
+        void Observe(object? sender, System.Runtime.ExceptionServices.FirstChanceExceptionEventArgs args)
+        {
+            if (observing.Value && args.Exception is SqliteException { SqliteErrorCode: 19 } exception)
+                constraintExceptions.Add(exception.SqliteExtendedErrorCode);
+        }
+
+        AppDomain.CurrentDomain.FirstChanceException += Observe;
+
+        try
+        {
+            Assert.False(await repository.RecordAlertAsync(90, 19m, 20m));
+        }
+        finally
+        {
+            observing.Value = false;
+
+            AppDomain.CurrentDomain.FirstChanceException -= Observe;
+        }
 
         Assert.Equal(1L, await CountAlertsAsync(90));
 
-        string warning = Assert.Single(logger.Warnings);
+        Assert.Empty(logger.Warnings);
 
-        Assert.Contains("90", warning, StringComparison.Ordinal);
+        Assert.Empty(constraintExceptions);
 
-        Assert.Contains("already recorded today", warning, StringComparison.Ordinal);
+        await using DbCommand original = _db!.Database.GetDbConnection().CreateCommand();
+
+        original.CommandText = "SELECT SpendUsd FROM BudgetAlerts WHERE Threshold=90";
+
+        await _db.Database.OpenConnectionAsync();
+
+        Assert.Equal(18m, Convert.ToDecimal(await original.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+    }
+
+    [SkippableFact]
+    public async Task Independent_connections_record_exactly_one_alert_when_their_prechecks_both_miss()
+    {
+        RequireSqlCipher();
+
+        await using ArcanumDbContext other = _fixture.CreateContext(_dbPath);
+
+        BudgetAlertRepository first = CreateRepository();
+
+        BudgetAlertRepository second = new(other, NullLogger<BudgetAlertRepository>.Instance);
+
+        Assert.False(await first.HasAlertedTodayAsync(80));
+
+        Assert.False(await second.HasAlertedTodayAsync(80));
+
+        TaskCompletionSource start = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Task<bool> WriteAsync(BudgetAlertRepository repository) => Task.Run(async () =>
+        {
+            await start.Task;
+
+            return await repository.RecordAlertAsync(80, 8m, 10m);
+        });
+
+        Task<bool>[] writes = [WriteAsync(first), WriteAsync(second)];
+
+        start.SetResult();
+
+        bool[] recorded = await Task.WhenAll(writes);
+
+        Assert.Single(recorded, value => value);
+
+        Assert.Equal(1L, await CountAlertsAsync(80));
+    }
+
+    [SkippableFact]
+    public async Task A_previous_utc_day_does_not_suppress_todays_alert()
+    {
+        RequireSqlCipher();
+
+        BudgetAlertRepository repository = CreateRepository();
+
+        Assert.True(await repository.RecordAlertAsync(80, 8m, 10m));
+
+        await using (DbCommand historical = _db!.Database.GetDbConnection().CreateCommand())
+        {
+            historical.CommandText = "UPDATE BudgetAlerts SET AlertedAt=@past WHERE Threshold=80";
+
+            DbParameter parameter = historical.CreateParameter();
+
+            parameter.ParameterName = "@past";
+
+            parameter.Value = UtcInstantText.Format(DateTimeOffset.UtcNow.AddDays(-2));
+
+            historical.Parameters.Add(parameter);
+
+            _ = await historical.ExecuteNonQueryAsync();
+        }
+
+        Assert.False(await repository.HasAlertedTodayAsync(80));
+
+        Assert.True(await repository.RecordAlertAsync(80, 9m, 10m));
+
+        Assert.True(await repository.HasAlertedTodayAsync(80));
+
+        Assert.Equal(2L, await CountAlertsAsync(80));
+    }
+
+    [SkippableFact]
+    public async Task RecordAlertAsync_unrelated_unique_constraint_is_not_a_duplicate_threshold()
+    {
+        RequireSqlCipher();
+
+        await _db!.Database.ExecuteSqlRawAsync("CREATE UNIQUE INDEX test_budget_limit_unique ON BudgetAlerts(DailyLimitUsd)");
+
+        BudgetAlertRepository repository = CreateRepository();
+
+        Assert.True(await repository.RecordAlertAsync(80, 8m, 10m));
+
+        SqliteException exception = await Assert.ThrowsAsync<SqliteException>(() => repository.RecordAlertAsync(100, 10m, 10m));
+
+        Assert.Equal(2067, exception.SqliteExtendedErrorCode);
+
+        Assert.Equal(0L, await CountAlertsAsync(100));
     }
 
     [SkippableFact]

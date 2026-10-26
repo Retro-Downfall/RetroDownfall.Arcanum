@@ -119,6 +119,11 @@ public sealed class BudgetMonitor(
     {
         try
         {
+            if (await budgetAlerts.HasAlertedTodayAsync(threshold, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+
             bool recorded = await budgetAlerts.RecordAlertAsync(threshold, spend, dailyLimit, cancellationToken).ConfigureAwait(false);
 
             if (!recorded)

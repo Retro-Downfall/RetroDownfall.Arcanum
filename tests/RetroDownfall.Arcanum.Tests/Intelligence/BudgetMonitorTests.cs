@@ -14,6 +14,85 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class BudgetMonitorTests
 {
     [Fact]
+    public async Task A_stale_precheck_does_not_bypass_insert_before_notification()
+    {
+        ControlledAlerts alerts = new(_ => Task.FromResult(false));
+
+        FakeCommLinkDispatcher commLink = new();
+
+        BudgetMonitor monitor = new(CreateScopeFactory(new TrackingGrimoireRepository { TodaySpend = 8m }, alerts),
+            commLink, new TestOptionsMonitor<ArcanumSettings>(Settings(new() { Enabled = true, DailyLimitUsd = 10m })),
+            NullLogger<BudgetMonitor>.Instance);
+
+        for (int check = 0; check < 4; check++) Assert.True((await monitor.CheckAsync()).IsSuccess);
+
+        Assert.Equal(4, alerts.RecordCalls);
+
+        Assert.Single(commLink.Dispatched);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_the_precheck_never_records_or_dispatches()
+    {
+        using CancellationTokenSource cancellation = new();
+
+        ControlledAlerts alerts = new(token =>
+        {
+            cancellation.Cancel();
+
+            return Task.FromCanceled<bool>(token);
+        });
+
+        FakeCommLinkDispatcher commLink = new();
+
+        BudgetMonitor monitor = new(CreateScopeFactory(new TrackingGrimoireRepository { TodaySpend = 8m }, alerts),
+            commLink, new TestOptionsMonitor<ArcanumSettings>(Settings(new() { Enabled = true, DailyLimitUsd = 10m })),
+            NullLogger<BudgetMonitor>.Instance);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => monitor.CheckAsync(cancellation.Token));
+
+        Assert.Equal(0, alerts.RecordCalls);
+
+        Assert.Empty(commLink.Dispatched);
+    }
+
+    [Theory]
+    [InlineData(8)]
+    [InlineData(10)]
+    public async Task Repeated_checks_above_threshold_skip_the_insert_after_the_first_alert(int spend)
+    {
+        FakeBudgetAlertRepository alerts = new();
+
+        FakeCommLinkDispatcher commLink = new();
+
+        BudgetMonitor monitor = new(CreateScopeFactory(new TrackingGrimoireRepository { TodaySpend = spend }, alerts),
+            commLink, new TestOptionsMonitor<ArcanumSettings>(Settings(new() { Enabled = true, DailyLimitUsd = 10m })),
+            NullLogger<BudgetMonitor>.Instance);
+
+        for (int check = 0; check < 5; check++)
+        {
+            Result result = await monitor.CheckAsync();
+
+            Assert.Equal(spend < 10, result.IsSuccess);
+        }
+
+        Assert.Equal(1, alerts.RecordCalls);
+
+        Assert.Equal(5, alerts.PrecheckCalls);
+
+        Assert.Single(commLink.Dispatched);
+
+        // A later UTC day's repository observation is authoritative; no singleton cache can hide it.
+        alerts.AlertedThresholdsToday.Clear();
+
+        _ = await monitor.CheckAsync();
+
+        Assert.Equal(2, alerts.RecordCalls);
+
+        Assert.Equal(2, commLink.Dispatched.Count);
+    }
+
+    [Fact]
     public async Task CheckAsync_Disabled_ReturnsSuccessWithoutCheckingSpend()
     {
         BudgetPolicySettings budget = new() { Enabled = false, DailyLimitUsd = 10m };
@@ -307,6 +386,16 @@ public sealed class BudgetMonitorTests
         }
 
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private sealed class ControlledAlerts(Func<CancellationToken, Task<bool>> precheck) : IBudgetAlertRepository
+    {
+        public int RecordCalls { get; private set; }
+
+        public Task<bool> HasAlertedTodayAsync(int threshold, CancellationToken cancellationToken = default) => precheck(cancellationToken);
+
+        public Task<bool> RecordAlertAsync(int threshold, decimal spendUsd, decimal dailyLimitUsd, CancellationToken cancellationToken = default) =>
+            Task.FromResult(++RecordCalls == 1);
     }
 
     private sealed class StubExternalSpendLedger(ExternalSpendSummary summary) : IExternalSpendLedger
