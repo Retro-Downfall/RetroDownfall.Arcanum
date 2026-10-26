@@ -3880,3 +3880,9 @@ Two additions earn no original-register credit. The exact missing Lexicon projec
 An extra RAPTOR full-project test attempt was cancelled and is not qualified. It exposed the now-repaired Lexicon catalog entries, an owned documentation guard failure repaired before stage1 approval, and an extraction contention fixture timeout now under deterministic diagnosis. No failed or cancelled attempt is treated as green.
 
 The latest passing combined verification still binds to the prior70-finding candidate349d7e96:5153 Arcanum passes/5 disclosed skips and116 Forge passes, zero-warning builds. These newer integrations require their next combined run. Full final qualification and external delivery remain outstanding.
+
+### Combined verification of the 76-finding checkpoint — 2026-10-25
+
+Candidate `896cb98d4eecd9e623470eced5c5f923cd22b207` passed the locked solution restore, a solution build with zero warnings and errors, 2,976 affected Arcanum tests (four Windows-only skips), all 198 Compendium tests, and 79 affected Forge tests. The RAPTOR foundation passed both house blankline checks and scoped whitespace verification; the worktree remained clean. Exact commands, log hashes and candidate tree are in `/private/tmp/arcanum-integrated-wave7b-manifest.json`. These are scoped integration checks; full final qualification remains outstanding.
+
+The first wave7 attempt stopped before tests because three projects had no restored assets in this worktree. Its failed setup log is retained separately; locked restore resolved that prerequisite without package or lock-file changes.
