@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Data.Common;
 
 using RetroDownfall.Arcanum.Api.Intelligence;
@@ -258,7 +259,7 @@ public sealed class LongRestSweepAdmissionOwnershipTests
 
             LongRestConfigurationEpoch epoch = new(new TestOptionsMonitor<ArcanumSettings>(new()), Guid.NewGuid());
 
-            _maintenance = new(epoch, null!, null!, null!, null!, null!, null!, null!, null!, null!, TimeProvider.System);
+            _maintenance = new(epoch, null!, null!, null!, null!, null!, null!, null!, null!, null!, TimeProvider.System, NullLogger<LongRestMaintenance>.Instance);
 
             _operation = Operations.Seed(LongRunningOperationKinds.LongRestSweep, LongRunningOperationRecoveryPolicy.ResumeFromCheckpoint);
 
@@ -267,7 +268,7 @@ public sealed class LongRestSweepAdmissionOwnershipTests
             Assert.True(ownership.TryClaim(_operation.Id, out _));
 
             _coordinator = new(Operations, null!, null!, Configuration, null!, _maintenance, null!, ownership,
-                null!, null!, TimeProvider.System, leaseGate ?? Gate);
+                null!, null!, TimeProvider.System, leaseGate ?? Gate, NullLogger<LongRestSweepCoordinator>.Instance);
         }
 
         /// <param name="lease">The caller's lease for the admitted entries; the self-admitting entries mint their own.</param>

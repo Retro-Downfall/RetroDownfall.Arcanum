@@ -99,7 +99,7 @@ public sealed partial class LongRestMaintenanceTests
 
         LongRestSweepProgress first = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
 
-        Assert.Equal(ErrorCodes.Hub.Error, first.DeferredReason);
+        Assert.Equal(ErrorCodes.LongRest.CredentialUnavailable, first.DeferredReason);
 
         Assert.Equal(2, keys.Resolutions);
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
@@ -240,10 +241,13 @@ internal sealed partial class LongRestMaintenance
     {
         try
         {
-            _ = await attempts.SettleUnresolvedSendAsync(attempt, outcome, CancellationToken.None).ConfigureAwait(false);
+            Result<LongRestDispatchAttempt> settled = await attempts.SettleUnresolvedSendAsync(attempt, outcome, CancellationToken.None).ConfigureAwait(false);
+
+            if (settled.IsFailure) LogCleanupFailure(attempt, "long_rest.settlement_failed");
         }
         catch (Exception)
         {
+            LogCleanupFailure(attempt, "long_rest.settlement_failed");
         }
     }
 
@@ -253,12 +257,19 @@ internal sealed partial class LongRestMaintenance
     {
         try
         {
-            _ = await attempts.ReleaseUnsentAttemptAsync(attempt, CancellationToken.None).ConfigureAwait(false);
+            Result released = await attempts.ReleaseUnsentAttemptAsync(attempt, CancellationToken.None).ConfigureAwait(false);
+
+            if (released.IsFailure) LogCleanupFailure(attempt, "long_rest.release_unsent_failed");
         }
         catch (Exception)
         {
+            LogCleanupFailure(attempt, "long_rest.release_unsent_failed");
         }
     }
+
+    private void LogCleanupFailure(LongRestDispatchAttempt attempt, string code) =>
+        logger.LogWarning("Long Rest recovery write failed: {Code}; operation {OperationId}, attempt {AttemptId}. The retained attempt requires recovery; the original failure is preserved.",
+            code, attempt.Work.OperationId, attempt.AttemptId);
 
     private async Task RenewClaimAsync(LongRestMaintenanceCapability capability, CancellationToken ct, ILongRestAttemptStore? independent = null)
     {
@@ -310,6 +321,9 @@ internal sealed partial class LongRestMaintenance
         }
         catch (Exception)
         {
+            logger.LogWarning("Long Rest claim heartbeat failed: {Code}; operation {OperationId}. Dispatch is cancelled; retained work requires recovery.",
+                "long_rest.claim_heartbeat_failed", generation.OperationId);
+
             await dispatch.CancelAsync().ConfigureAwait(false);
         }
     }

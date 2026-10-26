@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -220,7 +221,7 @@ public sealed partial class LongRestMaintenanceTests
         LongRunningOperationOwnership ownership = new();
 
         LongRestSweepCoordinator contested = new(f.Operations, new LongRestSweepStore(f.H.Saga.Context, f.Clock), f.H.Store, f.Epoch, CleanReviewFacts(f, null),
-            failing, f.Gate, ownership, new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+            failing, f.Gate, ownership, new LongRestSweepQueue(), f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
         Assert.True(ownership.TryClaim(f.Operation, out Guid token));
 

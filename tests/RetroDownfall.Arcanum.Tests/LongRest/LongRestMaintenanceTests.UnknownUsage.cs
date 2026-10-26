@@ -17,6 +17,64 @@ namespace RetroDownfall.Arcanum.Tests.LongRest;
 // Unknown-Usage Cap, and never usage written as zero or estimated. Only a failure raised before any request byte is "not sent".
 public sealed partial class LongRestMaintenanceTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Cleanup_refusal_is_visible_without_masking_provider_failure_or_replaying_work(bool release, bool throws)
+    {
+        await using MaintenanceFixture f = await MaintenanceFixture.CreateAsync(ownWorker: false, protectedSources: false);
+
+        if (release)
+        {
+            f.Keys = new CredentialRefusals(refuseResolution: 1);
+
+            f.ReleaseUnsent = (_, _) => throws ? throw new InvalidOperationException("private-fault-body")
+                : Task.FromResult(Result.Failure(new Error(ErrorCodes.LongRest.StaleInput, "private-fault-body")));
+        }
+        else
+        {
+            f.Handler.Status = HttpStatusCode.Unauthorized;
+
+            f.SettleUnresolved = (_, _, _) => throws ? throw new InvalidOperationException("private-fault-body")
+                : Task.FromResult(Result<LongRestDispatchAttempt>.Failure(new Error(ErrorCodes.LongRest.StaleInput, "private-fault-body")));
+        }
+
+        LongRestSweepProgress result = LongRestSweepHarness.Require(await f.ResumeAdmittedAsync(f.Operation, CancellationToken.None));
+
+        Assert.Equal(release ? "LongRest.CredentialUnavailable" : ErrorCodes.LongRest.ProviderRejected, result.DeferredReason);
+
+        Dictionary<string, object?> cleanup = Assert.Single(f.MaintenanceLog.Fields);
+
+        Assert.Equal(release ? "long_rest.release_unsent_failed" : "long_rest.settlement_failed", cleanup["Code"]);
+
+        Assert.Equal(f.Operation, cleanup["OperationId"]);
+
+        Dictionary<string, object?> parked = Assert.Single(f.CoordinatorLog.Fields);
+
+        Assert.Equal(result.DeferredReason, parked["Code"]);
+
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, Assert.Single(f.MaintenanceLog.Levels));
+
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Debug, Assert.Single(f.CoordinatorLog.Levels));
+
+        if (release)
+        {
+            Dictionary<string, object?> credential = Assert.Single(f.CredentialLog.Fields);
+
+            Assert.Equal(f.Operation, credential["OperationId"]);
+
+            Assert.Equal(result.DeferredReason, credential["Code"]);
+        }
+
+        Assert.Equal(f.Operation, parked["OperationId"]);
+
+        Assert.Equal(release ? 0 : 1, f.Handler.SendCount);
+
+        Assert.Equal(1L, await UnsettledEffectsAsync(f));
+    }
+
     private const string EffectRowsSql = """
         SELECT StateCode, COALESCE(FailureCode, ''), FailureCount, SentCount, PaidCount, PhysicalOrdinal, CompletionJson IS NULL, InputTokens, OutputTokens
         FROM long_rest_provider_effects ORDER BY PhysicalOrdinal, WorkItemId;

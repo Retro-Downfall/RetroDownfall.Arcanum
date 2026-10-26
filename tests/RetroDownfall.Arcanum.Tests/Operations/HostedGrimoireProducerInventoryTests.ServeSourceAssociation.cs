@@ -161,7 +161,10 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         ConstructorDeclarationSyntax constructor = Assert.Single(factory.Members.OfType<ConstructorDeclarationSyntax>(),
             static constructor => constructor.Modifiers.Any(static token => token.ValueText == "public"));
 
-        Assert.Equal("IProviderApiKeyResolver", constructor.ParameterList.Parameters.Single().Type!.ToString());
+        Assert.Equal(["IProviderApiKeyResolver", "ILogger<LongRestProviderClientFactory>"],
+            constructor.ParameterList.Parameters.Select(static parameter => parameter.Type!.ToString()));
+
+        Assert.All(constructor.ParameterList.Parameters, static parameter => Assert.Null(parameter.Default));
 
         Assert.DoesNotContain(factory.DescendantNodes().OfType<IdentifierNameSyntax>(), static name => name.Identifier.ValueText == "IHttpClientFactory");
 
@@ -201,7 +204,7 @@ public sealed partial class HostedGrimoireProducerInventoryTests
         MethodDeclarationSyntax connect = Assert.Single(guardTree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>(),
             static method => method.Identifier.ValueText == "EgressConnectCallbackAsync");
 
-        foreach (string expected in new[] { "ResolveValidatedAddressesAsync(", "if (resolved.IsFailure)",
+        foreach (string expected in new[] { "ResolveValidatedAddressesCoreAsync(", "diagnosticCodes: true", "if (resolved.IsFailure)",
             "foreach (IPAddress address in pinned)", "if (IsBlockedAddress(address, allowPrivateAndLoopback))",
             "await socket.ConnectAsync(new IPEndPoint(address, port), connectToken)",
             "return new NetworkStream(socket, ownsSocket: true)", "socket.Dispose()" })

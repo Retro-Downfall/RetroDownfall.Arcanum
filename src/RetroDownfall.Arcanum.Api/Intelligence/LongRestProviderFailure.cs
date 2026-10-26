@@ -1,5 +1,4 @@
 using System.ClientModel;
-using System.Globalization;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using RetroDownfall.Arcanum.Core.Primitives;
@@ -7,19 +6,10 @@ using RetroDownfall.Arcanum.Infrastructure.Security;
 
 namespace RetroDownfall.Arcanum.Api.Intelligence;
 
-/// <summary>
-/// Types a failed Long Rest SDK call for the executor from the exception chain alone. It reads exception types and, for the SDK's
-/// own error exception, the three-digit HTTP status the SDK prints at the head of its message. It keeps nothing else of that
-/// message: the provider's response body that may follow it is never copied, logged, stored or returned, and no property of the
-/// provider's answer is read.
-/// </summary>
+/// <summary>Classifies transport failures using only types and structured HTTP status; exception text is never inspected.</summary>
 internal static class LongRestProviderFailure
 {
     private const int MaximumDepth = 8;
-
-    // The two heads System.ClientModel gives an error response: "HTTP 500 (code: reason)" when the body carries an error object,
-    // and "Service request failed.\nStatus: 429 (reason)" when it does not.
-    private static readonly string[] StatusMarkers = ["HTTP ", "Status: "];
 
     /// <summary>
     /// 5xx, 429 and 408 are transient (<see cref="ErrorCodes.LongRest.ProviderUnavailable"/>); any other status that is not a
@@ -34,7 +24,9 @@ internal static class LongRestProviderFailure
     /// Anything else is a transient provider failure: the call ended without a result, so the sweep may be readmitted later. A
     /// dropped established connection is deliberately never unreachable, because it may have been served.
     /// </summary>
-    internal static Error Classify(Exception exception)
+    internal static Error Classify(Exception exception) => Classify(exception, out _);
+
+    internal static Error Classify(Exception exception, out int? httpStatus)
     {
         int status = 0;
 
@@ -48,11 +40,11 @@ internal static class LongRestProviderFailure
 
         for (int depth = 0; current is not null && depth < MaximumDepth; depth++)
         {
-            if (current is ClientResultException)
+            if (current is ClientResultException response)
             {
                 if (status == 0)
                 {
-                    status = ParseStatus(current.Message);
+                    status = response.Status is >= 100 and <= 599 ? response.Status : 0;
                 }
             }
             else if (current is OutboundConnectException)
@@ -65,8 +57,10 @@ internal static class LongRestProviderFailure
                     unreachable = true;
                 }
             }
-            else if (current is HttpRequestException)
+            else if (current is HttpRequestException request)
             {
+                if (status == 0 && request.StatusCode is { } code && (int)code is >= 100 and <= 599) status = (int)code;
+
                 http = true;
             }
             else if (current is IOException)
@@ -81,37 +75,32 @@ internal static class LongRestProviderFailure
             current = current.InnerException;
         }
 
+        httpStatus = status == 0 ? null : status;
+
         if (status != 0)
         {
-            return status is 408 or 429 or >= 500
-                ? new Error(ErrorCodes.LongRest.ProviderUnavailable, "The Long Rest provider could not complete the call right now.")
-                : new Error(ErrorCodes.LongRest.ProviderRejected, "The Long Rest provider rejected the call.");
+            string remedy = status switch
+            {
+                401 or 403 => "Check the configured provider credential and its access permissions.",
+                404 => "Check the configured model and endpoint.",
+                400 or 413 or 422 => "Check the configured model capabilities and request limits.",
+                429 => "Check the provider rate limit and quota before retrying the operation.",
+                408 => "Check provider availability before retrying the operation.",
+                >= 500 => "Check the provider service before retrying the operation.",
+                _ => "Check the provider configuration before retrying the operation.",
+            };
+
+            string diagnosis = status is 408 or 429 or >= 500 ? "could not complete" : "rejected";
+
+            return new Error(status is 408 or 429 or >= 500 ? ErrorCodes.LongRest.ProviderUnavailable : ErrorCodes.LongRest.ProviderRejected,
+                $"The Long Rest provider {diagnosis} the call (HTTP {status}). {remedy}");
         }
 
         return unreachable
-            ? new Error(ErrorCodes.LongRest.ProviderUnreachable, "The Long Rest provider could not be reached.")
-            : new Error(ErrorCodes.LongRest.ProviderUnavailable, "The Long Rest provider could not complete the call right now.");
+            ? new Error(ErrorCodes.LongRest.ProviderUnreachable, "The Long Rest provider could not be reached. Check provider availability and network access.")
+            : new Error(ErrorCodes.LongRest.ProviderUnavailable, "The Long Rest provider call ended without a result; HTTP status is unknown. Check provider availability before retrying the operation.");
     }
 
-    // Zero when the message carries no status head. Only a three-digit value in the HTTP range after a marker is accepted.
-    private static int ParseStatus(string message)
-    {
-        foreach (string marker in StatusMarkers)
-        {
-            int at = message.IndexOf(marker, StringComparison.Ordinal);
-
-            if (at < 0) continue;
-
-            int start = at + marker.Length;
-
-            if (message.Length >= start + 3
-                && int.TryParse(message.AsSpan(start, 3), NumberStyles.None, CultureInfo.InvariantCulture, out int status)
-                && status is >= 100 and <= 599)
-            {
-                return status;
-            }
-        }
-
-        return 0;
-    }
+    // Configuration labels, never endpoints or exception text. Bound their size and remove log-control characters.
+    internal static string Label(string value) => new(value.Take(128).Select(character => char.IsControl(character) ? '?' : character).ToArray());
 }

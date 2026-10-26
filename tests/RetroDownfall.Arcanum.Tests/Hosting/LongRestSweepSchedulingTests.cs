@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
 
 using Microsoft.Extensions.DependencyInjection;
@@ -434,7 +435,7 @@ public sealed partial class LongRestSweepSchedulingTests
             Queue = new();
 
             Coordinator = new(F.Operations, Sweeps, F.H.Store, F.Epoch, Facts, F.Maintenance, F.Gate,
-                Ownership, Queue, F.Services.GetRequiredService<IServiceScopeFactory>(), F.Clock, F.RecordedAdmission);
+                Ownership, Queue, F.Services.GetRequiredService<IServiceScopeFactory>(), F.Clock, F.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
             Service = new(new BorrowedScopes(this), Queue, F.Epoch, F.Admission, F.Clock, Log);
         }

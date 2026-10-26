@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -32,7 +33,7 @@ public sealed class LongRestCredentialSelectionTests
 
         RequestHandler handler = new();
 
-        using LongRestProviderClientFactory factory = new(keys, handler);
+        using LongRestProviderClientFactory factory = new(keys, handler, NullLogger<LongRestProviderClientFactory>.Instance);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
 

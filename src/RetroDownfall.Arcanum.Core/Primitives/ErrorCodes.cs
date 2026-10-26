@@ -1354,6 +1354,9 @@ public static class ErrorCodes
         /// </summary>
         public const string ProviderRejected = "LongRest.ProviderRejected";
 
+        /// <summary>The configured provider credential could not be resolved locally; no provider request was sent.</summary>
+        public const string CredentialUnavailable = "LongRest.CredentialUnavailable";
+
         /// <summary>
         /// A physical send ended without a result and without cancellation, so its billing is unknown. It is also the failure code
         /// written to the settled attempt, and the code a work unit parks under once it has spent its allowance of unknown attempts.

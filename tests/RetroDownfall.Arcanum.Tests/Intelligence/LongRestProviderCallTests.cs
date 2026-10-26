@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.AI;
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Configuration;
@@ -223,7 +224,7 @@ public sealed class LongRestProviderCallTests
         await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync();
         LongRestProviderFixture.CountingProvider handler = new();
 
-        using LongRestProviderClientFactory factory = new(new FailedKeys(), handler);
+        using LongRestProviderClientFactory factory = new(new FailedKeys(), handler, NullLogger<LongRestProviderClientFactory>.Instance);
         bool failed = false;
         string? message = null;
         Exception? exception = await Record.ExceptionAsync(async () =>
@@ -232,22 +233,103 @@ public sealed class LongRestProviderCallTests
             {
                 Result<EmbeddingGeneratorLease> result = await factory.ResolveEmbeddingAsync(f.Epoch.Capture().ResolveEmbedding().Value, CancellationToken.None);
                 failed = result.IsFailure;
+                Assert.Equal("LongRest.CredentialUnavailable", result.Error.Code);
                 message = result.Error.Message;
             }
             else
             {
                 Result<ChatClientLease> result = await factory.ResolveChatAsync(f.Epoch.Capture().ResolveChat().Value, CancellationToken.None);
                 failed = result.IsFailure;
+                Assert.Equal("LongRest.CredentialUnavailable", result.Error.Code);
                 message = result.Error.Message;
             }
         });
 
         Assert.Null(exception);
         Assert.True(failed);
+        Assert.Contains("credential", message!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("reachable", message!, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("protected-resolver-body", message!, StringComparison.Ordinal);
         Assert.Equal(0, f.Handler.SendCount);
 
         Assert.Equal(0, handler.SendCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Credential_failure_logs_bounded_selection_and_operation_once_and_caller_cancellation_stays_cancellation(bool embedding)
+    {
+        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync();
+
+        LongRestProviderFixture.SafeLog<LongRestProviderClientFactory> log = new();
+
+        LongRestProviderSelection selection = embedding ? f.Epoch.Capture().ResolveEmbedding().Value : f.Epoch.Capture().ResolveChat().Value;
+
+        selection = selection with { Provider = selection.Provider with { Name = "provider\n" + new string('p', 256) }, Model = "model\r" + new string('m', 256) };
+
+        Guid operation = Guid.NewGuid();
+
+        using LongRestProviderClientFactory factory = new(new FailedKeys(), new LongRestProviderFixture.CountingProvider(), log);
+
+        if (embedding) _ = await factory.ResolveEmbeddingAsync(selection, CancellationToken.None, operation);
+        else _ = await factory.ResolveChatAsync(selection, CancellationToken.None, operation);
+
+        Dictionary<string, object?> fields = Assert.Single(log.Fields);
+
+        Assert.Equal(ErrorCodes.LongRest.CredentialUnavailable, fields["Code"]);
+
+        Assert.Equal(operation, fields["OperationId"]);
+
+        Assert.Equal(128, Assert.IsType<string>(fields["Provider"]).Length);
+
+        Assert.Equal(128, Assert.IsType<string>(fields["Model"]).Length);
+
+        Assert.DoesNotContain("\n", Assert.Single(log.Messages), StringComparison.Ordinal);
+
+        Assert.DoesNotContain("protected-resolver-body", Assert.Single(log.Messages), StringComparison.Ordinal);
+
+        using CancellationTokenSource cancelled = new();
+
+        await cancelled.CancelAsync();
+
+        Exception? failure = await Record.ExceptionAsync(async () =>
+        {
+            if (embedding) _ = await factory.ResolveEmbeddingAsync(selection, cancelled.Token, operation);
+            else _ = await factory.ResolveChatAsync(selection, cancelled.Token, operation);
+        });
+
+        Assert.IsAssignableFrom<OperationCanceledException>(failure);
+
+        Assert.Single(log.Fields);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_credential_resolution_propagates_without_logging_a_credential_fault()
+    {
+        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync();
+
+        using CancellationTokenSource stopping = new();
+
+        LongRestProviderFixture.SafeLog<LongRestProviderClientFactory> log = new();
+
+        using LongRestProviderClientFactory factory = new(new CancelledKeys(stopping), new LongRestProviderFixture.CountingProvider(), log);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => factory.ResolveChatAsync(f.Epoch.Capture().ResolveChat().Value, stopping.Token));
+
+        Assert.Empty(log.Messages);
+    }
+
+    private sealed class CancelledKeys(CancellationTokenSource stopping) : IProviderApiKeyResolver
+    {
+        public async Task<string?> ResolveAsync(ProviderSettings provider, CancellationToken cancellationToken)
+        {
+            await stopping.CancelAsync();
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return null;
+        }
     }
 
     private sealed class FailedKeys : IProviderApiKeyResolver

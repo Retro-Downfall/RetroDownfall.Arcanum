@@ -56,7 +56,7 @@ public sealed class LongRestLateCancellationTests
             new LongRestLiveFenceReader(f.H.Saga.Context, f.Runtime, f.RecordedAdmission, f.Epoch,
                 new CampaignAvailabilityReader(connections), new CampaignPathIdentityReader(connections, null!)),
             f.Maintenance, f.Gate, new LongRunningOperationOwnership(), new LongRestSweepQueue(),
-            f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission);
+            f.Services.GetRequiredService<IServiceScopeFactory>(), f.Clock, f.RecordedAdmission, NullLogger<LongRestSweepCoordinator>.Instance);
 
         Assert.True(f.RecordedAdmission.TryAcquireWorkLease(GrimoireWorkKind.LongRestSweep, out IGrimoireWorkLease? admitted));
 

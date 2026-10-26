@@ -171,6 +171,8 @@ public sealed class LongRestOwnedTransportTests
 
             services.AddSingleton<IProviderApiKeyResolver>(Keys);
 
+            services.AddLogging();
+
             services.AddScoped<LongRestProviderClientFactory>();
 
             Services = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

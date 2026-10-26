@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.LongRest;
 using RetroDownfall.Arcanum.Core.Operations;
@@ -147,6 +148,9 @@ internal sealed partial class LongRestSweepCoordinator
             }
             catch (Refused refusal)
             {
+                // The provider boundary owns the Warning and its diagnosis; this event only correlates the parked operation.
+                logger.LogDebug("Long Rest sweep parked: {Code}; operation {OperationId}.", refusal.Error.Code, operation.Id);
+
                 return new(progress with { DeferredReason = refusal.Error.Code }, LongRunningOperationRecoveryResult.RequiresAttention(refusal.Error.Code));
             }
             catch (LongRestMaintenanceDeferredException)
@@ -210,9 +214,7 @@ internal sealed partial class LongRestSweepCoordinator
                 if (latest is null || latest.LeaseOwner != owner || latest.State != LongRunningOperationState.Running
                     || !await independent.RenewLeaseAsync(operation, owner, now, now.Add(LeaseDuration), stoppingToken).ConfigureAwait(false))
                 {
-                    await dispatch.CancelAsync().ConfigureAwait(false);
-
-                    return;
+                    throw new Refused(Unavailable());
                 }
             }
         }
@@ -221,9 +223,15 @@ internal sealed partial class LongRestSweepCoordinator
         }
         catch (Exception)
         {
+            LogWorkerHeartbeatFailure(operation);
+
             await dispatch.CancelAsync().ConfigureAwait(false);
         }
     }
+
+    private void LogWorkerHeartbeatFailure(Guid operation) =>
+        logger.LogWarning("Long Rest worker heartbeat failed: {Code}; operation {OperationId}. Dispatch is cancelled; retained work requires recovery.",
+            "long_rest.worker_heartbeat_failed", operation);
 
     private static LongRestSweepCheckpoint Checkpoint(LongRestSweep sweep) => new(1, sweep.OperationId, sweep.Scope.Kind,
         sweep.Scope.CampaignId, sweep.GenerationId == Guid.Empty ? null : sweep.GenerationId,

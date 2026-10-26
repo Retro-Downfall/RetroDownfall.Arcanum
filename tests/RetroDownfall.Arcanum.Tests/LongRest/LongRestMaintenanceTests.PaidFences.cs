@@ -320,7 +320,8 @@ public sealed partial class LongRestMaintenanceTests
 
     private sealed class PaidFenceAttemptStore(ILongRestAttemptStore inner,
         Func<LongRestDispatchAttempt, CancellationToken, Task> validated,
-        Func<LongRestDispatchAttempt, LongRestUnresolvedSend, CancellationToken, Task<Result<LongRestDispatchAttempt>>?>? settle = null) : ILongRestAttemptStore
+        Func<LongRestDispatchAttempt, LongRestUnresolvedSend, CancellationToken, Task<Result<LongRestDispatchAttempt>>?>? settle = null,
+        Func<LongRestDispatchAttempt, CancellationToken, Task<Result>?>? release = null) : ILongRestAttemptStore
     {
         public Task<Result<SessionTurnClaimLease>> RenewClaimAsync(SessionTurnClaimLease claim, CanonicalCampaignContext scope, CancellationToken ct) => inner.RenewClaimAsync(claim, scope, ct);
 
@@ -335,7 +336,7 @@ public sealed partial class LongRestMaintenanceTests
         public Task<Result<LongRestDispatchAttempt>> SettleUnresolvedSendAsync(LongRestDispatchAttempt attempt, LongRestUnresolvedSend outcome, CancellationToken ct) =>
             settle?.Invoke(attempt, outcome, ct) ?? inner.SettleUnresolvedSendAsync(attempt, outcome, ct);
 
-        public Task<Result> ReleaseUnsentAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct) => inner.ReleaseUnsentAttemptAsync(attempt, ct);
+        public Task<Result> ReleaseUnsentAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct) => release?.Invoke(attempt, ct) ?? inner.ReleaseUnsentAttemptAsync(attempt, ct);
 
         public async Task<Result> ValidateAttemptAsync(LongRestDispatchAttempt attempt, CancellationToken ct)
         {

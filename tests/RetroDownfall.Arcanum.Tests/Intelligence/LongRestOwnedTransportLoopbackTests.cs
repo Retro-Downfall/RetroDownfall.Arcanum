@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -180,7 +181,7 @@ public sealed class LongRestOwnedTransportLoopbackTests
             _ => "no-such-host.example",
         };
 
-        using LongRestProviderClientFactory factory = new(new Keys(), OutboundUrlGuard.CreateProviderEgressHandler(dns));
+        using LongRestProviderClientFactory factory = new(new Keys(), OutboundUrlGuard.CreateProviderEgressHandler(dns), NullLogger<LongRestProviderClientFactory>.Instance);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
@@ -208,7 +209,7 @@ public sealed class LongRestOwnedTransportLoopbackTests
 
         dns.Add("refusing.example", IPAddress.Loopback);
 
-        using LongRestProviderClientFactory factory = new(new Keys(), OutboundUrlGuard.CreateProviderEgressHandler(dns));
+        using LongRestProviderClientFactory factory = new(new Keys(), OutboundUrlGuard.CreateProviderEgressHandler(dns), NullLogger<LongRestProviderClientFactory>.Instance);
 
         using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(20));
 
@@ -304,6 +305,8 @@ public sealed class LongRestOwnedTransportLoopbackTests
             .ConfigurePrimaryHttpMessageHandler(static () => OutboundUrlGuard.CreateProviderEgressHandler());
 
         services.AddSingleton<IProviderApiKeyResolver>(new Keys());
+
+        services.AddLogging();
 
         services.AddScoped<LongRestProviderClientFactory>();
 

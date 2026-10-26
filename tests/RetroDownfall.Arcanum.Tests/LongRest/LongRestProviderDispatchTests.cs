@@ -172,6 +172,74 @@ public sealed class LongRestProviderDispatchTests
         Assert.Equal(0L, await f.H.ScalarAsync("SELECT count(*) FROM BillableOperations;"));
     }
 
+    [Theory]
+    [InlineData(LongRestProviderPayloadKind.Summary, 400, "request limits")]
+    [InlineData(LongRestProviderPayloadKind.Summary, 401, "credential")]
+    [InlineData(LongRestProviderPayloadKind.Embedding, 401, "credential")]
+    [InlineData(LongRestProviderPayloadKind.Embedding, 404, "model and endpoint")]
+    [InlineData(LongRestProviderPayloadKind.Summary, 429, "rate limit")]
+    [InlineData(LongRestProviderPayloadKind.Embedding, 503, "service")]
+    public async Task Provider_failure_identifies_status_remedy_and_safe_structured_context(LongRestProviderPayloadKind kind, int status, string remedy)
+    {
+        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync(kind);
+
+        f.Handler.Status = (HttpStatusCode)status;
+
+        Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
+            f.Callback(await f.PrepareAsync()), f.Admission(), CancellationToken.None);
+
+        Assert.True(result.IsFailure);
+
+        Assert.Equal(status is 429 or >= 500 ? ErrorCodes.LongRest.ProviderUnavailable : ErrorCodes.LongRest.ProviderRejected, result.Error.Code);
+
+        Assert.Contains($"HTTP {status}", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Contains(remedy, result.Error.Message, StringComparison.OrdinalIgnoreCase);
+
+        Assert.DoesNotContain("protected-test-body", result.Error.Message, StringComparison.Ordinal);
+
+        Dictionary<string, object?> fields = Assert.Single(f.Log.Fields);
+
+        Assert.Equal(LogLevel.Warning, Assert.Single(f.Log.Levels));
+
+        Assert.Equal("provider", fields["Provider"]);
+
+        Assert.Equal(kind == LongRestProviderPayloadKind.Embedding ? "embedding" : "model", fields["Model"]);
+
+        Assert.Equal(f.Payload.Work.OperationId, fields["OperationId"]);
+
+        Assert.Equal(status, fields["HttpStatus"]);
+
+        Assert.Equal(result.Error.Code, fields["Code"]);
+
+        Assert.Equal(1, f.Handler.SendCount);
+
+        Assert.DoesNotContain("protected-test-body", Assert.Single(f.Log.Messages), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("HTTP 401 (private-fault-body)")]
+    [InlineData("private-fault-body Status: 404")]
+    public async Task Unknown_transport_status_does_not_infer_status_from_exception_text(string body)
+    {
+        await using LongRestProviderFixture f = await LongRestProviderFixture.CreateAsync();
+
+        f.Handler.TransportFailure = new System.ClientModel.ClientResultException(body, null!);
+
+        Result<LongRestProviderResult> result = await f.Provider.ExecuteAsync(f.Payload, UnrestrictedTurnBudget.Instance,
+            f.Callback(await f.PrepareAsync()), f.Admission(), CancellationToken.None);
+
+        Assert.Equal(ErrorCodes.LongRest.ProviderUnavailable, result.Error.Code);
+
+        Assert.Contains("status is unknown", result.Error.Message, StringComparison.Ordinal);
+
+        Assert.Null(Assert.Single(f.Log.Fields)["HttpStatus"]);
+
+        Assert.DoesNotContain("private-fault-body", Assert.Single(f.Log.Messages), StringComparison.Ordinal);
+
+        Assert.Equal(1, f.Handler.SendCount);
+    }
+
     [Fact]
     public async Task Provider_error_bodies_never_enter_the_public_failure_or_executor_log()
     {
@@ -552,7 +620,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
             LongRestAcceptedHierarchySummary summary = new(generation.GenerationId, Guid.NewGuid(), work.Fold, work.Fold.Work.RecipeDigest,
                 paid.Attempt.PayloadDigest, "tainttoken summary", DerivedArtifactContentDigest.ForText("tainttoken summary"),
-                work.Fold.Children[0].Sensitivity, provenance, [..work.Fold.Children.SelectMany(c => c.LabelDigests).Distinct()], paid);
+                work.Fold.Children[0].Sensitivity, provenance, [.. work.Fold.Children.SelectMany(c => c.LabelDigests).Distinct()], paid);
             summary = LongRestSweepHarness.Require(await f.H.Store.CommitAcceptedHierarchySummaryAsync(summary, f.Capability, CancellationToken.None));
 
             LongRestHierarchyPublication publication = await f.H.EmbeddingAsync(work, summary);
@@ -576,7 +644,7 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
 
         f.Attempts = new(f.H.Saga.Context, TimeProvider.System);
 
-        f.ClientFactory = new(new NoKeys(), f.Handler);
+        f.ClientFactory = new(new NoKeys(), f.Handler, NullLogger<LongRestProviderClientFactory>.Instance);
 
         f.Provider = new(f.ClientFactory, new ModelCallExecutor(f.Estimator, f.Options, f.Log), f.Epoch,
             new PaidRunWriter(new TurnRunWriter(f.H.Saga.Context), () => f.PaidRecorded?.Invoke()),
@@ -720,15 +788,32 @@ internal sealed class LongRestProviderFixture : IAsyncDisposable
         await H.DisposeAsync();
     }
 
-    internal sealed class SafeLog : ILogger<ModelCallExecutor>
+    internal sealed class SafeLog : SafeLog<ModelCallExecutor>
+    {
+    }
+
+    internal class SafeLog<T> : ILogger<T>
     {
         internal List<string> Messages = [];
+
+        internal List<Dictionary<string, object?>> Fields = [];
+
+        internal List<LogLevel> Levels = [];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            Assert.Null(exception);
+
+            Messages.Add(formatter(state, exception));
+
+            Levels.Add(logLevel);
+
+            Fields.Add(((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary(pair => pair.Key, pair => pair.Value));
+        }
     }
 
     internal sealed class RecordingAudit : IInferenceAuditLogger

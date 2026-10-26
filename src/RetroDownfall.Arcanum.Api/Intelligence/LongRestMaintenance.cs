@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Security.Cryptography;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -19,7 +20,7 @@ namespace RetroDownfall.Arcanum.Api.Intelligence;
 internal sealed partial class LongRestMaintenance(LongRestConfigurationEpoch epoch, ILongRestDiscoveryStore discovery,
     ILongRestSweepStore sweeps, ILongRestAttemptStore attempts, LongRestLiveFenceReader facts, ICovenantOperationGate gate,
     ILongRestProvider provider, IModelTokenEstimator estimator, ICovenantDisclosureJournal disclosures,
-    IServiceScopeFactory scopes, TimeProvider timeProvider) : ILongRestMaintenance, ILongRestAdmittedMaintenance
+    IServiceScopeFactory scopes, TimeProvider timeProvider, ILogger<LongRestMaintenance> logger) : ILongRestMaintenance, ILongRestAdmittedMaintenance
 {
     public async Task<Result<LongRestMaintenanceCapability>> CreateCapabilityAsync(Guid operationId, ArcanumInvocationContext invocation,
         SessionTurnClaimLease claim, CanonicalCampaignContext scope, CovenantTurnLease lease, CancellationToken ct)

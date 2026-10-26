@@ -37472,7 +37472,8 @@ public sealed partial class HostedGrimoireProducerInventoryTests(ITestOutputHelp
         const string selectedFactory = "actualScope.ServiceProvider\n        .GetRequiredService<RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory>()";
 
         const string customFactory = "new RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory("
-            + "actualScope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver>())";
+            + "actualScope.ServiceProvider.GetRequiredService<RetroDownfall.Arcanum.Core.Security.IProviderApiKeyResolver>(), "
+            + "actualScope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<RetroDownfall.Arcanum.Api.Intelligence.LongRestProviderClientFactory>>())";
 
         if (shape is "explicit-custom-owner" or "helper-custom-owner")
         {

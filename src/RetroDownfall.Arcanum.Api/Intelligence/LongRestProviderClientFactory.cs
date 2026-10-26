@@ -2,6 +2,7 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using OpenAI;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Intelligence;
@@ -19,19 +20,23 @@ public sealed class LongRestProviderClientFactory : IDisposable
 
     private readonly HttpClient _httpClient;
 
+    private readonly ILogger<LongRestProviderClientFactory> _logger;
+
     private int _disposed;
 
-    public LongRestProviderClientFactory(IProviderApiKeyResolver keys)
+    public LongRestProviderClientFactory(IProviderApiKeyResolver keys, ILogger<LongRestProviderClientFactory> logger)
     {
         ArgumentNullException.ThrowIfNull(keys);
 
         _keys = keys;
 
+        _logger = logger;
+
         _httpClient = CreateOwnedHttpClient();
     }
 
     // Alternate owned-handler test path. Production DI selects the public constructor.
-    internal LongRestProviderClientFactory(IProviderApiKeyResolver keys, HttpMessageHandler handler)
+    internal LongRestProviderClientFactory(IProviderApiKeyResolver keys, HttpMessageHandler handler, ILogger<LongRestProviderClientFactory> logger)
     {
         ArgumentNullException.ThrowIfNull(keys);
 
@@ -39,10 +44,12 @@ public sealed class LongRestProviderClientFactory : IDisposable
 
         _keys = keys;
 
+        _logger = logger;
+
         _httpClient = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
 
-    public async Task<Result<ChatClientLease>> ResolveChatAsync(LongRestProviderSelection selection, CancellationToken ct)
+    public async Task<Result<ChatClientLease>> ResolveChatAsync(LongRestProviderSelection selection, CancellationToken ct, Guid? operationId = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
@@ -55,7 +62,7 @@ public sealed class LongRestProviderClientFactory : IDisposable
             throw new InvalidOperationException("Provider output-token limit wire dialect is not defined.");
         }
 
-        Result<string?> key = await ResolveCredentialAsync(selection.Provider, ct).ConfigureAwait(false);
+        Result<string?> key = await ResolveCredentialAsync(selection, operationId, ct).ConfigureAwait(false);
 
         if (key.IsFailure) return key.Error;
 
@@ -70,13 +77,13 @@ public sealed class LongRestProviderClientFactory : IDisposable
         return new ChatClientLease(client.AsIChatClient(), selection.Provider, selection.Model, ownedHttpClient: null);
     }
 
-    public async Task<Result<EmbeddingGeneratorLease>> ResolveEmbeddingAsync(LongRestProviderSelection selection, CancellationToken ct)
+    public async Task<Result<EmbeddingGeneratorLease>> ResolveEmbeddingAsync(LongRestProviderSelection selection, CancellationToken ct, Guid? operationId = null)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
         if (selection.Provider.Type != AiProviderKind.OpenAICompatible || selection.Dimensions <= 0) return Unsupported();
 
-        Result<string?> key = await ResolveCredentialAsync(selection.Provider, ct).ConfigureAwait(false);
+        Result<string?> key = await ResolveCredentialAsync(selection, operationId, ct).ConfigureAwait(false);
 
         if (key.IsFailure) return key.Error;
 
@@ -94,14 +101,14 @@ public sealed class LongRestProviderClientFactory : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) == 0) _httpClient.Dispose();
     }
 
-    private async Task<Result<string?>> ResolveCredentialAsync(ProviderSettings provider, CancellationToken ct)
+    private async Task<Result<string?>> ResolveCredentialAsync(LongRestProviderSelection selection, Guid? operationId, CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
 
             ProviderSettings credentials = JsonSerializer.Deserialize(
-                JsonSerializer.SerializeToUtf8Bytes(provider, ConfigurationJsonContext.Default.ProviderSettings),
+                JsonSerializer.SerializeToUtf8Bytes(selection.Provider, ConfigurationJsonContext.Default.ProviderSettings),
                 ConfigurationJsonContext.Default.ProviderSettings)!;
 
             return Result<string?>.Success(await _keys.ResolveAsync(credentials, ct).ConfigureAwait(false));
@@ -112,7 +119,12 @@ public sealed class LongRestProviderClientFactory : IDisposable
         }
         catch (Exception)
         {
-            return new Error(ErrorCodes.Hub.Error, PublicInferenceErrorMessages.NativeGenericFailure);
+            _logger.LogWarning("Long Rest credential resolution failed: {Code}; provider {Provider}, model {Model}, operation {OperationId}. Check the configured credential reference and credential store access.",
+                ErrorCodes.LongRest.CredentialUnavailable, LongRestProviderFailure.Label(selection.Provider.Name),
+                LongRestProviderFailure.Label(selection.Model), operationId);
+
+            return new Error(ErrorCodes.LongRest.CredentialUnavailable,
+                "The Long Rest provider credential could not be resolved. Check the configured credential reference and credential store access before retrying the operation.");
         }
     }
 
