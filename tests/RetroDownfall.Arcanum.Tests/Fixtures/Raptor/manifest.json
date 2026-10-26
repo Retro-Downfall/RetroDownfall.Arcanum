@@ -1,0 +1,124 @@
+{
+  "recipe": "raptor-reference-v1",
+  "raptorCommit": "7da1d48a7e1d7dec61a63c9d9aae84e2dfaa5767",
+  "pythonVersion": "3.11.16",
+  "platform": "Darwin-arm64",
+  "seed": 224,
+  "referenceSource": {
+    "name": "raptor/cluster_utils.py",
+    "url": "https://raw.githubusercontent.com/parthsarthi03/raptor/7da1d48a7e1d7dec61a63c9d9aae84e2dfaa5767/raptor/cluster_utils.py",
+    "sha256": "bfe3fa5c5ddf6741b3d1fa1747203d6899c1520aa6d3d167cbab34445de78317"
+  },
+  "lockfileSha256": "a896bbfaf2ddc3c219d619a6e4b824276ecad5358aabe260c666a44af7bf2b03",
+  "generatorSha256": "6c6d8b88b2a046b4bd17973acca38d2554b6f142e632cb5bcddce986baeacae9",
+  "artifacts": [
+    {
+      "name": "joblib",
+      "version": "1.4.2",
+      "filename": "joblib-1.4.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/91/29/df4b9b42f2be0b623cbd5e2140cafcaa2bef0759a00b7b70104dcfe2fb51/joblib-1.4.2-py3-none-any.whl",
+      "sha256": "06d478d5674cbc267e7496a410ee875abd68e4340feff4490bcb7afb88060ae6"
+    },
+    {
+      "name": "llvmlite",
+      "version": "0.42.0",
+      "filename": "llvmlite-0.42.0-cp311-cp311-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/ba/3a/286d01191e62ddbe645d4a3f1e0d96106a98d3fd7f82441d20ffe93ab669/llvmlite-0.42.0-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "81e674c2fe85576e6c4474e8c7e7aba7901ac0196e864fe7985492b737dbab65"
+    },
+    {
+      "name": "numba",
+      "version": "0.59.1",
+      "filename": "numba-0.59.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/70/7d/0d1419479997319ca72ef735791c2ee50819f9c200adea96142ee7499fae/numba-0.59.1-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "411df625372c77959570050e861981e9d196cc1da9aa62c3d6a836b5cc338966"
+    },
+    {
+      "name": "numpy",
+      "version": "1.26.3",
+      "filename": "numpy-1.26.3-cp311-cp311-macosx_11_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/55/78/f85aab3bda3ddffe6ce8c590190b5f0d2e61dfd2fb7a8f446dcb4f8c12c7/numpy-1.26.3-cp311-cp311-macosx_11_0_arm64.whl",
+      "sha256": "9e87562b91f68dd8b1c39149d0323b42e0082db7ddb8e934ab4c292094d575d6"
+    },
+    {
+      "name": "pynndescent",
+      "version": "0.5.12",
+      "filename": "pynndescent-0.5.12-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/bf/06/18c0e17eb245b7caeb861f2ff747adb0575500183b6ec4282d5350d29e9f/pynndescent-0.5.12-py3-none-any.whl",
+      "sha256": "9023dc5fea520a4e84d0633ae735db97d2509da927bfa86c897e61f3315473c7"
+    },
+    {
+      "name": "scikit-learn",
+      "version": "1.4.2",
+      "filename": "scikit_learn-1.4.2-cp311-cp311-macosx_12_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/f2/30/1299e84d2ba3bc735baf17cebbf5b9d55144243c41b3ec6559ce3cf61e23/scikit_learn-1.4.2-cp311-cp311-macosx_12_0_arm64.whl",
+      "sha256": "1d0b25d9c651fd050555aadd57431b53d4cf664e749069da77f3d52c5ad14b3b"
+    },
+    {
+      "name": "scipy",
+      "version": "1.12.0",
+      "filename": "scipy-1.12.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "url": "https://files.pythonhosted.org/packages/21/d4/e6c57acc61e59cd46acca27af1f400094d5dee218e372cc604b8162b97cb/scipy-1.12.0-cp311-cp311-macosx_12_0_arm64.whl",
+      "sha256": "5adfad5dbf0163397beb4aca679187d24aec085343755fcdbdeb32b3679f254c"
+    },
+    {
+      "name": "setuptools",
+      "version": "75.8.0",
+      "filename": "setuptools-75.8.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/69/8a/b9dc7678803429e4a3bc9ba462fa3dd9066824d3c607490235c6a796be5a/setuptools-75.8.0-py3-none-any.whl",
+      "sha256": "e3982f444617239225d675215d51f6ba05f845d4eec313da4418fdbb56fb27e3"
+    },
+    {
+      "name": "threadpoolctl",
+      "version": "3.5.0",
+      "filename": "threadpoolctl-3.5.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/4b/2c/ffbf7a134b9ab11a67b0cf0726453cedd9c5043a4fe7a35d1cefa9a1bcfb/threadpoolctl-3.5.0-py3-none-any.whl",
+      "sha256": "56c1e26c150397e58c4926da8eeee87533b1e32bef131bd4bf6a2f45f3185467"
+    },
+    {
+      "name": "tqdm",
+      "version": "4.66.5",
+      "filename": "tqdm-4.66.5-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/48/5d/acf5905c36149bbaec41ccf7f2b68814647347b72075ac0b1fe3022fdc73/tqdm-4.66.5-py3-none-any.whl",
+      "sha256": "90279a3770753eafc9194a0364852159802111925aa30eb3f9d85b0e805ac7cd"
+    },
+    {
+      "name": "umap-learn",
+      "version": "0.5.5",
+      "filename": "umap-learn-0.5.5.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/4f/3c/a81281db93878bcd80da672a9b520674f930e0a18d73a2e4b23e8b176cb6/umap-learn-0.5.5.tar.gz",
+      "sha256": "c54d607364413eade968b73ba07c8b3ea14412817f53cd07b6f720ac957293c4"
+    },
+    {
+      "name": "wheel",
+      "version": "0.45.1",
+      "filename": "wheel-0.45.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/0b/2c/87f3254fd8ffd29e4c02732eee68a83a1d3c346ae39bc6822dcbcb697f2b/wheel-0.45.1-py3-none-any.whl",
+      "sha256": "708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248"
+    }
+  ],
+  "kernels": [
+    {
+      "name": "sklearn/mixture/_gaussian_mixture.py",
+      "sha256": "5e7e0e6afab43d939324d5f56f0df620c4933668ff8dec313714cb89857a8d0b"
+    },
+    {
+      "name": "umap/layouts.py",
+      "sha256": "d8ac84926587b9680135ba6ea5f85e0d1d5c67e3712efe78aacf3a142837c826"
+    },
+    {
+      "name": "umap/umap_.py",
+      "sha256": "217f4dab6b061cff419afb1999b321de7f5628760909484a39ea0cb9e402d37f"
+    }
+  ],
+  "fixtures": {
+    "gaussian.json": "64d59ada01bdb2fda9d0861dc508296d77cb5e8b66f78fd62adb74c995a86312",
+    "fuzzy-graph.json": "b79c7d15dd02ecbae3c0495bf117ff03a475f0bfe41198e538e10e43c76adab5",
+    "optimizer-step.json": "959340d1cb2d0e33e483c47ad21702ff412c1db771d405f42ba70c02023f67cf"
+  },
+  "limitations": [
+    "Official RAPTOR leaves sklearn unpinned and UMAP unseeded; this is a separately pinned kernel oracle, not an upstream end-to-end reproduction.",
+    "Official UMAP calibration and optimizer use float32 and Tausworthe sampling; managed production uses double and SplitMix64. Exported negative-sample tapes isolate the optimizer equations from PRNG differences.",
+    "Same-platform reference regeneration is checked byte-for-byte; Python layouts and cross-architecture bit identity are not acceptance contracts."
+  ]
+}

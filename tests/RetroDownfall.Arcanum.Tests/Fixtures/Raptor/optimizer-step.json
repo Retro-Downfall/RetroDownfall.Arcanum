@@ -1,0 +1,210 @@
+{
+  "recipe": "raptor-reference-v1",
+  "seed": 224,
+  "dtype": "float32 coordinates/rdist; float64 scheduling",
+  "tolerance": 1e-06,
+  "minDist": 0.1,
+  "spread": 1.0,
+  "fittedA": 1.5769434603113077,
+  "fittedB": 0.8950608779109733,
+  "negativeSampleRate": 5,
+  "gradientClip": 4.0,
+  "repulsionDistanceFloor": 0.001,
+  "cases": [
+    {
+      "name": "analytic-attraction",
+      "initial": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0
+        ]
+      ],
+      "head": [
+        0
+      ],
+      "tail": [
+        1
+      ],
+      "epoch": 1,
+      "epochsPerSample": [
+        1.0
+      ],
+      "initialNextSample": [
+        1.0
+      ],
+      "epochsPerNegativeSample": [
+        0.2
+      ],
+      "initialNextNegative": [
+        1.0
+      ],
+      "nextSample": [
+        2.0
+      ],
+      "nextNegative": [
+        1.0
+      ],
+      "initialRng": [
+        42,
+        12345,
+        98765
+      ],
+      "finalRng": [
+        42,
+        12345,
+        98765
+      ],
+      "negativeSamples": [
+        []
+      ],
+      "a": 1.0,
+      "b": 1.0,
+      "alpha": 0.25,
+      "gamma": 1.0,
+      "moveOther": true,
+      "expected": [
+        [
+          0.25,
+          0.0
+        ],
+        [
+          0.75,
+          0.0
+        ]
+      ],
+      "delta": [
+        [
+          0.25,
+          0.0
+        ],
+        [
+          -0.25,
+          0.0
+        ]
+      ]
+    },
+    {
+      "name": "attraction-and-negative-sampling",
+      "initial": [
+        [
+          0.25,
+          -0.5
+        ],
+        [
+          1.25,
+          0.75
+        ],
+        [
+          -0.75,
+          1.5
+        ],
+        [
+          2.0,
+          -1.0
+        ]
+      ],
+      "head": [
+        0,
+        1
+      ],
+      "tail": [
+        1,
+        2
+      ],
+      "epoch": 1,
+      "epochsPerSample": [
+        1.0,
+        1.0
+      ],
+      "initialNextSample": [
+        1.0,
+        1.0
+      ],
+      "epochsPerNegativeSample": [
+        0.2,
+        0.2
+      ],
+      "initialNextNegative": [
+        0.2,
+        0.2
+      ],
+      "nextSample": [
+        2.0,
+        2.0
+      ],
+      "nextNegative": [
+        1.0,
+        1.0
+      ],
+      "initialRng": [
+        42,
+        12345,
+        98765
+      ],
+      "finalRng": [
+        1781140432,
+        493248,
+        3448707322
+      ],
+      "negativeSamples": [
+        [
+          1,
+          1,
+          0,
+          1
+        ],
+        [
+          1,
+          0,
+          3,
+          2
+        ]
+      ],
+      "a": 1.5769434603113077,
+      "b": 0.8950608779109733,
+      "alpha": 0.25,
+      "gamma": 1.0,
+      "moveOther": true,
+      "expected": [
+        [
+          0.19368767738342285,
+          -0.5703904032707214
+        ],
+        [
+          1.0188627243041992,
+          0.7347419261932373
+        ],
+        [
+          -0.5851971507072449,
+          1.4184781312942505
+        ],
+        [
+          2.0,
+          -1.0
+        ]
+      ],
+      "delta": [
+        [
+          -0.05631232261657715,
+          -0.07039040327072144
+        ],
+        [
+          -0.23113727569580078,
+          -0.015258073806762695
+        ],
+        [
+          0.16480284929275513,
+          -0.08152186870574951
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  ]
+}
