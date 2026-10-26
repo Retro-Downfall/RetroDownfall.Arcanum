@@ -624,6 +624,19 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         int admittedEffects = harness.Admission.Effects.Count;
 
+        await using (AsyncServiceScope revisionScope = harness.Factory.Services.CreateAsyncScope())
+        {
+            IGrimoireOrdinaryConnectionFactory revisions = revisionScope.ServiceProvider.GetRequiredService<IGrimoireOrdinaryConnectionFactory>();
+
+            var opened = await revisions.OpenFreshAsync(GrimoireOrdinaryFreshConnectionKind.ReadOnly, timeout.Token);
+
+            Assert.True(opened.IsSuccess);
+
+            await using IGrimoireOrdinaryConnectionLease revisionLease = opened.Value;
+
+            await AssertFactoryRevisionRowsAsync((SqliteConnection)revisionLease.Connection, harness.SessionId, attachmentIndexed: false, timeout.Token);
+        }
+
         DataRetentionPlan plan = await harness.PlanAsync(GrimoireTransitionEntryPoint.StandaloneFactoryReset);
 
         Assert.Empty(plan.Blockers);
@@ -1068,6 +1081,42 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
         return new(harness.OrdinaryMutations.Snapshot, resumedAttempts[1]);
     }
 
+    private static async Task AssertFactoryRevisionRowsAsync(SqliteConnection connection, Guid sessionId,
+        bool attachmentIndexed, CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+
+        command.CommandText = "SELECT ScopeKind, ScopeId, CorpusRevision, InvalidationRevision FROM tapestry_scope_revisions ORDER BY ScopeKind;";
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        Assert.True(await reader.ReadAsync(cancellationToken));
+
+        Assert.Equal("Session", reader.GetString(0));
+
+        Assert.Equal(sessionId.ToString().ToUpperInvariant(), reader.GetString(1));
+
+        Assert.Equal(1L, reader.GetInt64(2));
+
+        Assert.Equal(0L, reader.GetInt64(3));
+
+        if (attachmentIndexed)
+        {
+            Assert.True(await reader.ReadAsync(cancellationToken));
+
+            Assert.Equal("SessionAttachment", reader.GetString(0));
+
+            Assert.Equal(sessionId.ToString(), reader.GetString(1));
+
+            Assert.Equal(1L, reader.GetInt64(2));
+
+            // The real indexer activates a staged chunk by changing RetrievalScope from NULL.
+            Assert.Equal(1L, reader.GetInt64(3));
+        }
+
+        Assert.False(await reader.ReadAsync(cancellationToken));
+    }
+
     private static async Task<FactoryDrainEvidence> ReadFactoryDrainEvidenceAsync(GrimoireMaintenanceAdmissionHarness harness,
         SqliteConnection connection, DataRetentionPlan plan, DataRetentionConflict activeInference, CancellationToken token)
     {
@@ -1142,15 +1191,23 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(6, plan.Rows);
 
+        await AssertFactoryRevisionRowsAsync(connection, harness.SessionId, attachmentIndexed: true, token);
+
         command.CommandText = """
             SELECT (SELECT COUNT(*) FROM Entries_fts) + (SELECT COUNT(*) FROM session_attachment_index_state)
-                + (SELECT COUNT(*) FROM session_attachment_chunks) + (SELECT COUNT(*) FROM session_attachment_embeddings);
+                + (SELECT COUNT(*) FROM session_attachment_chunks) + (SELECT COUNT(*) FROM session_attachment_embeddings)
+                + (SELECT COUNT(*) FROM tapestry_scope_revisions);
             """;
 
         long derived = (long)(await command.ExecuteScalarAsync(token))!;
 
-        // This host uses blob embeddings; its optional vector mirror is not installed.
-        Assert.Equal(plan.DerivedRecords + 2, derived);
+        // Planning sees the Entry FTS row, active indexing state and Session revision. Draining
+        // indexing adds its chunk, BLOB embedding and SessionAttachment revision; no vector mirror.
+        Assert.Equal(3L, plan.DerivedRecords);
+
+        Assert.Equal(6L, derived);
+
+        Assert.Equal(plan.DerivedRecords + 3, derived);
 
         command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE name = 'session_attachment_embeddings_vec';";
 
@@ -1203,7 +1260,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         foreach (string table in new[] { "covenant_entries", "covenant_versions", "covenant_heads", "artifact_sensitivity",
             "managed_file_write_intents", "Sessions", "Entries", "SessionAttachments", "session_attachment_chunks",
-            "session_attachment_index_state", "session_attachment_embeddings", "Entries_fts", "BillableOperations", "InferenceRuns" })
+            "session_attachment_index_state", "session_attachment_embeddings", "Entries_fts", "tapestry_scope_revisions", "BillableOperations", "InferenceRuns" })
         {
             command.CommandText = $"SELECT COUNT(*) FROM {table};";
 
@@ -1226,7 +1283,7 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(plan.Rows + 1, result.RowsDeleted);
 
-        Assert.Equal(plan.DerivedRecords + 2, result.DerivedRecordsDeleted);
+        Assert.Equal(plan.DerivedRecords + 3, result.DerivedRecordsDeleted);
 
         Assert.Equal(plan.Files + 1, result.FilesDeleted);
 
@@ -1563,7 +1620,6 @@ public sealed partial class GrimoireMaintenanceAdmissionTests
 
         Assert.Equal(targetDataset, harness.Factory.Services
             .GetRequiredService<CovenantRuntimeGenerationProvider>().Current.Availability.DatasetGeneration);
-
     }
 
     private static void AssertStageOnePending(GrimoireMaintenanceAdmissionHarness harness, Task<HttpResponseMessage> reset)

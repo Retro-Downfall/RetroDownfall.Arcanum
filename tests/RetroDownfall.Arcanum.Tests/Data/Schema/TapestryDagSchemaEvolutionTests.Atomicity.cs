@@ -12,7 +12,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
     [InlineData(true)]
     public async Task Every_transition_statement_rolls_back_data_catalog_and_version_on_interruption(bool cancel)
     {
-        GrimoireSchemaVersionChain core = GrimoireSchemaVersionChains.Default.ForTier(GrimoireSchemaTransactionTier.Core);
+        GrimoireSchemaVersionChain core = CoreSchemaVersionTwentySixFixture.ChainSet().ForTier(GrimoireSchemaTransactionTier.Core);
 
         GrimoireSchemaVersionStep step = Assert.Single(core.Steps, item => item.ToVersion == 26);
 
@@ -79,7 +79,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
             Assert.Equal(2L, await ScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
 
-            await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+            await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
             Assert.Equal(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM tapestry_node_embeddings_vec"));
 
@@ -102,9 +102,9 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionTwentyFiveFixture.ChainSet(), 64, CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(old, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(old, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(fresh, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(fresh, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         Assert.Equal(await CatalogAsync(fresh), await CatalogAsync(old));
 
@@ -129,7 +129,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Generation("other-g", "/other")
             + Node("leaf", "g", 0, "Leaf") + Node("a", "g", 1, "Summary") + Node("other", "other-g", 2, "Summary", "/other")
@@ -147,7 +147,7 @@ public sealed partial class TapestryDagSchemaEvolutionTests
 
         await using SqliteConnection connection = await file.OpenAsync(CancellationToken.None);
 
-        await GrimoireSchemaTestInstaller.InstallAsync(connection, 64, CancellationToken.None);
+        await GrimoireSchemaTestInstaller.InstallAsync(connection, CoreSchemaVersionTwentySixFixture.ChainSet(), 64, CancellationToken.None);
 
         await ExecuteAsync(connection, Generation("g", "/scope") + Node("a", "g", 1, "Summary")
             + Node("leaf", "g", 0, "Leaf", parent: "'a'")

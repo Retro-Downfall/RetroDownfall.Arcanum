@@ -1,3 +1,5 @@
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -123,6 +125,59 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                 WorkspaceTreesEnabled = workspaceTrees,
             },
         };
+
+    [Fact]
+    public async Task Staging_EditRevertAfterLeafReadCannotHideBehindTheSameCorpusHash()
+    {
+        await SeedChunksAsync(("c00", "a.cs", "alpha body"), ("c01", "b.cs", "bravo body"));
+
+        BeginHookTapestryStore interleaved = new(_store!, async () =>
+        {
+            await _db!.Database.OpenConnectionAsync();
+
+            await using DbCommand command = _db.Database.GetDbConnection().CreateCommand();
+
+            command.CommandText = "UPDATE workspace_file_chunks SET Content='edited' WHERE ChunkId='c00'; UPDATE workspace_file_chunks SET Content='alpha body' WHERE ChunkId='c00';";
+
+            _ = await command.ExecuteNonQueryAsync();
+        });
+
+        TapestryWeaver weaver = new(interleaved, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.CorpusChanged, outcome.Status);
+
+        Assert.Equal(0, _summarizer!.CallCount);
+
+        Assert.Equal(0, await CountGenerationsWithStatusAsync("Building"));
+
+        Assert.Equal(0, await CountGenerationsWithStatusAsync("Complete"));
+    }
+
+    [Fact]
+    public async Task SummaryWrites_UseAtomicGraphCheckpointAndPreserveLegacyTraversal()
+    {
+        await SeedChunksAsync(("c00", "a.cs", "alpha body"), ("c01", "b.cs", "bravo body"), ("c02", "c.cs", "charlie body"));
+
+        BeginHookTapestryStore tracked = new(_store!, () => Task.CompletedTask);
+
+        TapestryWeaver weaver = new(tracked, _weave!, _summarizer!, _backoff, TimeProvider.System, _logger);
+
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.Woven, outcome.Status);
+
+        Assert.Equal(0, tracked.SeparateSummaryWrites);
+
+        Assert.True(tracked.AtomicSummaryWrites > 0);
+
+        TapestryGeneration generation = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        IReadOnlyList<TapestryNode> leaves = await _store.GetLayerNodesAsync(generation.GenerationId, 0, CancellationToken.None);
+
+        Assert.All(leaves, leaf => Assert.NotNull(leaf.ParentNodeId));
+    }
 
     [SkippableFact]
     public async Task RunSweepAsync_DeletesSupersededGenerationsOnEverySweep()
@@ -562,7 +617,7 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task WeaveAsync_ALeafEditRebuildsTheWholeScopeButReusesUnchangedSummaries()
+    public async Task WeaveAsync_ALeafEditInvalidatesEveryPriorSummaryBeforeRebuild()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
@@ -586,12 +641,9 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
 
         Assert.NotEqual(firstGeneration, secondGeneration);
 
-        // Summary reuse is by exact membership/recipe/model/input identity, so clusters untouched by
-        // the edit cost no new model call — but the whole scope is still re-clustered, because
-        // K-Means centroids are relative to the complete layer.
-        Assert.True(
-            outcome.SummariesReused > 0,
-            $"expected at least one reused summary, got {outcome.SummariesReused}");
+        // A destructive source revision invalidates the entire prior generation, including summaries
+        // whose own content hash happened to survive. Paid reuse requires valid provenance.
+        Assert.Equal(0, outcome.SummariesReused);
     }
 
     /// <summary>
@@ -1015,23 +1067,35 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task WeaveAsync_QuarantinesUnusableLeafVectorsWithoutFailingTheBuild()
+    public async Task WeaveAsync_UnusableLeafVectorRefusesIncompleteCoverageBeforePaidSummaryAndKeepsPriorGeneration()
     {
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         await SeedTenChunksAsync(this);
 
-        _weave!.PoisonContentSubstring = "number 3";
+        TapestryWeaver weaver = CreateWeaver();
 
-        TapestryWeaveOutcome outcome = await CreateWeaver().WeaveAsync(Scope, Settings(), CancellationToken.None);
+        Assert.Equal(TapestryWeaveStatus.Woven, (await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None)).Status);
 
-        Assert.True(outcome.Status == TapestryWeaveStatus.Woven, $"expected Woven, got {outcome.Status}. Log:\n{_logger}");
+        TapestryGeneration prior = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+
+        await SeedChunksAsync(("poison", "poison.cs", "new unusable leaf"));
+
+        _weave!.PoisonContentSubstring = "new unusable leaf";
+
+        _summarizer!.ResetCounters();
+
+        TapestryWeaveOutcome outcome = await weaver.WeaveAsync(Scope, Settings(), CancellationToken.None);
+
+        Assert.Equal(TapestryWeaveStatus.Failed, outcome.Status);
 
         Assert.Equal(1, outcome.QuarantinedVectors);
 
-        TapestryGeneration current = (await _store!.GetCurrentGenerationAsync(Scope, CancellationToken.None))!;
+        Assert.Equal(0, _summarizer.CallCount);
 
-        Assert.Equal(9, (await _store.GetLayerNodesAsync(current.GenerationId, 0, CancellationToken.None)).Count);
+        Assert.Equal(prior, await _store.GetCurrentGenerationAsync(Scope, CancellationToken.None));
+
+        Assert.Equal(0, await CountGenerationsWithStatusAsync("Building"));
     }
 
     [SkippableFact]
@@ -1337,6 +1401,41 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
     /// <summary>Runs a step just before the generation is begun, then delegates everything to the real store.</summary>
     private sealed class BeginHookTapestryStore(ITapestryStore inner, Func<Task> beforeBegin) : ITapestryStore
     {
+        public Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken) => inner.GetRetrievableGenerationAsync(scope, identity, cancellationToken);
+
+        public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken) => inner.HydrateRetrievedNodesAsync(access, hits, mode, cancellationToken);
+        public Task<TapestryBuildSnapshot> ReadBuildSnapshotAsync(TapestryScope scope, CancellationToken cancellationToken) => inner.ReadBuildSnapshotAsync(scope, cancellationToken);
+
+        public async Task<string> BeginGraphGenerationAsync(TapestryBuildSnapshot snapshot, TapestryGenerationRecipe recipe, DateTimeOffset startedAt, CancellationToken cancellationToken)
+        {
+            await beforeBegin();
+
+            return await inner.BeginGraphGenerationAsync(snapshot, recipe, startedAt, cancellationToken);
+        }
+
+        public int SeparateSummaryWrites { get; private set; }
+
+        public int AtomicSummaryWrites { get; private set; }
+
+        public Task AppendGraphCheckpointAsync(TapestryGraphCheckpoint checkpoint, CancellationToken cancellationToken)
+        {
+            AtomicSummaryWrites++;
+
+            Assert.True(checkpoint.LegacySingleParent);
+
+            return inner.AppendGraphCheckpointAsync(checkpoint, cancellationToken);
+        }
+
+        public Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken) => inner.PublishGenerationAsync(request, cancellationToken);
+
+        public Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken) => inner.GetRootIdsAsync(generationId, cancellationToken);
+
+        public Task<IReadOnlyList<string>> GetChildIdsAsync(string generationId, IReadOnlyList<string> parentIds, CancellationToken cancellationToken) => inner.GetChildIdsAsync(generationId, parentIds, cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetAncestorIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => inner.GetAncestorIdsAsync(generationId, nodeIds, cancellationToken);
+
+        public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetDescendantLeafIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => inner.GetDescendantLeafIdsAsync(generationId, nodeIds, cancellationToken);
+
         public Task<IReadOnlyList<TapestryScope>> DiscoverScopesAsync(
             bool includeWorkspace,
             bool includeSessionAttachments,
@@ -1386,8 +1485,12 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
                 cancellationToken);
         }
 
-        public Task AppendNodesAsync(IReadOnlyList<TapestryNodeWrite> nodes, CancellationToken cancellationToken) =>
-            inner.AppendNodesAsync(nodes, cancellationToken);
+        public Task AppendNodesAsync(IReadOnlyList<TapestryNodeWrite> nodes, CancellationToken cancellationToken)
+        {
+            SeparateSummaryWrites += nodes.Count(write => write.Node.NodeKind == TapestryNodeKind.Summary);
+
+            return inner.AppendNodesAsync(nodes, cancellationToken);
+        }
 
         public Task SetParentAsync(
             string generationId,
@@ -1442,13 +1545,6 @@ public sealed class TapestryWeaverTests : IAsyncLifetime
             string childMembershipHash,
             CancellationToken cancellationToken) =>
             inner.TryGetReusableSummaryAsync(scope, childMembershipHash, cancellationToken);
-
-        public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(
-            TapestryGeneration generation,
-            IReadOnlyList<(string NodeId, float Similarity)> hits,
-            TapestryRetrievalMode mode,
-            CancellationToken cancellationToken) =>
-            inner.HydrateRetrievedNodesAsync(generation, hits, mode, cancellationToken);
 
         public Task<int> GetTerminalLayerAsync(string generationId, CancellationToken cancellationToken) =>
             inner.GetTerminalLayerAsync(generationId, cancellationToken);

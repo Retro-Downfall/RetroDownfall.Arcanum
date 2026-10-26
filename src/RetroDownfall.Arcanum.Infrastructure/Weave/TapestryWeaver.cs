@@ -169,6 +169,8 @@ internal sealed class TapestryWeaver(
         // arrive a page at a time, and the working set is bounded by the ceiling rather than by whatever the
         // scope has grown to: clustering needs every vector and every summary prompt needs its leaves' text,
         // so the ceiling is what keeps that in memory at all.
+        TapestryBuildSnapshot snapshot = await store.ReadBuildSnapshotAsync(scope, cancellationToken).ConfigureAwait(false);
+
         List<TapestryLeafSource> leaves = [];
 
         await foreach (IReadOnlyList<TapestryLeafSource> page in store
@@ -192,46 +194,36 @@ internal sealed class TapestryWeaver(
             return new TapestryWeaveOutcome(TapestryWeaveStatus.NoCorpus);
         }
 
-        // The corpus can move between the two passes, so the generation records the fingerprint of what
-        // is actually being woven. Recording the earlier one would let an edit that landed in between be
-        // mistaken for already-included and never rebuilt.
         corpusFingerprint = TapestryHash.OfCorpus(leaves);
 
-        string generationId = await store
-            .BeginGenerationAsync(
-                scope,
-                SphericalKMeans.AlgorithmVersion,
-                settingsFingerprint,
-                summaryModel,
-                TapestryHash.SummaryRecipeVersion,
-                bounds.Dimensions,
-                corpusFingerprint,
-                clock.GetUtcNow(),
-                cancellationToken)
-            .ConfigureAwait(false);
+        if (snapshot.Corpus.ExceedsCeiling || snapshot.Corpus.Fingerprint != corpusFingerprint)
+        {
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.CorpusChanged);
+        }
+
+        string generationId;
+
+        try
+        {
+            generationId = await store.BeginGraphGenerationAsync(snapshot,
+                new(SphericalKMeans.AlgorithmVersion, settingsFingerprint, summaryModel,
+                    TapestryHash.SummaryRecipeVersion, bounds.Dimensions, bounds.EmbeddingModel),
+                clock.GetUtcNow(), cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            // Begin compares the exact revision observation, including edit/revert histories.
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.CorpusChanged);
+        }
 
         string buildIdentity = BuildIdentity(corpusFingerprint, settingsFingerprint, summaryModel);
 
         try
         {
-            // The leaves were read before this generation existed, so the corpus can have moved in between
-            // — and an erase that landed there deleted no Building generation, because there was none yet.
-            // Anything it removed would be summarized and published here. The identity pass is cheap (ids
-            // and stored hashes), and from this point an erase does reach the staging row: it deletes every
-            // generation of the Session whatever its status, and the publish below refuses to promote a row
-            // that is gone.
-            TapestryCorpusIdentity started = await store
-                .GetCorpusIdentityAsync(scope, TapestryLimits.MaxLeavesPerScope, cancellationToken)
-                .ConfigureAwait(false);
+            TapestryBuildSnapshot started = await store.ReadBuildSnapshotAsync(scope, cancellationToken).ConfigureAwait(false);
 
-            if (started.ExceedsCeiling
-                || !string.Equals(started.Fingerprint, corpusFingerprint, StringComparison.Ordinal))
+            if (started != snapshot)
             {
-                logger.LogInformation(
-                    "Tapestry weave abandoned for {ScopeKind} {ScopeId}: the corpus changed while the build was starting, so the next sweep reads it again.",
-                    scope.Kind,
-                    scope.Id);
-
                 await AbandonGenerationBestEffortAsync(generationId).ConfigureAwait(false);
 
                 return new TapestryWeaveOutcome(TapestryWeaveStatus.CorpusChanged);
@@ -371,6 +363,12 @@ internal sealed class TapestryWeaver(
         if (leafLayer.Nodes.Count == 0)
         {
             return new TapestryWeaveOutcome(TapestryWeaveStatus.EmbeddingUnavailable);
+        }
+
+        if (leafLayer.Nodes.Count != leaves.Count)
+        {
+            return new TapestryWeaveOutcome(TapestryWeaveStatus.Failed,
+                LeavesEmbedded: leafLayer.Embedded, QuarantinedVectors: leafLayer.Quarantined);
         }
 
         List<WorkingNode> working = leafLayer.Nodes;
@@ -643,7 +641,7 @@ internal sealed class TapestryWeaver(
         if (quarantined > 0)
         {
             logger.LogWarning(
-                "Tapestry quarantined {Count} unusable leaf vector(s) for {ScopeKind} {ScopeId}; the remaining leaves were woven normally.",
+                "Tapestry quarantined {Count} unusable leaf vector(s) for {ScopeKind} {ScopeId}; complete source coverage is unavailable, so the build is refused.",
                 quarantined,
                 scope.Kind,
                 scope.Id);
@@ -1090,7 +1088,7 @@ internal sealed class TapestryWeaver(
 
         int descendants = members.Sum(static member => member.DescendantLeafCount);
 
-        await store.AppendNodesAsync(
+        await store.AppendGraphCheckpointAsync(new(generationId,
             [
                 new TapestryNodeWrite(
                     new TapestryNode(
@@ -1114,13 +1112,8 @@ internal sealed class TapestryWeaver(
                         clock.GetUtcNow()),
                     embedding),
             ],
-            cancellationToken).ConfigureAwait(false);
-
-        await store.SetParentAsync(
-            generationId,
-            nodeId,
-            [.. members.Select(static member => member.NodeId)],
-            cancellationToken).ConfigureAwait(false);
+            [.. members.Select(member => new TapestryGraphEdge(nodeId, member.NodeId, null, null, "Legacy"))],
+            LegacySingleParent: true), cancellationToken).ConfigureAwait(false);
 
         return new SummaryOutcome(
             new WorkingNode(stableKey, nodeId, embedding, content, contentHash, descendants),

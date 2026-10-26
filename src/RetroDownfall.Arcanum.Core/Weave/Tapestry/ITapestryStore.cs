@@ -1,3 +1,5 @@
+using RetroDownfall.Arcanum.Core.Primitives;
+
 namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 
 /// <summary>
@@ -7,12 +9,31 @@ namespace RetroDownfall.Arcanum.Core.Weave.Tapestry;
 /// <c>ISagaMemoryStore</c>.
 ///
 /// <para>Generations are immutable. A build stages into a <see cref="TapestryGenerationStatus.Building"/>
-/// generation that retrieval never sees; <see cref="PublishGenerationAsync"/> is the single atomic
+/// generation that retrieval never sees; <see cref="PublishGenerationAsync(TapestryPublishRequest, CancellationToken)"/> is the single atomic
 /// switch that supersedes the previous complete generation. A corpus with no complete generation
 /// simply contributes no context.</para>
 /// </summary>
 public interface ITapestryStore
 {
+    Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken);
+
+    Task<TapestryBuildSnapshot> ReadBuildSnapshotAsync(TapestryScope scope, CancellationToken cancellationToken);
+
+    Task<string> BeginGraphGenerationAsync(TapestryBuildSnapshot snapshot, TapestryGenerationRecipe recipe, DateTimeOffset startedAt, CancellationToken cancellationToken);
+
+    Task AppendGraphCheckpointAsync(TapestryGraphCheckpoint checkpoint, CancellationToken cancellationToken);
+
+    Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<string>> GetChildIdsAsync(string generationId, IReadOnlyList<string> parentIds, CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetAncestorIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken);
+
+    Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetDescendantLeafIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken);
     /// <summary>
     /// Enumerates every corpus that currently has indexable rows, respecting the code-owned
     /// per-corpus participation flags. A corpus whose source feature never indexed anything yields
@@ -164,17 +185,6 @@ public interface ITapestryStore
     Task<TapestrySummaryReuseCandidate?> TryGetReusableSummaryAsync(
         TapestryScope scope,
         string childMembershipHash,
-        CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Hydrates retrieved nodes with content, lineage, and provenance. Leaf content is resolved from
-    /// the referenced corpus row and re-hashed: a leaf whose source has changed since the generation
-    /// was built is dropped rather than injected under a stale hash.
-    /// </summary>
-    Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(
-        TapestryGeneration generation,
-        IReadOnlyList<(string NodeId, float Similarity)> hits,
-        TapestryRetrievalMode mode,
         CancellationToken cancellationToken);
 
     /// <summary>The terminal (highest) layer index of a generation, for tree-traversal retrieval.</summary>

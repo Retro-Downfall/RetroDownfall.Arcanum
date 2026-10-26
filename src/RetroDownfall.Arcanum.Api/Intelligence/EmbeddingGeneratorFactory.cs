@@ -117,7 +117,7 @@ public sealed class EmbeddingGeneratorFactory(
             cacheKey,
             _ => BuildOpenAiCompatibleGenerator(provider, model, resolvedApiKey));
 
-        return new EmbeddingGeneratorLease(generator, ownsGenerator: false);
+        return new EmbeddingGeneratorLease(generator, ownsGenerator: false, new(provider.Name, model));
 
     }
 
@@ -174,14 +174,19 @@ public sealed class EmbeddingGeneratorLease : IDisposable
 
     internal EmbeddingGeneratorLease(
         IEmbeddingGenerator<string, Embedding<float>> generator,
-        bool ownsGenerator)
+        bool ownsGenerator,
+        EmbeddingProvenance? provenance = null)
     {
 
         Generator = generator;
 
+        Provenance = provenance;
+
         _ownsGenerator = ownsGenerator;
 
     }
+
+    internal EmbeddingProvenance? Provenance { get; }
 
     public IEmbeddingGenerator<string, Embedding<float>> Generator { get; }
 

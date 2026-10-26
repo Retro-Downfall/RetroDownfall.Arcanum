@@ -159,6 +159,32 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
 
     internal sealed class Store(TapestryAdmissionHarness harness) : ITapestryStore
     {
+        public Task<Result<TapestryGenerationAccess>> GetRetrievableGenerationAsync(TapestryScope scope, TapestryRetrievalIdentity identity, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGenerationAccess access, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public async Task<TapestryBuildSnapshot> ReadBuildSnapshotAsync(TapestryScope scope, CancellationToken cancellationToken) =>
+            new(scope, 0, 0, await GetCorpusIdentityAsync(scope, TapestryLimits.MaxLeavesPerScope, cancellationToken));
+
+        public Task<string> BeginGraphGenerationAsync(TapestryBuildSnapshot snapshot, TapestryGenerationRecipe recipe, DateTimeOffset startedAt, CancellationToken cancellationToken) =>
+            BeginGenerationAsync(snapshot.Scope, recipe.AlgorithmVersion, recipe.SettingsFingerprint, recipe.SummaryModel, recipe.SummaryRecipeVersion, recipe.EmbeddingDimension, snapshot.Corpus.Fingerprint, startedAt, cancellationToken);
+
+        public async Task AppendGraphCheckpointAsync(TapestryGraphCheckpoint checkpoint, CancellationToken cancellationToken)
+        {
+            await harness.StepAsync("append-summary", cancellationToken);
+
+            await harness.StepAsync("parents", cancellationToken);
+        }
+
+        public Task<Result> PublishGenerationAsync(TapestryPublishRequest request, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<IReadOnlyList<string>> GetRootIdsAsync(string generationId, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<IReadOnlyList<string>> GetChildIdsAsync(string generationId, IReadOnlyList<string> parentIds, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetAncestorIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> GetDescendantLeafIdsAsync(string generationId, IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => throw new NotImplementedException();
+
         internal IReadOnlyList<TapestryScope> Scopes { get; set; } = [First];
 
         internal Dictionary<string, TapestryGeneration> Generations { get; } = [];
@@ -266,8 +292,6 @@ internal sealed class TapestryAdmissionHarness : IAsyncDisposable
         public Task<IReadOnlyList<TapestryNode>> GetLayerNodesAsync(string generationId, int layer, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<IReadOnlyDictionary<string, float[]>> GetNodeEmbeddingsAsync(IReadOnlyList<string> nodeIds, CancellationToken cancellationToken) => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<TapestryRetrievedNode>> HydrateRetrievedNodesAsync(TapestryGeneration generation, IReadOnlyList<(string NodeId, float Similarity)> hits, TapestryRetrievalMode mode, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task<int> GetTerminalLayerAsync(string generationId, CancellationToken cancellationToken) => throw new NotSupportedException();
 

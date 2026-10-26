@@ -147,7 +147,10 @@ public sealed record TapestryGeneration(
     int RootNodeCount,
     TapestryTerminalReason? TerminalReason,
     DateTimeOffset StartedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt,
+    long SourceRevision = 0,
+    long? ValidatedInvalidationRevision = null,
+    string? EmbeddingIdentity = null);
 
 /// <summary>One node of a Tapestry tree. Leaves carry no content of their own — they reference a corpus row.</summary>
 public sealed record TapestryNode(

@@ -25,3 +25,6 @@ CREATE INDEX IF NOT EXISTS idx_session_attachment_chunks_session
     ON session_attachment_chunks(SessionId, RetrievalScope);
 CREATE INDEX IF NOT EXISTS idx_session_attachment_chunks_attachment
     ON session_attachment_chunks(AttachmentId);
+
+-- Snapshot pages seek within one scope in source-id order.
+CREATE INDEX IF NOT EXISTS idx_session_attachment_chunks_tapestry_scope_id ON session_attachment_chunks(SessionId, ChunkId COLLATE BINARY);

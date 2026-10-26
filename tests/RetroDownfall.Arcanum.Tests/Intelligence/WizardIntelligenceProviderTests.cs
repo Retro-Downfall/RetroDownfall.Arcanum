@@ -9761,7 +9761,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         RetroDownfall.Arcanum.Core.Resilience.IProviderHealthTracker? healthTracker = null,
         PromptCacheDispatchValidator? cacheValidator = null,
         RetroDownfall.Arcanum.Api.Intelligence.Subagents.ISubagentRunner? subagentRunner = null,
-        RetroDownfall.Arcanum.Core.Memory.IMemoryRecallCandidateReader? memoryRecallReader = null)
+        RetroDownfall.Arcanum.Core.Memory.IMemoryRecallCandidateReader? memoryRecallReader = null,
+        RetroDownfall.Arcanum.Core.Weave.Tapestry.ITapestryStore? tapestryStore = null)
     {
         settings ??= DefaultSettings();
 
@@ -9893,7 +9894,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
             covenantDispatch: covenantDispatch,
             covenantToolCapabilities: covenantToolCapabilities,
             campaignRollups: campaignRollups,
-            campaignResolver: campaignResolver ?? RefusingCampaignResolver.Instance);
+            campaignResolver: campaignResolver ?? RefusingCampaignResolver.Instance,
+            tapestryStore: tapestryStore);
     }
 
     private static GuardrailsPipeline CreateGuardrailsPipeline(ArcanumSettings settings, FakeGuardrailAuditLogger? audit = null) =>

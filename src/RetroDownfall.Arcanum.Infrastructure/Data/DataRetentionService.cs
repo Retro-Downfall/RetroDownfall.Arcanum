@@ -52,6 +52,8 @@ using RetroDownfall.Arcanum.Infrastructure.Operations;
 
 using RetroDownfall.Arcanum.Infrastructure.GrimoireTransitions;
 
+using RetroDownfall.Arcanum.Infrastructure.Weave;
+
 namespace RetroDownfall.Arcanum.Infrastructure.Data;
 
 /// <summary>
@@ -2534,6 +2536,7 @@ internal sealed partial class DataRetentionService(
                 0,
                 0,
                 snapshot.CampaignContinuity.Rows),
+            new(RetentionDataClass.Tapestry, 0, 0, 0, snapshot.TapestryRows),
         ];
 
         List<DataRetentionBlocker> blockers = [];
@@ -2655,6 +2658,7 @@ internal sealed partial class DataRetentionService(
                 attachment.EmbeddingCount
                     + attachment.VectorEmbeddingCount
                     + attachment.IndexStateCount),
+            new(RetentionDataClass.Tapestry, 0, 0, 0, attachment.TapestryRows),
         ];
 
         DataRetentionConflict[] conflicts = attachment.SessionId is Guid ownerSessionId
@@ -3257,6 +3261,9 @@ internal sealed partial class DataRetentionService(
                 // The snapshot includes owned rows removed by the Session's foreign-key cascade.
                 derivedDeleted += snapshot.CampaignContinuity.Rows;
             }
+
+            derivedDeleted += await TapestryStore.DeleteRetentionGraphsAsync(
+                connection, transaction, sessionId, true, cancellationToken).ConfigureAwait(false);
 
             derivedDeleted += await DeleteEntryIndexesAsync(
                 connection,
@@ -3995,7 +4002,8 @@ internal sealed partial class DataRetentionService(
             summaries,
             longRestDiscovery,
             await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, null, sessionId, cancellationToken).ConfigureAwait(false),
-            await CountTableAsync("saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false));
+            await CountTableAsync("saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false),
+            await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, sessionId, true, cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotAsync(
@@ -4095,6 +4103,7 @@ internal sealed partial class DataRetentionService(
             EmbeddingCount = embeddings,
             VectorEmbeddingCount = vectorEmbeddings,
             IndexStateCount = state,
+            TapestryRows = snapshot.SessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, null, owner, false, cancellationToken).ConfigureAwait(false) : 0,
         };
     }
 
@@ -4258,7 +4267,8 @@ internal sealed partial class DataRetentionService(
             summaries,
             longRestDiscovery,
             await MemoryEvaluationErasurePlan.ReadSessionClosureAsync(connection, transaction, sessionId, cancellationToken).ConfigureAwait(false),
-            await CountInTransactionAsync(connection, transaction, "saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false));
+            await CountInTransactionAsync(connection, transaction, "saga_committed_uses", "AssistantEntryId IN (SELECT AssistantEntryId FROM assistant_entry_finalizations WHERE SessionId = @id)", cancellationToken, ("@id", sessionId.ToString("D").ToUpperInvariant())).ConfigureAwait(false),
+            await TapestryStore.ReadRetentionGraphRowsAsync(connection, transaction, sessionId, true, cancellationToken).ConfigureAwait(false));
     }
 
     private async Task<AttachmentPlanSnapshot?> ReadAttachmentSnapshotInTransactionAsync(
@@ -4365,7 +4375,8 @@ internal sealed partial class DataRetentionService(
             chunkIds.Count,
             embeddings,
             vectorEmbeddings,
-            indexState);
+            indexState,
+            sessionId is Guid owner ? await TapestryStore.ReadRetentionGraphRowsAsync(connection, transaction, owner, false, cancellationToken).ConfigureAwait(false) : 0);
     }
 
     private async Task RevalidateSessionDeletionBoundaryAsync(
@@ -4513,7 +4524,8 @@ internal sealed partial class DataRetentionService(
             + snapshot.Summaries.Rows
             + snapshot.LongRestDiscoveryCount
             + snapshot.MemoryEvaluationCount
-            + snapshot.SagaCommittedUseCount;
+            + snapshot.SagaCommittedUseCount
+            + snapshot.TapestryRows;
 
         if (rows != plan.Rows
             || files != plan.Files
@@ -4537,6 +4549,7 @@ internal sealed partial class DataRetentionService(
             && snapshot.LongRestDiscoveryCount == expectedSnapshot.LongRestDiscoveryCount
             && snapshot.MemoryEvaluationCount == expectedSnapshot.MemoryEvaluationCount
             && snapshot.SagaCommittedUseCount == expectedSnapshot.SagaCommittedUseCount
+            && snapshot.TapestryRows == expectedSnapshot.TapestryRows
             && snapshot.EntryIds
                 .Order()
                 .SequenceEqual(expectedSnapshot.EntryIds.Order())
@@ -4553,7 +4566,8 @@ internal sealed partial class DataRetentionService(
         long derived = snapshot.ChunkCount
             + snapshot.EmbeddingCount
             + snapshot.VectorEmbeddingCount
-            + snapshot.IndexStateCount;
+            + snapshot.IndexStateCount
+            + snapshot.TapestryRows;
 
         if (plan.Rows != 1
             || plan.Files != (snapshot.FileExists ? 1 : 0)
@@ -4597,7 +4611,8 @@ internal sealed partial class DataRetentionService(
         && actual.ChunkCount == expected.ChunkCount
         && actual.EmbeddingCount == expected.EmbeddingCount
         && actual.VectorEmbeddingCount == expected.VectorEmbeddingCount
-        && actual.IndexStateCount == expected.IndexStateCount;
+        && actual.IndexStateCount == expected.IndexStateCount
+        && actual.TapestryRows == expected.TapestryRows;
 
     private async Task RevalidateAttachmentDeletionBoundaryAsync(
         DbConnection connection,
@@ -5302,7 +5317,9 @@ internal sealed partial class DataRetentionService(
         AttachmentPlanSnapshot attachment,
         CancellationToken cancellationToken)
     {
-        long deleted = 0;
+        long deleted = attachment.SessionId is Guid owner
+            ? await TapestryStore.DeleteRetentionGraphsAsync(connection, transaction, owner, false, cancellationToken).ConfigureAwait(false)
+            : 0;
 
         if (await TableExistsAsync(
                 "session_attachment_embeddings_vec",
@@ -8211,7 +8228,8 @@ internal sealed partial class DataRetentionService(
         SessionSummaryClosureSnapshot Summaries,
         long LongRestDiscoveryCount,
         long MemoryEvaluationCount,
-        long SagaCommittedUseCount);
+        long SagaCommittedUseCount,
+        long TapestryRows = 0);
 
     private readonly record struct IdSetBatch(
         string Predicate,
@@ -8228,7 +8246,8 @@ internal sealed partial class DataRetentionService(
         long ChunkCount,
         long EmbeddingCount,
         long VectorEmbeddingCount,
-        long IndexStateCount);
+        long IndexStateCount,
+        long TapestryRows = 0);
 
     private sealed record UploadedFileSnapshot(
         Guid Id,

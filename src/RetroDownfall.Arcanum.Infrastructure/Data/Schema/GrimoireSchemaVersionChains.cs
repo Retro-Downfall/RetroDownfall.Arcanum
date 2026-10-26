@@ -144,7 +144,7 @@ internal static class GrimoireSchemaVersionChains
     /// <para>Version 24 indexes Campaign continuity Session and output-artifact dependencies without
     /// changing source manifests, checkpoints, or their cascade relationships.</para>
     /// </remarks>
-    internal const int CoreSchemaVersion = 26;
+    internal const int CoreSchemaVersion = 27;
 
     /// <summary>The version of Covenant's authoritative tables this binary declares.</summary>
     /// <remarks>
@@ -325,6 +325,8 @@ internal static class GrimoireSchemaVersionChains
             // Captured before the Core26 DAG schema edits.
             [(GrimoireSchemaTransactionTier.Core, 26)] =
                 "4CD45949338193A2EDB9B54D990D0579763FB4BB0E12FB68C2447BEFE0177B20",
+
+            [(GrimoireSchemaTransactionTier.Core, 27)] = "9B9BE8D38636742B481D8C4A35BC1C84262AC4DA99373652B22FBB44517462A9",
 
             [(GrimoireSchemaTransactionTier.CovenantCanonical, 2)] =
                 "7F906C4C832FDF824EC3B6A56431E9E6098DC9BB83EDA5BAE02EC62CE3B4E105",

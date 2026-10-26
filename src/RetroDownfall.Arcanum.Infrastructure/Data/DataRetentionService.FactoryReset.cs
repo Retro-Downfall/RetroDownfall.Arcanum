@@ -163,7 +163,6 @@ internal sealed partial class DataRetentionService
         new("entry_embeddings", RetentionDataClass.SessionEntryEmbeddings, FactoryRecordKind.Derived),
         new("tapestry_generations", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_edges", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
-        new("tapestry_scope_revisions", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_node_embeddings", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("tapestry_nodes", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
         new("workspace_file_embeddings", RetentionDataClass.WorkspaceEmbeddings, FactoryRecordKind.Derived),
@@ -204,6 +203,8 @@ internal sealed partial class DataRetentionService
         new("BudgetAlerts", RetentionDataClass.CostAdjustments, FactoryRecordKind.Physical),
         new("UnseenServantWatermarks", RetentionDataClass.DaemonExecutions, FactoryRecordKind.Physical),
         new("WorkspaceContexts", RetentionDataClass.WorkspaceChunks, FactoryRecordKind.Physical),
+        // Source DELETE triggers advance revisions; clear bookkeeping only after every source owner.
+        new("tapestry_scope_revisions", RetentionDataClass.Tapestry, FactoryRecordKind.Derived),
     ];
 
     private async Task<DataRetentionPlan> BuildFactoryResetPlanCoreAsync(

@@ -445,6 +445,16 @@ public sealed class GrimoireFixture : IDisposable
     /// closed by disposal, so the sidecars outlive the caller, and a fixture that only ever composed
     /// the unpooled shape would answer every such question with the reassuring one.
     /// </remarks>
+    internal static ArcanumDbContext CreateContext(SqliteConnection openConnection)
+    {
+        DbContextOptions<ArcanumDbContext> options = new DbContextOptionsBuilder<ArcanumDbContext>()
+            .UseSqlite(openConnection)
+            .UseModel(ArcanumDbContextModel.Instance)
+            .Options;
+
+        return new(options, new TestSecretStore(), new TestGrimoireDbPassphraseSource());
+    }
+
     public ArcanumDbContext CreateContext(string databasePath, bool pooled = false)
     {
         TestGrimoireDbPassphraseSource passphraseSource = new();
