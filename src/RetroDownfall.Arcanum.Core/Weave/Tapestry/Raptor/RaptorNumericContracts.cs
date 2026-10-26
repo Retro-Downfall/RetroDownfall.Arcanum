@@ -43,13 +43,18 @@ public sealed record RaptorNumericOptions(
     double AverageLikelihoodTolerance = 1e-3,
     int MaximumEmIterations = 100,
     int MixtureInitializations = 1,
+    int MixtureBlockSize = 64,
+    int KMeansMaximumIterations = 100,
+    double MinimumComponentMass = 1e-12,
+    double MixtureNormalizationTolerance = 1e-12,
+    double MatrixSymmetryTolerance = 1e-12,
     string NumericRecipe = "double-fixed-order-v1",
     string NeighborRecipe = "cosine-normalized-scalar-identical-zero-self-first-identical-anchors-median-rptree-coprime-fill-new-old-reverse-nearest-nndescent-v1",
     string InitializationRecipe = "splitmix64-canonical-random-rescale-zero-singleton-v1",
     string CurveRecipe = "umap-0.5.5-scipy-fit-spread1-mindist0.1-v1",
     string FuzzyRecipe = "umap-0.5.5-double-self-excluded-smooth-fuzzy-union-zero-underflow-v1",
     string OptimizerRecipe = "umap-0.5.5-double-canonical-csr-prune-max-over-epochs-post-epoch-alpha-splitmix64-modulo-negative-v1",
-    string MixtureRecipe = "full-covariance-best-converged-v1");
+    string MixtureRecipe = "full-covariance-block-welford-pre-m-average-stop-final-score-identical-one-v1;kmeans++-one-draw-splitmix64-sha256-framed-seed-k-le64-modulo-first-lloyd-label-stable-low-index-tie-v1;lexicographic-samples-signed-zero-means-covariance-weights-exact-bic-tie-low-k-v1");
 
 /// <summary>Independent random streams; local and recursive paths also carry an exact stage key.</summary>
 public enum RaptorStage
