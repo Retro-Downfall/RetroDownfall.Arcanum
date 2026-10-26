@@ -38,7 +38,6 @@ public sealed class GrimoireTurnWriter(
     ISessionTurnClaimBeginStore? claimedBeginStore = null,
     ISessionTurnClaimCoordinator? claims = null) : IDisposable
 {
-
     private readonly SessionTurnConcurrencyGate _sessionTurnGate =
         sessionTurnGate ?? new SessionTurnConcurrencyGate();
 
@@ -49,7 +48,6 @@ public sealed class GrimoireTurnWriter(
 
     public sealed class TurnHandle
     {
-
         private IDisposable? _sessionTurnLease;
 
         public Guid? AssistantEntryId { get; internal set; }
@@ -75,7 +73,6 @@ public sealed class GrimoireTurnWriter(
 
         internal void ReleaseSessionTurnLease() =>
             Interlocked.Exchange(ref _sessionTurnLease, null)?.Dispose();
-
     }
 
     /// <summary>Replaces the exact Saga input set of the branch that may commit this turn.</summary>
@@ -108,7 +105,6 @@ public sealed class GrimoireTurnWriter(
             prompt,
             targetModel,
             cancellationToken,
-            "Grimoire could not begin assistant reply for model {ModelName}.",
             claimLease);
 
     /// <inheritdoc cref="BeginBufferedAssistantReplyAsync"/>
@@ -125,7 +121,6 @@ public sealed class GrimoireTurnWriter(
             prompt,
             targetModel,
             cancellationToken,
-            "Grimoire could not start streamed session persistence for model {ModelName}.",
             claimLease);
 
     /// <summary>
@@ -141,16 +136,13 @@ public sealed class GrimoireTurnWriter(
         ProviderCallSensitivity? sensitivity = null,
         CovenantTurnCommitBinding? covenantCommit = null)
     {
-
         return await TryFinalizeAssistantEntryCoreAsync(
             handle,
             finalText,
             targetModel,
             cancellationToken,
-            "Grimoire could not finalize assistant entry for model {ModelName}.",
             sensitivity,
             covenantCommit).ConfigureAwait(false);
-
     }
 
     /// <inheritdoc cref="TryFinalizeBufferedAssistantEntryAsync"/>
@@ -162,16 +154,13 @@ public sealed class GrimoireTurnWriter(
         ProviderCallSensitivity? sensitivity = null,
         CovenantTurnCommitBinding? covenantCommit = null)
     {
-
         return await TryFinalizeAssistantEntryCoreAsync(
             handle,
             finalText,
             targetModel,
             cancellationToken,
-            "Grimoire could not finalize streamed assistant entry for model {ModelName}.",
             sensitivity,
             covenantCommit).ConfigureAwait(false);
-
     }
 
     public async Task<bool> ResolveInterruptedAsync(
@@ -182,7 +171,6 @@ public sealed class GrimoireTurnWriter(
         CovenantTurnCommitBinding? covenantCommit = null,
         SessionTurnClaimOutcome? interruptionOutcome = null)
     {
-
         if (handle.IsFinalized)
         {
             return true;
@@ -190,9 +178,7 @@ public sealed class GrimoireTurnWriter(
 
         if (handle.AssistantEntryId is not { } entryId)
         {
-
             return true;
-
         }
 
         // An interrupted turn publishes no staged batch: the answer the operator would have judged
@@ -210,10 +196,8 @@ public sealed class GrimoireTurnWriter(
 
         try
         {
-
             if (!string.IsNullOrEmpty(resolvedContent))
             {
-
                 // An interrupted protected stream is the case most likely to lose its label: the reply
                 // is partial, the turn is unwinding, and the obvious thing to do is persist what
                 // arrived. Persisting it unlabelled would launder exactly the taint the completed path
@@ -230,35 +214,30 @@ public sealed class GrimoireTurnWriter(
 
                 if (committed.IsFailure)
                 {
-
                     logger.LogError(
-                        "An interrupted Covenant-derived reply could not be committed with its label: {ErrorCode}.",
-                        committed.Error.Code);
+                        "Session {SessionId} interrupted assistant entry {AssistantEntryId} could not be committed with its label ({ErrorCode}).",
+                        handle.SessionId, entryId, TurnLifecycleDiagnostics.SafeCode(committed.Error.Code));
 
                     return false;
-
                 }
 
                 if (!committed.Value)
                 {
-
                     await grimoire
                         .FinalizeAssistantEntryAsync(entryId, resolvedContent, cancellationToken)
                         .ConfigureAwait(false);
-
                 }
-
             }
             else
             {
-
                 if (handle.ClaimLease is not null)
                 {
                     Result discarded = await DiscardClaimedReplyAsync(handle, entryId, cancellationToken).ConfigureAwait(false);
 
                     if (discarded.IsFailure)
                     {
-                        logger.LogWarning("The interrupted claimed reply could not be discarded atomically ({Code}).", discarded.Error.Code);
+                        logger.LogWarning("Session {SessionId} interrupted assistant entry {AssistantEntryId} could not be discarded atomically ({ErrorCode}).",
+                            handle.SessionId, entryId, TurnLifecycleDiagnostics.SafeCode(discarded.Error.Code));
 
                         return false;
                     }
@@ -272,7 +251,6 @@ public sealed class GrimoireTurnWriter(
                 // then explain the missing reply without exposing any of its content or claiming a
                 // failed cleanup removed it.
                 handle.PartialReplyDropped = !string.IsNullOrEmpty(streamedContent);
-
             }
 
             publication.Token.ThrowIfCancellationRequested();
@@ -291,24 +269,18 @@ public sealed class GrimoireTurnWriter(
             }
 
             return true;
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-
             logger.LogWarning(
-                handle.OutputProtection?.Invoke() is null ? ex : null,
-                "Grimoire could not resolve interrupted assistant entry {AssistantEntryId}.",
-                entryId);
+                "Grimoire could not resolve Session {SessionId} interrupted assistant entry {AssistantEntryId} ({ErrorCode}).",
+                handle.SessionId, entryId, ErrorCodes.Hub.Error);
 
             return false;
-
         }
     }
 
@@ -320,11 +292,9 @@ public sealed class GrimoireTurnWriter(
         CovenantTurnCommitBinding? covenantCommit = null,
         SessionTurnClaimOutcome? interruptionOutcome = null)
     {
-
         if (handle.IsFinalized)
         {
             return true;
-
         }
 
         bool resolved = await ResolveInterruptedAsync(
@@ -337,15 +307,12 @@ public sealed class GrimoireTurnWriter(
 
         if (resolved)
         {
-
             handle.IsFinalized = true;
 
             ReleaseTurnHandle(handle);
-
         }
 
         return resolved;
-
     }
 
     public async Task TryResolveInterruptedOnStreamExitAsync(
@@ -354,34 +321,26 @@ public sealed class GrimoireTurnWriter(
         ProviderCallSensitivity? sensitivity = null,
         CovenantTurnCommitBinding? covenantCommit = null)
     {
-
         if (handle.IsFinalized || handle.AssistantEntryId is null)
         {
-
             return;
-
         }
 
         try
         {
-
             _ = await ResolveInterruptedAndMarkFinalizedAsync(
                 handle,
                 streamedContent,
                 CancellationToken.None,
                 sensitivity,
                 covenantCommit).ConfigureAwait(false);
-
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-
             logger.LogWarning(
-                ex,
-                "Grimoire could not resolve interrupted streamed assistant entry during cleanup.");
-
+                "Grimoire could not resolve Session {SessionId} interrupted streamed assistant entry {AssistantEntryId} during cleanup ({ErrorCode}).",
+                handle.SessionId, handle.AssistantEntryId, ErrorCodes.Hub.Error);
         }
-
     }
 
     public async Task TryAppendToolInteractionAsync(
@@ -394,12 +353,9 @@ public sealed class GrimoireTurnWriter(
         ProviderCallSensitivity? sensitivity = null,
         TurnHandle? handle = null)
     {
-
         if (!sessionId.HasValue)
         {
-
             return;
-
         }
 
         if (sensitivity is not null)
@@ -412,16 +368,28 @@ public sealed class GrimoireTurnWriter(
 
             if (committed.IsFailure) throw new InvalidOperationException("The protected tool interaction could not be committed.");
 
-            await PublishSavedEntryByIdAsync(sessionId.Value, committed.Value.CallEntryId, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await PublishSavedEntryByIdAsync(sessionId.Value, committed.Value.CallEntryId, cancellationToken).ConfigureAwait(false);
 
-            await PublishSavedEntryByIdAsync(sessionId.Value, committed.Value.ResultEntryId, cancellationToken).ConfigureAwait(false);
+                await PublishSavedEntryByIdAsync(sessionId.Value, committed.Value.ResultEntryId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                logger.LogWarning(
+                    "Session {SessionId} committed tool entries {CallEntryId}/{ResultEntryId} could not be published ({ErrorCode}).",
+                    sessionId, committed.Value.CallEntryId, committed.Value.ResultEntryId, ErrorCodes.Hub.Error);
+            }
 
             return;
         }
 
         try
         {
-
             await grimoire
                 .AppendToolInteractionAsync(
                     sessionId.Value,
@@ -434,40 +402,28 @@ public sealed class GrimoireTurnWriter(
 
             try
             {
-
                 await PublishLatestSavedEntriesAsync(sessionId.Value, 2, cancellationToken).ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
-
                 throw;
-
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-
                 logger.LogWarning(
-                    ex,
-                    "Session event hub could not publish tool interaction for tool {ToolName}.",
-                    toolName);
-
+                    "Session event hub could not publish tool interaction for Session {SessionId} ({ErrorCode}).",
+                    sessionId, ErrorCodes.Hub.Error);
             }
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-
-            logger.LogWarning(ex, "Grimoire could not append tool interaction for tool {ToolName}.", toolName);
-
+            logger.LogWarning("Grimoire could not append tool interaction for Session {SessionId} ({ErrorCode}).",
+                sessionId, ErrorCodes.Hub.Error);
         }
-
     }
 
     internal async ValueTask<ApplyPatchReceiptProbeResult>
@@ -475,7 +431,6 @@ public sealed class GrimoireTurnWriter(
             ApplyPatchReceiptProbe probe,
             CancellationToken cancellationToken)
     {
-
         MandatoryToolInteractionProbeResult result = await grimoire
             .ProbeMandatoryToolInteractionAsync(
                 new MandatoryToolInteractionProbe(
@@ -529,7 +484,6 @@ public sealed class GrimoireTurnWriter(
                     ApplyPatchReceiptProbeOutcome.Unavailable,
             },
             result.Result);
-
     }
 
     internal async ValueTask<ApplyPatchReceiptPreflightResult>
@@ -537,7 +491,6 @@ public sealed class GrimoireTurnWriter(
             ApplyPatchReceiptPreflight preflight,
             CancellationToken cancellationToken)
     {
-
         MandatoryToolInteractionPreflightResult result = await grimoire
             .PreflightMandatoryToolInteractionAsync(
                 new MandatoryToolInteraction(
@@ -567,7 +520,6 @@ public sealed class GrimoireTurnWriter(
                     ApplyPatchReceiptPreflightOutcome.Unavailable,
             },
             result.Result);
-
     }
 
     internal async ValueTask<MandatoryToolInteractionAppendOutcome>
@@ -575,7 +527,6 @@ public sealed class GrimoireTurnWriter(
             ApplyPatchRecoveryReceipt receipt,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(receipt);
 
         MandatoryToolInteraction interaction = new(
@@ -632,7 +583,6 @@ public sealed class GrimoireTurnWriter(
         }
 
         return outcome;
-
     }
 
     internal async ValueTask<ApplyPatchPendingReceiptHandoffResult>
@@ -640,7 +590,6 @@ public sealed class GrimoireTurnWriter(
             PendingApplyPatchReceipt pending,
             CancellationToken cancellationToken)
     {
-
         ArgumentNullException.ThrowIfNull(pending);
 
         MandatoryToolInteraction interaction = new(
@@ -726,7 +675,6 @@ public sealed class GrimoireTurnWriter(
         }
 
         return result;
-
     }
 
     private async ValueTask<ApplyPatchPendingReceiptHandoffResult>
@@ -734,7 +682,6 @@ public sealed class GrimoireTurnWriter(
             PendingApplyPatchReceipt pending,
             MandatoryToolInteractionAppendOutcome outcome)
     {
-
         if (outcome is MandatoryToolInteractionAppendOutcome.NewlyCommitted
             or MandatoryToolInteractionAppendOutcome.RecoveredCommitted)
         {
@@ -797,7 +744,6 @@ public sealed class GrimoireTurnWriter(
             MandatoryToolInteractionAppendOutcome.Ambiguous,
             Cleanup: null,
             Rollback: null);
-
     }
 
     private Task TryPublishMandatoryToolInteractionAsync(
@@ -813,7 +759,6 @@ public sealed class GrimoireTurnWriter(
         ToolInteractionReceipt receipt,
         CancellationToken cancellationToken)
     {
-
         try
         {
             await PublishSavedEntryByIdAsync(
@@ -836,7 +781,6 @@ public sealed class GrimoireTurnWriter(
                 "Session event hub could not publish mandatory apply_patch receipt {ReceiptId}.",
                 receipt.Id);
         }
-
     }
 
     private static MandatoryToolInteractionAppendOutcome?
@@ -850,7 +794,6 @@ public sealed class GrimoireTurnWriter(
         OperationCanceledException cancellation,
         ApplyPatchPendingReceiptHandoffResult result)
     {
-
         WorkspaceCommitRecovery? recovery =
             result.Rollback?.Recovery;
 
@@ -858,7 +801,6 @@ public sealed class GrimoireTurnWriter(
         {
             cancellation.Data[nameof(WorkspaceCommitRecovery)] = recovery;
         }
-
     }
 
     private static string FormatRecoveryPaths(
@@ -878,10 +820,8 @@ public sealed class GrimoireTurnWriter(
         string prompt,
         string targetModel,
         CancellationToken cancellationToken,
-        string beginFailureLogMessage,
         SessionTurnClaimLease? claimLease)
     {
-
         ArgumentNullException.ThrowIfNull(invocationContext);
 
         if (claimLease is not null
@@ -914,36 +854,31 @@ public sealed class GrimoireTurnWriter(
 
         if (sessionId.IsFailure)
         {
-
-            logger.LogWarning(beginFailureLogMessage, targetModel);
+            logger.LogWarning("Grimoire could not begin Session {SessionId} assistant entry {AssistantEntryId} ({ErrorCode}).",
+                request.SessionId, claimLease?.FutureAssistantEntryId, TurnLifecycleDiagnostics.SafeCode(sessionId.Error.Code));
 
             return sessionId.Error;
-
         }
 
         if (!_sessionTurnGate.TryAcquire(sessionId.Value, out IDisposable? sessionTurnLease))
         {
-
             return new Error(
                 ErrorCodes.Hub.SessionTurnBusy,
                 "This Session already has a turn in flight, so a second one cannot claim it.");
-
         }
 
         try
         {
-
             Result<AssistantReplyBeginReceipt> receipt = claimLease is null
                 ? await turnBeginStore.BeginAssistantReplyAsync(sessionId.Value, campaign, prompt, targetModel, cancellationToken).ConfigureAwait(false)
                 : await claimedBeginStore!.BeginClaimedAssistantReplyAsync(claimLease, campaign, prompt, targetModel, cancellationToken).ConfigureAwait(false);
 
             if (receipt.IsFailure)
             {
-
-                logger.LogWarning(beginFailureLogMessage, targetModel);
+                logger.LogWarning("Grimoire could not begin Session {SessionId} assistant entry {AssistantEntryId} ({ErrorCode}).",
+                    sessionId.Value, claimLease?.FutureAssistantEntryId, TurnLifecycleDiagnostics.SafeCode(receipt.Error.Code));
 
                 return receipt.Error;
-
             }
 
             if (claimLease is not null && (receipt.Value.AssistantEntryId != claimLease.FutureAssistantEntryId
@@ -970,39 +905,28 @@ public sealed class GrimoireTurnWriter(
 
             try
             {
-
                 await PublishLatestSavedEntriesAsync(receipt.Value.SessionId, 2, claimLease is null ? cancellationToken : CancellationToken.None)
                     .ConfigureAwait(false);
-
             }
             catch (OperationCanceledException)
             {
-
                 throw;
-
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-
                 // Publication is best-effort on purpose: the rows are already committed, and failing the
                 // turn here would discard a durable answer over an event nobody is required to receive.
                 logger.LogWarning(
-                    ex,
-                    "Session event hub could not publish begin-assistant entries for model {ModelName}.",
-                    targetModel);
-
+                    "Session event hub could not publish begin-assistant entry {AssistantEntryId} for Session {SessionId} ({ErrorCode}).",
+                    handle.AssistantEntryId, handle.SessionId, ErrorCodes.Hub.Error);
             }
 
             return Result<TurnHandle>.Success(handle);
-
         }
         finally
         {
-
             sessionTurnLease?.Dispose();
-
         }
-
     }
 
     /// <summary>
@@ -1037,7 +961,6 @@ public sealed class GrimoireTurnWriter(
         SessionTurnClaimOutcome? interruptionOutcome = null,
         MemoryDelegationPublication? publication = null)
     {
-
         // Two independent reasons to come here, and neither implies the other. A Covenant-derived
         // reply owes its label; a turn holding a staged batch owes an atomic publication. The first
         // proposal an agent ever authors has the second without the first — its Covenant was empty,
@@ -1053,7 +976,6 @@ public sealed class GrimoireTurnWriter(
             || (!owesLabel && protection is null && covenantCommit is null && handle.ClaimLease is null && handle.SagaUses.IsEmpty)
             || handle.SessionId is not { } sessionId)
         {
-
             // The ordinary reply has nothing to lose on this arm. A turn holding a staged batch does:
             // "not mine" hands it to a finalize path that writes content alone, so a turn that cannot
             // reach the atomic committer refuses rather than publishing half of what it owes.
@@ -1062,7 +984,6 @@ public sealed class GrimoireTurnWriter(
                 : Result<bool>.Failure(new Error(
                     ErrorCodes.Covenant.Unavailable,
                     "This turn staged a Covenant mutation that its finalization cannot publish atomically."));
-
         }
 
         ImmutableArray<CovenantMutationIntent> mutations = [];
@@ -1071,16 +992,13 @@ public sealed class GrimoireTurnWriter(
 
         if (covenantCommit is { } staged)
         {
-
             Result<ImmutableArray<CovenantMutationIntent>> frozen = staged.Collector.Seal(
                 staged.CommittedBranchId,
                 staged.FinalBranchOrdinal);
 
             if (frozen.IsFailure)
             {
-
                 return Result<bool>.Failure(frozen.Error);
-
             }
 
             mutations = frozen.Value;
@@ -1093,7 +1011,6 @@ public sealed class GrimoireTurnWriter(
                     staged.DatasetGeneration,
                     staged.ExpectedKeyReclamationEpoch,
                     ExpectedCampaignRegistryEpoch: null);
-
         }
 
         if (protection is not null)
@@ -1143,15 +1060,12 @@ public sealed class GrimoireTurnWriter(
         if (committed.IsSuccess
             && committed.Value.ThroughEntrySequence is { } throughEntrySequence)
         {
-
             handle.SagaExtractionThroughSequence = throughEntrySequence;
-
         }
 
         return committed.IsFailure
             ? Result<bool>.Failure(committed.Error)
             : Result<bool>.Success(true);
-
     }
 
     private async Task<bool> CompleteClaimAsync(TurnHandle handle, bool committed, SessionTurnClaimOutcome? terminalOutcome = null)
@@ -1172,14 +1086,16 @@ public sealed class GrimoireTurnWriter(
 
             if (result.IsFailure)
             {
-                logger.LogWarning("The saved assistant outcome could not settle its Session claim ({Code}).", result.Error.Code);
+                logger.LogWarning("Session {SessionId} saved assistant entry {AssistantEntryId} could not settle claim {ClaimId} ({ErrorCode}).",
+                    handle.SessionId, handle.AssistantEntryId, claimLease.Claim.ClaimId, TurnLifecycleDiagnostics.SafeCode(result.Error.Code));
             }
 
             return result.IsSuccess;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            logger.LogWarning(exception, "The saved assistant outcome could not settle its Session claim.");
+            logger.LogWarning("Session {SessionId} saved assistant entry {AssistantEntryId} could not settle claim {ClaimId} ({ErrorCode}).",
+                handle.SessionId, handle.AssistantEntryId, claimLease.Claim.ClaimId, ErrorCodes.Hub.Error);
 
             return false;
         }
@@ -1223,23 +1139,18 @@ public sealed class GrimoireTurnWriter(
         string finalText,
         string targetModel,
         CancellationToken cancellationToken,
-        string finalizeFailureLogMessage,
         ProviderCallSensitivity? sensitivity = null,
         CovenantTurnCommitBinding? covenantCommit = null)
     {
-
         if (handle.AssistantEntryId is not { } finalizeId)
         {
-
             return true;
-
         }
 
         await using var publication = new MemoryDelegationPublication(cancellationToken);
 
         try
         {
-
             Result<bool> committed = await TryCommitProtectedAsync(
                     handle,
                     finalizeId,
@@ -1251,18 +1162,15 @@ public sealed class GrimoireTurnWriter(
 
             if (committed.IsFailure)
             {
-
                 logger.LogError(
-                    "A Covenant-derived reply could not be committed with its label: {ErrorCode}.",
-                    committed.Error.Code);
+                    "Session {SessionId} assistant entry {AssistantEntryId} could not be committed with its label ({ErrorCode}).",
+                    handle.SessionId, finalizeId, TurnLifecycleDiagnostics.SafeCode(committed.Error.Code));
 
                 return false;
-
             }
 
             if (!committed.Value)
             {
-
                 long? throughEntrySequence = await grimoire
                     .FinalizeAssistantEntryWithFrontierAsync(
                         finalizeId,
@@ -1272,11 +1180,8 @@ public sealed class GrimoireTurnWriter(
 
                 if (throughEntrySequence is not null)
                 {
-
                     handle.SagaExtractionThroughSequence = throughEntrySequence;
-
                 }
-
             }
 
             publication.Token.ThrowIfCancellationRequested();
@@ -1285,58 +1190,45 @@ public sealed class GrimoireTurnWriter(
             // hub publication fails below.
             handle.IsFinalized = true;
 
-            if (!await CompleteClaimAsync(handle, committed: true).ConfigureAwait(false))
-            {
-                return false;
-            }
+            // The matching durable receipt already proved the reply saved. Claim settlement is
+            // recoverable from that receipt on exact-key acquisition; it cannot reverse commit truth.
+            _ = await CompleteClaimAsync(handle, committed: true).ConfigureAwait(false);
 
             if (handle.SessionId is { } publishSessionId)
             {
-
                 try
                 {
-
                     await PublishSavedEntryByIdAsync(
                             publishSessionId,
                             finalizeId,
                             publication.Token)
                         .ConfigureAwait(false);
-
                 }
                 catch (OperationCanceledException) when (publication.Token.IsCancellationRequested)
                 {
                     throw;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-
                     logger.LogWarning(
-                        handle.OutputProtection?.Invoke() is null ? ex : null,
-                        "Session event hub could not publish finalized assistant entry {AssistantEntryId} for model {ModelName}.",
-                        finalizeId,
-                        targetModel);
-
+                        "Session event hub could not publish finalized assistant entry {AssistantEntryId} for Session {SessionId} ({ErrorCode}).",
+                        finalizeId, handle.SessionId, ErrorCodes.Hub.Error);
                 }
-
             }
 
             return true;
-
         }
         catch (OperationCanceledException)
         {
-
             throw;
-
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-
-            logger.LogWarning(handle.OutputProtection?.Invoke() is null ? ex : null, finalizeFailureLogMessage, targetModel);
+            logger.LogWarning("Grimoire could not finalize Session {SessionId} assistant entry {AssistantEntryId} ({ErrorCode}).",
+                handle.SessionId, finalizeId, ErrorCodes.Hub.Error);
 
             try
             {
-
                 if (handle.ClaimLease is not null)
                 {
                     Result discarded = await DiscardClaimedReplyAsync(handle, finalizeId, CancellationToken.None).ConfigureAwait(false);
@@ -1354,16 +1246,12 @@ public sealed class GrimoireTurnWriter(
 
                     handle.PartialReplyDropped = !string.IsNullOrEmpty(finalText);
                 }
-
             }
-            catch (Exception cleanupEx)
+            catch (Exception)
             {
-
                 logger.LogWarning(
-                    handle.OutputProtection?.Invoke() is null ? cleanupEx : null,
-                    "Grimoire could not resolve interrupted assistant entry {AssistantEntryId} after finalize failure.",
-                    finalizeId);
-
+                    "Grimoire could not resolve Session {SessionId} interrupted assistant entry {AssistantEntryId} after finalize failure ({ErrorCode}).",
+                    handle.SessionId, finalizeId, ErrorCodes.Hub.Error);
             }
 
             handle.IsFinalized = true;
@@ -1371,9 +1259,7 @@ public sealed class GrimoireTurnWriter(
             ReleaseTurnHandle(handle);
 
             return false;
-
         }
-
     }
 
     /// <summary>
@@ -1388,83 +1274,64 @@ public sealed class GrimoireTurnWriter(
     /// </remarks>
     internal void CompleteSagaExtractionHandoff(TurnHandle handle)
     {
-
         ArgumentNullException.ThrowIfNull(handle);
 
         ReleaseTurnHandle(handle);
-
     }
 
     private void ReleaseTurnHandle(TurnHandle handle)
     {
-
         _ = _ownedTurnHandles.TryRemove(handle, out _);
 
         handle.ReleaseSessionTurnLease();
-
     }
 
     public void Dispose()
     {
-
         foreach (TurnHandle handle in _ownedTurnHandles.Keys)
         {
-
             ReleaseTurnHandle(handle);
-
         }
-
     }
 
     private async Task PublishLatestSavedEntriesAsync(Guid sessionId, int takeLast, CancellationToken cancellationToken)
     {
-
         List<GrimoireEntryDto>? entries = await grimoire
             .GetRecentSessionEntriesAsync(sessionId, takeLast, cancellationToken)
             .ConfigureAwait(false);
 
         if (entries is null || entries.Count == 0)
         {
-
             return;
-
         }
 
         foreach (GrimoireEntryDto dto in entries)
         {
-
             cancellationToken.ThrowIfCancellationRequested();
 
             sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
-
         }
-
     }
 
     private async Task PublishSavedEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken)
     {
-
         GrimoireEntryDto? dto = await grimoire
             .GetEntryByIdAsync(sessionId, entryId, cancellationToken)
             .ConfigureAwait(false);
 
         if (dto is null)
         {
-
             return;
-
         }
 
         cancellationToken.ThrowIfCancellationRequested();
 
         sessionEventHub.Publish(sessionId, ToEntry(dto, sessionId));
-
     }
 
     private static Entry ToEntry(GrimoireEntryDto dto, Guid sessionId) =>
         new()
         {
-
             Id = dto.Id,
 
             SessionId = sessionId,
@@ -1476,10 +1343,28 @@ public sealed class GrimoireTurnWriter(
             ModelUsed = dto.ModelUsed,
 
             CreatedAt = dto.CreatedAt,
-
         };
 
     private static bool IsStateless(PingRequest request) =>
         request.StatelessMessages is { Count: > 0 };
+}
 
+/// <summary>Only declared lifecycle codes belong beside content-free turn identities in diagnostics.</summary>
+internal static class TurnLifecycleDiagnostics
+{
+    internal static string SafeCode(string code) => code switch
+    {
+        ErrorCodes.Covenant.Unavailable or ErrorCodes.Covenant.StaleSnapshot
+            or ErrorCodes.Covenant.IntegrityFailure or ErrorCodes.Covenant.LifecycleConflict
+            or ErrorCodes.Covenant.CapacityExceeded or ErrorCodes.Covenant.ForbiddenAuthority
+            or ErrorCodes.Covenant.RevisionConflict
+            or ErrorCodes.Covenant.OperatorAuthorityUnavailable or ErrorCodes.Covenant.CampaignBindingConflict
+            or ErrorCodes.Covenant.NotFound or ErrorCodes.Covenant.InvalidScope
+            or ErrorCodes.Covenant.InvalidContent or ErrorCodes.Covenant.MaintenanceFailed
+            or ErrorCodes.Session.NotFound or ErrorCodes.Session.CampaignBindingRequired or ErrorCodes.Campaign.NotFound
+            or ErrorCodes.Grimoire.WriteFailed or ErrorCodes.Grimoire.MaintenanceUnavailable or ErrorCodes.Hub.SessionTurnBusy
+            or ErrorCodes.Hub.SessionTurnRestoredInterrupted or ErrorCodes.Security.IdempotencyConflict
+            or ErrorCodes.MemoryDelegation.StaleSource or ErrorCodes.MemoryDelegation.Unavailable => code,
+        _ => ErrorCodes.Hub.Error,
+    };
 }

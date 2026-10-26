@@ -14,6 +14,66 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 public sealed class CampaignRollupTurnSnapshotTests
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Disposing_a_turn_releases_a_successful_preparation_even_when_it_finishes_later(bool late, bool failClaim)
+    {
+        AcceptingClaims claims = new() { CompleteThrows = failClaim };
+        SessionTurnClaimLease claim = (await claims.AcquireAsync(new(
+            Guid.NewGuid(), 0, Guid.NewGuid(), Guid.NewGuid(), SessionTurnSurface.Intelligence,
+            new CovenantDigest(new byte[32]), new CovenantDigest(new byte[32]), null, 0, 0), default)).Value;
+        ReleaseRegistration registration = new();
+        CovenantTurnLease authority = new(registration);
+        CampaignRollupTurnSnapshot snapshot = new(null, Campaign, Request(), new ProbeStore(),
+            new TestOptionsMonitor<ArcanumSettings>(Enabled()), new Resolver(), authority, claim, claims);
+        TaskCompletionSource<Result<CampaignRollupTurnSnapshot?>> preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        CovenantTurnScope scope = CovenantTurnScope.NotEligible(logger);
+        scope.CampaignPreparation = preparation.Task;
+        if (!late) preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Success(snapshot));
+
+        await scope.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        if (late) preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Success(snapshot));
+        await registration.Released.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await scope.DisposeAsync();
+
+        Assert.Equal(1, claims.Completions);
+        Assert.Equal(1, registration.Releases);
+        Assert.True(authority.LifetimeEnded.IsCancellationRequested);
+
+        if (failClaim)
+        {
+            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(2));
+            while (logger.Entries.Count == 0) await Task.Delay(10, deadline.Token);
+            var warning = Assert.Single(logger.Entries);
+            Assert.Contains(ErrorCodes.Hub.Error, warning.Message);
+            Assert.DoesNotContain("private", warning.Message);
+            Assert.Null(warning.Exception);
+        }
+        else
+        {
+            Assert.Empty(logger.Entries);
+        }
+    }
+
+    private sealed class ReleaseRegistration : ICovenantLeaseRegistration
+    {
+        public int Releases { get; private set; }
+        public TaskCompletionSource Released { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CovenantOperationLeaseSnapshot Snapshot => throw new NotSupportedException();
+        public CancellationToken Revocation => CancellationToken.None;
+        public ValueTask<Result> RevalidateAsync(CancellationToken cancellationToken) => ValueTask.FromResult(Result.Success());
+        public ValueTask ReleaseAsync()
+        {
+            Releases++;
+            Released.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Disabled_keyed_inference_checks_only_local_ownership_when_runtime_authority_is_unavailable(bool alreadyOwned)
@@ -229,6 +289,8 @@ public sealed class CampaignRollupTurnSnapshotTests
     {
         public int Completions { get; private set; }
 
+        public bool CompleteThrows { get; init; }
+
         public ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(SessionTurnRequestIdentity request, CancellationToken cancellationToken)
         {
             Guid boot = Guid.NewGuid();
@@ -248,6 +310,8 @@ public sealed class CampaignRollupTurnSnapshotTests
         public ValueTask<Result<SessionTurnClaim>> CompleteAsync(SessionTurnClaimLease lease, SessionTurnClaimOutcome outcome, CancellationToken cancellationToken)
         {
             Completions++;
+
+            if (CompleteThrows) throw new IOException("private claim cleanup fault");
 
             return ValueTask.FromResult(Result<SessionTurnClaim>.Success(lease.Claim with { State = outcome.State, Outcome = outcome }));
         }

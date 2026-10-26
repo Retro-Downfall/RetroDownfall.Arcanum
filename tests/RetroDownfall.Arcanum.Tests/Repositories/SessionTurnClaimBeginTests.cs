@@ -51,6 +51,113 @@ public sealed class SessionTurnClaimBeginTests(GrimoireFixture fixture) : IAsync
     }
 
     [SkippableFact]
+    public async Task Cancellation_after_the_durable_receipt_does_not_reverse_the_saved_reply()
+    {
+        RequireSqlCipher();
+        SessionTurnClaimLease live = await AcquireAsync();
+        SessionTurnClaimStore claims = new(new FixedCovenantConnectionSource(Connection), new CovenantQuotaGuard(), live.OwnerBootId!.Value);
+        using CancellationTokenSource cancellation = new();
+        CancelAfterCommit committer = new(_repository, cancellation);
+        using GrimoireTurnWriter writer = new(_repository, _repository,
+            new SessionEventHub(NullLogger<SessionEventHub>.Instance), NullLogger<GrimoireTurnWriter>.Instance,
+            turnCommitter: committer, claimedBeginStore: _repository, claims: claims);
+        var handle = (await writer.BeginStreamedAssistantReplyAsync(new("hello", SessionId: live.Claim.SessionId),
+            InvocationContexts.AttendedGlobalOnlySession(), "hello", "model", default, live)).Value;
+        Assert.True(await writer.TryFinalizeStreamedAssistantEntryAsync(
+            handle, "paid committed answer", "model", cancellation.Token));
+        Assert.True(handle.IsFinalized);
+        await writer.TryResolveInterruptedOnStreamExitAsync(handle, "incorrect partial answer");
+        Assert.Equal("paid committed answer", await TextAsync("SELECT Content FROM Entries WHERE Role = 2;"));
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM assistant_entry_finalizations;"));
+        Assert.Equal(1, committer.Commits);
+    }
+
+    private sealed class CancelAfterCommit(IGrimoireTurnCommitter repository, CancellationTokenSource cancellation) : IGrimoireTurnCommitter
+    {
+        public int Commits { get; private set; }
+        public async Task<Result<TurnCommitReceipt>> CommitTurnAsync(TurnCommitRequest request, CancellationToken cancellationToken)
+        {
+            Commits++;
+            var committed = await repository.CommitTurnAsync(request, cancellationToken);
+            Assert.True(committed.IsSuccess, committed.Error.Message);
+            cancellation.Cancel();
+            return committed;
+        }
+    }
+
+    [SkippableTheory]
+    [InlineData("refusal")]
+    [InlineData("exception")]
+    [InlineData("success")]
+    [InlineData("storage")]
+    public async Task A_durable_claimed_reply_remains_saved_when_settlement_fails_and_exact_retry_replays(string settlement)
+    {
+        RequireSqlCipher();
+        SessionTurnClaimLease live = await AcquireAsync();
+        SessionTurnClaimStore store = new(new FixedCovenantConnectionSource(Connection), new CovenantQuotaGuard(), live.OwnerBootId!.Value);
+        FailedSettlement claims = new(store, settlement);
+        TestCapturingLogger<GrimoireTurnWriter> logger = new();
+        using GrimoireTurnWriter writer = new(_repository, _repository,
+            new SessionEventHub(NullLogger<SessionEventHub>.Instance), logger,
+            turnCommitter: _repository, claimedBeginStore: _repository, claims: claims);
+        GrimoireTurnWriter.TurnHandle handle = (await writer.BeginBufferedAssistantReplyAsync(
+            new("private prompt", SessionId: live.Claim.SessionId), InvocationContexts.AttendedGlobalOnlySession(),
+            "private prompt", "private-model-canary", default, live)).Value;
+
+        if (settlement == "storage") await ExecuteAsync("CREATE TRIGGER fail_commit_claim BEFORE UPDATE ON session_turn_claims WHEN NEW.StateCode=3 BEGIN SELECT RAISE(ABORT,'private storage fault'); END;");
+        bool saved = await writer.TryFinalizeBufferedAssistantEntryAsync(handle, "paid durable answer", "private-model-canary", default);
+        Assert.Equal("paid durable answer", await TextAsync("SELECT Content FROM Entries WHERE Role = 2;"));
+        Assert.Equal(1, await ScalarAsync("SELECT OutcomeCode FROM assistant_entry_finalizations;"));
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+        Assert.Equal(settlement == "success" ? 3 : 2, await ScalarAsync("SELECT StateCode FROM session_turn_claims;"));
+        Assert.True(saved);
+        Assert.True(handle.IsFinalized);
+        Assert.Equal(1, claims.Attempts);
+        await writer.TryResolveInterruptedOnStreamExitAsync(handle, "partial wrong replacement");
+        Assert.Equal("paid durable answer", await TextAsync("SELECT Content FROM Entries WHERE Role = 2;"));
+
+        SessionTurnRequestIdentity identity = new(live.Claim.OriginInstallationId, live.Claim.OriginRestoreEpoch,
+            live.Claim.ClientTurnId, live.Claim.SessionId, live.Claim.Surface, live.Claim.RequestDigest,
+            live.Claim.DependencyDigest, live.Claim.PreRequestHistoryWatermarkUtc, live.Claim.PreRequestHistoryRevision,
+            live.Claim.InputSensitivityRevision);
+        if (settlement == "storage") await ExecuteAsync("DROP TRIGGER fail_commit_claim;");
+        Result<SessionTurnClaimLease> retry = await store.AcquireAsync(identity, default);
+        Assert.True(retry.IsSuccess, retry.Error.Message);
+        Assert.Equal(SessionTurnClaimDisposition.Replayed, retry.Value.Disposition);
+        Assert.False(retry.Value.IsExecutable);
+        Assert.Equal(SessionTurnClaimState.Committed, retry.Value.Claim.State);
+        Assert.Equal(live.FutureAssistantEntryId, retry.Value.FutureAssistantEntryId);
+        Assert.Equal("paid durable answer", (await _repository.ReadCleanCommittedReplyAsync(retry.Value, default)).Value.Content);
+        Assert.Equal(1, await ScalarAsync("SELECT COUNT(*) FROM assistant_entry_finalizations;"));
+        Assert.Equal(2, await ScalarAsync("SELECT COUNT(*) FROM Entries;"));
+        if (settlement != "success")
+        {
+            TestLogEntry warning = Assert.Single(logger.Entries, entry => entry.Level == Microsoft.Extensions.Logging.LogLevel.Warning);
+            Assert.Contains(live.Claim.SessionId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(live.FutureAssistantEntryId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(settlement == "refusal" ? ErrorCodes.Covenant.Unavailable : ErrorCodes.Hub.Error, warning.Message);
+            Assert.Null(warning.Exception);
+            Assert.DoesNotContain("private", warning.Message, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed class FailedSettlement(SessionTurnClaimStore store, string mode) : ISessionTurnClaimCoordinator
+    {
+        public int Attempts { get; private set; }
+        public ValueTask<Result<SessionTurnClaimLease>> AcquireAsync(SessionTurnRequestIdentity request, CancellationToken cancellationToken) => store.AcquireAsync(request, cancellationToken);
+        public ValueTask<Result<SessionTurnClaim>> MarkBegunAsync(SessionTurnClaimLease lease, AssistantReplyBeginReceipt begin, CancellationToken cancellationToken) => store.MarkBegunAsync(lease, begin, cancellationToken);
+        public ValueTask<Result<SessionTurnClaim>> CompleteAsync(SessionTurnClaimLease lease, SessionTurnClaimOutcome outcome, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            Assert.False(cancellationToken.CanBeCanceled);
+            if (mode == "exception") throw new IOException("private exception path and content");
+            return mode == "refusal"
+                ? ValueTask.FromResult(Result<SessionTurnClaim>.Failure(new(ErrorCodes.Covenant.Unavailable, "private refusal content")))
+                : store.CompleteAsync(lease, outcome, cancellationToken);
+        }
+    }
+
+    [SkippableFact]
     public async Task Protected_tool_pair_commits_text_labels_and_exact_running_claim_revision_atomically()
     {
         RequireSqlCipher();

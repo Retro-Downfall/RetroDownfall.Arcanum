@@ -30,10 +30,112 @@ public sealed class CovenantDispatchGateTests
 {
     private static readonly Guid InstallationId = Guid.Parse("11111111-2222-3333-4444-555555555555");
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Factory_scopes_keep_the_explicit_logger_for_late_preparation_failures(bool delegated, bool refused)
+    {
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        Guid logicalTurn = Guid.NewGuid();
+        var protection = new RetroDownfall.Arcanum.Api.Intelligence.MemoryDelegation.MemoryDelegationProtection(
+            ProviderCallSensitivities.Create(ContentSensitivity.None, GenerationProvenance.CreateExact([])),
+            CancellationToken.None, _ => throw new InvalidOperationException("Cleanup must not admit a provider effect."));
+        CovenantTurnScope scope = delegated
+            ? CovenantTurnScope.ForMemoryDelegation(logicalTurn, protection, null, logger)
+            : CovenantTurnScope.NotEligible(logger);
+        TaskCompletionSource<Result<CampaignRollupTurnSnapshot?>> preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        scope.CampaignPreparation = preparation.Task;
+        await scope.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+        if (refused)
+            preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Failure(new(ErrorCodes.Covenant.Unavailable, "private-canary")));
+        else
+            preparation.SetException(new IOException("private-canary"));
+        using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(2));
+        while (logger.Entries.Count == 0) await Task.Delay(10, deadline.Token);
+        TestLogEntry warning = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.Contains(scope.LogicalTurnId.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(refused ? ErrorCodes.Covenant.Unavailable : ErrorCodes.Hub.Error, warning.Message);
+        Assert.DoesNotContain("private", warning.Message);
+        Assert.Null(warning.Exception);
+        await scope.DisposeAsync();
+        Assert.Single(logger.Entries);
+    }
+
+    [Theory]
+    [InlineData("fault")]
+    [InlineData("cancel")]
+    [InlineData("refusal")]
+    public async Task Disposed_turns_observe_late_preparation_endings_with_safe_diagnostics(string ending)
+    {
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        var gate = CreateGate(new AbsentContextProvider(CovenantTurnAbsence.Empty), new RecordingJournal(),
+            new RecordingSensitivityLedger(), logger: logger);
+        Guid session = Guid.NewGuid();
+        Guid turn = Guid.NewGuid();
+        CovenantTurnScope scope = (await gate.BeginTurnAsync(ArcanumInvocationContext.None, turn, session, default)).Value;
+        TaskCompletionSource<Result<CampaignRollupTurnSnapshot?>> preparation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        scope.CampaignPreparation = preparation.Task;
+        await scope.DisposeAsync();
+        switch (ending)
+        {
+            case "fault": preparation.SetException(new IOException("private-preparation-canary")); break;
+            case "cancel": preparation.SetCanceled(); break;
+            default: preparation.SetResult(Result<CampaignRollupTurnSnapshot?>.Failure(new(ErrorCodes.Covenant.Unavailable, "private-preparation-canary"))); break;
+        }
+
+        if (ending != "cancel")
+        {
+            using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(2));
+            while (!logger.Entries.Any(entry => entry.Level == LogLevel.Warning)) await Task.Delay(10, deadline.Token);
+            var warning = Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
+            Assert.Contains(session.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(turn.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(ending == "fault" ? ErrorCodes.Hub.Error : ErrorCodes.Covenant.Unavailable, warning.Message);
+            Assert.DoesNotContain("private", warning.Message);
+            Assert.Null(warning.Exception);
+        }
+
+        await scope.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Refused_gate_diagnostics_carry_turn_session_and_closed_code_without_content(bool history)
+    {
+        Guid session = Guid.NewGuid();
+        Guid turn = Guid.NewGuid();
+        const string secret = "private diagnostic payload";
+        Error error = new(ErrorCodes.Covenant.Unavailable, secret);
+        TestCapturingLogger<CovenantDispatchGate> logger = new();
+        CovenantDispatchGate gate = CreateGate(new FailureContextProvider(error), new RecordingJournal(),
+            new RecordingSensitivityLedger { Failure = history ? error : null }, logger: logger);
+        var result = await gate.BeginTurnAsync(ArcanumInvocationContext.None, turn, session, default);
+        Assert.True(result.IsFailure);
+        foreach (TestLogEntry warning in logger.Entries.Where(entry => entry.Level == LogLevel.Warning))
+        {
+            Assert.Contains(session.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(turn.ToString(), warning.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(error.Code, warning.Message);
+            Assert.DoesNotContain(secret, warning.Message);
+            Assert.Null(warning.Exception);
+        }
+        Assert.Equal(history ? 2 : 1, logger.Entries.Count);
+    }
+
+    private sealed class FailureContextProvider(Error error) : ICovenantContextProvider
+    {
+        public ValueTask<Result<CovenantTurnContext>> BeginTurnAsync(ArcanumInvocationContext invocation, Guid logicalTurnId, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(Result<CovenantTurnContext>.Failure(error));
+    }
+
     [Fact]
     public void Protected_tool_input_survives_later_empty_dispatch()
     {
-        var scope = CovenantTurnScope.NotEligible();
+        var scope = CovenantTurnScope.NotEligible(NullLogger.Instance);
         Guid generation = Guid.NewGuid();
         var provenance = GenerationProvenance.CreateExact([generation]);
         var sensitivity = new ProviderCallSensitivity(ContentSensitivity.CovenantDerived, provenance,
@@ -52,7 +154,7 @@ public sealed class CovenantDispatchGateTests
     {
         CampaignRollupArtifact protectedArtifact = CampaignRollupTurnSnapshotTests.Artifact("A protected earlier decision.", ContentSensitivity.CovenantDerived);
 
-        CovenantTurnScope scope = CovenantTurnScope.NotEligible();
+        CovenantTurnScope scope = CovenantTurnScope.NotEligible(NullLogger.Instance);
 
         scope.BindCampaignArtifact(protectedArtifact);
 

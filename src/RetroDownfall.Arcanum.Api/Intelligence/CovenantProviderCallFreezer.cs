@@ -46,7 +46,6 @@ public sealed record CovenantProviderCallDescriptor(
 /// </remarks>
 public static class CovenantProviderCallFreezer
 {
-
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     public static Result<ProviderCallEnvelope> TryFreeze(
@@ -54,59 +53,47 @@ public static class CovenantProviderCallFreezer
         ProviderCallSensitivity sensitivity,
         ProviderCallMaterializationSnapshot materialization)
     {
-
         ArgumentNullException.ThrowIfNull(descriptor);
 
         ArgumentNullException.ThrowIfNull(sensitivity);
 
         ArgumentNullException.ThrowIfNull(materialization);
 
-        Result<FrozenProviderOptions> options = FreezeOptions(descriptor.Options);
-
-        if (options.IsFailure)
-        {
-
-            return Result<ProviderCallEnvelope>.Failure(options.Error);
-
-        }
-
-        Result<ImmutableArray<ProviderMessageEnvelope>> messages = FreezeMessages(descriptor.Messages);
-
-        if (messages.IsFailure)
-        {
-
-            return Result<ProviderCallEnvelope>.Failure(messages.Error);
-
-        }
-
-        Result<ImmutableArray<ProviderToolDefinitionEnvelope>> tools = FreezeTools(descriptor.Options);
-
-        if (tools.IsFailure)
-        {
-
-            return Result<ProviderCallEnvelope>.Failure(tools.Error);
-
-        }
-
         byte[] systemPromptBytes;
 
         try
         {
-
             systemPromptBytes = StrictUtf8.GetBytes(descriptor.SystemPrompt ?? string.Empty);
-
         }
         catch (EncoderFallbackException)
         {
-
             return Result<ProviderCallEnvelope>.Failure(new Error(
                 ErrorCodes.Covenant.InvalidContent,
                 "The rendered system prompt is not strict UTF-8 and cannot be frozen."));
-
         }
 
         try
         {
+            Result<FrozenProviderOptions> options = FreezeOptions(descriptor.Options);
+
+            if (options.IsFailure)
+            {
+                return Result<ProviderCallEnvelope>.Failure(options.Error);
+            }
+
+            Result<ImmutableArray<ProviderMessageEnvelope>> messages = FreezeMessages(descriptor.Messages);
+
+            if (messages.IsFailure)
+            {
+                return Result<ProviderCallEnvelope>.Failure(messages.Error);
+            }
+
+            Result<ImmutableArray<ProviderToolDefinitionEnvelope>> tools = FreezeTools(descriptor.Options);
+
+            if (tools.IsFailure)
+            {
+                return Result<ProviderCallEnvelope>.Failure(tools.Error);
+            }
 
             return Result<ProviderCallEnvelope>.Success(new ProviderCallEnvelope(
                 descriptor.ProviderIdentity,
@@ -124,17 +111,13 @@ public static class CovenantProviderCallFreezer
                 tools.Value,
                 options.Value.CanonicalJsonSchemaDigest,
                 options.Value.HasCanonicalJsonSchema ? options.Value.CanonicalJsonSchemaBytes.AsSpan() : default));
-
         }
-        catch (ArgumentException exception)
+        catch (ArgumentException)
         {
-
             return Result<ProviderCallEnvelope>.Failure(new Error(
                 ErrorCodes.Covenant.InvalidContent,
-                $"The provider call could not be frozen: {exception.Message}"));
-
+                "The provider call could not be frozen because its content or identity is invalid."));
         }
-
     }
 
     /// <summary>
@@ -150,26 +133,20 @@ public static class CovenantProviderCallFreezer
         SystemPromptAttributionMap? attribution,
         string prompt)
     {
-
         if (attribution is not { HasCovenantContent: true }
             || !string.Equals(attribution.Prompt, prompt, StringComparison.Ordinal))
         {
-
             return [];
-
         }
 
         ImmutableArray<ProviderPromptSpan>.Builder spans = ImmutableArray.CreateBuilder<ProviderPromptSpan>();
 
         foreach (SystemPromptAttributionSpan span in attribution.Spans)
         {
-
             if (span.Attribution is not (CovenantPromptAttribution.CovenantConfirmed
                 or CovenantPromptAttribution.CovenantProposed))
             {
-
                 continue;
-
             }
 
             ReadOnlySpan<char> text = prompt.AsSpan(span.Utf16Start, span.Utf16Length);
@@ -179,21 +156,16 @@ public static class CovenantProviderCallFreezer
                 (uint)span.Utf16Start,
                 (uint)span.Utf16Length,
                 new CovenantDigest(SHA256.HashData(StrictUtf8.GetBytes(text.ToString())))));
-
         }
 
         return spans.ToImmutable();
-
     }
 
     private static Result<ImmutableArray<ProviderMessageEnvelope>> FreezeMessages(IReadOnlyList<ChatMessage> messages)
     {
-
         if (messages is null || messages.Count == 0)
         {
-
             return Result<ImmutableArray<ProviderMessageEnvelope>>.Success([]);
-
         }
 
         ImmutableArray<ProviderMessageEnvelope>.Builder frozen =
@@ -201,14 +173,11 @@ public static class CovenantProviderCallFreezer
 
         foreach (ChatMessage message in messages)
         {
-
             Result<CovenantProviderRole> role = FreezeRole(message.Role);
 
             if (role.IsFailure)
             {
-
                 return Result<ImmutableArray<ProviderMessageEnvelope>>.Failure(role.Error);
-
             }
 
             ImmutableArray<ProviderContentPartEnvelope>.Builder parts =
@@ -216,18 +185,14 @@ public static class CovenantProviderCallFreezer
 
             foreach (AIContent content in message.Contents)
             {
-
                 Result<ProviderContentPartEnvelope> part = FreezePart(content);
 
                 if (part.IsFailure)
                 {
-
                     return Result<ImmutableArray<ProviderMessageEnvelope>>.Failure(part.Error);
-
                 }
 
                 parts.Add(part.Value);
-
             }
 
             frozen.Add(new ProviderMessageEnvelope(
@@ -235,11 +200,9 @@ public static class CovenantProviderCallFreezer
                 message.MessageId,
                 message.AuthorName,
                 parts.ToImmutable()));
-
         }
 
         return Result<ImmutableArray<ProviderMessageEnvelope>>.Success(frozen.ToImmutable());
-
     }
 
     private static Result<CovenantProviderRole> FreezeRole(ChatRole role) =>
@@ -288,19 +251,16 @@ public static class CovenantProviderCallFreezer
 
     private static Result<ProviderContentPartEnvelope> FreezeToolCall(FunctionCallContent call)
     {
-
         Result<byte[]> arguments = CanonicalizeArguments(call.Arguments);
 
         return arguments.IsFailure
             ? Result<ProviderContentPartEnvelope>.Failure(arguments.Error)
             : Result<ProviderContentPartEnvelope>.Success(
                 ProviderContentPartEnvelope.ToolCall(call.CallId, call.Name, arguments.Value));
-
     }
 
     private static Result<ProviderContentPartEnvelope> FreezeToolResult(FunctionResultContent result)
     {
-
         string text = result.Result switch
         {
             null => string.Empty,
@@ -311,7 +271,6 @@ public static class CovenantProviderCallFreezer
 
         return Result<ProviderContentPartEnvelope>.Success(
             ProviderContentPartEnvelope.ToolResult(result.CallId, StrictUtf8.GetBytes(text)));
-
     }
 
     /// <summary>
@@ -324,57 +283,43 @@ public static class CovenantProviderCallFreezer
     /// </remarks>
     private static Result<byte[]> CanonicalizeArguments(IDictionary<string, object?>? arguments)
     {
-
         if (arguments is null || arguments.Count == 0)
         {
-
             return Result<byte[]>.Success(ArcanumCanonicalJsonV1.Canonicalize("{}"u8));
-
         }
 
         try
         {
-
             using MemoryStream buffer = new();
 
             using (Utf8JsonWriter writer = new(buffer))
             {
-
                 writer.WriteStartObject();
 
                 foreach (KeyValuePair<string, object?> argument in arguments)
                 {
-
                     writer.WritePropertyName(argument.Key);
 
                     WriteArgumentValue(writer, argument.Value);
-
                 }
 
                 writer.WriteEndObject();
-
             }
 
             return Result<byte[]>.Success(ArcanumCanonicalJsonV1.Canonicalize(buffer.ToArray()));
-
         }
         catch (Exception exception) when (exception is ArgumentException or JsonException or InvalidOperationException)
         {
-
             return Result<byte[]>.Failure(new Error(
                 ErrorCodes.Covenant.InvalidContent,
                 "A tool call's arguments could not be canonicalized for the frozen provider call."));
-
         }
-
     }
 
     private static void WriteArgumentValue(Utf8JsonWriter writer, object? value)
     {
-
         switch (value)
         {
-
             case null:
 
                 writer.WriteNullValue();
@@ -399,13 +344,25 @@ public static class CovenantProviderCallFreezer
 
                 break;
 
-            case int or long or short or byte or uint or ulong or ushort or sbyte:
+            case ulong unsigned:
+
+                writer.WriteNumberValue(unsigned);
+
+                break;
+
+            case int or long or short or byte or uint or ushort or sbyte:
 
                 writer.WriteNumberValue(Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture));
 
                 break;
 
-            case double or float or decimal:
+            case float single:
+
+                writer.WriteNumberValue(single);
+
+                break;
+
+            case double or decimal:
 
                 writer.WriteNumberValue(Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture));
 
@@ -416,19 +373,14 @@ public static class CovenantProviderCallFreezer
                 writer.WriteStringValue(value.ToString());
 
                 break;
-
         }
-
     }
 
     private static Result<ImmutableArray<ProviderToolDefinitionEnvelope>> FreezeTools(ChatOptions? options)
     {
-
         if (options?.Tools is not { Count: > 0 } tools)
         {
-
             return Result<ImmutableArray<ProviderToolDefinitionEnvelope>>.Success([]);
-
         }
 
         ImmutableArray<ProviderToolDefinitionEnvelope>.Builder frozen =
@@ -439,27 +391,22 @@ public static class CovenantProviderCallFreezer
         // is not part of what the model saw.
         foreach (AITool tool in tools.OrderBy(static value => value.Name, StringComparer.Ordinal))
         {
-
             string description = tool.Description ?? string.Empty;
 
             byte[] schema;
 
             try
             {
-
                 schema = ArcanumCanonicalJsonV1.Canonicalize(
                     tool is AIFunction function
                         ? function.JsonSchema.GetRawText()
                         : "{}");
-
             }
             catch (ArgumentException)
             {
-
                 return Result<ImmutableArray<ProviderToolDefinitionEnvelope>>.Failure(new Error(
                     ErrorCodes.Covenant.InvalidContent,
                     $"The tool '{tool.Name}' has a schema that cannot be canonicalized for a frozen provider call."));
-
             }
 
             frozen.Add(new ProviderToolDefinitionEnvelope(
@@ -475,16 +422,13 @@ public static class CovenantProviderCallFreezer
                 // policy. The envelope records the ordinary identity because it is freezing what was
                 // advertised, not what a later invocation of one of these tools would be allowed to do.
                 CovenantToolRiskIdentity.Ordinary));
-
         }
 
         return Result<ImmutableArray<ProviderToolDefinitionEnvelope>>.Success(frozen.ToImmutable());
-
     }
 
     private static Result<FrozenProviderOptions> FreezeOptions(ChatOptions? options)
     {
-
         try
         {
             ProviderResponseFormat responseFormat = ProviderResponseFormat.Text;
@@ -546,16 +490,12 @@ public static class CovenantProviderCallFreezer
         }
         catch (Exception exception) when (exception is ArgumentException or JsonException or InvalidOperationException)
         {
-
             return Result<FrozenProviderOptions>.Failure(new Error(
                 ErrorCodes.Covenant.InvalidContent,
                 "The provider options for this attempt could not be frozen."));
-
         }
-
     }
 
     private static ProviderToolChoice FreezeToolChoice(ChatOptions? options) =>
         options?.Tools is { Count: > 0 } ? ProviderToolChoice.Auto : ProviderToolChoice.None;
-
 }

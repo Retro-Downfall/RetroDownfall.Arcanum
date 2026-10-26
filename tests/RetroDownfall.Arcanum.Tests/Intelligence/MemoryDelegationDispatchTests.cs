@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
 using RetroDownfall.Arcanum.Api.Intelligence;
 using RetroDownfall.Arcanum.Core.Covenant;
 
@@ -8,7 +10,7 @@ public sealed class MemoryDelegationDispatchTests
     [Fact]
     public void Interrupted_or_empty_output_does_not_downgrade_prior_disclosure()
     {
-        var scope = CovenantTurnScope.NotEligible();
+        var scope = CovenantTurnScope.NotEligible(NullLogger.Instance);
         Guid first = Guid.NewGuid(), second = Guid.NewGuid();
         foreach (Guid generation in new[] { first, second })
         {
