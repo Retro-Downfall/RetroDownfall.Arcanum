@@ -30,7 +30,7 @@ namespace RetroDownfall.Arcanum.Tests.Backup;
 /// service over the same in-memory keychain.</para>
 /// </remarks>
 [Collection("ApiHost")]
-public sealed class BackupRestoreStagedDrainTests
+public sealed partial class BackupRestoreStagedDrainTests
 {
     private const string Erased = "erased before the restore";
 

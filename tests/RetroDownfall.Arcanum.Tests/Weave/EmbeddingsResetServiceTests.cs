@@ -22,7 +22,7 @@ namespace RetroDownfall.Arcanum.Tests.Weave;
 /// <summary>Operator reset endpoint backing service — clears embedding tables and companion metadata.</summary>
 [Collection("Grimoire")]
 [Trait("Category", "Integration")]
-public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
+public sealed partial class EmbeddingsResetServiceTests : IAsyncLifetime
 {
     private const int TestDimensions = 64;
 
@@ -1135,6 +1135,7 @@ public sealed class EmbeddingsResetServiceTests : IAsyncLifetime
 
         Assert.Equal(
             [
+                "tapestry_edges",
                 "tapestry_generations",
                 "tapestry_node_embeddings",
                 "tapestry_node_embeddings_vec",
