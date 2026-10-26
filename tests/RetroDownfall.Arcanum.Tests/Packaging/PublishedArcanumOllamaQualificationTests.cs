@@ -41,8 +41,6 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
     internal const string PerplexityKeyVariable = "ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY";
 
-    private const string PerplexitySuccessReceipt = "local-ollama-aot-perplexity-qualification:v1";
-
     private const string SearchQuery = "What is the purpose of NASA Voyager?";
 
     private const string SearchRecallPrompt =
@@ -50,8 +48,6 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         + "Recall the conversation marker from turn one and parse the earlier web_search result. "
         + "Reply with exactly MARKER=<conversation marker>; TOKEN=<CURRENT_TOKEN>; "
         + "CITATION_INDEX=<first retained citation index>; CITATION_URL=<first retained citation URL> and no other text.";
-
-    private const string SuccessReceipt = "local-ollama-aot-qualification:v1";
 
     private const string TestCredentialOptInVariable = "ARCANUM_TEST_IN_MEMORY_CREDENTIALS";
 
@@ -109,6 +105,10 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         bool perplexity = searchMode == "1";
 
+        PdfQualificationOptions? pdfOptions = PdfQualificationOptions.Read(global::System.Environment.GetEnvironmentVariable);
+
+        bool pdfCompleted = false;
+
         string? perplexityKey = perplexity
             ? LocalOllamaQualificationGuards.RequirePerplexityCredential(
                 global::System.Environment.GetEnvironmentVariable(PerplexitySourceVariable) ?? "ARCANUM_PERPLEXITY_API_KEY",
@@ -164,6 +164,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         Exception? primaryFailure = null;
         TcpListener? portReservation = null;
         HttpClient? api = null;
+        LongRestQualificationProxy? pdfProxy = null;
+
         PublishedHost? firstHost = null;
         PublishedHost? restartedHost = null;
 
@@ -182,7 +184,9 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         string secondPrompt = perplexity ? SearchRecallPrompt : SecondTurnPrompt;
 
         string?[] SensitiveValues() =>
-            [perplexityKey, firstHost?.DisclosedMasterApiKey, restartedHost?.DisclosedMasterApiKey];
+            [perplexityKey, firstHost?.DisclosedMasterApiKey, restartedHost?.DisclosedMasterApiKey,
+                pdfOptions is null ? null : LongRestQualificationConfiguration.ChatCredentialPlaceholder,
+                pdfOptions is null ? null : PdfQualificationDependencies.CredentialPlaceholder];
 
         try
         {
@@ -198,6 +202,19 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
             byte[] secondFactBytes = Encoding.UTF8.GetBytes($"CURRENT_TOKEN={rightToken}\n");
             byte[] imageBytes = await File.ReadAllBytesAsync(isolatedImage);
 
+            PdfQualificationDependencies? pdfDependencies = null;
+
+            if (pdfOptions is not null)
+            {
+                await AssertModelIsInstalledAsync(endpoint, pdfOptions.Model);
+
+                await PdfQualificationPreflight.VerifyAsync(endpoint, pdfOptions, CancellationToken.None);
+
+                pdfProxy = await LongRestQualificationProxy.StartAsync(endpoint);
+
+                pdfDependencies = new(pdfOptions, pdfProxy.Endpoint);
+            }
+
             portReservation = new TcpListener(IPAddress.Loopback, 0);
 
             portReservation.Start();
@@ -208,12 +225,13 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 configurationPath,
                 workspace,
                 hostPort,
-                endpoint,
+                pdfProxy?.Endpoint ?? endpoint,
                 model,
                 perplexity,
-                visionModel);
+                visionModel,
+                pdfDependencies);
 
-            TestEnvironment environment = new(isolation, workspace, perplexityKey);
+            TestEnvironment environment = new(isolation, workspace, perplexityKey, Pdf: pdfOptions is not null);
 
             portReservation.Stop();
             portReservation.Dispose();
@@ -609,6 +627,13 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
             _ = await AssertPersistedTimestampEncodingAsync(configurationDirectory);
 
+            if (pdfOptions is not null)
+            {
+                await RunPdfQualificationAsync(api, configurationDirectory, workspace, model, pdfOptions, pdfProxy!, sessionId);
+
+                pdfCompleted = true;
+            }
+
             await StopHostAsync(api, restartedHost, TimeSpan.FromSeconds(45));
 
             AssertNoPlaintextCredentialFiles(
@@ -617,7 +642,9 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 ProviderKey,
                 perplexityKey,
                 firstHost.DisclosedMasterApiKey,
-                restartedHost.DisclosedMasterApiKey);
+                restartedHost.DisclosedMasterApiKey,
+                pdfOptions is null ? null : LongRestQualificationConfiguration.ChatCredentialPlaceholder,
+                pdfOptions is null ? null : PdfQualificationDependencies.CredentialPlaceholder);
         }
         catch (Exception exception)
         {
@@ -687,6 +714,19 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 }
             }
 
+            if (pdfProxy is not null)
+            {
+                try
+                {
+                    await pdfProxy.DisposeAsync();
+                }
+                catch (Exception cleanupFailure)
+                {
+                    cleanupFailures.Add(LocalOllamaQualificationGuards.CreateSanitizedFailure(
+                        "PDF qualification forwarder cleanup failed.", cleanupFailure, ProviderKey, masterApiKey, SensitiveValues()));
+                }
+            }
+
             try
             {
                 isolation.Delete();
@@ -729,7 +769,7 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         {
             await File.WriteAllTextAsync(
                 receiptPath,
-                (perplexity ? PerplexitySuccessReceipt : SuccessReceipt) + global::System.Environment.NewLine);
+                PdfQualificationEvidence.Receipt(pdfOptions is not null, perplexity, pdfCompleted) + global::System.Environment.NewLine);
         }
     }
 
@@ -1132,7 +1172,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
         Uri endpoint,
         string model,
         bool perplexity = false,
-        string? visionModel = null)
+        string? visionModel = null,
+        PdfQualificationDependencies? pdf = null)
     {
         var roles = ResolveModelRoles(model, visionModel);
 
@@ -1215,6 +1256,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
                 },
             },
         };
+
+        pdf?.Configure(configuration.Arcanum);
 
         await using FileStream stream = new(
             path,
@@ -1728,7 +1771,8 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
     internal sealed record TestEnvironment(
         PublishedTestProcessIsolation Isolation,
         string Workspace,
-        string? PerplexityKey = null)
+        string? PerplexityKey = null,
+        bool Pdf = false)
     {
         public string TestHome => Isolation.TestHome;
 
@@ -1764,7 +1808,10 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
             start.Environment["ASPNETCORE_ENVIRONMENT"] = "Testing";
             start.Environment["ARCANUM_TEST_HOME"] = TestHome;
             start.Environment[TestCredentialOptInVariable] = "1";
-            start.Environment[ProviderKeyVariable] = ProviderKey;
+            start.Environment[ProviderKeyVariable] = Pdf ? LongRestQualificationConfiguration.ChatCredentialPlaceholder : ProviderKey;
+
+            if (Pdf) start.Environment[PdfQualificationDependencies.CredentialVariable] = PdfQualificationDependencies.CredentialPlaceholder;
+
             start.Environment["ARCANUM_NO_AUTO_SERVE"] = "1";
             start.Environment["NO_COLOR"] = "1";
             start.Environment["HOME"] = TestHome;
@@ -1787,7 +1834,9 @@ public sealed partial class PublishedArcanumOllamaQualificationTests
 
         public string Redact(string value)
         {
-            return LocalOllamaQualificationGuards.Redact(value, ProviderKey, MasterApiKey, PerplexityKey);
+            return LocalOllamaQualificationGuards.Redact(value, ProviderKey, MasterApiKey, PerplexityKey,
+                Pdf ? LongRestQualificationConfiguration.ChatCredentialPlaceholder : null,
+                Pdf ? PdfQualificationDependencies.CredentialPlaceholder : null);
         }
 
         public InvalidOperationException CreateSanitizedFailure(

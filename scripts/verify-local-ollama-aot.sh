@@ -14,6 +14,11 @@ TEXT_MODEL=""
 VISION_MODEL=""
 ENDPOINT="http://127.0.0.1:11434/v1/"
 PERPLEXITY=0
+PDF=0
+PDF_EMBEDDING_MODEL="qwen3-embedding:8b"
+PDF_EMBEDDING_WINDOW=40960
+PDF_EMBEDDING_DIMENSIONS=4096
+HANG_TIMEOUT=30m
 PERPLEXITY_KEY_VARIABLE="ARCANUM_PERPLEXITY_API_KEY"
 EXPECTED_IMAGE_SHA256="713ec8279747a2a33ee6e7407155f5c75be51037545aaec18677f0d7f91bf3da"
 
@@ -28,6 +33,10 @@ Local qualification options:
   --text-model <tag>     Override only the text/search/recall role, regardless of argument order.
   --vision-model <tag>   Override only the image-turn role, regardless of argument order.
   --endpoint <uri>       Literal-loopback Ollama /v1 endpoint (default: http://127.0.0.1:11434/v1/).
+  --pdf                 Also require PDF upload, arithmetic, pin recall and durable indexing.
+  --pdf-embedding-model <tag> Embedding dependency model (default: qwen3-embedding:8b).
+  --pdf-embedding-window <n> Verified embedding context window (default: 40960).
+  --pdf-embedding-dimensions <n> Verified vector width (default: 4096).
   --perplexity          Also require a live Perplexity search and parsed citation recall (paid network).
   --perplexity-key-variable <name> Credential environment-variable name, never a key value.
   --configuration <name> Managed test-harness configuration (default: Release).
@@ -78,6 +87,23 @@ while [[ $# -gt 0 ]]; do
       ENDPOINT="${2:?--endpoint requires a URI}"
       shift 2
       ;;
+    --pdf)
+      PDF=1
+      HANG_TIMEOUT=45m
+      shift
+      ;;
+    --pdf-embedding-model | --pdf-embedding-window | --pdf-embedding-dimensions)
+      if [[ $# -lt 2 || "$2" == --* || ! "$2" =~ [^[:space:]] ]]; then
+        echo "error: $1 requires a value" >&2
+        exit 2
+      fi
+      case "$1" in
+        --pdf-embedding-model) PDF_EMBEDDING_MODEL="$2" ;;
+        --pdf-embedding-window) PDF_EMBEDDING_WINDOW="$2" ;;
+        --pdf-embedding-dimensions) PDF_EMBEDDING_DIMENSIONS="$2" ;;
+      esac
+      shift 2
+      ;;
     --perplexity)
       PERPLEXITY=1
       shift
@@ -101,6 +127,17 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ ! "$PDF_EMBEDDING_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ \
+  || ! "$PDF_EMBEDDING_WINDOW" =~ ^[1-9][0-9]{0,6}$ \
+  || ! "$PDF_EMBEDDING_DIMENSIONS" =~ ^[1-9][0-9]{0,3}$ ]]; then
+  echo "error: invalid PDF embedding model/window/dimensions" >&2
+  exit 2
+fi
+if (( PDF_EMBEDDING_WINDOW < 1024 || PDF_EMBEDDING_DIMENSIONS < 64 || PDF_EMBEDDING_DIMENSIONS > 4096 )); then
+  echo "error: PDF embedding window must be at least 1024 and dimensions within 64..4096" >&2
+  exit 2
+fi
 
 TEXT_MODEL="${TEXT_MODEL:-$MODEL}"
 VISION_MODEL="${VISION_MODEL:-$MODEL}"
@@ -241,6 +278,12 @@ EXPECTED_QUALIFICATION_RECEIPT="local-ollama-aot-qualification:v1"
 if [[ "$PERPLEXITY" -eq 1 ]]; then
   EXPECTED_QUALIFICATION_RECEIPT="local-ollama-aot-perplexity-qualification:v1"
 fi
+if [[ "$PDF" -eq 1 ]]; then
+  EXPECTED_QUALIFICATION_RECEIPT="local-ollama-aot-pdf-qualification:v1"
+  if [[ "$PERPLEXITY" -eq 1 ]]; then
+    EXPECTED_QUALIFICATION_RECEIPT="local-ollama-aot-pdf-perplexity-qualification:v1"
+  fi
+fi
 QUALIFICATION_RECEIPT_FOR_TEST="$QUALIFICATION_RECEIPT"
 EXECUTABLE_FOR_TEST="$EXECUTABLE_PATH"
 IMAGE_FOR_TEST="$IMAGE_PATH"
@@ -283,8 +326,13 @@ rm -f "$QUALIFICATION_RECEIPT"
 echo "==> Running isolated Native AOT + Ollama qualification (cold turns may take up to 3 minutes)"
 # The one selected test spends up to two 3-minute host starts and up to five 3-minute cold model turns
 # plus its own 45-second steps, so the suite-wide 15 minute hang bound would kill a slow but live
-# local model. Thirty minutes still names and kills a test host that has stopped making progress.
+# local model. Baseline stays 30m. PDF adds a shared 5m preflight and 10m phase; 45m admits
+# its 37.5m named cold/start/phase allowances plus control/cleanup headroom without a process dump.
 ARCANUM_RUN_LOCAL_OLLAMA_AOT_QUALIFICATION=1 \
+ARCANUM_OLLAMA_QUALIFICATION_PDF="$PDF" \
+ARCANUM_OLLAMA_QUALIFICATION_PDF_EMBEDDING_MODEL="$PDF_EMBEDDING_MODEL" \
+ARCANUM_OLLAMA_QUALIFICATION_PDF_EMBEDDING_WINDOW="$PDF_EMBEDDING_WINDOW" \
+ARCANUM_OLLAMA_QUALIFICATION_PDF_EMBEDDING_DIMENSIONS="$PDF_EMBEDDING_DIMENSIONS" \
 ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY="$PERPLEXITY" \
 ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE="$PERPLEXITY_KEY_VARIABLE" \
 ARCANUM_PUBLISHED_EXECUTABLE="$EXECUTABLE_FOR_TEST" \
@@ -295,7 +343,7 @@ ARCANUM_OLLAMA_QUALIFICATION_ENDPOINT="$ENDPOINT" \
 ARCANUM_OLLAMA_QUALIFICATION_RECEIPT="$QUALIFICATION_RECEIPT_FOR_TEST" \
 dotnet test "$TEST_PROJECT" \
   -c "$CONFIGURATION" \
-  --blame-hang-timeout 30m \
+  --blame-hang-timeout "$HANG_TIMEOUT" \
   --blame-hang-dump-type none \
   --filter 'FullyQualifiedName=RetroDownfall.Arcanum.Tests.Packaging.PublishedArcanumOllamaQualificationTests.Published_native_aot_preserves_corrected_file_context_and_runs_vision_across_restart' \
   --artifacts-path "$WORK/test-artifacts" \
@@ -331,4 +379,8 @@ echo "==> Native AOT first-session, durable correction, attachment history, rest
 
 if [[ "$PERPLEXITY" -eq 1 ]]; then
   echo "==> Live Perplexity search, parsed citation recall, and durable tool exchange are healthy"
+fi
+
+if [[ "$PDF" -eq 1 ]]; then
+  echo "==> PDF canonical upload, text-role arithmetic, pin-only follow-up and exact-source durable indexing are healthy"
 fi

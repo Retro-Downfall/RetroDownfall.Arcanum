@@ -840,6 +840,11 @@ public sealed class PublishedApphostVerificationScriptTests
                 printf 'ollama-image=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_IMAGE:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'ollama-text-model=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'ollama-vision-model=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_VISION_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'pdf-mode=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PDF:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'pdf-embedding-model=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PDF_EMBEDDING_MODEL:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'pdf-embedding-window=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PDF_EMBEDDING_WINDOW:-}" >> "${FAKE_DOTNET_LOG:?}"
+                printf 'pdf-embedding-dimensions=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PDF_EMBEDDING_DIMENSIONS:-}" >> "${FAKE_DOTNET_LOG:?}"
+
 
                 printf 'perplexity-mode=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY:-}" >> "${FAKE_DOTNET_LOG:?}"
                 printf 'perplexity-reference=%s\n' "${ARCANUM_OLLAMA_QUALIFICATION_PERPLEXITY_KEY_VARIABLE:-}" >> "${FAKE_DOTNET_LOG:?}"
@@ -894,6 +899,18 @@ public sealed class PublishedApphostVerificationScriptTests
                         printf '%s\n' 'local-ollama-aot-perplexity-qualification:v1' > "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
                       fi
 
+                      if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
+                        printf '%s' 'trailing-bytes' >> "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
+                      fi
+                    fi
+                    ;;
+                  ollama-pdf | ollama-pdf-perplexity)
+                    if [[ "$selected" == "$expected_ollama" ]]; then
+                      receipt='local-ollama-aot-pdf-qualification:v1'
+                      if [[ "${FAKE_DOTNET_RECEIPT_KIND}" == ollama-pdf-perplexity ]]; then
+                        receipt='local-ollama-aot-pdf-perplexity-qualification:v1'
+                      fi
+                      printf '%s\n' "$receipt" > "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
                       if [[ "${FAKE_APPEND_RECEIPT_BYTES_WITHOUT_NEWLINE:-0}" == 1 ]]; then
                         printf '%s' 'trailing-bytes' >> "${ARCANUM_OLLAMA_QUALIFICATION_RECEIPT:?}"
                       fi

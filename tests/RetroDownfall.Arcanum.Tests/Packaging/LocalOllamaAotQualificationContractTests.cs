@@ -359,13 +359,16 @@ public sealed class LocalOllamaAotQualificationContractTests(GrimoireFixture fix
                 "Packaging",
                 $"{QualificationClass}.cs"));
 
+        string receiptOwner = File.ReadAllText(Path.Combine(root, "tests", "RetroDownfall.Arcanum.Tests", "Packaging", "PdfQualificationEvidence.cs"));
+
         Assert.Contains(ExactQualificationFilter, wrapper, StringComparison.Ordinal);
         Assert.Contains("ARCANUM_OLLAMA_QUALIFICATION_RECEIPT", wrapper, StringComparison.Ordinal);
         Assert.Contains("ARCANUM_OLLAMA_QUALIFICATION_RECEIPT", qualification, StringComparison.Ordinal);
         Assert.Contains("local-ollama-aot-qualification:v1", wrapper, StringComparison.Ordinal);
-        Assert.Contains("local-ollama-aot-qualification:v1", qualification, StringComparison.Ordinal);
+        Assert.Contains("local-ollama-aot-qualification:v1", receiptOwner, StringComparison.Ordinal);
+
         Assert.Contains(
-            "(perplexity ? PerplexitySuccessReceipt : SuccessReceipt) + global::System.Environment.NewLine",
+            "PdfQualificationEvidence.Receipt(pdfOptions is not null, perplexity, pdfCompleted) + global::System.Environment.NewLine",
             qualification,
             StringComparison.Ordinal);
         Assert.DoesNotContain("ARCANUM_PUBLISHED_SMOKE_RECEIPT", wrapper, StringComparison.Ordinal);

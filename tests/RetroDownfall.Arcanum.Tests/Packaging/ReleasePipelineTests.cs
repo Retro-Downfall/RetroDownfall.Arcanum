@@ -786,7 +786,9 @@ public sealed class ReleasePipelineTests
 
         foreach (string file in files)
         {
-            string[] invocations = [.. DotnetTestInvocations(File.ReadAllText(file))];
+            string source = File.ReadAllText(file);
+
+            string[] invocations = [.. DotnetTestInvocations(source)];
 
             string name = Path.GetFileName(file);
 
@@ -800,7 +802,7 @@ public sealed class ReleasePipelineTests
             }
 
             // 15 minutes everywhere except the two local Ollama qualifications, whose single tests legitimately spend longer than
-            // that in real-model work and carry their own bounds: 30 minutes for cold vision turns, and 90 for the Long Rest sweeps.
+            // that in real-model work and carry their own bounds: 30 minutes for cold vision turns, a closed 45-minute PDF branch, and 90 for Long Rest sweeps.
             int allowedMinutes = name switch
             {
                 "verify-local-ollama-aot.sh" => 30,
@@ -810,13 +812,26 @@ public sealed class ReleasePipelineTests
 
             foreach (string invocation in invocations)
             {
-                Match timeout = HangTimeout.Match(invocation);
+                string checkedInvocation = invocation;
+
+                int invocationMinutes = allowedMinutes;
+
+                if (name == "verify-local-ollama-aot.sh" && invocation.Contains("$HANG_TIMEOUT", StringComparison.Ordinal))
+                {
+                    Assert.True(HasClosedPdfHangTimeout(source), "Only the exact baseline 30m/PDF 45m timeout branches are admitted.");
+
+                    checkedInvocation = invocation.Replace("\"$HANG_TIMEOUT\"", "45m", StringComparison.Ordinal);
+
+                    invocationMinutes = 45;
+                }
+
+                Match timeout = HangTimeout.Match(checkedInvocation);
 
                 Assert.True(
                     timeout.Success
-                    && int.Parse(timeout.Groups["minutes"].Value, System.Globalization.CultureInfo.InvariantCulture) <= allowedMinutes
+                    && int.Parse(timeout.Groups["minutes"].Value, System.Globalization.CultureInfo.InvariantCulture) <= invocationMinutes
                     && invocation.Contains("--blame-hang-dump-type none", StringComparison.Ordinal),
-                    $"{name} runs a test project without a hang bound of at most {allowedMinutes}m (and no dump), so a hung test host is bounded only by the job ceiling: {invocation[..Math.Min(invocation.Length, 140)]}");
+                    $"{name} runs a test project without a hang bound of at most {invocationMinutes}m (and no dump), so a hung test host is bounded only by the job ceiling: {invocation[..Math.Min(invocation.Length, 140)]}");
             }
         }
 
@@ -846,6 +861,27 @@ public sealed class ReleasePipelineTests
             runner.RootElement.TryGetProperty("diagnosticMessages", out System.Text.Json.JsonElement diagnostics)
             && diagnostics.ValueKind == System.Text.Json.JsonValueKind.True,
             "xunit.runner.json sets longRunningTestSeconds without diagnosticMessages, so the notice is never printed.");
+    }
+
+    /// <summary>The one explicitly tested 30m baseline / 45m PDF selection; every other mention is refused.</summary>
+    internal static bool HasClosedPdfHangTimeout(string source)
+    {
+        source = source.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        string[] mentions = source.Split('\n').Where(static line => line.Contains("HANG_TIMEOUT", StringComparison.Ordinal))
+            .Select(static line => line.Trim()).ToArray();
+
+        string[] allowed = ["HANG_TIMEOUT=30m", "HANG_TIMEOUT=45m", "--blame-hang-timeout \"$HANG_TIMEOUT\" \\"];
+
+        int baseline = source.IndexOf("\nHANG_TIMEOUT=30m\n", StringComparison.Ordinal);
+
+        int arguments = source.IndexOf("\nwhile [[ $# -gt 0 ]]; do\n", StringComparison.Ordinal);
+
+        const string pdfBranch = "    --pdf)\n      PDF=1\n      HANG_TIMEOUT=45m\n      shift\n      ;;";
+
+        return mentions.SequenceEqual(allowed) && baseline >= 0 && arguments > baseline
+            && source.IndexOf(pdfBranch, StringComparison.Ordinal) > arguments
+            && source.Contains("\nPDF=0\n", StringComparison.Ordinal);
     }
 
     /// <summary>
