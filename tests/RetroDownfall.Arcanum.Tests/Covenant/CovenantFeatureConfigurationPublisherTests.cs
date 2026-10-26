@@ -1,8 +1,11 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using RetroDownfall.Arcanum.Tests.Support;
 
+using RetroDownfall.Arcanum.Api;
 using RetroDownfall.Arcanum.Core.Configuration;
 using RetroDownfall.Arcanum.Core.Covenant;
 using RetroDownfall.Arcanum.Infrastructure.Covenant;
@@ -26,8 +29,57 @@ namespace RetroDownfall.Arcanum.Tests.Covenant;
 /// edits can deliver out of order; a publisher that just wrote what its callback saw could leave the
 /// installation enabled after the operator's last action was to disable it.</para>
 /// </remarks>
+[Collection("ProcessEnvironment")]
 public sealed class CovenantFeatureConfigurationPublisherTests
 {
+    [Fact]
+    public void Activation_without_a_registered_logger_is_rejected()
+    {
+        ServiceCollection services = new();
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        InvalidOperationException exception = Assert.Throws<InvalidOperationException>(() =>
+            ActivatorUtilities.CreateInstance<CovenantFeatureConfigurationPublisher>(
+                provider,
+                new CovenantAvailability(),
+                new TestOptionsMonitor(Settings(covenant: false))));
+
+        Assert.Contains(nameof(ILogger<CovenantFeatureConfigurationPublisher>), exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_explicit_null_logger_is_rejected()
+    {
+        ArgumentNullException exception = Assert.Throws<ArgumentNullException>(() =>
+            new CovenantFeatureConfigurationPublisher(
+                new CovenantAvailability(),
+                new TestOptionsMonitor(Settings(covenant: false)),
+                null!));
+
+        Assert.Equal("logger", exception.ParamName);
+    }
+
+    [Fact]
+    public void Production_services_supply_the_required_logger()
+    {
+        using ArcanumTestHomeScope home = new("arcanum-covenant-feature-publisher");
+
+        ServiceCollection services = new();
+
+        services.AddArcanumApiServices(new ConfigurationBuilder().Build());
+
+        services.PostConfigure<ArcanumSettings>(settings => settings.Features = new FeatureSettings { Covenant = false });
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+
+        CovenantFeatureConfigurationPublisher publisher = provider.GetRequiredService<CovenantFeatureConfigurationPublisher>();
+
+        publisher.Start();
+
+        Assert.False(provider.GetRequiredService<CovenantAvailability>().Current.FeatureEnabled);
+    }
+
     [Fact]
     public void Feature_flips_are_operator_visible_and_unchanged_callbacks_are_quiet()
     {
@@ -76,7 +128,7 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         TestOptionsMonitor monitor = new(Settings(covenant: true));
 
-        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
 
         publisher.Start();
 
@@ -101,7 +153,7 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         TestOptionsMonitor monitor = new(Settings(covenant: true));
 
-        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
 
         publisher.Start();
 
@@ -131,7 +183,7 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         TestOptionsMonitor monitor = new(Settings(covenant: false));
 
-        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
 
         publisher.Start();
 
@@ -157,14 +209,14 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         TestOptionsMonitor monitor = new(Settings(covenant: true));
 
-        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
 
         publisher.Start();
 
         Assert.True(availability.Current.FeatureEnabled);
 
         // No connection source, no secret store, no configuration file. The publisher's whole
-        // dependency set is the two constructor arguments, so there is nothing here that could
+        // dependency set is the availability, monitor and explicit no-op logger, so nothing could
         // block on storage during a disable.
         monitor.Change(Settings(covenant: false));
 
@@ -178,7 +230,7 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         TestOptionsMonitor monitor = new(Settings(covenant: false));
 
-        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+        using CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
 
         publisher.Start();
 
@@ -197,7 +249,7 @@ public sealed class CovenantFeatureConfigurationPublisherTests
 
         TestOptionsMonitor monitor = new(Settings(covenant: false));
 
-        CovenantFeatureConfigurationPublisher publisher = new(availability, monitor);
+        CovenantFeatureConfigurationPublisher publisher = new(availability, monitor, NullLogger<CovenantFeatureConfigurationPublisher>.Instance);
 
         publisher.Start();
 
