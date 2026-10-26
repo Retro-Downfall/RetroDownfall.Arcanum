@@ -26,6 +26,10 @@ public sealed record RaptorNumericOptions(
     double FuzzyUnionMix = 1,
     double MinimumDistance = 0.1,
     double Spread = 1,
+    double CurveA = 1.5769434603113077,
+    double CurveB = 0.8950608779109733,
+    double InitialRescaleRange = 10,
+    int UmapProgressInterval = 1024,
     int SmallEpochs = 500,
     int LargeEpochs = 200,
     int LargeEpochBoundary = 10000,
@@ -41,7 +45,10 @@ public sealed record RaptorNumericOptions(
     int MixtureInitializations = 1,
     string NumericRecipe = "double-fixed-order-v1",
     string NeighborRecipe = "cosine-normalized-scalar-identical-zero-self-first-identical-anchors-median-rptree-coprime-fill-new-old-reverse-nearest-nndescent-v1",
-    string InitializationRecipe = "splitmix64-random-v1",
+    string InitializationRecipe = "splitmix64-canonical-random-rescale-zero-singleton-v1",
+    string CurveRecipe = "umap-0.5.5-scipy-fit-spread1-mindist0.1-v1",
+    string FuzzyRecipe = "umap-0.5.5-double-self-excluded-smooth-fuzzy-union-zero-underflow-v1",
+    string OptimizerRecipe = "umap-0.5.5-double-canonical-csr-prune-max-over-epochs-post-epoch-alpha-splitmix64-modulo-negative-v1",
     string MixtureRecipe = "full-covariance-best-converged-v1");
 
 /// <summary>Independent random streams; local and recursive paths also carry an exact stage key.</summary>

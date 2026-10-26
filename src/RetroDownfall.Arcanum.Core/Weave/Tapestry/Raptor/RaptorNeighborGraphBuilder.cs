@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using RetroDownfall.Arcanum.Core.Primitives;
 
 namespace RetroDownfall.Arcanum.Core.Weave.Tapestry.Raptor;
@@ -14,7 +15,8 @@ public sealed record RaptorNeighborGraph(
     ReadOnlyMemory<int> SourceIndices,
     ReadOnlyMemory<double> Distances,
     long DistanceEvaluations,
-    int DescentIterations);
+    int DescentIterations,
+    ImmutableArray<string> StableIds = default);
 
 /// <summary>Content-free bounded search progress; optional observers do not participate in arithmetic.</summary>
 public readonly record struct RaptorNeighborProgress(string Phase, long DistanceEvaluations);
@@ -52,7 +54,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         if (count == 0)
         {
-            return new RaptorNeighborGraph(0, 0, new int[1], Array.Empty<int>(), Array.Empty<double>(), 0, 0);
+            return new RaptorNeighborGraph(0, 0, new int[1], Array.Empty<int>(), Array.Empty<double>(), 0, 0, []);
         }
 
         if ((long)count * neighbors > Array.MaxLength)
@@ -174,7 +176,7 @@ public sealed class RaptorNeighborGraphBuilder(IProgress<RaptorNeighborProgress>
 
         offsets[count] = indices.Length;
 
-        return new RaptorNeighborGraph(count, neighbors, offsets, indices, distances, search.Evaluations, iterations);
+        return new RaptorNeighborGraph(count, neighbors, offsets, indices, distances, search.Evaluations, iterations, [.. points.Select(point => point.StableId)]);
     }
 
     private static bool IsValidId(string id)
