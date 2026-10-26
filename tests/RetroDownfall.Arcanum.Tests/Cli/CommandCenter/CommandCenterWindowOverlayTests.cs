@@ -12,6 +12,177 @@ namespace RetroDownfall.Arcanum.Tests.Cli.CommandCenter;
 public sealed class CommandCenterWindowOverlayTests
 {
     [Theory]
+    [InlineData("界", 40, 120, 82)]
+    [InlineData("語", 35, 100, 72)]
+    [InlineData("A界", 25, 120, 77)]
+    [InlineData("A", 80, 120, 82)]
+    [InlineData("e\u0301", 40, 120, 60)]
+    [InlineData("😀", 40, 140, 82)]
+    [InlineData("界", 80, 200, 120)]
+    [InlineData("界", 80, 80, 76)]
+    public void Generic_overlay_frame_measures_display_cells_and_retains_width_caps(
+        string glyph, int repetitions, int columns, int expectedWidth)
+    {
+        using CommandCenterWindow window = new();
+
+        window.ApplyAbsoluteLayout(columns, 40);
+
+        string line = string.Concat(Enumerable.Repeat(glyph, repetitions));
+
+        window.ShowOverlay(CommandCenterOverlayKind.Help, [line], "Content", showFilter: false);
+
+        Assert.True(window.Layout(new System.Drawing.Size(columns, 40)));
+
+        Assert.Equal(expectedWidth, window.OverlayPane.Frame.Width);
+
+        if (TerminalCellMetrics.MeasureWidth(line) <= expectedWidth - 2)
+        {
+            Assert.True(window.OverlayList.Viewport.Width >= TerminalCellMetrics.MeasureWidth(line));
+        }
+
+        window.ApplyAbsoluteLayout(80, 24);
+
+        _ = window.Layout(new System.Drawing.Size(80, 24));
+
+        Assert.Equal(Math.Min(76, expectedWidth), window.OverlayPane.Frame.Width);
+
+        Assert.Equal(line, string.Concat(window.GetOverlayLinesSnapshot()));
+    }
+
+    [Theory]
+    [InlineData(CommandCenterOverlayKind.Help)]
+    [InlineData(CommandCenterOverlayKind.QuitConfirm)]
+    internal void Generic_overlay_reflows_from_complete_content_when_terminal_width_changes(CommandCenterOverlayKind kind)
+    {
+        using CommandCenterWindow window = new();
+
+        window.ApplyAbsoluteLayout(120, 40);
+
+        string content = new('A', 80);
+
+        window.ShowOverlay(kind, [content], "Content", showFilter: false);
+
+        Assert.True(window.Layout(new System.Drawing.Size(120, 40)));
+
+        Assert.All(window.GetOverlayLinesSnapshot(), line =>
+            Assert.InRange(TerminalCellMetrics.MeasureWidth(line), 0, window.OverlayList.Viewport.Width));
+
+        window.ApplyAbsoluteLayout(80, 24);
+
+        _ = window.Layout(new System.Drawing.Size(80, 24));
+
+        Assert.All(window.GetOverlayLinesSnapshot(), line =>
+            Assert.InRange(TerminalCellMetrics.MeasureWidth(line), 0, window.OverlayList.Viewport.Width));
+
+        Assert.Equal(content, string.Concat(window.GetOverlayLinesSnapshot()));
+
+        if (kind == CommandCenterOverlayKind.QuitConfirm)
+        {
+            Assert.Equal(string.Join('\n', window.GetOverlayLinesSnapshot()), window.OverlayBody.Text);
+        }
+
+        window.ApplyAbsoluteLayout(120, 40);
+
+        _ = window.Layout(new System.Drawing.Size(120, 40));
+
+        Assert.Equal(content, Assert.Single(window.GetOverlayLinesSnapshot()));
+
+        Assert.Equal(82, window.OverlayPane.Frame.Width);
+    }
+
+    [Fact]
+    internal void Resizing_a_picker_after_help_preserves_action_rows_and_selected_target()
+    {
+        using CommandCenterWindow window = new();
+
+        window.ShowOverlay(CommandCenterOverlayKind.Help, [new string('H', 110)], "Help", showFilter: false);
+
+        string longAction = new('A', 90);
+
+        window.ShowOverlay(CommandCenterOverlayKind.CommandPalette, [longAction, "Quit"], "Commands", showFilter: false);
+
+        window.MovePaletteSelection(1);
+
+        foreach (int columns in new[] { 120, 80, 120 })
+        {
+            window.ApplyAbsoluteLayout(columns, 40);
+
+            _ = window.Layout(new System.Drawing.Size(columns, 40));
+
+            Assert.Equal(new[] { "  " + longAction, "> Quit" }, window.GetOverlayLinesSnapshot());
+
+            Assert.Equal(1, window.GetOverlaySelectedIndex());
+        }
+
+        window.HideOverlayVisual();
+
+        window.ApplyAbsoluteLayout(120, 40);
+
+        _ = window.Layout(new System.Drawing.Size(120, 40));
+
+        Assert.Empty(window.GetOverlayLinesSnapshot());
+
+        Assert.Equal(60, window.OverlayPane.Frame.Width);
+
+        window.ShowOverlay(CommandCenterOverlayKind.Help, ["Fresh help"], "Help", showFilter: false);
+
+        _ = window.Layout(new System.Drawing.Size(120, 40));
+
+        Assert.Equal("Fresh help", Assert.Single(window.GetOverlayLinesSnapshot()));
+
+        Assert.Equal(60, window.OverlayPane.Frame.Width);
+    }
+
+    [Theory]
+    [InlineData(CommandCenterOverlayKind.ModelPicker)]
+    [InlineData(CommandCenterOverlayKind.SessionPicker)]
+    internal void Dedicated_pickers_replace_prior_help_prose_before_resizing(CommandCenterOverlayKind kind)
+    {
+        using CommandCenterWindow window = new();
+
+        string priorHelp = new('H', 110);
+
+        window.ShowOverlay(CommandCenterOverlayKind.Help, [priorHelp], "Help", showFilter: false);
+
+        CommandCenterState state = new(new SessionLogBuffer())
+        {
+            ModelChoices = CommandCenterModelPicker.Build(
+            [
+                new ModelInfoDto("text-model", "compat", "OpenAICompatible", "***", 128_000),
+            ]),
+            Sessions = Sessions,
+            Overlay = kind,
+            FocusRegion = CommandCenterFocusRegion.Sessions,
+        };
+
+        if (kind == CommandCenterOverlayKind.ModelPicker)
+        {
+            window.ShowModelPickerOverlay(state);
+        }
+        else
+        {
+            window.ShowSessionPickerOverlay();
+
+            window.ApplyState(state, kind: CommandCenterUiUpdateKind.RefreshSidebar);
+        }
+
+        string[] expected = window.GetOverlayLinesSnapshot().ToArray();
+
+        Assert.NotEmpty(expected);
+
+        Assert.DoesNotContain(expected, line => line.Contains("HHHH", StringComparison.Ordinal));
+
+        foreach (int columns in new[] { 120, 80, 120 })
+        {
+            window.ApplyAbsoluteLayout(columns, 40);
+
+            _ = window.Layout(new System.Drawing.Size(columns, 40));
+
+            Assert.Equal(expected, window.GetOverlayLinesSnapshot());
+        }
+    }
+
+    [Theory]
     [InlineData(80, 24, 578)]
     [InlineData(120, 40, 578)]
     [InlineData(80, 24, 4000)]
