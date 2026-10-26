@@ -971,119 +971,107 @@ public sealed partial class GrimoireRepository : IGrimoireRepository
             : null;
     }
 
-    public async Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default)
+    public async Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(query))
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Result<string> normalized = Fts5QueryValidation.Normalize(query,
+            ArcanumSettingClamps.ArchiveSearchMaxQueryLength(_arcOptions.Value.ResolveIntelligence().ArchiveSearchMaxQueryLength));
+
+        if (normalized.IsFailure)
         {
-            return "No matching archives found.";
+            return normalized.Error;
         }
 
-        string trimmed = query.Trim();
+        string matchQuery = normalized.Value;
 
-        int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(
-            _arcOptions.Value.ResolveIntelligence().ArchiveSearchMaxQueryLength);
+        Result validation = await Fts5QueryValidation.ValidateAsync(_db, matchQuery, cancellationToken).ConfigureAwait(false);
 
-        if (trimmed.Length > maxQueryLen)
+        if (validation.IsFailure)
         {
-            return "Archive search query is too long. Use a shorter phrase.";
-        }
-
-        string matchQuery = FtsMatchQuerySanitizer.Sanitize(trimmed);
-
-        if (string.IsNullOrEmpty(matchQuery))
-        {
-            return "No matching archives found.";
+            return validation.Error;
         }
 
         int limit = Math.Clamp(maxResults, 1, 500);
 
-        try
+        await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
+            _db,
+            """
+            SELECT c."Role", c."Content", c."CreatedAt"
+            FROM "Entries_fts"
+            INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
+            WHERE "Entries_fts" MATCH @query
+            ORDER BY rank
+            LIMIT @limit
+            """,
+            cancellationToken).ConfigureAwait(false);
+
+        GrimoireEntitySql.AddParameter(command, "@query", matchQuery);
+        GrimoireEntitySql.AddParameter(command, "@limit", limit);
+
+        await using SqliteDataReader reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        // LIMIT bounds the row count but not the row sizes, and the caller's tool-output cap only
+        // rejects the finished string — so building past the cap allocates hundreds of megabytes
+        // purely to have them thrown away. The budget is enforced while building instead, and a
+        // row past it is counted without its Content ever being materialized.
+        int budget = (int)Math.Min(
+            ArcanumSettingClamps.ToolOutputCapBytes(
+                _arcOptions.Value.ResolveIntelligence().ToolOutputCapBytes),
+            int.MaxValue / 2);
+
+        StringBuilder sb = new();
+
+        bool any = false;
+
+        int omitted = 0;
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            await using SqliteCommand command = await GrimoireSqlCommandFactory.CreateAsync(
-                _db,
-                """
-                SELECT c."Role", c."Content", c."CreatedAt"
-                FROM "Entries_fts"
-                INNER JOIN "Entries" AS c ON c."Id" = "Entries_fts"."Id"
-                WHERE "Entries_fts" MATCH @query
-                ORDER BY rank
-                LIMIT @limit
-                """,
-                cancellationToken).ConfigureAwait(false);
+            any = true;
 
-            GrimoireEntitySql.AddParameter(command, "@query", matchQuery);
-            GrimoireEntitySql.AddParameter(command, "@limit", limit);
-
-            await using SqliteDataReader reader = await command
-                .ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            // LIMIT bounds the row count but not the row sizes, and the caller's tool-output cap only
-            // rejects the finished string — so building past the cap allocates hundreds of megabytes
-            // purely to have them thrown away. The budget is enforced while building instead, and a
-            // row past it is counted without its Content ever being materialized.
-            int budget = (int)Math.Min(
-                ArcanumSettingClamps.ToolOutputCapBytes(
-                    _arcOptions.Value.ResolveIntelligence().ToolOutputCapBytes),
-                int.MaxValue / 2);
-
-            StringBuilder sb = new();
-
-            bool any = false;
-
-            int omitted = 0;
-
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            if (sb.Length >= budget)
             {
-                any = true;
+                omitted++;
 
-                if (sb.Length >= budget)
-                {
-                    omitted++;
-
-                    continue;
-                }
-
-                MessageRole role = (MessageRole)reader.GetInt32(0);
-
-                string content = reader.GetString(1);
-
-                DateTimeOffset timestamp = UtcInstantText.Parse(reader.GetString(2));
-
-                int room = budget - sb.Length;
-
-                bool clipped = content.Length > room;
-
-                _ = sb.Append('[')
-                    .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
-                    .Append("] ")
-                    .Append(role)
-                    .Append(": ")
-                    .Append(clipped ? ClipToBudget(content, room) : content);
-
-                if (clipped)
-                {
-                    _ = sb.Append(" ... [TRUNCATED: this archived entry is larger than the remaining archive-search budget.]");
-                }
-
-                _ = sb.AppendLine();
+                continue;
             }
 
-            if (omitted > 0)
+            MessageRole role = (MessageRole)reader.GetInt32(0);
+
+            string content = reader.GetString(1);
+
+            DateTimeOffset timestamp = UtcInstantText.Parse(reader.GetString(2));
+
+            int room = budget - sb.Length;
+
+            bool clipped = content.Length > room;
+
+            _ = sb.Append('[')
+                .Append(timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
+                .Append("] ")
+                .Append(role)
+                .Append(": ")
+                .Append(clipped ? ClipToBudget(content, room) : content);
+
+            if (clipped)
             {
-                _ = sb.Append("... [TRUNCATED: ")
-                    .Append(omitted.ToString(CultureInfo.InvariantCulture))
-                    .AppendLine(" further matches were not read; narrow 'query' with more specific keywords to reach them.]");
+                _ = sb.Append(" ... [TRUNCATED: this archived entry is larger than the remaining archive-search budget.]");
             }
 
-            return any ? sb.ToString().TrimEnd() : "No matching archives found.";
+            _ = sb.AppendLine();
         }
-        catch (SqliteException ex)
-        {
-            _logger.LogWarning(ex, "FTS archive search failed for sanitized query.");
 
-            return "Archive search could not run for that input. Try simpler keywords (letters, numbers, spaces).";
+        if (omitted > 0)
+        {
+            _ = sb.Append("... [TRUNCATED: ")
+                .Append(omitted.ToString(CultureInfo.InvariantCulture))
+                .AppendLine(" further matches were not read; narrow 'query' with more specific keywords to reach them.]");
         }
+
+        return any ? sb.ToString().TrimEnd() : "No matching archives found.";
     }
 
     /// <summary>Clips to the remaining budget without splitting a surrogate pair.</summary>

@@ -20,7 +20,7 @@ public static class FtsMatchQuerySanitizer
     /// Walks Unicode scalar values rather than UTF-16 code units, so a letter outside the Basic Multilingual Plane
     /// stays whole instead of being split into two surrogate halves that each look like a separator. A token is made of
     /// letters, digits, underscores and the combining marks that belong to them; a run of marks with nothing to
-    /// attach to is dropped, because it tokenizes to nothing.
+    /// attach to, or underscores without any letter or number, are dropped because they tokenize to nothing.
     /// </remarks>
     public static string Sanitize(string query)
     {
@@ -34,7 +34,7 @@ public static class FtsMatchQuerySanitizer
         {
             if (IsBaseCharacter(rune))
             {
-                tokenHasBase = true;
+                tokenHasBase |= Rune.IsLetterOrDigit(rune);
 
                 _ = currentToken.Append(rune);
             }

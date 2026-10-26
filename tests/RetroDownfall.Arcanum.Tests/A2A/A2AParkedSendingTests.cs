@@ -1036,7 +1036,7 @@ public sealed class A2AParkedSendingTests
 
         public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) => throw new NotSupportedException();
 
-        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
+        public Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct) =>
             throw new NotSupportedException();
 
         public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) => throw new NotSupportedException();

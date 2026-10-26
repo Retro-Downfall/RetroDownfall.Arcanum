@@ -11093,8 +11093,8 @@ public sealed partial class WizardIntelligenceProviderTests : IAsyncLifetime
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             Task.FromResult<LoreDto?>(null);
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
-            Task.FromResult(string.Empty);
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+            Task.FromResult(Result<string>.Success(string.Empty));
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

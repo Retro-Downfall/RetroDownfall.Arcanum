@@ -136,10 +136,12 @@ internal static class SessionEndpoints
                     limit,
                     beforeUpdatedAt);
 
-                SessionQueryResult result = await repo.QueryAsync(request, ctx.RequestAborted).ConfigureAwait(false);
+                Result<SessionQueryResult> result = await repo.QueryAsync(request, ctx.RequestAborted).ConfigureAwait(false);
 
-                return Results.Ok(
-                    ApiResponse<SessionQueryResult>.FromResult(Result<SessionQueryResult>.Success(result), traceId));
+                return Results.Json(
+                    ApiResponse<SessionQueryResult>.FromResult(result, traceId),
+                    ArcanumJsonContext.Default.ApiResponseSessionQueryResult,
+                    statusCode: result.IsSuccess ? StatusCodes.Status200OK : ArcanumErrorMapper.ResolveStatusCodeDefaultBadRequest(result.Error.Code));
             })
         .WithName("QuerySessions");
 

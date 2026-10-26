@@ -13,11 +13,9 @@ namespace RetroDownfall.Arcanum.Tests.Chronosync;
 [Collection("Grimoire")]
 public sealed class ChronosyncEngineTests
 {
-
     [SkippableFact]
     public async Task AnalyzeAndSyncAsync_reports_thread_delta_after_baseline()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FixedTimeProvider time = new(DateTimeOffset.Parse("2026-06-20T12:00:00Z"));
@@ -64,13 +62,11 @@ public sealed class ChronosyncEngineTests
         Assert.False(second.DomainChanged);
 
         Assert.Equal(2, grimoire.Snapshots.Count);
-
     }
 
     [SkippableFact]
     public async Task AnalyzeAndSyncAsync_detects_domain_change()
     {
-
         Skip.IfNot(GrimoireFixture.SqlCipherAvailable, GrimoireFixture.SqlCipherUnavailableReason);
 
         FixedTimeProvider time = new(DateTimeOffset.Parse("2026-06-20T13:00:00Z"));
@@ -95,58 +91,46 @@ public sealed class ChronosyncEngineTests
         Assert.True(report.DomainChanged);
 
         Assert.Equal(DomainType.SoftwareEngineering, report.PreviousDomain);
-
     }
 
     private sealed class FixedTimeProvider : TimeProvider
     {
-
         private DateTimeOffset _utcNow;
 
         public FixedTimeProvider(DateTimeOffset utcNow)
         {
-
             _utcNow = utcNow;
-
         }
 
         public override DateTimeOffset GetUtcNow() => _utcNow;
 
         public void Advance(TimeSpan delta)
         {
-
             _utcNow = _utcNow.Add(delta);
-
         }
-
     }
 
     private sealed class RecordingGrimoireRepository : IGrimoireRepository
     {
-
         public List<WorkspaceContext> Snapshots { get; } = [];
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(
             string workspacePath,
             CancellationToken cancellationToken = default)
         {
-
             WorkspaceContext? latest = Snapshots
                 .Where(s => s.WorkspacePath == workspacePath)
                 .OrderByDescending(s => s.CreatedAt)
                 .FirstOrDefault();
 
             return Task.FromResult(latest);
-
         }
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default)
         {
-
             Snapshots.Add(context);
 
             return Task.CompletedTask;
-
         }
 
         public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(
@@ -275,9 +259,7 @@ public sealed class ChronosyncEngineTests
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
-
 }

@@ -34,7 +34,6 @@ namespace RetroDownfall.Arcanum.Tests.Intelligence;
 /// </remarks>
 public sealed class CovenantProtectedFinalizationTests
 {
-
     [SkippableTheory]
     [InlineData(false)]
     [InlineData(true)]
@@ -96,7 +95,6 @@ public sealed class CovenantProtectedFinalizationTests
     [Fact]
     public async Task A_completed_protected_reply_is_committed_with_its_label()
     {
-
         RecordingCommitter committer = new();
 
         RecordingGrimoire grimoire = new();
@@ -121,13 +119,11 @@ public sealed class CovenantProtectedFinalizationTests
         Assert.Equal("an answer", request.FinalText);
 
         Assert.Equal(AssistantFinalizationOutcome.Committed, request.Outcome);
-
     }
 
     [Fact]
     public async Task An_interrupted_protected_stream_persists_its_partial_content_labelled()
     {
-
         RecordingCommitter committer = new();
 
         RecordingGrimoire grimoire = new();
@@ -149,13 +145,11 @@ public sealed class CovenantProtectedFinalizationTests
         Assert.Equal(ContentSensitivity.CovenantDerived, request.ContentSensitivity);
 
         Assert.Equal("half an ans", request.FinalText);
-
     }
 
     [Fact]
     public async Task An_ordinary_reply_never_reaches_the_committer()
     {
-
         RecordingCommitter committer = new();
 
         RecordingGrimoire grimoire = new();
@@ -171,13 +165,11 @@ public sealed class CovenantProtectedFinalizationTests
         _ = await writer.ResolveInterruptedAsync(Handle(), "partial", CancellationToken.None);
 
         Assert.Empty(committer.Requests);
-
     }
 
     [Fact]
     public async Task A_protected_reply_that_cannot_be_labelled_is_not_persisted_at_all()
     {
-
         RecordingCommitter committer = new()
         {
             Failure = new Error(ErrorCodes.Grimoire.WriteFailed, "no"),
@@ -199,7 +191,6 @@ public sealed class CovenantProtectedFinalizationTests
         Assert.False(finalized);
 
         Assert.False(handle.IsFinalized);
-
     }
 
     private static GrimoireTurnWriter CreateWriter(
@@ -214,7 +205,6 @@ public sealed class CovenantProtectedFinalizationTests
 
     private static GrimoireTurnWriter.TurnHandle Handle()
     {
-
         GrimoireTurnWriter.TurnHandle handle = new();
 
         typeof(GrimoireTurnWriter.TurnHandle)
@@ -226,12 +216,10 @@ public sealed class CovenantProtectedFinalizationTests
             .SetValue(handle, Guid.NewGuid());
 
         return handle;
-
     }
 
     private static ProviderCallSensitivity Derived()
     {
-
         GenerationProvenance provenance =
             GenerationProvenance.CreateExact([Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")]);
 
@@ -243,7 +231,6 @@ public sealed class CovenantProtectedFinalizationTests
                 provenance.Mode,
                 provenance.ExactGenerationIds,
                 provenance.BloomBits)));
-
     }
 
     /// <summary>
@@ -256,12 +243,11 @@ public sealed class CovenantProtectedFinalizationTests
     /// </remarks>
     private sealed class RecordingGrimoire : IGrimoireRepository
     {
-
         public List<string> Finalized { get; } = [];
 
         public int Discards { get; private set; }
 
-        public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync( Guid? sessionId, string prompt, string model, CancellationToken cancellationToken = default) =>
+        public Task<(Guid SessionId, Guid AssistantEntryId)> BeginAssistantReplyAsync(Guid? sessionId, string prompt, string model, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task FinalizeAssistantEntryAsync(
@@ -269,58 +255,54 @@ public sealed class CovenantProtectedFinalizationTests
             string fullContent,
             CancellationToken cancellationToken = default)
         {
-
             Finalized.Add(fullContent);
 
             return Task.CompletedTask;
-
         }
 
         public Task DiscardAssistantEntryAsync(
             Guid assistantEntryId,
             CancellationToken cancellationToken = default)
         {
-
             Discards++;
 
             return Task.CompletedTask;
-
         }
 
-        public Task AppendToolInteractionAsync( Guid sessionId, string toolName, string arguments, string result, string modelUsed, CancellationToken cancellationToken = default) =>
+        public Task AppendToolInteractionAsync(Guid sessionId, string toolName, string arguments, string result, string modelUsed, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task SaveCompletedExchangeAsync( string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
+        public Task SaveCompletedExchangeAsync(string userPrompt, string assistantText, string modelUsed, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Session?> GetSessionAsync( Guid id, CancellationToken cancellationToken = default) =>
+        public Task<Session?> GetSessionAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<Session?> GetSessionHeaderAsync( Guid id, CancellationToken cancellationToken = default) =>
+        public Task<Session?> GetSessionHeaderAsync(Guid id, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync( Guid sessionId, CancellationToken cancellationToken = default) =>
+        public Task<List<GrimoireEntryDto>?> GetSessionEntriesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync( Guid sessionId, int takeLast, CancellationToken cancellationToken = default) =>
+        public Task<List<GrimoireEntryDto>?> GetRecentSessionEntriesAsync(Guid sessionId, int takeLast, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<GrimoireEntryDto?> GetEntryByIdAsync( Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+        public Task<GrimoireEntryDto?> GetEntryByIdAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<bool> DeleteEntryAsync( Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
+        public Task<bool> DeleteEntryAsync(Guid sessionId, Guid entryId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<bool> SetEntryPinnedAsync( Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
+        public Task<bool> SetEntryPinnedAsync(Guid sessionId, Guid entryId, bool pinned, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<int> GetPinnedEntryCountAsync( Guid sessionId, CancellationToken cancellationToken = default) =>
+        public Task<int> GetPinnedEntryCountAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<List<Guid>> GetSessionsNeedingSummarizationAsync( int threshold, DateTime idleCutoff, CancellationToken cancellationToken = default) =>
+        public Task<List<Guid>> GetSessionsNeedingSummarizationAsync(int threshold, DateTime idleCutoff, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<List<Entry>> GetUnsummarizedEntriesAsync( Guid sessionId, DateTime watermark, int batchSize, CancellationToken cancellationToken = default) =>
+        public Task<List<Entry>> GetUnsummarizedEntriesAsync(Guid sessionId, DateTime watermark, int batchSize, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<bool> SessionExistsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
@@ -329,7 +311,7 @@ public sealed class CovenantProtectedFinalizationTests
         public Task IncrementSessionTokensAsync(Guid sessionId, long totalTokens, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task IncrementSessionTokensAndCostAsync( Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default) =>
+        public Task IncrementSessionTokensAndCostAsync(Guid sessionId, long totalTokens, decimal costUsd, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<decimal> GetTodaySpendAsync(CancellationToken cancellationToken = default) =>
@@ -338,7 +320,7 @@ public sealed class CovenantProtectedFinalizationTests
         public Task AdvanceCampaignLogWatermarkAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task UpdateSessionCampaignRollupAsync( Guid sessionId, string summary, DateTime lastSummarizedMessageAt, CancellationToken cancellationToken = default) =>
+        public Task UpdateSessionCampaignRollupAsync(Guid sessionId, string summary, DateTime lastSummarizedMessageAt, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<string?> ReadLoreAsync(string key, CancellationToken cancellationToken = default) =>
@@ -350,13 +332,13 @@ public sealed class CovenantProtectedFinalizationTests
         public Task<bool> DeleteLoreAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<ListPageResult<LoreDto>> ListLoreAsync( int? limit = null, int offset = 0, CancellationToken cancellationToken = default) =>
+        public Task<ListPageResult<LoreDto>> ListLoreAsync(int? limit = null, int offset = 0, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task<LoreDto?> GetLoreAsync(string key, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
-        public Task<string> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
+        public Task<Result<string>> SearchArchivesAsync(string query, int maxResults, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
         public Task RecordWorkspaceContextAsync(WorkspaceContext context, CancellationToken cancellationToken = default) =>
@@ -364,12 +346,10 @@ public sealed class CovenantProtectedFinalizationTests
 
         public Task<WorkspaceContext?> GetLatestWorkspaceContextAsync(string workspacePath, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-
     }
 
     private sealed class RecordingCommitter : IGrimoireTurnCommitter
     {
-
         public List<TurnCommitRequest> Requests { get; } = [];
 
         public Error? Failure { get; init; }
@@ -378,7 +358,6 @@ public sealed class CovenantProtectedFinalizationTests
             TurnCommitRequest request,
             CancellationToken cancellationToken)
         {
-
             Requests.Add(request);
 
             return Task.FromResult(Failure is { } error
@@ -388,9 +367,6 @@ public sealed class CovenantProtectedFinalizationTests
                     request.Outcome,
                     Replayed: false,
                     ImmutableArray<CovenantMutationReceipt>.Empty)));
-
         }
-
     }
-
 }

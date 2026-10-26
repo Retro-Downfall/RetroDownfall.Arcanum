@@ -1577,7 +1577,7 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         // SaveChanges above opens then closes the EF connection, so the connection is closed
         // here. SearchArchivesAsync must open it itself before ExecuteReaderAsync.
-        string result = await repository.SearchArchivesAsync("cobalt", maxResults: 10, CancellationToken.None);
+        string result = (await repository.SearchArchivesAsync("cobalt", maxResults: 10, CancellationToken.None)).Value;
 
         Assert.Contains("cobalt", result, StringComparison.OrdinalIgnoreCase);
     }
@@ -1625,10 +1625,10 @@ public sealed class GrimoireRepositoryTests : IAsyncLifetime
 
         _ = await _db!.SaveChangesAsync(CancellationToken.None);
 
-        string result = await repository.SearchArchivesAsync(
+        string result = (await repository.SearchArchivesAsync(
             "zephyrine",
             maxResults: 100,
-            CancellationToken.None);
+            CancellationToken.None)).Value;
 
         long cap = ArcanumSettingClamps.ToolOutputCapBytes(
             new ArcanumSettings().ResolveIntelligence().ToolOutputCapBytes);

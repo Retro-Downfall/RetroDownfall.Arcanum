@@ -785,7 +785,7 @@ public sealed class WebResearchCampaignBindingTests : IDisposable
 
         public Task<Session> CreateAsync(Guid? campaignId, string? title, CancellationToken ct) => throw new NotSupportedException();
 
-        public Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct) => throw new NotSupportedException();
+        public Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct) => throw new NotSupportedException();
 
         public Task<SessionAnalytics> GetAnalyticsAsync(CancellationToken ct) => throw new NotSupportedException();
 

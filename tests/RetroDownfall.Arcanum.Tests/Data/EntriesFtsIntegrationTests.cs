@@ -93,7 +93,7 @@ public sealed class EntriesFtsIntegrationTests : IAsyncLifetime
             FixtureOrdinaryConnectionFactory.For(_db),
             FixtureLabeledArtifactGuard.For(_db), memoryDelegation: null);
 
-        string results = await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None);
+        string results = (await repository.SearchArchivesAsync("moonstone", maxResults: 10, CancellationToken.None)).Value;
 
         Assert.Contains("moonstone", results, StringComparison.OrdinalIgnoreCase);
     }

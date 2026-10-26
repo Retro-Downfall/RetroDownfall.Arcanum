@@ -284,7 +284,7 @@ internal sealed partial class ArcanumInternalToolServer
 
         if (query.Length > maxQueryLen)
         {
-            query = query[..maxQueryLen];
+            return ToolError("FTS5 query is too long. Shorten the complete expression and retry.");
         }
 
         int maxResults = ArcanumSettingClamps.ArchiveSearchMaxResults(_settings.ArchiveSearchMaxResults);
@@ -295,11 +295,11 @@ internal sealed partial class ArcanumInternalToolServer
 
             IGrimoireRepository repo = scope.ServiceProvider.GetRequiredService<IGrimoireRepository>();
 
-            string text = await repo
+            Result<string> result = await repo
                 .SearchArchivesAsync(query, maxResults, cancellationToken)
                 .ConfigureAwait(false);
 
-            return BuildBoundedSearchArchivesResult(text);
+            return result.IsFailure ? ToolError(result.Error.Message) : BuildBoundedSearchArchivesResult(result.Value);
         }
         catch (OperationCanceledException)
         {

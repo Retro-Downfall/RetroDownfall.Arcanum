@@ -75,7 +75,7 @@ internal sealed class SessionRepository(
     public Task<Session?> GetByIdAsync(Guid id, CancellationToken ct) =>
         ReadSessionAsync(id, ct);
 
-    public async Task<SessionQueryResult> QueryAsync(SessionQueryRequest request, CancellationToken ct)
+    public async Task<Result<SessionQueryResult>> QueryAsync(SessionQueryRequest request, CancellationToken ct)
     {
         SessionSettings settings = optionsMonitor.CurrentValue.ResolveSessions();
 
@@ -90,26 +90,28 @@ internal sealed class SessionRepository(
 
         string? ftsMatchQuery = null;
 
-        if (!string.IsNullOrWhiteSpace(request.Search))
+        ct.ThrowIfCancellationRequested();
+
+        if (request.Search is not null)
         {
-            string search = request.Search.Trim();
+            Result<string> normalized = Fts5QueryValidation.Normalize(request.Search,
+                ArcanumSettingClamps.ArchiveSearchMaxQueryLength(optionsMonitor.CurrentValue.ResolveIntelligence().ArchiveSearchMaxQueryLength));
 
-            int maxQueryLen = ArcanumSettingClamps.ArchiveSearchMaxQueryLength(
-                optionsMonitor.CurrentValue.ResolveIntelligence().ArchiveSearchMaxQueryLength);
-
-            if (search.Length > maxQueryLen)
+            if (normalized.IsFailure)
             {
-                search = search[..maxQueryLen];
+                return normalized.Error;
             }
 
-            searchTitlePattern = SqlLikePatterns.Contains(search);
+            ftsMatchQuery = normalized.Value;
 
-            string matchQuery = FtsMatchQuerySanitizer.Sanitize(search);
+            Result validation = await Fts5QueryValidation.ValidateAsync(db, ftsMatchQuery, ct).ConfigureAwait(false);
 
-            if (!string.IsNullOrEmpty(matchQuery))
+            if (validation.IsFailure)
             {
-                ftsMatchQuery = matchQuery;
+                return validation.Error;
             }
+
+            searchTitlePattern = SqlLikePatterns.Contains(ftsMatchQuery);
         }
 
         List<(string Name, object Value)> parameters = [];
