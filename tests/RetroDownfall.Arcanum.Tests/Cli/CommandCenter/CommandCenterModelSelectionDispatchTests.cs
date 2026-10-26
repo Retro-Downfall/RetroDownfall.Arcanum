@@ -82,7 +82,7 @@ public sealed class CommandCenterModelSelectionDispatchTests
         Assert.Equal("gemma4:e4b", state.Model);
 
         Assert.Contains(
-            "Model set to gemma4:e4b (Ollama) for this session.",
+            "Model set to gemma4:e4b for this session. The host chooses the provider from its configuration.",
             state.Log.RenderPlainText(),
             StringComparison.Ordinal);
 
@@ -151,7 +151,7 @@ public sealed class CommandCenterModelSelectionDispatchTests
         Assert.Equal("opus", state.Model);
 
         Assert.Contains(
-            "Model set to opus (claude-sub, hidden from model lists) for this session.",
+            "Model set to opus for this session. The host chooses the provider from its configuration. It is hidden from model lists.",
             state.Log.RenderPlainText(),
             StringComparison.Ordinal);
     }

@@ -23,7 +23,7 @@ internal enum ModelChoiceRoute
 /// The session model to store: the provider's own spelling when a row lists or hides the name, the
 /// trimmed name as typed otherwise.
 /// </param>
-/// <param name="ProviderName">The provider the name goes to; <see langword="null"/> when refused.</param>
+/// <param name="ProviderName">The matching listing or Familiar fallback, not a guaranteed runtime route; <see langword="null"/> when refused.</param>
 /// <param name="Message">The transcript line reporting the decision.</param>
 internal sealed record ModelChoiceDecision(ModelChoiceRoute Route, string Model, string? ProviderName, string Message)
 {
@@ -49,10 +49,11 @@ internal sealed record ModelChoiceDecision(ModelChoiceRoute Route, string Model,
 /// <para>
 /// Matching is trimmed, case-insensitive and in configured order: a listed model on any provider,
 /// then a hidden one, then the first Familiar. Over the same configuration, acceptance always agrees
-/// with the resolver. Only the provider named can differ, in two hide-list corners the projection
-/// cannot tell apart: an earlier Familiar that declares and hides a name a later row lists (the
+/// with the resolver. The matched provider can differ from the runtime route in two hide-list corners
+/// the projection cannot tell apart: an earlier Familiar that declares and hides a name a later row lists (the
 /// resolver picks the Familiar), and a Familiar after the first that hides a name it never declares
-/// (the resolver hands it to the first Familiar).
+/// (the resolver hands it to the first Familiar). Confirmations therefore promise the selected model
+/// and leave provider routing to the host.
 /// </para>
 /// </remarks>
 internal static class CommandCenterModelChoice
@@ -84,7 +85,7 @@ internal static class CommandCenterModelChoice
                         ModelChoiceRoute.Listed,
                         model,
                         provider.Name,
-                        Confirmation(model, provider.Name));
+                        Confirmation(model));
                 }
             }
         }
@@ -102,7 +103,7 @@ internal static class CommandCenterModelChoice
                         ModelChoiceRoute.Hidden,
                         entry,
                         provider.Name,
-                        $"Model set to {entry} ({provider.Name}, hidden from model lists) for this session.");
+                        $"{Confirmation(entry)} It is hidden from model lists.");
                 }
             }
         }
@@ -131,8 +132,8 @@ internal static class CommandCenterModelChoice
     /// The confirmation for a model a provider lists, shared by <c>/model &lt;name&gt;</c> and the
     /// header drop-down so the two report a selection in the same words.
     /// </summary>
-    public static string Confirmation(string model, string providerName) =>
-        $"Model set to {model} ({providerName}) for this session.";
+    public static string Confirmation(string model) =>
+        $"Model set to {model} for this session. The host chooses the provider from its configuration.";
 
     /// <summary>
     /// The refusal when the provider list could not be read. The name is refused rather than taken on

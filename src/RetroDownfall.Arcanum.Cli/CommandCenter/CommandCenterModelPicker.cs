@@ -3,8 +3,8 @@ using RetroDownfall.Arcanum.Core.Configuration;
 
 namespace RetroDownfall.Arcanum.Cli.CommandCenter;
 
-/// <summary>One selectable model, with the provider it belongs to.</summary>
-internal sealed record ModelPickerItem(string Model, string ProviderName);
+/// <summary>One selectable model id, with its listing providers.</summary>
+internal sealed record ModelPickerItem(string Model, string ProviderNames);
 
 /// <summary>
 /// The pure part of the Command Center model drop-down: what to show, how typing narrows it, and
@@ -31,31 +31,20 @@ internal static class CommandCenterModelPicker
     internal const string ActiveMarker = "●";
 
     /// <summary>
-    /// Groups models by provider in configured order, de-duplicating a model id that the same
-    /// provider advertises twice. The same id on two providers is kept twice on purpose: they are
-    /// genuinely different routes, and collapsing them would hide which one a selection picks.
+    /// Groups models in configured provider order, then collapses case-insensitive duplicate ids.
+    /// Provider names describe listings; selecting a model never selects a provider route.
     /// </summary>
-    public static IReadOnlyList<ModelPickerItem> Build(IReadOnlyList<ModelInfoDto>? models)
-    {
-        List<ModelPickerItem> items = [];
-
-        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
-
-        foreach (IGrouping<string, ModelInfoDto> group in (models ?? [])
+    public static IReadOnlyList<ModelPickerItem> Build(IReadOnlyList<ModelInfoDto>? models) =>
+    [
+        .. (models ?? [])
             .Where(static model => !string.IsNullOrWhiteSpace(model.Model))
-            .GroupBy(static model => model.ProviderName, StringComparer.Ordinal))
-        {
-            foreach (ModelInfoDto model in group)
-            {
-                if (seen.Add($"{group.Key}\0{model.Model}"))
-                {
-                    items.Add(new ModelPickerItem(model.Model, group.Key));
-                }
-            }
-        }
-
-        return items;
-    }
+            .GroupBy(static model => model.ProviderName, StringComparer.Ordinal)
+            .SelectMany(static group => group)
+            .GroupBy(static model => model.Model, StringComparer.OrdinalIgnoreCase)
+            .Select(static group => new ModelPickerItem(
+                group.First().Model,
+                string.Join(", ", group.Select(static model => model.ProviderName).Distinct(StringComparer.OrdinalIgnoreCase)))),
+    ];
 
     /// <summary>
     /// Type-ahead narrowing over both the model id and the provider name, so an operator can find a
@@ -78,7 +67,7 @@ internal static class CommandCenterModelPicker
         [
             .. items.Where(item =>
                 item.Model.Contains(needle, StringComparison.OrdinalIgnoreCase)
-                || item.ProviderName.Contains(needle, StringComparison.OrdinalIgnoreCase)),
+                || item.ProviderNames.Contains(needle, StringComparison.OrdinalIgnoreCase)),
         ];
     }
 
@@ -106,7 +95,7 @@ internal static class CommandCenterModelPicker
 
             // A model id and a provider name come from the provider's /models answer, and this list
             // fills the overlay without passing through ShowOverlay, so it is stripped here.
-            lines.Add(TerminalTextSanitizer.SanitizeLine($"{marker} {item.Model}  ({item.ProviderName})"));
+            lines.Add(TerminalTextSanitizer.SanitizeLine($"{marker} {item.Model}  (listed by: {item.ProviderNames})"));
         }
 
         return lines;
@@ -117,8 +106,8 @@ internal static class CommandCenterModelPicker
         ResolveItem(items, selectedIndex)?.Model;
 
     /// <summary>
-    /// The model and provider a selected row means, or null when the row is the empty-state line. The
-    /// provider is what lets the drop-down confirm a selection in the same words <c>/model</c> does.
+    /// The model id and listing providers for a selected row, or null for the empty-state line.
+    /// Listing providers are display information only; the host resolves the selected model id.
     /// </summary>
     public static ModelPickerItem? ResolveItem(IReadOnlyList<ModelPickerItem> items, int selectedIndex)
     {
